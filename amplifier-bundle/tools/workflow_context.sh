@@ -62,8 +62,8 @@ _workflow_context_contract() {
     implementation) _wc_cohort=implementation; _wc_type=string; _wc_legacy=IMPLEMENTATION ;;
     allow_no_op) _wc_cohort=${WORKFLOW_CONTEXT_COHORT:-implementation}; _wc_type=bool; _wc_legacy=ALLOW_NO_OP ;;
     doc_review_feedback) _wc_cohort=documentation; _wc_type=object; _wc_legacy=DOC_REVIEW_FEEDBACK ;;
-    precommit_results) _wc_cohort=verification; _wc_type=string; _wc_legacy=PRECOMMIT_RESULTS ;;
-    local_testing_gate) _wc_cohort=verification; _wc_type=string; _wc_legacy=LOCAL_TESTING_GATE ;;
+    precommit_results) _wc_cohort=verification; _wc_type=report; _wc_legacy=PRECOMMIT_RESULTS ;;
+    local_testing_gate) _wc_cohort=verification; _wc_type=report; _wc_legacy=LOCAL_TESTING_GATE ;;
     agentic_finalizer_narrative) _wc_cohort=reporting; _wc_type=string; _wc_legacy=AGENTIC_FINALIZER_NARRATIVE ;;
     pr_number|issue_number) _wc_cohort=metadata; _wc_type=number; _wc_legacy=$(_workflow_context_upper "$1") ;;
     repo_path|branch_name|base_ref|remote_host_type|pr_url|task_description)
@@ -126,7 +126,7 @@ workflow_context_read() {
     raw=$(_workflow_context_get "$name" && printf '.') || return 2
     raw=${raw%.}
     # Runner scalar Strings are raw; objects are complete JSON documents.
-    if [[ $_wc_type == string || $_wc_type == bool || $_wc_type == number ]]; then
+    if [[ $_wc_type == string || $_wc_type == bool || $_wc_type == number || $_wc_type == report ]]; then
       printf '%s' "$raw"; return 0
     fi
   fi
@@ -135,6 +135,11 @@ workflow_context_read() {
       if ! value=$(printf '%s' "$raw" | jq -cs 'if length != 1 then error("context") else .[0] end | if type == "string" then fromjson else . end | if type == "object" then if type == "string" and index("\u0000") != null then error("context") else . end else error("context") end' 2>/dev/null); then
         _workflow_context_invalid; return 3
       fi ;;
+    report)
+      if ! value=$(printf '%s' "$raw" | jq -j 'if type == "string" and index("\u0000") != null then error("context") elif type == "string" or type == "object" then . else error("context") end' 2>/dev/null && printf '.'); then
+        _workflow_context_invalid; return 3
+      fi
+      value=${value%.} ;;
     string|bool|number)
       if ! value=$(printf '%s' "$raw" | jq -j --arg kind "$_wc_type" 'if type == "string" or ($kind == "bool" and type == "boolean") or ($kind == "number" and type == "number") then if type == "string" and index("\u0000") != null then error("context") else . end else error("context") end' 2>/dev/null && printf '.'); then
         _workflow_context_invalid; return 3

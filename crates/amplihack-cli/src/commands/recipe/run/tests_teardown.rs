@@ -109,6 +109,7 @@ fn test_failure_path_reaps_orphaned_descendants() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -170,6 +171,7 @@ fn test_timeout_teardown_sends_sigterm_before_sigkill() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("graceful-marker");
@@ -232,6 +234,7 @@ fn test_teardown_grace_window_is_configurable() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let _timeout_env = EnvVarGuard::set(RUNNER_TIMEOUT_ENV, "1");
     let grace_env = EnvVarGuard::set(TEARDOWN_GRACE_ENV, "0");
@@ -302,6 +305,7 @@ fn test_teardown_is_scoped_to_runner_process_group() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
 
     // Sibling process in the TEST's process group (NOT the runner's session).
@@ -469,6 +473,7 @@ fn test_depth_guard_bails_at_limit_before_spawn() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let spawned = depth_guard_spawned("3", Some("3"));
     assert!(
@@ -491,6 +496,7 @@ fn test_depth_guard_fails_closed_on_malformed_session_depth() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let spawned = depth_guard_spawned("not-a-number", Some("3"));
     assert!(
@@ -514,6 +520,7 @@ fn test_depth_guard_clamps_forged_max_depth_to_ceiling() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let ceiling = crate::commands::session_tree::state::MAX_DEPTH_CEILING;
     let at_ceiling = ceiling.to_string();
@@ -538,6 +545,7 @@ fn test_depth_guard_allows_spawn_below_limit() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let spawned = depth_guard_spawned("0", Some("3"));
     assert!(
@@ -607,6 +615,7 @@ fn test_caller_git_state_restored_after_terminal_failure() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("caller-checkout");
@@ -672,6 +681,7 @@ fn test_restore_preserves_durable_child_worktree() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("caller-checkout");
@@ -731,6 +741,7 @@ fn test_caller_git_state_restored_after_structured_failure_result() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("caller-checkout");
@@ -829,4 +840,12 @@ fn generated_tree_ids_are_valid_and_distinct() {
     validate_tree_id(&a).expect("generated tree id must be valid");
     validate_tree_id(&b).expect("generated tree id must be valid");
     assert_ne!(a, b, "two ids from one process must differ");
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

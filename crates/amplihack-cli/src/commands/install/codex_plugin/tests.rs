@@ -3,6 +3,9 @@ use super::*;
 #[cfg(unix)]
 #[test]
 fn native_failure_diagnostics_do_not_expose_child_output() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let binary = dir.path().join("native");
@@ -18,6 +21,9 @@ fn native_failure_diagnostics_do_not_expose_child_output() {
 
 #[test]
 fn derived_production_instructions_are_portable() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let output = tempfile::tempdir().unwrap();
     instruction_skills(
@@ -48,6 +54,9 @@ fn derived_production_instructions_are_portable() {
 
 #[test]
 fn codex_hooks_reconcile_preserves_foreign_definitions_across_update_and_removal() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hooks.json");
     let foreign =
@@ -71,6 +80,9 @@ fn codex_hooks_reconcile_preserves_foreign_definitions_across_update_and_removal
 
 #[test]
 fn codex_hooks_malformed_json_and_unowned_collisions_are_preserved() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("hooks.json");
     fs::write(&path, "{broken").unwrap();
@@ -86,6 +98,9 @@ fn codex_hooks_malformed_json_and_unowned_collisions_are_preserved() {
 #[cfg(unix)]
 #[test]
 fn codex_resource_and_config_symlink_escape_are_refused() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let source = dir.path().join("source");
     let staged = dir.path().join("staged");
@@ -103,6 +118,9 @@ fn codex_resource_and_config_symlink_escape_are_refused() {
 
 #[test]
 fn malformed_recovery_snapshots_are_rejected_before_mutation() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("root");
     let home = dir.path().join("home");
@@ -129,6 +147,9 @@ fn malformed_recovery_snapshots_are_rejected_before_mutation() {
 
 #[test]
 fn resolved_native_binary_survives_nested_selection_and_failure() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let outer = Path::new("/already/resolved/codex");
     let inner = Path::new("/nested/codex");
     with_binary(outer, || {

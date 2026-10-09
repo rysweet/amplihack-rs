@@ -93,6 +93,7 @@ fn a_runner_that_dies_without_a_result_still_names_the_run() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     write_stub(&runner, "#!/bin/sh\necho 'not json at all'\nexit 1\n");
@@ -133,6 +134,7 @@ fn a_runner_that_times_out_still_names_the_run() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     // Sleeps well past the timeout below, so the wait returns None.
@@ -167,4 +169,12 @@ fn a_runner_that_times_out_still_names_the_run() {
          emitted before teardown can fail and swallow it. Issue #1304. \
          Got: {chain}"
     );
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&["AMPLIHACK_AGENT_BINARY", "HOME"]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

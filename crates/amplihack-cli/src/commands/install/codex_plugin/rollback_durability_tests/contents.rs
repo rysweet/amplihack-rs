@@ -3,6 +3,9 @@ use super::*;
 
 #[test]
 fn rollback_restored_file_sync_failures_retain_exact_journal_and_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for key in ["config", "hooks", "marketplace", "ledger"] {
         let fixture = Rollback::new(true, true);
         let path = fixture
@@ -17,6 +20,9 @@ fn rollback_restored_file_sync_failures_retain_exact_journal_and_retry() {
 
 #[test]
 fn rollback_restored_package_tree_sync_failures_retain_journal_and_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for entry in ["resource", "nested/resource", "nested", ""] {
         let fixture = Rollback::new(true, true);
         fixture.assert_retained_then_retry(&fixture.root.join("market/plugin").join(entry));
@@ -25,6 +31,9 @@ fn rollback_restored_package_tree_sync_failures_retain_journal_and_retry() {
 
 #[test]
 fn rollback_syncs_original_dependencies_before_journal_retirement() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let fixture = Rollback::new(true, true);
     let journal = fixture.root.join("pending.json");
     let mut trace = Vec::new();
@@ -91,6 +100,9 @@ fn rollback_syncs_original_dependencies_before_journal_retirement() {
 
 #[test]
 fn rollback_revalidates_foreign_changes_after_sync_before_retiring_journal() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for resource in ["config", "package", "journal"] {
         let fixture = Rollback::new(true, true);
         let journal = fixture.root.join("pending.json");
@@ -137,6 +149,9 @@ fn rollback_revalidates_foreign_changes_after_sync_before_retiring_journal() {
 
 #[test]
 fn rollback_package_links_remain_owned_without_synchronizing_targets() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let mut fixture = Rollback::new(true, true);
     let backup = fixture.root.join("previous-package");
     std::os::unix::fs::symlink("resource", backup.join("relative")).unwrap();

@@ -991,9 +991,18 @@ fn agentic_finalization_reporting_failure_preserves_durable_evidence() {
     let output = run_agentic_finalization(
         "validate",
         &[
-            ("IMPLEMENTATION_COMPLETED", "true"),
-            ("VERIFICATION_COMPLETED", "true"),
-            ("FINALIZER_STEP_STATUS", "failed"),
+            (
+                "RECIPE_VAR_implementation_terminal_evidence",
+                r#"{"implementation_completed":"true"}"#,
+            ),
+            (
+                "RECIPE_VAR_verification_terminal_evidence",
+                r#"{"verification_completed":"true"}"#,
+            ),
+            (
+                "RECIPE_VAR_finalizer_step_status",
+                r#"{"status":"failed","reporting_failure":"true"}"#,
+            ),
             (
                 "RECIPE_VAR_finalizer_step_status__reporting_failure",
                 "true",
@@ -1036,15 +1045,24 @@ fn agentic_finalization_distinguishes_implementation_failure_from_reporting_fail
     let output = run_agentic_finalization(
         "validate",
         &[
-            ("IMPLEMENTATION_COMPLETED", "false"),
-            ("VERIFICATION_COMPLETED", "false"),
-            ("FINALIZER_STEP_STATUS", "failed"),
+            (
+                "RECIPE_VAR_implementation_terminal_evidence",
+                r#"{"implementation_completed":"false"}"#,
+            ),
+            (
+                "RECIPE_VAR_verification_terminal_evidence",
+                r#"{"verification_completed":"false"}"#,
+            ),
+            (
+                "RECIPE_VAR_finalizer_step_status",
+                r#"{"status":"failed","reporting_failure":"true"}"#,
+            ),
             (
                 "RECIPE_VAR_finalizer_step_status__reporting_failure",
                 "true",
             ),
             (
-                "FINALIZATION_EVIDENCE",
+                "RECIPE_VAR_finalization_evidence",
                 r#"{"schema_version":1,"git":{"dirty_worktree":"false","meaningful_diff":"true"},"tooling":{"missing":"","gh_required":"false"},"prior_terminal_state":{"terminal_state":""}}"#,
             ),
             ("REPO_PATH", &repo_path),
@@ -1109,12 +1127,12 @@ fn agentic_finalization_ignores_adversarial_finalizer_prose() {
 // for control flow, and must not retain the brittle single-JSON-object gate.
 #[test]
 fn validate_helper_does_not_parse_agentic_finalizer_prose() {
-    let text = helper_text("workflow_agentic_finalization.sh");
-    let validate_body = text
-        .split_once("validate_finalization()")
-        .map(|(_, rest)| rest)
-        .and_then(|rest| rest.split_once("complete_workflow()").map(|(body, _)| body))
-        .expect("workflow_agentic_finalization.sh must define validate_finalization and complete_workflow");
+    let dispatcher = helper_text("workflow_agentic_finalization.sh");
+    assert!(dispatcher.contains(". \"$here/workflow_finalization_validate.sh\""));
+    assert!(dispatcher.contains(". \"$here/workflow_finalization_complete.sh\""));
+    let validate_body = helper_text("workflow_finalization_validate.sh");
+    assert!(validate_body.contains("validate_finalization()"));
+    assert!(helper_text("workflow_finalization_complete.sh").contains("complete_workflow()"));
 
     for forbidden in [
         "AGENTIC_FINALIZER_OUTPUT",

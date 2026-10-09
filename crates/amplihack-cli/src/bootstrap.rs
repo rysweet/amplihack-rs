@@ -1236,14 +1236,14 @@ mod tests {
     /// for that reason.
     #[test]
     fn codex_reads_the_config_amplihack_writes() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(codex) = which("codex") else {
             eprintln!("skipping codex_reads_the_config_amplihack_writes: codex is not installed");
             return;
         };
 
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
         let previous_codex_home = std::env::var_os("CODEX_HOME");
@@ -1366,8 +1366,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         fs::write(
@@ -1387,8 +1389,6 @@ mod tests {
             raw.contains("# chosen by hand, keep it"),
             "a merge must not throw away the user's comments; got {raw}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
@@ -1397,8 +1397,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         // Not a table, and not parseable as one: TOML documents have no
@@ -1415,8 +1417,6 @@ mod tests {
                 || error.to_string().contains("refusing to overwrite"),
             "error should clearly explain malformed config preservation; got {error:#}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
@@ -1425,8 +1425,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         let original = "[approval_policy]\nsomething = \"else\"\n";
@@ -1440,8 +1442,6 @@ mod tests {
                 || error.to_string().contains("refusing to overwrite"),
             "error should clearly explain what it refused to overwrite; got {error:#}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]

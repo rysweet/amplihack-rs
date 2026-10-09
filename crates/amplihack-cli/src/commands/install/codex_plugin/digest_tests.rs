@@ -4,6 +4,9 @@ use super::*;
 
 #[test]
 fn framed_identity_rejects_the_exact_legacy_concatenation_collision_in_recovery() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for legacy in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = committed_fixture(dir.path());
@@ -38,6 +41,9 @@ fn framed_identity_rejects_the_exact_legacy_concatenation_collision_in_recovery(
 }
 #[test]
 fn legacy_digest_journals_retain_even_unchanged_backups_and_existing_inventories() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for inventory in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = committed_fixture(dir.path());
@@ -73,6 +79,9 @@ fn legacy_digest_journals_retain_even_unchanged_backups_and_existing_inventories
 }
 #[test]
 fn framed_digest_distinguishes_entry_boundaries_types_paths_and_link_targets() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path();
     fs::write(root.join("a"), b"").unwrap();

@@ -203,7 +203,7 @@ fn an_unrelated_flag_with_a_similar_name_does_not_suppress_injection() {
 
 use super::command::build_command_for_dir;
 use crate::binary_finder::BinaryInfo;
-use crate::test_support::{home_env_lock, restore_cwd, restore_home, set_cwd, set_home};
+use crate::test_support::{home_env_lock, restore_home, set_home};
 
 fn claude_binary() -> BinaryInfo {
     BinaryInfo {
@@ -227,7 +227,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
     let cwd = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".amplihack/.claude/context")).unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_opt_out = std::env::var_os("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND");
     unsafe {
@@ -237,7 +237,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
 
     let result = f(cwd.path());
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(v) => unsafe { std::env::set_var("UV_PYTHON", v) },

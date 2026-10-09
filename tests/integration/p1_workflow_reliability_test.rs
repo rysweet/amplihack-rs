@@ -96,10 +96,30 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
     let mut f = tempfile::NamedTempFile::new().unwrap();
     f.as_file_mut().write_all(cmd.as_bytes()).unwrap();
 
+    let private_home = tempfile::tempdir().unwrap();
     let out = Command::new("bash")
         .arg(f.path())
         .env_clear()
+        .env("HOME", private_home.path())
+        .env("CODEX_HOME", private_home.path().join(".codex"))
+        .env("CARGO_HOME", private_home.path().join(".cargo"))
+        .env("XDG_CONFIG_HOME", private_home.path().join(".config"))
+        .env("XDG_CACHE_HOME", private_home.path().join(".cache"))
+        .env("XDG_DATA_HOME", private_home.path().join(".local/share"))
+        .env("XDG_STATE_HOME", private_home.path().join(".local/state"))
+        .env("CLAUDE_CONFIG_DIR", private_home.path().join(".claude"))
+        .env(
+            "CLAUDE_PLUGIN_DATA",
+            private_home.path().join("claude-plugin-data"),
+        )
+        .env("COPILOT_HOME", private_home.path().join(".copilot"))
+        .env("COPILOT_CONFIG_DIR", private_home.path().join(".copilot"))
+        .env("TMPDIR", private_home.path())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env(
+            "AMPLIHACK_HOME",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        )
         .env("VERDICT_JSON", verdict_json)
         .env("IMPLEMENTATION", implementation)
         .env("ALLOW_NO_OP", allow_no_op)
@@ -140,6 +160,10 @@ mod ws1_synonym_mapping {
                 .unwrap()
                 .replace('\'', "'\\''"),
         );
+        assert!(cmd.contains("workflow_enforce_verdict.sh"));
+        let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../amplifier-bundle/tools/workflow_enforce_verdict.sh");
+        let cmd = format!("{cmd}\n{}", std::fs::read_to_string(helper).unwrap());
         assert!(
             cmd.contains("orch helper extract-json"),
             "enforce-verdict must extract the JSON verdict via `orch helper extract-json`"

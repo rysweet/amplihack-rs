@@ -65,3 +65,22 @@ impl Drop for EnvVarGuard {
         }
     }
 }
+
+/// CWD restoration must finish while the caller still owns `env_lock()`.
+pub(crate) struct CwdGuard {
+    previous: std::path::PathBuf,
+}
+impl CwdGuard {
+    pub(crate) fn set(path: &std::path::Path) -> std::io::Result<Self> {
+        let previous = std::env::current_dir()?;
+        std::env::set_current_dir(path)?;
+        Ok(Self { previous })
+    }
+}
+impl Drop for CwdGuard {
+    fn drop(&mut self) {
+        if let Err(error) = std::env::set_current_dir(&self.previous) {
+            eprintln!("test CWD restoration failed: {error}");
+        }
+    }
+}

@@ -53,8 +53,15 @@ steps:
          - Formatting issues
          - Type checking errors
 
-      Iterate until all checks pass. Report results.
+      Iterate until all checks pass. Report results, then return exactly one JSON
+      object with status (PASS or FAIL), exit_code (the actual aggregate exit),
+      precommit_exit_code and workspace_exit_code (actual numeric exits),
+      workspace_command ("cargo test --workspace --locked"),
+      validation_scope ("FULL_WORKSPACE"), test_threads ("DEFAULT"), and
+      evidence (retained raw log/exit references). A subset, failed run or earlier
+      source epoch cannot supply successful full-workspace evidence.
     output: "precommit_results"
+    parse_json: true
 
   # ==========================================================================
   # STEP 13: MANDATORY OUTSIDE-IN TESTING
@@ -158,8 +165,12 @@ steps:
       - Assuming "documentation can't be tested"
 
       Report the full test output and confirm both scenarios passed (or document
-      any failures with root cause analysis).
+      any failures with root cause analysis). Return exactly one JSON object with
+      status (PASS or FAIL), exit_code (actual numeric aggregate exit), scenarios
+      (an array with at least two objects, each containing status and actual
+      numeric exit_code), and evidence (retained raw log/exit references).
     output: "local_testing_gate"
+    parse_json: true
 
   - id: "verification-terminal-evidence"
     type: "bash"
@@ -184,7 +195,17 @@ steps:
           '{verification_completed:$verification_completed,terminal_no_op:$terminal_no_op,terminal_state:$terminal_state,terminal_reason:$terminal_reason}'
       }
 
-      . '{{worktree_setup.worktree_path}}/amplifier-bundle/tools/workflow_context.sh'
+      # An explicit framework root is authoritative, including missing assets.
+      if [ -n "${AMPLIHACK_HOME:-}" ]; then
+        CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"
+      else
+        CONTEXT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_context.sh"
+      fi
+      [ -f "$CONTEXT_HELPER" ] || { echo "ERROR: workflow_context.sh not found at selected framework root" >&2; exit 2; }
+      . "$CONTEXT_HELPER"
       WORKFLOW_CONTEXT_COHORT=verification
       workflow_context_capture allow_no_op allow_no_op
       allow_no_op="$(normalize_bool "$allow_no_op")"
@@ -195,10 +216,22 @@ steps:
         exit 0
       fi
 
-      if [ -n "$precommit" ] && [ -n "$testing" ]; then
-        emit_evidence "true" "false" "VERIFICATION_COMPLETED" "pre-commit and outside-in local testing phases produced validation output"
+      # Reports remain data. Only complete successful structured receipts count;
+      # failed/nonempty prose, missing members and subset runs stay unproven.
+      if printf '%s' "$precommit" | jq -se '
+          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
+          .precommit_exit_code == 0 and .workspace_exit_code == 0 and
+          .workspace_command == "cargo test --workspace --locked" and
+          .validation_scope == "FULL_WORKSPACE" and .test_threads == "DEFAULT" and
+          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1 &&
+        printf '%s' "$testing" | jq -se '
+          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
+          (.scenarios | type == "array" and length >= 2 and
+            all(.[]; type == "object" and .status == "PASS" and .exit_code == 0)) and
+          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1; then
+        emit_evidence "true" "false" "VERIFICATION_COMPLETED" "current full workspace, pre-commit and outside-in structured receipts report successful validation"
       else
-        emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "pre-commit and outside-in local testing evidence is missing"
+        emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "successful full workspace, pre-commit or outside-in structured evidence is missing or invalid"
       fi
     output: "verification_terminal_evidence"
 

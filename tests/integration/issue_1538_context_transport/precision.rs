@@ -53,7 +53,7 @@ fn newline_noop_strings_keep_each_consumers_original_policy() {
 }
 
 #[test]
-fn newline_only_verification_strings_remain_nonempty() {
+fn newline_only_reports_do_not_establish_successful_verification() {
     for channel in ["legacy", "canonical", "file"] {
         let f = selected(channel, "precommit_results", "\n");
         let f = if channel == "file" {
@@ -73,7 +73,12 @@ fn newline_only_verification_strings_remain_nonempty() {
             "verification-terminal-evidence",
         ));
         r.exit(0);
-        assert_eq!(r.json()["verification_completed"], "true", "{channel}");
+        assert_eq!(r.json()["verification_completed"], "false", "{channel}");
+        assert_eq!(
+            r.json()["terminal_state"],
+            "VERIFICATION_UNPROVEN",
+            "{channel}"
+        );
     }
 }
 

@@ -28,8 +28,7 @@ fn pre_compact_returns_success_and_exports_transcript() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let transcript = dir.path().join("input.jsonl");
     fs::write(&transcript, "{\"type\":\"user\",\"message\":\"hello\"}\n").unwrap();
@@ -43,7 +42,7 @@ fn pre_compact_returns_success_and_exports_transcript() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     let output = &result["hookSpecificOutput"];
     assert_eq!(output["hookEventName"], "PreCompact");
@@ -71,8 +70,7 @@ fn pre_compact_preserves_original_request_from_conversation_payload() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = PreCompactHook;
     let result = hook
@@ -91,7 +89,7 @@ fn pre_compact_preserves_original_request_from_conversation_payload() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     let output = &result["hookSpecificOutput"];
     assert_eq!(output["hookEventName"], "PreCompact");
@@ -116,8 +114,7 @@ fn pre_compact_preserves_original_request_from_transcript_jsonl() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let transcript = dir.path().join("copilot-events.jsonl");
     fs::write(
@@ -138,7 +135,7 @@ fn pre_compact_preserves_original_request_from_transcript_jsonl() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     let output = &result["hookSpecificOutput"];
     assert_eq!(output["hookEventName"], "PreCompact");

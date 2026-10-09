@@ -44,6 +44,9 @@ pub(super) fn interrupted(dir: &Path, had_package: bool) -> (PathBuf, PathBuf, V
 
 #[test]
 fn interrupted_recovery_preserves_foreign_resources_before_native_or_package_changes() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for resource in [
         "config",
         "hooks",
@@ -83,6 +86,9 @@ fn interrupted_recovery_preserves_foreign_resources_before_native_or_package_cha
 #[cfg(unix)]
 #[test]
 fn interrupted_recovery_restores_absence_and_bytes_and_is_repeatable() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     use std::os::unix::fs::PermissionsExt;
     for had_package in [false, true] {
         let dir = tempfile::tempdir().unwrap();
@@ -109,6 +115,9 @@ fn interrupted_recovery_restores_absence_and_bytes_and_is_repeatable() {
 #[cfg(unix)]
 #[test]
 fn interrupted_recovery_preserves_config_symlink_and_legacy_journal() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home, mut pending) = interrupted(dir.path(), false);
     let outside = dir.path().join("outside");
@@ -130,6 +139,9 @@ fn interrupted_recovery_preserves_config_symlink_and_legacy_journal() {
 
 #[test]
 fn committed_cleanup_preserves_modified_backup_and_pending_evidence() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home, mut pending) = interrupted(dir.path(), true);
     let ledger = json!({"schema_version":1,"codex_home":home,"transaction":"test",
@@ -154,6 +166,9 @@ fn committed_cleanup_preserves_modified_backup_and_pending_evidence() {
 #[cfg(unix)]
 #[test]
 fn partially_restored_recovery_preserves_exact_original_file_bytes() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
     let (root, home, mut pending) = interrupted(dir.path(), true);
@@ -184,6 +199,9 @@ fn partially_restored_recovery_preserves_exact_original_file_bytes() {
 #[cfg(unix)]
 #[test]
 fn native_config_transition_rolls_back_exact_bytes_and_rejects_foreign_edits() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for foreign in [false, true] {
         native_config_case(foreign);
     }

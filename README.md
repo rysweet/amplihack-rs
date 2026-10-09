@@ -1,7 +1,7 @@
 # amplihack
 
-Development framework for Claude Code, GitHub Copilot CLI, and Microsoft
-Amplifier. Adds structured workflows, persistent memory, specialized agents,
+Development framework for Claude Code, GitHub Copilot CLI, OpenAI Codex, and
+Microsoft Amplifier. Adds structured workflows, persistent memory, specialized agents,
 goal-seeking capabilities, autonomous execution, and continuous improvement for
 systematic software engineering.
 
@@ -45,7 +45,7 @@ amplihack copilot
 
 ## Why amplihack?
 
-**The Problem**: Claude Code and GitHub Copilot CLI are barebones development
+**The Problem**: Claude Code, GitHub Copilot CLI, and Codex are barebones development
 tools. They provide a chat interface and model access, but no engineering system
 for managing complexity, maintaining consistency, or shipping reliable code at
 scale.
@@ -104,6 +104,9 @@ amplihack amplifier
 
 # Launch with GitHub Copilot
 amplihack copilot
+
+# Launch with OpenAI Codex
+amplihack codex
 ```
 
 **Option 3: uvx git bootstrap**
@@ -136,6 +139,28 @@ This loads the skills, agents, and slash commands straight from git with no
 `amplihack install`. That makes it the way to get amplihack into Claude Code
 on the web. See
 [Install amplihack as a Claude Code plugin](docs/howto/install-claude-code-plugin.md).
+
+**Option 6: Native Codex plugin (requires Codex CLI)**
+
+Install amplihack using one of the CLI options above, then install and
+authenticate Codex. With Codex available, run:
+
+```bash
+codex --version
+amplihack install
+codex plugin list --json
+amplihack codex -- "Explain the structure of this repository"
+```
+
+Installation registers `amplihack@amplihack-local` through Codex's native local
+marketplace and installs owned command hooks in the selected `CODEX_HOME`.
+Use the same `CODEX_HOME` for install and launch; its default is `~/.codex`.
+Review the definitions in Codex `/hooks` and explicitly trust the hooks you want
+to execute. Plugin enablement does not grant hook trust. Optional Codex
+registration is skipped when Codex is absent; a selected Codex launch requires
+a client with native plugin support. See
+[Use Amplihack with Codex](docs/howto/install-codex-plugin.md) for installation,
+ownership, recovery, and hook limitations.
 
 ### Runtime and install path
 
@@ -355,6 +380,8 @@ Full reference:
 
 - **[GitHub Copilot CLI](https://rysweet.github.io/amplihack-rs/COPILOT_CLI/)** —
   Full Copilot compatibility
+- **[OpenAI Codex](docs/howto/install-codex-plugin.md)** — Interactive launch,
+  unattended `codex exec` recipes, native plugins, and command hooks
 - **[Microsoft Amplifier](https://github.com/microsoft/amplifier)** —
   Multi-model support
 - **[RustyClawd](#rustyclawd-integration)** — High-performance Rust launcher
@@ -462,6 +489,39 @@ ls .github/agents/*.md
 
 Full guide: [COPILOT_CLI.md](docs/COPILOT_CLI.md)
 
+### OpenAI Codex
+
+Codex uses `$CODEX_HOME/config.toml`, defaulting to `~/.codex/config.toml`.
+Amplihack preserves existing model choices, profiles, approval and sandbox
+settings, authentication, and unrelated plugins. Native options go after `--`:
+
+```bash
+# Interactive positional prompt; terminal input remains available
+amplihack codex -- "Review the public interfaces"
+
+# Resume the most recent session
+amplihack codex -- resume --last
+
+# Select Codex for unattended recipe steps
+AMPLIHACK_AGENT_BINARY=codex amplihack recipe run default-workflow \
+  -c task_description="Document the public interfaces" \
+  -c repo_path=. --format json
+```
+
+Codex `-p` selects a profile. Unattended steps use `codex exec`, deliver complete
+instructions through stdin, and collect the final assistant message separately
+from progress output. Managed runner delivery uses the shared immutable revision
+in `claude-plugin/recipe-runner.rev`. A caller-selected `RECIPE_RUNNER_RS_PATH`
+must advertise `codex_exec` in its schema-1 capability probe; compatible custom
+or newer runners remain supported. See
+[runner validation](docs/reference/recipe-runner-validation.md).
+
+The integration targets codex-cli 0.160.0. Native runtime checks cover Linux;
+native macOS and Windows acceptance remain unverified. Hooks require explicit
+trust and support command handlers; Codex Stop does not provide Claude's
+transcript-driven continuation. See
+[Codex usage and limitations](docs/howto/install-codex-plugin.md).
+
 ### Microsoft Amplifier
 
 Interactive configuration wizard on first startup:
@@ -524,6 +584,8 @@ Custom workflows:
   including office, Azure, and workflow patterns
 - **[GitHub Copilot Integration](https://rysweet.github.io/amplihack-rs/COPILOT_CLI/)** -
   Full CLI support
+- **[OpenAI Codex Integration](docs/howto/install-codex-plugin.md)** -
+  Native installation, interactive launch, recipes, configuration, and hook trust
 - **[External LiteLLM Gateway](docs/tutorials/external-litellm-gateway.md)** -
   Route Claude Code, GitHub Copilot CLI, or RustyClawd through an
   operator-managed LiteLLM gateway

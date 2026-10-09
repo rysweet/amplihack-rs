@@ -23,9 +23,18 @@ mod reader;
 #[path = "issue_1538_context_transport/tooling.rs"]
 mod tooling;
 
+#[path = "issue_1538_context_transport/canonical_sources.rs"]
+mod canonical_sources;
+#[path = "issue_1538_context_transport/checkpoint.rs"]
+mod checkpoint;
 #[path = "issue_1538_context_transport/metadata.rs"]
 mod metadata;
 #[path = "issue_1538_context_transport/native_chain.rs"]
 mod native_chain;
 #[path = "issue_1538_context_transport/precision.rs"]
 mod precision;
+#[path = "issue_1538_context_transport/source_fixture.rs"]
+mod source_fixture;
+
+#[path = "issue_1538_context_transport/report_integrity.rs"]
+mod report_integrity;

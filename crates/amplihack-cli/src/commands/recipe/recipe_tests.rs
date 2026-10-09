@@ -160,6 +160,9 @@ steps:
 
 #[test]
 fn resolve_recipe_path_finds_named_recipe_in_project_local_dir() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     let recipes_dir = temp.path().join(".claude").join("recipes");
     fs::create_dir_all(&recipes_dir).unwrap();
@@ -177,6 +180,9 @@ fn resolve_recipe_path_finds_named_recipe_in_project_local_dir() {
 
 #[test]
 fn resolve_recipe_path_prefers_cwd_for_bare_yaml_filename_with_working_dir_override() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
 
     let cwd_recipe = temp.path().join("demo.yaml");
@@ -189,11 +195,11 @@ fn resolve_recipe_path_prefers_cwd_for_bare_yaml_filename_with_working_dir_overr
     let working_dir = temp.path().join("sandbox");
     fs::create_dir_all(&working_dir).unwrap();
 
-    let previous_cwd = crate::test_support::set_cwd(temp.path()).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
 
     let resolved = resolve_recipe_path("demo.yaml", &working_dir).unwrap();
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     assert_eq!(
         resolved, cwd_recipe,
@@ -203,6 +209,9 @@ fn resolve_recipe_path_prefers_cwd_for_bare_yaml_filename_with_working_dir_overr
 
 #[test]
 fn resolve_recipe_path_uses_working_dir_for_relative_yaml_paths() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     let working_dir = temp.path().join("project");
     let nested_dir = working_dir.join("recipes");
@@ -243,7 +252,7 @@ fn resolve_recipe_path_relative_path_resolves_under_amplihack_home() {
     )
     .unwrap();
 
-    let previous_cwd = crate::test_support::set_cwd(&working_dir).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(&working_dir).unwrap();
     let _amplihack_home_guard = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
 
     let resolved = resolve_recipe_path(
@@ -251,7 +260,7 @@ fn resolve_recipe_path_relative_path_resolves_under_amplihack_home() {
         &working_dir,
     );
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     let resolved = resolved.unwrap();
     assert_eq!(
@@ -289,14 +298,14 @@ fn resolve_recipe_path_relative_path_resolves_under_repo_root_walked_from_workin
     // the cwd-first preference does not steal the match from the repo root.
     let cwd_island = temp.path().join("cwd-island");
     fs::create_dir_all(&cwd_island).unwrap();
-    let previous_cwd = crate::test_support::set_cwd(&cwd_island).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(&cwd_island).unwrap();
 
     let resolved = resolve_recipe_path(
         "amplifier-bundle/recipes/test-only-repo-root-recipe.yaml",
         &nested_working_dir,
     );
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     assert_eq!(resolved.unwrap(), recipe_path);
 }
@@ -330,18 +339,21 @@ fn resolve_recipe_path_relative_path_prefers_cwd_over_amplihack_home() {
     )
     .unwrap();
 
-    let previous_cwd = crate::test_support::set_cwd(&cwd).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(&cwd).unwrap();
     let _amplihack_home_guard = EnvVarGuard::set_path("AMPLIHACK_HOME", &amplihack_home);
 
     let resolved = resolve_recipe_path("amplifier-bundle/recipes/dup.yaml", &cwd);
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     assert_eq!(resolved.unwrap(), cwd_recipe);
 }
 
 #[test]
 fn resolve_recipe_path_relative_path_falls_through_to_working_dir_when_no_root_matches() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     // When none of the search roots contain the file, the resolver should
     // return the working_dir-relative path so downstream code can emit the
     // standard "could not open recipe file" error pointing at the path the
@@ -360,6 +372,9 @@ fn resolve_recipe_path_relative_path_falls_through_to_working_dir_when_no_root_m
 
 #[test]
 fn resolve_recipe_path_searches_repo_root_from_nested_working_dir() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     fs::create_dir_all(temp.path().join(".git")).unwrap();
     let nested_working_dir = temp.path().join("nested").join("project");
@@ -486,6 +501,9 @@ fn resolve_recipe_path_fails_loudly_when_all_smart_orchestrator_candidates_are_s
 
 #[test]
 fn resolve_recipe_path_fails_loudly_for_absolute_stale_smart_orchestrator() {
+    let _env_guard = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let temp = tempdir().unwrap();
     let stale = temp.path().join("smart-orchestrator.yaml");
     write_recipe(&stale, stale_smart_orchestrator_recipe());
@@ -510,12 +528,12 @@ fn amplihack_home_recipe_dir_warns_for_non_directory_root_with_resolved_path() {
     let temp = tempdir().unwrap();
     let invalid_root = temp.path().join("invalid-home");
     fs::write(&invalid_root, "not a directory").unwrap();
-    let previous_cwd = crate::test_support::set_cwd(temp.path()).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
     let _amplihack_home = EnvVarGuard::set_path("AMPLIHACK_HOME", Path::new("invalid-home"));
 
     let (resolved, warnings) = capture_warn_logs(resolve::amplihack_home_recipe_dir);
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     assert!(resolved.is_none());
     assert_eq!(warnings.len(), 1);
@@ -532,13 +550,13 @@ fn amplihack_home_recipe_dir_warns_when_bundle_recipes_subdir_is_missing() {
     let temp = tempdir().unwrap();
     let amplihack_home = temp.path().join("amplihack-home");
     fs::create_dir_all(&amplihack_home).unwrap();
-    let previous_cwd = crate::test_support::set_cwd(temp.path()).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
     let _amplihack_home = EnvVarGuard::set_path("AMPLIHACK_HOME", Path::new("amplihack-home"));
     let expected_recipe_dir = amplihack_home.join("amplifier-bundle").join("recipes");
 
     let (resolved, warnings) = capture_warn_logs(resolve::amplihack_home_recipe_dir);
 
-    crate::test_support::restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
 
     assert!(resolved.is_none());
     assert_eq!(warnings.len(), 1);

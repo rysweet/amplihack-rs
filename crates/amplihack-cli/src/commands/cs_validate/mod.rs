@@ -403,7 +403,10 @@ mod tests {
     fn config_returns_default_when_no_file_found() {
         // Run from temp dir with no config
         let dir = TempDir::new().unwrap();
-        let _guard = SetCwd::new(dir.path());
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
         let cfg = load_config(None).unwrap();
         assert_eq!(cfg.validation_level, 2);
     }
@@ -575,26 +578,6 @@ class Foo {
         assert!(json.contains("Unbalanced braces"));
         assert!(json.contains("\"passed\":false"));
         assert!(json.contains("\"level\":1"));
-    }
-
-    // ── Helper: temporarily change cwd for config tests ──────────────────
-
-    struct SetCwd {
-        prev: PathBuf,
-    }
-
-    impl SetCwd {
-        fn new(dir: &Path) -> Self {
-            let prev = std::env::current_dir().unwrap();
-            std::env::set_current_dir(dir).unwrap();
-            Self { prev }
-        }
-    }
-
-    impl Drop for SetCwd {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.prev);
-        }
     }
 
     // ── Config-enabled tests ─────────────────────────────────────────────

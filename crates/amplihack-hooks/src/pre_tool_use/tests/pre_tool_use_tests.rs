@@ -11,6 +11,7 @@ fn make_bash_input(command: &str) -> HookInput {
 
 #[test]
 fn allows_safe_commands() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook.process(make_bash_input("ls -la")).unwrap();
     assert!(result.as_object().unwrap().is_empty());
@@ -18,6 +19,7 @@ fn allows_safe_commands() {
 
 #[test]
 fn allows_non_bash_tools() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let input = HookInput::PreToolUse {
         tool_name: "Read".to_string(),
@@ -30,6 +32,7 @@ fn allows_non_bash_tools() {
 
 #[test]
 fn blocks_no_verify() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git commit --no-verify -m 'test'"))
@@ -40,6 +43,7 @@ fn blocks_no_verify() {
 
 #[test]
 fn blocks_no_verify_from_camel_case_host_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let input: HookInput = serde_json::from_value(serde_json::json!({
         "hookEventName": "PreToolUse",
@@ -57,6 +61,7 @@ fn blocks_no_verify_from_camel_case_host_payload() {
 
 #[test]
 fn blocks_no_verify_on_push() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git push --no-verify origin main"))
@@ -66,6 +71,7 @@ fn blocks_no_verify_on_push() {
 
 #[test]
 fn blocks_no_verify_on_rebase() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git rebase --no-verify main"))
@@ -76,6 +82,7 @@ fn blocks_no_verify_on_rebase() {
 
 #[test]
 fn blocks_no_verify_on_merge() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git merge --no-verify feature-branch"))
@@ -86,6 +93,7 @@ fn blocks_no_verify_on_merge() {
 
 #[test]
 fn blocks_no_verify_on_cherry_pick() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git cherry-pick --no-verify abc123"))
@@ -96,6 +104,7 @@ fn blocks_no_verify_on_cherry_pick() {
 
 #[test]
 fn blocks_no_verify_on_am() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("git am --no-verify patch.patch"))
@@ -134,6 +143,7 @@ fn allows_git_commit_on_feature_branch() {
 
 #[test]
 fn handles_unknown_hook_event() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook.process(HookInput::Unknown).unwrap();
     assert!(result.as_object().unwrap().is_empty());
@@ -160,15 +170,6 @@ fn handles_unknown_hook_event() {
 // former write path rather than being a hollow tripwire. It FAILS against the
 // vulnerable code (AGENTS.md is written) and PASSES once the writer is removed.
 // ---------------------------------------------------------------------------
-
-/// Restores the process working directory on drop, even if an assertion panics.
-struct CwdRestore(std::path::PathBuf);
-
-impl Drop for CwdRestore {
-    fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.0);
-    }
-}
 
 /// Saves an env var and restores its original value (or unsets it) on drop.
 struct EnvRestore {
@@ -236,11 +237,8 @@ fn assert_process_persists_nothing(input: HookInput, forbidden: &str) -> serde_j
 
     // Declare `temp` before the cwd guard so, on unwind, the cwd is restored
     // (guard drops first) *before* the tempdir is removed.
-    let original_cwd = std::env::current_dir().unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let _restore_cwd = CwdRestore(original_cwd);
-
-    std::env::set_current_dir(temp.path()).unwrap();
+    let _restore_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
     let _home = EnvRestore::set("HOME", temp.path().to_str().unwrap());
     let _amplihack_root = EnvRestore::unset("AMPLIHACK_ROOT");
 
@@ -307,6 +305,7 @@ fn process_has_no_filesystem_side_effects_for_non_bash_tool() {
 
 #[test]
 fn blocks_no_verify_with_git_dir_prefix() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input(
@@ -319,6 +318,7 @@ fn blocks_no_verify_with_git_dir_prefix() {
 
 #[test]
 fn blocks_no_verify_with_env_prefix() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_bash_input("env git push --no-verify origin main"))
@@ -389,6 +389,7 @@ fn make_skill_input_name_key(name: &str) -> HookInput {
 
 #[test]
 fn redirects_skill_call_naming_prompt_writer_agent() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook.process(make_skill_input("prompt-writer")).unwrap();
 
@@ -413,6 +414,7 @@ fn redirects_skill_call_naming_prompt_writer_agent() {
 
 #[test]
 fn redirects_skill_call_using_name_key_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook
         .process(make_skill_input_name_key("prompt-writer"))
@@ -425,6 +427,7 @@ fn redirects_skill_call_using_name_key_payload() {
 
 #[test]
 fn redirects_skill_call_naming_guide_agent_only() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // `guide` exists only as an agent (no SKILL.md), so it must redirect.
     let hook = PreToolUseHook;
     let result = hook.process(make_skill_input("guide")).unwrap();
@@ -436,6 +439,7 @@ fn redirects_skill_call_naming_guide_agent_only() {
 
 #[test]
 fn does_not_redirect_real_skill() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let result = hook.process(make_skill_input("default-workflow")).unwrap();
     assert!(
@@ -446,8 +450,15 @@ fn does_not_redirect_real_skill() {
 
 #[test]
 fn does_not_redirect_overlapping_skill_and_agent_names() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // gherkin-expert, tla-plus-expert, and verus-expert are BOTH a skill and an
     // agent. Skills take precedence, so these must pass through (resolve as skills).
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .canonicalize()
+        .unwrap();
+    let _root = EnvRestore::set("AMPLIHACK_HOME", root.to_str().unwrap());
+    let _cwd = crate::test_support::CwdGuard::set(&root).unwrap();
     let hook = PreToolUseHook;
     for name in ["gherkin-expert", "tla-plus-expert", "verus-expert"] {
         let result = hook.process(make_skill_input(name)).unwrap();
@@ -460,6 +471,7 @@ fn does_not_redirect_overlapping_skill_and_agent_names() {
 
 #[test]
 fn does_not_redirect_unknown_skill_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Unknown names are neither skill nor agent — let the runtime handle them
     // normally rather than over-blocking.
     let hook = PreToolUseHook;
@@ -474,6 +486,7 @@ fn does_not_redirect_unknown_skill_name() {
 
 #[test]
 fn malformed_skill_payloads_pass_through_without_panic() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
 
     let malformed = [
@@ -583,6 +596,7 @@ fn bundled_skill_names_under_is_confined_to_the_given_roots() {
 
 #[test]
 fn bundled_skill_names_is_non_empty() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // An empty set would mean the scanner failed to locate the bundled skills
     // directory — which would wrongly redirect every real skill.
     let skills = checkout_skill_names();
@@ -594,6 +608,7 @@ fn bundled_skill_names_is_non_empty() {
 
 #[test]
 fn bundled_skill_names_contains_top_level_skills() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let skills = checkout_skill_names();
     for name in ["default-workflow", "pdf", "xlsx"] {
         assert!(
@@ -605,6 +620,7 @@ fn bundled_skill_names_contains_top_level_skills() {
 
 #[test]
 fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Nested category dirs (migrate/, development/, quality/, meta-cognitive/)
     // are identified by their frontmatter `name:`, not the directory path.
     let skills = checkout_skill_names();
@@ -623,6 +639,7 @@ fn bundled_skill_names_uses_frontmatter_name_for_nested_skills() {
 
 #[test]
 fn bundled_skill_names_excludes_directory_path_forms() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Identity is the frontmatter name, so category-prefixed path forms and
     // bare parent-dir names must NOT be members.
     let skills = checkout_skill_names();
@@ -666,6 +683,7 @@ fn bundled_skill_names_contains_overlap_names() {
 
 #[test]
 fn bundled_skill_names_matches_every_bundled_frontmatter_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Directory-as-source-of-truth: every SKILL.md frontmatter `name:` in the
     // workspace bundle must appear in the set the scanner derives from that
     // same workspace. Both sides are read from the checkout under test, so a
@@ -757,6 +775,7 @@ fn copilot_pre_tool_use_payload(command: &str) -> HookInput {
 
 #[test]
 fn blocks_no_verify_from_copilot_tool_args_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let hook = PreToolUseHook;
     let input = copilot_pre_tool_use_payload("git commit --no-verify -m 'test'");
 
@@ -799,12 +818,9 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
 
     // Declare `temp` before the cwd guard so, on unwind, the cwd is restored
     // (guard drops first) *before* the tempdir is removed.
-    let original_cwd = std::env::current_dir().unwrap();
     let temp = tempfile::tempdir().unwrap();
-    let _restore_cwd = CwdRestore(original_cwd);
-
     init_git_repo_on_main(temp.path());
-    std::env::set_current_dir(temp.path()).unwrap();
+    let _restore_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
 
     let input = copilot_pre_tool_use_payload("git commit -m 'update'");
     let result = PreToolUseHook.process(input).unwrap();

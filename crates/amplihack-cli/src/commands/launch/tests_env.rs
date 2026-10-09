@@ -2,7 +2,7 @@ use super::*;
 use crate::binary_finder::BinaryInfo;
 use crate::env_builder::EnvBuilder;
 use crate::launcher_context::{LauncherKind, read_launcher_context};
-use crate::test_support::{home_env_lock, restore_cwd, restore_home, set_cwd, set_home};
+use crate::test_support::{home_env_lock, restore_home, set_home};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -15,7 +15,7 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
     let cwd = tempfile::tempdir().unwrap();
     let execution_dir = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
     let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
@@ -44,7 +44,7 @@ fn build_command_injects_uvx_plugin_and_project_args_for_claude() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
@@ -142,7 +142,7 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
     let execution_dir = tempfile::tempdir().unwrap();
     let project_dir = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_original_cwd = std::env::var_os("AMPLIHACK_ORIGINAL_CWD");
     let previous_is_staged = std::env::var_os("AMPLIHACK_IS_STAGED");
@@ -171,7 +171,7 @@ fn build_command_prefers_original_cwd_for_staged_uvx_launches() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
@@ -199,7 +199,7 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_model = std::env::var_os("AMPLIHACK_DEFAULT_MODEL");
     unsafe {
@@ -224,7 +224,7 @@ fn build_command_does_not_duplicate_uvx_plugin_or_add_dir_args() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect::<Vec<_>>();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
@@ -456,7 +456,7 @@ fn build_command_skips_dangerous_flag_for_copilot() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     unsafe { std::env::set_var("UV_PYTHON", "1") };
 
@@ -472,7 +472,7 @@ fn build_command_skips_dangerous_flag_for_copilot() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
@@ -498,7 +498,7 @@ fn build_command_injects_dangerous_flag_for_claude() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     unsafe { std::env::set_var("UV_PYTHON", "1") };
 
@@ -514,7 +514,7 @@ fn build_command_injects_dangerous_flag_for_claude() {
         .map(|arg| arg.to_string_lossy().into_owned())
         .collect();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },

@@ -105,6 +105,22 @@ fn step_field(recipe: &str, step_id: &str, field: &str) -> Option<String> {
 }
 
 /// Is `parse_json: true` set on the step?
+fn consumer_source(recipe: &str, id: &str, helper: &str) -> String {
+    let command = step_command(recipe, id);
+    assert!(
+        command.contains(helper),
+        "canonical command must source {helper}"
+    );
+    let path = recipe_path(recipe)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("tools")
+        .join(helper);
+    format!("{command}\n{}", std::fs::read_to_string(path).unwrap())
+}
+
 fn step_parse_json(recipe: &str, step_id: &str) -> bool {
     let text = read_recipe(recipe);
     let value: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
@@ -130,7 +146,62 @@ struct Run {
 /// Run `amplihack <args>` feeding `stdin`, with an optional extra env map and
 /// the built binary already on PATH.
 fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
+    // Cold register fixtures must genuinely install current assets before
+    // their exact stdout checks. Automatic startup repair remains enabled.
+    let private = tempfile::tempdir().expect("private CLI home");
+    let configure = |command: &mut Command| {
+        command
+            .env_clear()
+            .env("PATH", path_with_bin())
+            .env("CARGO_HOME", private.path().join(".cargo"))
+            .env("XDG_DATA_HOME", private.path().join(".local/share"))
+            .env("XDG_RUNTIME_DIR", private.path().join(".runtime"))
+            .env("XDG_STATE_HOME", private.path().join(".local/state"))
+            .env(
+                "CLAUDE_PLUGIN_DATA",
+                private.path().join("claude-plugin-data"),
+            )
+            .env("COPILOT_CONFIG_DIR", private.path().join(".copilot"))
+            .env("RUSTC_WRAPPER", "")
+            .env("CARGO_BUILD_JOBS", "8")
+            .env("AMPLIHACK_AGENT_BINARY", "claude")
+            .env("HOME", private.path())
+            .env("CODEX_HOME", private.path().join(".codex"))
+            .env("XDG_CONFIG_HOME", private.path().join(".config"))
+            .env("XDG_CACHE_HOME", private.path().join(".cache"))
+            .env("CLAUDE_CONFIG_DIR", private.path().join(".claude"))
+            .env("COPILOT_HOME", private.path().join(".copilot"))
+            .env("TMPDIR", private.path());
+        for key in ["RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RECIPE_RUNNER_RS_PATH"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+    };
+    if args.first() == Some(&"session-tree") {
+        let mut install = Command::new(bin());
+        configure(&mut install);
+        let output = install
+            .args(["install", "--local"])
+            .arg(
+                recipe_path("workflow-tdd")
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap(),
+            )
+            .output()
+            .expect("install current CLI into private home");
+        assert!(
+            output.status.success(),
+            "private install failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let mut cmd = Command::new(bin());
+    configure(&mut cmd);
     cmd.args(args)
         .env("PATH", path_with_bin())
         .stdin(Stdio::piped())
@@ -170,10 +241,38 @@ fn run_bash_body(body: &str, envs: &[(&str, &str)]) -> Run {
     script.write_all(body.as_bytes()).expect("write body");
     let path = script.path().to_path_buf();
 
+    let private_home = tempfile::tempdir().unwrap();
     let mut cmd = Command::new("bash");
     cmd.arg(&path)
         .env_clear()
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
+        .env("HOME", private_home.path())
+        .env("CODEX_HOME", private_home.path().join(".codex"))
+        .env("CARGO_HOME", private_home.path().join(".cargo"))
+        .env("XDG_CONFIG_HOME", private_home.path().join(".config"))
+        .env("XDG_CACHE_HOME", private_home.path().join(".cache"))
+        .env("XDG_DATA_HOME", private_home.path().join(".local/share"))
+        .env("XDG_RUNTIME_DIR", private_home.path().join(".runtime"))
+        .env("XDG_STATE_HOME", private_home.path().join(".local/state"))
+        .env("CLAUDE_CONFIG_DIR", private_home.path().join(".claude"))
+        .env(
+            "CLAUDE_PLUGIN_DATA",
+            private_home.path().join("claude-plugin-data"),
+        )
+        .env("COPILOT_HOME", private_home.path().join(".copilot"))
+        .env("COPILOT_CONFIG_DIR", private_home.path().join(".copilot"))
+        .env("TMPDIR", private_home.path())
         .env("PATH", path_with_bin())
+        .env(
+            "AMPLIHACK_HOME",
+            recipe_path("workflow-tdd")
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap(),
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -309,7 +408,7 @@ const TDD_GATE: &str = "step-08c-enforce-verdict";
 
 #[test]
 fn a1_tdd_gate_uses_orch_helper_extractor() {
-    let cmd = step_command("workflow-tdd", TDD_GATE);
+    let cmd = consumer_source("workflow-tdd", TDD_GATE, "workflow_enforce_verdict.sh");
     assert!(
         cmd.contains("orch helper extract-json"),
         "{TDD_GATE} must extract the verdict via `orch helper extract-json`"
@@ -326,7 +425,7 @@ fn a1_tdd_gate_uses_orch_helper_extractor() {
 
 #[test]
 fn a1_tdd_gate_drops_brittle_line_scrape() {
-    let cmd = step_command("workflow-tdd", TDD_GATE);
+    let cmd = consumer_source("workflow-tdd", TDD_GATE, "workflow_enforce_verdict.sh");
     // The line-based grep for a JSON object and the awk "last line" scrape are
     // exactly what multiline verifier JSON defeats — they must be gone.
     assert!(
@@ -346,7 +445,7 @@ fn a1_tdd_gate_drops_brittle_line_scrape() {
 
 #[test]
 fn a1_tdd_gate_preserves_failsafe_branches() {
-    let cmd = step_command("workflow-tdd", TDD_GATE);
+    let cmd = consumer_source("workflow-tdd", TDD_GATE, "workflow_enforce_verdict.sh");
     // Do NOT tear down existing fail-safe/opt-out branches or issue-referenced
     // defensive comments — only replace the brittle parsing mechanism.
     for needle in [
@@ -565,7 +664,11 @@ fn a3_doc_review_emits_structured_status() {
 
 #[test]
 fn a3_doc_checkpoint_drops_keyword_nlu_grep() {
-    let cmd = step_command("workflow-design", DOC_CHECKPOINT);
+    let cmd = consumer_source(
+        "workflow-design",
+        DOC_CHECKPOINT,
+        "workflow_doc_review_checkpoint.sh",
+    );
     // Pure English-keyword NLU in bash is the brittle mechanism to remove.
     assert!(
         !cmd.contains("fail|error|cannot|could not|unable|missing|incomplete|does not|blocker"),
@@ -584,7 +687,11 @@ fn a3_doc_checkpoint_drops_keyword_nlu_grep() {
 fn a3_doc_checkpoint_stays_non_fatal_and_safe() {
     // Preserve the issue #834 contract: non-fatal, WARNING+NEEDS_ATTENTION,
     // untrusted feedback consumed as data (printf '%s'), no exit 1.
-    let cmd = step_command("workflow-design", DOC_CHECKPOINT);
+    let cmd = consumer_source(
+        "workflow-design",
+        DOC_CHECKPOINT,
+        "workflow_doc_review_checkpoint.sh",
+    );
     assert!(
         !cmd.contains("exit 1"),
         "{DOC_CHECKPOINT} must remain non-fatal (no exit 1)"
@@ -748,7 +855,7 @@ fn d1_guard_blocks_registration_failed() {
 fn d2_register_default_line_is_byte_exact() {
     // The additive --json flag must NOT disturb the byte-exact default contract
     // consumed by smart-orchestrator.yaml: `TREE_ID=<id> DEPTH=<n>\n`.
-    let tmp = tempfile::TempDir::new_in("/tmp").unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
     let run = run_cli(
         &["session-tree", "register", "sess1234"],
         "",
@@ -767,7 +874,7 @@ fn d2_register_default_line_is_byte_exact() {
 
 #[test]
 fn d2_register_json_flag_emits_structured_status() {
-    let tmp = tempfile::TempDir::new_in("/tmp").unwrap();
+    let tmp = tempfile::TempDir::new().unwrap();
     let run = run_cli(
         &["session-tree", "register", "sess5678", "--json"],
         "",

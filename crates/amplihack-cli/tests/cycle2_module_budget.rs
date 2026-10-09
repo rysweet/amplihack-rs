@@ -22,6 +22,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
     let cli = Path::new(env!("CARGO_MANIFEST_DIR"));
     let mut violations = Vec::new();
     for relative in [
+        "src/commands/install/stale_wrappers/quarantine_name_tests.rs",
         "src/commands/install/codex_plugin/path_scope.rs",
         "src/commands/install/codex_plugin/path_scope_tests.rs",
         "src/commands/install/codex_plugin/recovery_tests.rs",
@@ -29,6 +30,8 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "src/commands/install/codex_plugin/rollback.rs",
         "src/commands/install/codex_plugin/rollback_durability.rs",
         "../../amplifier-bundle/tools/workflow_context.sh",
+        "../../amplifier-bundle/tools/workflow_enforce_verdict.sh",
+        "../../amplifier-bundle/tools/workflow_doc_review_checkpoint.sh",
         "../../amplifier-bundle/tools/workflow_finalization_context.sh",
         "../../amplifier-bundle/tools/workflow_finalization_metadata.sh",
         "../../amplifier-bundle/tools/workflow_finalization_collect.sh",

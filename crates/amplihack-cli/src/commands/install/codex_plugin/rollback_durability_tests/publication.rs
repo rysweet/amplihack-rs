@@ -3,6 +3,9 @@ use super::*;
 
 #[test]
 fn rollback_rename_and_snapshot_parent_sync_failures_retain_journal_and_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for directory in [
         "root",
         "market",
@@ -30,6 +33,9 @@ fn rollback_rename_and_snapshot_parent_sync_failures_retain_journal_and_retry() 
 
 #[test]
 fn rollback_absence_removal_sync_failures_retain_journal_and_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for directory in ["home", "plugins", "market", "root"] {
         let fixture = Rollback::new(false, false);
         let path = match directory {
@@ -44,6 +50,9 @@ fn rollback_absence_removal_sync_failures_retain_journal_and_retry() {
 
 #[test]
 fn rollback_absent_snapshot_parents_sync_surviving_ancestors_and_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for ancestor in ["market", "transaction"] {
         let fixture = Rollback::new(false, false);
         fs::remove_file(fixture.home.join("hooks.json")).unwrap();
@@ -64,6 +73,9 @@ fn rollback_absent_snapshot_parents_sync_surviving_ancestors_and_retry() {
 
 #[test]
 fn rollback_post_unlink_sync_failure_reports_error_with_absent_journal() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let fixture = Rollback::new(true, true);
     let journal = fixture.root.join("pending.json");
     let mut injected = false;

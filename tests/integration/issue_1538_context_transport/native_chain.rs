@@ -2,6 +2,7 @@
 use super::{
     fixtures::*,
     native::{native_context, native_verdict},
+    producers::{precommit, testing},
 };
 use serde_json::{Value, json};
 use std::{fs, path::PathBuf, process::Command};
@@ -34,6 +35,13 @@ fn acceptance(spill: bool) {
         ),
         ("noop", "INSUFFICIENT_EVIDENCE", true, "ALLOW_NO_OP", 0),
         ("reporting", "WORK_VERIFIED", false, "FAILED_REPORTING", 1),
+        (
+            "failed-receipt",
+            "WORK_VERIFIED",
+            false,
+            "FAILED_IMPLEMENTATION",
+            1,
+        ),
     ] {
         let f = Fixture::new();
         let evidence = root
@@ -48,8 +56,12 @@ fn acceptance(spill: bool) {
         context["allow_no_op"] = json!(noop);
         // Inputs are controlled validation/report fixtures. Completion objects
         // are exclusively emitted by the current actual product producers.
-        context["precommit_results"] = json!("controlled validation fixture");
-        context["local_testing_gate"] = json!("controlled testing fixture");
+        context["precommit_results"] = precommit();
+        context["local_testing_gate"] = testing();
+        if case == "failed-receipt" {
+            context["precommit_results"]["status"] = json!("FAIL");
+            context["precommit_results"]["workspace_exit_code"] = json!(101);
+        }
         context["agentic_finalizer_narrative"] = json!(if case == "reporting" {
             ""
         } else {

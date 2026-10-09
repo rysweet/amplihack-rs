@@ -376,14 +376,34 @@ fn default_workflow_direct_commit_paths_use_safe_pre_commit_handling() {
     let mut violations = Vec::new();
 
     for (recipe, step_id) in SAFE_COMMIT_STEPS {
-        let cmd = step_command(recipe, step_id);
+        let mut cmd = step_command(recipe, step_id);
+        if cmd.contains("workflow_checkpoint_commit.sh") {
+            let helper = std::fs::read_to_string(
+                recipes_dir()
+                    .parent()
+                    .unwrap()
+                    .join("tools/workflow_checkpoint_commit.sh"),
+            )
+            .unwrap();
+            assert!(helper.contains("amplihack_prepare_git_commit_identity"));
+            assert!(helper.contains("PRE_COMMIT_ALLOW_NO_CONFIG=1 git commit"));
+            cmd.push_str(&helper);
+        }
+
+        let conditional_commit = cmd.contains("if git commit")
+            || (cmd.contains("if commit_with_pre_commit_guard") && cmd.contains("elif git commit"));
+        if !conditional_commit {
+            violations.push(format!(
+                "{recipe}: step `{step_id}` must conditionally handle the actual hook/commit exit"
+            ));
+        }
 
         for required in [
             "set -euo pipefail",
             "git add -A",
             "git diff --cached --name-only",
             "commit_output_file=$(mktemp",
-            "if git commit",
+            "git commit",
             "commit_rc=$?",
             "ERROR: git commit failed",
             "cat \"$commit_output_file\"",

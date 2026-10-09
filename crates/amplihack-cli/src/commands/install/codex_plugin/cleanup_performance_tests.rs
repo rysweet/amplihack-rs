@@ -10,6 +10,9 @@ thread_local! {
 #[test]
 #[cfg(unix)]
 fn cleanup_hash_work_is_bounded_independently_of_unlink_count() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for count in [8, 64] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = committed_fixture(dir.path());
@@ -68,6 +71,9 @@ fn cleanup_hash_work_is_bounded_independently_of_unlink_count() {
 #[cfg(unix)]
 #[test]
 fn cleanup_rechecks_foreign_edits_after_an_actual_unlink() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for change in ["backup", "live", "hooks", "journal", "extra", "ancestor"] {
         let dir = tempfile::tempdir().unwrap();
         let (root, home) = committed_fixture(dir.path());

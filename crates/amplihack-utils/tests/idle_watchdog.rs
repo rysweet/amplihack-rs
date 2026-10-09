@@ -180,11 +180,11 @@ async fn async_idle_child_is_killed_after_window() {
 /// streams, and is killed only once it has been idle for the window.
 #[tokio::test]
 async fn async_child_killed_only_after_it_stops_producing() {
-    // Three ticks (≈3 s of activity), then silent for 20 s.
+    // Active ticks have a 900ms margin below the 1s idle threshold, then silence.
     let mut child = tokio::process::Command::new("bash")
         .args([
             "-c",
-            "for i in 1 2 3; do echo tick $i; sleep 1; done; sleep 20",
+            "for i in 1 2 3; do echo tick $i; sleep 0.1; done; sleep 20",
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -206,7 +206,7 @@ async fn async_child_killed_only_after_it_stops_producing() {
         "child must be killed after it goes idle"
     );
     assert!(
-        outcome.stdout.contains("tick 3"),
+        (1..=3).all(|i| outcome.stdout.contains(&format!("tick {i}"))),
         "output produced before going idle must be captured, got: {:?}",
         outcome.stdout
     );

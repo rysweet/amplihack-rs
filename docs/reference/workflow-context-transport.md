@@ -394,3 +394,30 @@ does not establish verified work.
 See [Codex usage](../howto/install-codex-plugin.md),
 [implementation evidence](workflow-implementation-evidence.md) and
 [runner validation](recipe-runner-validation.md).
+
+Canonical shell consumers locate framework helpers through `AMPLIHACK_HOME`,
+then the target `REPO_PATH`, cwd and private provider assets. An explicit
+`AMPLIHACK_HOME` is authoritative even when its helper is missing. Target
+repositories need not contain `amplifier-bundle`; paths remain quoted shell
+values, including spaces, quotes and metacharacters. Documentation checkpoints
+remain nonfatal and report `NEEDS_ATTENTION` when helpers are unavailable.
+
+Verification requires structured current validation receipts, not the presence
+of a report. `precommit_results` must have `status: "PASS"`, numeric zero
+`exit_code`, `precommit_exit_code` and `workspace_exit_code`,
+`workspace_command: "cargo test --workspace --locked"`,
+`validation_scope: "FULL_WORKSPACE"`, `test_threads: "DEFAULT"`, and a nonempty
+`evidence` array referencing retained raw logs and exits. `local_testing_gate`
+must have `status: "PASS"`, numeric zero `exit_code`, a nonempty `evidence`
+array, and at least two `scenarios`, each with `status: "PASS"` and numeric zero
+`exit_code`. These are typed recipe objects; legacy-only consumers may supply
+serialized objects in the corresponding uppercase variables. Prose, failed
+reports, subset runs and missing members produce `VERIFICATION_UNPROVEN`.
+The explicit boolish no-op path retains its separate policy. Receipts describe
+executed validation and must not reuse a failed or earlier source epoch.
+
+Receipt Strings must contain exactly one complete JSON Object; malformed input,
+NUL, multiple documents (including failure followed by PASS) and non-object
+values remain unproven. Native OBJECT and serialized String transport obey the
+same schema. Controlled positive fixtures test this classifier; their receipts
+do not establish validation of the actual workstream.

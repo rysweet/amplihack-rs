@@ -30,8 +30,7 @@ fn session_start_captures_original_request_context() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     unsafe { std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip") };
 
     let hook = SessionStartHook;
@@ -46,7 +45,7 @@ fn session_start_captures_original_request_context() {
         .unwrap();
 
     unsafe { std::env::remove_var("AMPLIHACK_BLARIFY_MODE") };
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     let context = result["hookSpecificOutput"]["additionalContext"]
         .as_str()
@@ -72,8 +71,7 @@ fn session_start_process_surfaces_code_graph_context_failure_notice() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let broken_db = dir.path().join("broken-graph-db");
     fs::write(&broken_db, "not a graph db").unwrap();
@@ -92,7 +90,7 @@ fn session_start_process_surfaces_code_graph_context_failure_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
         std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
@@ -122,8 +120,7 @@ fn session_start_process_surfaces_legacy_graph_env_alias_notice() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let legacy_override = dir.path().join("legacy-graph-db");
     unsafe {
@@ -141,7 +138,7 @@ fn session_start_process_surfaces_legacy_graph_env_alias_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
         std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
@@ -162,8 +159,7 @@ fn session_start_process_surfaces_legacy_graph_store_notice() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let legacy_store = dir.path().join(".amplihack").join("kuzu_db");
     fs::create_dir_all(&legacy_store).unwrap();
@@ -182,7 +178,7 @@ fn session_start_process_surfaces_legacy_graph_store_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
         std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
@@ -203,8 +199,7 @@ fn session_start_process_surfaces_legacy_memory_env_alias_notice() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let legacy_override = dir.path().join("legacy-memory-db");
     unsafe {
@@ -222,7 +217,7 @@ fn session_start_process_surfaces_legacy_memory_env_alias_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
         std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
@@ -244,8 +239,7 @@ fn session_start_process_surfaces_legacy_memory_store_notice() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let legacy_store = home.path().join(".amplihack").join("memory_kuzu.db");
     fs::create_dir_all(legacy_store.parent().unwrap()).unwrap();
@@ -267,7 +261,7 @@ fn session_start_process_surfaces_legacy_memory_store_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     match previous_home {
         Some(value) => unsafe { std::env::set_var("HOME", value) },
         None => unsafe { std::env::remove_var("HOME") },
@@ -294,8 +288,7 @@ fn session_start_process_surfaces_blarify_setup_failure_notice() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir_all(dir.path().join("src")).unwrap();
     fs::write(dir.path().join("src/app.py"), "print('hi')\n").unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     unsafe {
         std::env::set_var(
             "AMPLIHACK_AMPLIHACK_BINARY_PATH",
@@ -313,7 +306,7 @@ fn session_start_process_surfaces_blarify_setup_failure_notice() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_AMPLIHACK_BINARY_PATH");
         std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
@@ -359,8 +352,7 @@ fn session_start_process_always_emits_indexing_status() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     // Disable blarify so we get a deterministic "complete" status.
     unsafe {
         std::env::set_var("AMPLIHACK_BLARIFY_MODE", "skip");
@@ -375,7 +367,7 @@ fn session_start_process_always_emits_indexing_status() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
     unsafe {
         std::env::remove_var("AMPLIHACK_BLARIFY_MODE");
     }

@@ -1,3 +1,9 @@
+use sha2::{Digest, Sha256};
+
+#[cfg(test)]
+#[path = "stale_wrappers/quarantine_name_tests.rs"]
+mod quarantine_name_tests;
+
 use anyhow::Result;
 use serde::Serialize;
 use std::fs;
@@ -528,14 +534,23 @@ fn quarantine_path_for(run_dir: &Path, original: &Path, counter: usize) -> PathB
         })
         .collect::<Vec<_>>()
         .join("__");
-    run_dir.join(format!(
-        "{counter:03}-{}",
-        sanitize_path_segment(if sanitized.is_empty() {
-            "amplihack".into()
-        } else {
-            sanitized
-        })
-    ))
+    let sanitized = sanitize_path_segment(if sanitized.is_empty() {
+        "amplihack".into()
+    } else {
+        sanitized
+    });
+    let name = format!("{counter:03}-{sanitized}");
+    if name.len() <= 240 {
+        return run_dir.join(name);
+    }
+    // Long, valid ancestor paths must not turn into an invalid filename.
+    // Keep a readable prefix and bind all original path bytes, including those
+    // beyond the prefix. The manifest still retains the complete source path.
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(original.as_os_str().as_encoded_bytes())
+    );
+    run_dir.join(format!("{counter:03}-{}-{digest}", &sanitized[..140]))
 }
 
 fn sanitize_path_segment(segment: String) -> String {

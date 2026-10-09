@@ -1,6 +1,17 @@
 use super::fixtures::*;
 use serde_json::json;
 
+pub(super) fn precommit() -> serde_json::Value {
+    json!({"status":"PASS","exit_code":0,"precommit_exit_code":0,"workspace_exit_code":0,
+        "workspace_command":"cargo test --workspace --locked","validation_scope":"FULL_WORKSPACE",
+        "test_threads":"DEFAULT","evidence":["controlled-precommit-fixture"]})
+}
+pub(super) fn testing() -> serde_json::Value {
+    json!({"status":"PASS","exit_code":0,"scenarios":[
+        {"status":"PASS","exit_code":0},{"status":"PASS","exit_code":0}],
+        "evidence":["controlled-scenario-fixture"]})
+}
+
 fn verification(f: &Fixture, completed: &str, noop: &str) -> serde_json::Value {
     let r = f.run(&body(
         "workflow-precommit-test",
@@ -19,11 +30,8 @@ fn verification(f: &Fixture, completed: &str, noop: &str) -> serde_json::Value {
 fn verification_canonical_validation_outputs_produce_evidence() {
     verification(
         &Fixture::new()
-            .env("RECIPE_VAR_precommit_results", "actual precommit output")
-            .env(
-                "RECIPE_VAR_local_testing_gate",
-                "actual local validation output",
-            ),
+            .env("RECIPE_VAR_precommit_results", precommit().to_string())
+            .env("RECIPE_VAR_local_testing_gate", testing().to_string()),
         "true",
         "false",
     );
@@ -33,9 +41,7 @@ fn verification_canonical_validation_outputs_produce_evidence() {
 fn verification_file_positive_beats_stale_missing_outputs() {
     verification(
         &Fixture::new()
-            .file(
-                json!({"precommit_results":"validation output","local_testing_gate":"test output"}),
-            )
+            .file(json!({"precommit_results":precommit(),"local_testing_gate":testing()}))
             .env("PRECOMMIT_RESULTS", "")
             .env("LOCAL_TESTING_GATE", ""),
         "true",
@@ -76,16 +82,16 @@ fn verification_file_true_noop_is_preserved() {
 }
 
 #[test]
-fn verification_legacy_only_presence_and_boolish_policy_remain_supported() {
+fn verification_legacy_only_structured_receipts_and_boolish_policy_remain_supported() {
     verification(
         &Fixture::new()
-            .env("PRECOMMIT_RESULTS", "nonempty")
-            .env("LOCAL_TESTING_GATE", "nonempty"),
+            .env("PRECOMMIT_RESULTS", precommit().to_string())
+            .env("LOCAL_TESTING_GATE", testing().to_string()),
         "true",
         "false",
     );
     verification(
-        &Fixture::new().env("PRECOMMIT_RESULTS", "nonempty"),
+        &Fixture::new().env("PRECOMMIT_RESULTS", precommit().to_string()),
         "false",
         "false",
     );
@@ -100,8 +106,8 @@ fn producer_objects_flow_through_collector_validator_and_completion() {
     ir.helper_state("IMPLEMENTATION_COMPLETED");
     let vr = verification(
         &Fixture::new()
-            .env("PRECOMMIT_RESULTS", "real test fixture output")
-            .env("LOCAL_TESTING_GATE", "real validation fixture output"),
+            .env("PRECOMMIT_RESULTS", precommit().to_string())
+            .env("LOCAL_TESTING_GATE", testing().to_string()),
         "true",
         "false",
     );
@@ -154,4 +160,67 @@ fn reporting_status_canonical_empty_suppresses_stale_narrative() {
         r.json(),
         json!({"status":"failed","reporting_failure":"true"})
     );
+}
+
+#[test]
+fn failed_or_subset_reports_never_produce_verification() {
+    for failure in [
+        json!({"status":"FAIL","exit_code":101}),
+        {
+            let mut value = precommit();
+            value["workspace_exit_code"] = json!(101);
+            value
+        },
+        {
+            let mut value = precommit();
+            value["validation_scope"] = json!("SUBSET");
+            value
+        },
+        {
+            let mut value = precommit();
+            value["test_threads"] = json!("SERIAL");
+            value
+        },
+        {
+            let mut value = precommit();
+            value["exit_code"] = json!("0");
+            value
+        },
+        {
+            let mut value = precommit();
+            value["evidence"] = json!([]);
+            value
+        },
+    ] {
+        verification(
+            &Fixture::new().file(json!({"precommit_results":failure,
+            "local_testing_gate":testing()})),
+            "false",
+            "false",
+        );
+    }
+    verification(
+        &Fixture::new()
+            .env("PRECOMMIT_RESULTS", "nonempty failed workspace101")
+            .env("LOCAL_TESTING_GATE", "nonempty PASS scenarios"),
+        "false",
+        "false",
+    );
+    let mut failure = testing();
+    failure["scenarios"][1]["exit_code"] = json!(1);
+    verification(
+        &Fixture::new().file(json!({"precommit_results":precommit(),
+        "local_testing_gate":failure})),
+        "false",
+        "false",
+    );
+}
+
+#[test]
+fn verification_rejects_nul_in_a_serialized_report_without_truncating_it_to_pass() {
+    let invalid = format!("{}\0", precommit());
+    let f =
+        Fixture::new().file(json!({"precommit_results":invalid,"local_testing_gate":testing()}));
+    let output = verification(&f, "false", "false");
+    assert_eq!(output["terminal_state"], "VERIFICATION_UNPROVEN");
 }

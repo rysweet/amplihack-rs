@@ -301,6 +301,16 @@ fn step_08c_enforce_verdict_is_bash_type_with_correct_wiring() {
         command.contains("set -euo pipefail"),
         "{ENFORCE_STEP_ID} must `set -euo pipefail` to fail loud on shell errors"
     );
+    assert!(command.contains("workflow_enforce_verdict.sh"));
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/tools/workflow_enforce_verdict.sh");
+    let reader = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/tools/workflow_context.sh");
+    let command = format!(
+        "{command}\n{}\n{}",
+        std::fs::read_to_string(helper).unwrap(),
+        std::fs::read_to_string(reader).unwrap()
+    );
     // The gate must consume the verifier's verdict via the env var name
     // produced from `output: verdict_json`.
     assert!(
@@ -401,10 +411,30 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
         .expect("write script");
     let script_path = script_file.path().to_path_buf();
 
+    let private_home = tempfile::tempdir().unwrap();
     let output = Command::new("bash")
         .arg(&script_path)
         .env_clear()
+        .env("HOME", private_home.path())
+        .env("CODEX_HOME", private_home.path().join(".codex"))
+        .env("CARGO_HOME", private_home.path().join(".cargo"))
+        .env("XDG_CONFIG_HOME", private_home.path().join(".config"))
+        .env("XDG_CACHE_HOME", private_home.path().join(".cache"))
+        .env("XDG_DATA_HOME", private_home.path().join(".local/share"))
+        .env("XDG_STATE_HOME", private_home.path().join(".local/state"))
+        .env("CLAUDE_CONFIG_DIR", private_home.path().join(".claude"))
+        .env(
+            "CLAUDE_PLUGIN_DATA",
+            private_home.path().join("claude-plugin-data"),
+        )
+        .env("COPILOT_HOME", private_home.path().join(".copilot"))
+        .env("COPILOT_CONFIG_DIR", private_home.path().join(".copilot"))
+        .env("TMPDIR", private_home.path())
         .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env(
+            "AMPLIHACK_HOME",
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
+        )
         .env("VERDICT_JSON", verdict_json)
         .env("IMPLEMENTATION", implementation)
         .env("ALLOW_NO_OP", allow_no_op)

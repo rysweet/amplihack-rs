@@ -3,6 +3,9 @@ use super::*;
 
 #[test]
 fn rollback_rejects_foreign_directory_links_before_native_or_restore() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for location in ["home", "market", "agents", "ancestor"] {
         rollback_rejects_foreign_directory_links_before_native_or_restore_case(location);
     }
@@ -38,6 +41,9 @@ fn rollback_rejects_foreign_directory_links_before_native_or_restore_case(locati
 
 #[test]
 fn rollback_preserves_concurrent_byte_only_journal_change() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let fixture = Rollback::new(true, true);
     let journal = fixture.root.join("pending.json");
     let mut foreign = json_bytes(&fixture.pending).unwrap();

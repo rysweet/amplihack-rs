@@ -23,6 +23,9 @@ fn with_agent_binary_sets_env_var_for_all_tools() {
 
 #[test]
 fn active_agent_binary_reads_env_override() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let previous = env::var_os("AMPLIHACK_AGENT_BINARY");
     unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "copilot") };
 
@@ -522,14 +525,9 @@ fn fallback_when_nothing_set() {
     let _snap = EnvSnapshot::scrub_all();
 
     let tmp = tempfile::tempdir().unwrap();
-    let prev = env::current_dir().ok();
-    env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
     assert_eq!(active_agent_binary(), "copilot");
-
-    if let Some(p) = prev {
-        let _ = env::set_current_dir(p);
-    }
 }
 
 /// Issue #489: empty/whitespace-only override is rejected by the resolver and
@@ -542,12 +540,7 @@ fn empty_override_falls_through_to_detection() {
     unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "   ") };
 
     let tmp = tempfile::tempdir().unwrap();
-    let prev = env::current_dir().ok();
-    env::set_current_dir(tmp.path()).unwrap();
+    let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
     assert_eq!(active_agent_binary(), "copilot");
-
-    if let Some(p) = prev {
-        let _ = env::set_current_dir(p);
-    }
 }

@@ -44,6 +44,9 @@ fn interrupt_authorized_unlink(root: &Path, home: &Path) {
 
 #[test]
 fn committed_cleanup_resumes_after_actual_authorized_unlink() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());
     interrupt_authorized_unlink(&root, &home);
@@ -59,6 +62,9 @@ fn committed_cleanup_resumes_after_actual_authorized_unlink() {
 
 #[test]
 fn full_backup_control_and_proof_free_partial_backup() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for partial in [false, true] {
         cases::partial_backup_case(partial);
     }
@@ -66,6 +72,9 @@ fn full_backup_control_and_proof_free_partial_backup() {
 
 #[test]
 fn cleanup_proof_directory_barrier_failure_prevents_every_unlink() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());
     let before = digest(&root.join("previous-package")).unwrap();
@@ -89,6 +98,9 @@ fn cleanup_proof_directory_barrier_failure_prevents_every_unlink() {
 
 #[test]
 fn cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for change in [
         "file",
         "injected",
@@ -173,6 +185,9 @@ fn cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact_
 #[cfg(unix)]
 #[test]
 fn cleanup_checks_symlink_targets_and_never_follows_them() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for substitute in [false, true] {
         cases::backup_link_case(substitute);
     }
@@ -180,6 +195,9 @@ fn cleanup_checks_symlink_targets_and_never_follows_them() {
 
 #[test]
 fn backup_removal_sync_failure_keeps_journal_and_can_retry() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());
     let result = storage::testing::with_sync_hook(
@@ -202,6 +220,9 @@ fn backup_removal_sync_failure_keeps_journal_and_can_retry() {
 
 #[test]
 fn proof_publication_rejects_concurrent_journal_edit_before_unlink() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());
     let before = digest(&root.join("previous-package")).unwrap();
@@ -219,6 +240,9 @@ fn proof_publication_rejects_concurrent_journal_edit_before_unlink() {
 #[cfg(unix)]
 #[test]
 fn authorized_cleanup_rejects_directory_symlink_substitution() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());
     interrupt_authorized_unlink(&root, &home);
@@ -242,6 +266,9 @@ fn authorized_cleanup_rejects_directory_symlink_substitution() {
 #[cfg(unix)]
 #[test]
 fn unsupported_backup_fifo_is_rejected_without_opening_it() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     use std::os::unix::ffi::OsStrExt;
     let dir = tempfile::tempdir().unwrap();
     let (root, home) = committed_fixture(dir.path());

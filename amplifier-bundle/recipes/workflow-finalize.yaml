@@ -338,7 +338,17 @@ steps:
       # deterministic signal: an empty narrative means the reporting step failed
       # to produce its human-readable output.
       command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
-      . '{{worktree_setup.worktree_path}}/amplifier-bundle/tools/workflow_context.sh'
+      # An explicit framework root is authoritative, including missing assets.
+      if [ -n "${AMPLIHACK_HOME:-}" ]; then
+        CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"
+      else
+        CONTEXT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_context.sh"
+      fi
+      [ -f "$CONTEXT_HELPER" ] || { echo "ERROR: workflow_context.sh not found at selected framework root" >&2; exit 2; }
+      . "$CONTEXT_HELPER"
       narrative="$(workflow_context_read agentic_finalizer_narrative || :)"
       status="ok"
       reporting_failure="false"

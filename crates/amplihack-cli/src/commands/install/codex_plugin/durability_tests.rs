@@ -7,6 +7,9 @@ use super::*;
 // returning an error prevents that sync and must propagate to the caller.
 #[test]
 fn atomic_publication_checks_destination_directory_sync() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("ownership.json");
     let result = storage::testing::with_sync_hook(
@@ -25,6 +28,9 @@ fn atomic_publication_checks_destination_directory_sync() {
 
 #[test]
 fn sync_hook_reentry_panics_before_aliasing_and_resets_after_unwind() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         storage::testing::with_sync_hook(storage::sync_path, || storage::sync_path(dir.path()))
@@ -44,6 +50,9 @@ fn sync_hook_reentry_panics_before_aliasing_and_resets_after_unwind() {
 
 #[test]
 fn committed_recovery_retains_evidence_when_dependency_sync_fails() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     for dependency in [
         "ownership.json",
         "market/plugin/resource",
@@ -82,6 +91,9 @@ fn committed_recovery_retains_evidence_when_dependency_sync_fails() {
 
 #[test]
 fn committed_recovery_syncs_dependencies_before_deleting_backup_or_journal() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home, mut pending) = interrupted(dir.path(), true);
     let ledger = json!({"schema_version":1,"codex_home":home,
@@ -124,6 +136,9 @@ fn committed_recovery_syncs_dependencies_before_deleting_backup_or_journal() {
 
 #[test]
 fn committed_cleanup_sync_failure_reports_removed_evidence_accurately() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let (root, home, mut pending) = interrupted(dir.path(), true);
     let ledger = json!({"schema_version":1,"codex_home":home,
@@ -151,6 +166,9 @@ fn committed_cleanup_sync_failure_reports_removed_evidence_accurately() {
 #[cfg(unix)]
 #[test]
 fn durability_preserves_resource_symlinks_without_following_them() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let tree = dir.path().join("package");
     fs::create_dir(&tree).unwrap();

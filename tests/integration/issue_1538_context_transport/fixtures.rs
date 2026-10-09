@@ -165,6 +165,19 @@ impl Fixture {
             .arg(&script)
             .env_clear()
             .envs(self.env.iter().cloned())
+            .env("CODEX_HOME", self.temp.path().join(".codex"))
+            .env("CARGO_HOME", self.temp.path().join(".cargo"))
+            .env("XDG_CONFIG_HOME", self.temp.path().join(".config"))
+            .env("XDG_CACHE_HOME", self.temp.path().join(".cache"))
+            .env("XDG_DATA_HOME", self.temp.path().join(".local/share"))
+            .env("XDG_STATE_HOME", self.temp.path().join(".local/state"))
+            .env("CLAUDE_CONFIG_DIR", self.temp.path().join(".claude"))
+            .env(
+                "CLAUDE_PLUGIN_DATA",
+                self.temp.path().join("claude-plugin-data"),
+            )
+            .env("COPILOT_HOME", self.temp.path().join(".copilot"))
+            .env("COPILOT_CONFIG_DIR", self.temp.path().join(".copilot"))
             .env("HOME", self.temp.path())
             .env("TMPDIR", self.temp.path())
             .current_dir(self.temp.path())

@@ -110,6 +110,7 @@ mod tests {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let dir = tempfile::tempdir().unwrap();
         fs::create_dir_all(dir.path().join(".amplihack/.claude")).unwrap();
+        let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
         let previous_home = env::var_os("HOME");
         let previous_root = env::var_os("AMPLIHACK_ROOT");
         unsafe {
