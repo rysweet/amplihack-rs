@@ -346,43 +346,43 @@ steps:
     type: "bash"
     condition: "terminal_state.terminal_success != 'true'"
     command: |
-      set -euo pipefail
-      echo "=== ZERO-BS VERIFICATION ==="
+      set -euo pipefail; umask 077
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-19c worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-19c worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "ERROR: step-19c-zero-bs-verification requires a git repo; run git init or rerun from a checkout" >&2; exit 1; fi
-      echo "Scanning for Zero-BS violations..."
-      scan_or_none() {
-        local label=$1 pattern=$2 rc tracked_rc untracked_rc=1 file tmp; shift 2
-        local files=()
-        echo "--- $label ---"
-        if git grep -n -E "$pattern" -- "$@"; then tracked_rc=0; else tracked_rc=$?; fi
-        if [ "$tracked_rc" -ne 0 ] && [ "$tracked_rc" -ne 1 ]; then
-          echo "ERROR: git grep failed during $label (exit $tracked_rc)" >&2; return "$tracked_rc"
-        fi
-        tmp=$(mktemp -t step19c-untracked-XXXXXX)
-        if git ls-files --others --exclude-standard -z -- "$@" >"$tmp"; then
-          while IFS= read -r -d '' file; do files+=("$file"); done <"$tmp"; rm -f "$tmp"
-        else
-          rc=$?; rm -f "$tmp"; echo "ERROR: git ls-files failed during $label (exit $rc)" >&2; return "$rc"
-        fi
-        if [ "${#files[@]}" -gt 0 ]; then
-          if grep -n -E -H -- "$pattern" "${files[@]}"; then untracked_rc=0; else untracked_rc=$?; fi
-        fi
-        if [ "$untracked_rc" -ne 0 ] && [ "$untracked_rc" -ne 1 ]; then
-          echo "ERROR: grep failed during untracked $label (exit $untracked_rc)" >&2; return "$untracked_rc"
-        fi
-        [ "$tracked_rc" -eq 0 ] || [ "$untracked_rc" -eq 0 ] || echo "None found"
+      root=$(cd "${TMPDIR:-/d0/ryan/sunfixamp-codex-support/tmp}" && pwd -P) || exit $?
+      case "$root" in /d0/*) ;; *) echo 'ERROR: step-19c requires a physical /d0 artifact root' >&2; exit 1;; esac
+      storage=$(mktemp -d "$root/step19c.XXXXXXXXXXXX") || exit $?
+      chmod 700 "$storage" || exit $?; report="$storage/report"; summary="$storage/summary.json"; categories=(); total=0
+      trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "ERROR: step-19c scan/presentation incomplete (exit %s); retained report: %s\n" "$rc" "$report" >&2; fi' EXIT
+      (set -C; : >"$report") || exit $?; printf '%s\n' '=== ZERO-BS VERIFICATION ===' 'Format: NUL-delimited filenames; tracked line numbers also NUL-delimited. Complete matching lines follow.' >"$report" || exit $?
+      record_scan() { local mode=$1 raw=$2 rc=$3 file number line count=0
+        cat "$raw" >>"$report" || return $?
+        if [ "$rc" -gt 1 ]; then printf 'ERROR: %s scan failed (exit %s)\n' "$mode" "$rc" | tee -a "$report" >&2; return "$rc"; fi
+        while IFS= read -r -d '' file; do if [ "$mode" = 'git grep' ]; then IFS= read -r -d '' number || return 2; fi; IFS= read -r line || return 2; count=$((count + 1)); done <"$raw" || return $?
+        scan_count=$count; }
+      scan_or_none() { local label=$1 pattern=$2 rc file raw list tracked_count untracked_count=0; shift 2; local files=()
+        printf '\n--- %s ---\n' "$label" >>"$report" || return $?
+        raw=$(mktemp "$storage/scan.XXXXXXXXXXXX") || return $?; list=$(mktemp "$storage/files.XXXXXXXXXXXX") || return $?
+        if git grep -n -E -a -z "$pattern" -- "$@" >"$raw" 2>>"$report"; then rc=0; else rc=$?; fi
+        record_scan 'git grep' "$raw" "$rc" || return $?; tracked_count=$scan_count
+        if git ls-files --others --exclude-standard -z -- "$@" >"$list" 2>>"$report"; then :; else rc=$?; printf 'ERROR: git ls-files failed (exit %s)\n' "$rc" | tee -a "$report" >&2; return "$rc"; fi
+        while IFS= read -r -d '' file; do files+=("$file"); done <"$list" || return $?
+        if [ "${#files[@]}" -gt 0 ]; then if grep -n -E -H -a -Z -- "$pattern" "${files[@]}" >"$raw" 2>>"$report"; then rc=0; else rc=$?; fi; record_scan 'untracked grep' "$raw" "$rc" || return $?; untracked_count=$scan_count; fi
+        count=$((tracked_count + untracked_count)); total=$((total + count)); result=NO_FINDINGS; if [ "$count" -gt 0 ]; then result=WARNING_REVIEW_REQUIRED; else printf '%s\n' 'None found' >>"$report" || return $?; fi
+        categories+=("$(jq -cn --arg category "$label" --arg result "$result" --argjson tracked "$tracked_count" --argjson untracked "$untracked_count" '{category:$category,result:$result,tracked_count:$tracked,untracked_count:$untracked,count:($tracked+$untracked)}')") || return $?
       }
-      scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.rs' '*.ts' '*.js' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile
-      scan_or_none "Checking for stub indicators" "(todo!|unimplemented!|panic!.*stub)" '*.rs'
-      scan_or_none "Rust: bail/panic stubs (zero-stubs policy)" 'bail!\("not implemented|bail!\("TODO|bail!\("unimplemented|panic!\("not implemented|panic!\("TODO' '*.rs'
-      echo "--- Checking for Forbidden Patterns ---"
-      scan_or_none "Shell: || true, >/dev/null 2>&1, set +e" '\|\| true|\|\| :|>/dev/null 2>&1|2>/dev/null|&>/dev/null|set \+e' '*.sh' '*.bash' Makefile Dockerfile
-      scan_or_none "Rust: unwrap without context, expect without message" '\.unwrap\(\)$|\.expect\(\"\"\)' '*.rs'
-      scan_or_none "TypeScript/JS: empty catch, catch return undefined" 'catch.*\{.*\}$|catch.*return undefined|catch.*return \[\]' '*.ts' '*.js'
-      echo ""
-      echo "=== Zero-BS Verification Complete ==="
+      scan_or_none "Checking for TODO/FIXME comments" "(TODO|FIXME)" '*.rs' '*.ts' '*.js' '*.sh' '*.bash' '*.md' '*.yaml' '*.yml' Makefile Dockerfile || exit $?
+      scan_or_none "Checking for stub indicators" "(todo!|unimplemented!|panic!.*stub)" '*.rs' || exit $?
+      scan_or_none "Rust: bail/panic stubs (zero-stubs policy)" 'bail!\("not implemented|bail!\("TODO|bail!\("unimplemented|panic!\("not implemented|panic!\("TODO' '*.rs' || exit $?
+      scan_or_none "Shell: || true, >/dev/null 2>&1, set +e" '\|\| true|\|\| :|>/dev/null 2>&1|2>/dev/null|&>/dev/null|set \+e' '*.sh' '*.bash' Makefile Dockerfile || exit $?
+      scan_or_none "Rust: unwrap without context, expect without message" '\.unwrap\(\)$|\.expect\(\"\"\)' '*.rs' || exit $?
+      scan_or_none "TypeScript/JS: empty catch, catch return undefined" 'catch.*\{.*\}$|catch.*return undefined|catch.*return \[\]' '*.ts' '*.js' || exit $?
+      printf '\n=== Zero-BS Verification Complete ===\n' >>"$report" || exit $?
+      bytes=$(cat "$report" | wc -c) || exit $?; results=$(printf '%s\n' "${categories[@]}" | jq -sc '.') || exit $?
+      (set -C; { printf '%s\n' '=== ZERO-BS SUMMARY ===' && jq -cn --arg report_path "$report" --argjson report_bytes "$bytes" --argjson categories "$results" --argjson count "$total" '{report_path:$report_path,report_bytes:$report_bytes,categories:$categories,count_unit:"matching lines per category and tracked/untracked scan (overlap counted)",scan_complete:true,status:(if $count>0 then "WARNING_REVIEW_REQUIRED" else "NO_FINDINGS" end),findings_resolved:false,presentation:{previews_omitted:true,omitted_report_bytes:$report_bytes,report_truncated:false,summary_truncated:false,stdout_max_bytes:8192}}'; } >"$summary") || exit $?
+      size=$(wc -c <"$summary") || exit $?; if [ "$size" -gt 8192 ]; then echo 'ERROR: step-19c metadata exceeds 8192 bytes; retained complete artifacts' >&2; exit 1; fi
+      cat "$summary" || exit $?
     output: "zero_bs_check"
   - id: "step-19d-verification-gate"
     type: "bash"

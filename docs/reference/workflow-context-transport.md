@@ -27,6 +27,7 @@ existing decision policy.
 - [Documentation checkpoint](#documentation-checkpoint)
 - [Consumer and file inventory](#consumer-and-file-inventory)
 - [Transport acceptance requirements](#transport-acceptance-requirements)
+- [Bounded PR diagnostics](#bounded-pr-diagnostics)
 - [Integration and diagnostics](#integration-and-diagnostics)
 
 ## Source authority
@@ -475,3 +476,39 @@ then the target `REPO_PATH`, cwd and private provider assets. An explicit
 repositories need not contain `amplifier-bundle`; paths remain quoted shell
 values, including spaces, quotes and metacharacters. Documentation checkpoints
 remain nonfatal and report `NEEDS_ATTENTION` when helpers are unavailable.
+
+## Bounded PR diagnostics
+
+PR-review step `step-19c-zero-bs-verification` returns a String containing a
+short `=== ZERO-BS SUMMARY ===` heading followed by one JSON summary, with a hard limit of 8,192 bytes for complete stdout.
+The heading preserves the native String against automatic JSON Object decoding.
+The summary identifies an absolute retained `report_path`, its `report_bytes`,
+six category results and tracked/untracked counts, `scan_complete`, and explicit
+presentation metadata. No match previews enter workflow context. All report
+bytes are omitted from presentation; the report and summary are never silently
+truncated. Oversized metadata and presentation failures are fatal.
+
+Counts measure matching lines separately for each category and tracked/untracked
+scan. A line matching multiple categories contributes to each category. Counts
+come from complete scan records, not newline counts in filenames. Scans preserve
+the category patterns and globs, use tracked Git discovery and NUL-delimited
+untracked discovery, and treat binary content as text to retain complete matching
+lines. Report records contain NUL-delimited filenames; tracked records also use
+a NUL separator after the line number. Matching line content, including hostile
+literal bytes and arbitrarily long lines, is retained unchanged. Category headings,
+no-match notices and operational diagnostics accompany these records.
+
+Storage is exclusively allocated with an unpredictable name beneath the physical
+`/d0` temporary root selected by `TMPDIR` (default:
+`/d0/ryan/sunfixamp-codex-support/tmp`). Directory mode 0700 and file mode 0600
+apply before payload writes. Supplied report paths are never adopted. Artifacts
+remain after the step; their retention and eventual removal belong to the run
+owner. Allocation, writing, final reading and stdout presentation are checked.
+Grep exits 0 and 1 mean findings and no findings respectively; operational errors
+remain fatal, retain diagnostics and identify the incomplete report on stderr.
+
+Completed scans with findings return `WARNING_REVIEW_REQUIRED`; completed scans
+without findings return `NO_FINDINGS`. Both record `findings_resolved: false`:
+scan completion does not resolve review findings or waive downstream gates.
+The step ID, Bash type, condition, String output and following gate are unchanged.
+This bounded product output does not repair or certify generic runner transport.

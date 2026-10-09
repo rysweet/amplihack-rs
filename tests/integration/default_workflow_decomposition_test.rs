@@ -736,14 +736,14 @@ fn workflow_pr_review_scopes_pre_commit_allow_no_config_to_stale_hook_case() {
 fn workflow_pr_review_zero_bs_scan_covers_tracked_and_untracked_without_recursive_walks() {
     let command = step_command("workflow-pr-review", "step-19c-zero-bs-verification");
     assert!(
-        command.contains("git grep -n -E") && command.contains("ERROR: git grep failed"),
+        command.contains("git grep -n -E") && command.contains("record_scan 'git grep'"),
         "step-19c must use fail-loud git grep scans for repository verification"
     );
     assert!(
         command.contains("git ls-files --others --exclude-standard -z")
             && command.contains("while IFS= read -r -d '' file")
-            && command.contains("grep -n -E -H -- \"$pattern\" \"${files[@]}\"")
-            && command.contains("ERROR: grep failed during untracked"),
+            && command.contains("grep -n -E -H -a -Z -- \"$pattern\" \"${files[@]}\"")
+            && command.contains("record_scan 'untracked grep'"),
         "step-19c must restore fail-loud untracked-file scanning"
     );
     assert!(
@@ -1295,3 +1295,6 @@ fn workflow_finalize_step_21_guards_pr_url_before_gh_commands() {
         "step-21 must check PR_URL before invoking 'gh pr ready'"
     );
 }
+
+#[path = "zero_bs_transport/mod.rs"]
+mod zero_bs_transport;
