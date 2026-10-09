@@ -53,6 +53,16 @@ extract_step_command() {
 # FATAL allowlist — these gates MUST keep their fatal exit.
 # ---------------------------------------------------------------------------
 ENFORCE="$(extract_step_command "${RECIPES}/workflow-tdd.yaml" "step-08c-enforce-verdict")"
+ENFORCE_COMMAND="$ENFORCE"
+ENFORCE_HELPER="$REPO_ROOT/amplifier-bundle/tools/workflow_enforce_verdict.sh"
+if [[ -f "$ENFORCE_HELPER" ]] \
+   && printf '%s\n' "$ENFORCE_COMMAND" | grep -qxF '  CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"' \
+   && printf '%s\n' "$ENFORCE_COMMAND" | grep -qxF '. "$CONTEXT_HELPER"' \
+   && printf '%s\n' "$ENFORCE_COMMAND" | grep -qxF '. "$(dirname "$CONTEXT_HELPER")/workflow_enforce_verdict.sh"'; then
+    pass linkage "enforcer sources the exact fixed sibling of selected context helper"
+else fail linkage "canonical enforcer sourcing relationship is broken"; fi
+ENFORCE="$ENFORCE_COMMAND
+$(cat "$ENFORCE_HELPER")"
 if printf '%s\n' "${ENFORCE}" | grep -qF 'HOLLOW_SUCCESS' \
    && printf '%s\n' "${ENFORCE}" | grep -qE 'exit[[:space:]]+1'; then
     pass "FATAL:step-08c" "enforce-verdict keeps HOLLOW_SUCCESS -> exit 1"
@@ -122,6 +132,56 @@ for t in "${NEW_TESTS[@]}"; do
         fail "CI-registered:${t}" "ci.yml does not run ${t}"
     fi
 done
+
+# Real canonical enforcer controls: HOLLOW_SUCCESS must reach fatal dispatch.
+RUNTIME="$(mktemp -d "${TMPDIR:-${RUNNER_TEMP:-/tmp}}/enforce-verdict.XXXXXX")"
+trap 'rm -rf "$RUNTIME"' EXIT
+mkdir -p "$RUNTIME/bin" "$RUNTIME/home" "$RUNTIME/empty" "$RUNTIME/context-only/amplifier-bundle/tools"
+if [[ -n "${AMPLIHACK_BIN:-}" ]]; then TOOL="$AMPLIHACK_BIN"; else
+    (cd "$REPO_ROOT" && RUSTC_WRAPPER='' cargo build --locked -p amplihack --bin amplihack)
+    TOOL="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack"
+fi
+[[ -x "$TOOL" ]] || { echo "HARNESS-ERROR: real amplihack binary missing" >&2; exit 2; }
+ln -s "$(cd "$(dirname "$TOOL")" && pwd)/$(basename "$TOOL")" "$RUNTIME/bin/amplihack"
+for tool in bash jq dirname grep tr; do ln -s "$(command -v "$tool")" "$RUNTIME/bin/$tool"; done
+cp "$REPO_ROOT/amplifier-bundle/tools/workflow_context.sh" "$RUNTIME/context-only/amplifier-bundle/tools/"
+for scenario in hollow verified insufficient unknown absent malformed hostile sentinel noop missing-context missing-helper; do
+    impl='Implemented concrete artifact'; noop=false; framework="$REPO_ROOT"
+    verdict='{"verdict":"HOLLOW_SUCCESS"}'; expected=0; diagnostic=WARN
+    case "$scenario" in
+        hollow) expected=1; diagnostic='rejected step-08-implement with HOLLOW_SUCCESS' ;;
+        verified) verdict='{"verdict":"WORK_VERIFIED"}'; diagnostic=APPROVED ;;
+        insufficient) verdict='{"verdict":"INSUFFICIENT_EVIDENCE"}' ;;
+        unknown) verdict='{"verdict":"NOVEL_VERDICT"}' ;;
+        absent) verdict='' ;;
+        malformed) verdict='not JSON' ;;
+        hostile)
+            payload=$(cat <<'HOSTILE'
+%s%n " ' $(/usr/bin/touch ATTACK_PATH); `/usr/bin/touch ATTACK_PATH`; eval echo HOSTILE_FEEDBACK
+HOSTILE
+)
+            payload=${payload//ATTACK_PATH/$RUNTIME/executed}
+            verdict="$(jq -nc --arg text "$payload" '{verdict:$text}')" ;;
+
+        sentinel) impl='No files modified — orchestration task'; diagnostic='sentinel matched' ;;
+        noop) noop=true; diagnostic='ALLOW_NO_OP=true' ;;
+        missing-context) framework="$RUNTIME/empty"; expected=2; diagnostic='workflow_context.sh not found' ;;
+        missing-helper) framework="$RUNTIME/context-only"; expected=1; diagnostic=workflow_enforce_verdict.sh ;;
+    esac
+    set +e
+    (cd "$RUNTIME" && env -i PATH="$RUNTIME/bin" HOME="$RUNTIME/home" TMPDIR="$RUNTIME" \
+        AMPLIHACK_HOME="$framework" REPO_PATH="$REPO_ROOT" \
+        IMPLEMENTATION="$impl" ALLOW_NO_OP="$noop" VERDICT_JSON="$verdict" \
+        bash -c "$ENFORCE_COMMAND") >"$RUNTIME/$scenario.out" 2>"$RUNTIME/$scenario.err"
+    child_exit=$?
+    set -e
+    if [[ "$child_exit" = "$expected" ]] && grep -qF "$diagnostic" "$RUNTIME/$scenario.err" \
+       && [[ ! -e "$RUNTIME/executed" && ! -e "$RUNTIME/marker" ]]; then
+        if [[ "$scenario" = verified ]] || ! grep -qF APPROVED "$RUNTIME/$scenario.err"; then
+            pass "runtime:$scenario" "exit$expected with correct diagnostic and no false approval/execution"
+        else fail "runtime:$scenario" "false approval"; fi
+    else fail "runtime:$scenario" "exit$child_exit, expected $expected and $diagnostic"; fi
+ done
 
 echo ""
 echo "--- Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed ---"
