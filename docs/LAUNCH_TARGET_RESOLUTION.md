@@ -47,6 +47,14 @@ consequences.
 
 ## The resolution contract
 
+The frozen top-level signatures below have explicit owning modules. The contract
+guard checks those modules; unrelated same-name declarations do not satisfy it.
+
+| Functions | Owning module |
+| --- | --- |
+| `resolve`, `resolve_uncached`, `amplihack_prefix_bin` | `crates/amplihack-utils/src/launch_target.rs` |
+| `is_materialized`, `claude_platform_packages` | `crates/amplihack-utils/src/claude_native.rs` |
+
 ### `resolve`
 
 ```rust

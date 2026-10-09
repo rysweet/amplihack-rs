@@ -231,12 +231,34 @@ non-object values and recursively encoded Strings cannot establish verification.
 `evidence` array referencing retained raw logs and actual exits. This means real
 precommit execution and full locked workspace validation with default parallel
 threads; subset tests or declared commands alone cannot supply that evidence.
+Each evidence entry contains `log` and `exit_receipt` references to retained raw
+output and actual numeric child exits. Entries must cover both full
+`cargo test --workspace --locked` and full real `pre-commit run --all-files`.
 
 `local_testing_gate` requires `status: "PASS"`, numeric zero `exit_code`, a
 nonempty `evidence` array, and at least two actual outside-in `scenarios`, each
 with `status: "PASS"` and numeric zero `exit_code`. Receipt evidence must bind the
 executed validation to its current source and tools. Prose, nonempty reports,
 failed runs and earlier source epochs cannot establish verification.
+
+The following are illustrative schema examples only. Placeholder references
+and PASS/zero values are not completed-check evidence; actual producer values
+must reflect genuine completed checks, and failures must report FAIL.
+
+```json
+{"status":"PASS","exit_code":0,"precommit_exit_code":0,"workspace_exit_code":0,"workspace_command":"cargo test --workspace --locked","validation_scope":"FULL_WORKSPACE","test_threads":"DEFAULT","evidence":[{"log":"<actual retained raw log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+```
+
+```json
+{"status":"PASS","exit_code":0,"scenarios":[{"status":"PASS","exit_code":0,"name":"<actual simple scenario>"},{"status":"PASS","exit_code":0,"name":"<actual complex scenario>"}],"evidence":[{"log":"<actual retained outside-in log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+```
+
+Add entries when checks have separate logs or exit receipts. Fresh native
+producer Objects must carry actual retained references; converting historical
+Objects, substituting artifact FILE receipts, fabricating references or injecting
+success cannot satisfy the contract. Source-qualified successful child outcomes
+may be referenced only while their relevant source, tool and runtime inputs
+remain unchanged.
 
 The separate explicit no-op path remains first: case-insensitive `true`, `1`,
 `yes` and `y`. Normalization removes trailing LF through Bash command

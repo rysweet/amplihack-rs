@@ -58,8 +58,23 @@ steps:
       precommit_exit_code and workspace_exit_code (actual numeric exits),
       workspace_command ("cargo test --workspace --locked"),
       validation_scope ("FULL_WORKSPACE"), test_threads ("DEFAULT"), and
-      evidence (retained raw log/exit references). A subset, failed run or earlier
-      source epoch cannot supply successful full-workspace evidence.
+      evidence (a nonempty ARRAY containing actual retained reference entries
+      covering BOTH checks, each with log and exit_receipt references). Bind the
+      successful full `cargo test --workspace --locked` with DEFAULT test threads
+      and full real `pre-commit run --all-files` to current product source.
+      A subset, failed run or earlier source epoch cannot supply successful
+      full-workspace evidence. Report FAIL truthfully when checks fail.
+
+      Illustrative schema example ONLY; placeholder references and PASS/zero
+      values are not completed-check evidence. Actual values must come from
+      genuine completed checks and references must identify retained artifacts:
+      {"status":"PASS","exit_code":0,"precommit_exit_code":0,"workspace_exit_code":0,"workspace_command":"cargo test --workspace --locked","validation_scope":"FULL_WORKSPACE","test_threads":"DEFAULT","evidence":[{"log":"<actual retained raw log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+      Include retained references covering both workspace and precommit checks;
+      add entries if their logs/exit receipts are retained separately. Return a
+      genuine fresh native Object, never a converted historical Object or artifact
+      FILE receipt; do not fabricate references or inject success. Source-qualified
+      retained successful child outcomes may be referenced only where relevant
+      source, tool and runtime inputs remain unchanged.
     output: "precommit_results"
     parse_json: true
 
@@ -168,7 +183,19 @@ steps:
       any failures with root cause analysis). Return exactly one JSON object with
       status (PASS or FAIL), exit_code (actual numeric aggregate exit), scenarios
       (an array with at least two objects, each containing status and actual
-      numeric exit_code), and evidence (retained raw log/exit references).
+      numeric exit_code and name), and evidence (a nonempty ARRAY containing
+      actual retained reference entries with log and exit_receipt references).
+      Include at least two meaningful current-source outside-in scenario Objects
+      with actual numeric exits. Report FAIL truthfully when checks fail.
+
+      Illustrative schema example ONLY; placeholder references and PASS/zero
+      values are not completed-check evidence:
+      {"status":"PASS","exit_code":0,"scenarios":[{"status":"PASS","exit_code":0,"name":"<actual simple scenario>"},{"status":"PASS","exit_code":0,"name":"<actual complex scenario>"}],"evidence":[{"log":"<actual retained outside-in log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+      Return a genuine fresh native Object with references covering the actual
+      scenarios. Never convert historical Objects, substitute artifact FILE
+      receipts, fabricate references or inject success. Source-qualified retained
+      successful child outcomes may be referenced only where relevant source,
+      tool and runtime inputs remain unchanged.
     output: "local_testing_gate"
     parse_json: true
 

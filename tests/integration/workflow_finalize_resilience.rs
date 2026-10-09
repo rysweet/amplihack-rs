@@ -85,6 +85,124 @@ fn make_executable(path: &Path) {
     }
 }
 
+// Each child gets its own environment: no ambient Git/config, credentials,
+// helper overrides or flattened recipe/PR aliases can select another scope.
+fn private_scope_command(tmp: &Path, repo: &Path, helper: &str) -> Command {
+    let mut command = Command::new("bash");
+    isolate_scope_child(&mut command, tmp, repo);
+    command.arg(workspace_helper_path(helper));
+    command
+}
+
+fn isolate_scope_child(command: &mut Command, tmp: &Path, repo: &Path) {
+    let home = tmp.join("home");
+    let scratch = tmp.join("tmp");
+    fs::create_dir_all(&home).expect("private HOME");
+    fs::create_dir_all(&scratch).expect("private tmp");
+    command
+        .env_clear()
+        .current_dir(repo)
+        .env("HOME", &home)
+        .env("TMPDIR", &scratch)
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("GH_CONFIG_DIR", home.join(".config/gh"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env(
+            "PATH",
+            format!("{}:/usr/bin:/bin", tmp.join("bin").display()),
+        )
+        .env("GH_CALL_LOG", tmp.join("gh-calls.log"));
+}
+
+fn private_git(tmp: &Path, repo: &Path, args: &[&str]) {
+    let mut command = amplihack_git::command();
+    isolate_scope_child(&mut command, tmp, repo);
+    let output = command.args(args).output().expect("private Git setup");
+    assert!(
+        output.status.success(),
+        "Git setup {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn private_git_scope(tmp: &Path) -> PathBuf {
+    let repo = tmp.join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.email", "test@example.com"],
+        vec!["config", "user.name", "Workflow Test"],
+        vec![
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+    ] {
+        private_git(tmp, &repo, &args);
+    }
+    write_file(&repo.join("README.md"), "base\n");
+    for args in [
+        vec!["add", "README.md"],
+        vec!["commit", "-m", "base"],
+        vec!["update-ref", "refs/remotes/origin/main", "HEAD"],
+        vec!["switch", "-c", "feature"],
+    ] {
+        private_git(tmp, &repo, &args);
+    }
+    write_file(&repo.join("README.md"), "base\nfeature\n");
+    private_git(tmp, &repo, &["add", "README.md"]);
+    private_git(tmp, &repo, &["commit", "-m", "feature"]);
+    private_git(tmp, &repo, &["rev-parse", "--verify", "HEAD"]);
+    private_git(
+        tmp,
+        &repo,
+        &["rev-parse", "--verify", "refs/remotes/origin/main"],
+    );
+    repo
+}
+
+fn write_failing_gh(tmp: &Path, read: &str) {
+    let gh = tmp.join("bin/gh");
+    write_file(
+        &gh,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+if [ "${{1:-}}" = "pr" ]; then
+  case "${{2:-}}" in
+    ready|comment|create|edit|merge) echo "unexpected mutation" >&2; exit 99 ;;
+  esac
+fi
+if [ "${{1:-}}" = "auth" ] && [ "${{2:-}}" = "status" ]; then exit 0; fi
+if [ "${{1:-}}" = "pr" ] && [ "${{2:-}}" = "{read}" ]; then
+  echo "https://token@example.com/fixture failure" >&2
+  exit 42
+fi
+echo "unexpected gh call: $*" >&2
+exit 99
+"#
+        ),
+    );
+    make_executable(&gh);
+}
+
+fn assert_scoped_read(tmp: &Path, expected: &str) {
+    let calls = fs::read_to_string(tmp.join("gh-calls.log")).expect("private GH call log");
+    assert!(
+        calls.lines().any(|line| line.starts_with(expected)),
+        "intended scoped read was not reached: {calls}"
+    );
+    for line in calls.lines() {
+        assert!(
+            line == "auth status" || line.starts_with("pr view ") || line.starts_with("pr list "),
+            "unexpected GH call (including mutation): {line}"
+        );
+    }
+}
+
 fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let mut command = Command::new("bash");
     command
@@ -215,33 +333,18 @@ fn workflow_complete_json_reports_terminal_outcome_instead_of_unconditional_merg
 #[test]
 fn pr_ready_helper_fails_closed_when_pr_view_metadata_is_unavailable() {
     let tmp = TempDir::new().expect("tempdir");
-    let bin_dir = tmp.path().join("bin");
-    fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let gh = bin_dir.join("gh");
-    write_file(
-        &gh,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
-  exit 0
-fi
-if [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ]; then
-  echo "https://token@example.com/hidden failure" >&2
-  exit 42
-fi
-echo "unexpected gh call: $*" >&2
-exit 99
-"#,
-    );
-    make_executable(&gh);
+    let repo = private_git_scope(tmp.path());
+    write_failing_gh(tmp.path(), "view");
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .env("PR_URL", "https://github.com/owner/repo/pull/7")
         .output()
         .expect("run workflow_pr_ready.sh");
 
+    assert_scoped_read(
+        tmp.path(),
+        "pr view https://github.com/owner/repo/pull/7 --repo owner/repo --json ",
+    );
     assert!(
         !output.status.success(),
         "PR-ready helper must fail closed when explicit PR metadata cannot be inspected\nstdout:\n{}\nstderr:\n{}",
@@ -250,11 +353,12 @@ exit 99
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("current branch is empty") || stderr.contains("pr_metadata_unavailable"),
+        stderr.contains("pr_metadata_unavailable"),
         "scoped validation must fail closed before ambiguous PR mutation, stderr:\n{stderr}"
     );
     assert!(
-        !stderr.contains("https://token@example.com"),
+        !stderr.contains("https://token@example.com")
+            && !String::from_utf8_lossy(&output.stdout).contains("https://token@example.com"),
         "scoped validation must not leak credential-bearing URLs, stderr:\n{stderr}"
     );
 }
@@ -300,70 +404,79 @@ exit 99
 #[test]
 fn pr_ready_helper_fails_closed_when_branch_discovery_fails() {
     let tmp = TempDir::new().expect("tempdir");
-    let repo = tmp.path().join("repo");
-    fs::create_dir(&repo).expect("create repo");
-    for args in [
-        vec!["init", "-b", "main"],
-        vec!["config", "user.email", "test@example.com"],
-        vec!["config", "user.name", "Workflow Test"],
-    ] {
-        let status = amplihack_git::command()
-            .args(args)
-            .current_dir(&repo)
-            .status()
-            .expect("git setup");
-        assert!(status.success(), "git setup command failed");
-    }
-    write_file(&repo.join("README.md"), "base\n");
-    for args in [
-        vec!["add", "README.md"],
-        vec!["commit", "-m", "base"],
-        vec!["switch", "-c", "feature"],
-    ] {
-        let status = amplihack_git::command()
-            .args(args)
-            .current_dir(&repo)
-            .status()
-            .expect("git setup");
-        assert!(status.success(), "git setup command failed");
-    }
+    let repo = private_git_scope(tmp.path());
+    write_failing_gh(tmp.path(), "list");
 
-    let bin_dir = tmp.path().join("bin");
-    fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let gh = bin_dir.join("gh");
-    write_file(
-        &gh,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-if [ "${1:-}" = "auth" ] && [ "${2:-}" = "status" ]; then
-  exit 0
-fi
-if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
-  echo "discovery unavailable" >&2
-  exit 42
-fi
-echo "unexpected gh call: $*" >&2
-exit 99
-"#,
-    );
-    make_executable(&gh);
-
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = workflow_pr_ready_command()
-        .current_dir(&repo)
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
         .output()
         .expect("run workflow_pr_ready.sh");
 
+    assert_scoped_read(
+        tmp.path(),
+        "pr list --repo owner/repo --head feature --state all --json ",
+    );
     assert!(
         !output.status.success(),
         "PR-ready helper must fail closed when branch PR discovery is ambiguous"
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("unable to determine current GitHub repo identity")
-            || stderr.contains("scoped PR validation failed"),
+        stderr.contains("pr_metadata_unavailable"),
         "branch discovery failure must not become a no-PR success, stderr:\n{stderr}"
+    );
+    assert!(
+        !String::from_utf8_lossy(&output.stdout).contains("https://token@example.com")
+            && !stderr.contains("https://token@example.com"),
+        "discovery failure must redact credential-bearing URLs"
+    );
+}
+
+#[test]
+fn pr_ready_helper_rejects_missing_origin_before_discovery() {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = private_git_scope(tmp.path());
+    private_git(tmp.path(), &repo, &["remote", "remove", "origin"]);
+    write_failing_gh(tmp.path(), "list");
+    let output = private_scope_command(tmp.path(), &repo, "workflow_pr_ready.sh")
+        .output()
+        .expect("run PR-ready helper without origin");
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("unable to determine current GitHub repo identity")
+    );
+    let calls = fs::read_to_string(tmp.path().join("gh-calls.log")).unwrap_or_default();
+    assert!(calls.lines().all(|line| line == "auth status"), "{calls}");
+}
+
+#[test]
+fn final_status_missing_scope_remains_uncertain_without_scoped_read() {
+    let tmp = TempDir::new().expect("tempdir");
+    write_failing_gh(tmp.path(), "view");
+    let output = private_scope_command(tmp.path(), tmp.path(), "workflow_final_status.sh")
+        .env("REMOTE_HOST_TYPE", "github")
+        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("TASK_DESCRIPTION", "test task")
+        .output()
+        .expect("run final-status helper without Git scope");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stdout.contains("terminal_verdict=UNCERTAIN"),
+        "{stdout}\n{stderr}"
+    );
+    assert!(!stdout.contains("All 23 workflow steps completed successfully"));
+    assert!(stderr.contains("lacks repo, branch, headRefOid, or baseRefName context"));
+    assert!(stderr.contains("still live and must be driven to a terminal state"));
+    assert!(!stdout.contains("https://token@example.com"));
+    assert!(!stderr.contains("https://token@example.com"));
+    let calls = fs::read_to_string(tmp.path().join("gh-calls.log")).unwrap_or_default();
+    assert!(!calls.contains("--repo owner/repo --json"), "{calls}");
+    assert!(
+        calls.lines().all(|line| {
+            line == "auth status" || line.starts_with("pr view ") || line.starts_with("pr list ")
+        }),
+        "{calls}"
     );
 }
 
@@ -721,23 +834,10 @@ exit 99
 #[test]
 fn final_status_unreadable_gh_is_uncertain_never_silent_success() {
     let tmp = TempDir::new().expect("tempdir");
-    let bin_dir = tmp.path().join("bin");
-    fs::create_dir_all(&bin_dir).expect("create bin dir");
-    let gh = bin_dir.join("gh");
-    write_file(
-        &gh,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-echo "https://token@example.com/final status failure" >&2
-exit 42
-"#,
-    );
-    make_executable(&gh);
+    let repo = private_git_scope(tmp.path());
+    write_failing_gh(tmp.path(), "view");
 
-    let old_path = std::env::var("PATH").unwrap_or_default();
-    let output = Command::new("bash")
-        .arg(workspace_helper_path("workflow_final_status.sh"))
-        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+    let output = private_scope_command(tmp.path(), &repo, "workflow_final_status.sh")
         .env("REMOTE_HOST_TYPE", "github")
         .env("PR_URL", "https://github.com/owner/repo/pull/7")
         .env("TASK_DESCRIPTION", "test task")
@@ -748,6 +848,10 @@ exit 42
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
 
+    assert_scoped_read(
+        tmp.path(),
+        "pr view https://github.com/owner/repo/pull/7 --repo owner/repo --json ",
+    );
     assert!(
         !stdout.contains("All 23 workflow steps completed successfully"),
         "an unreadable GitHub must never be reported as a completed workflow, stdout:\n{stdout}"
@@ -757,8 +861,7 @@ exit 42
         "an unreadable GitHub must be adjudicated UNCERTAIN, stdout:\n{stdout}\nstderr:\n{stderr}"
     );
     assert!(
-        stderr.contains("scoped final PR match did not resolve")
-            || stderr.contains("lacks repo, branch, headRefOid, or baseRefName context"),
+        stderr.contains("scoped final PR match did not resolve: pr_metadata_unavailable"),
         "final-status helper must explain the unresolved scope signal, stderr:\n{stderr}"
     );
     assert!(
@@ -766,7 +869,8 @@ exit 42
         "UNCERTAIN must hand the outstanding artifacts back rather than orphan them, stderr:\n{stderr}"
     );
     assert!(
-        !stderr.contains("https://token@example.com"),
+        !stderr.contains("https://token@example.com")
+            && !String::from_utf8_lossy(&output.stdout).contains("https://token@example.com"),
         "final-status helper must not expose credential-bearing URLs, stderr:\n{stderr}"
     );
 }
