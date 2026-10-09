@@ -216,15 +216,34 @@ fi
 # no indirect expansion or "@P"-style parameter transformation in the checkpoint step.
 # ---------------------------------------------------------------------------
 untrusted_sources() {
-    grep -E '(^|[;&|[:space:]])(source|\.)[[:space:]]' \
-        | sed 's/^[[:space:]]*//' \
+    local sources status
+    # grep status 1 means no match; every operational error remains a failure.
+    if sources=$(grep -E '(^|[;&|[:space:]])(source|\.)[[:space:]]'); then
+        :
+    else
+        status=$?
+        [[ "$status" = 1 ]] && return 0
+        return "$status"
+    fi
+    if sources=$(printf '%s\n' "$sources" | sed 's/^[[:space:]]*//'); then
+        :
+    else
+        return $?
+    fi
+    if printf '%s\n' "$sources" \
         | grep -vxF -e 'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then' \
-                     -e '. "$DOC_CHECKPOINT_HELPER"' || true
+                     -e '. "$DOC_CHECKPOINT_HELPER"'; then
+        return 0
+    else
+        status=$?
+        [[ "$status" = 1 ]] && return 0
+        return "$status"
+    fi
 }
 
 # Literal fixture text is classified, never sourced or evaluated.
 for trusted in 'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then' '. "$DOC_CHECKPOINT_HELPER"'; do
-    if [[ -z "$(printf '  %s\n' "$trusted" | untrusted_sources)" ]]; then
+    if classified=$(printf '  %s\n' "$trusted" | untrusted_sources) && [[ -z "$classified" ]]; then
         pass 6a "complete trusted source form is allowed"
     else
         fail 6a "complete trusted source form was rejected"
@@ -234,18 +253,57 @@ for untrusted in '. "$DOC_FEEDBACK"' 'source "$DOC_FEEDBACK"' \
     '. "$CONTEXT_HELPER"' \
     'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then DOC_FEEDBACK="$(workflow_context_read doc_review_feedback || :)"; . "$DOC_FEEDBACK" 2>/dev/null; fi' \
     '. "$DOC_CHECKPOINT_HELPER"; . "$DOC_FEEDBACK"'; do
-    if [[ -n "$(printf '%s\n' "$untrusted" | untrusted_sources)" ]]; then
+    if classified=$(printf '%s\n' "$untrusted" | untrusted_sources) && [[ -n "$classified" ]]; then
         pass 6b "untrusted source statement is rejected"
     else
         fail 6b "classifier hid an untrusted source statement: $untrusted"
     fi
 done
 
+
+if classified=$(printf '%s\n' 'printf feedback' | untrusted_sources) && [[ -z "$classified" ]]; then
+    pass 6c "no source statement is an expected no-match"
+else
+    fail 6c "no-match classification failed"
+fi
+# Inject operational failures separately at every stage; preserve their exact exits.
+for stage in scan trim filter; do
+    if (
+        grep() {
+            if [[ "$stage" = scan && "$1" = -E ]] || [[ "$stage" = filter && "$1" = -vxF ]]; then
+                return 2
+            fi
+            command grep "$@"
+        }
+        sed() {
+            if [[ "$stage" = trim ]]; then return 7; fi
+            command sed "$@"
+        }
+        printf '%s\n' '. "$DOC_FEEDBACK"' | untrusted_sources
+    ); then
+        classifier_exit=0
+    else
+        classifier_exit=$?
+    fi
+    expected_exit=2; [[ "$stage" = trim ]] && expected_exit=7
+    if [[ "$classifier_exit" = "$expected_exit" ]]; then
+        pass "6d:$stage" "classifier preserves tool error $expected_exit"
+    else
+        fail "6d:$stage" "classifier returned $classifier_exit instead of $expected_exit"
+    fi
+ done
+
 if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
     # Fixed trusted sources are allowed; every other executable source is rejected.
     SECURITY_CODE="$(printf '%s\n' "$CHECKPOINT_COMMAND" "$(cat "$CHECKPOINT_HELPER")" | sed '/^[[:space:]]*#/d')"
-    UNTRUSTED_SOURCE="$(printf '%s\n' "$SECURITY_CODE" | untrusted_sources)"
-    if [[ -n "$UNTRUSTED_SOURCE" ]] \
+    if UNTRUSTED_SOURCE=$(printf '%s\n' "$SECURITY_CODE" | untrusted_sources); then
+        CLASSIFIER_EXIT=0
+    else
+        CLASSIFIER_EXIT=$?
+    fi
+    if [[ "$CLASSIFIER_EXIT" != 0 ]]; then
+        fail 6 "source classifier failed with exit $CLASSIFIER_EXIT"
+    elif [[ -n "$UNTRUSTED_SOURCE" ]] \
        || printf '%s\n' "$SECURITY_CODE" | grep -qE '(^|[^[:alnum:]_])eval([^[:alnum:]_]|$)|\$\{![A-Za-z_]|@P\}'; then
         fail 6 "checkpoint executes untrusted source/eval/indirect-expansion"
     else
@@ -329,11 +387,12 @@ run_checkpoint() {
                          COMMIT_SHA=abc123 REVIEW_THREAD_ID=thread834)
     fi
     # env -i removes inherited context, tokens and refs; feedback stays one argument.
-    set +e
-    (cd "$RUNTIME" && "${checkpoint_env[@]}" bash -c "$CHECKPOINT_COMMAND") \
-        >"$RUNTIME/$name.out" 2>"$RUNTIME/$name.err"
-    CHILD_EXIT=$?
-    set -e
+    if (cd "$RUNTIME" && "${checkpoint_env[@]}" bash -c "$CHECKPOINT_COMMAND") \
+        >"$RUNTIME/$name.out" 2>"$RUNTIME/$name.err"; then
+        CHILD_EXIT=0
+    else
+        CHILD_EXIT=$?
+    fi
 }
 for scenario in ok degraded absent malformed hostile; do
     case "$scenario" in

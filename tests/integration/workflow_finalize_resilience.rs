@@ -445,7 +445,8 @@ fn pr_ready_helper_rejects_missing_origin_before_discovery() {
         String::from_utf8_lossy(&output.stderr)
             .contains("unable to determine current GitHub repo identity")
     );
-    let calls = fs::read_to_string(tmp.path().join("gh-calls.log")).unwrap_or_default();
+    let calls = optional_gh_call_log(&tmp.path().join("gh-calls.log"))
+        .unwrap_or_else(|error| panic!("read private GH call log: {error}"));
     assert!(calls.lines().all(|line| line == "auth status"), "{calls}");
 }
 
@@ -470,7 +471,8 @@ fn final_status_missing_scope_remains_uncertain_without_scoped_read() {
     assert!(stderr.contains("still live and must be driven to a terminal state"));
     assert!(!stdout.contains("https://token@example.com"));
     assert!(!stderr.contains("https://token@example.com"));
-    let calls = fs::read_to_string(tmp.path().join("gh-calls.log")).unwrap_or_default();
+    let calls = optional_gh_call_log(&tmp.path().join("gh-calls.log"))
+        .unwrap_or_else(|error| panic!("read private GH call log: {error}"));
     assert!(!calls.contains("--repo owner/repo --json"), "{calls}");
     assert!(
         calls.lines().all(|line| {
@@ -1519,4 +1521,42 @@ fn cleanup_push_logging_redacts_embedded_remote_credentials() {
         !command.contains("cat \"$push_output_file\""),
         "cleanup push step must not print raw git push output"
     );
+}
+
+// Missing logs mean no call; corrupt or unreadable logs must fail the assertion.
+fn optional_gh_call_log(path: &Path) -> std::io::Result<String> {
+    match fs::read_to_string(path) {
+        Ok(calls) => Ok(calls),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(error) => Err(error),
+    }
+}
+
+#[test]
+fn optional_gh_call_log_allows_only_missing_files() {
+    let tmp = TempDir::new().expect("tempdir");
+    assert_eq!(
+        optional_gh_call_log(&tmp.path().join("missing")).unwrap(),
+        ""
+    );
+    let path = tmp.path().join("calls");
+    fs::write(&path, "auth status\n").unwrap();
+    assert_eq!(optional_gh_call_log(&path).unwrap(), "auth status\n");
+}
+
+#[test]
+fn optional_gh_call_log_rejects_invalid_encoding() {
+    let tmp = TempDir::new().expect("tempdir");
+    let path = tmp.path().join("calls");
+    fs::write(&path, [0xff]).unwrap();
+    assert_eq!(
+        optional_gh_call_log(&path).unwrap_err().kind(),
+        std::io::ErrorKind::InvalidData
+    );
+}
+
+#[test]
+fn optional_gh_call_log_rejects_directory_read_errors() {
+    let tmp = TempDir::new().expect("tempdir");
+    assert!(optional_gh_call_log(tmp.path()).is_err());
 }
