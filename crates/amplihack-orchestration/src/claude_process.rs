@@ -395,25 +395,7 @@ async fn run_delivered_command(
         }
     };
 
-    if let Some(payload) = stdin_payload
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        if let Err(e) = stdin.write_all(&payload).await {
-            return ProcessResult::err(
-                format!("failed to write prompt to child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-        if let Err(e) = stdin.flush().await {
-            return ProcessResult::err(
-                format!("failed to flush child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-    }
-
+    let stdin = child.stdin.take();
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
@@ -425,7 +407,27 @@ async fn run_delivered_command(
         Some(t) => IdleConfig::with_idle(t),
         None => IdleConfig::from_env(),
     };
-    let outcome = wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg).await;
+    // Drain output while writing stdin. Waiting to start the watchdog until
+    // after a large stdin write can deadlock when the child's output pipe
+    // fills before it has read the complete prompt.
+    let write_stdin = async move {
+        if let (Some(payload), Some(mut stdin)) = (stdin_payload, stdin) {
+            stdin.write_all(&payload).await?;
+            stdin.flush().await?;
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    let (write_result, outcome) = tokio::join!(
+        write_stdin,
+        wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg)
+    );
+    if let Err(e) = write_result {
+        return ProcessResult::err(
+            format!("failed to write prompt to child stdin: {e}"),
+            process_id,
+            start.elapsed(),
+        );
+    }
 
     drop(delivery_handle);
     let duration = start.elapsed();
