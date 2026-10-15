@@ -215,6 +215,27 @@ directory, `autodrive_record_crusty_loop_done`, and the merge-ready loop's
 lands, a full auto-drive run on recipe-runner 0.3.8 still loses the loops' own
 step outputs.
 
+**Overlap with the #1511 branch.** The `RECIPE_VAR_` step-output reads belong
+to `fix/autodrive-step-output-plumbing` (issue #1511). PR #1520 still had to
+change the reads in the two round recipes, because its rebuilt steps read
+outputs that did not exist before. It used the same
+`${UPPER:-${RECIPE_VAR_lower:-}}` form that branch uses. The two branches
+still overlap as text. `git merge-tree` of #1520's head against that branch at
+14ef5411 reports conflicts in six files:
+
+- `amplifier-bundle/recipes/autodrive-crusty-round.yaml`
+- `amplifier-bundle/recipes/autodrive-merge-loop.yaml`
+- `amplifier-bundle/recipes/autodrive-merge-round.yaml`
+- `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh`
+- `docs/reference/auto-drive-to-merge.md`
+- `tests/integration/auto_drive_to_merge_test.rs`
+
+The plumbing branch has no open PR, so **#1520 lands first and the plumbing
+branch rebases onto main after it.** Both sides use the same read form, so
+resolving a conflict means keeping one copy of each read. Nothing has to be
+decided about which behaviour wins. The rebased branch then converts the
+loop-recipe reads listed above.
+
 ### The crusty verdict contract
 
 `crusty-old-engineer` historically emitted prose only. It now emits an
