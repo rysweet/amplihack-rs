@@ -105,6 +105,8 @@ check_log erase "erase-line directly before a word" \
     '\033[2KTEST RESULT: ok. 5 passed\n' "TEST RESULT: ok. 5 passed"
 check_log column "cursor-to-column before a path" \
     '\033[1G\033[2KPASS src/a.test.ts (12 tests)\n' "PASS src/a.test.ts (12 tests)"
+check_log bare "parameterless erase-to-end and reset (ESC[K, ESC[m)" \
+    'A\033[KB\033[mC done\n' "ABC done"
 check_log truecolour "colon-separated and private-parameter sequences" \
     '\033[38:2:255:0:0mred\033[0m \033[>4;1mkeys\033[0m done\n' "red" "keys" "done"
 check_log quotes "double quotes" \
