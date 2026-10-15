@@ -256,6 +256,37 @@ twice counts twice. There are 31 in all:
 | `autodrive-merge-loop.yaml` | 5 |
 | `autodrive-merge-round.yaml` | 11 |
 
+### A stale bare variable wins
+
+Because the bare name is tried first, a non-empty variable of that name
+already in the runner's environment hides the step output:
+
+```console
+$ export CRUSTY_LOOP_PREFLIGHT='{"state_dir":"/old"}'
+$ export RECIPE_VAR_crusty_loop_preflight='{"state_dir":"/new"}'
+$ echo "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
+{"state_dir":"/old"}
+```
+
+This is a known residual risk. It is not specific to these recipes: every
+bundle recipe that uses the dual-name idiom, including `workflow-publish` and
+`workflow-finalize`, shares it, so it is tracked as a bundle-wide follow-up
+rather than fixed here. Reversing the order in the autodrive recipes alone
+would make them disagree with the rest of the bundle.
+
+The exposure is bounded:
+
+- Nothing in this workflow exports a step output's upper-case name, so the
+  variable has to come from the environment that launched the run.
+- A shadowed value still goes through `extract-json --require-field` or
+  `extract-field`, and a shadowed `state_dir` still goes through the
+  [check below](#state_dir-is-checked-before-use).
+- `autodrive-merge-evidence.yaml` reads no step outputs, so the
+  [merge gate](#no-silent-merge) cannot be fed through this path.
+
+Do not launch auto-drive with an upper-case variable named after a step output
+(`CRUSTY_LOOP_PREFLIGHT`, `BUILD_RESULT`, …) in the environment.
+
 ### `state_dir` is checked before use
 
 With the fallback in place, the preflight's `state_dir` reaches later steps
