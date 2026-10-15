@@ -23,8 +23,9 @@ Unreleased changes appear at the top under `[Unreleased]`.
   deletion run only on a linked task worktree. The sweep and
   `cleanup_on_failure` keep any worktree whose status is not clean, probe it
   without taking its index lock, and treat a branch whose changes are already in
-  the base (squash or rebase merge) as merged instead of pushing it back to
-  origin.
+  the base (squash or rebase merge, detected by `git merge-tree` or by patch-id) as
+  merged; archiving never recreates a branch the remote has deleted, and adding
+  `/worktrees/` never merges into an unterminated last line of `info/exclude`.
 
 - **Artifact Guard blocked verified work over a pre-existing repository
   condition (#1422)** — the guard now distinguishes artifacts the change under

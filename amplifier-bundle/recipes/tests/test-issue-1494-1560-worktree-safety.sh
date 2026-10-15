@@ -189,6 +189,48 @@ check 1560-q "the merged branch is not pushed back to origin" not remote_branch_
 check 1560-r "the merged worktree is pruned" not test -e "$SQ/worktrees/feat"
 check 1560-s "the merged local branch is deleted" not branch_exists "$SQ" feat
 
+echo "== #1560: a squash merge is still recognised after main edits the same lines =="
+SL="$WORK/squash-later"
+new_repo "$SL" "$WORK/squash-later-origin.git"
+git -C "$SL" worktree add -q -b feat2 "$SL/worktrees/feat2"
+printf 'base\nfeature line\n' > "$SL/worktrees/feat2/file.txt"
+git -C "$SL/worktrees/feat2" commit -q -am feature
+git -C "$SL/worktrees/feat2" push -q -u origin feat2
+git -C "$SL" merge -q --squash feat2 >/dev/null
+git -C "$SL" commit -q -m "feature (#2)"
+printf 'base\nfeature line, revised\n' > "$SL/file.txt"   # a later PR edits the same line
+git -C "$SL" commit -q -am "revise (#3)"
+git -C "$SL" push -q origin main
+git -C "$SL" push -q origin --delete feat2
+AMPLIHACK_WORKTREE_STALE_SECS=0 AMPLIHACK_WORKTREE_BASE_REF=main bash "$SWEEP" sweep "$SL" 2>/dev/null || true
+check 1560-t "the merged branch is not pushed back to origin" not remote_branch_exists "$SL" feat2
+check 1560-u "the merged worktree is pruned" not test -e "$SL/worktrees/feat2"
+check 1560-v "the merged local branch is deleted" not branch_exists "$SL" feat2
+
+echo "== #1560: an unmerged branch that origin deleted is archived, not pushed back =="
+UM="$WORK/unmerged"
+new_repo "$UM" "$WORK/unmerged-origin.git"
+git -C "$UM" worktree add -q -b feat3 "$UM/worktrees/feat3"
+echo unique > "$UM/worktrees/feat3/unique.txt"
+git -C "$UM/worktrees/feat3" add unique.txt
+git -C "$UM/worktrees/feat3" commit -q -m unique
+git -C "$UM/worktrees/feat3" push -q -u origin feat3
+git -C "$UM" push -q origin --delete feat3
+AMPLIHACK_WORKTREE_STALE_SECS=0 AMPLIHACK_WORKTREE_BASE_REF=main bash "$SWEEP" sweep "$UM" 2>/dev/null || true
+check 1560-w "the deleted branch is not recreated on origin" not remote_branch_exists "$UM" feat3
+check 1560-x "its commits are archived locally" git -C "$UM" rev-parse --verify --quiet refs/amplihack-archive/feat3
+check 1560-y "its worktree is kept" test -f "$UM/worktrees/feat3/unique.txt"
+
+echo "== #1494: adding /worktrees/ keeps an unterminated last exclude rule intact =="
+EX="$WORK/exclude"
+new_repo "$EX"
+printf '*.swp' > "$EX/.git/info/exclude"
+git -C "$EX" worktree add -q -b ex "$EX/worktrees/ex"
+bash "$SWEEP" sweep "$EX" 2>/dev/null || true
+touch "$EX/a.swp"
+check 1494-m "the user's last rule still ignores its files" status_clean "$EX"
+check 1494-n "the rule keeps its own line" grep -qxF '*.swp' "$EX/.git/info/exclude"
+
 echo
 echo "Summary: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"
 [ "$FAIL_COUNT" -eq 0 ] || exit 1

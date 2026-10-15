@@ -43,7 +43,12 @@ _amplihack_exclude_worktrees_dir() {
   if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
     return 0
   fi
-  mkdir -p "$common/info" 2>/dev/null && printf '/worktrees/\n' >> "$exclude" 2>/dev/null || true
+  mkdir -p "$common/info" 2>/dev/null || return 0
+  # End an unterminated last line first, or the user's last rule and ours merge.
+  if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
+    printf '\n' >> "$exclude" 2>/dev/null || true
+  fi
+  printf '/worktrees/\n' >> "$exclude" 2>/dev/null || true
   return 0
 }
 

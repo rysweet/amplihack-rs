@@ -118,19 +118,33 @@ commits_ahead() {
     git -C "$repo" rev-list --count "${base}..${tip}" 2>/dev/null || printf '1\n'
 }
 
-# content_merged <repo> <base> <branch> — true when merging <branch> into <base>
-# would change nothing: its changes are already in <base> even though its
-# commits are not, as after a squash or rebase merge. Without this, a kept task
-# worktree whose PR was squash-merged looks unmerged forever, and archive_branch
-# pushes the deleted branch back to origin. Needs `git merge-tree --write-tree`
-# (git 2.38+); without it, or on any error or conflict, the branch counts as
-# unmerged.
+# content_merged <repo> <base> <branch> — true when <branch>'s changes are
+# already in <base> even though its commits are not, as after a squash or rebase
+# merge. Without this, a kept task worktree whose PR was squash-merged looks
+# unmerged forever. Two tests, either is enough:
+#   - merging <branch> into <base> would change nothing (`git merge-tree
+#     --write-tree`, git 2.38+);
+#   - a commit on <base> since the merge base carries <branch>'s whole diff
+#     (same `git patch-id --stable`), as a squash commit does. This still holds
+#     after later commits on <base> edit the same lines, when merge-tree reports
+#     a conflict. The search is bounded to the last 2000 commits.
+# On any error the branch counts as unmerged.
 content_merged() {
-    local repo="$1" base="$2" branch="$3" merged base_tree
-    merged="$(git -C "$repo" merge-tree --write-tree "$base" "$branch" 2>/dev/null)" || return 1
-    merged="${merged%%$'\n'*}"
-    base_tree="$(git -C "$repo" rev-parse --verify --quiet "${base}^{tree}" 2>/dev/null)" || return 1
-    [ -n "$merged" ] && [ "$merged" = "$base_tree" ]
+    local repo="$1" base="$2" branch="$3" merged base_tree mb pid
+    if merged="$(git -C "$repo" merge-tree --write-tree "$base" "$branch" 2>/dev/null)"; then
+        merged="${merged%%$'\n'*}"
+        base_tree="$(git -C "$repo" rev-parse --verify --quiet "${base}^{tree}" 2>/dev/null || true)"
+        if [ -n "$merged" ] && [ "$merged" = "$base_tree" ]; then
+            return 0
+        fi
+    fi
+    mb="$(git -C "$repo" merge-base "$base" "$branch" 2>/dev/null)" || return 1
+    pid="$(git -C "$repo" diff "$mb" "$branch" 2>/dev/null | git -C "$repo" patch-id --stable 2>/dev/null)" || return 1
+    pid="${pid%% *}"
+    [ -n "$pid" ] || return 1
+    git -C "$repo" log -p --max-count=2000 --format='commit %H' "${mb}..${base}" 2>/dev/null \
+        | git -C "$repo" patch-id --stable 2>/dev/null \
+        | awk -v p="$pid" '$1 == p { found = 1 } END { exit !found }'
 }
 
 # archive_branch <repo> <branch> <sha> — record <sha> under the archive
@@ -145,8 +159,14 @@ archive_branch() {
         log_warn "Could not archive '${branch}' to ${ref} locally."
         return 1
     fi
-    git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1 \
-        || git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
+    # Update the remote branch only while the remote still has it: pushing
+    # refs/heads/<branch> after a merged PR's branch was deleted would bring it
+    # back. Otherwise push the archive ref, which no branch listing shows.
+    if git -C "$repo" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 \
+        && git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1; then
+        return 0
+    fi
+    git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
         || log_warn "Best-effort archive push for '${branch}' did not complete; local archive ref retained."
     return 0
 }
@@ -261,7 +281,12 @@ exclude_worktrees_dir() {
     if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
         return 0
     fi
-    mkdir -p "${common}/info" 2>/dev/null && printf '/worktrees/\n' >> "$exclude" 2>/dev/null \
+    mkdir -p "${common}/info" 2>/dev/null || { log_warn "Could not create ${common}/info."; return 0; }
+    # End an unterminated last line first, or the user's last rule and ours merge.
+    if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
+        printf '\n' >> "$exclude" 2>/dev/null || true
+    fi
+    printf '/worktrees/\n' >> "$exclude" 2>/dev/null \
         || log_warn "Could not add /worktrees/ to ${exclude}."
     return 0
 }

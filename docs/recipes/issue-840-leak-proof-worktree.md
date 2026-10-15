@@ -169,7 +169,9 @@ Algorithm:
      equals `0` (mirrors the existing cleanliness gate at
      `workflow-worktree.yaml` lines 284/300), or merging the branch into
      `<BASE_REF>` would change nothing (`git merge-tree --write-tree`, git
-     2.38+): its changes landed through a squash or rebase merge.
+     2.38+), or a commit on `<BASE_REF>` carries the branch's whole diff (same
+     `git patch-id`): its changes landed through a squash or rebase merge, even
+     if later commits edited the same lines.
 
 **Exit code is always `0`.** Per-orphan failures are logged (`WARN:`) and never
 abort the sweep or the surrounding setup step. This is what makes setup
@@ -185,10 +187,12 @@ amplifier-bundle/tools/workflow_worktree_sweep.sh cleanup_on_failure "$REPO_PATH
 
 Algorithm:
 
-1. If `<branch>` has unique commits (`<BASE_REF>..<branch> > 0`), archive/push
-   them first to `refs/amplihack-archive/<branch>` (and push to the configured
-   remote when available). **No destructive operation runs until the archive
-   succeeds.**
+1. If `<branch>` has unique commits (`<BASE_REF>..<branch> > 0`) whose changes
+   are not already in `<BASE_REF>`, archive them first to
+   `refs/amplihack-archive/<branch>`, and push them to the configured remote when
+   available: to `refs/heads/<branch>` only while the remote still has that
+   branch (a merged PR's deleted branch is never recreated), otherwise to the
+   archive ref. **No destructive operation runs until the archive succeeds.**
 2. Prune that run's worktree directory and branch — unless the worktree has
    uncommitted or untracked files (#1560), in which case both are kept.
 3. If meaningful unmerged work cannot be archived/pushed, **skip the prune** and
