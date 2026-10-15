@@ -289,6 +289,41 @@ fn remove_keeps_pointer_for_other_profile() {
     assert_eq!(pointer::read(s.root()).unwrap(), Some(n("home")));
 }
 
+#[test]
+fn remove_preserves_profile_when_default_pointer_is_corrupt() {
+    let (_d, s) = store();
+    let profile = s.add(&n("work")).unwrap();
+    fs::write(s.root().join(".default"), "../outside").unwrap();
+
+    assert!(matches!(
+        s.remove(&n("work"), true),
+        Err(ProfileError::PointerCorrupt(_))
+    ));
+    assert!(profile.exists());
+}
+
+#[test]
+fn remove_preserves_profile_when_default_pointer_is_dangling() {
+    let (_d, s) = store();
+    let profile = s.add(&n("work")).unwrap();
+    fs::write(s.root().join(".default"), "gone\n").unwrap();
+
+    assert!(matches!(
+        s.remove(&n("work"), true),
+        Err(ProfileError::PointerDangling(_))
+    ));
+    assert!(profile.exists());
+}
+
+#[test]
+fn remove_succeeds_when_default_pointer_is_missing() {
+    let (_d, s) = store();
+    s.add(&n("work")).unwrap();
+    assert!(!s.root().join(".default").exists());
+    s.remove(&n("work"), true).unwrap();
+    assert!(!s.root().join("work").exists());
+}
+
 #[cfg(unix)]
 #[test]
 fn remove_never_follows_symlink_outside_root() {

@@ -47,15 +47,20 @@ fn verify_rejects_regular_file_in_place_of_directory() {
 }
 
 #[test]
-fn verify_rejects_group_or_world_writable_directory() {
+fn verify_rejects_group_or_world_accessible_directory() {
     let (_d, s, n) = setup();
     let dir = s.resolve(&n).unwrap();
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
-    let error = s.verify_profile_dir(&n).unwrap_err();
-    assert!(matches!(error, ProfileError::UnsafePermissions(_)));
-    assert!(error.hint().contains("chmod go-w"));
-    fs::set_permissions(&dir, fs::Permissions::from_mode(0o702)).unwrap();
-    assert!(s.verify_profile_dir(&n).is_err());
+    for mode in [0o755, 0o750, 0o705, 0o770, 0o702] {
+        fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+        let error = s.verify_profile_dir(&n).unwrap_err();
+        assert!(
+            matches!(error, ProfileError::UnsafePermissions(_)),
+            "mode {mode:o} must be rejected"
+        );
+        assert!(error.hint().contains("chmod go-rwx"));
+    }
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert!(s.verify_profile_dir(&n).is_ok());
 }
 
 #[test]

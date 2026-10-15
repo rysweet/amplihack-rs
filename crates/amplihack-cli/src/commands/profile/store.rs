@@ -194,7 +194,7 @@ impl ProfileStore {
     }
 
     /// Spawn-time check: re-resolves the profile and additionally requires the
-    /// directory to be owned by the current user and not group/world writable.
+    /// directory to be owned by the current user with no group/other mode bits.
     #[cfg(unix)]
     pub fn verify_profile_dir(&self, name: &ProfileName) -> Result<PathBuf, ProfileError> {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -205,9 +205,9 @@ impl ProfileStore {
         if !meta.is_dir() || meta.file_type().is_symlink() || meta.uid() != uid {
             return Err(ProfileError::UnsafePermissions(name.to_string()));
         }
-        if meta.permissions().mode() & 0o022 != 0 {
+        if meta.permissions().mode() & 0o077 != 0 {
             return Err(ProfileError::UnsafePermissions(format!(
-                "{name} (group/world-writable)"
+                "{name} (group/other mode bits)"
             )));
         }
         Ok(canonical)
@@ -223,7 +223,10 @@ impl ProfileStore {
             return Err(ProfileError::ConfirmationRequired);
         }
         let dir = self.resolve(name)?;
-        let was_default = matches!(pointer::read(&self.root), Ok(Some(ref d)) if d == name);
+        // Validate the pointer before deleting anything. Treating a corrupt
+        // pointer as "not the default" could delete its target and leave stale
+        // state behind while reporting success.
+        let was_default = pointer::read(&self.root)?.as_ref() == Some(name);
         fs::remove_dir_all(dir)?;
         if was_default {
             pointer::clear(&self.root)?;

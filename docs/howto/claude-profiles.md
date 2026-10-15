@@ -125,6 +125,12 @@ amplihack profile remove personal --yes
 clears the default pointer if it named that profile. This deletes that
 account's local Claude login and history.
 
+`remove` reads the default pointer before deleting anything. A missing pointer
+means "no default" and removal proceeds. A corrupt, unreadable or dangling
+pointer makes `remove` fail with the pointer error and leaves every profile
+directory untouched. Repair it with `amplihack profile switch <name>`, then
+re-run `remove`.
+
 ## Limits
 
 - `run <name> -- args` forwards args literally with no shell; `-- "; rm -rf ~"`
@@ -138,6 +144,13 @@ account's local Claude login and history.
   env-activated Docker is skipped with a warning.
 - The profile path is re-validated just before spawn. The check is not atomic;
   a small window remains.
+- On Unix, launches require the profile directory to be owned by the current
+  user with no group/other permission mode bits (`mode & 0o077 == 0`, so
+  `0700` passes and `0755`, `0750` and `0705` are rejected). This checks mode
+  bits; filesystem ACL entries are not inspected. Profiles created by older
+  versions with `0755` need `chmod go-rwx <profile-directory>`. Only the
+  profile directory is checked, not its parents; the profile root is created
+  `0700`. The check is Unix-only.
 - The seeded `hooks`, `statusLine` and `permissions` keys are code-execution
   configuration: hooks and the status line run commands, and permissions
   control what Claude may run. Review them before sharing a profile, and treat

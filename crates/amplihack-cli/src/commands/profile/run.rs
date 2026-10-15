@@ -16,7 +16,7 @@ pub(super) fn build_profile_command(
     name: &ProfileName,
     args: &[String],
 ) -> Result<Command, ProfileError> {
-    // Validate ownership and writable permissions immediately before creating
+    // Validate ownership and mode-bit permissions immediately before creating
     // the child process. `resolve` alone only checks path containment.
     let dir = store.verify_profile_dir(name)?;
     let mut cmd = Command::new(&binary.path);

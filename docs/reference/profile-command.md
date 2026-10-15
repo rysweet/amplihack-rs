@@ -24,7 +24,7 @@ amplihack launch|claude --profile <name> [...]
 | `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
-| `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, deletes it, clears a matching pointer. Never deletes the root; never follows symlinks. |
+| `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks. |
 | `login <name>` | Always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 
@@ -113,10 +113,13 @@ only (never `set_var`), overriding any ambient value, and only for
 Claude-compatible binaries. Immediately before spawn, the profile path is
 re-resolved and re-validated: it must be a real directory (not a symlink),
 its canonical path must equal the expected path under the profile root, and
-it must be owned by the current user with no group/other write permission.
+it must be owned by the current user with no group/other permission mode bits
+(`mode & 0o077 == 0`: `0700` passes; `0755`, `0750` and `0705` fail). ACLs are
+not inspected. Only the profile directory is checked, not its parents.
+If the check fails, run `chmod go-rwx <profile-directory>` on Unix.
 Any failure aborts the launch. This check applies only to profile launches;
 Claude and Copilot launches without a profile are unchanged.
-Ownership and group/other write checks are available on Unix. On other
+Ownership and group/other mode-bit checks are available on Unix. On other
 platforms, profile launches still require a real, contained directory, but
 the operating system does not expose the same checks through this command.
 

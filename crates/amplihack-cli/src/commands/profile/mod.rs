@@ -81,7 +81,7 @@ impl ProfileError {
             Self::SharedAssetLimit(_) => "trim the oversized directory under ~/.claude and retry",
             Self::SymlinkRefused(_) => "remove the symlink and re-add the profile",
             Self::UnsafePermissions(_) => {
-                "ensure the profile is owned by your user and run `chmod go-w <profile-directory>`"
+                "ensure the profile is owned by your user and run `chmod go-rwx <profile-directory>`"
             }
             Self::Io(_) => "check permissions on the profile root",
         }
