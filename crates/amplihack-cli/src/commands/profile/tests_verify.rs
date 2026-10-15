@@ -51,7 +51,9 @@ fn verify_rejects_group_or_world_writable_directory() {
     let (_d, s, n) = setup();
     let dir = s.resolve(&n).unwrap();
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o770)).unwrap();
-    assert!(s.verify_profile_dir(&n).is_err());
+    let error = s.verify_profile_dir(&n).unwrap_err();
+    assert!(matches!(error, ProfileError::UnsafePermissions(_)));
+    assert!(error.hint().contains("chmod go-w"));
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o702)).unwrap();
     assert!(s.verify_profile_dir(&n).is_err());
 }

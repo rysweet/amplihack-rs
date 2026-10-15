@@ -58,6 +58,8 @@ pub enum ProfileError {
     SharedAssetLimit(String),
     #[error("refusing symlinked or out-of-root path {0:?}")]
     SymlinkRefused(String),
+    #[error("profile directory has unsafe ownership or permissions: {0:?}")]
+    UnsafePermissions(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -78,6 +80,9 @@ impl ProfileError {
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => "trim the oversized directory under ~/.claude and retry",
             Self::SymlinkRefused(_) => "remove the symlink and re-add the profile",
+            Self::UnsafePermissions(_) => {
+                "ensure the profile is owned by your user and run `chmod go-w <profile-directory>`"
+            }
             Self::Io(_) => "check permissions on the profile root",
         }
     }

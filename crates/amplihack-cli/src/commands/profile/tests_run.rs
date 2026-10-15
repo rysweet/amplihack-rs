@@ -83,11 +83,7 @@ fn run_refuses_profile_swapped_for_symlink() {
 #[test]
 fn run_refuses_group_writable_profile_before_spawn() {
     let (_d, s, name, bin) = setup();
-    fs::set_permissions(
-        s.root().join("work"),
-        fs::Permissions::from_mode(0o770),
-    )
-    .unwrap();
+    fs::set_permissions(s.root().join("work"), fs::Permissions::from_mode(0o770)).unwrap();
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 

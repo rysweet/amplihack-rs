@@ -20,7 +20,7 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Create `<root>/<name>/` with mode `0700`, then copy allowlisted shared assets from `~/.claude`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
+| `add <name>` | Create `<root>/<name>/` with mode `0700` on Unix (Windows uses its inherited ACL), then copy allowlisted shared assets from `~/.claude`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
 | `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
@@ -33,9 +33,9 @@ amplihack launch|claude --profile <name> [...]
 | Item | Value |
 |------|-------|
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. Must be absolute and non-empty. Default `~/.amplihack/claude-profiles/`. |
-| `<root>/<name>/` | Profile directory (mode `0700`). |
-| Root directory | Created with mode `0700`. A symlinked root is refused. An existing custom root is trusted input. |
-| `<root>/.default` | Pointer file: only the profile name (mode `0600`, max 256 bytes). Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
+| `<root>/<name>/` | Profile directory (mode `0700` on Unix; Windows uses its inherited ACL). |
+| Root directory | Created with mode `0700` on Unix; Windows uses its inherited ACL. A symlinked root is refused. An existing custom root is trusted input. |
+| `<root>/.default` | Pointer file: only the profile name (mode `0600` on Unix, max 256 bytes). Windows uses its inherited ACL. Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
 
 ### Seeding
 
@@ -54,8 +54,9 @@ Rules:
 - `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
   profile's `settings.json`. If nothing survives the filter, no file is
   written. `env`, `apiKeyHelper` and all unknown keys are dropped.
-- Directories are created `0700`, files `0600`, with `create_new` (`O_EXCL`):
-  nothing is overwritten and no destination symlink is followed.
+- On Unix, directories are created `0700` and files `0600`; Windows uses
+  inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
+  overwritten and no destination symlink is followed.
 - The 12-key list is kept in sync with the code by `tests_docs_sync.rs`, which
   checks both directions (every constant key is documented here and in the
   how-to guide, and no extra key is documented).
@@ -79,9 +80,9 @@ Rules:
   Non-Unix platforms keep the path-based copy without this hardening.
 - A missing `~/.claude` source produces an empty profile. An existing source
   that is not a directory fails the add and rolls back the new profile.
-- Caps: nesting is limited to 16 levels, a seed to 5,000 entries, and
-  `settings.json` to 1 MiB; exceeding a cap is an error. Special files are
-  skipped without being opened, so a FIFO cannot block the copy.
+- Caps: nesting is limited to 16 levels, a seed to 5,000 entries, each file to
+  64 MiB, and `settings.json` to 1 MiB; exceeding a cap is an error. Special
+  files are skipped without being opened, so a FIFO cannot block the copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `projects`, `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server
@@ -115,6 +116,9 @@ its canonical path must equal the expected path under the profile root, and
 it must be owned by the current user with no group/other write permission.
 Any failure aborts the launch. This check applies only to profile launches;
 Claude and Copilot launches without a profile are unchanged.
+Ownership and group/other write checks are available on Unix. On other
+platforms, profile launches still require a real, contained directory, but
+the operating system does not expose the same checks through this command.
 
 `profile run` applies the same check as `launch --profile`: if Docker is
 active (including `AMPLIHACK_USE_DOCKER`), it fails with the unsupported-mode

@@ -3,7 +3,7 @@
 use super::name::ProfileName;
 use super::{ProfileError, pointer};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
@@ -13,6 +13,16 @@ const MAX_COPY_ENTRIES: usize = 5_000;
 const MAX_COPY_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 const SHARED_ASSET_FILES: &[&str] = &["CLAUDE.md"];
+
+fn copy_limited<R: Read, W: Write>(input: R, output: &mut W) -> Result<(), ProfileError> {
+    let copied = std::io::copy(&mut input.take(MAX_COPY_FILE_BYTES + 1), output)?;
+    if copied > MAX_COPY_FILE_BYTES {
+        return Err(ProfileError::SharedAssetLimit(format!(
+            "file larger than {MAX_COPY_FILE_BYTES} bytes"
+        )));
+    }
+    Ok(())
+}
 pub(super) const SHARED_SETTINGS_KEYS: &[&str] = &[
     "alwaysThinkingEnabled",
     "attribution",
@@ -193,10 +203,10 @@ impl ProfileStore {
         // SAFETY: geteuid has no preconditions.
         let uid = unsafe { libc::geteuid() };
         if !meta.is_dir() || meta.file_type().is_symlink() || meta.uid() != uid {
-            return Err(ProfileError::SymlinkRefused(name.to_string()));
+            return Err(ProfileError::UnsafePermissions(name.to_string()));
         }
         if meta.permissions().mode() & 0o022 != 0 {
-            return Err(ProfileError::SymlinkRefused(format!(
+            return Err(ProfileError::UnsafePermissions(format!(
                 "{name} (group/world-writable)"
             )));
         }
@@ -399,7 +409,7 @@ pub(super) mod test_hook {
 
 #[cfg(unix)]
 mod fdwalk {
-    use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, MAX_COPY_FILE_BYTES, ProfileError};
+    use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, ProfileError};
     use std::ffi::{CString, OsStr, OsString};
     use std::fs::File;
     use std::io::Read;
@@ -664,13 +674,7 @@ mod fdwalk {
     fn write_file(input: File, dst: &OwnedFd, name: &OsStr) -> Result<(), ProfileError> {
         let out_flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
         let mut output = File::from(openat(dst.as_raw_fd(), name, out_flags, 0o600)?);
-        let copied = std::io::copy(&mut input.take(MAX_COPY_FILE_BYTES + 1), &mut output)?;
-        if copied > MAX_COPY_FILE_BYTES {
-            return Err(ProfileError::SharedAssetLimit(format!(
-                "file larger than {MAX_COPY_FILE_BYTES} bytes"
-            )));
-        }
-        Ok(())
+        super::copy_limited(input, &mut output)
     }
 }
 
@@ -691,8 +695,7 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
         options.mode(0o600);
     }
     let mut output = options.open(destination)?;
-    std::io::copy(&mut input, &mut output)?;
-    Ok(())
+    copy_limited(input, &mut output)
 }
 
 /// Best-effort on non-Unix: no descriptor-relative open is available.

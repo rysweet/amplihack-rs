@@ -50,10 +50,11 @@ Caveats:
   `openat` relative to that descriptor, so swapping `~/.claude` or a
   directory for a symlink mid-copy is not followed and no outside data is
   copied; non-Unix platforms lack this race hardening.
-- **Permissions.** Copied directories are `0700`, files `0600`. Existing files
-  are never overwritten.
-- **Limits.** Copying is bounded (16 directory levels, 5,000 entries); exceeding a bound
-  is an error that fails the add (it is not silently truncated).
+- **Permissions.** On Unix, copied directories are `0700` and files `0600`.
+  Windows inherits the destination's ACLs. Existing files are never overwritten.
+- **Limits.** Copying is bounded (16 directory levels, 5,000 entries, and
+  64 MiB per file); exceeding a bound is an error that fails the add (it is not
+  silently truncated).
 - **Non-Unix / Windows.** On Unix, source files are opened relative to a
   no-follow root descriptor to close the check-then-open race. Non-Unix
   platforms, including Windows, have no equivalent, so a same-user race remains
@@ -83,7 +84,7 @@ amplihack profile add personal
 amplihack profile login personal
 ```
 
-`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700`), copies the
+`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700` on Unix), copies the
 allowlisted shared assets, and fails if the profile already exists. `login`
 always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.

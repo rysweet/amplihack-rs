@@ -43,6 +43,23 @@ fn add_does_not_create_credentials_or_files_inside() {
 }
 
 #[test]
+fn oversized_shared_asset_fails_and_rolls_back_profile() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(&source).unwrap();
+    let path = source.join("CLAUDE.md");
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+
+    let error = store.add(&n("work")).unwrap_err();
+    assert!(matches!(error, ProfileError::SharedAssetLimit(_)));
+    assert!(!store.root().join("work").exists());
+}
+
+#[test]
 fn add_copies_allowlisted_shared_assets_and_filters_settings() {
     let d = tempfile::tempdir().unwrap();
     let source = d.path().join("main-claude");
