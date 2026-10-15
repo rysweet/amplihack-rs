@@ -12,6 +12,55 @@ pub(super) struct Prepared {
     pub(super) transaction: String,
     pub(super) staged: tempfile::TempDir,
 }
+const LEGACY_PROOF: &str =
+    "legacy or changed Codex ownership proof; preserve package and reconcile manually";
+
+/// Upgrade a prior unframed ledger only when the on-disk package is provably Amplihack-generated
+/// and unchanged; a digest match alone is never trusted.
+fn migrate_legacy_ledger(ledger: &Path, package: &Path, old: &mut Ownership) -> Result<()> {
+    let meta = fs::symlink_metadata(package).context(LEGACY_PROOF)?;
+    ensure!(
+        meta.is_dir() && !meta.file_type().is_symlink(),
+        LEGACY_PROOF
+    );
+    ensure!(
+        resources::legacy_digest(package)? == old.package_digest,
+        LEGACY_PROOF
+    );
+    let regular = |rel: &str| -> Result<Vec<u8>> {
+        let path = package.join(rel);
+        let meta = fs::symlink_metadata(&path).context(LEGACY_PROOF)?;
+        ensure!(
+            meta.is_file() && !meta.file_type().is_symlink(),
+            LEGACY_PROOF
+        );
+        Ok(fs::read(path)?)
+    };
+    let manifest: Value = serde_json::from_slice(&regular("plugin.json")?).context(LEGACY_PROOF)?;
+    ensure!(
+        manifest["name"] == "amplihack"
+            && regular("hooks/hooks.json")? == b"{\"hooks\":{}}\n"
+            && regular("bin/hook")? == HOOK_WRAPPER.as_bytes()
+            && old.hooks == declarations(package)?,
+        LEGACY_PROOF
+    );
+    let migrated = Ownership {
+        schema_version: 1,
+        transaction: old.transaction.clone(),
+        codex_home: old.codex_home.clone(),
+        package_digest: digest(package)?,
+        hooks: old.hooks.clone(),
+    };
+    atomic_json(
+        ledger,
+        &serde_json::to_value(&migrated)?,
+        regular_json(ledger)?,
+    )?;
+    *old = migrated;
+    eprintln!("  ↻ Migrated verified legacy Codex ownership proof to the current format");
+    Ok(())
+}
+
 pub(super) fn prepare(
     root: &Path,
     home: &Path,
@@ -25,20 +74,26 @@ pub(super) fn prepare(
         Ok(_) => bail!("unowned Codex package backup exists; preserve it and reconcile manually"),
     }
     let ledger = root.join("ownership.json");
-    let previous = regular_json(&ledger)?
+    let mut previous = regular_json(&ledger)?
         .map(serde_json::from_value::<Ownership>)
         .transpose()?;
     if let Some(old) = &previous {
         ensure!(
             old.schema_version == 1
                 && old.codex_home == home
-                && resources::current_digest(&old.package_digest),
-            "legacy or changed Codex ownership proof; preserve package and reconcile manually"
+                && (resources::current_digest(&old.package_digest)
+                    || resources::legacy_digest_format(&old.package_digest)),
+            LEGACY_PROOF
         );
     }
     let package = root.join("market/plugin");
     let inventory = native(binary, &["plugin", "list", "--json"], home)?;
     verify_identity(&inventory, &package)?;
+    if let Some(old) = &mut previous
+        && resources::legacy_digest_format(&old.package_digest)
+    {
+        migrate_legacy_ledger(&ledger, &package, old)?;
+    }
     ensure!(
         previous.is_some() || !installed(&inventory),
         "unowned existing Codex identity; refusing replacement"

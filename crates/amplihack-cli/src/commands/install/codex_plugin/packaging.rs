@@ -1,5 +1,6 @@
 //! Portable package construction.
 use super::*;
+pub(super) const HOOK_WRAPPER: &str = "#!/bin/sh\nexport AMPLIHACK_AGENT_BINARY=codex\nexec \"$(dirname -- \"$0\")/amplihack-hooks\" \"$@\"\n";
 pub(super) fn build(source: &Path, hooks_binary: &Path, staged: &Path) -> Result<()> {
     let skills = staged.join("skills");
     let canonical = source.join("amplifier-bundle/skills").canonicalize()?;
@@ -28,10 +29,7 @@ pub(super) fn build(source: &Path, hooks_binary: &Path, staged: &Path) -> Result
     let wrapper = staged.join("bin/hook");
     // Copy the durable binary into the portable package; shell text has no path interpolation.
     fs::copy(hooks_binary, staged.join("bin/amplihack-hooks"))?;
-    fs::write(
-        &wrapper,
-        "#!/bin/sh\nexport AMPLIHACK_AGENT_BINARY=codex\nexec \"$(dirname -- \"$0\")/amplihack-hooks\" \"$@\"\n",
-    )?;
+    fs::write(&wrapper, HOOK_WRAPPER)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

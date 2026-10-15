@@ -101,6 +101,40 @@ pub(super) fn digest(root: &Path) -> Result<String> {
     walk(root, root, &mut hash)?;
     Ok(format!("v2:{:x}", hash.finalize()))
 }
+/// Pre-framing tree identity, used only to verify a prior ledger before migrating it.
+pub(super) fn legacy_digest(root: &Path) -> Result<String> {
+    fn walk(path: &Path, base: &Path, hash: &mut Sha256) -> Result<()> {
+        let mut entries = fs::read_dir(path)?.collect::<std::io::Result<Vec<_>>>()?;
+        entries.sort_by_key(|e| e.file_name());
+        for e in entries {
+            hash.update(e.path().strip_prefix(base)?.as_os_str().as_encoded_bytes());
+            let kind = e.file_type()?;
+            if kind.is_symlink() {
+                hash.update(b"link");
+                hash.update(fs::read_link(e.path())?.as_os_str().as_encoded_bytes());
+            } else if kind.is_dir() {
+                hash.update(b"dir");
+                walk(&e.path(), base, hash)?;
+            } else {
+                ensure!(kind.is_file(), "unsupported Codex digest entry type");
+                hash.update(b"file");
+                hash.update(fs::read(e.path())?);
+            }
+        }
+        Ok(())
+    }
+    let meta = fs::symlink_metadata(root)?;
+    ensure!(
+        meta.is_dir() && !meta.file_type().is_symlink(),
+        "nonregular Codex digest root"
+    );
+    let mut hash = Sha256::new();
+    walk(root, root, &mut hash)?;
+    Ok(format!("{:x}", hash.finalize()))
+}
+pub(super) fn legacy_digest_format(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
 /// Legacy unframed identities cannot authorize adoption, replacement or cleanup.
 pub(super) fn current_digest(value: &str) -> bool {
     value

@@ -75,6 +75,8 @@ mod cleanup_performance_tests;
 mod digest_tests;
 #[cfg(test)]
 mod durability_tests;
+#[cfg(test)]
+mod legacy_migration_tests;
 #[cfg(all(test, unix))]
 mod recovery_alias_tests;
 #[cfg(test)]
