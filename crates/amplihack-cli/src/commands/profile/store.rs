@@ -119,7 +119,12 @@ impl ProfileStore {
                     && let Err(error) = seed_shared_assets(source, &dir)
                 {
                     // A failed seed must not leave a profile that appears ready.
-                    let _ = fs::remove_dir_all(&dir);
+                    if let Err(cleanup) = fs::remove_dir_all(&dir) {
+                        eprintln!(
+                            "warning: profile rollback failed to remove {}: {cleanup}",
+                            dir.display()
+                        );
+                    }
                     return Err(error);
                 }
                 Ok(dir)
