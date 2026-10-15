@@ -538,6 +538,25 @@ fn codex_rejects_nul_byte_in_native_arguments() {
 }
 
 #[test]
+fn codex_rejects_empty_prompt_for_every_delivery_mode() {
+    for requested in [
+        PromptDelivery::Auto,
+        PromptDelivery::Argv,
+        PromptDelivery::Stdin,
+    ] {
+        let error = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &[],
+            "",
+            requested,
+        )
+        .expect_err("an empty Codex prompt must fail before spawning");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    }
+}
+
+#[test]
 fn codex_leading_dash_prompt_is_passed_after_delimiter_without_nul_regression() {
     let delivered = build_tool_command_with_prompt_delivery(
         AgentBinary::Codex,
