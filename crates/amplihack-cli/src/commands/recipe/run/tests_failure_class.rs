@@ -742,6 +742,33 @@ fn rate_limit_exceeded_keeps_its_transient_meaning() {
 }
 
 #[test]
+fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
+    // "rate limit" on its own must never become a usage-limit marker: that
+    // would make every provider rate limit non-retryable. Assert only "not
+    // UsageLimit" so the guard does not pin which retryable class it lands in.
+    let (class, signal) = classify_failure_text("rate limit");
+    assert_ne!(
+        class,
+        FailureClass::UsageLimit,
+        "a bare \"rate limit\" is not a usage limit. signal={signal:?}"
+    );
+}
+
+#[test]
+fn a_daily_request_quota_is_never_a_usage_limit() {
+    // "daily limit" is deliberately not a marker (#1546): API daily request
+    // quotas use the same phrase and clear on their own, so filing them as
+    // `usage_limit` would stop retrying them.
+    let text = "You have reached your daily limit of 5000 API requests";
+    let (class, signal) = classify_failure_text(text);
+    assert_ne!(
+        class,
+        FailureClass::UsageLimit,
+        "a daily request quota is not a usage limit. signal={signal:?}"
+    );
+}
+
+#[test]
 fn work_failures_still_beat_a_weekly_or_spend_limit() {
     for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
         let (class, signal) =

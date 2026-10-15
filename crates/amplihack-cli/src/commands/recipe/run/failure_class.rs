@@ -317,6 +317,13 @@ const WORK_MARKERS: &[&str] = &[
 ///
 /// Note what is absent: a bare "rate limit". That phrase belongs to the
 /// short-lived envelopes above and must keep its existing meaning.
+///
+/// Issue #1546: "weekly limit" and "spend limit" are listed explicitly,
+/// because "monthly limit" does not match "monthly spend limit". "daily
+/// limit" is deliberately absent too: provider and GitHub API daily request
+/// quotas use that phrase and clear on their own, so listing it would stop
+/// retrying them. List order does not pick the reported signal --
+/// `first_match` reports the marker that appears earliest in the text.
 const USAGE_LIMIT_MARKERS: &[&str] = &[
     "session limit",
     "usage limit",
