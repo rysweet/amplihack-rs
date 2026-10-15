@@ -1,0 +1,19 @@
+name: claude-profiles
+description: >
+  Isolated CLI acceptance test for Claude login profiles. Runs the candidate
+  amplihack binary against a temporary HOME and fake Claude executable, checking
+  allowlisted seeding, credential exclusion, login/run routing, default clearing,
+  removal, and that the shared source remains unchanged.
+version: "1.0"
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: exercise-claude-profile-cli
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/claude-profiles.sh
+    timeout: 180000
+assertions: []
+metadata:
+  tags: [cli]

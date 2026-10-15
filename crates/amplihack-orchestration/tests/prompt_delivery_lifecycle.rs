@@ -61,6 +61,42 @@ async fn tokio_stdin_delivery_writes_flushes_closes_and_awaits_child() {
 }
 
 #[tokio::test]
+async fn stdin_delivery_drains_large_child_output_while_writing_prompt() {
+    let prompt = "p".repeat(1024 * 1024);
+    // Emit more than a typical OS pipe can hold on stdout and stderr before
+    // reading stdin. The parent must drain both streams while writing this
+    // large prompt, or both sides can block forever.
+    let command = r"head -c 131072 /dev/zero | tr '\000' o; head -c 131072 /dev/zero | tr '\000' e >&2; cat >/dev/null; printf done";
+    let delivered = build_command_with_prompt_delivery(
+        "sh",
+        ["-c", command],
+        &prompt,
+        PromptDelivery::Stdin,
+        DeliveryCaps {
+            supports_argv: true,
+            supports_tempfile: false,
+            supports_stdin: true,
+            tempfile_flag: None,
+        },
+    )
+    .expect("stdin-capable delivered command should build");
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_delivered_command_for_test(delivered, Duration::from_secs(5)),
+    )
+    .await
+    .expect("stdin writer and output drain must not deadlock")
+    .expect("test child should run to completion");
+
+    assert_eq!(result.exit_code, 0);
+    assert_eq!(result.output.len(), 131072 + "done".len());
+    assert!(result.output.starts_with(&"o".repeat(131072)));
+    assert_eq!(result.stderr.len(), 131072);
+    assert!(result.stderr.bytes().all(|byte| byte == b'e'));
+}
+
+#[tokio::test]
 async fn tokio_tempfile_delivery_keeps_handle_alive_until_after_wait() {
     let prompt = synthetic_prompt();
     let delivered = build_command_with_prompt_delivery(
