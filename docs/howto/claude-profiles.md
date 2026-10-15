@@ -10,8 +10,56 @@ between them manually.
 > `CLAUDE_CONFIG_DIR` Claude Code runs with.
 
 Profiles rely on Claude Code's documented `CLAUDE_CONFIG_DIR` variable.
-amplihack never touches `~/.claude`, never reads credentials, and makes no
-network calls for this feature.
+amplihack never modifies `~/.claude` and makes no network calls for this
+feature. See [What a new profile inherits](#what-a-new-profile-inherits).
+
+## What a new profile inherits
+
+`amplihack profile add` seeds the new profile with an **allowlist** of shared,
+non-auth assets copied from `~/.claude` (resolved from `$HOME`). Login
+credentials and history stay isolated per profile.
+
+| Copied | Details |
+|--------|---------|
+| `CLAUDE.md` | Your global instructions |
+| `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
+| `settings.json` (filtered) | Only allowlisted top-level keys: `hooks`, `permissions`, `model`, `statusLine`, `outputStyle`, `language` |
+
+Never copied: `.credentials.json`, `.claude.json`, `history*`, `projects/`,
+`sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
+on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
+key not on the allowlist). If `~/.claude` does not exist, the profile is simply
+created empty.
+
+Caveats:
+
+- **Copy by value.** Nothing is linked. Later edits to `~/.claude` do not
+  propagate to existing profiles; re-add the profile to pick them up.
+- **Allowlisted setting values are copied verbatim.** Review hooks and
+  status-line commands for embedded secrets or machine-specific paths before
+  adding a profile; what they contain is your responsibility. Values are never
+  logged.
+- **Symlinks.** A symlinked `~/.claude` is refused (`SymlinkRefused`). Symlinks
+  and special files (FIFOs, sockets, devices) inside the shared directories are
+  skipped, never followed or copied.
+- **Permissions.** Copied directories are `0700`, files `0600`. Existing files
+  are never overwritten.
+- **Limits.** Copying is bounded (16 directory levels, 5,000 entries); exceeding a bound
+  is an error that fails the add (it is not silently truncated).
+- **Windows.** Source files are opened with `O_NOFOLLOW` on Unix to close the
+  check-then-open race. Windows has no equivalent, so a same-user race remains
+  possible there.
+- **Failure is atomic.** If seeding fails (for example invalid `settings.json`
+  gives `InvalidSharedSettings`), the profile directory created by that call is
+  removed. A pre-existing profile is never deleted.
+
+Example:
+
+```bash
+amplihack profile add work
+# error: InvalidSharedSettings: ~/.claude/settings.json is not valid JSON
+# (exact wording may vary; no profile directory is left behind)
+```
 
 ## Create and log in
 
@@ -22,9 +70,10 @@ amplihack profile add personal
 amplihack profile login personal
 ```
 
-`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700`) and fails if
-it already exists. `login` always runs the `claude` binary (not the configured launch binary) with `CLAUDE_CONFIG_DIR` pointing
-at the profile so the login is stored there.
+`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700`), copies the
+allowlisted shared assets, and fails if the profile already exists. `login`
+always runs the `claude` binary (not the configured launch binary) with
+`CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
 
 ## Choose a profile
 
@@ -89,4 +138,6 @@ printf '#!/bin/sh\necho "$CLAUDE_CONFIG_DIR"\n' > "$d/claude" && chmod +x "$d/cl
 PATH="$d:$PATH" amplihack profile run demo
 ```
 
-The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile directory.
+The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile
+directory. Profile creation copies only allowlisted assets from `$HOME/.claude`
+when that directory exists; use a temporary HOME to test that behavior safely.

@@ -3,18 +3,47 @@
 use super::name::ProfileName;
 use super::{ProfileError, pointer};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
+const MAX_COPY_DEPTH: usize = 16;
+const MAX_COPY_ENTRIES: usize = 5_000;
+const SHARED_ASSET_FILES: &[&str] = &["CLAUDE.md"];
+const SHARED_SETTINGS_KEYS: &[&str] = &[
+    "alwaysThinkingEnabled",
+    "attribution",
+    "cleanupPeriodDays",
+    "hooks",
+    "includeCoAuthoredBy",
+    "language",
+    "model",
+    "outputStyle",
+    "permissions",
+    "respectGitignore",
+    "spinnerVerbs",
+    "statusLine",
+];
 
 #[derive(Debug, Clone)]
 pub struct ProfileStore {
     root: PathBuf,
+    shared_assets: Option<PathBuf>,
 }
 
 impl ProfileStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            shared_assets: None,
+        }
+    }
+
+    /// Use a fixture or user Claude config as the source of allowlisted assets.
+    pub fn with_shared_assets(mut self, source: PathBuf) -> Self {
+        self.shared_assets = Some(source);
+        self
     }
 
     pub fn from_root_str(raw: &str) -> Result<Self, ProfileError> {
@@ -26,21 +55,26 @@ impl ProfileStore {
     }
 
     pub fn from_env() -> Result<Self, ProfileError> {
-        if let Some(raw) = std::env::var_os(ROOT_ENV) {
-            let raw = raw
-                .into_string()
-                .map_err(|_| ProfileError::InvalidRoot("non-UTF-8 path".into()))?;
-            return Self::from_root_str(&raw);
-        }
         let home = std::env::var_os("HOME")
             .or_else(|| std::env::var_os("USERPROFILE"))
             .filter(|h| !h.is_empty())
-            .ok_or_else(|| ProfileError::InvalidRoot("HOME is not set".into()))?;
-        Ok(Self::new(
-            PathBuf::from(home)
+            .map(PathBuf::from);
+        let root = if let Some(raw) = std::env::var_os(ROOT_ENV) {
+            let raw = raw
+                .into_string()
+                .map_err(|_| ProfileError::InvalidRoot("non-UTF-8 path".into()))?;
+            Self::from_root_str(&raw)?.root
+        } else {
+            home.as_ref()
+                .ok_or_else(|| ProfileError::InvalidRoot("HOME is not set".into()))?
                 .join(".amplihack")
-                .join("claude-profiles"),
-        ))
+                .join("claude-profiles")
+        };
+        let store = Self::new(root);
+        Ok(match home {
+            Some(home) => store.with_shared_assets(home.join(".claude")),
+            None => store,
+        })
     }
 
     pub fn root(&self) -> &Path {
@@ -79,7 +113,16 @@ impl ProfileStore {
         }
         let dir = self.root.join(name.as_str());
         match private_dir_builder().create(&dir) {
-            Ok(()) => Ok(dir),
+            Ok(()) => {
+                if let Some(source) = &self.shared_assets
+                    && let Err(error) = seed_shared_assets(source, &dir)
+                {
+                    // A failed seed must not leave a profile that appears ready.
+                    let _ = fs::remove_dir_all(&dir);
+                    return Err(error);
+                }
+                Ok(dir)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
                 Err(ProfileError::AlreadyExists(name.to_string()))
             }
@@ -163,4 +206,138 @@ fn private_dir_builder() -> fs::DirBuilder {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
     b
+}
+
+fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    match fs::symlink_metadata(source) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            return Err(ProfileError::SymlinkRefused(source.display().to_string()));
+        }
+        Ok(meta) if meta.is_dir() => {}
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+
+    let mut entries = 0usize;
+    for name in SHARED_ASSET_DIRS {
+        copy_allowlisted_tree(&source.join(name), &destination.join(name), 0, &mut entries)?;
+    }
+    for name in SHARED_ASSET_FILES {
+        copy_regular_file(&source.join(name), &destination.join(name))?;
+    }
+    copy_filtered_settings(
+        &source.join("settings.json"),
+        &destination.join("settings.json"),
+    )
+}
+
+/// Copies only regular files and directories. Symlinks and special files are
+/// skipped so shared assets cannot pull credentials or arbitrary paths in.
+fn copy_allowlisted_tree(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    entries: &mut usize,
+) -> Result<(), ProfileError> {
+    if depth > MAX_COPY_DEPTH {
+        return Err(ProfileError::SharedAssetLimit(format!(
+            "directory nesting deeper than {MAX_COPY_DEPTH}"
+        )));
+    }
+    match fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    private_dir_builder().create(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        *entries += 1;
+        if *entries > MAX_COPY_ENTRIES {
+            return Err(ProfileError::SharedAssetLimit(format!(
+                "more than {MAX_COPY_ENTRIES} entries"
+            )));
+        }
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let kind = entry.file_type()?;
+        if kind.is_dir() {
+            copy_allowlisted_tree(&source_path, &destination_path, depth + 1, entries)?;
+        } else if kind.is_file() {
+            copy_regular_file(&source_path, &destination_path)?;
+        }
+    }
+    Ok(())
+}
+
+fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    match fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    let mut input = open_source_nofollow(source)?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut output = options.open(destination)?;
+    std::io::copy(&mut input, &mut output)?;
+    Ok(())
+}
+
+/// Opens without following a symlink swapped in after the metadata check, and
+/// without blocking on a FIFO swapped in the same way.
+fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    options.open(path)
+}
+
+fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    match fs::symlink_metadata(source) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    let mut raw = Vec::new();
+    std::io::Read::read_to_end(&mut open_source_nofollow(source)?, &mut raw)?;
+    let value: serde_json::Value = serde_json::from_slice(&raw)
+        .map_err(|error| ProfileError::InvalidSharedSettings(error.to_string()))?;
+    let Some(settings) = value.as_object() else {
+        return Err(ProfileError::InvalidSharedSettings(
+            "expected a JSON object".into(),
+        ));
+    };
+    let safe: serde_json::Map<String, serde_json::Value> = settings
+        .iter()
+        .filter(|(key, _)| SHARED_SETTINGS_KEYS.contains(&key.as_str()))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect();
+    if safe.is_empty() {
+        return Ok(());
+    }
+    let contents = serde_json::to_vec_pretty(&safe)
+        .map_err(|error| ProfileError::InvalidSharedSettings(error.to_string()))?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(destination)?.write_all(&contents)?;
+    Ok(())
 }

@@ -20,7 +20,7 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Create `<root>/<name>/` with mode `0700`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
+| `add <name>` | Create `<root>/<name>/` with mode `0700`, then copy allowlisted shared assets from `~/.claude`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
 | `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
@@ -34,12 +34,43 @@ amplihack launch|claude --profile <name> [...]
 |------|-------|
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. Must be absolute and non-empty. Default `~/.amplihack/claude-profiles/`. |
 | `<root>/<name>/` | Profile directory (mode `0700`). |
-| Root directory | Created and set to mode `0700`. A symlinked root, or one not owned by the current user, is refused (best effort on Unix). |
+| Root directory | Created with mode `0700`. A symlinked root is refused. An existing custom root is trusted input. |
 | `<root>/.default` | Pointer file: only the profile name (mode `0600`, max 256 bytes). Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
+
+### Seeding
+
+`add` calls the store's `seed_shared_assets`, which copies from the source
+`$HOME/.claude` into the new profile by value. The allowlists are fixed
+constants:
+
+| Constant | Contents |
+|----------|----------|
+| `SHARED_ASSET_FILES` | `CLAUDE.md` |
+| `SHARED_ASSET_DIRS` | `agents`, `commands`, `output-styles`, `rules`, `skills` |
+| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `hooks`, `permissions`, `model`, `statusLine`, `outputStyle`, `language` |
+
+Rules:
+
+- `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
+  profile's `settings.json`. If nothing survives the filter, no file is
+  written. `env`, `apiKeyHelper` and all unknown keys are dropped.
+- Directories are created `0700`, files `0600`, with `create_new` (`O_EXCL`):
+  nothing is overwritten and no destination symlink is followed.
+- A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
+  special files are skipped. On Unix sources are opened with `O_NOFOLLOW`.
+- Traversal depth and entry count are bounded; exceeding them is an error.
+- Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
+  `projects`, `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
+  and every other entry not on the allowlists (so plugins and MCP server
+  settings are not carried over).
+- Invalid `settings.json` yields `InvalidSharedSettings`. Any seeding error
+  removes the directory this call created (never a pre-existing profile).
+- Values are never logged; messages contain paths and counts only.
+- No sync after creation: later edits to `~/.claude` do not update profiles.
 
 ## Name rules
 
-Pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`. Additionally rejected: `..`
+Pattern `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$` (validated before any path join). Additionally rejected: `..`
 anywhere, trailing `.`, path separators, NUL, and Windows-reserved names
 (`CON`, `PRN`, `AUX`, `NUL`, `COM1-9`, `LPT1-9`, also with an extension,
 case-insensitive). `add` rejects names that differ only by case from an existing profile on
@@ -90,7 +121,11 @@ and exit with status 1. Messages never include file contents.
 
 ## Security notes
 
-amplihack never opens, copies, logs or lists profile contents. Profiles are
-not a security boundary against the same OS user. A same-user race between
-path verification and spawn is accepted and mitigated by re-checking before
-spawn.
+When creating a profile amplihack reads the allowlisted assets and parses
+`settings.json`; it never modifies the source directory and never copies
+credential or history files. Allowlisted setting values and asset contents are
+copied verbatim, so any secrets embedded in hooks, status-line commands or
+skills remain the user's responsibility. Unix source reads use `O_NOFOLLOW`;
+Windows has a residual same-user check-then-open race. Profiles are not a security boundary against the same OS user.
+A same-user race between path verification and spawn is accepted and mitigated
+by re-checking before spawn.

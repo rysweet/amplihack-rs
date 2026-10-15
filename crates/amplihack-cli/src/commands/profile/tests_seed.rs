@@ -1,0 +1,214 @@
+//! Hardening contract for seeding shared Claude assets into a new profile.
+//! Every test uses a temp directory as the source; none reads the real HOME.
+
+use super::ProfileError;
+use super::name::ProfileName;
+use super::store::ProfileStore;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+fn n(s: &str) -> ProfileName {
+    ProfileName::parse(s).unwrap()
+}
+
+fn fixture() -> (tempfile::TempDir, PathBuf, ProfileStore) {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(&source).unwrap();
+    if let Some(home) = std::env::var_os("HOME") {
+        assert_ne!(
+            source.canonicalize().unwrap(),
+            PathBuf::from(home).join(".claude"),
+            "tests must never seed from the live ~/.claude"
+        );
+    }
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source.clone());
+    (d, source, store)
+}
+
+#[test]
+fn credentials_history_and_state_are_never_copied() {
+    let (_d, source, store) = fixture();
+    for name in [
+        ".credentials.json",
+        ".claude.json",
+        "history.jsonl",
+        "history",
+        "statsig",
+        "shell-snapshots",
+        "ide",
+        "projects",
+        "sessions",
+        "todos",
+    ] {
+        let path = source.join(name);
+        if name.contains('.') {
+            fs::write(&path, "secret").unwrap();
+        } else {
+            fs::create_dir_all(&path).unwrap();
+            fs::write(path.join("data"), "secret").unwrap();
+        }
+    }
+    fs::write(source.join("CLAUDE.md"), "ok").unwrap();
+
+    let profile = store.add(&n("work")).unwrap();
+
+    let names: Vec<String> = fs::read_dir(&profile)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert_eq!(names, vec!["CLAUDE.md".to_string()]);
+}
+
+#[test]
+fn settings_with_only_non_allowlisted_keys_writes_no_file() {
+    let (_d, source, store) = fixture();
+    fs::write(source.join("settings.json"), r#"{"env":{"K":"v"}}"#).unwrap();
+    let profile = store.add(&n("work")).unwrap();
+    assert!(!profile.join("settings.json").exists());
+}
+
+#[test]
+fn settings_that_are_not_an_object_are_rejected_and_rolled_back() {
+    let (_d, source, store) = fixture();
+    fs::write(source.join("settings.json"), "[1,2]").unwrap();
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::InvalidSharedSettings(_))
+    ));
+    assert!(!store.root().join("work").exists());
+}
+
+#[test]
+fn rollback_after_late_failure_removes_partial_copies() {
+    let (_d, source, store) = fixture();
+    fs::create_dir_all(source.join("agents")).unwrap();
+    fs::write(source.join("agents/a.md"), "a").unwrap();
+    fs::write(source.join("settings.json"), "{bad").unwrap();
+    assert!(store.add(&n("work")).is_err());
+    assert!(!store.root().join("work").exists());
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn failed_add_never_deletes_a_pre_existing_profile() {
+    let (_d, source, store) = fixture();
+    let existing = store.add(&n("work")).unwrap();
+    fs::write(existing.join("keep.txt"), "mine").unwrap();
+    fs::write(source.join("settings.json"), "{bad").unwrap();
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::AlreadyExists(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(existing.join("keep.txt")).unwrap(),
+        "mine"
+    );
+}
+
+#[test]
+fn copies_are_by_value_not_links() {
+    let (_d, source, store) = fixture();
+    fs::write(source.join("CLAUDE.md"), "v1").unwrap();
+    let profile = store.add(&n("work")).unwrap();
+    fs::write(source.join("CLAUDE.md"), "v2").unwrap();
+    assert_eq!(fs::read_to_string(profile.join("CLAUDE.md")).unwrap(), "v1");
+    assert!(
+        !fs::symlink_metadata(profile.join("CLAUDE.md"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_allowlisted_file_and_dir_roots_are_skipped() {
+    use std::os::unix::fs::symlink;
+    let (d, source, store) = fixture();
+    let outside = d.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("x.md"), "external").unwrap();
+    fs::write(d.path().join("real.md"), "external").unwrap();
+    symlink(d.path().join("real.md"), source.join("CLAUDE.md")).unwrap();
+    symlink(&outside, source.join("skills")).unwrap();
+
+    let profile = store.add(&n("work")).unwrap();
+    assert!(!profile.join("CLAUDE.md").exists());
+    assert!(!profile.join("skills").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn fifo_inside_allowlisted_tree_is_skipped_without_blocking() {
+    let (_d, source, store) = fixture();
+    fs::create_dir_all(source.join("agents")).unwrap();
+    fs::write(source.join("agents/ok.md"), "ok").unwrap();
+    let fifo = std::ffi::CString::new(source.join("agents/pipe").to_str().unwrap()).unwrap();
+    assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+
+    let profile = store.add(&n("work")).unwrap();
+    assert!(profile.join("agents/ok.md").is_file());
+    assert!(!profile.join("agents/pipe").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn seeded_tree_is_private() {
+    use std::os::unix::fs::PermissionsExt;
+    let (_d, source, store) = fixture();
+    fs::create_dir_all(source.join("skills/a/b")).unwrap();
+    fs::write(source.join("skills/a/b/SKILL.md"), "s").unwrap();
+    fs::write(source.join("CLAUDE.md"), "c").unwrap();
+    fs::set_permissions(source.join("CLAUDE.md"), fs::Permissions::from_mode(0o644)).unwrap();
+    fs::write(source.join("settings.json"), r#"{"model":"m"}"#).unwrap();
+
+    let profile = store.add(&n("work")).unwrap();
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&profile), 0o700);
+    assert_eq!(mode(&profile.join("skills/a/b")), 0o700);
+    assert_eq!(mode(&profile.join("skills/a/b/SKILL.md")), 0o600);
+    assert_eq!(mode(&profile.join("CLAUDE.md")), 0o600);
+    assert_eq!(mode(&profile.join("settings.json")), 0o600);
+}
+
+#[test]
+fn excessive_depth_fails_closed_and_rolls_back() {
+    let (_d, source, store) = fixture();
+    let mut deep = source.join("skills");
+    for i in 0..64 {
+        deep = deep.join(format!("d{i}"));
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("f.md"), "x").unwrap();
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::SharedAssetLimit(_))
+    ));
+    assert!(!store.root().join("work").exists());
+}
+
+#[test]
+fn excessive_entry_count_fails_closed_and_rolls_back() {
+    let (_d, source, store) = fixture();
+    fs::create_dir_all(source.join("commands")).unwrap();
+    for i in 0..5_100 {
+        fs::write(source.join(format!("commands/c{i}.md")), "x").unwrap();
+    }
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::SharedAssetLimit(_))
+    ));
+    assert!(!store.root().join("work").exists());
+}
+
+#[test]
+fn missing_source_root_seeds_nothing_and_succeeds() {
+    let d = tempfile::tempdir().unwrap();
+    let store = ProfileStore::new(d.path().join("profiles"))
+        .with_shared_assets(d.path().join("does-not-exist"));
+    let profile = store.add(&n("work")).unwrap();
+    assert_eq!(fs::read_dir(profile).unwrap().count(), 0);
+}
