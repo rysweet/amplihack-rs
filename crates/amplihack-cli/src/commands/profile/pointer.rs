@@ -61,7 +61,14 @@ pub fn write(root: &Path, name: &ProfileName) -> Result<(), ProfileError> {
         fs::rename(&tmp, root.join(FILE))
     })();
     if let Err(e) = result {
-        let _ = fs::remove_file(&tmp);
+        if let Err(cleanup) = fs::remove_file(&tmp)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            eprintln!(
+                "warning: profile pointer rollback failed to remove {}: {cleanup}",
+                tmp.display()
+            );
+        }
         return Err(e.into());
     }
     Ok(())

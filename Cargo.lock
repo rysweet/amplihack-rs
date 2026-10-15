@@ -156,6 +156,7 @@ dependencies = [
  "clap_complete",
  "cxx-build",
  "dialoguer",
+ "errno",
  "flate2",
  "fs4",
  "lbug",

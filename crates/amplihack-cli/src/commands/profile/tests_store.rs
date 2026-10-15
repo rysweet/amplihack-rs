@@ -43,6 +43,23 @@ fn add_does_not_create_credentials_or_files_inside() {
 }
 
 #[test]
+fn oversized_shared_asset_fails_and_rolls_back_profile() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(&source).unwrap();
+    let path = source.join("CLAUDE.md");
+    fs::File::create(&path)
+        .unwrap()
+        .set_len(64 * 1024 * 1024 + 1)
+        .unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+
+    let error = store.add(&n("work")).unwrap_err();
+    assert!(matches!(error, ProfileError::SharedAssetLimit(_)));
+    assert!(!store.root().join("work").exists());
+}
+
+#[test]
 fn add_copies_allowlisted_shared_assets_and_filters_settings() {
     let d = tempfile::tempdir().unwrap();
     let source = d.path().join("main-claude");
@@ -191,12 +208,10 @@ fn profile_root_inside_shared_assets_is_rejected_before_recursive_copy() {
         store.add(&n("work")),
         Err(ProfileError::SharedSourceContainsRoot(_))
     ));
-    assert!(store.list().unwrap().is_empty());
     assert!(
         !root.exists(),
         "rejected overlap must not create the profile root"
     );
-    assert!(!root.join("work").exists());
 }
 
 #[test]
@@ -325,6 +340,41 @@ fn remove_keeps_pointer_for_other_profile() {
     pointer::write(s.root(), &n("home")).unwrap();
     s.remove(&n("work"), true).unwrap();
     assert_eq!(pointer::read(s.root()).unwrap(), Some(n("home")));
+}
+
+#[test]
+fn remove_preserves_profile_when_default_pointer_is_corrupt() {
+    let (_d, s) = store();
+    let profile = s.add(&n("work")).unwrap();
+    fs::write(s.root().join(".default"), "../outside").unwrap();
+
+    assert!(matches!(
+        s.remove(&n("work"), true),
+        Err(ProfileError::PointerCorrupt(_))
+    ));
+    assert!(profile.exists());
+}
+
+#[test]
+fn remove_preserves_profile_when_default_pointer_is_dangling() {
+    let (_d, s) = store();
+    let profile = s.add(&n("work")).unwrap();
+    fs::write(s.root().join(".default"), "gone\n").unwrap();
+
+    assert!(matches!(
+        s.remove(&n("work"), true),
+        Err(ProfileError::PointerDangling(_))
+    ));
+    assert!(profile.exists());
+}
+
+#[test]
+fn remove_succeeds_when_default_pointer_is_missing() {
+    let (_d, s) = store();
+    s.add(&n("work")).unwrap();
+    assert!(!s.root().join(".default").exists());
+    s.remove(&n("work"), true).unwrap();
+    assert!(!s.root().join("work").exists());
 }
 
 #[cfg(unix)]

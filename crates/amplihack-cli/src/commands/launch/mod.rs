@@ -473,6 +473,9 @@ fn run_launch_core(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::verify_launch_profile_dir(dir)?;
+        }
         let mut child = match ManagedChild::spawn(cmd) {
             Ok(child) => child,
             Err(err) => {

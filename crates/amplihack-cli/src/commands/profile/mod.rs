@@ -12,13 +12,19 @@ mod store;
 #[cfg(test)]
 mod tests_commands;
 #[cfg(test)]
+mod tests_docs_sync;
+#[cfg(test)]
 mod tests_name;
 #[cfg(test)]
 mod tests_pointer;
 #[cfg(test)]
 mod tests_run;
 #[cfg(test)]
+mod tests_seed;
+#[cfg(test)]
 mod tests_store;
+#[cfg(test)]
+mod tests_verify;
 
 use anyhow::Result;
 use clap::Subcommand;
@@ -46,6 +52,10 @@ pub enum ProfileError {
     InvalidRoot(String),
     #[error("invalid shared Claude settings: {0}")]
     InvalidSharedSettings(String),
+    #[error("shared Claude asset source is not a directory: {0:?}")]
+    InvalidSharedSource(String),
+    #[error("shared Claude assets exceed the copy limit: {0}")]
+    SharedAssetLimit(String),
     #[error("profile root cannot be inside shared Claude assets at {0:?}")]
     SharedSourceContainsRoot(String),
     #[error(
@@ -58,6 +68,8 @@ pub enum ProfileError {
     },
     #[error("refusing symlinked or out-of-root path {0:?}")]
     SymlinkRefused(String),
+    #[error("profile directory has unsafe ownership or permissions: {0:?}")]
+    UnsafePermissions(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
 }
@@ -75,11 +87,18 @@ impl ProfileError {
             Self::PointerCorrupt(_) => "re-run `amplihack profile switch <name>`",
             Self::InvalidRoot(_) => "set AMPLIHACK_CLAUDE_PROFILE_ROOT to an absolute path",
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
+            Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
+            Self::SharedAssetLimit(_) => {
+                "reduce oversized files or directories under ~/.claude and retry"
+            }
             Self::SharedSourceContainsRoot(_) => "choose a profile root outside ~/.claude",
             Self::SeedCleanupFailed { .. } => {
                 "remove the reported partial directory before retrying"
             }
             Self::SymlinkRefused(_) => "remove the symlink and re-add the profile",
+            Self::UnsafePermissions(_) => {
+                "ensure the profile is owned by your user and run `chmod go-rwx <profile-directory>`"
+            }
             Self::Io(_) => "check permissions on the profile root",
         }
     }
@@ -219,13 +238,40 @@ fn validate_launch_flags(
     Ok(())
 }
 
+fn docker_env_active() -> bool {
+    crate::docker::DockerDetector
+        .activation_source(false)
+        .is_some()
+}
+
+/// Profiles are not applied in Docker; fail closed rather than drop the profile.
+pub(super) fn reject_docker_env() -> Result<()> {
+    validate_launch_flags(Some(""), false, docker_env_active(), false).map_err(with_hint)
+}
+
+/// Re-validates a profile directory immediately before the child is spawned.
+/// This narrows, but does not close, the window before `exec`.
+pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
+    let name = dir
+        .file_name()
+        .and_then(|n| n.to_str())
+        .ok_or_else(|| ProfileError::SymlinkRefused(dir.display().to_string()))
+        .and_then(ProfileName::parse)
+        .map_err(with_hint)?;
+    let store = ProfileStore::from_env().map_err(with_hint)?;
+    let verified = store.verify_profile_dir(&name).map_err(with_hint)?;
+    if verified != dir {
+        return Err(with_hint(ProfileError::SymlinkRefused(
+            dir.display().to_string(),
+        )));
+    }
+    Ok(())
+}
+
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then
 /// the default pointer, then none. Docker and auto launches ignore the pointer.
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
-    let docker_env = !docker
-        && crate::docker::DockerDetector
-            .activation_source(false)
-            .is_some();
+    let docker_env = !docker && docker_env_active();
     validate_launch_flags(flag, docker, docker_env, auto).map_err(with_hint)?;
     if docker || auto {
         return Ok(None);
