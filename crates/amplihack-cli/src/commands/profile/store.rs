@@ -10,6 +10,7 @@ pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
 const MAX_COPY_ENTRIES: usize = 5_000;
+const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 const SHARED_ASSET_FILES: &[&str] = &["CLAUDE.md"];
 const SHARED_SETTINGS_KEYS: &[&str] = &[
     "alwaysThinkingEnabled",
@@ -313,7 +314,15 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
         Err(error) => return Err(error.into()),
     }
     let mut raw = Vec::new();
-    std::io::Read::read_to_end(&mut open_source_nofollow(source)?, &mut raw)?;
+    std::io::Read::read_to_end(
+        &mut std::io::Read::take(open_source_nofollow(source)?, MAX_SETTINGS_BYTES + 1),
+        &mut raw,
+    )?;
+    if raw.len() as u64 > MAX_SETTINGS_BYTES {
+        return Err(ProfileError::SharedAssetLimit(
+            "settings.json larger than 1 MiB".into(),
+        ));
+    }
     let value: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|error| ProfileError::InvalidSharedSettings(error.to_string()))?;
     let Some(settings) = value.as_object() else {

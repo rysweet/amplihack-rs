@@ -212,3 +212,17 @@ fn missing_source_root_seeds_nothing_and_succeeds() {
     let profile = store.add(&n("work")).unwrap();
     assert_eq!(fs::read_dir(profile).unwrap().count(), 0);
 }
+
+#[test]
+fn oversized_settings_are_rejected_and_rolled_back() {
+    let (_d, source, store) = fixture();
+    let filler = "x".repeat(1024 * 1024 + 16);
+    fs::write(
+        source.join("settings.json"),
+        format!("{{\"model\":\"{filler}\"}}"),
+    )
+    .unwrap();
+    let err = store.add(&n("big")).unwrap_err();
+    assert!(matches!(err, ProfileError::SharedAssetLimit(_)));
+    assert!(!store.root().join("big").exists());
+}
