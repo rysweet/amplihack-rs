@@ -8,14 +8,24 @@ fn hook(subcommand: &str, payload: Value) -> Value {
 }
 fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
     let home = tempfile::tempdir().unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
+    command
         .arg(subcommand)
         .current_dir(home.path())
         .env("HOME", home.path())
         .env("AMPLIHACK_HOME", home.path().join(".amplihack"))
         .env("CODEX_HOME", home.path().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
-        .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run")
+        .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");
+    if provider == "codex" {
+        // The agent binary is inherited runtime context, not host protocol
+        // selection. Exercise the same explicit marker written by the Codex
+        // plugin's packaged hook command.
+        command.env("AMPLIHACK_HOOK_PROTOCOL", "codex");
+    } else {
+        command.env_remove("AMPLIHACK_HOOK_PROTOCOL");
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

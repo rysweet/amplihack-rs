@@ -38,3 +38,20 @@ pub(super) fn build(source: &Path, hooks_binary: &Path, staged: &Path) -> Result
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod hook_wrapper_contract_tests {
+    use super::HOOK_WRAPPER;
+
+    #[test]
+    fn wrapper_exports_protocol_then_execs_with_quoted_args() {
+        let export = HOOK_WRAPPER
+            .find("export AMPLIHACK_HOOK_PROTOCOL=codex")
+            .unwrap();
+        let exec = HOOK_WRAPPER
+            .find("exec \"$(dirname -- \"$0\")/amplihack-hooks\" \"$@\"")
+            .unwrap();
+        assert!(export < exec);
+        assert!(!HOOK_WRAPPER.contains("eval"));
+    }
+}

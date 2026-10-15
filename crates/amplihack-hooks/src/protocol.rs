@@ -183,7 +183,7 @@ pub fn run_hook<H: Hook>(hook: H) {
     }
 }
 
-fn codex_hook_protocol_selected() -> bool {
+pub(crate) fn codex_hook_protocol_selected() -> bool {
     std::env::var("AMPLIHACK_HOOK_PROTOCOL").as_deref() == Ok("codex")
 }
 
@@ -492,5 +492,42 @@ mod codex_payload_contract_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod codex_selector_exactness_tests {
+    use super::*;
+
+    #[test]
+    fn only_exact_codex_value_selects_codex_protocol() {
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for value in [
+            "codex ", "Codex", "CODEX", "1", "true", "claude", "copilot", "",
+        ] {
+            let _guard = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", value);
+            assert!(
+                !codex_hook_protocol_selected(),
+                "{value:?} must not select codex"
+            );
+        }
+        let _guard = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", "codex");
+        assert!(codex_hook_protocol_selected());
+    }
+
+    #[test]
+    fn session_start_shares_the_protocol_selector() {
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for value in ["codex", "codex ", "1"] {
+            let _guard = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", value);
+            assert_eq!(
+                crate::session_start::codex_protocol_selected(),
+                codex_hook_protocol_selected()
+            );
+        }
     }
 }

@@ -499,3 +499,69 @@ fn codex_root_option_exec_subprocess_receives_complete_large_stdin() {
     assert_eq!(fs::read(captured).unwrap(), prompt.as_bytes());
     assert_eq!(output.stdout, b"--model\nresume\n--config=exec\nexec\n-\n");
 }
+
+// Issue #1538 red phase: NUL bytes cannot cross an argv boundary and must be
+// rejected up front rather than truncated by the OS.
+#[test]
+fn codex_rejects_nul_byte_in_prompt_for_every_delivery_mode() {
+    for requested in [
+        PromptDelivery::Auto,
+        PromptDelivery::Argv,
+        PromptDelivery::Stdin,
+    ] {
+        let error = build_tool_command_with_prompt_delivery(
+            AgentBinary::Codex,
+            Path::new("."),
+            &[],
+            "before\0after",
+            requested,
+        )
+        .expect_err("NUL in a Codex prompt must fail before spawning");
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+        assert!(error.to_string().to_lowercase().contains("nul"));
+    }
+}
+
+#[test]
+fn codex_rejects_nul_byte_in_native_arguments() {
+    let args = ["--model".to_owned(), "gpt\0-5".to_owned()];
+    let error = build_tool_command_with_prompt_delivery(
+        AgentBinary::Codex,
+        Path::new("."),
+        &args,
+        "prompt",
+        PromptDelivery::Auto,
+    )
+    .expect_err("NUL in a Codex argument must fail before spawning");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(error.to_string().to_lowercase().contains("nul"));
+}
+
+#[test]
+fn codex_leading_dash_prompt_is_passed_after_delimiter_without_nul_regression() {
+    let delivered = build_tool_command_with_prompt_delivery(
+        AgentBinary::Codex,
+        Path::new("."),
+        &[],
+        "--not-a-flag",
+        PromptDelivery::Argv,
+    )
+    .expect("a leading-dash prompt is valid input");
+    let args = argv(&delivered.command);
+    let pos = args.iter().position(|a| a == "--").expect("`--` separator");
+    assert_eq!(args.get(pos + 1).map(String::as_str), Some("--not-a-flag"));
+}
+
+#[test]
+fn claude_and_copilot_still_accept_ordinary_prompts_unchanged() {
+    for binary in [AgentBinary::Claude, AgentBinary::Copilot] {
+        build_tool_command_with_prompt_delivery(
+            binary,
+            Path::new("."),
+            &[],
+            "ordinary prompt",
+            PromptDelivery::Argv,
+        )
+        .expect("non-Codex binaries are unaffected by Codex NUL validation");
+    }
+}

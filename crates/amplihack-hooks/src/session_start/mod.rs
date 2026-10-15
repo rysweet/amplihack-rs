@@ -87,7 +87,7 @@ impl Hook for SessionStartHook {
         }
 
         // Migrate global hooks if needed.
-        if std::env::var("AMPLIHACK_HOOK_PROTOCOL").as_deref() != Ok("codex")
+        if !codex_protocol_selected()
             && let Some(migration_notice) = migrate_global_hooks(&dirs)
         {
             context_parts.push(migration_notice);
@@ -186,6 +186,10 @@ fn maybe_capture_original_request(
     Ok(capture_original_request(dirs, session_id, prompt)?
         .as_ref()
         .map(format_original_request_context))
+}
+
+pub(crate) fn codex_protocol_selected() -> bool {
+    crate::protocol::codex_hook_protocol_selected()
 }
 
 fn format_code_graph_status(body: String) -> String {
