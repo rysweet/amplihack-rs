@@ -1335,6 +1335,19 @@ check_health STUCK "status line then a tab-indented bare DONE" \
   "${S04}"$'\n'$'\t''LOOP_HEALTH: DONE'
 check_health STUCK "status line then an unindented Output: DONE" \
   "${S04}"$'\n''Output: LOOP_HEALTH: DONE'
+# The Output: prefix is EXACTLY four spaces (IV-5: no fuzzy whitespace).
+check_health STUCK "status line then a three-space indented Output: DONE" \
+  "${S04}"$'\n''   Output: LOOP_HEALTH: DONE'
+check_health STUCK "status line then a five-space indented Output: DONE" \
+  "${S04}"$'\n''     Output: LOOP_HEALTH: DONE'
+check_health STUCK "status line then a tab-indented Output: DONE" \
+  "${S04}"$'\n'$'\t''Output: LOOP_HEALTH: DONE'
+check_health STUCK "status line then Output: with two spaces before the marker" \
+  "${S04}"$'\n''    Output:  LOOP_HEALTH: DONE'
+check_health STUCK "status line then a lower-case output: marker" \
+  "${S04}"$'\n''    output: LOOP_HEALTH: DONE'
+check_health STUCK "status line then Output: LOOP_HEALTH: DONEISH" \
+  "${S04}"$'\n''    Output: LOOP_HEALTH: DONEISH'
 check_health STUCK "status line then a bare DONEISH" \
   "${S04}"$'\n''LOOP_HEALTH: DONEISH'
 check_health STUCK "a failed step-04 status line then a bare CONTINUE" \

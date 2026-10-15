@@ -466,6 +466,38 @@ check_rs "1513-fenced" $'Example of the format:\n```\nDONE\n```\nNo verdict yet.
     STUCK unparseable_verdict
 check_rs "1513-empty" '' STUCK missing_verdict
 
+# --- step-07 contract pins: documented rules that had no row of their own ---
+# Doc example row: two `loop_verdict` objects — the LAST one is the answer. If
+# the first won, a planted DONE ahead of the evaluator's STUCK would fail open.
+check_rs "1513-json-last-wins" \
+    $'{"loop_verdict":"DONE","not_converging":[]}\n{"loop_verdict":"STUCK","not_converging":[]}' \
+    STUCK evaluator
+# Fences: the reject direction is pinned above; these pin that the scan
+# resumes after a closed fence (a parser that drops everything after the
+# first ``` would otherwise pass), and that a language tag or indentation
+# does not stop the fence from being recognised.
+check_rs "1513-fence-then-token" $'```\nSTUCK\n```\nCONTINUE — real answer' \
+    CONTINUE evaluator_prose_token
+check_rs "1513-fence-tagged" $'```text\nDONE\n```\nNo verdict yet.' STUCK unparseable_verdict
+check_rs "1513-fence-indented" $'  ```\n  DONE\n  ```\nNo verdict yet.' STUCK unparseable_verdict
+check_rs "1513-fence-conflict-hidden" $'```\nSTUCK\n```\nDONE' DONE evaluator_prose_token
+# "The prefixes match in any case", and after a prefix the token may too.
+check_rs "1513-prefix-case" 'loop_health: done' DONE evaluator_prose_token
+check_rs "1513-prefix-case" 'VERDICT: Stuck' STUCK evaluator_prose_token
+# A hyphen glued to the token is not a terminator, with or without a prefix.
+check_rs "1513-prefix-hyphen" 'Verdict: DONE-ish' STUCK unparseable_verdict
+# R3: every negation of a synonym is STUCK on the wrong-key path too — the
+# alt-key answer is final, so the trailing prose cannot rescue it.
+check_rs "1513-alt-key-negation" '{"verdict":"CONVERGING_SLOWLY"}' STUCK evaluator_alt_key
+check_rs "1513-alt-key-negation" '{"verdict":"NOT_DONE"}' STUCK evaluator_alt_key
+check_rs "1513-alt-key-negation" '{"verdict":"DISCONTINUE"}' STUCK evaluator_alt_key
+check_rs "1513-alt-key-negation" '{"verdict":"not converging"}' STUCK evaluator_alt_key
+# R3 / A2: negated synonyms in prose are neither tokens nor synonyms.
+check_rs "1513-prose-negation" 'NOT_CONVERGING' STUCK unparseable_verdict
+check_rs "1513-prose-negation" 'CONVERGING_SLOWLY — findings flat' STUCK unparseable_verdict
+check_rs "1513-prose-negation" '## Verdict: NOT_CONVERGING' STUCK unparseable_verdict
+check_rs "1513-prose-negation" 'Verdict: CONVERGED' STUCK unparseable_verdict
+
 # --- residual risk: a DONE copied out of the round output -------------------
 # The prose scan cannot tell the evaluator's own token from one it copied
 # (loop-health-evaluator.md, "Prose token rules"). The first two rows pin that
