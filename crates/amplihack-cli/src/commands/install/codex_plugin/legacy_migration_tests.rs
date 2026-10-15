@@ -130,3 +130,33 @@ fn legacy_hooks_pointing_elsewhere_are_refused() {
     fs::write(f.root.join("ownership.json"), json_bytes(&ledger).unwrap()).unwrap();
     f.assert_refused_untouched();
 }
+
+#[test]
+fn malformed_ledger_is_refused_without_changes() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let f = fixture();
+    fs::write(f.root.join("ownership.json"), b"{\"schema_version\":1,").unwrap();
+    let ledger = f.ledger_bytes();
+    let package = digest(&f.package).unwrap();
+    assert!(f.prepare().is_err());
+    assert_eq!(f.ledger_bytes(), ledger);
+    assert_eq!(digest(&f.package).unwrap(), package);
+}
+
+#[test]
+fn unknown_schema_version_is_refused_without_changes() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let f = fixture();
+    let mut ledger: Value = serde_json::from_slice(&f.ledger_bytes()).unwrap();
+    ledger["schema_version"] = json!(99);
+    fs::write(f.root.join("ownership.json"), json_bytes(&ledger).unwrap()).unwrap();
+    let before = f.ledger_bytes();
+    let package = digest(&f.package).unwrap();
+    assert!(f.prepare().is_err());
+    assert_eq!(f.ledger_bytes(), before);
+    assert_eq!(digest(&f.package).unwrap(), package);
+}
