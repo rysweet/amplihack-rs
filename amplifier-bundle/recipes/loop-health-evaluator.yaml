@@ -294,7 +294,7 @@ steps:
             }' | sort -u)
           case "$TOKENS" in
             CONTINUE|DONE|STUCK)
-              VERDICT=$(printf '%s' "$TOKENS" | amplihack orch helper normalise-loop-verdict)
+              VERDICT="$TOKENS"
               SOURCE="evaluator_prose_token"
               NOT_CONVERGING='[]'
               [ "$VERDICT" = "STUCK" ] && NOT_CONVERGING='["the evaluator answered STUCK in prose, without a JSON verdict"]'
