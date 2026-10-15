@@ -4,6 +4,15 @@ use crate::test_support::{EnvGuard, home_env_lock};
 use serde_json::json;
 use std::{fs, os::unix::fs::PermissionsExt};
 
+/// Change a packaged skill so the next install is a real upgrade, not a no-op.
+fn make_source_newer(source: &std::path::Path) {
+    fs::write(
+        source.join("amplifier-bundle/skills/marker.txt"),
+        "upgraded\n",
+    )
+    .unwrap();
+}
+
 #[test]
 fn failed_upgrade_restores_package_ledger_and_hooks() {
     let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
@@ -23,6 +32,7 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
         ("AMPLIHACK_AGENT_BINARY", "codex"),
     ]);
     codex_plugin::install(&source, &hooks).unwrap();
+    make_source_newer(&source);
     let ledger = home.join(".amplihack/codex/ownership.json");
     let before = fs::read(&ledger).unwrap();
     // Recovery must preserve source bytes, including user formatting, rather
@@ -38,6 +48,7 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
     let before_hooks = fs::read(&hooks_path).unwrap();
     let package = home.join(".amplihack/codex/market/plugin");
     let before_package = fs::read(package.join("plugin.json")).unwrap();
+    let before_skill = fs::read(package.join("skills/marker.txt")).unwrap();
     let script = fs::read_to_string(&binary).unwrap();
     fs::write(
         &binary,
@@ -56,6 +67,10 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
     assert_eq!(
         fs::read(package.join("plugin.json")).unwrap(),
         before_package
+    );
+    assert_eq!(
+        fs::read(package.join("skills/marker.txt")).unwrap(),
+        before_skill
     );
     assert!(!home.join(".amplihack/codex/pending.json").exists());
     // Simulate interruption after replacing the package, before committing its ledger.
@@ -83,6 +98,10 @@ fn failed_upgrade_restores_package_ledger_and_hooks() {
     assert_eq!(
         fs::read(root.join("previous-package/plugin.json")).unwrap(),
         before_package
+    );
+    assert_eq!(
+        fs::read(root.join("previous-package/skills/marker.txt")).unwrap(),
+        before_skill
     );
     assert!(root.join("pending.json").exists());
 }
@@ -172,6 +191,7 @@ fn hook_and_ledger_write_failures_retain_recovery_until_retry() {
             ("AMPLIHACK_AGENT_BINARY", "codex"),
         ]);
         codex_plugin::install(&source, &hooks).unwrap();
+        make_source_newer(&source);
         let script = fs::read_to_string(&binary).unwrap();
         // Inject a filesystem write failure from the native subprocess after preflight.
         let fault = format!(
@@ -254,6 +274,7 @@ fn interrupted_native_install_preserves_foreign_edits_and_all_recovery_evidence(
             ("AMPLIHACK_AGENT_BINARY", "codex"),
         ]);
         codex_plugin::install(&source, &hooks).unwrap();
+        make_source_newer(&source);
         let script = fs::read_to_string(&binary).unwrap();
         let fault = format!(
             "'plugin marketplace add') printf 'foreign exact bytes' > \"$HOME/{relative}\"; exit 17;;\n 'never')"
