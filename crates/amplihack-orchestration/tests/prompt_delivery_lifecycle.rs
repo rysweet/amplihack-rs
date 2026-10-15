@@ -208,6 +208,22 @@ async fn stdin_writer_is_cancelled_when_exited_child_leaves_nonreader() {
         "expected incomplete-prompt error, got {:?}",
         result.stderr
     );
+    let descendant_pid = std::fs::read_to_string(&pid_file)
+        .expect("fixture should record inherited-stdin descendant pid")
+        .trim()
+        .parse::<u32>()
+        .expect("descendant pid should be numeric");
+    let descendant_alive = std::process::Command::new("kill")
+        .arg("-0")
+        .arg(descendant_pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .expect("Unix kill utility should be available")
+        .success();
+    assert!(
+        descendant_alive,
+        "Claude helper owns the direct child only and must not kill its process group"
+    );
 }
 
 #[tokio::test]

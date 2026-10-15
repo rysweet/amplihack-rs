@@ -65,7 +65,9 @@ fn canonical_native_verification_accepts_one_object_or_string_receipt_only() {
 
 #[test]
 fn canonical_native_sources_select_private_framework_for_all_targets() {
-    let f = NativeFixture::new();
+    // The private HOME has no managed runner, and this fixture withholds the
+    // explicit override, so install and invocation must use ordinary PATH.
+    let f = NativeFixture::new_path_only();
     for (recipe, id) in SITES {
         for variant in ["main", "ordinary", "target-metachar", "framework-metachar"] {
             let result = f.run(recipe, id, variant, json!({}));

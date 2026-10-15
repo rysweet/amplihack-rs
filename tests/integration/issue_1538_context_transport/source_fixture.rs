@@ -1,6 +1,7 @@
 use super::fixtures::*;
 use serde_json::{Value, json};
 use std::{
+    ffi::OsStr,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -43,15 +44,73 @@ fn copy_tools(source: &Path, target: &Path) {
     }
 }
 
+fn binary_on_path(name: &OsStr, path: &OsStr) -> Option<PathBuf> {
+    std::env::split_paths(path)
+        .map(|directory| directory.join(name))
+        .find(|candidate| candidate.is_file())
+}
+
+fn resolve_runner_override(value: &OsStr, home: &Path, path: &OsStr) -> Option<PathBuf> {
+    let configured = PathBuf::from(value);
+    let configured = if let Ok(rest) = configured.strip_prefix("~") {
+        home.join(rest)
+    } else {
+        configured
+    };
+    if configured.components().count() > 1 {
+        configured.is_file().then_some(configured)
+    } else {
+        binary_on_path(configured.as_os_str(), path)
+    }
+}
+
 impl NativeFixture {
     pub fn new() -> Self {
+        Self::build(false)
+    }
+
+    /// Exercise install's ordinary PATH lookup while invoking the same real
+    /// runner selected by the host environment, without forwarding its override.
+    pub fn new_path_only() -> Self {
+        Self::build(true)
+    }
+
+    fn build(path_only: bool) -> Self {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().join("home");
         fs::create_dir(&home).unwrap();
+        let host_path = std::env::var_os("PATH").expect("public tool PATH");
+        let private_path = if path_only {
+            let genuine_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
+                .as_deref()
+                .and_then(|override_path| resolve_runner_override(override_path, &home, &host_path))
+                .or_else(|| binary_on_path(OsStr::new("recipe-runner-rs"), &host_path))
+                .expect("PATH-only control requires a genuine recipe-runner-rs candidate");
+            let bin = temp.path().join("path-only-bin");
+            fs::create_dir(&bin).unwrap();
+            let selected = bin.join("recipe-runner-rs");
+            fs::copy(&genuine_runner, &selected).unwrap();
+            // Keep the copied genuine executable runnable even when a platform's
+            // copy implementation does not preserve executable mode bits.
+            fs::set_permissions(
+                &selected,
+                fs::metadata(&genuine_runner).unwrap().permissions(),
+            )
+            .unwrap();
+            std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&host_path)))
+                .expect("private PATH should be representable")
+        } else {
+            host_path.clone()
+        };
+        let explicit_override = if path_only {
+            None
+        } else {
+            std::env::var_os("RECIPE_RUNNER_RS_PATH")
+        };
         let mut install = Command::new(env!("CARGO_BIN_EXE_amplihack"));
         install
             .env_clear()
-            .env("PATH", std::env::var_os("PATH").expect("public tool PATH"))
+            .env("PATH", &private_path)
             .env("CARGO_HOME", home.join(".cargo"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
             .env("XDG_DATA_HOME", home.join(".local/share"))
@@ -73,10 +132,13 @@ impl NativeFixture {
             .env("TMPDIR", temp.path());
         // Public read-only selectors and a supported real runner override are
         // explicit; model/Git credentials and writable roots are never copied.
-        for key in ["RUSTUP_HOME", "RUSTUP_TOOLCHAIN", "RECIPE_RUNNER_RS_PATH"] {
+        for key in ["RUSTUP_HOME", "RUSTUP_TOOLCHAIN"] {
             if let Some(value) = std::env::var_os(key) {
                 install.env(key, value);
             }
+        }
+        if let Some(value) = &explicit_override {
+            install.env("RECIPE_RUNNER_RS_PATH", value);
         }
         let output = install
             .output()
@@ -91,27 +153,14 @@ impl NativeFixture {
             "private install: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        let runner = std::env::var_os("RECIPE_RUNNER_RS_PATH")
-            .filter(|value| !value.is_empty())
-            .map(PathBuf::from)
-            .and_then(|path| {
-                let path = if let Ok(rest) = path.strip_prefix("~") {
-                    home.join(rest)
-                } else {
-                    path
-                };
-                if path.components().count() > 1 {
-                    path.is_file().then_some(path)
-                } else {
-                    std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
-                        .map(|directory| directory.join(&path))
-                        .find(|candidate| candidate.is_file())
-                }
-            })
+        let runner = explicit_override
+            .as_deref()
+            .and_then(|value| resolve_runner_override(value, &home, &private_path))
             .or_else(|| {
                 let managed = home.join(".cargo/bin/recipe-runner-rs");
                 managed.is_file().then_some(managed)
             })
+            .or_else(|| binary_on_path(OsStr::new("recipe-runner-rs"), &private_path))
             .expect("real explicit runner or coherent private Cargo HOME installation required");
         Self { temp, runner, home }
     }
