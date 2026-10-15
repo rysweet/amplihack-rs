@@ -259,19 +259,20 @@ twice counts twice. There are 31 in all:
 ### A stale bare variable wins
 
 Because the bare name is tried first, a non-empty variable of that name
-already in the runner's environment hides the step output:
+already in the runner's environment hides the step output. The example sets
+both variables for one child shell only, so it leaves your shell unchanged:
 
 ```console
-$ export CRUSTY_LOOP_PREFLIGHT='{"state_dir":"/old"}'
-$ export RECIPE_VAR_crusty_loop_preflight='{"state_dir":"/new"}'
-$ echo "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
+$ CRUSTY_LOOP_PREFLIGHT='{"state_dir":"/old"}' \
+  RECIPE_VAR_crusty_loop_preflight='{"state_dir":"/new"}' \
+  bash -c 'echo "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"'
 {"state_dir":"/old"}
 ```
 
 This is a known residual risk. It is not specific to these recipes: every
 bundle recipe that uses the dual-name idiom, including `workflow-publish` and
-`workflow-finalize`, shares it, so it is tracked as a bundle-wide follow-up
-rather than fixed here. Reversing the order in the autodrive recipes alone
+`workflow-finalize`, shares it, so the fix belongs to the bundle as a whole
+and is not made here. Reversing the order in the autodrive recipes alone
 would make them disagree with the rest of the bundle.
 
 The exposure is bounded:
