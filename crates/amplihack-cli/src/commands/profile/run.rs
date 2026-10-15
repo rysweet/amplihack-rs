@@ -16,7 +16,9 @@ pub(super) fn build_profile_command(
     name: &ProfileName,
     args: &[String],
 ) -> Result<Command, ProfileError> {
-    let dir = store.resolve(name)?;
+    // Validate ownership and writable permissions immediately before creating
+    // the child process. `resolve` alone only checks path containment.
+    let dir = store.verify_profile_dir(name)?;
     let mut cmd = Command::new(&binary.path);
     cmd.args(args).env("CLAUDE_CONFIG_DIR", dir);
     Ok(cmd)

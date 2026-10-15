@@ -80,6 +80,17 @@ fn run_refuses_profile_swapped_for_symlink() {
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
 
+#[test]
+fn run_refuses_group_writable_profile_before_spawn() {
+    let (_d, s, name, bin) = setup();
+    fs::set_permissions(
+        s.root().join("work"),
+        fs::Permissions::from_mode(0o770),
+    )
+    .unwrap();
+    assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
+}
+
 struct DockerEnvGuard(Option<std::ffi::OsString>);
 impl DockerEnvGuard {
     fn set(v: &str) -> Self {

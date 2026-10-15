@@ -58,6 +58,9 @@ Caveats:
   no-follow root descriptor to close the check-then-open race. Non-Unix
   platforms, including Windows, have no equivalent, so a same-user race remains
   possible there.
+- **Hardlinks.** A hardlink is indistinguishable from a regular file, so a
+  hardlink inside `~/.claude` to another file you own is copied like any other
+  file. Only files the invoking user can already read are reachable.
 - **Failure is rolled back.** If seeding fails (for example invalid
   `settings.json` gives `InvalidSharedSettings`), the profile directory created
   by that call is removed. If cleanup also fails, a warning is printed and the
