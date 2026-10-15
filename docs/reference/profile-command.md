@@ -21,7 +21,7 @@ amplihack launch|claude --profile <name> [...]
 | Command | Behavior |
 |---------|----------|
 | `add <name>` | Create `<root>/<name>/` with mode `0700`, then copy allowlisted shared assets from `~/.claude`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
-| `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. |
+| `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, deletes it, clears a matching pointer. Never deletes the root; never follows symlinks. |

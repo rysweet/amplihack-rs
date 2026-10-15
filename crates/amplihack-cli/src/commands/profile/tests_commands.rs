@@ -25,6 +25,30 @@ fn list_marks_default_with_star() {
 }
 
 #[test]
+fn list_reports_a_corrupt_default_pointer_instead_of_hiding_it() {
+    let (_d, s) = store();
+    s.add(&n("alpha")).unwrap();
+    fs::write(s.root().join(".default"), "../outside").unwrap();
+
+    assert!(matches!(
+        render_list(&s),
+        Err(ProfileError::PointerCorrupt(_))
+    ));
+}
+
+#[test]
+fn list_reports_a_dangling_default_pointer_instead_of_hiding_it() {
+    let (_d, s) = store();
+    s.add(&n("alpha")).unwrap();
+    fs::write(s.root().join(".default"), "missing\n").unwrap();
+
+    assert!(matches!(
+        render_list(&s),
+        Err(ProfileError::PointerDangling(_))
+    ));
+}
+
+#[test]
 fn show_prints_none_without_pointer() {
     let (_d, s) = store();
     assert_eq!(render_show(&s).unwrap().trim(), "none");
