@@ -21,6 +21,8 @@ mod tests_env;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
+mod tests_model;
+#[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
 mod tests_subprocess_safe;

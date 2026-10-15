@@ -59,13 +59,13 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
 /// `AMPLIHACK_DEFAULT_MODEL`, so every test that asserts on the *default* has
 /// to start from a host where the gateway is not configured -- otherwise the
 /// result depends on the developer's shell.
-const PROXY_ENV_VARS: [&str; 3] = [
+pub(super) const PROXY_ENV_VARS: [&str; 3] = [
     amplihack_utils::litellm_proxy::ENDPOINT_ENV,
     amplihack_utils::litellm_proxy::API_KEY_ENV,
     amplihack_utils::litellm_proxy::MODEL_ENV,
 ];
 
-fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+pub(super) fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -99,7 +99,7 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
 
 /// The model on the command line when a launch is routed through the LiteLLM
 /// gateway, with `AMPLIHACK_LITELLM_MODEL` set to `model`.
-fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
+pub(super) fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
     with_default_model_env(Some("pinned-by-env"), || {
         // `with_default_model_env` has already cleared all three, so setting
         // the endpoint alone is what "gateway configured, no model named" is.
@@ -788,7 +788,7 @@ fn copilot_skips_allow_all_when_env_opt_out() {
 
 /// Copilot is NOT Claude-compatible, so even when skip_permissions=true the
 /// `--dangerously-skip-permissions` flag MUST NOT appear.  This locks the
-/// `is_claude_compatible` whitelist against accidental expansion.
+/// `is_claude_compatible_tool` whitelist against accidental expansion.
 #[test]
 fn copilot_does_not_get_skip_permissions_even_when_requested() {
     with_uvx_detection_disabled(|| {
