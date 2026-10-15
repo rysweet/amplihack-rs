@@ -1,12 +1,13 @@
 //! Outside-in controls of the actual canonical command and its retained report.
 mod controls;
 mod native;
+mod privacy;
 
 use super::step_command;
 use serde_json::Value;
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     path::PathBuf,
     process::{Command, Output},
 };
@@ -38,18 +39,18 @@ impl Fixture {
     fn new() -> Self {
         let temp = tempfile::Builder::new()
             .prefix("zero-bs-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir()
             .unwrap();
-        assert!(
-            temp.path().starts_with("/d0"),
-            "private /d0 TMPDIR required"
-        );
+        fs::set_permissions(temp.path(), fs::Permissions::from_mode(0o700)).unwrap();
         let shell = std::env::var_os("AMPLIHACK_TEST_BASH")
             .map(PathBuf::from)
             .unwrap_or_else(|| PathBuf::from("/bin/bash"));
         let f = Self { temp, shell };
         for dir in ["repo", "home", "tmp", "bin"] {
-            fs::create_dir(f.temp.path().join(dir)).unwrap();
+            let path = f.temp.path().join(dir);
+            fs::create_dir(&path).unwrap();
+            fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
         }
         std::os::unix::fs::symlink(&f.shell, f.temp.path().join("bin/bash")).unwrap();
         assert!(f.git(&["init", "-q"]).status.success());
@@ -115,7 +116,10 @@ impl Fixture {
         }
         assert!(self.git(&["add", "."]).status.success());
         // Newline, command substitutions, backticks and literal bytes stay data.
-        self.write("untracked\n$(touch PWNED)`touch PWNED`.rs", rs.as_bytes());
+        self.write(
+            "-untracked: space\n$(touch PWNED)`touch PWNED`.rs",
+            rs.as_bytes(),
+        );
         self.write("untracked.sh", b"set +e\n");
         self.write("untracked.js", b"catch(e) {}\n");
         self.write(
@@ -140,9 +144,24 @@ fn receipt(output: &Output) -> Value {
     )
     .unwrap()
 }
-fn report(j: &Value) -> Vec<u8> {
+fn report(f: &Fixture, j: &Value) -> Vec<u8> {
+    report_in_root(f, &f.temp.path().join("tmp"), j)
+}
+fn report_in_root(f: &Fixture, root: &std::path::Path, j: &Value) -> Vec<u8> {
     let path = PathBuf::from(j["report_path"].as_str().unwrap());
-    assert!(path.is_absolute() && path.starts_with("/d0"));
+    let root = fs::canonicalize(root).unwrap();
+    assert!(path.is_absolute() && path.starts_with(&root));
+    assert_eq!(fs::canonicalize(&path).unwrap(), path);
+    let parent = path.parent().unwrap();
+    assert_eq!(parent.parent().unwrap(), root);
+    let metadata = fs::symlink_metadata(&path).unwrap();
+    assert!(metadata.is_file() && !metadata.file_type().is_symlink());
+    let directory = fs::symlink_metadata(parent).unwrap();
+    assert!(directory.is_dir() && !directory.file_type().is_symlink());
+    // The private fixture HOME belongs to the same caller as all artifacts.
+    assert_eq!(metadata.uid(), fs::metadata(f.temp.path()).unwrap().uid());
+    assert_eq!(directory.uid(), metadata.uid());
+    assert_eq!(metadata.nlink(), 1);
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -155,7 +174,16 @@ fn report(j: &Value) -> Vec<u8> {
             & 0o777,
         0o700
     );
-    let data = fs::read(path).unwrap();
+    let mut file = fs::File::open(&path).unwrap();
+    let opened = file.metadata().unwrap();
+    assert_eq!(
+        (opened.dev(), opened.ino()),
+        (metadata.dev(), metadata.ino())
+    );
+    let mut data = Vec::new();
+    std::io::Read::read_to_end(&mut file, &mut data).unwrap();
+    let after = fs::symlink_metadata(&path).unwrap();
+    assert_eq!((after.dev(), after.ino()), (metadata.dev(), metadata.ino()));
     assert_eq!(data.len() as u64, j["report_bytes"].as_u64().unwrap());
     data
 }
@@ -193,7 +221,7 @@ fn expected(f: &Fixture, index: usize, tracked: bool) -> Vec<u8> {
         assert!(files.status.success());
         use std::os::unix::ffi::OsStrExt;
         f.child("/usr/bin/grep")
-            .args(["-n", "-E", "-H", "-a", "-Z", "--", PATTERNS[index]])
+            .args(["-n", "-E", "-H", "-a", "--null", "--", PATTERNS[index]])
             .args(
                 files
                     .stdout
@@ -213,7 +241,10 @@ fn large_report_exact_parity_counts_literal_bytes_and_final_marker() {
     let f = Fixture::new();
     f.large();
     let j = receipt(&f.run());
-    let data = report(&j);
+    let data = report(&f, &j);
+    assert_large_parity(&f, &j, &data);
+}
+fn assert_large_parity(f: &Fixture, j: &Value, data: &[u8]) {
     assert!(data.len() > 202_307);
     assert_eq!(j["scan_complete"], true);
     assert_eq!(j["status"], "WARNING_REVIEW_REQUIRED");
@@ -226,8 +257,8 @@ fn large_report_exact_parity_counts_literal_bytes_and_final_marker() {
     let mut full=b"=== ZERO-BS VERIFICATION ===\nFormat: NUL-delimited filenames; tracked line numbers also NUL-delimited. Complete matching lines follow.\n".to_vec();
     for (i, label) in LABELS.iter().enumerate() {
         full.extend_from_slice(format!("\n--- {label} ---\n").as_bytes());
-        full.extend(expected(&f, i, true));
-        full.extend(expected(&f, i, false));
+        full.extend(expected(f, i, true));
+        full.extend(expected(f, i, false));
         let count = if i == 0 { 2 } else { 1 };
         let extra = if i == 0 { 1 } else { 0 };
         assert_eq!(j["categories"][i]["tracked_count"], count);

@@ -742,7 +742,7 @@ fn workflow_pr_review_zero_bs_scan_covers_tracked_and_untracked_without_recursiv
     assert!(
         command.contains("git ls-files --others --exclude-standard -z")
             && command.contains("while IFS= read -r -d '' file")
-            && command.contains("grep -n -E -H -a -Z -- \"$pattern\" \"${files[@]}\"")
+            && command.contains("grep -n -E -H -a --null -- \"$pattern\" \"${files[@]}\"")
             && command.contains("record_scan 'untracked grep'"),
         "step-19c must restore fail-loud untracked-file scanning"
     );

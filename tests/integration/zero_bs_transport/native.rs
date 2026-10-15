@@ -13,7 +13,7 @@ fn save(root: &std::path::Path, name: &str, bytes: &[u8]) {
     file.sync_all().unwrap();
 }
 #[test]
-#[ignore = "requires protected launch's genuine RECIPE_RUNNER_RS_PATH and /d0 retained evidence"]
+#[ignore = "requires protected launch's genuine RECIPE_RUNNER_RS_PATH and owned retained evidence"]
 fn held707_bounded_string_launches_actual_following_bash_gate() {
     let runner = PathBuf::from(
         std::env::var_os("RECIPE_RUNNER_RS_PATH")
@@ -21,15 +21,18 @@ fn held707_bounded_string_launches_actual_following_bash_gate() {
     );
     let root = PathBuf::from(
         std::env::var_os("AMPLIHACK_ZERO_BS_NATIVE_EVIDENCE")
-            .expect("retained /d0 evidence required"),
+            .expect("retained evidence root required"),
     );
     assert!(runner.is_absolute() && runner.is_file());
-    assert!(root.starts_with("/d0"));
+    let root = fs::canonicalize(root).unwrap();
+    assert!(root.is_dir());
     let evidence = tempfile::Builder::new()
         .prefix("native-zero-bs-")
+        .permissions(fs::Permissions::from_mode(0o700))
         .tempdir_in(&root)
         .unwrap()
         .keep();
+    fs::set_permissions(&evidence, fs::Permissions::from_mode(0o700)).unwrap();
     let mut f = Fixture::new();
     f.temp.disable_cleanup(true);
     f.large();
@@ -67,6 +70,9 @@ fn held707_bounded_string_launches_actual_following_bash_gate() {
         "selected-bash.json",
         json!({"AMPLIHACK_BASH":f.shell}).to_string().as_bytes(),
     );
+    let runner_before = fs::read(&runner).unwrap();
+    save(&evidence, "selected-runner.json", json!({"path":runner,
+        "bytes":runner_before.len(),"source_pin":include_str!("../../../claude-plugin/recipe-runner.rev").trim()}).to_string().as_bytes());
     let before = fs::read(super::super::recipe_path("workflow-pr-review")).unwrap();
     save(&evidence, "source-before.yaml", &before);
     let out = f
@@ -91,7 +97,8 @@ fn held707_bounded_string_launches_actual_following_bash_gate() {
     assert!(string.len() <= 8192);
     let j: Value =
         serde_json::from_str(string.strip_prefix("=== ZERO-BS SUMMARY ===\n").unwrap()).unwrap();
-    let data = report(&j);
+    let data = report(&f, &j);
+    assert_large_parity(&f, &j, &data);
     assert!(data.len() > 202_307);
     save(&evidence, "full-report", &data);
     assert!(
@@ -146,6 +153,7 @@ fn held707_bounded_string_launches_actual_following_bash_gate() {
     let after = fs::read(super::super::recipe_path("workflow-pr-review")).unwrap();
     save(&evidence, "source-after.yaml", &after);
     assert_eq!(before, after);
+    assert_eq!(runner_before, fs::read(&runner).unwrap());
     let fixture_path = f.temp.keep();
     println!(
         "retained native evidence {} fixture {}",

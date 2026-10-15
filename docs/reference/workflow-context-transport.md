@@ -493,17 +493,27 @@ scan. A line matching multiple categories contributes to each category. Counts
 come from complete scan records, not newline counts in filenames. Scans preserve
 the category patterns and globs, use tracked Git discovery and NUL-delimited
 untracked discovery, and treat binary content as text to retain complete matching
-lines. Report records contain NUL-delimited filenames; tracked records also use
+lines. Untracked grep uses the common GNU/Apple `--null` filename option
+with `-n -E -H -a` ([GNU manual](https://www.gnu.org/software/grep/manual/html_node/Output-Line-Prefix-Control.html),
+[Apple manual](https://raw.githubusercontent.com/apple-oss-distributions/text_cmds/main/grep/grep.1));
+tracked `git grep -n -E -a -z` keeps Git's framing.
+Apple grep's `-Z` selects gzip behavior and is not the filename delimiter option.
+Report records contain NUL-delimited filenames; tracked records also use
 a NUL separator after the line number. Matching line content, including hostile
 literal bytes and arbitrarily long lines, is retained unchanged. Category headings,
 no-match notices and operational diagnostics accompany these records.
 
 Storage is exclusively allocated with an unpredictable name beneath the physical
-`/d0` temporary root selected by `TMPDIR` (default:
-`/d0/ryan/sunfixamp-codex-support/tmp`). Directory mode 0700 and file mode 0600
-apply before payload writes. Supplied report paths are never adopted. Artifacts
-remain after the step; their retention and eventual removal belong to the run
-owner. Allocation, writing, final reading and stdout presentation are checked.
+temporary root selected by caller `TMPDIR`, or the system `/tmp` root when
+`TMPDIR` is unset. The selected root is resolved physically; an empty, missing,
+unusable or unsafe selection fails without choosing another location. A shared
+system temporary parent need not belong to the caller. The exclusively allocated
+retained directory and its artifacts belong to the caller. Directory mode 0700
+and file mode 0600 apply before payload writes. Supplied report paths are never
+adopted. Artifacts remain after the step; their retention and eventual removal belong to the run
+owner. Local workflow builds and caches may still prefer `/d0`; that local
+configuration does not restrict diagnostic storage. Allocation, writing, final
+reading and stdout presentation are checked.
 Grep exits 0 and 1 mean findings and no findings respectively; operational errors
 remain fatal, retain diagnostics and identify the incomplete report on stderr.
 

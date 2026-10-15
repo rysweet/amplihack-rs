@@ -350,12 +350,14 @@ steps:
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-19c worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-19c worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "ERROR: step-19c-zero-bs-verification requires a git repo; run git init or rerun from a checkout" >&2; exit 1; fi
-      root=$(cd "${TMPDIR:-/d0/ryan/sunfixamp-codex-support/tmp}" && pwd -P) || exit $?
-      case "$root" in /d0/*) ;; *) echo 'ERROR: step-19c requires a physical /d0 artifact root' >&2; exit 1;; esac
-      storage=$(mktemp -d "$root/step19c.XXXXXXXXXXXX") || exit $?
+      selected_root=${TMPDIR-/tmp}; [ -n "$selected_root" ] || { echo 'ERROR: step-19c TMPDIR is empty' >&2; exit 1; }; root=$(cd -- "$selected_root" && pwd -P && printf '.') || exit $?; root=${root%$'\n.'}
+      storage=$(mktemp -d "${root%/}/step19c.XXXXXXXXXXXX") || exit $?; case "$storage" in "${root%/}"/step19c.*) ;; *) echo 'ERROR: step-19c unsafe allocation' >&2; exit 1;; esac
+      [ "${storage%/*}" = "${root%/}" ] && [ -d "$storage" ] && [ ! -L "$storage" ] && [ -O "$storage" ] || { echo 'ERROR: step-19c unsafe allocation identity' >&2; exit 1; }; physical=$(cd -- "$storage" && pwd -P && printf '.') || exit $?; [ "${physical%$'\n.'}" = "$storage" ] || { echo 'ERROR: step-19c allocation escaped physical root' >&2; exit 1; }
+      for entry in "$storage"/* "$storage"/.[!.]* "$storage"/..?*; do if [ -e "$entry" ] || [ -L "$entry" ]; then echo 'ERROR: step-19c allocation is not empty' >&2; exit 1; fi; done
       chmod 700 "$storage" || exit $?; report="$storage/report"; summary="$storage/summary.json"; categories=(); total=0
       trap 'rc=$?; if [ "$rc" -ne 0 ]; then printf "ERROR: step-19c scan/presentation incomplete (exit %s); retained report: %s\n" "$rc" "$report" >&2; fi' EXIT
-      (set -C; : >"$report") || exit $?; printf '%s\n' '=== ZERO-BS VERIFICATION ===' 'Format: NUL-delimited filenames; tracked line numbers also NUL-delimited. Complete matching lines follow.' >"$report" || exit $?
+      owned_file() { [ "${1%/*}" = "$storage" ] && [ -f "$1" ] && [ ! -L "$1" ] && [ -O "$1" ]; }; private_file() { (set -C; : >"$1") && owned_file "$1" && chmod 600 "$1"; }
+      private_file "$report" || exit $?; private_file "$summary" || exit $?; printf '%s\n' '=== ZERO-BS VERIFICATION ===' 'Format: NUL-delimited filenames; tracked line numbers also NUL-delimited. Complete matching lines follow.' >"$report" || exit $?
       record_scan() { local mode=$1 raw=$2 rc=$3 file number line count=0
         cat "$raw" >>"$report" || return $?
         if [ "$rc" -gt 1 ]; then printf 'ERROR: %s scan failed (exit %s)\n' "$mode" "$rc" | tee -a "$report" >&2; return "$rc"; fi
@@ -363,12 +365,12 @@ steps:
         scan_count=$count; }
       scan_or_none() { local label=$1 pattern=$2 rc file raw list tracked_count untracked_count=0; shift 2; local files=()
         printf '\n--- %s ---\n' "$label" >>"$report" || return $?
-        raw=$(mktemp "$storage/scan.XXXXXXXXXXXX") || return $?; list=$(mktemp "$storage/files.XXXXXXXXXXXX") || return $?
+        raw=$(mktemp "$storage/scan.XXXXXXXXXXXX") || return $?; list=$(mktemp "$storage/files.XXXXXXXXXXXX") || return $?; case "$raw" in "$storage"/scan.*) ;; *) echo 'ERROR: step-19c unsafe scan allocation' >&2; return 1;; esac; case "$list" in "$storage"/files.*) ;; *) echo 'ERROR: step-19c unsafe discovery allocation' >&2; return 1;; esac; [ "$raw" != "$list" ] && owned_file "$raw" && owned_file "$list" && chmod 600 "$raw" "$list" || return $?
         if git grep -n -E -a -z "$pattern" -- "$@" >"$raw" 2>>"$report"; then rc=0; else rc=$?; fi
         record_scan 'git grep' "$raw" "$rc" || return $?; tracked_count=$scan_count
         if git ls-files --others --exclude-standard -z -- "$@" >"$list" 2>>"$report"; then :; else rc=$?; printf 'ERROR: git ls-files failed (exit %s)\n' "$rc" | tee -a "$report" >&2; return "$rc"; fi
         while IFS= read -r -d '' file; do files+=("$file"); done <"$list" || return $?
-        if [ "${#files[@]}" -gt 0 ]; then if grep -n -E -H -a -Z -- "$pattern" "${files[@]}" >"$raw" 2>>"$report"; then rc=0; else rc=$?; fi; record_scan 'untracked grep' "$raw" "$rc" || return $?; untracked_count=$scan_count; fi
+        if [ "${#files[@]}" -gt 0 ]; then if grep -n -E -H -a --null -- "$pattern" "${files[@]}" >"$raw" 2>>"$report"; then rc=0; else rc=$?; fi; record_scan 'untracked grep' "$raw" "$rc" || return $?; untracked_count=$scan_count; fi
         count=$((tracked_count + untracked_count)); total=$((total + count)); result=NO_FINDINGS; if [ "$count" -gt 0 ]; then result=WARNING_REVIEW_REQUIRED; else printf '%s\n' 'None found' >>"$report" || return $?; fi
         categories+=("$(jq -cn --arg category "$label" --arg result "$result" --argjson tracked "$tracked_count" --argjson untracked "$untracked_count" '{category:$category,result:$result,tracked_count:$tracked,untracked_count:$untracked,count:($tracked+$untracked)}')") || return $?
       }
@@ -380,9 +382,7 @@ steps:
       scan_or_none "TypeScript/JS: empty catch, catch return undefined" 'catch.*\{.*\}$|catch.*return undefined|catch.*return \[\]' '*.ts' '*.js' || exit $?
       printf '\n=== Zero-BS Verification Complete ===\n' >>"$report" || exit $?
       bytes=$(cat "$report" | wc -c) || exit $?; results=$(printf '%s\n' "${categories[@]}" | jq -sc '.') || exit $?
-      (set -C; { printf '%s\n' '=== ZERO-BS SUMMARY ===' && jq -cn --arg report_path "$report" --argjson report_bytes "$bytes" --argjson categories "$results" --argjson count "$total" '{report_path:$report_path,report_bytes:$report_bytes,categories:$categories,count_unit:"matching lines per category and tracked/untracked scan (overlap counted)",scan_complete:true,status:(if $count>0 then "WARNING_REVIEW_REQUIRED" else "NO_FINDINGS" end),findings_resolved:false,presentation:{previews_omitted:true,omitted_report_bytes:$report_bytes,report_truncated:false,summary_truncated:false,stdout_max_bytes:8192}}'; } >"$summary") || exit $?
-      size=$(wc -c <"$summary") || exit $?; if [ "$size" -gt 8192 ]; then echo 'ERROR: step-19c metadata exceeds 8192 bytes; retained complete artifacts' >&2; exit 1; fi
-      cat "$summary" || exit $?
+      owned_file "$report" && owned_file "$summary" || exit $?; { printf '%s\n' '=== ZERO-BS SUMMARY ===' && jq -cn --arg report_path "$report" --argjson report_bytes "$bytes" --argjson categories "$results" --argjson count "$total" '{report_path:$report_path,report_bytes:$report_bytes,categories:$categories,count_unit:"matching lines per category and tracked/untracked scan (overlap counted)",scan_complete:true,status:(if $count>0 then "WARNING_REVIEW_REQUIRED" else "NO_FINDINGS" end),findings_resolved:false,presentation:{previews_omitted:true,omitted_report_bytes:$report_bytes,report_truncated:false,summary_truncated:false,stdout_max_bytes:8192}}'; } >"$summary" || exit $?; size=$(wc -c <"$summary") || exit $?; if [ "$size" -gt 8192 ]; then echo 'ERROR: step-19c metadata exceeds 8192 bytes; retained complete artifacts' >&2; exit 1; fi; cat "$summary" || exit $?
     output: "zero_bs_check"
   - id: "step-19d-verification-gate"
     type: "bash"
