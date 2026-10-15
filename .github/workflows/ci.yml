@@ -223,6 +223,9 @@ jobs:
       - name: Recipes — canonical helper resolution ladders (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-runtime-artifact-ladders.sh
+      - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
