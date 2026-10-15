@@ -22,6 +22,7 @@ pub mod node;
 pub mod orch;
 pub mod plugin;
 pub mod pr;
+pub mod profile;
 pub mod query_code;
 pub mod recipe;
 pub mod reflect;
@@ -95,6 +96,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         }),
         Commands::Internal { command } => crate::runner_validation::run(command),
         Commands::Uninstall => install::run_uninstall(),
+        Commands::Profile(cmd) => profile::run_profile(cmd),
         Commands::Launch {
             resume,
             continue_session,
@@ -108,12 +110,14 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            profile,
             claude_args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -126,7 +130,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     working_dir,
                 );
             }
-            launch::run_launch(
+            launch::run_launch_profiled(
                 "claude",
                 "launch",
                 docker,
@@ -143,6 +147,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // user's instruction.
                 OverrideOrigin::User,
                 Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+                claude_config_dir,
             )
         }
         Commands::Claude {
@@ -154,12 +159,14 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            profile,
             claude_args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -173,7 +180,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 );
             }
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch(
+            launch::run_launch_profiled(
                 "claude",
                 "claude",
                 docker,
@@ -190,6 +197,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // user's instruction.
                 OverrideOrigin::User,
                 Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+                claude_config_dir,
             )
         }
         Commands::Copilot {
