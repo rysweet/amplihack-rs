@@ -41,11 +41,6 @@ pub(super) fn open_lock_file(path: &Path) -> Result<fs::File> {
     {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
         ensure!(
-            metadata.mode() & libc::S_IFMT == libc::S_IFREG,
-            "refusing nonregular Codex lock file {}",
-            path.display()
-        );
-        ensure!(
             metadata.nlink() == 1,
             "refusing hardlinked Codex lock file {}",
             path.display()
