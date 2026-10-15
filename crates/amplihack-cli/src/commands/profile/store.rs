@@ -10,9 +10,10 @@ pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
 const MAX_COPY_ENTRIES: usize = 5_000;
+const MAX_COPY_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SETTINGS_BYTES: u64 = 1024 * 1024;
 const SHARED_ASSET_FILES: &[&str] = &["CLAUDE.md"];
-const SHARED_SETTINGS_KEYS: &[&str] = &[
+pub(super) const SHARED_SETTINGS_KEYS: &[&str] = &[
     "alwaysThinkingEnabled",
     "attribution",
     "cleanupPeriodDays",
@@ -182,6 +183,31 @@ impl ProfileStore {
         Ok(canonical)
     }
 
+    /// Spawn-time check: re-resolves the profile and additionally requires the
+    /// directory to be owned by the current user and not group/world writable.
+    #[cfg(unix)]
+    pub fn verify_profile_dir(&self, name: &ProfileName) -> Result<PathBuf, ProfileError> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let canonical = self.resolve(name)?;
+        let meta = fs::symlink_metadata(&canonical)?;
+        // SAFETY: geteuid has no preconditions.
+        let uid = unsafe { libc::geteuid() };
+        if !meta.is_dir() || meta.file_type().is_symlink() || meta.uid() != uid {
+            return Err(ProfileError::SymlinkRefused(name.to_string()));
+        }
+        if meta.permissions().mode() & 0o022 != 0 {
+            return Err(ProfileError::SymlinkRefused(format!(
+                "{name} (group/world-writable)"
+            )));
+        }
+        Ok(canonical)
+    }
+
+    #[cfg(not(unix))]
+    pub fn verify_profile_dir(&self, name: &ProfileName) -> Result<PathBuf, ProfileError> {
+        self.resolve(name)
+    }
+
     pub fn remove(&self, name: &ProfileName, yes: bool) -> Result<(), ProfileError> {
         if !yes {
             return Err(ProfileError::ConfirmationRequired);
@@ -244,6 +270,7 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
 
 /// Copies only regular files and directories. Symlinks and special files are
 /// skipped so shared assets cannot pull credentials or arbitrary paths in.
+#[cfg(not(unix))]
 fn copy_allowlisted_tree(
     source: &Path,
     destination: &Path,
@@ -280,6 +307,243 @@ fn copy_allowlisted_tree(
         }
     }
     Ok(())
+}
+
+/// Unix variant: every directory is opened with `O_NOFOLLOW|O_DIRECTORY` and
+/// entries are read, classified and opened relative to that descriptor, so a
+/// path component swapped for a symlink mid-copy is never followed.
+#[cfg(unix)]
+fn copy_allowlisted_tree(
+    source: &Path,
+    destination: &Path,
+    depth: usize,
+    entries: &mut usize,
+) -> Result<(), ProfileError> {
+    let Some(src) = fdwalk::open_dir(libc::AT_FDCWD, source)? else {
+        return Ok(());
+    };
+    private_dir_builder().create(destination)?;
+    let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
+        .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
+    fdwalk::copy_dir(&src, &dst, source, depth, entries)
+}
+
+#[cfg(all(unix, test))]
+pub(super) mod test_hook {
+    use std::cell::RefCell;
+    use std::path::Path;
+
+    type Hook = Box<dyn Fn(&Path)>;
+    thread_local! {
+        static BEFORE_OPEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub fn set_before_open(hook: Option<Hook>) {
+        BEFORE_OPEN.with(|h| *h.borrow_mut() = hook);
+    }
+
+    pub(super) fn fire(path: &Path) {
+        BEFORE_OPEN.with(|h| {
+            if let Some(hook) = h.borrow().as_ref() {
+                hook(path);
+            }
+        });
+    }
+}
+
+#[cfg(unix)]
+mod fdwalk {
+    use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, MAX_COPY_FILE_BYTES, ProfileError};
+    use std::ffi::{CString, OsStr, OsString};
+    use std::fs::File;
+    use std::io::Read;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
+    use std::os::unix::ffi::{OsStrExt, OsStringExt};
+    use std::path::Path;
+
+    fn cstr(name: &OsStr) -> std::io::Result<CString> {
+        CString::new(name.as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput.into())
+    }
+
+    fn openat(
+        dir: RawFd,
+        name: &OsStr,
+        flags: libc::c_int,
+        mode: libc::mode_t,
+    ) -> std::io::Result<OwnedFd> {
+        let c = cstr(name)?;
+        // SAFETY: `c` is a valid NUL-terminated string; the result is checked.
+        let fd = unsafe {
+            libc::openat(
+                dir,
+                c.as_ptr(),
+                flags | libc::O_CLOEXEC,
+                mode as libc::c_uint,
+            )
+        };
+        if fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `fd` is a freshly opened descriptor that we own.
+        Ok(unsafe { OwnedFd::from_raw_fd(fd) })
+    }
+
+    fn skippable(e: &std::io::Error) -> bool {
+        matches!(
+            e.raw_os_error(),
+            Some(libc::ELOOP | libc::ENOTDIR | libc::ENOENT)
+        )
+    }
+
+    /// `Ok(None)` when the path is absent, not a directory, or a symlink.
+    pub(super) fn open_dir(dir: RawFd, path: &Path) -> Result<Option<OwnedFd>, ProfileError> {
+        match openat(
+            dir,
+            path.as_os_str(),
+            libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY,
+            0,
+        ) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(e) if skippable(&e) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn file_type(dir: RawFd, name: &OsStr) -> std::io::Result<libc::mode_t> {
+        let c = cstr(name)?;
+        let mut st = std::mem::MaybeUninit::<libc::stat>::zeroed();
+        // SAFETY: valid path and out-pointer; initialised only on success.
+        let rc =
+            unsafe { libc::fstatat(dir, c.as_ptr(), st.as_mut_ptr(), libc::AT_SYMLINK_NOFOLLOW) };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: fstatat succeeded.
+        Ok(unsafe { st.assume_init() }.st_mode & libc::S_IFMT)
+    }
+
+    fn list(dir: &OwnedFd) -> std::io::Result<Vec<OsString>> {
+        // SAFETY: dup returns a new descriptor or -1.
+        let dup = unsafe { libc::dup(dir.as_raw_fd()) };
+        if dup < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `dup` is valid; on success the DIR* owns it.
+        let handle = unsafe { libc::fdopendir(dup) };
+        if handle.is_null() {
+            let e = std::io::Error::last_os_error();
+            // SAFETY: fdopendir failed, so `dup` is still ours to close.
+            unsafe { libc::close(dup) };
+            return Err(e);
+        }
+        let mut names = Vec::new();
+        let result = loop {
+            // SAFETY: errno is thread-local; readdir signals errors only through it.
+            unsafe { *libc::__errno_location() = 0 };
+            // SAFETY: `handle` is a live DIR*.
+            let ent = unsafe { libc::readdir(handle) };
+            if ent.is_null() {
+                let e = std::io::Error::last_os_error();
+                break if e.raw_os_error() == Some(0) {
+                    Ok(())
+                } else {
+                    Err(e)
+                };
+            }
+            // SAFETY: d_name is a NUL-terminated string inside a live dirent.
+            let name = unsafe { std::ffi::CStr::from_ptr((*ent).d_name.as_ptr()) }.to_bytes();
+            if name != b"." && name != b".." {
+                names.push(OsString::from_vec(name.to_vec()));
+            }
+        };
+        // SAFETY: closes the DIR* and its dup'd descriptor exactly once.
+        unsafe { libc::closedir(handle) };
+        result.map(|()| names)
+    }
+
+    pub(super) fn copy_dir(
+        src: &OwnedFd,
+        dst: &OwnedFd,
+        shown: &Path,
+        depth: usize,
+        entries: &mut usize,
+    ) -> Result<(), ProfileError> {
+        if depth > MAX_COPY_DEPTH {
+            return Err(ProfileError::SharedAssetLimit(format!(
+                "directory nesting deeper than {MAX_COPY_DEPTH}"
+            )));
+        }
+        for name in list(src)? {
+            *entries += 1;
+            if *entries > MAX_COPY_ENTRIES {
+                return Err(ProfileError::SharedAssetLimit(format!(
+                    "more than {MAX_COPY_ENTRIES} entries"
+                )));
+            }
+            let path = shown.join(&name);
+            let kind = match file_type(src.as_raw_fd(), &name) {
+                Ok(k) => k,
+                Err(e) if skippable(&e) => continue,
+                Err(e) => return Err(e.into()),
+            };
+            if kind != libc::S_IFDIR && kind != libc::S_IFREG {
+                continue;
+            }
+            #[cfg(test)]
+            super::test_hook::fire(&path);
+            if kind == libc::S_IFDIR {
+                copy_subdir(src, dst, &name, &path, depth, entries)?;
+            } else {
+                copy_file(src, dst, &name)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn copy_subdir(
+        src: &OwnedFd,
+        dst: &OwnedFd,
+        name: &OsStr,
+        path: &Path,
+        depth: usize,
+        entries: &mut usize,
+    ) -> Result<(), ProfileError> {
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
+        let child = match openat(src.as_raw_fd(), name, flags, 0) {
+            Ok(fd) => fd,
+            Err(e) if skippable(&e) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        let c = cstr(name)?;
+        // SAFETY: valid directory descriptor and path.
+        if unsafe { libc::mkdirat(dst.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
+            return Err(std::io::Error::last_os_error().into());
+        }
+        let out = openat(dst.as_raw_fd(), name, flags, 0)?;
+        copy_dir(&child, &out, path, depth + 1, entries)
+    }
+
+    fn copy_file(src: &OwnedFd, dst: &OwnedFd, name: &OsStr) -> Result<(), ProfileError> {
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+        let input = match openat(src.as_raw_fd(), name, flags, 0) {
+            Ok(fd) => File::from(fd),
+            Err(e) if skippable(&e) => return Ok(()),
+            Err(e) => return Err(e.into()),
+        };
+        // The opened descriptor, not the earlier path stat, decides the type.
+        if !input.metadata()?.file_type().is_file() {
+            return Ok(());
+        }
+        let out_flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
+        let mut output = File::from(openat(dst.as_raw_fd(), name, out_flags, 0o600)?);
+        let copied = std::io::copy(&mut input.take(MAX_COPY_FILE_BYTES + 1), &mut output)?;
+        if copied > MAX_COPY_FILE_BYTES {
+            return Err(ProfileError::SharedAssetLimit(format!(
+                "file larger than {MAX_COPY_FILE_BYTES} bytes"
+            )));
+        }
+        Ok(())
+    }
 }
 
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {

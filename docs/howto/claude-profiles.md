@@ -23,7 +23,7 @@ credentials and history stay isolated per profile.
 |--------|---------|
 | `CLAUDE.md` | Your global instructions |
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
-| `settings.json` (filtered) | Only allowlisted top-level keys: `hooks`, `permissions`, `model`, `statusLine`, `outputStyle`, `language` |
+| `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
 Never copied: `.credentials.json`, `.claude.json`, `history*`, `projects/`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
@@ -43,7 +43,9 @@ Caveats:
   logged.
 - **Symlinks.** A symlinked `~/.claude` is refused (`SymlinkRefused`). Symlinks
   and special files (FIFOs, sockets, devices) inside the shared directories are
-  skipped, never followed or copied.
+  skipped, never followed or copied. On Unix the copy is descriptor-based
+  (`O_NOFOLLOW`, `openat`), so a directory replaced by a symlink mid-copy is
+  not followed; non-Unix platforms lack this race hardening.
 - **Permissions.** Copied directories are `0700`, files `0600`. Existing files
   are never overwritten.
 - **Limits.** Copying is bounded (16 directory levels, 5,000 entries); exceeding a bound
@@ -121,9 +123,16 @@ account's local Claude login and history.
 - Names differing only by case (`Work` vs `work`) are rejected on every platform.
 - Profiles apply only to Claude-compatible binaries (`claude`, `rusty`,
   `rustyclawd`, `amplifier`). Copilot and Codex launches are unaffected.
-- `--profile` with `--docker`, `--auto`, or env-activated Docker is rejected
-  with an error rather than being partially applied. A default pointer under
+- Docker is unsupported with profiles. `profile run`, `launch --profile`,
+  `--docker`, `--auto` and env-activated Docker (`AMPLIHACK_USE_DOCKER`) are all
+  rejected with an error rather than partially applied. A default pointer under
   env-activated Docker is skipped with a warning.
+- The profile path is re-validated just before spawn. The check is not atomic;
+  a small window remains.
+- The seeded `hooks`, `statusLine` and `permissions` keys are code-execution
+  configuration: hooks and the status line run commands, and permissions
+  control what Claude may run. Review them before sharing a profile, and treat
+  `~/.claude/settings.json` as trusted input.
 - If the default pointer names a deleted profile, launch fails with a hint
   (`amplihack profile switch <name>`); it does not fall back silently.
 - Profiles are not a security boundary against other processes of the same OS

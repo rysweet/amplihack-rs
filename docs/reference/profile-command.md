@@ -47,7 +47,7 @@ constants:
 |----------|----------|
 | `SHARED_ASSET_FILES` | `CLAUDE.md` |
 | `SHARED_ASSET_DIRS` | `agents`, `commands`, `output-styles`, `rules`, `skills` |
-| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `hooks`, `permissions`, `model`, `statusLine`, `outputStyle`, `language` |
+| `SHARED_SETTINGS_KEYS` | top-level `settings.json` keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` (12 keys) |
 
 Rules:
 
@@ -56,11 +56,22 @@ Rules:
   written. `env`, `apiKeyHelper` and all unknown keys are dropped.
 - Directories are created `0700`, files `0600`, with `create_new` (`O_EXCL`):
   nothing is overwritten and no destination symlink is followed.
+- The 12-key list is kept in sync with the code by `tests_docs_sync.rs`, which
+  checks both directions (every constant key is documented here and in the
+  how-to guide, and no extra key is documented).
 - A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
-  special files are skipped. On Unix sources are opened with `O_NOFOLLOW`.
+  special files (FIFOs, sockets, devices) are skipped. On Unix the tree is
+  walked by file descriptor: each directory is opened with
+  `O_NOFOLLOW|O_DIRECTORY` and entries are read and stat'ed relative to it
+  (`openat`/`fstatat` with `AT_SYMLINK_NOFOLLOW`), so a directory swapped for a
+  symlink during the copy is never followed. Files are opened `O_NOFOLLOW` and
+  must be regular files. Entry names must be a single path component.
+  Non-Unix platforms keep the path-based copy without this hardening.
 - A missing `~/.claude` source produces an empty profile. An existing source
   that is not a directory fails the add and rolls back the new profile.
-- Traversal depth and entry count are bounded; exceeding them is an error.
+- Caps: nesting is limited to 16 levels, a seed to 5,000 entries, and
+  `settings.json` to 1 MiB; exceeding a cap is an error. Special files are
+  skipped without being opened, so a FIFO cannot block the copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `projects`, `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server
@@ -88,8 +99,17 @@ every platform, so `Work` and `work` can never coexist.
 
 When a profile resolves, `CLAUDE_CONFIG_DIR` is set on the child `Command`
 only (never `set_var`), overriding any ambient value, and only for
-Claude-compatible binaries. The canonical path is re-verified immediately
-before spawn.
+Claude-compatible binaries. Immediately before spawn, the profile path is
+re-resolved and re-validated: it must be a real directory (not a symlink),
+its canonical path must equal the expected path under the profile root, and
+it must be owned by the current user with no group/other write permission.
+Any failure aborts the launch. This check applies only to profile launches;
+Claude and Copilot launches without a profile are unchanged.
+
+`profile run` applies the same check as `launch --profile`: if Docker is
+active (including `AMPLIHACK_USE_DOCKER`), it fails with the unsupported-mode
+error before resolving or creating anything. It never silently drops the
+profile.
 
 `--profile` together with `--docker` or `--auto` fails with an
 unsupported-mode error before anything is spawned. This includes Docker
@@ -130,5 +150,6 @@ credential or history files. Allowlisted setting values and asset contents are
 copied verbatim, so any secrets embedded in hooks, status-line commands or
 skills remain the user's responsibility. Unix source reads use `O_NOFOLLOW`;
 Windows has a residual same-user check-then-open race. Profiles are not a security boundary against the same OS user.
-A same-user race between path verification and spawn is accepted and mitigated
-by re-checking before spawn.
+The pre-spawn re-validation narrows but does not close the window between the
+check and `exec`; it is not atomic. This is defense in depth: anyone who can
+write the profile store already has the user's privileges.

@@ -79,3 +79,56 @@ fn run_refuses_profile_swapped_for_symlink() {
     std::os::unix::fs::symlink(&outside, s.root().join("work")).unwrap();
     assert!(build_profile_command(&bin, &s, &name, &[]).is_err());
 }
+
+struct DockerEnvGuard(Option<std::ffi::OsString>);
+impl DockerEnvGuard {
+    fn set(v: &str) -> Self {
+        let prev = std::env::var_os("AMPLIHACK_USE_DOCKER");
+        unsafe { std::env::set_var("AMPLIHACK_USE_DOCKER", v) };
+        Self(prev)
+    }
+}
+impl Drop for DockerEnvGuard {
+    fn drop(&mut self) {
+        unsafe {
+            match &self.0 {
+                Some(v) => std::env::set_var("AMPLIHACK_USE_DOCKER", v),
+                None => std::env::remove_var("AMPLIHACK_USE_DOCKER"),
+            }
+        }
+    }
+}
+
+#[test]
+fn reject_docker_env_errors_when_env_active() {
+    let _l = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _g = DockerEnvGuard::set("1");
+    let err = super::reject_docker_env()
+        .unwrap_err()
+        .to_string()
+        .to_lowercase();
+    assert!(err.contains("docker"), "{err}");
+}
+
+#[test]
+fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
+    let _l = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    let _g = DockerEnvGuard::set("1");
+    let d = tempfile::tempdir().unwrap();
+    let root = d.path().join("root");
+    let s = ProfileStore::new(root.clone());
+    let missing = ProfileName::parse("ghost").unwrap();
+    let err = super::run::run(&s, &missing, vec![])
+        .unwrap_err()
+        .to_string()
+        .to_lowercase();
+    assert!(
+        err.contains("docker"),
+        "docker check must precede resolution: {err}"
+    );
+    assert!(!root.exists());
+}

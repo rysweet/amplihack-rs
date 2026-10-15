@@ -241,3 +241,88 @@ fn oversized_settings_are_rejected_and_rolled_back() {
     assert!(matches!(err, ProfileError::SharedAssetLimit(_)));
     assert!(!store.root().join("big").exists());
 }
+
+#[cfg(unix)]
+mod race_and_nested {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn nested_symlinked_dir_and_file_are_not_followed() {
+        let (d, source, store) = fixture();
+        let outside = d.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret"), "TOPSECRET").unwrap();
+        let sub = source.join("skills/s");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("ok.md"), "ok").unwrap();
+        symlink(&outside, sub.join("linkdir")).unwrap();
+        symlink(outside.join("secret"), sub.join("linkfile")).unwrap();
+        let dir = store.add(&n("w")).unwrap();
+        assert!(dir.join("skills/s/ok.md").is_file());
+        assert!(fs::symlink_metadata(dir.join("skills/s/linkdir")).is_err());
+        assert!(fs::symlink_metadata(dir.join("skills/s/linkfile")).is_err());
+    }
+
+    #[test]
+    fn directory_swapped_for_symlink_between_stat_and_open_is_not_followed() {
+        let (d, source, store) = fixture();
+        let outside = d.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("secret"), "TOPSECRET").unwrap();
+        let sub = source.join("skills/victim");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(sub.join("a.md"), "a").unwrap();
+        // Hook fires after the entry was classified, before it is opened.
+        super::super::store::test_hook::set_before_open(Some(Box::new(move |p| {
+            if p.ends_with("victim") {
+                let _ = fs::remove_dir_all(p);
+                let _ = symlink(&outside, p);
+            }
+        })));
+        let res = store.add(&n("w"));
+        super::super::store::test_hook::set_before_open(None);
+        let dir = store.root().join("w");
+        let leaked = dir.exists()
+            && walk(&dir).iter().any(|f| {
+                fs::read_to_string(f)
+                    .map(|s| s.contains("TOPSECRET"))
+                    .unwrap_or(false)
+            });
+        assert!(!leaked, "swapped symlink was followed");
+        if let Ok(p) = res {
+            assert!(fs::symlink_metadata(p.join("skills/victim/secret")).is_err());
+        }
+    }
+
+    fn walk(p: &Path) -> Vec<PathBuf> {
+        let mut out = vec![];
+        if let Ok(rd) = fs::read_dir(p) {
+            for e in rd.flatten() {
+                let ft = e.file_type().unwrap();
+                if ft.is_dir() {
+                    out.extend(walk(&e.path()));
+                } else if ft.is_file() {
+                    out.push(e.path());
+                }
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn copied_files_are_0600_and_dirs_0700() {
+        let (_d, source, store) = fixture();
+        fs::create_dir_all(source.join("rules/x")).unwrap();
+        fs::write(source.join("rules/x/r.md"), "r").unwrap();
+        fs::set_permissions(
+            source.join("rules/x/r.md"),
+            fs::Permissions::from_mode(0o666),
+        )
+        .unwrap();
+        let dir = store.add(&n("w")).unwrap();
+        let m = |p: PathBuf| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(m(dir.join("rules/x")), 0o700);
+        assert_eq!(m(dir.join("rules/x/r.md")), 0o600);
+    }
+}
