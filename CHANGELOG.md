@@ -7,6 +7,10 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ## [Unreleased] — Recipe Execution Hardening
 
+### Added
+
+- **Claude login profiles (#1555)** — `amplihack profile <add|list|show|switch|remove|login|run>` and `--profile <name>` on `launch`/`claude` manage named, isolated Claude Code logins via `CLAUDE_CONFIG_DIR`. Manual only: no token vault, refresh, usage probing or auto-rotation. See `docs/howto/claude-profiles.md`.
+
 ### Fixed
 
 - **Artifact Guard blocked verified work over a pre-existing repository

@@ -23,6 +23,8 @@ mod tests_launch;
 #[cfg(test)]
 mod tests_model;
 #[cfg(test)]
+mod tests_profile;
+#[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
 mod tests_subprocess_safe;
@@ -152,7 +154,7 @@ pub fn run_launch(
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
 ) -> Result<()> {
-    run_launch_with(
+    run_launch_profiled(
         tool,
         launcher_command,
         docker,
@@ -166,6 +168,44 @@ pub fn run_launch(
         extra_args,
         override_origin,
         proxy_target,
+        None,
+    )
+}
+
+/// [`run_launch`] with an optional Claude login-profile directory, exported to
+/// the child as `CLAUDE_CONFIG_DIR` (Claude-compatible tools only).
+#[allow(clippy::too_many_arguments)]
+pub fn run_launch_profiled(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        claude_config_dir,
         amplihack_utils::root_sandbox::detect,
     )
 }
@@ -173,6 +213,7 @@ pub fn run_launch(
 /// [`run_launch`] with the issue #1482 root-sandbox decision injected, so
 /// tests reach the call in the launch whatever uid they run as.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_launch_with(
     tool: &str,
     launcher_command: &str,
@@ -187,6 +228,43 @@ pub(crate) fn run_launch_with(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        None,
+        root_sandbox_decision,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_launch_core(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
@@ -374,6 +452,7 @@ pub(crate) fn run_launch_with(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
+            claude_config_dir.as_deref(),
         );
         cmd.current_dir(&execution_dir);
         let routed_copilot = proxy_config.is_some()
@@ -395,6 +474,9 @@ pub(crate) fn run_launch_with(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::verify_launch_profile_dir(dir)?;
+        }
         let mut child = match ManagedChild::spawn(cmd) {
             Ok(child) => child,
             Err(err) => {

@@ -275,6 +275,7 @@ fn copilot_subprocess_safe_injects_allow_all_tools_and_paths() {
         &[],
         None,
         true, // subprocess_safe
+        None,
     );
     let args = arg_strings(&cmd);
     assert!(
@@ -304,6 +305,7 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_tools() 
         &extra,
         None,
         true, // subprocess_safe
+        None,
     );
     let args = arg_strings(&cmd);
     let tools_count = args
@@ -325,7 +327,16 @@ fn copilot_subprocess_safe_skips_injection_when_user_supplied_allow_all_paths() 
     }
 
     let extra = vec!["--allow-all-paths".to_string()];
-    let cmd = build_command_for_dir(&copilot_binary(), false, false, false, &extra, None, true);
+    let cmd = build_command_for_dir(
+        &copilot_binary(),
+        false,
+        false,
+        false,
+        &extra,
+        None,
+        true,
+        None,
+    );
     let args = arg_strings(&cmd);
     let paths_count = args
         .iter()
@@ -348,7 +359,16 @@ fn copilot_subprocess_safe_skips_both_granular_when_allow_all_present() {
     }
 
     let extra = vec!["--allow-all".to_string()];
-    let cmd = build_command_for_dir(&copilot_binary(), false, false, false, &extra, None, true);
+    let cmd = build_command_for_dir(
+        &copilot_binary(),
+        false,
+        false,
+        false,
+        &extra,
+        None,
+        true,
+        None,
+    );
     let args = arg_strings(&cmd);
     assert!(
         !args.iter().any(|a| a == "--allow-all-tools"),
@@ -382,6 +402,7 @@ fn copilot_subprocess_safe_with_no_allow_all_env_skips_all_three_permission_flag
         &[],
         None,
         true, // subprocess_safe
+        None,
     );
     let args = arg_strings(&cmd);
 
@@ -426,6 +447,7 @@ fn copilot_interactive_does_not_inject_subprocess_safe_granular_flags() {
         &[],
         None,
         false, // subprocess_safe = false
+        None,
     );
     let args = arg_strings(&cmd);
 
@@ -458,6 +480,7 @@ fn non_copilot_binaries_never_get_subprocess_safe_granular_flags() {
         &[],
         None,
         true, // subprocess_safe is true but this is a claude binary
+        None,
     );
     let args = arg_strings(&cmd);
     assert!(
@@ -480,7 +503,7 @@ fn codex_does_not_get_subprocess_safe_granular_flags() {
         path: PathBuf::from("/usr/bin/codex"),
         version: None,
     };
-    let cmd = build_command_for_dir(&codex, false, false, false, &[], None, true);
+    let cmd = build_command_for_dir(&codex, false, false, false, &[], None, true, None);
     let args = arg_strings(&cmd);
     assert!(
         !args.iter().any(|a| a == "--allow-all-tools"),
@@ -509,7 +532,16 @@ fn copilot_subprocess_safe_flags_appear_before_user_trailing_args() {
 
     let user_marker = "USER_TRAILING_ARG";
     let extra = vec![user_marker.to_string()];
-    let cmd = build_command_for_dir(&copilot_binary(), false, false, false, &extra, None, true);
+    let cmd = build_command_for_dir(
+        &copilot_binary(),
+        false,
+        false,
+        false,
+        &extra,
+        None,
+        true,
+        None,
+    );
     let args = arg_strings(&cmd);
 
     unsafe {

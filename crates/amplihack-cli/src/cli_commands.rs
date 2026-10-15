@@ -32,6 +32,9 @@ pub enum Commands {
     },
     /// Remove amplihack agents and tools
     Uninstall,
+    /// Manage Claude Code login profiles
+    #[command(subcommand)]
+    Profile(crate::commands::profile::ProfileCommands),
     /// Launch Claude Code
     Launch {
         /// Resume the previous session
@@ -73,6 +76,9 @@ pub enum Commands {
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Use a named Claude login profile (see `amplihack profile`).
+        #[arg(long = "profile", value_name = "NAME")]
+        profile: Option<String>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -128,6 +134,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Use a named Claude login profile (see `amplihack profile`).
+        #[arg(long = "profile", value_name = "NAME")]
+        profile: Option<String>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
