@@ -41,17 +41,22 @@ Caveats:
   status-line commands for embedded secrets or machine-specific paths before
   adding a profile; what they contain is your responsibility. Values are never
   logged.
-- **Symlinks.** A symlinked `~/.claude` is refused (`SymlinkRefused`). Symlinks
+- **Symlinks.** A symlinked `~/.claude` is refused (`SymlinkRefused`); symlinked
+  ancestors of it are resolved normally. A missing `CLAUDE.md` or `settings.json`
+  is skipped. Symlinks
   and special files (FIFOs, sockets, devices) inside the shared directories are
-  skipped, never followed or copied. On Unix the copy is descriptor-based
-  (`O_NOFOLLOW`, `openat`), so a directory replaced by a symlink mid-copy is
-  not followed; non-Unix platforms lack this race hardening.
+  skipped, never followed or copied. On Unix the copy is descriptor-based:
+  `~/.claude` is opened once with `O_NOFOLLOW` and everything else is read with
+  `openat` relative to that descriptor, so swapping `~/.claude` or a
+  directory for a symlink mid-copy is not followed and no outside data is
+  copied; non-Unix platforms lack this race hardening.
 - **Permissions.** Copied directories are `0700`, files `0600`. Existing files
   are never overwritten.
 - **Limits.** Copying is bounded (16 directory levels, 5,000 entries); exceeding a bound
   is an error that fails the add (it is not silently truncated).
-- **Windows.** Source files are opened with `O_NOFOLLOW` on Unix to close the
-  check-then-open race. Windows has no equivalent, so a same-user race remains
+- **Non-Unix / Windows.** On Unix, source files are opened relative to a
+  no-follow root descriptor to close the check-then-open race. Non-Unix
+  platforms, including Windows, have no equivalent, so a same-user race remains
   possible there.
 - **Failure is rolled back.** If seeding fails (for example invalid
   `settings.json` gives `InvalidSharedSettings`), the profile directory created

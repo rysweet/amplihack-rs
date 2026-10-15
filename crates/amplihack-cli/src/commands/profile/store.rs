@@ -240,6 +240,34 @@ fn private_dir_builder() -> fs::DirBuilder {
     b
 }
 
+/// Unix: the source root is opened once with no-follow and every later open is
+/// relative to that descriptor, so a root swapped for a symlink afterwards is
+/// never followed. Only the final component of `source` is no-follow; symlinked
+/// ancestors are resolved once, at this open.
+#[cfg(unix)]
+fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileError> {
+    let Some(root) = fdwalk::open_root(source)? else {
+        return Ok(());
+    };
+    #[cfg(test)]
+    test_hook::fire_after_root_anchor(source);
+
+    let mut entries = 0usize;
+    for name in SHARED_ASSET_DIRS {
+        copy_allowlisted_tree(&root, name, &destination.join(name), 0, &mut entries)?;
+    }
+    let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
+        .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
+    for name in SHARED_ASSET_FILES {
+        fdwalk::copy_root_file(&root, &dst, name)?;
+    }
+    if let Some(raw) = fdwalk::read_root_file(&root, "settings.json", MAX_SETTINGS_BYTES)? {
+        write_filtered_settings(&raw, &destination.join("settings.json"))?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
 fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(meta) if meta.file_type().is_symlink() => {
@@ -314,18 +342,20 @@ fn copy_allowlisted_tree(
 /// path component swapped for a symlink mid-copy is never followed.
 #[cfg(unix)]
 fn copy_allowlisted_tree(
-    source: &Path,
+    root: &std::os::fd::OwnedFd,
+    name: &str,
     destination: &Path,
     depth: usize,
     entries: &mut usize,
 ) -> Result<(), ProfileError> {
-    let Some(src) = fdwalk::open_dir(libc::AT_FDCWD, source)? else {
+    use std::os::fd::AsRawFd;
+    let Some(src) = fdwalk::open_dir(root.as_raw_fd(), Path::new(name))? else {
         return Ok(());
     };
     private_dir_builder().create(destination)?;
     let dst = fdwalk::open_dir(libc::AT_FDCWD, destination)?
         .ok_or_else(|| ProfileError::SymlinkRefused(destination.display().to_string()))?;
-    fdwalk::copy_dir(&src, &dst, source, depth, entries)
+    fdwalk::copy_dir(&src, &dst, Path::new(name), depth, entries)
 }
 
 #[cfg(all(unix, test))]
@@ -336,6 +366,22 @@ pub(super) mod test_hook {
     type Hook = Box<dyn Fn(&Path)>;
     thread_local! {
         static BEFORE_OPEN: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    thread_local! {
+        static AFTER_ROOT_ANCHOR: RefCell<Option<Hook>> = const { RefCell::new(None) };
+    }
+
+    pub fn set_after_root_anchor(hook: Option<Hook>) {
+        AFTER_ROOT_ANCHOR.with(|h| *h.borrow_mut() = hook);
+    }
+
+    pub(super) fn fire_after_root_anchor(path: &Path) {
+        AFTER_ROOT_ANCHOR.with(|h| {
+            if let Some(hook) = h.borrow().as_ref() {
+                hook(path);
+            }
+        });
     }
 
     pub fn set_before_open(hook: Option<Hook>) {
@@ -393,6 +439,70 @@ mod fdwalk {
             e.raw_os_error(),
             Some(libc::ELOOP | libc::ENOTDIR | libc::ENOENT)
         )
+    }
+
+    /// The only absolute-path source open. `Ok(None)` when the root is absent.
+    pub(super) fn open_root(path: &Path) -> Result<Option<OwnedFd>, ProfileError> {
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
+        match openat(libc::AT_FDCWD, path.as_os_str(), flags, 0) {
+            Ok(fd) => Ok(Some(fd)),
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => Ok(None),
+            Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+                // Error classification only; no data is read through this path.
+                match std::fs::symlink_metadata(path) {
+                    Ok(m) if m.file_type().is_symlink() => {
+                        Err(ProfileError::SymlinkRefused(path.display().to_string()))
+                    }
+                    Ok(_) => Err(ProfileError::InvalidSharedSource(
+                        path.display().to_string(),
+                    )),
+                    Err(m) if m.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                    Err(m) => Err(m.into()),
+                }
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Opens a root-relative regular file; `None` if absent, a symlink or special.
+    fn open_regular(root: &OwnedFd, name: &str) -> Result<Option<File>, ProfileError> {
+        debug_assert!(!name.is_empty() && !name.contains('/') && name != "..");
+        let flags = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_NONBLOCK;
+        let input = match openat(root.as_raw_fd(), OsStr::new(name), flags, 0) {
+            Ok(fd) => File::from(fd),
+            Err(e) if skippable(&e) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(input.metadata()?.file_type().is_file().then_some(input))
+    }
+
+    pub(super) fn copy_root_file(
+        root: &OwnedFd,
+        dst: &OwnedFd,
+        name: &str,
+    ) -> Result<(), ProfileError> {
+        match open_regular(root, name)? {
+            Some(input) => write_file(input, dst, OsStr::new(name)),
+            None => Ok(()),
+        }
+    }
+
+    pub(super) fn read_root_file(
+        root: &OwnedFd,
+        name: &str,
+        limit: u64,
+    ) -> Result<Option<Vec<u8>>, ProfileError> {
+        let Some(input) = open_regular(root, name)? else {
+            return Ok(None);
+        };
+        let mut raw = Vec::new();
+        input.take(limit + 1).read_to_end(&mut raw)?;
+        if raw.len() as u64 > limit {
+            return Err(ProfileError::SharedAssetLimit(format!(
+                "{name} larger than {limit} bytes"
+            )));
+        }
+        Ok(Some(raw))
     }
 
     /// `Ok(None)` when the path is absent, not a directory, or a symlink.
@@ -548,6 +658,10 @@ mod fdwalk {
         if !input.metadata()?.file_type().is_file() {
             return Ok(());
         }
+        write_file(input, dst, name)
+    }
+
+    fn write_file(input: File, dst: &OwnedFd, name: &OsStr) -> Result<(), ProfileError> {
         let out_flags = libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL | libc::O_NOFOLLOW;
         let mut output = File::from(openat(dst.as_raw_fd(), name, out_flags, 0o600)?);
         let copied = std::io::copy(&mut input.take(MAX_COPY_FILE_BYTES + 1), &mut output)?;
@@ -560,6 +674,7 @@ mod fdwalk {
     }
 }
 
+#[cfg(not(unix))]
 fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -580,8 +695,8 @@ fn copy_regular_file(source: &Path, destination: &Path) -> Result<(), ProfileErr
     Ok(())
 }
 
-/// Opens without following a symlink swapped in after the metadata check, and
-/// without blocking on a FIFO swapped in the same way.
+/// Best-effort on non-Unix: no descriptor-relative open is available.
+#[cfg(not(unix))]
 fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
@@ -593,6 +708,7 @@ fn open_source_nofollow(path: &Path) -> std::io::Result<fs::File> {
     options.open(path)
 }
 
+#[cfg(not(unix))]
 fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -610,7 +726,11 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
             "settings.json larger than 1 MiB".into(),
         ));
     }
-    let value: serde_json::Value = serde_json::from_slice(&raw)
+    write_filtered_settings(&raw, destination)
+}
+
+fn write_filtered_settings(raw: &[u8], destination: &Path) -> Result<(), ProfileError> {
+    let value: serde_json::Value = serde_json::from_slice(raw)
         .map_err(|error| ProfileError::InvalidSharedSettings(error.to_string()))?;
     let serde_json::Value::Object(settings) = value else {
         return Err(ProfileError::InvalidSharedSettings(

@@ -60,12 +60,22 @@ Rules:
   checks both directions (every constant key is documented here and in the
   how-to guide, and no extra key is documented).
 - A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
-  special files (FIFOs, sockets, devices) are skipped. On Unix the tree is
-  walked by file descriptor: each directory is opened with
+  special files (FIFOs, sockets, devices) are skipped. On Unix the source root
+  is opened exactly once with `O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC` and
+  that descriptor anchors the whole copy. The five allowlisted directories,
+  `CLAUDE.md` and `settings.json` are opened with `openat(root_fd, name, ...)`
+  and `O_NOFOLLOW`, never by absolute path, so replacing `~/.claude` (or any
+  ancestor) with a symlink after the anchor is taken cannot redirect the copy:
+  the descriptor still pins the original directory. Ancestors of the root are
+  resolved once, at anchor time. Each directory is opened with
   `O_NOFOLLOW|O_DIRECTORY` and entries are read and stat'ed relative to it
   (`openat`/`fstatat` with `AT_SYMLINK_NOFOLLOW`), so a directory swapped for a
-  symlink during the copy is never followed. Files are opened `O_NOFOLLOW` and
-  must be regular files. Entry names must be a single path component.
+  symlink during the copy is never followed. Files are opened `O_NOFOLLOW`
+  and `O_NONBLOCK`, verified as regular files with `fstat` on the opened
+  descriptor, and read through that same descriptor with a bounded read. Entry
+  names must be a single path component. A missing `CLAUDE.md` or
+  `settings.json` is skipped. Only the final component of the root is
+  no-follow: a symlinked ancestor of `~/.claude` is resolved normally, once.
   Non-Unix platforms keep the path-based copy without this hardening.
 - A missing `~/.claude` source produces an empty profile. An existing source
   that is not a directory fails the add and rolls back the new profile.
@@ -148,8 +158,10 @@ When creating a profile amplihack reads the allowlisted assets and parses
 `settings.json`; it never modifies the source directory and never copies
 credential or history files. Allowlisted setting values and asset contents are
 copied verbatim, so any secrets embedded in hooks, status-line commands or
-skills remain the user's responsibility. Unix source reads use `O_NOFOLLOW`;
-Windows has a residual same-user check-then-open race. Profiles are not a security boundary against the same OS user.
+skills remain the user's responsibility. Unix source reads are anchored to a
+no-follow root descriptor; non-Unix platforms have a residual same-user
+check-then-open race. Profiles are not a security boundary against the same
+OS user.
 The pre-spawn re-validation narrows but does not close the window between the
 check and `exec`; it is not atomic. This is defense in depth: anyone who can
 write the profile store already has the user's privileges.

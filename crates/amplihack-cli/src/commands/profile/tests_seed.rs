@@ -295,6 +295,49 @@ mod race_and_nested {
         }
     }
 
+    #[test]
+    fn source_root_swapped_to_symlink_after_anchor_copies_no_outside_data() {
+        let (d, source, store) = fixture();
+        fs::create_dir_all(source.join("skills/real")).unwrap();
+        fs::write(source.join("skills/real/a.md"), "REAL").unwrap();
+        fs::write(source.join("CLAUDE.md"), "REAL-CLAUDE").unwrap();
+        fs::write(source.join("settings.json"), r#"{"model":"real"}"#).unwrap();
+
+        let outside = d.path().join("outside");
+        fs::create_dir_all(outside.join("skills/evil")).unwrap();
+        fs::write(outside.join("skills/evil/s.md"), "TOPSECRET").unwrap();
+        fs::write(outside.join("CLAUDE.md"), "TOPSECRET").unwrap();
+        fs::write(outside.join("settings.json"), r#"{"model":"TOPSECRET"}"#).unwrap();
+
+        let aside = d.path().join("aside");
+        let src = source.clone();
+        // Fires after the source root is anchored, before any entry is read.
+        super::super::store::test_hook::set_after_root_anchor(Some(Box::new(move |_| {
+            fs::rename(&src, &aside).unwrap();
+            symlink(&outside, &src).unwrap();
+        })));
+        let res = store.add(&n("w"));
+        super::super::store::test_hook::set_after_root_anchor(None);
+
+        let dir = store.root().join("w");
+        assert!(res.is_ok(), "{res:?}");
+        let files = walk(&dir);
+        assert!(
+            !files.iter().any(|f| fs::read_to_string(f)
+                .map(|s| s.contains("TOPSECRET"))
+                .unwrap_or(false)),
+            "outside data copied via swapped source root"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("skills/real/a.md")).unwrap(),
+            "REAL"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.join("CLAUDE.md")).unwrap(),
+            "REAL-CLAUDE"
+        );
+    }
+
     fn walk(p: &Path) -> Vec<PathBuf> {
         let mut out = vec![];
         if let Ok(rd) = fs::read_dir(p) {
