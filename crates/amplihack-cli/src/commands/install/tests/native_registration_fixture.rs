@@ -44,11 +44,21 @@ pub(super) fn executable(bin: &Path) -> PathBuf {
     binary
 }
 
-pub(super) fn inventory(binary: &Path, home: &Path, codex_home: &Path) -> Value {
-    let output = Command::new(binary)
-        .args(["plugin", "list", "--json"])
+fn native_command(binary: &Path, home: &Path, codex_home: &Path) -> Command {
+    let mut command = Command::new(binary);
+    // Other tests temporarily replace the process PATH. Keep this fixture's
+    // bash interpreter and POSIX utilities independent of that ambient state.
+    command
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
         .env("HOME", home)
-        .env("CODEX_HOME", codex_home)
+        .env("CODEX_HOME", codex_home);
+    command
+}
+
+pub(super) fn inventory(binary: &Path, home: &Path, codex_home: &Path) -> Value {
+    let output = native_command(binary, home, codex_home)
+        .args(["plugin", "list", "--json"])
         .output()
         .unwrap();
     assert!(
@@ -83,10 +93,8 @@ fn fixture_add_reenables_owned_disabled_entry_and_reports_preference_separately(
     let before = inventory(&binary, home, &codex_home);
     assert_eq!(before["installed"][0]["installed"], true);
     assert_eq!(before["installed"][0]["enabled"], false);
-    let output = Command::new(&binary)
+    let output = native_command(&binary, home, &codex_home)
         .args(["plugin", "add", "amplihack@amplihack-local", "--json"])
-        .env("HOME", home)
-        .env("CODEX_HOME", &codex_home)
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -100,5 +108,33 @@ fn fixture_add_reenables_owned_disabled_entry_and_reports_preference_separately(
             "[plugins.\"amplihack@amplihack-local\"]\nenabled = true",
             1
         )
+    );
+}
+
+#[test]
+fn native_fixture_works_without_an_ambient_shell_path() {
+    let isolated = tempfile::tempdir().unwrap();
+    let output = Command::new(std::env::current_exe().unwrap())
+        .args([
+            "commands::install::tests::native_registration_fixture::fixture_add_reenables_owned_disabled_entry_and_reports_preference_separately",
+            "--exact",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_clear()
+        .env("PATH", isolated.path())
+        .env("HOME", isolated.path())
+        .env("TMPDIR", isolated.path())
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "fixture failed without an ambient shell PATH:\n{stdout}\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("1 passed;"),
+        "fixture did not run: {stdout}"
     );
 }
