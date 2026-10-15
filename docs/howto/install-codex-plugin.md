@@ -156,7 +156,7 @@ Canonical skill trees retain their directory layout. Generated instruction name 
 
 Only command handlers are registered. Prompt and agent hook handlers, unsupported events, and input rewriting are outside this integration. Codex transcripts are not treated as Claude transcripts; transcript-dependent checks cannot be claimed when the required data is unavailable. Advisory hook errors retain existing fail-open behavior with diagnostics; explicit policy denials remain denials. Protocol responses go to stdout and diagnostics to stderr.
 
-Trust is user-controlled. Ordinary install and launch never insert `--dangerously-bypass-hook-trust`. Automation that independently vets hook sources may explicitly pass that native flag for its invocation; it neither persists trust nor changes approval or sandbox policy. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
+Trust is user-controlled. Ordinary install and launch never insert `--dangerously-bypass-hook-trust`; review and trust the command definitions through Codex's `/hooks` interface. Do not bypass hook trust to make an unattended installation succeed. Hooks execute with user privileges, so the model sandbox does not isolate hook commands. [Official packaging documentation](https://developers.openai.com/plugins/build/plugins) describes the native manifest and portable plugin runtime variables.
 
 ## Runner delivery and removal
 

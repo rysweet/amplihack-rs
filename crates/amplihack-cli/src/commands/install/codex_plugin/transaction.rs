@@ -66,6 +66,11 @@ fn install_scoped(
 }
 
 fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Result<()> {
+    if prepared.already_current {
+        path_scope::check()?;
+        amplihack_launcher::codex_config::configure(home, false)?;
+        return Ok(());
+    }
     let Prepared {
         ledger,
         package,
@@ -77,13 +82,19 @@ fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Resul
         hooks,
         transaction,
         staged,
+        already_current: _,
     } = prepared;
     path_scope::check()?;
     amplihack_launcher::codex_config::configure(home, false)?;
     path_scope::check()?;
     atomic_json(marketplace_path, marketplace, original_marketplace.clone())?;
     path_scope::check()?;
-    if package.exists() {
+    if path_present(package)? {
+        let metadata = fs::symlink_metadata(package)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Codex package changed to a non-directory or symlink during install; preserving it"
+        );
         fs::rename(package, root.join("previous-package"))?;
     }
     path_scope::check()?;

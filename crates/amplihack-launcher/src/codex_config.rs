@@ -70,10 +70,7 @@ pub fn configure(directory: &Path, bootstrap: bool) -> Result<()> {
             .context("failed to atomically replace Codex configuration")?;
         lock.sync_all()?;
     }
-    // Only the exact historical launcher output is owned. Ambiguous files stay.
-    let legacy = directory.join("config.yaml");
-    if read_regular(&legacy)?.as_deref() == Some("approval_mode: auto\n") {
-        fs::remove_file(&legacy).context("failed to retire owned legacy Codex YAML")?;
-    }
+    // Leave legacy config.yaml untouched. It is outside this TOML transaction,
+    // and even known historical contents must survive a failed installation.
     Ok(())
 }

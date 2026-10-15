@@ -93,12 +93,12 @@ fn ignores_stale_persisted_launcher_context() {
 }
 
 #[test]
-fn codex_authoritative_host_overrides_inherited_provider_markers() {
+fn active_provider_markers_override_inherited_codex_agent_binary() {
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let _codex = crate::test_support::EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "codex");
     let _copilot = crate::test_support::EnvVarGuard::set("GITHUB_COPILOT_AGENT", "1");
     let _claude = crate::test_support::EnvVarGuard::set("CLAUDE_CODE_SESSION", "inherited");
-    assert_eq!(format!("{:?}", detect_launcher()), "Codex");
+    assert_eq!(format!("{:?}", detect_launcher()), "Copilot");
 }
 
 #[test]

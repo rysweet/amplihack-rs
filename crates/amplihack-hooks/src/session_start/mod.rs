@@ -87,7 +87,7 @@ impl Hook for SessionStartHook {
         }
 
         // Migrate global hooks if needed.
-        if std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() != Ok("codex")
+        if std::env::var("AMPLIHACK_HOOK_PROTOCOL").as_deref() != Ok("codex")
             && let Some(migration_notice) = migrate_global_hooks(&dirs)
         {
             context_parts.push(migration_notice);

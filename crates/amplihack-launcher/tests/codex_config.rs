@@ -4,10 +4,13 @@ use amplihack_launcher::codex::configure_codex;
 use std::fs;
 
 #[test]
-fn ordinary_configuration_never_creates_legacy_yaml_or_approval_override() {
+fn ordinary_configuration_leaves_legacy_yaml_and_approval_override_untouched() {
     let dir = tempfile::tempdir().unwrap();
+    fs::create_dir(dir.path().join(".codex")).unwrap();
+    let legacy = dir.path().join(".codex/config.yaml");
+    fs::write(&legacy, "approval_mode: auto\n").unwrap();
     configure_codex(dir.path()).unwrap();
-    assert!(!dir.path().join(".codex/config.yaml").exists());
+    assert_eq!(fs::read_to_string(legacy).unwrap(), "approval_mode: auto\n");
     let path = dir.path().join(".codex/config.toml");
     if path.exists() {
         assert!(
@@ -53,7 +56,7 @@ fn symlink_configuration_is_refused_and_target_is_untouched() {
     assert_eq!(fs::read_to_string(target).unwrap(), "# outside config\n");
 }
 #[test]
-fn ambiguous_legacy_yaml_is_preserved() {
+fn legacy_yaml_is_preserved() {
     let dir = tempfile::tempdir().unwrap();
     fs::create_dir(dir.path().join(".codex")).unwrap();
     let path = dir.path().join(".codex/config.yaml");

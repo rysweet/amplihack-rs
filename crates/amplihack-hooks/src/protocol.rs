@@ -69,7 +69,10 @@ pub fn run_hook<H: Hook>(hook: H) {
     let start = Instant::now();
     let hook_name = hook.name();
     let policy = hook.failure_policy();
-    let codex = std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() == Ok("codex");
+    // Hook wire protocol belongs to the host invoking this hook. The active
+    // agent binary can be inherited by nested Claude/Copilot processes, so it
+    // must not select the hook protocol.
+    let codex = codex_hook_protocol_selected();
     let security = codex && hook_name == "pre_tool_use";
 
     let result = std::panic::catch_unwind(AssertUnwindSafe(|| -> anyhow::Result<()> {
@@ -178,6 +181,10 @@ pub fn run_hook<H: Hook>(hook: H) {
             let _ = io::stdout().flush();
         }
     }
+}
+
+fn codex_hook_protocol_selected() -> bool {
+    std::env::var("AMPLIHACK_HOOK_PROTOCOL").as_deref() == Ok("codex")
 }
 
 /// Deserialize the hook payload, injecting a known `hook_event_name` when the
@@ -336,6 +343,18 @@ mod codex_payload_contract_tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn inherited_codex_agent_binary_does_not_select_hook_protocol() {
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _agent = crate::test_support::EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "codex");
+        let _host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_HOOK_PROTOCOL");
+        assert!(!codex_hook_protocol_selected());
+        let _codex_host = crate::test_support::EnvVarGuard::set("AMPLIHACK_HOOK_PROTOCOL", "codex");
+        assert!(codex_hook_protocol_selected());
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn security_denial_subprocess_worker() {
@@ -395,7 +414,7 @@ mod codex_payload_contract_tests {
                     .env("AMPLIHACK_TEST_DENIAL_PANIC", "1")
                     .env("AMPLIHACK_TEST_SECURITY_MODE", mode)
                     .env("AMPLIHACK_TEST_SECURITY_TRANSPORT", transport)
-                    .env("AMPLIHACK_AGENT_BINARY", "codex")
+                    .env("AMPLIHACK_HOOK_PROTOCOL", "codex")
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
                     .stderr(Stdio::piped())

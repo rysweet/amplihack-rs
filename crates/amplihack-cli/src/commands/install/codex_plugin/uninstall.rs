@@ -34,6 +34,21 @@ fn uninstall_scoped(root: &Path, home: &Path) -> Result<()> {
         record.codex_home == home,
         "Codex ownership home differs from captured selection; preserve record"
     );
+    // Validate the on-disk package before unregistering the native plugin or
+    // reconciling hooks. If an owner changed it, uninstall must preserve every
+    // part of the owned installation and stop before side effects.
+    let package = root.join("market/plugin");
+    if path_present(&package)? {
+        let metadata = fs::symlink_metadata(&package)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Codex package changed to a non-directory or symlink; preserving package and ownership record"
+        );
+        ensure!(
+            digest(&package)? == record.package_digest,
+            "Codex package modified; preserving package and ownership record"
+        );
+    }
     let binary =
         selected_binary()?.context("Codex required to unregister owned plugin before deletion")?;
     recover_install(root, &binary, &record.codex_home)?;
@@ -52,11 +67,17 @@ fn uninstall_scoped(root: &Path, home: &Path) -> Result<()> {
     }
     path_scope::check()?;
     reconcile_hooks(&record.codex_home, &record.hooks, &json!({}))?;
-    let package = root.join("market/plugin");
-    if package.exists() && digest(&package)? == record.package_digest {
+    if path_present(&package)? {
+        let metadata = fs::symlink_metadata(&package)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Codex package changed to a non-directory or symlink; preserving package and ownership record"
+        );
+        ensure!(
+            digest(&package)? == record.package_digest,
+            "Codex package modified; preserving package and ownership record"
+        );
         fs::remove_dir_all(package)?;
-    } else if package.exists() {
-        bail!("Codex package modified; preserving package and ownership record");
     }
     path_scope::check()?;
     fs::remove_file(root.join("ownership.json"))?;

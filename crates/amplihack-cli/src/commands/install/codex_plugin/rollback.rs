@@ -23,13 +23,23 @@ pub(super) fn restore(pending: &Value, root: &Path, binary: &Path, home: &Path) 
             pending["ledger"]["package_digest"].as_str() == Some(digest(&backup)?.as_str()),
             "previous Codex package changed; recovery retained for manual repair"
         );
-        if package.exists() {
+        if path_present(&package)? {
+            let metadata = fs::symlink_metadata(&package)?;
+            ensure!(
+                metadata.is_dir() && !metadata.file_type().is_symlink(),
+                "Codex package changed to a non-directory or symlink; recovery retained"
+            );
             guard(pending, root, home, &journal)?;
             fs::remove_dir_all(&package)?;
         }
         guard(pending, root, home, &journal)?;
         fs::rename(&backup, &package)?;
-    } else if pending["had_package"] == false && package.exists() {
+    } else if pending["had_package"] == false && path_present(&package)? {
+        let metadata = fs::symlink_metadata(&package)?;
+        ensure!(
+            metadata.is_dir() && !metadata.file_type().is_symlink(),
+            "Codex package changed to a non-directory or symlink; recovery retained"
+        );
         fs::remove_dir_all(&package)?;
     }
     for (key, path) in recovery::recovery_paths(root, home)

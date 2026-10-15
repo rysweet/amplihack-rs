@@ -11,6 +11,7 @@ pub(super) struct Prepared {
     pub(super) hooks: Value,
     pub(super) transaction: String,
     pub(super) staged: tempfile::TempDir,
+    pub(super) already_current: bool,
 }
 const LEGACY_PROOF: &str =
     "legacy or changed Codex ownership proof; preserve package and reconcile manually";
@@ -40,7 +41,11 @@ fn migrate_legacy_ledger(ledger: &Path, package: &Path, old: &mut Ownership) -> 
     ensure!(
         manifest["name"] == "amplihack"
             && regular("hooks/hooks.json")? == b"{\"hooks\":{}}\n"
-            && regular("bin/hook")? == HOOK_WRAPPER.as_bytes()
+            && matches!(
+                regular("bin/hook")?.as_slice(),
+                wrapper if wrapper == HOOK_WRAPPER.as_bytes()
+                    || wrapper == LEGACY_HOOK_WRAPPER.as_bytes()
+            )
             && old.hooks == declarations(package)?,
         LEGACY_PROOF
     );
@@ -98,7 +103,7 @@ pub(super) fn prepare(
         previous.is_some() || !installed(&inventory),
         "unowned existing Codex identity; refusing replacement"
     );
-    if package.exists() {
+    if path_present(&package)? {
         ensure!(
             !fs::symlink_metadata(&package)?.file_type().is_symlink(),
             "refusing symlink Codex package"
@@ -170,6 +175,33 @@ pub(super) fn prepare(
         .into_owned();
     let snapshots = json!({"hooks":snapshot(&home.join("hooks.json"))?, "marketplace":snapshot(&marketplace_path)?, "ledger":snapshot(&ledger)?});
     let target_digest = digest(staged.path())?;
+    let package_matches = path_present(&package)? && digest(&package)? == target_digest;
+    let already_current = package_matches
+        && installed(&inventory)
+        && previous.as_ref().is_some_and(|owner| {
+            owner.package_digest == target_digest
+                && owner.hooks == hooks
+                && owner.codex_home == home
+        })
+        && original_marketplace.as_ref() == Some(&marketplace)
+        && original_hooks
+            .as_ref()
+            .is_some_and(|current| current == &expected_hooks);
+    if already_current {
+        return Ok(Prepared {
+            ledger,
+            package,
+            market,
+            marketplace_path,
+            marketplace,
+            original_marketplace,
+            old_hooks,
+            hooks,
+            transaction,
+            staged,
+            already_current: true,
+        });
+    }
     let record = Ownership {
         schema_version: 1,
         transaction: Some(transaction.clone()),
@@ -180,7 +212,7 @@ pub(super) fn prepare(
     let expected = json!({"config":original_config,"hooks":json_bytes(&expected_hooks)?,
         "marketplace":json_bytes(&marketplace)?,"ledger":json_bytes(&serde_json::to_value(record)?)?});
     let pending = json!({"config_states":config_states,"expected":expected,"snapshots":snapshots,"schema_version":2,"codex_home":home,"transaction":transaction,"config":original_config,"marketplace":original_marketplace, "hooks":original_hooks,
-        "ledger":original_ledger, "installed":installed(&inventory), "had_package":package.exists(), "target_digest":target_digest, "target_hooks":hooks});
+        "ledger":original_ledger, "installed":installed(&inventory), "had_package":path_present(&package)?, "target_digest":target_digest, "target_hooks":hooks});
     atomic_json(&root.join("pending.json"), &pending, None)?;
     // atomic_json checks the journal file and directory durability before mutation.
     Ok(Prepared {
@@ -194,5 +226,6 @@ pub(super) fn prepare(
         hooks,
         transaction,
         staged,
+        already_current: false,
     })
 }

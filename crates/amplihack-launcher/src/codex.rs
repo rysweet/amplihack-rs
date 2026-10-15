@@ -221,13 +221,13 @@ mod tests {
     }
 
     #[test]
-    fn configure_codex_does_not_overwrite() {
+    fn configure_codex_preserves_legacy_yaml() {
         let dir = tempfile::tempdir().unwrap();
         let config_dir = dir.path().join(".codex");
         std::fs::create_dir_all(&config_dir).unwrap();
         std::fs::write(config_dir.join("config.yaml"), "custom: true\n").unwrap();
         configure_codex(dir.path()).unwrap();
         let content = std::fs::read_to_string(config_dir.join("config.yaml")).unwrap();
-        assert!(content.contains("custom: true"));
+        assert_eq!(content, "custom: true\n");
     }
 }

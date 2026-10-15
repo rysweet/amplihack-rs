@@ -89,6 +89,25 @@ fn verified_legacy_digest_ownership_migrates_to_framed_proof() {
 }
 
 #[test]
+fn verified_legacy_wrapper_ownership_migrates_to_new_protocol_wrapper() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let f = fixture();
+    fs::write(f.package.join("bin/hook"), LEGACY_HOOK_WRAPPER).unwrap();
+    f.write_ledger(&legacy_digest(&f.package).unwrap());
+
+    f.prepare().unwrap();
+
+    let ledger: Ownership = serde_json::from_slice(&f.ledger_bytes()).unwrap();
+    assert!(resources::current_digest(&ledger.package_digest));
+    assert_eq!(
+        fs::read(f.package.join("bin/hook")).unwrap(),
+        LEGACY_HOOK_WRAPPER.as_bytes()
+    );
+}
+
+#[test]
 fn tampered_legacy_package_is_refused_without_changes() {
     let _env_lock = crate::test_support::env_lock()
         .lock()
@@ -96,6 +115,30 @@ fn tampered_legacy_package_is_refused_without_changes() {
     let f = fixture();
     fs::write(f.package.join("bin/amplihack-hooks"), b"tampered").unwrap();
     f.assert_refused_untouched();
+}
+
+#[test]
+fn dangling_package_symlink_is_refused_before_writing_a_journal() {
+    use std::os::unix::fs::symlink;
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let f = fixture();
+    f.write_ledger(&digest(&f.package).unwrap());
+    fs::remove_dir_all(&f.package).unwrap();
+    symlink(f._dir.path().join("missing-package"), &f.package).unwrap();
+
+    let error = format!("{:#}", f.prepare().unwrap_err());
+
+    assert!(error.contains("refusing symlink Codex package"), "{error}");
+    assert!(
+        fs::symlink_metadata(&f.package)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(!f.root.join("pending.json").exists());
+    assert!(!f.root.join("market/.agents/plugins").exists());
 }
 
 #[test]

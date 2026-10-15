@@ -1,5 +1,25 @@
 //! Regular-file snapshots and atomic writes.
 use super::*;
+/// `Path::exists` follows symlinks and reports a dangling symlink as absent.
+/// Package ownership checks must observe the directory entry itself.
+pub(super) fn path_present(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(all(test, unix))]
+#[test]
+fn dangling_package_symlink_counts_as_present() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("package");
+    std::os::unix::fs::symlink(dir.path().join("missing-target"), &path).unwrap();
+    assert!(!path.exists(), "fixture must be a dangling symlink");
+    assert!(path_present(&path).unwrap());
+}
+
 pub(super) fn regular_json(path: &Path) -> Result<Option<Value>> {
     match fs::symlink_metadata(path) {
         Ok(m) => {
