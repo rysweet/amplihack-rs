@@ -275,7 +275,7 @@ steps:
           TOKENS=$(printf '%s\n' "$RAW" | LC_ALL=C awk '
             BEGIN {
               lead = "^[[:space:]]*[*]*[[:space:]]*(#+[[:space:]]*)?[*]*"
-              stop = "[*]*( |:|[.]|[[:space:]]-|–|—)"
+              stop = "[*]*([[:space:]]*($|:|[.]|–|—)|[[:space:]]+-)"
               pre = "([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])[*]*[[:space:]]*:[[:space:]]*[*]*[[:space:]]*"
               anyc = "([Cc][Oo][Nn][Tt][Ii][Nn][Uu][Ee]|[Dd][Oo][Nn][Ee]|[Ss][Tt][Uu][Cc][Kk])"
             }

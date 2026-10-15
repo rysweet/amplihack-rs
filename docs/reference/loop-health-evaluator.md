@@ -263,10 +263,16 @@ The prose scan accepts a verdict token only when there is no doubt about it:
   "We should continue" in ordinary English never matches. After a
   `Verdict:` or `LOOP_HEALTH:` prefix the token may be in any case, so
   `## Verdict: continue` matches.
-- The token must end the line or be followed by a space, `:`, `.`, `–` or
-  `—`. A hyphen counts only after whitespace (`DONE - all clear`); a hyphen
+- After the token (and any closing `*`) there may be whitespace, and then
+  the line must end or the next character must be `:`, `.`, `–` or `—`. A
+  hyphen counts only after whitespace (`DONE - all clear`); a hyphen
   straight after the token (`DONE-ish`) does not match. So `DISCONTINUE`,
   `NOT_DONE`, `CONTINUED` and `DONE-ish` never match.
+- A token followed by an ordinary word is a sentence, not a verdict, and
+  does not match. `CONTINUE is not warranted; the loop has stalled.` and
+  `DONE is premature: two blockers remain.` both give `STUCK` with
+  `verdict_source=unparseable_verdict`. This is the rule proposed in the
+  issue #1513 discussion; a plain space after the token is not an ending.
 - A line quoted with `>` does not match; the token must not follow any other
   character.
 - The same token on several lines counts once.
@@ -278,7 +284,7 @@ em-dash and en-dash are written as alternatives, not inside a bracket class,
 because they are multibyte:
 
 ```
-^[[:space:]]*\**[[:space:]]*(#+[[:space:]]*)?\**(([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])\**[[:space:]]*:[[:space:]]*\**[[:space:]]*)?(CONTINUE|DONE|STUCK)\**( |$|:|\.|[[:space:]]-|–|—)
+^[[:space:]]*\**[[:space:]]*(#+[[:space:]]*)?\**(([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])\**[[:space:]]*:[[:space:]]*\**[[:space:]]*)?(CONTINUE|DONE|STUCK)\**([[:space:]]*($|:|\.|–|—)|[[:space:]]+-)
 ```
 
 With a `Verdict:` or `LOOP_HEALTH:` prefix the token group is matched case
@@ -322,6 +328,14 @@ again before it merges. A copied `CONTINUE` has the same weakness; see the
 known limitation under
 [Where the prompt states the contract](#where-the-prompt-states-the-contract).
 
+The same holds for a token followed by a dashed qualifier. The ending rule
+rejects `DONE is premature`, but a line such as `DONE — but not really` still
+reads as `DONE`, because a dash after the token is how evaluators actually
+write their reason (`CONTINUE — round 1 made real progress`). The control
+that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
+in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
+clean, and otherwise the run stops as `STUCK`.
+
 ### Examples
 
 | Evaluator output | `loop_verdict` | `verdict_source` |
@@ -345,6 +359,8 @@ known limitation under
 | `DISCONTINUE` | `STUCK` | `unparseable_verdict` |
 | `CONTINUE` on one line and `STUCK` on another | `STUCK` | `unparseable_verdict` |
 | `DONE.` on two separate lines | `DONE` | `evaluator_prose_token` |
+| `CONTINUE is not warranted; the loop has stalled.` | `STUCK` | `unparseable_verdict` |
+| `DONE is premature: two blockers remain.` | `STUCK` | `unparseable_verdict` |
 | `DONE-ish, mostly` | `STUCK` | `unparseable_verdict` |
 | `I cannot CONTINUE` | `STUCK` | `unparseable_verdict` |
 | `continue reading below` | `STUCK` | `unparseable_verdict` |

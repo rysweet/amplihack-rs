@@ -218,6 +218,9 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # is STUCK. Anything we cannot read as CONTINUE or DONE is STUCK — a missing
   # verdict never authorises another round.
   # Portable to BSD awk and mawk: byte matching, no gawk extensions.
+  # The format is owned by format_recipe_run_table in
+  # crates/amplihack-cli/src/commands/recipe/run/format.rs; the Rust test
+  # tests_autodrive_health_log.rs runs this awk over that function's output.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
     HEALTH_READ="$(LC_ALL=C awk '

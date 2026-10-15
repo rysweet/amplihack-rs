@@ -497,6 +497,23 @@ check_rs "1513-prose-negation" 'NOT_CONVERGING' STUCK unparseable_verdict
 check_rs "1513-prose-negation" 'CONVERGING_SLOWLY — findings flat' STUCK unparseable_verdict
 check_rs "1513-prose-negation" '## Verdict: NOT_CONVERGING' STUCK unparseable_verdict
 check_rs "1513-prose-negation" 'Verdict: CONVERGED' STUCK unparseable_verdict
+# A token followed by an ordinary word is a sentence, not a verdict: a plain
+# space is not a token ending. These sentences say the opposite of the token
+# they start with, so reading them as a verdict would reverse the answer.
+check_rs "1513-prose-negated-sentence" 'CONTINUE is not warranted; the loop has stalled.' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-negated-sentence" 'DONE is premature: two blockers remain.' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-negated-sentence" 'Verdict: CONTINUE would waste the budget' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-negated-sentence" '**DONE** is not reached yet' STUCK unparseable_verdict
+# A real verdict elsewhere in the reply still wins over such a sentence.
+check_rs "1513-prose-negated-sentence" \
+    $'CONTINUE is not warranted; the loop has stalled.\nSTUCK — no diff in two rounds' \
+    STUCK evaluator_prose_token
+# Endings that remain legal: trailing whitespace, and whitespace before `:`.
+check_rs "1513-prose-ending" 'DONE   ' DONE evaluator_prose_token
+check_rs "1513-prose-ending" 'CONTINUE : findings 3 -> 1' CONTINUE evaluator_prose_token
 
 # --- residual risk: a DONE copied out of the round output -------------------
 # The prose scan cannot tell the evaluator's own token from one it copied
