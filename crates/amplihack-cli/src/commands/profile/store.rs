@@ -422,6 +422,21 @@ mod fdwalk {
         Ok(unsafe { st.assume_init() }.st_mode & libc::S_IFMT)
     }
 
+    /// readdir signals errors only through errno, so it must be cleared first.
+    fn clear_errno() {
+        // SAFETY: errno is thread-local and always writable.
+        unsafe {
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            {
+                *libc::__errno_location() = 0;
+            }
+            #[cfg(any(target_os = "macos", target_os = "ios", target_os = "freebsd"))]
+            {
+                *libc::__error() = 0;
+            }
+        }
+    }
+
     fn list(dir: &OwnedFd) -> std::io::Result<Vec<OsString>> {
         // SAFETY: dup returns a new descriptor or -1.
         let dup = unsafe { libc::dup(dir.as_raw_fd()) };
@@ -438,8 +453,7 @@ mod fdwalk {
         }
         let mut names = Vec::new();
         let result = loop {
-            // SAFETY: errno is thread-local; readdir signals errors only through it.
-            unsafe { *libc::__errno_location() = 0 };
+            clear_errno();
             // SAFETY: `handle` is a live DIR*.
             let ent = unsafe { libc::readdir(handle) };
             if ent.is_null() {
