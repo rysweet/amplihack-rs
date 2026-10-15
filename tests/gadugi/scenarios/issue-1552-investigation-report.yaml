@@ -1,0 +1,38 @@
+name: issue-1552-investigation-report
+description: >
+  Run the shipped investigation-report bash step through recipe-runner-rs with
+  hostile context values and verify synthesis and output paths remain literal.
+  RECIPE_RUNNER_QA_BINARY must be the runner executable's absolute path.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires:
+    - CARGO_TARGET_DIR
+    - RECIPE_RUNNER_QA_BINARY
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, recipe-runner, investigation-report, regression]
+  priority: high
+  issues: ["1552"]
+steps:
+  - name: run-runner-backed-report-case
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-issue-1552-report-scenario.sh
+    timeout: 880000
+  - name: assert-runner-report-case-passed
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: ISSUE_1552_RECIPE_RUNNER_SCENARIO_PASSED
+assertions:
+  - name: report-step-ran-through-recipe-runner
+    type: output_contains
+    params:
+      target: stdout
+      expected: ISSUE_1552_RECIPE_RUNNER_SCENARIO_PASSED

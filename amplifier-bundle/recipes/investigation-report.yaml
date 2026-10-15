@@ -22,11 +22,14 @@ steps:
   - id: "update-discoveries"
     type: "bash"
     command: |
-      # Create output directory if needed
-      mkdir -p "{{output_dir}}"
-
-      # Output status - actual file updates handled by synthesis agent
-      echo '{"discoveries_updated": true, "output_dir": "{{output_dir}}", "investigation_question": "{{investigation_question}}", "investigation_type": "{{investigation_type}}"}'
+      set -euo pipefail
+      out_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
+      case "$out_dir" in
+        ""|*..*) echo "invalid output_dir" >&2; exit 1 ;;
+      esac
+      mkdir -p -- "$out_dir"
+      # This step records completion only; the report step owns the artifact.
+      printf '{"discoveries_updated": true}\n'
     output: "discoveries_update"
     parse_json: true
 
@@ -34,8 +37,11 @@ steps:
     type: "bash"
     condition: "patterns_analysis and patterns_analysis.patterns_discovered"
     command: |
-      # Output status - actual file updates handled by synthesis agent
-      echo '{"patterns_updated": true, "patterns_path": "{{patterns_path}}", "investigation_type": "{{investigation_type}}"}'
+      set -euo pipefail
+      patterns_path="${PATTERNS_PATH:-${RECIPE_VAR_patterns_path:-}}"
+      investigation_type="${INVESTIGATION_TYPE:-${RECIPE_VAR_investigation_type:-}}"
+      jq -cn --arg patterns_path "$patterns_path" --arg investigation_type "$investigation_type" \
+        '{patterns_updated: true, patterns_path: $patterns_path, investigation_type: $investigation_type}'
     output: "patterns_update"
     parse_json: true
 
@@ -44,29 +50,33 @@ steps:
     command: |
       set -euo pipefail
       umask 022
-      out_dir="{{output_dir}}"
+      out_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
+      synthesis="${SYNTHESIS:-${RECIPE_VAR_synthesis:-}}"
       case "$out_dir" in
         ""|*..*) echo "invalid output_dir: '$out_dir'" >&2; exit 1 ;;
       esac
       mkdir -p -- "$out_dir"
       report="$out_dir/investigation_report.md"
-      if [ -L "$report" ]; then
-        echo "refusing to write through symlink: $report" >&2
+      if [ -L "$report" ] || { [ -e "$report" ] && [ ! -f "$report" ]; }; then
+        echo "refusing nonregular report target: $report" >&2
         exit 1
       fi
       tmp="$(mktemp "$out_dir/.investigation_report.XXXXXX")"
       trap 'rm -f -- "$tmp"' EXIT
-      # Quoted heredoc: the synthesis is untrusted text and must stay literal.
-      cat > "$tmp" <<'AMPLIHACK_INVESTIGATION_REPORT_EOF'
-      {{synthesis}}
-      AMPLIHACK_INVESTIGATION_REPORT_EOF
+      # Context values arrive through the runner environment. Do not template
+      # them into shell source: synthesis may contain shell/heredoc syntax.
+      printf '%s\n' "$synthesis" > "$tmp"
+      if [ ! -s "$tmp" ] || ! grep -q '[^[:space:]]' "$tmp"; then
+        echo "investigation synthesis is empty or whitespace-only" >&2
+        exit 1
+      fi
       mv -f -- "$tmp" "$report"
       trap - EXIT
       if [ ! -s "$report" ] || ! grep -q '[^[:space:]]' "$report"; then
         echo "investigation report missing or empty: $report" >&2
         exit 1
       fi
-      printf '{"report_path": "%s", "status": "created"}\n' "$report"
+      jq -cn --arg report_path "$report" '{report_path: $report_path, status: "created"}'
     output: "report_creation"
     parse_json: true
 
@@ -121,7 +131,11 @@ steps:
   - id: "efficiency-report"
     type: "bash"
     command: |
-      START_TIME={{tracking.start_time}}
+      tracking_raw="${TRACKING:-${RECIPE_VAR_tracking:-}}"
+      START_TIME="${TRACKING_START_TIME:-${RECIPE_VAR_tracking_start_time:-}}"
+      if [ -z "$START_TIME" ]; then
+        START_TIME="$(jq -rn --arg raw "$tracking_raw" 'try (($raw | fromjson).start_time // "") catch ""')"
+      fi
       END_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
       # Calculate steps completed (each agent call = ~1-2 messages in ad-hoc)
@@ -130,24 +144,24 @@ steps:
       ESTIMATED_ADHOC_MESSAGES=55
       EFFICIENCY_GAIN=$(echo "scale=0; 100 - ($WORKFLOW_STEPS * 100 / $ESTIMATED_ADHOC_MESSAGES)" | bc)
 
-      cat << EOF
-      {
-        "start_time": "$START_TIME",
-        "end_time": "$END_TIME",
-        "workflow_steps": $WORKFLOW_STEPS,
-        "estimated_adhoc_messages": $ESTIMATED_ADHOC_MESSAGES,
-        "efficiency_gain_percent": $EFFICIENCY_GAIN,
-        "target_met": $([ $EFFICIENCY_GAIN -ge 30 ] && echo "true" || echo "false"),
-        "efficiency_sources": [
-          "Scope definition prevented scope creep",
-          "Exploration strategy prevented random exploration",
-          "Parallel deep dives maximized information gathering",
-          "Hypothesis verification caught misunderstandings early",
-          "Synthesis ensured all questions answered",
-          "Knowledge capture prevents repeat investigations"
-        ]
-      }
-      EOF
+      jq -cn \
+        --arg start_time "$START_TIME" \
+        --arg end_time "$END_TIME" \
+        --argjson workflow_steps "$WORKFLOW_STEPS" \
+        --argjson estimated_adhoc_messages "$ESTIMATED_ADHOC_MESSAGES" \
+        --argjson efficiency_gain_percent "$EFFICIENCY_GAIN" \
+        --argjson target_met "$([ "$EFFICIENCY_GAIN" -ge 30 ] && echo true || echo false)" \
+        '{start_time: $start_time, end_time: $end_time, workflow_steps: $workflow_steps,
+          estimated_adhoc_messages: $estimated_adhoc_messages,
+          efficiency_gain_percent: $efficiency_gain_percent, target_met: $target_met,
+          efficiency_sources: [
+            "Scope definition prevented scope creep",
+            "Exploration strategy prevented random exploration",
+            "Parallel deep dives maximized information gathering",
+            "Hypothesis verification caught misunderstandings early",
+            "Synthesis ensured all questions answered",
+            "Knowledge capture prevents repeat investigations"
+          ]}'
     output: "efficiency_metrics"
     parse_json: true
 
@@ -158,40 +172,60 @@ steps:
     type: "bash"
     parse_json: true
     command: |
-      cat << 'EOF'
-      {
-        "workflow": "investigation-workflow",
-        "version": "2.0.0",
-        "question": "{{investigation_question}}",
-        "investigation_type": "{{investigation_type}}",
-        "status": "complete",
-        "phases_completed": 6,
-        "phases": [
-          "1. Scope Definition",
-          "2. Exploration Strategy",
-          "3. Parallel Deep Dives",
-          "4. Verification & Testing",
-          "5. Synthesis (5 outputs)",
-          "6. Knowledge Capture"
-        ],
-        "outputs": {
-          "report": "{{output_dir}}/investigation_report.md",
-          "discoveries_updated": "{{discoveries_path}}",
-          "patterns_updated": "{{patterns_path}}"
-        },
-        "synthesis_summary": {
-          "executive_summary": "{{synthesis.executive_summary}}",
-          "key_insights_count": "{{synthesis.key_insights.length}}",
-          "remaining_unknowns_count": "{{synthesis.remaining_unknowns.length}}"
-        },
-        "transition": {
-          "recommended": "{{transition_guidance.transition_recommended}}",
-          "resume_at": "{{transition_guidance.resume_at_step}}"
-        },
-        "efficiency": {
-          "gain_percent": "{{efficiency_metrics.efficiency_gain_percent}}",
-          "target_met": "{{efficiency_metrics.target_met}}"
-        }
-      }
-      EOF
+      set -euo pipefail
+      output_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
+      question="${INVESTIGATION_QUESTION:-${RECIPE_VAR_investigation_question:-}}"
+      investigation_type="${INVESTIGATION_TYPE:-${RECIPE_VAR_investigation_type:-}}"
+      discoveries_path="${DISCOVERIES_PATH:-${RECIPE_VAR_discoveries_path:-}}"
+      patterns_path="${PATTERNS_PATH:-${RECIPE_VAR_patterns_path:-}}"
+      synthesis_raw="${SYNTHESIS:-${RECIPE_VAR_synthesis:-}}"
+      transition_raw="${TRANSITION_GUIDANCE:-${RECIPE_VAR_transition_guidance:-}}"
+      efficiency_raw="${EFFICIENCY_METRICS:-${RECIPE_VAR_efficiency_metrics:-}}"
+      report_path="$output_dir/investigation_report.md"
+      synthesis_json="$(jq -cn --arg raw "$synthesis_raw" 'try ($raw | fromjson) catch {}')"
+      transition_json="$(jq -cn --arg raw "$transition_raw" 'try ($raw | fromjson) catch {}')"
+      efficiency_json="$(jq -cn --arg raw "$efficiency_raw" 'try ($raw | fromjson) catch {}')"
+      jq -cn \
+        --arg question "$question" \
+        --arg investigation_type "$investigation_type" \
+        --arg report_path "$report_path" \
+        --arg discoveries_path "$discoveries_path" \
+        --arg patterns_path "$patterns_path" \
+        --argjson synthesis "$synthesis_json" \
+        --argjson transition "$transition_json" \
+        --argjson efficiency "$efficiency_json" \
+        '{
+          workflow: "investigation-workflow",
+          version: "2.0.0",
+          question: $question,
+          investigation_type: $investigation_type,
+          status: "complete",
+          phases_completed: 6,
+          phases: [
+            "1. Scope Definition",
+            "2. Exploration Strategy",
+            "3. Parallel Deep Dives",
+            "4. Verification & Testing",
+            "5. Synthesis (5 outputs)",
+            "6. Knowledge Capture"
+          ],
+          outputs: {
+            report: $report_path,
+            discoveries_updated: $discoveries_path,
+            patterns_updated: $patterns_path
+          },
+          synthesis_summary: {
+            executive_summary: ($synthesis.executive_summary // "" | tostring),
+            key_insights_count: (($synthesis.key_insights // [] | length) | tostring),
+            remaining_unknowns_count: (($synthesis.remaining_unknowns // [] | length) | tostring)
+          },
+          transition: {
+            recommended: ($transition.transition_recommended // "" | tostring),
+            resume_at: ($transition.resume_at_step // "" | tostring)
+          },
+          efficiency: {
+            gain_percent: ($efficiency.efficiency_gain_percent // "" | tostring),
+            target_met: ($efficiency.target_met // "" | tostring)
+          }
+        }'
     output: "final_result"
