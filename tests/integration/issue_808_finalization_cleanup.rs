@@ -152,16 +152,6 @@ impl TaskWorktree {
         git(&self.repo, &["push", "origin", branch]);
     }
 
-    /// Simulate the leaked nested worktree under the task worktree, on its own
-    /// run-created branch that was also pushed to the shared remote.
-    fn add_nested_worktree(&self, rel_path: &str, branch: &str) {
-        git(
-            &self.repo,
-            &["worktree", "add", rel_path, "-b", branch, "main"],
-        );
-        git(&self.repo, &["push", "origin", branch]);
-    }
-
     fn repo_str(&self) -> &str {
         self.repo.to_str().unwrap()
     }
