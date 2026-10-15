@@ -42,6 +42,196 @@ fn add_does_not_create_credentials_or_files_inside() {
     assert_eq!(fs::read_dir(dir).unwrap().count(), 0);
 }
 
+#[test]
+fn add_copies_allowlisted_shared_assets_and_filters_settings() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(source.join("agents")).unwrap();
+    fs::create_dir_all(source.join("skills/review")).unwrap();
+    fs::create_dir_all(source.join("plugins")).unwrap();
+    fs::write(source.join("CLAUDE.md"), "shared instructions").unwrap();
+    fs::write(source.join("agents/reviewer.md"), "shared agent").unwrap();
+    fs::write(source.join("skills/review/SKILL.md"), "shared skill").unwrap();
+    fs::write(source.join("plugins/installed.json"), "plugin state").unwrap();
+    fs::write(source.join(".credentials.json"), "auth secret").unwrap();
+    fs::write(source.join("history.jsonl"), "session history").unwrap();
+    fs::write(
+        source.join("settings.json"),
+        r#"{
+            "model": "sonnet",
+            "hooks": {"Stop": [{"command": "echo shared-hook"}]},
+            "env": {"API_KEY": "secret"},
+            "apiKeyHelper": "secret-helper",
+            "mcpServers": {"private": {"command": "private"}},
+            "enabledPlugins": {"private": true},
+            "unknownSecretSetting": "must not be copied"
+        }"#,
+    )
+    .unwrap();
+
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+    let profile = store.add(&n("work")).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(profile.join("CLAUDE.md")).unwrap(),
+        "shared instructions"
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("agents/reviewer.md")).unwrap(),
+        "shared agent"
+    );
+    assert_eq!(
+        fs::read_to_string(profile.join("skills/review/SKILL.md")).unwrap(),
+        "shared skill"
+    );
+    for excluded in [
+        ".credentials.json",
+        "history.jsonl",
+        "plugins",
+        "projects",
+        "credentials.json",
+    ] {
+        assert!(
+            !profile.join(excluded).exists(),
+            "copied excluded {excluded}"
+        );
+    }
+    let copied_settings: serde_json::Value =
+        serde_json::from_slice(&fs::read(profile.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(copied_settings["model"], "sonnet");
+    assert_eq!(
+        copied_settings["hooks"]["Stop"][0]["command"],
+        "echo shared-hook"
+    );
+    for excluded in [
+        "env",
+        "apiKeyHelper",
+        "mcpServers",
+        "enabledPlugins",
+        "unknownSecretSetting",
+    ] {
+        assert!(
+            copied_settings.get(excluded).is_none(),
+            "copied setting {excluded}"
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_asset_copy_skips_symlinks_and_keeps_private_modes() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    let outside = d.path().join("outside");
+    fs::create_dir_all(source.join("agents")).unwrap();
+    fs::create_dir(&outside).unwrap();
+    fs::write(outside.join("secret.md"), "external secret").unwrap();
+    symlink(&outside, source.join("agents/external")).unwrap();
+    fs::write(source.join("agents/local.md"), "local").unwrap();
+
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+    let profile = store.add(&n("work")).unwrap();
+
+    assert_eq!(
+        fs::read_to_string(profile.join("agents/local.md")).unwrap(),
+        "local"
+    );
+    assert!(!profile.join("agents/external").exists());
+    let mode = |path: &std::path::Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode(&profile.join("agents")), 0o700);
+    assert_eq!(mode(&profile.join("agents/local.md")), 0o600);
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_asset_copy_refuses_symlinked_source_root() {
+    use std::os::unix::fs::symlink;
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    let actual = d.path().join("actual-claude");
+    fs::create_dir(&actual).unwrap();
+    symlink(&actual, &source).unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
+fn failed_shared_settings_copy_rolls_back_new_profile() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(&source).unwrap();
+    fs::write(source.join("settings.json"), "not json").unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::InvalidSharedSettings(_))
+    ));
+    assert!(store.list().unwrap().is_empty());
+    assert!(!store.root().join("work").exists());
+    assert_eq!(fs::read_dir(store.root()).unwrap().count(), 1); // persistent add lock only
+}
+
+#[test]
+fn profile_root_inside_shared_assets_is_rejected_before_recursive_copy() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(source.join("agents")).unwrap();
+    fs::write(source.join("agents/reviewer.md"), "shared agent").unwrap();
+    let root = source.join("agents/profiles");
+    let store = ProfileStore::new(root.clone()).with_shared_assets(source.clone());
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::SharedSourceContainsRoot(_))
+    ));
+    assert!(store.list().unwrap().is_empty());
+    assert!(
+        !root.exists(),
+        "rejected overlap must not create the profile root"
+    );
+    assert!(!root.join("work").exists());
+}
+
+#[test]
+fn missing_shared_source_overlap_is_rejected_without_creating_it() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("not-created-yet/.claude");
+    let root = source.join("profiles");
+    let store = ProfileStore::new(root.clone()).with_shared_assets(source.clone());
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::SharedSourceContainsRoot(_))
+    ));
+    assert!(!source.exists());
+    assert!(!root.exists());
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
+#[test]
+fn staging_publish_never_replaces_a_concurrently_created_empty_profile() {
+    use super::store::rename_noreplace;
+    let d = tempfile::tempdir().unwrap();
+    let staging = d.path().join("staging");
+    let destination = d.path().join("work");
+    fs::create_dir(&staging).unwrap();
+    fs::write(staging.join("shared.md"), "staged").unwrap();
+    fs::create_dir(&destination).unwrap();
+
+    let error = rename_noreplace(&staging, &destination).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+    assert!(staging.join("shared.md").is_file());
+    assert!(destination.is_dir());
+    assert_eq!(fs::read_dir(&destination).unwrap().count(), 0);
+}
+
 #[cfg(unix)]
 #[test]
 fn root_and_profile_dirs_are_0700() {

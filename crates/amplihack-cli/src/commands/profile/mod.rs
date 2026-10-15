@@ -44,6 +44,18 @@ pub enum ProfileError {
     PointerCorrupt(String),
     #[error("invalid profile root: {0:?}")]
     InvalidRoot(String),
+    #[error("invalid shared Claude settings: {0}")]
+    InvalidSharedSettings(String),
+    #[error("profile root cannot be inside shared Claude assets at {0:?}")]
+    SharedSourceContainsRoot(String),
+    #[error(
+        "profile seeding failed ({seed_error}); cleanup of {path:?} also failed: {cleanup_error}"
+    )]
+    SeedCleanupFailed {
+        path: String,
+        seed_error: String,
+        cleanup_error: String,
+    },
     #[error("refusing symlinked or out-of-root path {0:?}")]
     SymlinkRefused(String),
     #[error("i/o error: {0}")]
@@ -62,6 +74,11 @@ impl ProfileError {
             Self::PointerDangling(_) => "run `amplihack profile switch <name>` or add the profile",
             Self::PointerCorrupt(_) => "re-run `amplihack profile switch <name>`",
             Self::InvalidRoot(_) => "set AMPLIHACK_CLAUDE_PROFILE_ROOT to an absolute path",
+            Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
+            Self::SharedSourceContainsRoot(_) => "choose a profile root outside ~/.claude",
+            Self::SeedCleanupFailed { .. } => {
+                "remove the reported partial directory before retrying"
+            }
             Self::SymlinkRefused(_) => "remove the symlink and re-add the profile",
             Self::Io(_) => "check permissions on the profile root",
         }
@@ -74,7 +91,7 @@ pub(crate) fn with_hint(e: ProfileError) -> anyhow::Error {
 
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommands {
-    /// Create an empty profile directory (does not run Claude)
+    /// Create a profile and copy allowlisted shared Claude assets (does not run Claude)
     Add { name: String },
     /// List profiles; the default is marked with '*'
     List,
@@ -141,7 +158,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
 }
 
 fn render_list(store: &ProfileStore) -> Result<String, ProfileError> {
-    let default = pointer::read(store.root()).ok().flatten();
+    let default = pointer::read(store.root())?;
     let mut out = String::new();
     for n in store.list()? {
         let mark = if default.as_ref().is_some_and(|d| d.as_str() == n) {

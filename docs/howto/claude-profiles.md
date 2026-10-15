@@ -10,8 +10,19 @@ between them manually.
 > `CLAUDE_CONFIG_DIR` Claude Code runs with.
 
 Profiles rely on Claude Code's documented `CLAUDE_CONFIG_DIR` variable.
-amplihack never touches `~/.claude`, never reads credentials, and makes no
-network calls for this feature.
+When you add a profile, amplihack copies an allowlist of shared, non-auth
+assets from `~/.claude`: `CLAUDE.md`, `agents/`, `commands/`, `output-styles/`,
+`rules/`, `skills/`, and selected settings keys such as hooks and permissions.
+It refuses a symlinked `~/.claude` source and skips symlinks inside shared
+asset directories. It does not copy credential/history files, projects,
+plugins, MCP server settings, environment variables, API-key helpers or
+unknown top-level settings. Selected setting values are copied as-is; review hooks and
+status-line commands for embedded secrets or machine-specific paths before
+adding a profile. Each profile gets its own copy, so later edits to `~/.claude`
+do not change existing profiles. amplihack does not modify `~/.claude` or make
+network calls for this feature. Asset copying skips symlinks and protects file
+opens against final-component symlink replacement. It does not defend against
+another process running as the same user changing `~/.claude` during the copy.
 
 ## Create and log in
 
@@ -22,9 +33,10 @@ amplihack profile add personal
 amplihack profile login personal
 ```
 
-`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700`) and fails if
-it already exists. `login` always runs the `claude` binary (not the configured launch binary) with `CLAUDE_CONFIG_DIR` pointing
-at the profile so the login is stored there.
+`add` creates `~/.amplihack/claude-profiles/work/` (mode `0700`), copies the
+allowlisted shared assets, and fails if the profile already exists. `login`
+always runs the `claude` binary (not the configured launch binary) with
+`CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
 
 ## Choose a profile
 
@@ -89,4 +101,6 @@ printf '#!/bin/sh\necho "$CLAUDE_CONFIG_DIR"\n' > "$d/claude" && chmod +x "$d/cl
 PATH="$d:$PATH" amplihack profile run demo
 ```
 
-The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile directory.
+The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile
+directory. Profile creation copies only allowlisted assets from `$HOME/.claude`
+when that directory exists; use a temporary HOME to test that behavior safely.

@@ -20,7 +20,7 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Create `<root>/<name>/` with mode `0700`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
+| `add <name>` | Create `<root>/<name>/` with mode `0700`, then copy allowlisted shared assets from `~/.claude`. Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
 | `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
@@ -34,8 +34,19 @@ amplihack launch|claude --profile <name> [...]
 |------|-------|
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. Must be absolute and non-empty. Default `~/.amplihack/claude-profiles/`. |
 | `<root>/<name>/` | Profile directory (mode `0700`). |
-| Root directory | Created and set to mode `0700`. A symlinked root, or one not owned by the current user, is refused (best effort on Unix). |
+| Root directory | Created with mode `0700`. A symlinked root is refused. An existing custom root is trusted input. |
 | `<root>/.default` | Pointer file: only the profile name (mode `0600`, max 256 bytes). Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
+
+Profile creation copies only `CLAUDE.md`, `agents/`, `commands/`,
+`output-styles/`, `rules/`, `skills/`, and allowlisted top-level settings keys
+for hooks, permissions, model, status line, output style and language. A
+symlinked source root is refused; symlinks inside asset directories are skipped.
+Credential/history files, projects, plugins, MCP server settings,
+environment variables, API-key helpers and unknown top-level settings are not
+copied. Selected setting values are copied as-is; review hooks and status-line
+commands for embedded secrets or machine-specific paths. Settings and asset
+files in the profile are independent copies; later edits to `~/.claude` do not
+update existing profiles.
 
 ## Name rules
 
@@ -90,7 +101,10 @@ and exit with status 1. Messages never include file contents.
 
 ## Security notes
 
-amplihack never opens, copies, logs or lists profile contents. Profiles are
-not a security boundary against the same OS user. A same-user race between
-path verification and spawn is accepted and mitigated by re-checking before
-spawn.
+amplihack reads the shared asset directories and parses `settings.json` when
+creating a profile, then copies only the listed settings keys. It does not
+modify the source directory or copy credential/history files. Settings values
+are copied as-is, so embedded secrets in allowlisted values remain the user's
+responsibility. Profiles are not a security boundary against the same OS user.
+A same-user race between path verification and spawn is accepted and mitigated
+by re-checking before spawn.
