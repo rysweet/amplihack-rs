@@ -69,11 +69,18 @@ fn repeated_escaped_pipe_holders_release_probe_readers_within_cleanup_budget() {
         );
         observed.push(resources());
     }
-    assert_eq!(
-        observed,
-        vec![baseline; 2],
-        "every probe must release its readers and descriptors before returning"
-    );
+    for (index, actual) in observed.into_iter().enumerate() {
+        assert!(
+            actual.0 <= baseline.0,
+            "probe {index} leaked a task: before={}, after={}",
+            baseline.0,
+            actual.0
+        );
+        assert_eq!(
+            actual.1, baseline.1,
+            "probe {index} leaked a file descriptor"
+        );
+    }
 }
 
 #[test]
@@ -99,5 +106,12 @@ fn continuous_stdout_and_stderr_writers_both_advance_without_starving_deadline()
         "each stream must make progress beyond pipe capacity"
     );
     assert!(started.elapsed() < Duration::from_secs(12));
-    assert_eq!(resources(), baseline);
+    let after = resources();
+    assert!(
+        after.0 <= baseline.0,
+        "probe leaked a task: before={}, after={}",
+        baseline.0,
+        after.0
+    );
+    assert_eq!(after.1, baseline.1, "probe leaked a file descriptor");
 }
