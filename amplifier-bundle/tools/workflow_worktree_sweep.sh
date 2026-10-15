@@ -210,6 +210,16 @@ EOF
     return 0
 }
 
+# has_uncommitted_work <path> — true when the worktree has uncommitted or
+# untracked files. That work is in no commit, so the commits-ahead gate cannot
+# see it, and such a worktree is never removed (issue #1560). A status that
+# cannot be read counts as dirty: when in doubt, keep.
+has_uncommitted_work() {
+    local path="$1" out
+    out="$(git -C "$path" status --porcelain --untracked-files=normal 2>/dev/null)" || return 0
+    [ -n "$out" ]
+}
+
 # _sweep_consider <repo> <path> <branch> <threshold> <now> <base>
 # Evaluate one registered worktree and act on it. Best-effort throughout.
 _sweep_consider() {
@@ -219,6 +229,10 @@ _sweep_consider() {
     # Containment: only ever touch worktrees under <repo>/worktrees/. This skips
     # the primary checkout and any sibling/external worktree.
     within_worktrees_dir "$repo" "$path" || return 0
+    if has_uncommitted_work "$path"; then
+        log_warn "Keeping worktree '${path}': it has uncommitted or untracked changes (#1560)."
+        return 0
+    fi
 
     local mtime age
     mtime="$(dir_mtime "$path")"
@@ -291,7 +305,7 @@ cleanup_on_failure() {
     sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/${branch}" 2>/dev/null || true)"
     if [ -z "$sha" ]; then
         log_info "cleanup_on_failure: branch '${branch}' not present; pruning any stale worktree dir."
-        if [ -n "$path" ] && within_worktrees_dir "$repo" "$path"; then
+        if [ -n "$path" ] && within_worktrees_dir "$repo" "$path" && ! has_uncommitted_work "$path"; then
             git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 || rm -rf -- "$path" 2>/dev/null || true
             git -C "$repo" worktree prune >/dev/null 2>&1 || true
         fi
@@ -317,6 +331,10 @@ cleanup_on_failure() {
     if [ -n "$path" ] && ! within_worktrees_dir "$repo" "$path"; then
         log_warn "cleanup_on_failure: worktree '${path}' is outside managed worktrees/; pruning branch only."
         path=""
+    fi
+    if [ -n "$path" ] && [ -d "$path" ] && has_uncommitted_work "$path"; then
+        log_warn "cleanup_on_failure: keeping '${path}' and branch '${branch}': the worktree has uncommitted or untracked changes (#1560)."
+        return 0
     fi
     remove_worktree_and_branch "$repo" "$path" "$branch"
     return 0

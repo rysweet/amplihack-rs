@@ -43,17 +43,21 @@ cleanup_known_workflow_runtime_artifacts() {
         echo "ERROR: refusing to remove tracked path during runtime cleanup: $rel" >&2
         return 1
       fi
+      # On the main checkout, `worktrees/` holds other runs' task worktrees and
+      # their uncommitted work. Recipe steps do call this from the main checkout
+      # (finalize preflight when a run starts there), and a bare `rm -rf` then
+      # destroyed every concurrent run's worktree (issue #1494). Leave it alone.
+      if [ "$rel" = "worktrees" ] && ! _amplihack_is_linked_worktree "$repo"; then
+        echo "INFO: leaving $repo/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" >&2
+        continue
+      fi
       # On a *dedicated* (linked) task worktree, the `worktrees/` children are
       # leaked nested scratch worktrees created by this run. Record their
       # branches (so finalization deletes them) and deregister the worktrees
       # gracefully — a bare `rm -rf worktrees/` would leave dangling
       # registrations behind in the parent repo's $GIT_DIR/worktrees/ (issue
-      # #808 — a regression of #780/#755). This graceful path is intentionally
-      # skipped on the main checkout, where `worktrees/` children are other
-      # runs' task worktrees: it must never deregister or record those. (The
-      # pre-existing `rm -rf` below is left unchanged; it is only ever pointed
-      # at a per-task worktree by the recipe steps that cd into the worktree.)
-      if [ "$rel" = "worktrees" ] && _amplihack_is_linked_worktree "$repo"; then
+      # #808 — a regression of #780/#755).
+      if [ "$rel" = "worktrees" ]; then
         _amplihack_record_nested_worktree_branches "$repo"
         cleanup_nested_worktrees "$repo"
       fi

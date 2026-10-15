@@ -211,6 +211,9 @@ jobs:
       - name: Recipes — leak-proof, self-healing worktree setup (issue #840)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-840-worktree-leak-proof.sh
+      - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
