@@ -32,6 +32,11 @@ amplihack codex -- "Explain the structure of this repository"
 
 Installation stages the Amplihack package from canonical assets and registers `amplihack@amplihack-local` through Codex's native local marketplace commands. Registration uses the same `CODEX_HOME` as launch. Optional registration is skipped when Codex is absent. On `amplihack codex`, the launcher resolves Codex through the existing tool-availability policy before preparing the framework, then reconciles the native package and hooks even when framework staging already exists. Missing-client auto-install respects the existing opt-out and noninteractive/subprocess restrictions; if installation is disallowed or fails, launch stops with remediation. The resolved executable is reused for registration and launch. Re-run `amplihack install` to reconcile an installation or update owned assets. It preserves unrelated plugins and records ownership for uninstall.
 
+Native Windows currently skips optional Codex plugin registration because the
+canonical skills include Unix symlink resources. Use WSL for Codex plugin
+installation; `amplihack install` still completes the shared framework install
+on native Windows.
+
 Open `/hooks` in Codex, inspect the Amplihack command definitions, and trust the definitions you want to execute. Plugin enablement does not grant hook trust. Updated definitions may require review again. Managed policy can prevent these hooks from loading. See [official hook trust documentation](https://learn.chatgpt.com/docs/hooks).
 
 Interactive launch retains terminal input and passes the initial instructions as a positional prompt. Pass native options after `--`:

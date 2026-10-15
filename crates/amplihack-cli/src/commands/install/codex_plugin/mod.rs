@@ -21,9 +21,16 @@ struct Ownership {
     schema_version: u32,
     #[serde(default)]
     transaction: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    uninstall_pending: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uninstall_inventory: Option<Value>,
     codex_home: PathBuf,
     package_digest: String,
     hooks: Value,
+}
+fn is_false(value: &bool) -> bool {
+    !value
 }
 fn root() -> Result<PathBuf> {
     Ok(home_dir()?.join(".amplihack/codex"))
@@ -48,6 +55,7 @@ use storage::*;
 mod backup_cleanup;
 mod cleanup_guard;
 mod config;
+mod package_cleanup;
 mod recovery;
 mod rollback;
 mod rollback_durability;
@@ -56,6 +64,8 @@ mod packaging;
 use packaging::*;
 mod planning;
 use planning::*;
+mod lock_file;
+use lock_file::{open_lock_file, open_package_lock};
 mod path_scope;
 #[cfg(all(test, unix))]
 mod path_scope_tests;

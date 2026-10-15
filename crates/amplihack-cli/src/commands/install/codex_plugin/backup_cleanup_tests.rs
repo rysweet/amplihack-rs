@@ -1,6 +1,38 @@
 use super::recovery_tests::interrupted;
 use super::*;
 
+#[test]
+fn uninstall_inventory_resumes_partial_cleanup_and_preserves_foreign_survivors() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    let root = home.join(".amplihack/codex");
+    let codex_home = home.join(".codex");
+    let package = root.join("uninstall-package");
+    fs::create_dir_all(package.join("nested")).unwrap();
+    fs::create_dir_all(&codex_home).unwrap();
+    fs::write(package.join("nested/owned.txt"), b"owned").unwrap();
+    fs::write(package.join("keep.txt"), b"also owned").unwrap();
+    let _env = crate::test_support::EnvGuard::set([("HOME", home.to_str().unwrap())]);
+
+    path_scope::with_scope(&root, &codex_home, || {
+        let inventory = package_cleanup::capture(&package)?;
+        fs::remove_file(package.join("nested/owned.txt"))?;
+        package_cleanup::validate_survivors(&package, &inventory)?;
+        fs::write(package.join("foreign.txt"), b"preserve me")?;
+        assert!(package_cleanup::remove_survivors(&package, &inventory).is_err());
+        assert_eq!(fs::read(package.join("foreign.txt"))?, b"preserve me");
+
+        fs::remove_file(package.join("foreign.txt"))?;
+        package_cleanup::remove_survivors(&package, &inventory)?;
+        assert!(!package.exists());
+        Ok(())
+    })
+    .unwrap();
+}
+
 pub(super) fn committed_fixture(dir: &Path) -> (PathBuf, PathBuf) {
     let (root, home, mut pending) = interrupted(dir, true);
     fs::create_dir(root.join("previous-package/nested")).unwrap();
@@ -182,105 +214,7 @@ fn cleanup_rejects_changed_survivors_and_invalid_inventory_with_evidence_intact_
     assert!(fs::symlink_metadata(&resource).is_ok(), "{change}");
 }
 
-#[cfg(unix)]
-#[test]
-fn cleanup_checks_symlink_targets_and_never_follows_them() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    for substitute in [false, true] {
-        cases::backup_link_case(substitute);
-    }
-}
-
-#[test]
-fn backup_removal_sync_failure_keeps_journal_and_can_retry() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let (root, home) = committed_fixture(dir.path());
-    let result = storage::testing::with_sync_hook(
-        |path| {
-            if path == root && !root.join("previous-package").exists() {
-                assert!(root.join("pending.json").is_file());
-                anyhow::bail!("interrupted after backup removal before journal removal");
-            }
-            Ok(())
-        },
-        || recover_install(&root, Path::new("must-not-spawn"), &home),
-    );
-    assert!(result.is_err());
-    assert!(!root.join("previous-package").exists());
-    assert!(root.join("pending.json").exists());
-    recover_install(&root, Path::new("must-not-spawn"), &home).unwrap();
-    recover_install(&root, Path::new("must-not-spawn"), &home).unwrap();
-    assert!(!root.join("pending.json").exists());
-}
-
-#[test]
-fn proof_publication_rejects_concurrent_journal_edit_before_unlink() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let (root, home) = committed_fixture(dir.path());
-    let before = digest(&root.join("previous-package")).unwrap();
-    let journal = root.join("pending.json");
-    let mut pending = regular_json(&journal).unwrap().unwrap();
-    let mut changed = pending.clone();
-    changed["foreign"] = json!("concurrent edit");
-    fs::write(&journal, json_bytes(&changed).unwrap()).unwrap();
-    let result = backup_cleanup::finish(&mut pending, &root, &home);
-    assert!(format!("{:#}", result.unwrap_err()).contains("changed concurrently"));
-    assert_eq!(digest(&root.join("previous-package")).unwrap(), before);
-    assert_eq!(regular_json(&journal).unwrap().unwrap(), changed);
-}
-
-#[cfg(unix)]
-#[test]
-fn authorized_cleanup_rejects_directory_symlink_substitution() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    let dir = tempfile::tempdir().unwrap();
-    let (root, home) = committed_fixture(dir.path());
-    interrupt_authorized_unlink(&root, &home);
-    let nested = root.join("previous-package/nested");
-    fs::remove_dir(&nested).unwrap();
-    let outside = dir.path().join("outside");
-    fs::create_dir(&outside).unwrap();
-    fs::write(outside.join("second"), b"foreign").unwrap();
-    std::os::unix::fs::symlink(&outside, &nested).unwrap();
-    assert!(recover_install(&root, Path::new("must-not-spawn"), &home).is_err());
-    assert_eq!(fs::read(outside.join("second")).unwrap(), b"foreign");
-    assert!(root.join("pending.json").exists());
-    assert!(
-        fs::symlink_metadata(nested)
-            .unwrap()
-            .file_type()
-            .is_symlink()
-    );
-}
-
-#[cfg(unix)]
-#[test]
-fn unsupported_backup_fifo_is_rejected_without_opening_it() {
-    let _env_lock = crate::test_support::env_lock()
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    use std::os::unix::ffi::OsStrExt;
-    let dir = tempfile::tempdir().unwrap();
-    let (root, home) = committed_fixture(dir.path());
-    let path = root.join("previous-package/fifo");
-    let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
-    assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
-    let error = recover_install(&root, Path::new("must-not-spawn"), &home).unwrap_err();
-    assert!(format!("{error:#}").contains("unsupported backup entry"));
-    assert!(root.join("pending.json").exists());
-    assert!(path.exists());
-}
-
+mod durability;
 mod independent;
 
 mod cases;

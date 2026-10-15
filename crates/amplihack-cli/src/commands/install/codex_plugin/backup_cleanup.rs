@@ -4,16 +4,16 @@ use std::{collections::BTreeMap, path::Component};
 
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "type", deny_unknown_fields)]
-enum Kind {
+pub(super) enum Kind {
     Directory,
     File { sha256: String },
     Symlink { target: PathBuf },
 }
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-struct Entry {
-    path: PathBuf,
-    kind: Kind,
+pub(super) struct Entry {
+    pub(super) path: PathBuf,
+    pub(super) kind: Kind,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,7 +25,7 @@ struct Inventory {
     entries: Vec<Entry>,
 }
 
-fn entry_kind(path: &Path, meta: &fs::Metadata) -> Result<Kind> {
+pub(super) fn entry_kind(path: &Path, meta: &fs::Metadata) -> Result<Kind> {
     let kind = if meta.file_type().is_symlink() {
         Kind::Symlink {
             target: fs::read_link(path)?,
@@ -60,7 +60,7 @@ fn entry_kind(path: &Path, meta: &fs::Metadata) -> Result<Kind> {
     Ok(kind)
 }
 
-fn scan(base: &Path) -> Result<Vec<Entry>> {
+pub(super) fn scan(base: &Path) -> Result<Vec<Entry>> {
     #[cfg(test)]
     super::cleanup_performance_tests::SCANS.with(|n| n.set(n.get() + 1));
     fn walk(base: &Path, relative: &Path, entries: &mut Vec<Entry>) -> Result<()> {

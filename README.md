@@ -663,6 +663,7 @@ natively.
 | Workflows & recipes                             |              ✅              |         ✅          |
 | Persistent memory                               |              ✅              |         ✅          |
 | Direct API access                               |              ✅              |         ✅          |
+| Native Codex plugin registration                |       ⚠️ (use WSL)           |         ✅          |
 | Fleet management (multi-VM)                     |    ❌ (requires tmux/SSH)    |         ✅          |
 | Rust recipe runner                              |        ⚠️ (untested)         |         ✅          |
 | Docker sandbox                                  | ⚠️ (Docker Desktop required) |         ✅          |
@@ -678,6 +679,8 @@ npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack
 
 - Fleet commands (`amplihack fleet *`) are unavailable — they require tmux and
   SSH, which are Linux/macOS only. Use WSL for fleet operations.
+- Native Codex plugin registration is skipped because the bundled skill tree
+  contains Unix symlink resources. Use WSL for Codex plugin installation.
 - Some language server integrations (multilspy) may have reduced functionality.
 - File permission management (chmod) is a no-op on Windows.
 

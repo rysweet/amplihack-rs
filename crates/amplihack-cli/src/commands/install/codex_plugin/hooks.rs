@@ -6,7 +6,7 @@ pub(super) fn reconcile_hooks(home: &Path, previous: &Value, desired: &Value) ->
         !fs::symlink_metadata(home)?.file_type().is_symlink(),
         "refusing symlink Codex home"
     );
-    let lock = fs::File::open(home)?;
+    let lock = open_lock_file(&home.join(".amplihack-hooks.lock"))?;
     lock.lock_exclusive()?;
     let path = home.join("hooks.json");
     let original = regular_json(&path)?;

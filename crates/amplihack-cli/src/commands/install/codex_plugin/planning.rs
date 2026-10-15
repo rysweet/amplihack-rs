@@ -52,6 +52,8 @@ fn migrate_legacy_ledger(ledger: &Path, package: &Path, old: &mut Ownership) -> 
     let migrated = Ownership {
         schema_version: 1,
         transaction: old.transaction.clone(),
+        uninstall_pending: false,
+        uninstall_inventory: None,
         codex_home: old.codex_home.clone(),
         package_digest: digest(package)?,
         hooks: old.hooks.clone(),
@@ -84,6 +86,10 @@ pub(super) fn prepare(
         .transpose()?;
     if let Some(old) = &previous {
         ensure!(
+            !old.uninstall_pending,
+            "Codex uninstall cleanup is pending; rerun amplihack uninstall before installing again"
+        );
+        ensure!(
             old.schema_version == 1
                 && old.codex_home == home
                 && (resources::current_digest(&old.package_digest)
@@ -91,6 +97,10 @@ pub(super) fn prepare(
             LEGACY_PROOF
         );
     }
+    ensure!(
+        !path_present(&root.join("uninstall-package"))?,
+        "retired Codex package exists; rerun amplihack uninstall before installing again"
+    );
     let package = root.join("market/plugin");
     let inventory = native(binary, &["plugin", "list", "--json"], home)?;
     verify_identity(&inventory, &package)?;
@@ -205,6 +215,8 @@ pub(super) fn prepare(
     let record = Ownership {
         schema_version: 1,
         transaction: Some(transaction.clone()),
+        uninstall_pending: false,
+        uninstall_inventory: None,
         codex_home: home.to_path_buf(),
         package_digest: target_digest.clone(),
         hooks: hooks.clone(),

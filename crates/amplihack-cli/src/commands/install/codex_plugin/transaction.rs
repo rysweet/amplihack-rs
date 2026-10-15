@@ -1,6 +1,20 @@
 //! Installation transaction orchestration and commit.
 use super::*;
 pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
+    #[cfg(windows)]
+    {
+        let _ = (source, hooks_binary);
+        println!(
+            "  ⚠️ Optional Codex plugin skipped: native Windows package resources are not portable; use WSL"
+        );
+        return Ok(false);
+    }
+    #[cfg(not(windows))]
+    install_unix(source, hooks_binary)
+}
+
+#[cfg(not(windows))]
+fn install_unix(source: &Path, hooks_binary: &Path) -> Result<bool> {
     let home = codex_home()?;
     let root = root()?;
     // Binary selection itself probes --version, so capture before resolution.
@@ -17,6 +31,7 @@ pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     })
 }
 
+#[cfg(not(windows))]
 fn install_scoped(
     source: &Path,
     hooks_binary: &Path,
@@ -41,7 +56,7 @@ fn install_scoped(
         !fs::symlink_metadata(root)?.file_type().is_symlink(),
         "refusing symlink Codex staging root"
     );
-    let lock = fs::File::open(root)?;
+    let lock = open_package_lock(root)?;
     lock.lock_exclusive()?;
     path_scope::check()?;
     fs::create_dir_all(home)?;
@@ -63,6 +78,12 @@ fn install_scoped(
         "  ✅ Native Codex plugin installed; review exact hooks in Codex /hooks before trusting them"
     );
     Ok(true)
+}
+
+#[cfg(all(test, windows))]
+#[test]
+fn native_windows_skips_optional_codex_package_resources() {
+    assert!(!install(Path::new("unused"), Path::new("unused")).unwrap());
 }
 
 fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Result<()> {
@@ -103,6 +124,8 @@ fn commit(root: &Path, home: &Path, binary: &Path, prepared: &Prepared) -> Resul
     let record = Ownership {
         schema_version: 1,
         transaction: Some(transaction.clone()),
+        uninstall_pending: false,
+        uninstall_inventory: None,
         codex_home: home.to_path_buf(),
         package_digest: digest(package)?,
         hooks: hooks.clone(),
