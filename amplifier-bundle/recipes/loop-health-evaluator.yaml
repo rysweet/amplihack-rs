@@ -253,8 +253,6 @@ steps:
         #   4. anything else is STUCK                         -> unparseable_verdict
         VJSON=$(printf '%s' "$RAW" \
           | amplihack orch helper extract-json --require-field loop_verdict)
-        AJSON=$(printf '%s\n' "$RAW" | awk 'NF{l=$0} END{print l}' \
-          | amplihack orch helper extract-json --require-field verdict)
         if [ "$VJSON" != "{}" ]; then
           VERDICT=$(printf '%s' "$VJSON" \
             | amplihack orch helper extract-field --field loop_verdict --default STUCK \
@@ -262,7 +260,9 @@ steps:
           NOT_CONVERGING=$(printf '%s' "$VJSON" \
             | amplihack orch helper extract-field --field not_converging --default "[]")
           SOURCE="evaluator"
-        elif [ "$AJSON" != "{}" ]; then
+        elif AJSON=$(printf '%s\n' "$RAW" | awk 'NF{l=$0} END{print l}' \
+            | amplihack orch helper extract-json --require-field verdict); \
+            [ "$AJSON" != "{}" ]; then
           VERDICT=$(printf '%s' "$AJSON" \
             | amplihack orch helper extract-field --field verdict --default STUCK \
             | amplihack orch helper normalise-loop-verdict)
