@@ -40,17 +40,20 @@ render() {
 }
 render default-workflow
 expected=0
+total=0
 count_leaves() {
     local name=$1 depth=$2 direct child
     test "$depth" -lt 12
     direct=$(awk '/^    type: bash$/ { count++ } END { print count+0 }' "$fixture/recipes/$name.yaml")
     expected=$((expected + direct))
+    total=$((total + direct))
     while IFS= read -r child; do
+        total=$((total + 1))
         count_leaves "$child" "$((depth + 1))"
     done < <(awk '/^    recipe:/ { gsub(/"/, "", $2); print $2 }' "$fixture/recipes/$name.yaml")
 }
 count_leaves default-workflow 0
-test "$expected" -gt 60
+test "$total" -gt 80
 run() {
     env -i HOME="$fixture/home" PATH=/usr/bin:/bin QA_STEP_LOG="$fixture/steps" \
         "$runner" "$fixture/recipes/default-workflow.yaml" \
@@ -60,12 +63,12 @@ run() {
 run > "$fixture/pass.log" 2>&1 || { cat "$fixture/pass.log"; exit 1; }
 test "$(wc -l < "$fixture/steps")" -eq "$expected"
 # Negative control proves the old budget fails in the actual execution engine.
-sed -i 's/max_total_steps: [0-9]*/max_total_steps: 60/' "$fixture/recipes/default-workflow.yaml"
+sed -i 's/max_total_steps: [0-9]*/max_total_steps: 80/' "$fixture/recipes/default-workflow.yaml"
 rm "$fixture/steps"
 if run > "$fixture/fail.log" 2>&1; then
-    echo 'FAIL: old 60-step budget unexpectedly completed' >&2
+    echo 'FAIL: old 80-step budget unexpectedly completed' >&2
     exit 1
 fi
 rg -qi '(max.*(total|step)|step.*(limit|exceed|budget))' "$fixture/fail.log"
 test "$(wc -l < "$fixture/steps")" -lt "$expected"
-printf 'PASS: current default-workflow budget completes all %s leaf steps; old 60-step budget fails\n' "$expected"
+printf 'PASS: current default-workflow budget completes %s total steps (%s leaves); old 80-step budget fails\n' "$total" "$expected"
