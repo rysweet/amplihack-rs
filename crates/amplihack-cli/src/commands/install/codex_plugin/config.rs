@@ -9,6 +9,7 @@ pub(super) fn config_states(
     market: &Path,
     owned: bool,
 ) -> Result<Vec<Vec<u8>>> {
+    // A missing config file is intentionally modeled as empty TOML; invalid UTF-8 still errors.
     let text = std::str::from_utf8(original.unwrap_or_default())?;
     let mut doc = text.parse::<DocumentMut>()?;
     let path = market
