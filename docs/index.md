@@ -136,6 +136,7 @@ amplihack copilot
 - [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
+- [Codex ownership ledger migration](CODEX_OWNERSHIP_MIGRATION.md) - Safe upgrade of legacy schema 1 ownership proofs
 
 #### General Configuration
 

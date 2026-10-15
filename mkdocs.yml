@@ -159,6 +159,7 @@ nav:
           - Tutorial: tutorials/copilot-parity-control-plane.md
           - Configuration: howto/configure-copilot-parity-control-plane.md
           - Reference: reference/copilot-parity-control-plane.md
+      - Codex Ownership Migration: CODEX_OWNERSHIP_MIGRATION.md
       - External LiteLLM Gateway:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md
