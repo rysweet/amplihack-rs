@@ -41,12 +41,17 @@ fn count(name: &str, stack: &mut Vec<String>) -> usize {
     total
 }
 
-#[test]
-fn default_workflow_cap_covers_recursive_step_total() {
+fn total_and_cap() -> (usize, usize) {
     let total = count("default-workflow", &mut Vec::new());
     let cap = load("default-workflow")["recursion"]["max_total_steps"]
         .as_u64()
         .expect("max_total_steps") as usize;
+    (total, cap)
+}
+
+#[test]
+fn default_workflow_cap_covers_recursive_step_total() {
+    let (total, cap) = total_and_cap();
     assert!(
         cap >= total,
         "max_total_steps={cap} is below recursive step total {total}"
@@ -55,10 +60,7 @@ fn default_workflow_cap_covers_recursive_step_total() {
 
 #[test]
 fn default_workflow_cap_is_bounded() {
-    let total = count("default-workflow", &mut Vec::new());
-    let cap = load("default-workflow")["recursion"]["max_total_steps"]
-        .as_u64()
-        .unwrap() as usize;
+    let (total, cap) = total_and_cap();
     assert!(
         cap <= total * 2,
         "cap {cap} is unreasonably above total {total}"
