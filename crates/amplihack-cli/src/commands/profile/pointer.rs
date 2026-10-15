@@ -2,6 +2,7 @@
 
 use super::ProfileError;
 use super::name::ProfileName;
+use super::store::check_root_not_symlink;
 use std::fs;
 use std::io::Read;
 use std::path::Path;
@@ -10,6 +11,7 @@ const FILE: &str = ".default";
 const MAX_BYTES: u64 = 256;
 
 pub fn read(root: &Path) -> Result<Option<ProfileName>, ProfileError> {
+    check_root_not_symlink(root)?;
     let path = root.join(FILE);
     let meta = match fs::symlink_metadata(&path) {
         Ok(m) => m,
@@ -20,7 +22,11 @@ pub fn read(root: &Path) -> Result<Option<ProfileName>, ProfileError> {
         return Err(ProfileError::PointerCorrupt("not a regular file".into()));
     }
     let mut buf = Vec::new();
-    fs::File::open(&path)?
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::custom_flags(&mut opts, libc::O_NOFOLLOW);
+    opts.open(&path)?
         .take(MAX_BYTES + 1)
         .read_to_end(&mut buf)?;
     if buf.len() as u64 > MAX_BYTES {
@@ -39,6 +45,7 @@ pub fn read(root: &Path) -> Result<Option<ProfileName>, ProfileError> {
 
 pub fn write(root: &Path, name: &ProfileName) -> Result<(), ProfileError> {
     use std::io::Write;
+    check_root_not_symlink(root)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
@@ -61,6 +68,7 @@ pub fn write(root: &Path, name: &ProfileName) -> Result<(), ProfileError> {
 }
 
 pub fn clear(root: &Path) -> Result<(), ProfileError> {
+    check_root_not_symlink(root)?;
     match fs::remove_file(root.join(FILE)) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

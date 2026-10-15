@@ -58,7 +58,13 @@ Claude-compatible binaries. The canonical path is re-verified immediately
 before spawn.
 
 `--profile` together with `--docker` or `--auto` fails with an
-unsupported-mode error before anything is spawned.
+unsupported-mode error before anything is spawned. This includes Docker
+activated through the environment (`AMPLIHACK_USE_DOCKER`). With Docker
+activated that way and only a default pointer, the pointer is not applied and
+a warning is printed.
+
+A symlinked profile root is refused by every subcommand and by the pointer
+reads/writes; a missing root is treated as empty.
 
 ## Literal argument forwarding
 

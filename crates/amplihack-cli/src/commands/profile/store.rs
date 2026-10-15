@@ -47,6 +47,11 @@ impl ProfileStore {
         &self.root
     }
 
+    /// Non-creating check: a missing root is fine, a symlinked one is not.
+    pub fn check_root_not_symlink(&self) -> Result<(), ProfileError> {
+        check_root_not_symlink(&self.root)
+    }
+
     fn ensure_root(&self) -> Result<(), ProfileError> {
         match fs::symlink_metadata(&self.root) {
             Ok(m) if m.file_type().is_symlink() => Err(ProfileError::SymlinkRefused(
@@ -83,6 +88,7 @@ impl ProfileStore {
     }
 
     pub fn list(&self) -> Result<Vec<String>, ProfileError> {
+        self.check_root_not_symlink()?;
         let entries = match fs::read_dir(&self.root) {
             Ok(e) => e,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -106,6 +112,7 @@ impl ProfileStore {
     /// Verifies the profile is a real directory directly inside the root and
     /// returns its canonical path.
     pub fn resolve(&self, name: &ProfileName) -> Result<PathBuf, ProfileError> {
+        self.check_root_not_symlink()?;
         let path = self.root.join(name.as_str());
         match fs::symlink_metadata(&path) {
             Ok(m) if m.file_type().is_symlink() => {
@@ -137,6 +144,17 @@ impl ProfileStore {
             pointer::clear(&self.root)?;
         }
         Ok(())
+    }
+}
+
+pub(super) fn check_root_not_symlink(root: &Path) -> Result<(), ProfileError> {
+    match fs::symlink_metadata(root) {
+        Ok(m) if m.file_type().is_symlink() => {
+            Err(ProfileError::SymlinkRefused(root.display().to_string()))
+        }
+        Ok(_) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
     }
 }
 

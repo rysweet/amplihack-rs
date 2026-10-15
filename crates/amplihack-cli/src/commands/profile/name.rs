@@ -4,7 +4,7 @@
 use super::ProfileError;
 
 const MAX_LEN: usize = 64;
-const RESERVED: [&str; 4] = ["CON", "PRN", "AUX", "NUL"];
+const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfileName(String);

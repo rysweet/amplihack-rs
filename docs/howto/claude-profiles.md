@@ -69,8 +69,9 @@ account's local Claude login and history.
 - Names differing only by case (`Work` vs `work`) are rejected on every platform.
 - Profiles apply only to Claude-compatible binaries (`claude`, `rusty`,
   `rustyclawd`, `amplifier`). Copilot and Codex launches are unaffected.
-- `--profile` with `--docker` or `--auto` is rejected with an error rather
-  than being partially applied.
+- `--profile` with `--docker`, `--auto`, or env-activated Docker is rejected
+  with an error rather than being partially applied. A default pointer under
+  env-activated Docker is skipped with a warning.
 - If the default pointer names a deleted profile, launch fails with a hint
   (`amplihack profile switch <name>`); it does not fall back silently.
 - Profiles are not a security boundary against other processes of the same OS

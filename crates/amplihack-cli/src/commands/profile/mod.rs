@@ -182,6 +182,7 @@ fn resolve_launch_profile(
 fn validate_launch_flags(
     profile: Option<&str>,
     docker: bool,
+    docker_env: bool,
     auto: bool,
 ) -> Result<(), ProfileError> {
     if profile.is_none() {
@@ -189,6 +190,11 @@ fn validate_launch_flags(
     }
     if docker {
         return Err(ProfileError::UnsupportedMode("--docker".into()));
+    }
+    if docker_env {
+        return Err(ProfileError::UnsupportedMode(
+            "docker (env-activated)".into(),
+        ));
     }
     if auto {
         return Err(ProfileError::UnsupportedMode("--auto".into()));
@@ -199,11 +205,19 @@ fn validate_launch_flags(
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then
 /// the default pointer, then none. Docker and auto launches ignore the pointer.
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
-    validate_launch_flags(flag, docker, auto).map_err(with_hint)?;
+    let docker_env = !docker
+        && crate::docker::DockerDetector
+            .activation_source(false)
+            .is_some();
+    validate_launch_flags(flag, docker, docker_env, auto).map_err(with_hint)?;
     if docker || auto {
         return Ok(None);
     }
     let store = ProfileStore::from_env().map_err(with_hint)?;
     let resolved = resolve_launch_profile(&store, flag).map_err(with_hint)?;
+    if docker_env && let Some((name, _)) = &resolved {
+        eprintln!("warning: default profile '{name}' is not applied in Docker (env-activated)");
+        return Ok(None);
+    }
     Ok(resolved.map(|(_, dir)| dir))
 }

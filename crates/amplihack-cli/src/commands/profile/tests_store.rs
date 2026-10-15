@@ -160,3 +160,42 @@ fn from_env_rejects_relative_and_empty_root() {
     }
     assert!(ProfileStore::from_root_str("/tmp/abs-root").is_ok());
 }
+
+#[cfg(unix)]
+#[test]
+fn symlinked_root_is_refused_everywhere() {
+    let d = tempfile::tempdir().unwrap();
+    let real = d.path().join("real");
+    fs::create_dir(&real).unwrap();
+    let link = d.path().join("link");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let s = ProfileStore::new(link.clone());
+    assert!(matches!(s.list(), Err(ProfileError::SymlinkRefused(_))));
+    assert!(matches!(
+        s.resolve(&n("a")),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+    assert!(matches!(
+        s.remove(&n("a"), true),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+    assert!(matches!(
+        pointer::read(&link),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+    assert!(matches!(
+        pointer::write(&link, &n("a")),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+    assert!(matches!(
+        pointer::clear(&link),
+        Err(ProfileError::SymlinkRefused(_))
+    ));
+}
+
+#[test]
+fn missing_root_is_empty_for_readers() {
+    let (_d, s) = store();
+    assert!(s.list().unwrap().is_empty());
+    assert!(pointer::read(s.root()).unwrap().is_none());
+}

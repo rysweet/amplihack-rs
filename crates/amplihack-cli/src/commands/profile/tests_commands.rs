@@ -87,15 +87,15 @@ fn unknown_or_invalid_flag_value_errors() {
 #[test]
 fn profile_with_docker_or_auto_is_unsupported() {
     assert!(matches!(
-        validate_launch_flags(Some("w"), true, false),
+        validate_launch_flags(Some("w"), true, false, false),
         Err(ProfileError::UnsupportedMode(_))
     ));
     assert!(matches!(
-        validate_launch_flags(Some("w"), false, true),
+        validate_launch_flags(Some("w"), false, false, true),
         Err(ProfileError::UnsupportedMode(_))
     ));
-    assert!(validate_launch_flags(Some("w"), false, false).is_ok());
-    assert!(validate_launch_flags(None, true, true).is_ok());
+    assert!(validate_launch_flags(Some("w"), false, false, false).is_ok());
+    assert!(validate_launch_flags(None, true, true, true).is_ok());
 }
 
 #[test]
@@ -115,4 +115,13 @@ fn errors_have_one_line_message_and_a_hint() {
         assert!(!e.hint().is_empty(), "{e:?}");
     }
     assert!(ProfileError::ConfirmationRequired.hint().contains("--yes"));
+}
+
+#[test]
+fn profile_flag_with_env_activated_docker_is_an_error() {
+    assert!(matches!(
+        validate_launch_flags(Some("w"), false, true, false),
+        Err(ProfileError::UnsupportedMode(m)) if m.contains("env-activated")
+    ));
+    assert!(validate_launch_flags(None, false, true, false).is_ok());
 }
