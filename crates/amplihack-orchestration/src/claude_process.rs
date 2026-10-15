@@ -417,17 +417,46 @@ async fn run_delivered_command(
         }
         Ok::<(), std::io::Error>(())
     };
-    let (write_result, outcome) = tokio::join!(
-        write_stdin,
-        wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg)
-    );
-    if let Err(e) = write_result {
-        return ProcessResult::err(
-            format!("failed to write prompt to child stdin: {e}"),
-            process_id,
-            start.elapsed(),
-        );
-    }
+    let mut write_stdin = Box::pin(write_stdin);
+    let mut watchdog = Box::pin(wait_with_idle_watchdog(
+        &mut child,
+        stdout_pipe,
+        stderr_pipe,
+        cfg,
+    ));
+    let outcome = tokio::select! {
+        biased;
+        write_result = &mut write_stdin => {
+            if let Err(e) = write_result {
+                // Do not wait for the idle watchdog after a broken stdin pipe:
+                // a child can keep emitting output forever, which deliberately
+                // keeps that watchdog alive. Cancel it (which aborts its
+                // drainers), then kill and reap the child.
+                drop(watchdog);
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return ProcessResult::err(
+                    format!("failed to write prompt to child stdin: {e}"),
+                    process_id,
+                    start.elapsed(),
+                );
+            }
+            watchdog.await
+        }
+        _ = &mut watchdog => {
+            // The child can exit or be killed as idle before it accepts the
+            // entire prompt. Since the writer branch was polled first, it is
+            // still pending here; cancel it rather than wait indefinitely for
+            // a descendant that inherited stdin but does not read it.
+            drop(write_stdin);
+            return ProcessResult::err(
+                "failed to write prompt to child stdin: child exited before prompt delivery completed"
+                    .to_string(),
+                process_id,
+                start.elapsed(),
+            );
+        }
+    };
 
     drop(delivery_handle);
     let duration = start.elapsed();

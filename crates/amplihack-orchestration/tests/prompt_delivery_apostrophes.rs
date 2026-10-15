@@ -51,13 +51,14 @@ fn run(mut cmd: Command, prompt: &str, mode: DeliveryMode) -> String {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("harness should spawn");
-    // Drain stdout and stderr while writing stdin. Writing a large payload
-    // before reading child output can deadlock when both OS pipes fill.
+    // Write stdin concurrently with wait_with_output, which drains stdout.
+    // Writing synchronously first can deadlock when the child fills its
+    // stdout pipe before it has consumed the complete payload.
     let writer = if mode == DeliveryMode::Stdin {
         use std::io::Write;
         child.stdin.take().map(|mut sin| {
-            let prompt = prompt.as_bytes().to_vec();
-            std::thread::spawn(move || sin.write_all(&prompt))
+            let payload = prompt.as_bytes().to_vec();
+            std::thread::spawn(move || sin.write_all(&payload))
         })
     } else {
         None
@@ -68,7 +69,7 @@ fn run(mut cmd: Command, prompt: &str, mode: DeliveryMode) -> String {
     if let Some(writer) = writer {
         writer
             .join()
-            .expect("stdin writer thread should complete")
+            .expect("stdin writer should not panic")
             .expect("write to child stdin should succeed");
     }
     assert!(

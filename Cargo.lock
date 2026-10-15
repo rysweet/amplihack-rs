@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "amplihack"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-cli",
  "amplihack-git",
@@ -50,7 +50,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-core"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-memory",
  "amplihack-utils",
@@ -69,7 +69,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-eval"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "serde",
@@ -81,7 +81,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-agent-generator"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "chrono",
@@ -96,7 +96,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-asset-resolver-bin"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-cli",
  "tracing",
@@ -105,7 +105,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-blarify"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -120,7 +120,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-builders"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-cli"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-builders",
  "amplihack-git",
@@ -158,6 +158,7 @@ dependencies = [
  "dialoguer",
  "errno",
  "flate2",
+ "fs2",
  "fs4",
  "lbug",
  "libc",
@@ -188,7 +189,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-context"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -200,7 +201,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-delegation"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "globset",
@@ -215,7 +216,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-domain-agents"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -232,7 +233,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-fleet"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -243,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-git"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "tempfile",
  "tokio",
@@ -251,7 +252,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hive"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-agent-core",
  "amplihack-memory",
@@ -267,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "amplihack-memory",
@@ -292,38 +293,41 @@ dependencies = [
 
 [[package]]
 name = "amplihack-hooks-bin"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-hooks",
  "amplihack-state",
  "amplihack-types",
  "anyhow",
  "serde_json",
+ "tempfile",
  "tracing",
  "tracing-subscriber",
 ]
 
 [[package]]
 name = "amplihack-launcher"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "amplihack-types",
  "amplihack-utils",
  "anyhow",
  "chrono",
+ "fs2",
  "libc",
  "regex",
  "serde",
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
+ "toml_edit",
  "tracing",
 ]
 
 [[package]]
 name = "amplihack-memory"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -349,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-multilspy"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -363,7 +367,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-orchestration"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-state",
  "amplihack-utils",
@@ -380,7 +384,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-recovery"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "anyhow",
@@ -394,7 +398,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-reflection"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -409,7 +413,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-remote"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "amplihack-utils",
@@ -428,7 +432,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-safety"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "serde",
@@ -439,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-security"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "once_cell",
  "regex",
@@ -452,7 +456,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-session"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "filetime",
@@ -469,7 +473,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-signal"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-turn",
  "amplihack-types",
@@ -487,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-state"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-types",
  "libc",
@@ -500,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-supply-chain-audit"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "chrono",
  "clap",
@@ -516,7 +520,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-turn"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "async-trait",
  "thiserror 2.0.18",
@@ -527,7 +531,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-types"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -537,7 +541,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-utils"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-git",
  "amplihack-types",
@@ -559,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "amplihack-workflows"
-version = "1.1.0"
+version = "1.2.0"
 dependencies = [
  "amplihack-utils",
  "chrono",
@@ -1127,6 +1131,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
 dependencies = [
  "percent-encoding",
+]
+
+[[package]]
+name = "fs2"
+version = "0.4.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9564fc758e15025b46aa6643b1b77d047d1a56a1aea6e01002ac0c7026876213"
+dependencies = [
+ "libc",
+ "winapi",
 ]
 
 [[package]]
@@ -2064,9 +2078,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.46"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "48e13bd8c0e9365c43cfa5c9e8f9ad49d3c8444926c9aac819e0e4dc503c8fdf"
 dependencies = [
  "log",
  "once_cell",
@@ -2088,9 +2102,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -2132,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "scan-invisible-chars-bin"
-version = "1.1.0"
+version = "1.2.0"
 
 [[package]]
 name = "scratch"
@@ -2909,6 +2923,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "winapi"
+version = "0.3.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c839a674fcd7a98952e593242ea400abe93992746761e38641405d28b00f419"
+dependencies = [
+ "winapi-i686-pc-windows-gnu",
+ "winapi-x86_64-pc-windows-gnu",
+]
+
+[[package]]
+name = "winapi-i686-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ac3b87c63620426dd9b991e5ce0329eff545bccbbb34f3be09ff6fb6ab51b7b6"
+
+[[package]]
 name = "winapi-util"
 version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2916,6 +2946,12 @@ checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "winapi-x86_64-pc-windows-gnu"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "windows-core"

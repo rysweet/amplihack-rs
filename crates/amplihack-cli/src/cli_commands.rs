@@ -12,6 +12,11 @@ use super::{
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: crate::InternalCommands,
+    },
     /// Install amplihack framework assets to ~/.amplihack/.claude and wire ~/.claude/settings.json
     Install {
         /// Install from a local directory instead of cloning from git

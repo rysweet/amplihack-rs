@@ -94,6 +94,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => crate::rust_toolchain::with_bootstrap_permitted(|| {
             install::run_install(local, interactive, force_refresh)
         }),
+        Commands::Internal { command } => crate::runner_validation::run(command),
         Commands::Uninstall => install::run_uninstall(),
         Commands::Profile(cmd) => profile::run_profile(cmd),
         Commands::Launch {

@@ -380,6 +380,31 @@ jobs:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install pinned recipe runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Require one immutable revision, including exactly one line in the pin.
+          if [[ "$(wc -l < claude-plugin/recipe-runner.rev)" -ne 1 \
+             || "$(wc -c < claude-plugin/recipe-runner.rev)" -ne 41 ]]; then
+            echo "ERROR: recipe-runner.rev must contain exactly 40 hex bytes and a newline" >&2
+            exit 1
+          fi
+          rev="$(cat claude-plugin/recipe-runner.rev)"
+          if [[ ! "$rev" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "ERROR: recipe-runner.rev must contain one immutable 40-hex revision" >&2
+            exit 1
+          fi
+          install_root="$RUNNER_TEMP/recipe-runner"
+          CARGO_TARGET_DIR="$RUNNER_TEMP/recipe-runner-target" cargo install \
+            --git https://github.com/rysweet/amplihack-recipe-runner \
+            --rev "$rev" --locked --root "$install_root"
+          runner="$install_root/bin/recipe-runner-rs"
+          test -x "$runner"
+          "$runner" --version
+          "$runner" --capabilities
+          printf '%s\n' "$install_root/bin" >> "$GITHUB_PATH"
+          printf 'RECIPE_RUNNER_RS_PATH=%s\n' "$runner" >> "$GITHUB_ENV"
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.

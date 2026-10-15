@@ -39,11 +39,16 @@ pub(super) enum Outcome {
     SkippedByEnv,
 }
 
-const REMEDIATION: &str = "recipe-runner-rs is required for `amplihack recipe run` and the dev-orchestrator skill. \
+fn remediation() -> String {
+    format!(
+        "recipe-runner-rs is required for `amplihack recipe run` and the dev-orchestrator skill. \
      Install it manually with:\n    \
-     cargo install --git https://github.com/rysweet/amplihack-recipe-runner --branch main --locked\n\
+     cargo install --git https://github.com/rysweet/amplihack-recipe-runner --rev {} --locked\n\
      Then re-run `amplihack install`. \
-     Override the binary location with RECIPE_RUNNER_RS_PATH=/path/to/recipe-runner-rs.";
+     Override the binary location with RECIPE_RUNNER_RS_PATH=/path/to/recipe-runner-rs.",
+        crate::freshness::RECIPE_RUNNER_REV.trim()
+    )
+}
 
 /// Ensure `recipe-runner-rs` is reachable on PATH (or via the override env
 /// vars probed by [`recipe_runner_binary_present`]). Prints a one-line
@@ -57,7 +62,13 @@ const REMEDIATION: &str = "recipe-runner-rs is required for `amplihack recipe ru
 ///    [`install_recipe_runner_from_git`].
 /// 4. Re-probe. Present → return `InstalledFromGit`. Absent → bail.
 pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
-    if recipe_runner_binary_present() {
+    let remediation = remediation();
+    if std::env::var_os("RECIPE_RUNNER_RS_PATH").is_some_and(|v| !v.is_empty()) {
+        crate::freshness::probe_recipe_runner().map_err(|e| anyhow::anyhow!(
+            "RECIPE_RUNNER_RS_PATH selects an incompatible runner: {e:#}. Preserve this binary; select a compatible build or unset the override. {remediation}"))?;
+        return Ok(Outcome::AlreadyOnPath);
+    }
+    if recipe_runner_binary_present() && !crate::freshness::managed_runner_needs_reconcile() {
         println!("   ✅ recipe-runner-rs is available");
         return Ok(Outcome::AlreadyOnPath);
     }
@@ -72,7 +83,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
         // install-completeness. Surface a clear remediation.
         bail!(
             "recipe-runner-rs not found on PATH and AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL=1 \
-             disabled the cargo install fallback. {REMEDIATION}"
+             disabled the cargo install fallback. {remediation}"
         );
     }
 
@@ -81,7 +92,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
     // self-heal and ensure_framework_installed reach this same function.
     let bootstrap = crate::rust_toolchain::bootstrap_permitted();
     if let Err(err) = install_recipe_runner_from_git(bootstrap) {
-        bail!("failed to install recipe-runner-rs via cargo: {err:#}. {REMEDIATION}");
+        bail!("failed to install recipe-runner-rs via cargo: {err:#}. {remediation}");
     }
 
     if recipe_runner_binary_present() {
@@ -97,7 +108,7 @@ pub(super) fn ensure_recipe_runner() -> Result<Outcome> {
              discoverable. cargo installed it outside $CARGO_HOME/bin (check CARGO_INSTALL_ROOT \
              or cargo's `install.root` setting; `cargo install --list` shows the root). Set \
              RECIPE_RUNNER_RS_PATH to the installed binary and re-run `amplihack install`. \
-             {REMEDIATION}"
+             {remediation}"
         );
     }
 }
@@ -126,7 +137,7 @@ mod tests {
         let _guard = lock_env();
         let temp = tempfile::tempdir().unwrap();
         let stub = temp.path().join("recipe-runner-rs");
-        std::fs::write(&stub, "#!/bin/sh\nexit 0\n").unwrap();
+        std::fs::write(&stub, "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"version\":\"fixture\",\"capabilities\":[\"codex_exec\"]}'\n").unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;

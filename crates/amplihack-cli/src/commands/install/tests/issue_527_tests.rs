@@ -86,6 +86,7 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous_home = crate::test_support::set_home(temp.path());
 
@@ -366,4 +367,20 @@ fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
             );
         }
     });
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
+        "CARGO_HOME",
+        "HOME",
+        "PATH",
+        "RECIPE_RUNNER_RS_PATH",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }
