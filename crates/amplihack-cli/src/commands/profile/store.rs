@@ -612,15 +612,14 @@ fn copy_filtered_settings(source: &Path, destination: &Path) -> Result<(), Profi
     }
     let value: serde_json::Value = serde_json::from_slice(&raw)
         .map_err(|error| ProfileError::InvalidSharedSettings(error.to_string()))?;
-    let Some(settings) = value.as_object() else {
+    let serde_json::Value::Object(settings) = value else {
         return Err(ProfileError::InvalidSharedSettings(
             "expected a JSON object".into(),
         ));
     };
     let safe: serde_json::Map<String, serde_json::Value> = settings
-        .iter()
+        .into_iter()
         .filter(|(key, _)| SHARED_SETTINGS_KEYS.contains(&key.as_str()))
-        .map(|(key, value)| (key.clone(), value.clone()))
         .collect();
     if safe.is_empty() {
         return Ok(());
