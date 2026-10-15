@@ -42,11 +42,31 @@ steps:
   - id: "create-investigation-report"
     type: "bash"
     command: |
-      # Create output directory
-      mkdir -p "{{output_dir}}"
-
-      # Output report metadata - actual report generation handled by synthesis agent
-      echo '{"report_path": "{{output_dir}}/investigation_report.md", "status": "created", "investigation_question": "{{investigation_question}}", "investigation_type": "{{investigation_type}}", "depth": "{{depth}}"}'
+      set -euo pipefail
+      umask 022
+      out_dir="{{output_dir}}"
+      case "$out_dir" in
+        ""|*..*) echo "invalid output_dir: '$out_dir'" >&2; exit 1 ;;
+      esac
+      mkdir -p -- "$out_dir"
+      report="$out_dir/investigation_report.md"
+      if [ -L "$report" ]; then
+        echo "refusing to write through symlink: $report" >&2
+        exit 1
+      fi
+      tmp="$(mktemp "$out_dir/.investigation_report.XXXXXX")"
+      trap 'rm -f -- "$tmp"' EXIT
+      # Quoted heredoc: the synthesis is untrusted text and must stay literal.
+      cat > "$tmp" <<'AMPLIHACK_INVESTIGATION_REPORT_EOF'
+      {{synthesis}}
+      AMPLIHACK_INVESTIGATION_REPORT_EOF
+      mv -f -- "$tmp" "$report"
+      trap - EXIT
+      if [ ! -s "$report" ] || ! grep -q '[^[:space:]]' "$report"; then
+        echo "investigation report missing or empty: $report" >&2
+        exit 1
+      fi
+      printf '{"report_path": "%s", "status": "created"}\n' "$report"
     output: "report_creation"
     parse_json: true
 
