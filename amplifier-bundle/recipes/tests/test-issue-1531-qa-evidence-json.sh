@@ -76,7 +76,7 @@ check_log() {
     printf "$fmt" > "$log"
     out="$(record "$log")"
     if ! printf '%s' "$out" | valid_json; then
-        fail "$id" "$desc: record is not valid JSON: $(printf '%s' "$out" | od -c | head -3 | tr -s ' ')"
+        fail "$id" "$desc: record is not valid JSON: $(printf '%q' "${out:0:200}")"
         return 0
     fi
     summary="$(printf '%s' "$out" | summary_of)"
