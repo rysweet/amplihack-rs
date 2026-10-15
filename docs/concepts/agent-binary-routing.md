@@ -169,8 +169,10 @@ than reading the env var directly. One older helper,
 `CLAUDECODE`, the marker Claude Code exports. Nothing in amplihack calls it,
 so it decides nothing, and it was left as it was rather than taught a ranking
 that no caller exercises.
-Code that only checks whether the variable is set (as a sign of running as a
-subprocess) does not choose a binary and is unaffected by the tag.
+Nothing in amplihack reads the variable's presence as a sign of running as a
+subprocess any more (issue #1525). Subprocess safety is decided as described in
+[COPILOT_SUBPROCESS_SAFE.md](../COPILOT_SUBPROCESS_SAFE.md), and a set
+`AMPLIHACK_AGENT_BINARY` plays no part in it.
 
 ```mermaid
 sequenceDiagram
