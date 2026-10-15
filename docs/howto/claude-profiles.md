@@ -1,9 +1,12 @@
 # How to Manage Multiple Claude Code Logins with Profiles
 
-A *Claude login profile* is a named, isolated Claude Code configuration
-directory. Each profile has its own login, settings and history, so you can
-keep, for example, a `work` and a `personal` account side by side and choose
-between them manually.
+A *Claude login profile* is a named Claude Code configuration directory. For
+claude.ai logins and API-key accounts, separate profiles let you keep, for
+example, `work` and `personal` configurations side by side and choose between
+them manually. There is one authentication exception: Claude Code does not
+isolate two Claude Console sign-ins made without an API key because those
+credentials live outside the configuration directory. See Claude Code's
+[multiple-account documentation](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts).
 
 > Not to be confused with [component profiles](../PROFILE_MANAGEMENT.md),
 > which filter staged files during install. Login profiles only select which
@@ -16,8 +19,13 @@ feature. See [What a new profile inherits](#what-a-new-profile-inherits).
 ## What a new profile inherits
 
 `amplihack profile add` seeds the new profile with an **allowlist** of shared,
-non-auth assets copied from `~/.claude` (resolved from `$HOME`). Login
-credentials and history stay isolated per profile.
+non-auth assets copied from `~/.claude` (resolved from `$HOME`). Authentication
+and history stored in the selected configuration directory stay with that
+profile, subject to the Console sign-in exception above.
+
+Profiles preserve the calling process environment. An inherited
+`ANTHROPIC_API_KEY` can select API billing instead of a subscription login; see
+the official [environment variable reference](https://code.claude.com/docs/en/env-vars).
 
 | Copied | Details |
 |--------|---------|

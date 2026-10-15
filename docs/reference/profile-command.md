@@ -129,6 +129,16 @@ Ownership and group/other mode-bit checks are available on Unix. On other
 platforms, profile launches still require a real, contained directory, but
 the operating system does not expose the same checks through this command.
 
+The profile selects a configuration directory; it does not change Claude's
+authentication environment. Claude Code documents separate directories for
+claude.ai logins and API-key accounts, but two Claude Console sign-ins without
+API keys are not isolated because their credentials live outside the
+configuration directory. An inherited `ANTHROPIC_API_KEY` can also select API
+billing instead of a subscription login. See the official
+[multiple-account](https://code.claude.com/docs/en/authentication#log-in-with-multiple-accounts)
+and [environment variable](https://code.claude.com/docs/en/env-vars)
+documentation.
+
 `profile run` applies the same check as `launch --profile`: if Docker is
 active (including `AMPLIHACK_USE_DOCKER`), it fails with the unsupported-mode
 error before resolving or creating anything. It never silently drops the
