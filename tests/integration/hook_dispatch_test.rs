@@ -55,7 +55,7 @@ fn codex_security_denial_write_failure_blocks_tool() {
     let project = tempfile::tempdir().unwrap();
     let mut child = Command::new(hooks_bin())
         .arg("pre-tool-use")
-        .env("AMPLIHACK_AGENT_BINARY", "codex")
+        .env("AMPLIHACK_HOOK_PROTOCOL", "codex")
         .env("HOME", project.path())
         .current_dir(project.path())
         .stdin(Stdio::piped())
@@ -72,7 +72,9 @@ fn codex_security_denial_write_failure_blocks_tool() {
         .stdin
         .take()
         .unwrap()
-        .write_all(b"invalid JSON")
+        .write_all(
+            br#"{"hook_event_name":"PreToolUse","tool_name":"Bash","tool_input":{"command":"pwd"}}"#,
+        )
         .unwrap();
     let output = child.wait_with_output().unwrap();
     assert_eq!(

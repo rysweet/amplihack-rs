@@ -100,6 +100,36 @@ CARGO_TARGET_DIR=/tmp/amplihack-target cargo test -p amplihack-cli --lib legacy_
 Use any writable directory for `CARGO_TARGET_DIR` if the default `target/` is
 read-only or shared.
 
+## Failure-recovery tests
+
+Tests in `crates/amplihack-cli/src/commands/install/tests/codex_failure_recovery.rs`
+verify that a failed or interrupted Codex upgrade rolls back exactly. They use
+a temporary `HOME` guarded by `EnvGuard` and `home_env_lock`, so the real
+`~/.codex`, `~/.claude` and `~/.copilot` are never touched.
+
+An upgrade only exercises recovery if the packaged content actually changed.
+The upgrade tests therefore install once, then call `make_source_newer()`, which
+rewrites the packaged `amplifier-bundle/skills/marker.txt` to `upgraded\n`
+before the second install. Without it the second install is a no-op and the
+rollback assertions pass vacuously.
+
+After the injected failure, the tests assert byte-exact restoration of:
+
+- `market/plugin/plugin.json` and `market/plugin/skills/marker.txt`
+- the ownership ledger and hooks file
+- removal of `pending.json` on a clean rollback
+
+For the simulated interruption (package replaced, ledger not committed),
+`previous-package/plugin.json` and `previous-package/skills/marker.txt` must
+hold the pre-upgrade bytes and `pending.json` must remain for retry.
+
+```
+cargo test -p amplihack-cli --lib codex_failure_recovery
+```
+
+Claude and Copilot install behavior is covered by `claude_command_staging_tests`,
+`settings_tests` and `install_flow`.
+
 ## Maintainer note
 
 If the framed digest format changes again, add a new migration step rather than
