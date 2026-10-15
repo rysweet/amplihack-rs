@@ -55,16 +55,30 @@ fn run(mut cmd: Command, prompt: &str, mode: DeliveryMode) -> String {
     // write to it before wait(). Until that is implemented this branch
     // emulates the eventual behaviour so the assertion still measures
     // round-trip integrity end-to-end.
-    if mode == DeliveryMode::Stdin {
-        use std::io::Write;
-        if let Some(mut sin) = child.stdin.take() {
-            sin.write_all(prompt.as_bytes())
-                .expect("write to child stdin should succeed");
-        }
-    }
+    //
+    // The write runs on its own thread while `wait_with_output` drains
+    // stdout: writing all 64 KiB first deadlocks against `cat` whenever the
+    // pipes hold less than the payload, which they do once the user exceeds
+    // `fs.pipe-user-pages-soft` and the kernel hands out one-page pipes.
+    let writer = (mode == DeliveryMode::Stdin)
+        .then(|| child.stdin.take())
+        .flatten()
+        .map(|mut sin| {
+            let payload = prompt.as_bytes().to_vec();
+            std::thread::spawn(move || {
+                use std::io::Write;
+                sin.write_all(&payload)
+            })
+        });
     let out = child
         .wait_with_output()
         .expect("harness should run to completion");
+    if let Some(writer) = writer {
+        writer
+            .join()
+            .expect("stdin writer thread should not panic")
+            .expect("write to child stdin should succeed");
+    }
     assert!(
         out.status.success(),
         "harness exited non-zero: {:?}",

@@ -395,24 +395,26 @@ async fn run_delivered_command(
         }
     };
 
-    if let Some(payload) = stdin_payload
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        if let Err(e) = stdin.write_all(&payload).await {
-            return ProcessResult::err(
-                format!("failed to write prompt to child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-        if let Err(e) = stdin.flush().await {
-            return ProcessResult::err(
-                format!("failed to flush child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-    }
+    // Feed stdin on its own task, concurrently with draining stdout/stderr.
+    // Writing the whole payload before reading deadlocks any child that
+    // echoes its input (e.g. `cat`) once both pipe buffers fill. Pipe
+    // capacity is not a fixed 64 KiB: once a user exceeds
+    // `fs.pipe-user-pages-soft`, new pipes get a single page, so even a
+    // modest prompt hangs. Dropping `stdin` at the end of the task closes the
+    // pipe so the child sees EOF.
+    let stdin_writer = match (stdin_payload, child.stdin.take()) {
+        (Some(payload), Some(mut stdin)) => Some(tokio::spawn(async move {
+            stdin
+                .write_all(&payload)
+                .await
+                .map_err(|e| format!("failed to write prompt to child stdin: {e}"))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|e| format!("failed to flush child stdin: {e}"))
+        })),
+        _ => None,
+    };
 
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -428,6 +430,13 @@ async fn run_delivered_command(
     let outcome = wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg).await;
 
     drop(delivery_handle);
+    let stdin_result = match stdin_writer {
+        Some(task) => match task.await {
+            Ok(r) => r,
+            Err(e) => Err(format!("child stdin writer task failed: {e}")),
+        },
+        None => Ok(()),
+    };
     let duration = start.elapsed();
 
     if outcome.killed_for_idle {
@@ -436,6 +445,10 @@ async fn run_delivered_command(
             process_id,
             duration,
         );
+    }
+
+    if let Err(e) = stdin_result {
+        return ProcessResult::err(e, process_id, duration);
     }
 
     match outcome.status {
