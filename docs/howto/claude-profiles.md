@@ -30,6 +30,8 @@ Never copied: `.credentials.json`, `.claude.json`, `history*`, `projects/`,
 on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
 key not on the allowlist). If `~/.claude` does not exist, the profile is simply
 created empty.
+If the path exists but is not a directory, `profile add` fails and removes the
+new profile directory rather than silently creating an unseeded profile.
 
 Caveats:
 
@@ -49,9 +51,10 @@ Caveats:
 - **Windows.** Source files are opened with `O_NOFOLLOW` on Unix to close the
   check-then-open race. Windows has no equivalent, so a same-user race remains
   possible there.
-- **Failure is atomic.** If seeding fails (for example invalid `settings.json`
-  gives `InvalidSharedSettings`), the profile directory created by that call is
-  removed. A pre-existing profile is never deleted.
+- **Failure is rolled back.** If seeding fails (for example invalid
+  `settings.json` gives `InvalidSharedSettings`), the profile directory created
+  by that call is removed. If cleanup also fails, a warning is printed and the
+  original seeding error is returned. A pre-existing profile is never deleted.
 
 Example:
 

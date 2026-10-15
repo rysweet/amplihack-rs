@@ -220,7 +220,11 @@ fn seed_shared_assets(source: &Path, destination: &Path) -> Result<(), ProfileEr
             return Err(ProfileError::SymlinkRefused(source.display().to_string()));
         }
         Ok(meta) if meta.is_dir() => {}
-        Ok(_) => return Ok(()),
+        Ok(_) => {
+            return Err(ProfileError::InvalidSharedSource(
+                source.display().to_string(),
+            ));
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(error.into()),
     }

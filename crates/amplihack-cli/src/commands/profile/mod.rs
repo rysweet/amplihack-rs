@@ -48,6 +48,8 @@ pub enum ProfileError {
     InvalidRoot(String),
     #[error("invalid shared Claude settings: {0}")]
     InvalidSharedSettings(String),
+    #[error("shared Claude asset source is not a directory: {0:?}")]
+    InvalidSharedSource(String),
     #[error("shared Claude assets exceed the copy limit: {0}")]
     SharedAssetLimit(String),
     #[error("refusing symlinked or out-of-root path {0:?}")]
@@ -69,6 +71,7 @@ impl ProfileError {
             Self::PointerCorrupt(_) => "re-run `amplihack profile switch <name>`",
             Self::InvalidRoot(_) => "set AMPLIHACK_CLAUDE_PROFILE_ROOT to an absolute path",
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
+            Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => "trim the oversized directory under ~/.claude and retry",
             Self::SymlinkRefused(_) => "remove the symlink and re-add the profile",
             Self::Io(_) => "check permissions on the profile root",

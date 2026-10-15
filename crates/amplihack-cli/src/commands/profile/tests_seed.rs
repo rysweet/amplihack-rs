@@ -61,6 +61,21 @@ fn credentials_history_and_state_are_never_copied() {
 }
 
 #[test]
+fn non_directory_shared_source_is_rejected_and_profile_is_rolled_back() {
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::write(&source, "not a directory").unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
+
+    assert!(matches!(
+        store.add(&n("work")),
+        Err(ProfileError::InvalidSharedSource(_))
+    ));
+    assert!(!store.root().join("work").exists());
+    assert!(store.list().unwrap().is_empty());
+}
+
+#[test]
 fn settings_with_only_non_allowlisted_keys_writes_no_file() {
     let (_d, source, store) = fixture();
     fs::write(source.join("settings.json"), r#"{"env":{"K":"v"}}"#).unwrap();

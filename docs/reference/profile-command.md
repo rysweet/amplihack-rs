@@ -58,13 +58,16 @@ Rules:
   nothing is overwritten and no destination symlink is followed.
 - A symlinked source root fails with `SymlinkRefused`. Nested symlinks and
   special files are skipped. On Unix sources are opened with `O_NOFOLLOW`.
+- A missing `~/.claude` source produces an empty profile. An existing source
+  that is not a directory fails the add and rolls back the new profile.
 - Traversal depth and entry count are bounded; exceeding them is an error.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
   `projects`, `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server
   settings are not carried over).
-- Invalid `settings.json` yields `InvalidSharedSettings`. Any seeding error
-  removes the directory this call created (never a pre-existing profile).
+- Invalid `settings.json` yields `InvalidSharedSettings`. A seeding error
+  removes the directory this call created; cleanup failure is reported as a
+  warning while the original error is returned (never a pre-existing profile).
 - Values are never logged; messages contain paths and counts only.
 - No sync after creation: later edits to `~/.claude` do not update profiles.
 
