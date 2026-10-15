@@ -10,6 +10,7 @@
 use std::path::Path;
 
 /// A fake `claude` that records every invocation.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // the test is Linux only
 fn write_recording_claude(dir: &Path, ledger: &Path) {
     let script = format!(
         "#!/bin/sh\n\
@@ -24,6 +25,7 @@ fn write_recording_claude(dir: &Path, ledger: &Path) {
     std::fs::set_permissions(&path, perms).unwrap();
 }
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 fn probe_count(ledger: &Path) -> usize {
     std::fs::read_to_string(ledger)
         .map(|text| text.lines().count())
