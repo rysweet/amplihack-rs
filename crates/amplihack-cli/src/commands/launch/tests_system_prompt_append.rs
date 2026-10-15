@@ -252,7 +252,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
 
 fn argv_for(extra: &[String]) -> Vec<String> {
     let binary = claude_binary();
-    build_command_for_dir(&binary, false, false, false, extra, None, false)
+    build_command_for_dir(&binary, false, false, false, extra, None, false, None)
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect()
@@ -350,7 +350,7 @@ fn copilot_launches_are_untouched_by_this_feature() {
             path: std::path::PathBuf::from("/usr/bin/copilot"),
             version: Some("1.0.0".to_string()),
         };
-        build_command_for_dir(&binary, false, false, false, &[], None, false)
+        build_command_for_dir(&binary, false, false, false, &[], None, false, None)
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect::<Vec<_>>()
