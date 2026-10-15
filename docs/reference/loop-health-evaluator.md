@@ -248,6 +248,13 @@ Historically, agents read a `79` refusal as an infrastructure fault and retried
 one level deeper with a raised ceiling. That is what #1327 sealed, and it is
 what this branch refuses to re-open.
 
+The mirror-image failure is just as expensive (issue #1437): reading an
+*ordinary* failure as a refusal. `autodrive_loop.sh` decides terminality on the
+child's exit status and on the structured `structural_refusal` boolean in the
+child's own `amplihack.recipe.failure_class` marker — never by grepping a round
+transcript, which contains every file the round's agents read. See
+[auto-drive-to-merge](auto-drive-to-merge.md#and-not-every-failure-is-terminal-issue-1437).
+
 ## Fail-safe guarantees
 
 Every branch fails toward stopping:
