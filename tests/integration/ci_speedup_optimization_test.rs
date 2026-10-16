@@ -332,7 +332,12 @@ fn recipe_gate_builds_do_not_disable_rustc_wrapper() {
         let path = workspace_root().join(script);
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("FAIL: cannot read {path:?}: {e}"));
-        let disabling = Regex::new(r#"RUSTC_WRAPPER=(''|""|\s)"#).unwrap();
+        // An empty or defaulted assignment, `unset`, `env -u`, or a cargo
+        // `rustc-wrapper` override: each bypasses the job's sccache.
+        let disabling = Regex::new(
+            r#"RUSTC_WRAPPER=(?:''|""|\s|\$\{)|unset\s+RUSTC_WRAPPER|-u\s*RUSTC_WRAPPER|rustc-wrapper\s*="#,
+        )
+        .unwrap();
         assert!(
             !disabling.is_match(&content),
             "FAIL: {script} disables RUSTC_WRAPPER for its cargo build.\n\
