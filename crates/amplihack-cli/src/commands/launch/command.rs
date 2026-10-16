@@ -124,6 +124,7 @@ pub(super) fn build_command_for_dir(
     // Login profile: child-only, and only for tools that read Claude's config dir.
     if let (true, Some(dir)) = (is_claude_compatible, claude_config_dir) {
         cmd.env("CLAUDE_CONFIG_DIR", dir);
+        pin_profile_for_descendants(&mut cmd, dir);
     }
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
@@ -240,6 +241,35 @@ pub(super) fn build_command_for_dir(
         cmd.arg("--secret-env-vars=COPILOT_PROVIDER_API_KEY");
     }
     cmd
+}
+
+/// Issue #1567: pins the applied login profile for every descendant launch.
+/// A nested `amplihack claude` without `--profile` reads
+/// `AMPLIHACK_CLAUDE_PROFILE` before the default pointer, so a later
+/// `profile switch` cannot move it to another account. Child-only, like
+/// `CLAUDE_CONFIG_DIR`.
+///
+/// `dir` is always `store.resolve(name)`, i.e. `<root>/<name>` (the same
+/// assumption `verify_launch_profile_dir` makes), so its file name is the
+/// profile name and its parent is the root. The root is passed on only when
+/// the parent itself was given one; otherwise the child uses the default root
+/// just as the parent did.
+pub(crate) fn pin_profile_for_descendants(cmd: &mut Command, dir: &Path) {
+    use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
+    // A verified `<root>/<name>` always has both; without them the pin would be
+    // skipped and the child would fall back to the pointer.
+    debug_assert!(
+        dir.file_name().is_some() && dir.parent().is_some(),
+        "profile dir {dir:?} is not <root>/<name>"
+    );
+    if let Some(name) = dir.file_name() {
+        cmd.env(PROFILE_ENV, name);
+    }
+    if std::env::var_os(ROOT_ENV).is_some()
+        && let Some(root) = dir.parent()
+    {
+        cmd.env(ROOT_ENV, root);
+    }
 }
 
 /// The tools amplihack treats as Claude Code: they get

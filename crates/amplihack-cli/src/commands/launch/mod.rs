@@ -34,7 +34,8 @@ mod tests_system_prompt_append;
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
 pub(crate) use command::{
-    resolve_no_reflection, resolve_subprocess_safe, validate_routed_copilot_workspace,
+    pin_profile_for_descendants, resolve_no_reflection, resolve_subprocess_safe,
+    validate_routed_copilot_workspace,
 };
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 

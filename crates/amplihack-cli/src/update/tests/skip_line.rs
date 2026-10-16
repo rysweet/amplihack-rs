@@ -243,25 +243,24 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Issue #334: Windows x86_64 release support.
+// Native Windows is not a published release target (owner decision: no
+// Windows builds). WSL resolves to the linux targets.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn release_target_table_covers_windows_x86_64() {
-    // The supported_release_target() function in mod.rs is hard-coded with
-    // cfg!() arms, so we can only directly observe the host's mapping. To
-    // assert the Windows arm exists without conditionally compiling the test
-    // away, we read the source and check the literal arm is present. This is
-    // a static guard — it fails any commit that drops the windows arm.
+fn release_target_table_excludes_native_windows() {
+    // supported_release_target() is hard-coded with cfg!() arms, so only the
+    // host's mapping is directly observable. Read the source to guarantee no
+    // Windows arm (and no reference to the dropped msvc asset) creeps back in
+    // while the release workflow publishes no Windows archive.
     let src = include_str!("../mod.rs");
     assert!(
-        src.contains(r#"target_os = "windows", target_arch = "x86_64""#),
-        "supported_release_target() must include a windows/x86_64 arm",
+        !src.contains(r#"target_os = "windows""#),
+        "supported_release_target() must not map native Windows to a release target",
     );
     assert!(
-        src.contains(r#"x86_64-pc-windows-msvc"#),
-        "supported_release_target() must map windows/x86_64 to x86_64-pc-windows-msvc",
+        !src.contains("pc-windows-msvc"),
+        "no x86_64-pc-windows-msvc release asset is published",
     );
 }
 
@@ -280,15 +279,11 @@ fn binary_filename_appends_exe_on_windows() {
     );
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 #[test]
-fn windows_host_resolves_msvc_target() {
-    assert_eq!(supported_release_target(), Some("x86_64-pc-windows-msvc"));
-    assert_eq!(
-        expected_archive_name().unwrap(),
-        "amplihack-x86_64-pc-windows-msvc.tar.gz"
-    );
-    assert_eq!(binary_filename("amplihack"), "amplihack.exe");
+fn native_windows_host_is_unsupported_for_self_update() {
+    assert_eq!(supported_release_target(), None);
+    assert!(expected_archive_name().is_err());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
