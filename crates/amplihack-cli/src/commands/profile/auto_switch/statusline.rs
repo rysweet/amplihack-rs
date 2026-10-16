@@ -58,14 +58,30 @@ pub fn run(root_arg: &str, owner_arg: &str) -> i32 {
     code
 }
 
+/// The state for `root_arg`, or `None` after one stderr line naming why the
+/// root is unusable. Stdout stays empty either way (status-line contract).
 fn open_state(root_arg: &str) -> Option<State> {
     let root = Path::new(root_arg);
-    if !root.is_absolute() {
-        return None;
+    let opened = if root.is_absolute() {
+        State::new(root).map_err(|e| e.to_string()).and_then(|s| {
+            match fsx::check_root_private(&s.root) {
+                Ok(()) => Ok(s),
+                Err(e) => Err(e.to_string()),
+            }
+        })
+    } else {
+        Err("is not an absolute path".to_string())
+    };
+    match opened {
+        Ok(s) => Some(s),
+        Err(why) => {
+            eprintln!(
+                "auto-switch: status line disabled: profile root {}: {why}",
+                root.display()
+            );
+            None
+        }
     }
-    let state = State::new(root).ok()?;
-    fsx::check_root_private(&state.root).ok()?;
-    Some(state)
 }
 
 /// The wrapper acts only for the session it was installed for: Claude's

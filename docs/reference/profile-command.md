@@ -586,6 +586,13 @@ wrapper does not run it, prints nothing to standard output (Claude shows an
 empty status line), and writes one stderr line naming the path and telling
 you to run `amplihack profile auto-switch repair`.
 
+If the `--root` it was installed with is not an absolute path, cannot be
+resolved, or fails the profile-root checks (a real directory owned by you and
+not writable by other users), the wrapper does nothing else: it runs neither
+the original status line nor any bookkeeping, prints nothing to standard
+output, and writes one stderr line, `auto-switch: status line disabled:
+profile root <path>: <reason>`.
+
 #### Trigger point and coverage
 
 The wrapper is the only passive source of `rate_limits`: hooks receive no
@@ -959,8 +966,8 @@ metadata checks, and syncing the directories that contain them. Each account's
 login is in exactly one place at any moment. `.claude.json` and
 `settings.json` may contain secrets (`primaryApiKey`, `env`, `apiKeyHelper`):
 only the `oauthAccount` key is copied out of `.claude.json`, rewrites of
-`.claude.json` and `settings.json` keep the file's existing mode (a new
-`settings.json` is `0600`), and parse errors report the path, line and
+`.claude.json` and `settings.json` keep the file's existing permission bits
+(setuid, setgid and sticky are dropped; a new `settings.json` is `0600`), and parse errors report the path, line and
 column only.
 State directories are `0700` and state files `0600`, and symlinks are
 refused, as for the profile store. Auto-switch

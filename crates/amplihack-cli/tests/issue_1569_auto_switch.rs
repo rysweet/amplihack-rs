@@ -931,6 +931,26 @@ fn wrapper_without_inner_command_prints_nothing_and_exits_zero() {
 }
 
 #[test]
+fn wrapper_on_an_unsafe_root_prints_nothing_and_says_why_on_stderr() {
+    let f = Fixture::new();
+    f.ok(&["profile", "auto-switch", "install"]);
+    f.switch_on();
+    let mode = fs::metadata(&f.root).unwrap().mode() & 0o7777;
+    fs::set_permissions(&f.root, fs::Permissions::from_mode(0o777)).unwrap();
+    let out = f.tick("X", 20.0);
+    fs::set_permissions(&f.root, fs::Permissions::from_mode(mode)).unwrap();
+    assert!(out.stdout.is_empty(), "{}", text(&out.stdout));
+    assert_eq!(out.status.code(), Some(0));
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("status line disabled")
+            && stderr.contains(&f.root.display().to_string())
+            && stderr.contains("writable by other users"),
+        "{stderr}"
+    );
+}
+
+#[test]
 fn wrapper_records_a_reading_while_on() {
     let f = Fixture::new();
     f.switch_on();

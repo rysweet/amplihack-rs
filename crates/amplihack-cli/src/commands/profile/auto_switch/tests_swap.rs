@@ -4,7 +4,7 @@
 use super::super::fsx;
 use super::super::liveness::Liveness;
 use super::super::state::{Journal, Op, PHASE_INCONSISTENT, State};
-use super::{MoveError, cleanup_rerun, fail, recover, rerun_owner, swap_allowed};
+use super::{MoveError, cleanup_rerun, fail, recover, rerun_owner, same_version, swap_allowed};
 use crate::commands::profile::name::ProfileName;
 use std::collections::BTreeSet;
 use std::fs;
@@ -259,4 +259,60 @@ fn keep_mode_write_keeps_an_existing_mode_and_makes_new_files_private() {
 
     fsx::write_private_atomic(&dir, ".claude.json", b"{}").unwrap();
     assert_eq!(fs::metadata(&old).unwrap().mode() & 0o7777, 0o600);
+}
+
+#[test]
+fn keep_mode_write_drops_setuid_setgid_and_sticky_bits() {
+    let r = root();
+    let dir = r.state.root.join("X");
+    fs::create_dir(&dir).unwrap();
+    let file = dir.join(".claude.json");
+    fs::write(&file, b"{}").unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o5755)).unwrap();
+    assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7000, 0o5000);
+    fsx::write_atomic_keep_mode(&dir, ".claude.json", b"{\"a\":1}").unwrap();
+    assert_eq!(fs::metadata(&file).unwrap().mode() & 0o7777, 0o755);
+}
+
+/// Sets `path`'s mtime to exactly `sec`.`nsec`.
+fn set_mtime(path: &std::path::Path, sec: i64, nsec: i64) {
+    use std::os::unix::ffi::OsStrExt;
+    let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+    let times = [
+        libc::timespec {
+            tv_sec: 0,
+            tv_nsec: libc::UTIME_OMIT,
+        },
+        libc::timespec {
+            tv_sec: sec as libc::time_t,
+            tv_nsec: nsec as _,
+        },
+    ];
+    // SAFETY: `c` is a valid NUL-terminated path and `times` has two entries.
+    let rc = unsafe { libc::utimensat(libc::AT_FDCWD, c.as_ptr(), times.as_ptr(), 0) };
+    assert_eq!(rc, 0, "utimensat: {}", std::io::Error::last_os_error());
+}
+
+#[test]
+fn a_change_of_whole_seconds_alone_counts_as_a_new_version() {
+    let r = root();
+    let file = r.state.root.join(".claude.json");
+    fs::write(&file, b"{}").unwrap();
+    set_mtime(&file, 1_700_000_000, 123_456_789);
+    let before = fs::symlink_metadata(&file).unwrap();
+    assert!(same_version(&before, &fs::symlink_metadata(&file).unwrap()));
+
+    // Same inode, size and nanoseconds; only the seconds differ.
+    set_mtime(&file, 1_700_000_001, 123_456_789);
+    let now = fs::symlink_metadata(&file).unwrap();
+    assert_eq!(now.mtime_nsec(), before.mtime_nsec());
+    assert_eq!((now.ino(), now.len()), (before.ino(), before.len()));
+    assert!(!same_version(&before, &now));
+
+    // And the nanoseconds alone.
+    set_mtime(&file, 1_700_000_000, 987_654_321);
+    assert!(!same_version(
+        &before,
+        &fs::symlink_metadata(&file).unwrap()
+    ));
 }

@@ -83,11 +83,12 @@ pub fn write_private_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<
     write_atomic(dir, name, bytes, 0o600)
 }
 
-/// Like `write_private_atomic`, but an existing file keeps its mode; a new
-/// file is `0600`. For files amplihack edits on Claude's behalf
-/// (`.claude.json`, `settings.json`), whose mode is the user's choice.
+/// Like `write_private_atomic`, but an existing file keeps its permission
+/// bits; a new file is `0600`. For files amplihack edits on Claude's behalf
+/// (`.claude.json`, `settings.json`), whose mode is the user's choice. The
+/// setuid, setgid and sticky bits are dropped: a JSON file never needs them.
 pub fn write_atomic_keep_mode(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
-    let mode = check_replaceable(&dir.join(name))?.map_or(0o600, |m| m.mode() & 0o7777);
+    let mode = check_replaceable(&dir.join(name))?.map_or(0o600, |m| m.mode() & 0o777);
     write_atomic(dir, name, bytes, mode)
 }
 

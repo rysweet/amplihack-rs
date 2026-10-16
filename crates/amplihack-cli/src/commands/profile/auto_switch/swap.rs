@@ -277,12 +277,8 @@ fn patch_oauth_account(state: &State, dir: &str, account: &str) {
         let Ok(bytes) = serde_json::to_vec_pretty(&v) else {
             return;
         };
-        let unchanged = fs::symlink_metadata(path.join(CLAUDE_JSON)).is_ok_and(|now| {
-            now.ino() == before.ino()
-                && now.mtime() == before.mtime()
-                && now.mtime_nsec() == before.mtime_nsec()
-                && now.len() == before.len()
-        });
+        let unchanged = fs::symlink_metadata(path.join(CLAUDE_JSON))
+            .is_ok_and(|now| same_version(&before, &now));
         if !unchanged {
             continue;
         }
@@ -292,6 +288,15 @@ fn patch_oauth_account(state: &State, dir: &str, account: &str) {
         return;
     }
     eprintln!("warning: {dir}/{CLAUDE_JSON} kept changing; account details not updated");
+}
+
+/// Whether `now` is the same version of a file as `before`: same inode,
+/// size and full mtime (seconds and nanoseconds).
+fn same_version(before: &fs::Metadata, now: &fs::Metadata) -> bool {
+    now.ino() == before.ino()
+        && now.mtime() == before.mtime()
+        && now.mtime_nsec() == before.mtime_nsec()
+        && now.len() == before.len()
 }
 
 // ---------------------------------------------------------------------------
