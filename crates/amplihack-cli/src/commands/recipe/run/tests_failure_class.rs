@@ -732,15 +732,20 @@ fn the_weekly_limit_verdict_tells_the_operator_when_to_come_back() {
 
 #[test]
 fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
-    // Guard against the new markers over-reaching. The provider rate-limit
-    // envelopes are pinned to `TransientTransport` in
-    // `transport_level_faults_classify_as_transient`; the bare phrase matches
-    // no marker, so assert only that it is not a usage limit.
-    let (class, signal) = classify_failure_text("rate limit");
-    assert_ne!(
-        class,
-        FailureClass::UsageLimit,
-        "a bare \"rate limit\" is not a usage limit. signal={signal:?}"
+    // Guard against the new markers over-reaching. The bare phrase matches no
+    // marker at all; the provider's own wording of it is a transient envelope.
+    assert_eq!(
+        classify_failure_text("rate limit"),
+        (FailureClass::Indeterminate, None),
+        "a bare \"rate limit\" is not a usage limit"
+    );
+    assert_eq!(
+        classify_failure_text("Error: rate limit exceeded, retry after 2s"),
+        (
+            FailureClass::TransientTransport,
+            Some("rate limit exceeded")
+        ),
+        "a provider rate limit stays retryable"
     );
 }
 
@@ -762,11 +767,10 @@ fn a_daily_request_quota_is_never_a_usage_limit() {
     // quotas use the same phrase and clear on their own, so filing them as
     // `usage_limit` would stop retrying them.
     let text = "You have reached your daily limit of 5000 API requests";
-    let (class, signal) = classify_failure_text(text);
-    assert_ne!(
-        class,
-        FailureClass::UsageLimit,
-        "a daily request quota is not a usage limit. signal={signal:?}"
+    assert_eq!(
+        classify_failure_text(text),
+        (FailureClass::Indeterminate, None),
+        "a daily request quota is not a usage limit"
     );
 }
 
@@ -793,6 +797,11 @@ fn a_weekly_or_spend_limit_wrapped_in_a_429_is_still_a_usage_limit() {
             FailureClass::UsageLimit,
             "a usage limit wrapped in a 429 envelope must not be read as a \
              short-lived transport fault: {line:?}. signal={signal:?}"
+        );
+        assert_eq!(
+            signal,
+            classify_failure_text(line).1,
+            "the envelope must not change the signal"
         );
     }
 }
