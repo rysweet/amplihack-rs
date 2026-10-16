@@ -146,3 +146,31 @@ fn test_infer_missing_context_repo_path_defaults_to_dot() {
         "repo_path must default to '.' when AMPLIHACK_REPO_PATH is not set"
     );
 }
+
+/// Issue #1567: a recipe context key cannot fake or override the pinned Claude
+/// login profile, in any letter case, because AMPLIHACK_* names are reserved.
+#[test]
+fn test_context_env_pairs_drops_claude_profile_keys() {
+    let mut context = BTreeMap::new();
+    context.insert("AMPLIHACK_CLAUDE_PROFILE".to_string(), "evil".to_string());
+    context.insert("amplihack_claude_profile".to_string(), "evil".to_string());
+    context.insert(
+        "AMPLIHACK_CLAUDE_PROFILE_ROOT".to_string(),
+        "/tmp/evil".to_string(),
+    );
+    context.insert("task_description".to_string(), "kept".to_string());
+
+    let pairs = super::execute::context_env_pairs(&context, usize::MAX);
+
+    assert!(
+        pairs
+            .iter()
+            .all(|(k, _)| !k.starts_with("AMPLIHACK_CLAUDE_PROFILE")),
+        "profile keys must never be exported from recipe context: {pairs:?}"
+    );
+    assert!(
+        pairs
+            .iter()
+            .any(|(k, v)| k == "TASK_DESCRIPTION" && v == "kept")
+    );
+}

@@ -163,7 +163,9 @@ a single line of the step runs. Exporting attacker- or author-controlled values
 into those names would be a code-execution vector. The exporter therefore
 **never** sets any name in the reserved denylist, regardless of context, and
 never sets any name beginning with `AMPLIHACK_` (those are owned by the
-subprocess environment builder).
+subprocess environment builder). A context key in the `AMPLIHACK_` namespace
+passed to `amplihack recipe run` (`-c`/`--set` or `--context-file`) is not
+skipped: the run stops before the runner starts (issue #1567).
 
 | Category | Reserved names |
 |----------|----------------|
