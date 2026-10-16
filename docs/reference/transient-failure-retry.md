@@ -70,8 +70,8 @@ failed (exit 1)`; the 529 was in the captured stdout, which is why both are read
 - **`daily limit` is not a marker.** Provider and GitHub API daily request
   quotas use the same phrase. Filing those as `usage_limit` would stop retrying
   failures that clear on their own.
-- **A bare `rate limit` is not a marker**, so a provider rate limit never
-  becomes non-retryable. `rate limit exceeded`, `rate_limit_error`, a plain
+- **A bare `rate limit` is not a marker**, so a provider rate limit is never
+  filed as `usage_limit`. `rate limit exceeded`, `rate_limit_error`, a plain
   `API Error: 429` and `429 Too Many Requests` stay `transient_transport`.
 - **`credit balance is too low`** is also on the marker list, but the
   environmental check runs first, so that message classifies `environmental`.
