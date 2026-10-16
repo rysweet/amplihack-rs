@@ -65,12 +65,18 @@ The markers are `session limit`, `usage limit`, `usage_limit_reached`,
   `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)`
   gives `it resets Oct 8, 12am (America/Los_Angeles)`.
 - **Two markers in one message.** The `signal` is the marker that appears
-  earliest in the text, not the one listed first.
-  `You've hit your org's monthly spend limit · … · your weekly limit resets Oct 10, ...`
+  earliest in the text, not the one listed first. This message:
+
+  ```text
+  You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 10, ...
+  ```
+
   reports `spend limit`, and its reset hint is `Oct 10, ...`, the text after the
   first `resets `.
-- **Checked before the transient markers.** A usage-limit marker inside a 429
-  envelope is still `usage_limit`.
+- **Checked after work and environmental, before transient.** The order is
+  `work` → `environmental` → `usage_limit` → `transient_transport`, and the
+  first class with a match wins. A usage-limit marker inside a 429 envelope is
+  still `usage_limit`, and `weekly limit` text cannot hide a real test failure.
 - **`daily limit` is not a marker.** Provider and GitHub API daily request
   quotas use the same phrase. Filing those as `usage_limit` would stop retrying
   failures that clear on their own.

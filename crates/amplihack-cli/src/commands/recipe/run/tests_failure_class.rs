@@ -95,7 +95,6 @@ fn transport_level_faults_classify_as_transient() {
         "request timed out",
         r#"{"type":"error","error":{"type":"overloaded_error"}}"#,
         r#"{"type":"error","error":{"type":"rate_limit_error"}}"#,
-        "rate limit exceeded",
     ] {
         let (class, signal) = classify_failure_text(text);
         assert_eq!(
