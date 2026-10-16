@@ -486,6 +486,8 @@ fn run_launch_core(
             proxy_config.as_ref().zip(proxy_target),
             root_sandbox.as_ref(),
         )?;
+        // Issue #1569: only the supervising amplihack sees this marker.
+        cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
 
         // Spawn child in its own process group.
         //
@@ -520,7 +522,13 @@ fn run_launch_core(
         };
 
         // Wait for child or signal
-        let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // Issue #1569: hand back logins the session borrowed, on success and
+        // on error, before this process exits.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::return_after_session(dir);
+        }
+        let exit_code = exit_code?;
         tracker.complete_session(&session_id)?;
         if exit_code != 0 {
             std::process::exit(exit_code);

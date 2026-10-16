@@ -373,6 +373,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
         return true;
     }
+    // `profile statusline` is the status-line wrapper Claude Code runs after
+    // every turn (issue #1569). Its stdout is the status line and it must stay
+    // fast and silent, so it never triggers auto-install.
+    if matches!(positionals.as_slice(), ["profile", "statusline", ..]) {
+        return true;
+    }
 
     // First non-flag positional is the subcommand candidate.
     for arg in args.iter().skip(1) {
@@ -932,6 +938,32 @@ steps:
                 "`orch helper {sub}` is a pipe primitive and must not self-heal (would pollute stdout)"
             );
         }
+    }
+
+    #[test]
+    fn profile_statusline_skips_startup_self_heal() {
+        // Issue #1569: Claude Code runs the wrapper after every turn and
+        // shows its stdout as the status line.
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&[
+                "amplihack",
+                "profile",
+                "statusline",
+                "--root",
+                "/r",
+                "--owner",
+                "work",
+            ]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
     }
 
     #[test]
