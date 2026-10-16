@@ -23,7 +23,7 @@
 #
 # Security contracts for the new checkpoint bash step (untrusted agent feedback
 # is consumed as data, never as code):
-#   S1. No eval / source / dynamic command construction; no indirect expansion
+#   S1. Only fixed trusted framework sourcing; no eval / data execution; no indirect expansion
 #       or "@P"-style parameter transformation.
 #   S2. Untrusted feedback is read with `printf '%s'` (not `printf "$X"` or a
 #       bare `echo $X`) to prevent format-string / word-splitting injection.
@@ -90,6 +90,25 @@ echo "=== Bug #834: documentation-review failure is non-fatal-but-reported ==="
 
 REVIEW_BLOCK="$(extract_step "${REVIEW_STEP_ID}")"
 CHECKPOINT_BLOCK="$(extract_step "${CHECKPOINT_STEP_ID}")"
+
+# Extract executable command separately; metadata/comments cannot prove linkage.
+CHECKPOINT_COMMAND="$(printf '%s\n' "$CHECKPOINT_BLOCK" | awk '
+    /command: \|/ { capture=1; next }
+    capture && /^    [a-zA-Z_]+:/ { exit }
+    capture { sub(/^      /, ""); print }
+')"
+CHECKPOINT_HELPER="$REPO_ROOT/amplifier-bundle/tools/workflow_doc_review_checkpoint.sh"
+if [[ -f "$CHECKPOINT_HELPER" ]] \
+   && printf '%s\n' "$CHECKPOINT_COMMAND" | grep -qxF '  CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"' \
+   && printf '%s\n' "$CHECKPOINT_COMMAND" | grep -qxF 'DOC_CHECKPOINT_HELPER="$(dirname "$CONTEXT_HELPER")/workflow_doc_review_checkpoint.sh"' \
+   && printf '%s\n' "$CHECKPOINT_COMMAND" | grep -qxF '  . "$DOC_CHECKPOINT_HELPER"'; then
+    pass linkage "canonical command sources the fixed sibling of selected context helper"
+else
+    fail linkage "canonical command/helper sourcing relationship is broken"
+fi
+# Preserve metadata assertions and inspect the actual selected implementation.
+CHECKPOINT_BLOCK="$CHECKPOINT_BLOCK
+$(cat "$CHECKPOINT_HELPER")"
 
 # ---------------------------------------------------------------------------
 # Assertion 1: step-06b-documentation-review carries continue_on_error: true
@@ -176,9 +195,8 @@ fi
 #     echo of the raw variable, nor `printf "$VAR"`).
 # ---------------------------------------------------------------------------
 if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
-    # The untrusted value is injected via the templated {{doc_review_feedback}}
-    # or an env-flattened DOC_REVIEW_FEEDBACK; either way it must be piped
-    # through printf '%s' before grep, never word-split into a command.
+    # Selected structured context or legacy DOC_REVIEW_FEEDBACK stays data.
+    # It must be piped through printf '%s' before structured parsing, never word-split into a command.
     if printf '%s\n' "${CHECKPOINT_BLOCK}" | grep -qE "printf[[:space:]]+'%s'"; then
         pass 5a "checkpoint uses printf '%s' to consume untrusted feedback safely"
     else
@@ -194,16 +212,102 @@ if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Assertion 6 (security): no eval / source / dynamic command construction and
+# Assertion 6 (security): only fixed framework sources; no eval or data execution and
 # no indirect expansion or "@P"-style parameter transformation in the checkpoint step.
 # ---------------------------------------------------------------------------
-if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
-    if printf '%s\n' "${CHECKPOINT_BLOCK}" | grep -qE '(^|[^[:alnum:]_])(eval|source)([^[:alnum:]_]|$)' \
-       || printf '%s\n' "${CHECKPOINT_BLOCK}" | grep -qE '\$\{![A-Za-z_]' \
-       || printf '%s\n' "${CHECKPOINT_BLOCK}" | grep -qE '@P\}'; then
-        fail 6 "checkpoint uses eval/source/indirect-expansion (code-injection risk)"
+untrusted_sources() {
+    local sources status
+    # grep status 1 means no match; every operational error remains a failure.
+    if sources=$(grep -E '(^|[;&|[:space:]])(source|\.)[[:space:]]'); then
+        :
     else
-        pass 6 "checkpoint has no eval/source/indirect-expansion"
+        status=$?
+        [[ "$status" = 1 ]] && return 0
+        return "$status"
+    fi
+    if sources=$(printf '%s\n' "$sources" | sed 's/^[[:space:]]*//'); then
+        :
+    else
+        return $?
+    fi
+    if printf '%s\n' "$sources" \
+        | grep -vxF -e 'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then' \
+                     -e '. "$DOC_CHECKPOINT_HELPER"'; then
+        return 0
+    else
+        status=$?
+        [[ "$status" = 1 ]] && return 0
+        return "$status"
+    fi
+}
+
+# Literal fixture text is classified, never sourced or evaluated.
+for trusted in 'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then' '. "$DOC_CHECKPOINT_HELPER"'; do
+    if classified=$(printf '  %s\n' "$trusted" | untrusted_sources) && [[ -z "$classified" ]]; then
+        pass 6a "complete trusted source form is allowed"
+    else
+        fail 6a "complete trusted source form was rejected"
+    fi
+done
+for untrusted in '. "$DOC_FEEDBACK"' 'source "$DOC_FEEDBACK"' \
+    '. "$CONTEXT_HELPER"' \
+    'if [ -f "$CONTEXT_HELPER" ] && . "$CONTEXT_HELPER"; then DOC_FEEDBACK="$(workflow_context_read doc_review_feedback || :)"; . "$DOC_FEEDBACK" 2>/dev/null; fi' \
+    '. "$DOC_CHECKPOINT_HELPER"; . "$DOC_FEEDBACK"'; do
+    if classified=$(printf '%s\n' "$untrusted" | untrusted_sources) && [[ -n "$classified" ]]; then
+        pass 6b "untrusted source statement is rejected"
+    else
+        fail 6b "classifier hid an untrusted source statement: $untrusted"
+    fi
+done
+
+
+if classified=$(printf '%s\n' 'printf feedback' | untrusted_sources) && [[ -z "$classified" ]]; then
+    pass 6c "no source statement is an expected no-match"
+else
+    fail 6c "no-match classification failed"
+fi
+# Inject operational failures separately at every stage; preserve their exact exits.
+for stage in scan trim filter; do
+    if (
+        grep() {
+            if [[ "$stage" = scan && "$1" = -E ]] || [[ "$stage" = filter && "$1" = -vxF ]]; then
+                return 2
+            fi
+            command grep "$@"
+        }
+        sed() {
+            if [[ "$stage" = trim ]]; then return 7; fi
+            command sed "$@"
+        }
+        printf '%s\n' '. "$DOC_FEEDBACK"' | untrusted_sources
+    ); then
+        classifier_exit=0
+    else
+        classifier_exit=$?
+    fi
+    expected_exit=2; [[ "$stage" = trim ]] && expected_exit=7
+    if [[ "$classifier_exit" = "$expected_exit" ]]; then
+        pass "6d:$stage" "classifier preserves tool error $expected_exit"
+    else
+        fail "6d:$stage" "classifier returned $classifier_exit instead of $expected_exit"
+    fi
+ done
+
+if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
+    # Fixed trusted sources are allowed; every other executable source is rejected.
+    SECURITY_CODE="$(printf '%s\n' "$CHECKPOINT_COMMAND" "$(cat "$CHECKPOINT_HELPER")" | sed '/^[[:space:]]*#/d')"
+    if UNTRUSTED_SOURCE=$(printf '%s\n' "$SECURITY_CODE" | untrusted_sources); then
+        CLASSIFIER_EXIT=0
+    else
+        CLASSIFIER_EXIT=$?
+    fi
+    if [[ "$CLASSIFIER_EXIT" != 0 ]]; then
+        fail 6 "source classifier failed with exit $CLASSIFIER_EXIT"
+    elif [[ -n "$UNTRUSTED_SOURCE" ]] \
+       || printf '%s\n' "$SECURITY_CODE" | grep -qE '(^|[^[:alnum:]_])eval([^[:alnum:]_]|$)|\$\{![A-Za-z_]|@P\}'; then
+        fail 6 "checkpoint executes untrusted source/eval/indirect-expansion"
+    else
+        pass 6 "checkpoint sources only fixed trusted helpers; feedback is never code"
     fi
 fi
 
@@ -244,6 +348,103 @@ if [[ -n "${CHECKPOINT_BLOCK}" ]]; then
     fi
 fi
 
+# Execute the canonical wrapper with real helper tools, never a parser stub.
+RUNTIME="$(mktemp -d "${TMPDIR:-${RUNNER_TEMP:-/tmp}}/doc-checkpoint.XXXXXX")"
+RUNTIME_COMPLETE=false
+cleanup_runtime() {
+    local status=$?
+    # Bash 3.2 can enter EXIT with status 0 after a parse failure. Require the
+    # final success path as well as a zero status before reporting success.
+    if [[ "$status" = 0 && "$RUNTIME_COMPLETE" != true ]]; then
+        status=2
+    fi
+    rm -rf "$RUNTIME"
+    exit "$status"
+}
+trap cleanup_runtime EXIT
+mkdir -p "$RUNTIME/bin" "$RUNTIME/empty" "$RUNTIME/home"
+if [[ -n "${AMPLIHACK_BIN:-}" ]]; then
+    TOOL="$AMPLIHACK_BIN"
+else
+    # The lint job reaches this gate before sccache setup; build without a wrapper.
+    (cd "$REPO_ROOT" && RUSTC_WRAPPER='' cargo build --locked -p amplihack --bin amplihack)
+    TOOL="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack"
+fi
+[[ -x "$TOOL" ]] || { echo "HARNESS-ERROR: real amplihack binary missing" >&2; exit 2; }
+ln -s "$(cd "$(dirname "$TOOL")" && pwd)/$(basename "$TOOL")" "$RUNTIME/bin/amplihack"
+# Nested checkpoints must use the interpreter executing this test, including
+# compatibility runs where the ambient PATH selects a newer Bash.
+ln -s "$BASH" "$RUNTIME/bin/bash"
+for tool in jq dirname tr grep; do ln -s "$(command -v "$tool")" "$RUNTIME/bin/$tool"; done
+run_checkpoint() {
+    local name="$1" feedback="$2" framework="$3" refs="${4:-absent}"
+    # Bash 3.2 with nounset cannot expand an empty array. Keep the environment
+    # command populated even when no durable reference variables are supplied.
+    local -a checkpoint_env=(env -i PATH="$RUNTIME/bin" HOME="$RUNTIME/home" TMPDIR="$RUNTIME"
+        AMPLIHACK_HOME="$framework" REPO_PATH="$REPO_ROOT" DOC_REVIEW_FEEDBACK="$feedback")
+    if [[ "$refs" = populated ]]; then
+        checkpoint_env+=(BRANCH_NAME=fix/834 PR_NUMBER=834 PR_URL=https://example.test/pr/834
+                         COMMIT_SHA=abc123 REVIEW_THREAD_ID=thread834)
+    fi
+    # env -i removes inherited context, tokens and refs; feedback stays one argument.
+    if (cd "$RUNTIME" && "${checkpoint_env[@]}" bash -c "$CHECKPOINT_COMMAND") \
+        >"$RUNTIME/$name.out" 2>"$RUNTIME/$name.err"; then
+        CHILD_EXIT=0
+    else
+        CHILD_EXIT=$?
+    fi
+}
+for scenario in ok degraded absent malformed hostile; do
+    case "$scenario" in
+        ok) feedback='{"status":"OK","feedback":"review passed"}' ;;
+        degraded) feedback='{"status":"NEEDS_ATTENTION","feedback":"repair docs"}' ;;
+        absent) feedback='' ;;
+        malformed) feedback='not JSON' ;;
+        hostile)
+            # Keep literal data outside command substitution: Bash 3.2 parses
+            # quoted heredocs containing substitutions incorrectly inside $().
+            cat > "$RUNTIME/hostile-feedback" <<'HOSTILE'
+%s%n " ' $(/usr/bin/touch ATTACK_PATH); `/usr/bin/touch ATTACK_PATH`; eval echo HOSTILE_FEEDBACK
+HOSTILE
+            payload=$(cat "$RUNTIME/hostile-feedback")
+            payload=${payload//ATTACK_PATH/$RUNTIME/executed}
+            feedback="$(jq -nc --arg text "$payload" '{status:"NEEDS_ATTENTION",feedback:$text}')" ;;
+
+    esac
+    run_checkpoint "$scenario" "$feedback" "$REPO_ROOT"
+    expected=NEEDS_ATTENTION; [[ "$scenario" = ok ]] && expected=OK
+    if [[ "$CHILD_EXIT" = 0 ]] && grep -qxF "DOC_REVIEW_CHECKPOINT: $expected" "$RUNTIME/$scenario.out" \
+       && ! grep -qE '    (branch|pr_number|pr_url|commit_sha|review_thread):' "$RUNTIME/$scenario.out" \
+       && ! grep -qF HOSTILE_FEEDBACK "$RUNTIME/$scenario.out" \
+       && ! grep -qF HOSTILE_FEEDBACK "$RUNTIME/$scenario.err" \
+       && [[ ! -e "$RUNTIME/executed" && ! -e "$RUNTIME/marker" ]]; then
+        if [[ "$scenario" = ok && ! -s "$RUNTIME/$scenario.err" ]] \
+           || { [[ "$scenario" != ok ]] && grep -q WARNING "$RUNTIME/$scenario.err"; }; then
+            pass "runtime:$scenario" "exit0, correct summary/warning, no fabricated refs or feedback execution/leak"
+        else fail "runtime:$scenario" "incorrect warning channel"; fi
+    else fail "runtime:$scenario" "incorrect exit, summary, references or feedback execution/leak"; fi
+ done
+run_checkpoint populated '{"status":"NEEDS_ATTENTION"}' "$REPO_ROOT" populated
+if [[ "$CHILD_EXIT" = 0 ]] && grep -q WARNING "$RUNTIME/populated.err" \
+   && grep -qxF 'DOC_REVIEW_CHECKPOINT: NEEDS_ATTENTION' "$RUNTIME/populated.out" \
+   && grep -qxF '    branch: fix/834' "$RUNTIME/populated.out" \
+   && grep -qxF '    pr_number: 834' "$RUNTIME/populated.out" \
+   && grep -qxF '    pr_url: https://example.test/pr/834' "$RUNTIME/populated.out" \
+   && grep -qxF '    commit_sha: abc123' "$RUNTIME/populated.out" \
+   && grep -qxF '    review_thread: thread834' "$RUNTIME/populated.out"; then
+    pass runtime:refs "degraded exit0 retains every populated durable reference"
+else fail runtime:refs "degraded checkpoint lost durable references"; fi
+# Authoritative wrong roots must not silently use the nearby checkout's helper.
+mkdir -p "$RUNTIME/context-only/amplifier-bundle/tools"
+cp "$REPO_ROOT/amplifier-bundle/tools/workflow_context.sh" "$RUNTIME/context-only/amplifier-bundle/tools/"
+for framework in empty context-only; do
+    run_checkpoint "missing-$framework" '{"status":"OK"}' "$RUNTIME/$framework"
+    if [[ "$CHILD_EXIT" = 0 ]] && grep -qxF 'DOC_REVIEW_CHECKPOINT: NEEDS_ATTENTION' "$RUNTIME/missing-$framework.out" \
+       && grep -q 'WARNING: documentation checkpoint helper is missing' "$RUNTIME/missing-$framework.err"; then
+        pass "runtime:$framework" "selected missing helper degrades visibly without checkout fallback"
+    else fail "runtime:$framework" "selected missing helper falsely passed or became fatal"; fi
+ done
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
@@ -255,4 +456,5 @@ if [[ ${FAIL_COUNT} -gt 0 ]]; then
 fi
 
 echo "PASS: Bug #834 — documentation-review failure is non-fatal-but-reported."
+RUNTIME_COMPLETE=true
 exit 0

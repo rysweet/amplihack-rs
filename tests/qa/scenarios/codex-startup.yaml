@@ -1,0 +1,39 @@
+name: Codex startup provider isolation
+description: Exercise candidate CLI startup and install in isolated homes with foreign Codex state.
+version: "1.0.0"
+config:
+  timeout: 600000
+  retries: 0
+  parallel: false
+environment:
+  requires: [AMPLIHACK_QA_BINARY]
+agents:
+  - name: cli-agent
+    type: cli
+    config:
+      defaultTimeout: 180000
+steps:
+  - name: Claude launch survives foreign Codex ownership
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/codex-startup.sh claude
+    timeout: 180000
+  - name: Copilot launch survives foreign Codex ownership
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/codex-startup.sh copilot
+    timeout: 180000
+  - name: Selected Codex rejects foreign ownership without mutation
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/codex-startup.sh codex
+    timeout: 180000
+  - name: Explicit install rejects foreign ownership without mutation
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/codex-startup.sh install
+    timeout: 180000
+assertions: []
+metadata:
+  tags: [cli, codex, install, compatibility]
+  priority: critical

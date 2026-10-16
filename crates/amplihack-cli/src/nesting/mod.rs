@@ -132,6 +132,7 @@ mod tests {
         // Use a temp HOME to isolate from any real session.json on the host.
         let tmp = tempfile::tempdir().unwrap();
         let original_home = set_home(tmp.path());
+        let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
         // SAFETY: Test-only env var manipulation; test runner serializes tests by default.
         unsafe {

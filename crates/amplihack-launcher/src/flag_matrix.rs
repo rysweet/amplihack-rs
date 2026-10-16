@@ -120,10 +120,10 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
         AgentBinary::Codex => FlagSet {
             binary: AgentBinary::Codex,
             supports_append_prompt: false,
-            supports_add_dir: false,
-            supports_model: false,
+            supports_add_dir: true,
+            supports_model: true,
             supports_skip_permissions: false,
-            supports_resume: false,
+            supports_resume: true,
             supports_print: false,
             supports_allow_all_tools: false,
             supports_remote: false,
@@ -240,7 +240,7 @@ fn note_for(binary: AgentBinary) -> String {
             "no verified Copilot prompt-file or stdin task-prompt contract".to_string()
         }
         AgentBinary::Codex => {
-            "stdin support pending verified Codex command contract".to_string()
+            "interactive: positional argv and terminal stdin; exec: complete stdin via -, resume subcommand".to_string()
         }
         AgentBinary::Amplifier => {
             "Amplifier is routed through prompt_delivery as argv-only until a long-form contract exists".to_string()
@@ -359,13 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_is_minimal_flags() {
+    fn codex_native_capabilities_are_mode_specific() {
         let flags = flags_for(AgentBinary::Codex);
         assert!(!flags.supports_append_prompt);
-        assert!(!flags.supports_add_dir);
-        assert!(!flags.supports_model);
+        assert!(flags.supports_add_dir);
+        assert!(flags.supports_model);
         assert!(!flags.supports_skip_permissions);
-        assert!(!flags.supports_resume);
+        assert!(flags.supports_resume);
         assert!(!flags.supports_print);
         assert!(!flags.supports_allow_all_tools);
         assert!(!flags.supports_remote);

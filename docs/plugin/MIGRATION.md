@@ -615,3 +615,9 @@ A: Yes, use `~/.amplihack/.claude/settings.json` to override plugin defaults. Se
 
 **Last updated:** 2026-01-19
 **Plugin version:** 1.0.0
+
+## Codex migration
+
+For Codex, migrate legacy YAML/JSON settings to config.toml and use native plugin registration. Only positively identified tool-owned legacy files are removed automatically; ambiguous files and existing user preferences are retained. Reusable Claude commands/personas are exposed as Codex skills rather than assuming identical slash syntax.
+
+See [Use Amplihack with Codex](../howto/install-codex-plugin.md) for the complete procedure and limitations.

@@ -221,6 +221,9 @@ mod tests {
 
     #[test]
     fn manifest_path_based_on_home() {
+        let _env_lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Just verify it returns Some when HOME is set
         if std::env::var_os("HOME").is_some() {
             let p = manifest_path();

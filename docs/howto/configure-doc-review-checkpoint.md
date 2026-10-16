@@ -1,118 +1,57 @@
-# How to Configure the Documentation-Review Checkpoint
-
-> [Home](../index.md) > How-To > Configure the Documentation-Review Checkpoint
-
-This guide shows how the non-fatal documentation-review checkpoint behaves in a
-run, how to read its output, and what is and is not configurable.
-
-The behavior ships enabled. There is no feature flag to turn it on, and there is
-no new required input.
-
+---
+title: Read documentation review checkpoints
+description: Inspect structured review status and act on nonfatal documentation follow-up.
+type: howto
+updated: 2026-10-08
 ---
 
-## Before You Start
+# Read documentation review checkpoints
 
-- You are running `smart-orchestrator` or `default-workflow` (both compose
-  `workflow-design`).
-- `repo_path` points at a writable git repository.
-- You are comfortable letting the workflow create branches, commits, and PRs
-  when it reaches those steps.
+Recipes composing `workflow-design` record documentation review automatically.
+No feature flag or additional required context enables the checkpoint.
 
----
+## Inspect the checkpoint
 
-## 1. Run the Workflow Normally
+Read `doc_review_checkpoint` in the saved recipe result or run summary. Look for
+`DOC_REVIEW_CHECKPOINT: OK` or `DOC_REVIEW_CHECKPOINT: NEEDS_ATTENTION`. The latter
+includes a fixed reason and follow-up, plus any available durable references.
 
-No extra context is required. The checkpoint activates automatically.
-
-```bash
-amplihack recipe run default-workflow \
-  -c "task_description=Implement and document the rate-limiter" \
-  -c "repo_path=/home/user/src/amplihack-rs" \
-  -c "branch_prefix=feat"
-```
-
-If `step-06b-documentation-review` succeeds, the checkpoint records `OK:
-doc-review` and the run proceeds with no follow-up item.
-
----
-
-## 2. Read the Degraded-Success Summary
-
-When documentation review fails *after* durable side effects exist, the run
-continues and the summary contains a checkpoint block:
-
-```text
-WARNING: step-06b-documentation-review exited non-zero (review reported failure).
-NEEDS_ATTENTION: doc-review
-  branch:        feat/issue-834-non-fatal-doc-review
-  pr:            rysweet/amplihack-rs#841 (https://github.com/rysweet/amplihack-rs/pull/841)
-  commit:        8fb46865fb4412038b9313a62c02cc5aa0693132
-  review_thread: 1987654321
-  follow_up:     Re-run documentation review for the listed PR before close.
-```
-
-To extract just the checkpoint output via the CLI:
-
-```bash
-amplihack recipe run default-workflow \
-  -c task_description="Implement and document the rate-limiter" \
-  -c repo_path="/home/user/src/amplihack-rs" \
-  -c branch_prefix="feat" \
-  --output json | jq -r '.context.doc_review_checkpoint'
-```
-
-Act on the `NEEDS_ATTENTION: doc-review` marker and the references under it. The
-listed PR, branch, commit, and review thread are the durable work that already
-landed.
-
----
-
-## 3. Distinguish the Three Outcomes
-
-| Summary contains | Meaning | Action |
+| Marker | Meaning | Action |
 | --- | --- | --- |
-| `OK: doc-review` | Review passed. | None. |
-| `NEEDS_ATTENTION: doc-review` with refs | Review failed after work landed; run is degraded-success. | Re-run documentation review for the listed PR, then close. |
-| A hard `FAILURE` with no checkpoint block | Failure occurred before any durable side effect, or in a fail-closed terminal-state gate. | Investigate the failing step; this path is intentionally not softened. |
+| `OK` | Selected feedback has normalized status `OK`. | Continue assessing the workflow's other gates. |
+| `NEEDS_ATTENTION` | Feedback is missing, unusable or non-OK. | Inspect review/refinement output and address the documentation gaps. |
+| Missing checkpoint | The checkpoint did not produce a result. | Inspect the run's actual failure and completed steps. |
 
----
+A checkpoint does not establish that implementation, publication or finalization
+succeeded. References may be absent, especially during a fresh design phase.
 
-## 4. Resolve a Documentation-Review Follow-Up
+## Resolve follow-up
 
-When you see `NEEDS_ATTENTION: doc-review`:
+1. Inspect the documentation-review object and the refinement output.
+2. Address the gaps or rerun the documentation review in the owning workflow.
+3. If present, use `pr_url`, `branch`, `commit_sha` and `review_thread` to locate
+   the relevant durable work. Confirm those references before acting on them.
+4. Confirm the new review's structured status is `OK` and inspect the new
+   checkpoint. Preserve earlier failure records.
 
-1. Open the PR listed under `pr:`.
-2. Confirm the commit under `commit:` is present on the branch under `branch:`.
-3. Re-run documentation review against that PR (re-run the workflow or run the
-   documentation phase manually).
-4. Once review passes, resolve the review thread under `review_thread:` and
-   close the follow-up.
+## Diagnose missing feedback
 
-The implementation, verification, and PR work are already complete — you are
-only clearing the documentation quality signal.
+The reader uses `AMPLIHACK_CONTEXT_FILE` when supplied, then relevant canonical
+`RECIPE_VAR_doc_review_feedback` input, then legacy `DOC_REVIEW_FEEDBACK` only
+when canonical input is absent. A supplied invalid file or empty canonical root
+cannot revive legacy success. Correct the producer or authoritative transport;
+do not add an `OK` alias to mask missing feedback.
 
----
+The producer returns an object with `status` and `feedback`. Prose such as
+“looks good” does not replace structured status. See
+[workflow context transport](../reference/workflow-context-transport.md).
 
-## 5. Know What Is Not Configurable
+## Fixed behavior
 
-The checkpoint is a safety/visibility contract, not a tuning surface. These are
-fixed:
+Review and refinement remain nonfatal. The Bash checkpoint always exits zero,
+emits fixed warnings for follow-up and includes only allowlisted non-sensitive
+references. It does not soften implementation verification, publication or
+strict finalization. There is no checkpoint-specific configuration knob.
 
-- `step-06b-documentation-review` is non-fatal (`continue_on_error: true`).
-- The checkpoint always exits `0` and never aborts the workflow.
-- Failure is always reported — `WARNING` on stderr and `NEEDS_ATTENTION` in the
-  summary. It is never silently swallowed.
-- Only the allow-listed artifact refs (branch, PR id/url, commit sha, review
-  thread/comment id) are surfaced. No tokens or environment dumps.
-- Pre-side-effect failures and terminal-state gates remain fail-closed.
-
-If you need different behavior, change the workflow contract and its tests
-together. Do not override the checkpoint in local wrapper scripts.
-
----
-
-## Related Documentation
-
-- [Non-fatal documentation review checkpoint overview](../features/doc-review-non-fatal-checkpoint.md)
-- [Documentation-review checkpoint reference](../reference/doc-review-non-fatal-checkpoint.md)
-- [Tutorial: degraded-success after a failed doc review](../tutorials/doc-review-non-fatal-checkpoint.md)
+See the [checkpoint reference](../reference/doc-review-non-fatal-checkpoint.md)
+and [checkpoint tutorial](../tutorials/doc-review-non-fatal-checkpoint.md).

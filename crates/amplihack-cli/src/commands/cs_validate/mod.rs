@@ -403,7 +403,10 @@ mod tests {
     fn config_returns_default_when_no_file_found() {
         // Run from temp dir with no config
         let dir = TempDir::new().unwrap();
-        let _guard = SetCwd::new(dir.path());
+        let _lock = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let _cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
         let cfg = load_config(None).unwrap();
         assert_eq!(cfg.validation_level, 2);
     }
@@ -575,36 +578,6 @@ class Foo {
         assert!(json.contains("Unbalanced braces"));
         assert!(json.contains("\"passed\":false"));
         assert!(json.contains("\"level\":1"));
-    }
-
-    // ── Helper: temporarily change cwd for config tests ──────────────────
-
-    /// Holds the crate's one environment lock (#1380) for as long as the cwd
-    /// is changed. Without it, restoring `prev` could move a concurrently
-    /// running test that holds the lock out of its temp dir and back into the
-    /// crate directory, where a launch test then wrote `.claude/runtime/`.
-    /// That stray directory makes `uvx_help::staged_home_is_used_as_fallback`
-    /// fail on every later run.
-    struct SetCwd {
-        prev: PathBuf,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl SetCwd {
-        fn new(dir: &Path) -> Self {
-            let lock = crate::test_support::cwd_env_lock()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let prev = std::env::current_dir().unwrap();
-            std::env::set_current_dir(dir).unwrap();
-            Self { prev, _lock: lock }
-        }
-    }
-
-    impl Drop for SetCwd {
-        fn drop(&mut self) {
-            let _ = std::env::set_current_dir(&self.prev);
-        }
     }
 
     // ── Config-enabled tests ─────────────────────────────────────────────

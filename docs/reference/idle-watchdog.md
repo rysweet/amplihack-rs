@@ -131,6 +131,15 @@ task is aborted, the sync thread detached) and whatever bytes it already
 buffered are returned. On the normal path the pipes close as soon as the child
 exits, so the bound is never reached.
 
+### Process ownership
+
+The watchdog and Claude delivered-command helper supervise and kill only their
+direct child. They do not signal a Unix process group, so a descendant that
+inherited a pipe or stdin can outlive that child. Cancellation aborts async
+drainers so those descendants cannot keep a detached reader buffering output.
+Recipe execution has a separate process-group cleanup layer because that
+runner owns the recipe process group; see [recipe run failure cleanup](../RECIPE_RUN_FAILURE_CLEANUP.md).
+
 ### `file_idle_since` (file-mtime probe)
 
 For call sites whose child stdout is already consumed by a logging thread, so no

@@ -152,16 +152,6 @@ impl TaskWorktree {
         git(&self.repo, &["push", "origin", branch]);
     }
 
-    /// Simulate the leaked nested worktree under the task worktree, on its own
-    /// run-created branch that was also pushed to the shared remote.
-    fn add_nested_worktree(&self, rel_path: &str, branch: &str) {
-        git(
-            &self.repo,
-            &["worktree", "add", rel_path, "-b", branch, "main"],
-        );
-        git(&self.repo, &["push", "origin", branch]);
-    }
-
     fn repo_str(&self) -> &str {
         self.repo.to_str().unwrap()
     }
@@ -229,10 +219,27 @@ fn finalization_deletes_tracked_fallback_branch_from_shared_remote_and_locally()
 
 #[test]
 fn finalization_removes_nested_worktree_with_no_dangling_registration_and_deletes_its_branch() {
-    let fx = TaskWorktree::new("feat/degradation-events");
-    fx.add_nested_worktree("worktrees/feat/issue-491-nested", "feat/issue-491-nested");
+    // Finalization runs against the run's dedicated (linked) task worktree. On
+    // the main checkout, worktrees/ holds other runs' task worktrees and is
+    // never cleaned (#1494), so the fixture is a linked worktree off main.
+    let fx = TaskWorktree::new("main-placeholder");
+    git(&fx.repo, &["checkout", "main"]);
+    let intended = "feat/degradation-events";
+    let task_wt = add_linked_worktree_pushed(&fx.repo, "worktrees/task", intended);
+    git(
+        &task_wt,
+        &[
+            "worktree",
+            "add",
+            "worktrees/feat/issue-491-nested",
+            "-b",
+            "feat/issue-491-nested",
+            "main",
+        ],
+    );
+    git(&task_wt, &["push", "origin", "feat/issue-491-nested"]);
 
-    let nested_dir = fx.repo.join("worktrees/feat/issue-491-nested");
+    let nested_dir = task_wt.join("worktrees/feat/issue-491-nested");
     assert!(nested_dir.exists(), "precondition: nested worktree exists");
     assert!(
         registered_worktrees(&fx.repo)
@@ -247,8 +254,7 @@ fn finalization_removes_nested_worktree_with_no_dangling_registration_and_delete
 
     let out = run_with_helper(&format!(
         "finalize_workflow_runtime_artifacts \"{repo}\" \"{intended}\"",
-        repo = fx.repo_str(),
-        intended = fx.intended,
+        repo = task_wt.to_str().unwrap(),
     ));
     assert!(out.status.success(), "cleanup must never abort the caller");
 
@@ -257,7 +263,7 @@ fn finalization_removes_nested_worktree_with_no_dangling_registration_and_delete
         "nested worktree directory must be removed"
     );
     assert!(
-        !fx.repo.join("worktrees").exists(),
+        !task_wt.join("worktrees").exists(),
         "leaked worktrees/ directory must be removed"
     );
     // The #780/#755 regression: a bare `rm -rf` leaves a dangling registration.
@@ -267,12 +273,13 @@ fn finalization_removes_nested_worktree_with_no_dangling_registration_and_delete
             .any(|w| w.contains("issue-491-nested")),
         "nested worktree must be deregistered (no dangling worktree metadata)"
     );
-    // The task worktree itself must remain registered.
+    // The main checkout and the task worktree itself must remain registered.
     assert_eq!(
         registered_worktrees(&fx.repo).len(),
-        1,
-        "only the task worktree itself should remain registered"
+        2,
+        "only the main checkout and the task worktree should remain registered"
     );
+    assert!(task_wt.exists(), "the task worktree itself must survive");
     // The orphaned nested branch must be deleted from the remote and locally.
     assert!(
         !remote_branch_exists(&fx.repo, "feat/issue-491-nested"),
@@ -283,8 +290,48 @@ fn finalization_removes_nested_worktree_with_no_dangling_registration_and_delete
         "leaked nested-worktree branch must be deleted locally"
     );
     assert!(
-        local_branch_exists(&fx.repo, &fx.intended),
+        local_branch_exists(&fx.repo, intended) && remote_branch_exists(&fx.repo, intended),
         "intended PR branch must be preserved"
+    );
+}
+
+#[test]
+fn finalization_on_the_main_checkout_keeps_other_runs_worktrees_and_branches() {
+    // #1494: on the main checkout, worktrees/ holds other runs' task worktrees.
+    // Finalization there must not remove them, their uncommitted work, or their
+    // published branches.
+    let fx = TaskWorktree::new("main-placeholder");
+    git(&fx.repo, &["checkout", "main"]);
+    let sibling =
+        add_linked_worktree_pushed(&fx.repo, "worktrees/feat/sibling-pr", "feat/sibling-pr");
+    std::fs::write(sibling.join("wip.txt"), "uncommitted\n").unwrap();
+
+    let out = run_with_helper(&format!(
+        "finalize_workflow_runtime_artifacts \"{repo}\" main",
+        repo = fx.repo_str(),
+    ));
+    assert!(out.status.success(), "cleanup must never abort the caller");
+
+    assert!(
+        sibling.join("wip.txt").exists(),
+        "another run's worktree and its uncommitted work must survive"
+    );
+    assert!(
+        registered_worktrees(&fx.repo)
+            .iter()
+            .any(|w| w.ends_with("worktrees/feat/sibling-pr")),
+        "another run's worktree must stay registered"
+    );
+    assert!(
+        remote_branch_exists(&fx.repo, "feat/sibling-pr")
+            && local_branch_exists(&fx.repo, "feat/sibling-pr"),
+        "another run's PR branch must survive, remote and local"
+    );
+    assert!(
+        git_stdout(&fx.repo, &["status", "--porcelain"])
+            .trim()
+            .is_empty(),
+        "kept worktrees must not show up as untracked files on the main checkout"
     );
 }
 
