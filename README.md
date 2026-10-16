@@ -69,8 +69,8 @@ high-quality code.
 
 ### Prerequisites
 
-- **Platform**: macOS, Linux, or Windows via WSL. Native Windows has
-  [partial support](#windows-support).
+- **Platform**: macOS, Linux, or Windows via WSL. Native Windows is
+  [not supported](#windows-support).
 - **Runtime**: Rust 1.88+ / cargo, Node.js 18+, git. `amplihack install`
   installs a user-local Rust toolchain via rustup (and `build-essential` via
   apt, as root or with passwordless sudo) if cargo or a C linker is missing.
@@ -653,42 +653,13 @@ Custom workflows:
 
 ## Windows Support
 
-amplihack has partial support for Windows native (PowerShell). The recommended
-approach remains **WSL** for full compatibility, but core features work
-natively.
+Native Windows is not supported: CI does not build or test it, and no Windows
+release binary is published. `amplihack update` on native Windows reports that
+the platform is not a published release target.
 
-| Feature                                         |        Windows Native        | WSL / macOS / Linux |
-| ----------------------------------------------- | :--------------------------: | :-----------------: |
-| Core CLI (`amplihack claude/copilot/amplifier`) |              ✅              |         ✅          |
-| Workflows & recipes                             |              ✅              |         ✅          |
-| Persistent memory                               |              ✅              |         ✅          |
-| Direct API access                               |              ✅              |         ✅          |
-| Native Codex plugin registration                |       ⚠️ (use WSL)           |         ✅          |
-| Fleet management (multi-VM)                     |    ❌ (requires tmux/SSH)    |         ✅          |
-| Rust recipe runner                              |        ⚠️ (untested)         |         ✅          |
-| Docker sandbox                                  | ⚠️ (Docker Desktop required) |         ✅          |
-
-**Installation on Windows native:**
-
-```powershell
-# Requires Rust 1.88+, Node.js 18+, git, cmake
-npx --yes --package=git+https://github.com/rysweet/amplihack-rs.git -- amplihack copilot
-```
-
-**Known limitations:**
-
-- Fleet commands (`amplihack fleet *`) are unavailable — they require tmux and
-  SSH, which are Linux/macOS only. Use WSL for fleet operations.
-- Native Codex plugin registration is skipped because the bundled skill tree
-  contains Unix symlink resources. Use WSL for Codex plugin installation.
-- Some language server integrations (multilspy) may have reduced functionality.
-- File permission management (chmod) is a no-op on Windows.
-
-For full compatibility, use
-[WSL](https://learn.microsoft.com/en-us/windows/wsl/install).
-
-See [issue #3112](https://github.com/rysweet/amplihack-rs/issues/3112) for the
-complete Windows compatibility tracker.
+On Windows, run amplihack inside
+[WSL](https://learn.microsoft.com/en-us/windows/wsl/install), where it uses the
+Linux release binaries and behaves exactly as on Linux.
 
 ## Development
 
