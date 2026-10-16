@@ -732,37 +732,16 @@ fn the_weekly_limit_verdict_tells_the_operator_when_to_come_back() {
 
 #[test]
 fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
-    // Guard against the new markers over-reaching: a rate-limit phrase must
-    // never become a usage limit, or every provider rate limit would stop
-    // being retried. Assert only "not UsageLimit" so the guard does not pin
-    // which retryable class each phrase lands in.
-    for text in ["rate limit", "rate limit exceeded", "rate_limit_error"] {
-        let (class, signal) = classify_failure_text(text);
-        assert_ne!(
-            class,
-            FailureClass::UsageLimit,
-            "{text:?} is not a usage limit. signal={signal:?}"
-        );
-    }
-}
-
-#[test]
-fn provider_rate_limit_envelopes_stay_transient_transport() {
-    // The new markers must not pull a short-lived rate limit out of the
-    // retryable class: each of these clears on its own.
-    for text in [
-        "rate limit exceeded",
-        "rate_limit_error",
-        "API Error: 429",
-        "429 Too Many Requests",
-    ] {
-        let (class, signal) = classify_failure_text(text);
-        assert_eq!(
-            class,
-            FailureClass::TransientTransport,
-            "{text:?} is a retryable rate limit. signal={signal:?}"
-        );
-    }
+    // Guard against the new markers over-reaching. The provider rate-limit
+    // envelopes are pinned to `TransientTransport` in
+    // `transport_level_faults_classify_as_transient`; the bare phrase matches
+    // no marker, so assert only that it is not a usage limit.
+    let (class, signal) = classify_failure_text("rate limit");
+    assert_ne!(
+        class,
+        FailureClass::UsageLimit,
+        "a bare \"rate limit\" is not a usage limit. signal={signal:?}"
+    );
 }
 
 #[test]
