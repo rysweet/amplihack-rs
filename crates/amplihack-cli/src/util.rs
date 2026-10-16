@@ -161,7 +161,30 @@ pub fn run_with_timeout_described(
 
 /// Run a pre-built `Command` with stdout/stderr capture and a hard timeout.
 pub fn run_output_with_timeout(mut cmd: Command, timeout: Duration) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, timeout, None)
+    run_output_with_timeout_inner(&mut cmd, timeout, None, None)
+}
+
+/// [`run_output_with_timeout`] that also owns the child's stdin (issue #1570).
+///
+/// With `Some(payload)` stdin is piped and the payload is written by a
+/// separate thread, so a child that writes output before reading cannot
+/// deadlock the parent. With `None` stdin is `Stdio::null()`, never
+/// inherited. A child that closes stdin early (`BrokenPipe` or
+/// `ConnectionReset`) is not an error: its exit status decides. Any other
+/// write error is returned as an error naming only the program, so a caller
+/// never mistakes a cut-off payload for success. After a timeout the writer
+/// thread is not joined.
+pub fn run_output_with_timeout_stdin(
+    mut cmd: Command,
+    timeout: Duration,
+    stdin_payload: Option<Vec<u8>>,
+) -> Result<Output> {
+    cmd.stdin(if stdin_payload.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    });
+    run_output_with_timeout_inner(&mut cmd, timeout, None, stdin_payload)
 }
 
 /// Run a pre-built `Command` with stdout/stderr capture capped per stream.
@@ -173,18 +196,35 @@ pub fn run_output_with_timeout_limited(
     timeout: Duration,
     max_bytes_per_stream: usize,
 ) -> Result<Output> {
-    run_output_with_timeout_inner(&mut cmd, timeout, Some(max_bytes_per_stream))
+    run_output_with_timeout_inner(&mut cmd, timeout, Some(max_bytes_per_stream), None)
 }
+
+/// How long a finished subprocess's stdin writer may take to end before it is
+/// detached.
+const STDIN_WRITER_GRACE: Duration = Duration::from_secs(2);
 
 fn run_output_with_timeout_inner(
     cmd: &mut Command,
     timeout: Duration,
     max_bytes_per_stream: Option<usize>,
+    stdin_payload: Option<Vec<u8>>,
 ) -> Result<Output> {
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
     let mut child = spawn_subprocess(cmd).context("failed to spawn subprocess")?;
     let pid = child.id();
+    let stdin_writer = match stdin_payload {
+        Some(payload) => {
+            let stdin = child
+                .stdin
+                .take()
+                .context("failed to capture subprocess stdin")?;
+            Some(amplihack_utils::payload_delivery::spawn_stdin_writer(
+                stdin, payload,
+            ))
+        }
+        None => None,
+    };
     let stdout = child
         .stdout
         .take()
@@ -199,8 +239,14 @@ fn run_output_with_timeout_inner(
     if let Some(status) =
         wait_for_child_exit(&mut child, timeout).context("failed to wait for subprocess output")?
     {
+        // Bounded join: a descendant that inherited stdin and never reads it
+        // would otherwise block the writer, and this call, indefinitely.
+        let stdin_result = stdin_writer.map(|writer| writer.finish_within(STDIN_WRITER_GRACE));
+        // Join the readers before any stdin error is returned, so no reader
+        // thread outlives this call.
         let stdout = join_pipe_reader(stdout_reader, "stdout")?;
         let stderr = join_pipe_reader(stderr_reader, "stderr")?;
+        check_stdin_writer_result(stdin_result, &cmd.get_program().to_string_lossy(), pid)?;
         return Ok(Output {
             status,
             stdout,
@@ -209,15 +255,46 @@ fn run_output_with_timeout_inner(
     }
 
     terminate_timed_out_child(&mut child)?;
-    // Do not join pipe readers after timeout: descendants may keep inherited
-    // pipe fds open, and this helper must preserve a hard wall-clock timeout.
-    let command_context = format!("{cmd:?}");
+    // Do not join pipe readers or the stdin writer after timeout: descendants
+    // may keep inherited pipe fds open, and this helper must preserve a hard
+    // wall-clock timeout.
+    drop(stdin_writer);
+    // Name only the program: the arguments may hold a prompt under argv
+    // delivery.
     bail!(
         "subprocess `{}` timed out after {:?} (pid {})",
-        command_context,
+        cmd.get_program().to_string_lossy(),
         timeout,
         pid
     )
+}
+
+/// Maps how a stdin writer ended to the result of the call.
+///
+/// `writer_result` is `None` without a payload, `Some(None)` when the writer
+/// was still running after the grace period, and `Some(Some(result))` when it
+/// ended. A writer still running is only logged: the child already exited and
+/// its status decides. A write error fails the call; the message names the
+/// program and the error kind only, never argv or payload bytes.
+fn check_stdin_writer_result(
+    writer_result: Option<Option<std::io::Result<()>>>,
+    program: &str,
+    pid: u32,
+) -> Result<()> {
+    match writer_result {
+        Some(Some(Err(error))) => bail!(
+            "failed to write stdin payload to `{program}` (pid {pid}): {:?}",
+            error.kind()
+        ),
+        Some(None) => {
+            tracing::warn!(
+                pid,
+                "stdin payload still being written after the subprocess exited; detaching the writer"
+            );
+            Ok(())
+        }
+        Some(Some(Ok(()))) | None => Ok(()),
+    }
 }
 
 /// Truncate UTF-8 text on character boundaries and report discarded characters.
@@ -560,6 +637,31 @@ pub fn read_user_input_with_timeout(prompt: &str, timeout: Duration) -> Result<O
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── #1570: stdin writer outcome ───────────────────────────────────────────
+
+    #[test]
+    fn stdin_write_error_fails_the_call_without_leaking_payload() {
+        let error = std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "writing payload to child stdin failed: SECRET-PAYLOAD",
+        );
+        let result = check_stdin_writer_result(Some(Some(Err(error))), "azlin", 42);
+        let message = format!(
+            "{:#}",
+            result.expect_err("a write error must not return Ok")
+        );
+        assert!(message.contains("`azlin`"), "{message}");
+        assert!(message.contains("PermissionDenied"), "{message}");
+        assert!(!message.contains("SECRET-PAYLOAD"), "{message}");
+    }
+
+    #[test]
+    fn stdin_writer_still_running_or_finished_is_ok() {
+        assert!(check_stdin_writer_result(None, "cat", 1).is_ok());
+        assert!(check_stdin_writer_result(Some(None), "cat", 1).is_ok());
+        assert!(check_stdin_writer_result(Some(Some(Ok(()))), "cat", 1).is_ok());
+    }
 
     // ── WS2: is_noninteractive ─────────────────────────────────────────────────
 

@@ -198,6 +198,8 @@ Understand the philosophy and architecture behind amplihack.
 - [Blarify Architecture](blarify_architecture.md) - Understanding the Blarify integration
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
+- [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
+- [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`
 - [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
 - [`amplihack-supply-chain-audit` Supply Chain Audit Reference](reference/supply-chain-audit-api.md) - Native Rust `supply-chain-audit` skill: the `amplihack-supply-chain-audit` CLI, 12 audit dimensions, finding/report schemas, `run_audit` / `AuditConfig` / `Finding` / `Severity` library API, accepted-risks configuration, and the seven enforced security invariants
 - [Idle Watchdog Concept](concepts/idle-watchdog.md) - Why agentic child processes use idle detection instead of wall-clock timeouts
@@ -290,6 +292,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
+- [Pass Large Recipe Context and Agent Text](howto/pass-large-recipe-context.md) - `--context-file`, `--context-from-file`, `--body-file` and `git commit -F` for values that would exceed the argument limit
 - [Recipe Context Environment Export](reference/recipe-context-environment.md) - Export recipe context variables to bash steps (`$TASK_DESCRIPTION`, `$REPO_PATH`), uppercasing, reserved-name denylist, and precedence
 - [Tutorial: Propagate Recipe Context to Bash Steps](tutorials/recipe-context-env-propagation.md) - Read context from the environment under `set -u`, including nested sub-recipes and skipped keys
 - [Workflow Provider Abstraction](features/workflow-provider-abstraction.md) - Provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and adapters

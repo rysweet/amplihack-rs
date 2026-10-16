@@ -255,7 +255,7 @@ steps:
       # room for the #1361 claim check below was bought.
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
       [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
-      . "$T"
+      . "$T"; . "$(dirname "$T")/workflow_body_file.sh"  # write_body_file: body to a file for --body-file (#1570)
       REF_ISSUE_NUM=""
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
@@ -270,10 +270,11 @@ steps:
       github)
         if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
         SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
-        ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS")
+        ISSUE_BODY_FILE=$(umask 077; mktemp); trap 'rm -f -- "$ISSUE_BODY_FILE"' EXIT
+        printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" | write_body_file "$ISSUE_BODY_FILE"
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
-        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
+        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body-file "$ISSUE_BODY_FILE" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
         # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run. On a
         # rate limit (not auth error) wait for the AUTHORITATIVE `gh api rate_limit` reset (adaptive, no fixed cap), then retry; 401s never retried.

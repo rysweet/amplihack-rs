@@ -185,6 +185,7 @@ fn finish_codex_delivery(
                 supports_argv: false,
                 supports_tempfile: false,
                 supports_stdin: true,
+                supports_file_reference: false,
                 tempfile_flag: None,
             },
         )

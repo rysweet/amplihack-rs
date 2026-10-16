@@ -11,6 +11,7 @@ use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -345,11 +346,71 @@ fn current_arg_max() -> usize {
     ARG_MAX_FALLBACK_BYTES
 }
 
+/// The runner's file-first context for the parent step (issue #1570).
+const CONTEXT_FILE_ENV: &str = "AMPLIHACK_CONTEXT_FILE";
+
+/// Prefix of the runner's per-step context variables.
+const RECIPE_VAR_PREFIX: &str = "RECIPE_VAR_";
+
+/// Issue #1570: `true` when the inherited variable `name` is removed from the
+/// runner command, because this run passes its own context explicitly and a
+/// parent's context would otherwise accumulate across nesting levels.
+///
+/// Removed: every `RECIPE_VAR_<key>`, the uppercase alias of each inherited
+/// `RECIPE_VAR_<key>` whose `<key>` has no `__`, and `AMPLIHACK_CONTEXT_FILE`.
+/// Never removed: [`RESERVED_ENV_DENYLIST`] names, other `AMPLIHACK_*` names
+/// and names that are not valid environment identifiers.
+/// `inherited_names` is the set of every inherited variable name.
+pub(super) fn is_stripped_inherited_name(name: &str, inherited_names: &BTreeSet<String>) -> bool {
+    if name == CONTEXT_FILE_ENV || name.starts_with(RECIPE_VAR_PREFIX) {
+        return true;
+    }
+    if !is_valid_env_identifier(name)
+        || RESERVED_ENV_DENYLIST.contains(&name)
+        || name.starts_with("AMPLIHACK_")
+    {
+        return false;
+    }
+    inherited_names
+        .iter()
+        .filter_map(|n| n.strip_prefix(RECIPE_VAR_PREFIX))
+        .any(|key| !key.contains("__") && key.eq_ignore_ascii_case(name))
+}
+
+/// Names of the current process environment that are valid UTF-8. A name
+/// that is not UTF-8 is never stripped.
+fn inherited_env_names() -> BTreeSet<String> {
+    utf8_env_names(&std::env::vars_os().collect::<Vec<_>>())
+}
+
+fn utf8_env_names(vars: &[(OsString, OsString)]) -> BTreeSet<String> {
+    vars.iter()
+        .filter_map(|(name, _)| name.to_str().map(str::to_owned))
+        .collect()
+}
+
 /// Total bytes the current process environment will consume as it passes
 /// THROUGH to the spawned recipe-runner (and is re-exported to every bash
-/// step). Summed with the same per-entry accounting used for the mirror.
+/// step). See [`inherited_env_bytes_from`].
 fn inherited_env_bytes() -> usize {
-    std::env::vars_os()
+    inherited_env_bytes_from(std::env::vars_os())
+}
+
+/// Bytes `vars` will consume in the runner's environment, summed with the
+/// same per-entry accounting used for the mirror. Names removed by
+/// [`is_stripped_inherited_name`] are not counted.
+pub(super) fn inherited_env_bytes_from<I>(vars: I) -> usize
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let vars: Vec<_> = vars.into_iter().collect();
+    let names = utf8_env_names(&vars);
+    vars.iter()
+        .filter(|(name, _)| {
+            !name
+                .to_str()
+                .is_some_and(|name| is_stripped_inherited_name(name, &names))
+        })
         .map(|(name, value)| name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES)
         .sum()
 }
@@ -558,6 +619,16 @@ pub(super) fn execute_recipe_via_rust(
         // Pass context as a file when the total size would risk E2BIG (os error 7).
         // The temp file is kept alive until the recipe runner child completes.
         let context_file = pass_context(&mut command, context)?;
+
+        // Issue #1570: remove inherited recipe context before adding this
+        // run's own, so a nested run does not carry every ancestor's
+        // `RECIPE_VAR_*`, uppercase aliases and context file.
+        let inherited_names = inherited_env_names();
+        for name in &inherited_names {
+            if is_stripped_inherited_name(name, &inherited_names) {
+                command.env_remove(name);
+            }
+        }
 
         // Issue #784 / #4583: export recipe context as environment variables so
         // bash steps (and nested sub-recipes, via OS inheritance) can read

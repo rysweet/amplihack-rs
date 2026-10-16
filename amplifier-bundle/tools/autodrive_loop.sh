@@ -34,7 +34,7 @@ set -uo pipefail
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
-REPO="."; STATE_DIR=""; ROUND_CTX=()
+REPO="."; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -44,6 +44,7 @@ while [ $# -gt 0 ]; do
     --verdict-field) VERDICT_FIELD="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
+    --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
     --context)       ROUND_CTX+=("-c" "${2:-}"); shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -54,6 +55,29 @@ for req in LOOP_NAME ROUND_RECIPE CLEAN_TOKEN VERDICT_FIELD STATE_DIR; do
   [ -n "${!req}" ] || { echo "ERROR: autodrive_loop.sh: --$flag is required" >&2; exit 2; }
 done
 mkdir -p "$STATE_DIR" || exit 2
+
+# --- task description: copied once, passed by file (issue #1570) -----------
+# The caller writes the task to a file with write_context_value and names it
+# with --task-file. It is never read from the environment: the runner omits
+# the uppercase TASK_DESCRIPTION alias for exactly the large values this path
+# exists for. A missing or empty task is an error, never an empty task.
+# The copy lives in a private state file, and every round names it with
+# --context-from-file, so the task text never becomes an argv element.
+if [ ! -f "$TASK_FILE_IN" ] || [ ! -s "$TASK_FILE_IN" ]; then
+  echo "ERROR: autodrive_loop.sh: --task-file '${TASK_FILE_IN}' is missing or empty; refusing to run without a task" >&2
+  exit 2
+fi
+TASK_FILE="${STATE_DIR}/task_description.txt"
+TASK_TMP="$(umask 077; mktemp "${STATE_DIR}/.task_description.XXXXXX")" || exit 2
+cat -- "$TASK_FILE_IN" > "$TASK_TMP" && mv -f -- "$TASK_TMP" "$TASK_FILE" || {
+  rm -f -- "$TASK_TMP"
+  echo "ERROR: autodrive_loop.sh: cannot write ${TASK_FILE}" >&2
+  exit 2
+}
+# Nothing resumes from this copy (a rerun receives --task-file again), so it
+# is removed when the loop ends rather than left holding the full task text.
+trap 'rm -f -- "$TASK_FILE"' EXIT
+ROUND_CTX+=("--context-from-file" "task_description=${TASK_FILE}")
 
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX

@@ -142,6 +142,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Use a named Claude login profile (see `amplihack profile`).
         #[arg(long = "profile", value_name = "NAME")]
         profile: Option<String>,
+        /// Read the initial auto-mode prompt from a file (requires --auto).
+        #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
+        prompt_file: Option<PathBuf>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -174,6 +177,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Read the initial auto-mode prompt from a file (requires --auto).
+        #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
+        prompt_file: Option<PathBuf>,
         /// Extra args passed to copilot
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -201,6 +207,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Read the initial auto-mode prompt from a file (requires --auto).
+        #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
+        prompt_file: Option<PathBuf>,
         /// Extra args passed to codex
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
@@ -228,6 +237,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Read the initial auto-mode prompt from a file (requires --auto).
+        #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
+        prompt_file: Option<PathBuf>,
         /// Extra args passed to amplifier
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,

@@ -8,6 +8,7 @@ use std::process::Stdio;
 use std::time::Instant;
 
 use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog};
+use amplihack_utils::payload_delivery::write_stdin_async;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tracing::{debug, info, warn};
@@ -15,7 +16,7 @@ use tracing::{debug, info, warn};
 use crate::backoff::BackoffPolicy;
 use crate::error::{ErrorContext, RemoteError};
 use crate::orchestrator::VM;
-use crate::script::{build_remote_script, build_tmux_script, validate_command};
+use crate::script::{build_remote_script, build_tmux_script, validate_remote_command};
 
 /// Result of a remote command execution.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,9 +133,9 @@ impl Executor {
         prompt: &str,
         max_turns: u32,
     ) -> Result<ExecutionResult, RemoteError> {
-        // Issue #997 (F2): validate at the entry boundary too, so callers get a
-        // clear rejection before an env lookup or delegation occurs.
-        validate_command(command)?;
+        // Issue #997 (F2) / #1570: validate at the entry boundary too, so
+        // callers get a clear rejection before an env lookup or delegation.
+        validate_remote_command(command)?;
         let api_key = std::env::var("ANTHROPIC_API_KEY")
             .map_err(|_| RemoteError::execution("ANTHROPIC_API_KEY not found in environment"))?;
         self.execute_remote_with_api_key(command, prompt, max_turns, &api_key)
@@ -149,19 +150,16 @@ impl Executor {
         max_turns: u32,
         api_key: &str,
     ) -> Result<ExecutionResult, RemoteError> {
-        // Issue #997 (F2): reject untrusted command tokens before building any script.
-        validate_command(command)?;
-        if api_key.trim().is_empty() {
-            return Err(RemoteError::execution(
-                "ANTHROPIC_API_KEY not found in environment",
-            ));
-        }
+        // Issue #997 (F2) / #1570: reject untrusted or non-`auto` commands
+        // before building any script or spawning anything.
+        validate_remote_command(command)?;
+        validate_api_key(api_key)?;
 
         info!(command, "executing remote command");
 
         // Issue #997 (F1): the script is key-free by construction; the secret is
         // transported over the child's stdin (never argv, disk, or logs).
-        let setup_script = build_remote_script(&self.remote_workspace, command, prompt, max_turns)?;
+        let setup_script = build_remote_script(&self.remote_workspace, command, max_turns)?;
 
         let mut cmd = Command::new("azlin");
         cmd.arg("connect");
@@ -169,9 +167,9 @@ impl Executor {
         cmd.args([&self.vm.name, &setup_script]);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        // Issue #997 (F1): pipe stdin so we can hand the API key to the remote
-        // `read`. Issue #867 is preserved: we write the key once, flush, and
-        // close the handle immediately, so the child never holds a live TTY.
+        // Issue #997 (F1) / #1570: stdin carries the API key line and then the
+        // prompt. Issue #867 is preserved: the pipe is closed after the last
+        // byte, so the child never holds a live TTY.
         cmd.stdin(Stdio::piped());
 
         let start = Instant::now();
@@ -181,29 +179,19 @@ impl Executor {
             .spawn()
             .map_err(|e| RemoteError::execution(format!("Failed to spawn remote command: {e}")))?;
 
-        // Issue #997 (F1): deliver the API key via stdin, then close it (EOF).
-        // Surface any write failure explicitly — no silent fallback.
-        {
-            use tokio::io::AsyncWriteExt;
-            let mut stdin = child.stdin.take().ok_or_else(|| {
-                RemoteError::execution("failed to capture remote command stdin for key transport")
-            })?;
-            stdin
-                .write_all(format!("{api_key}\n").as_bytes())
-                .await
-                .map_err(|e| {
-                    RemoteError::execution(format!("failed to write API key to remote stdin: {e}"))
-                })?;
-            stdin.flush().await.map_err(|e| {
-                RemoteError::execution(format!("failed to flush API key to remote stdin: {e}"))
-            })?;
-            // Drop closes the pipe, signalling EOF to the remote shell.
-        }
-
+        let stdin = child.stdin.take().ok_or_else(|| {
+            RemoteError::execution("failed to capture remote command stdin for key transport")
+        })?;
         let child_stdout = child.stdout.take();
         let child_stderr = child.stderr.take();
         let cfg = IdleConfig::with_idle(std::time::Duration::from_secs(self.timeout_seconds));
-        let outcome = wait_with_idle_watchdog(&mut child, child_stdout, child_stderr, cfg).await;
+        // The payload is written while the child runs: a 200 KiB prompt
+        // exceeds the pipe buffer, so writing before waiting could stall.
+        let (written, outcome) = tokio::join!(
+            write_stdin_payload(stdin, api_key, prompt),
+            wait_with_idle_watchdog(&mut child, child_stdout, child_stderr, cfg)
+        );
+        written?;
         let duration = start.elapsed().as_secs_f64();
 
         if outcome.killed_for_idle {
@@ -243,23 +231,23 @@ impl Executor {
         max_turns: u32,
         api_key: &str,
     ) -> Result<(), RemoteError> {
-        // Issue #997 (F2): reject untrusted command tokens before building any script.
-        validate_command(command)?;
-        if api_key.trim().is_empty() {
-            return Err(RemoteError::execution(
-                "ANTHROPIC_API_KEY not found in environment",
-            ));
-        }
+        // Issue #997 (F2) / #1570: reject untrusted or non-`auto` commands
+        // before building any script or spawning anything.
+        validate_remote_command(command)?;
+        validate_api_key(api_key)?;
 
         // Issue #997 (F1): key-free script; the secret arrives over stdin.
         // Issue #998: build_tmux_script rejects (not strips) invalid session ids.
-        let script = build_tmux_script(session_id, command, prompt, max_turns)?;
+        let script = build_tmux_script(session_id, command, max_turns)?;
 
         let mut cmd = Command::new("azlin");
         cmd.arg("connect");
         self.append_port_args(&mut cmd);
         cmd.args([&self.vm.name, &script]);
         cmd.stdin(Stdio::piped());
+        // Issue #1570: if the launch times out, dropping the child kills it,
+        // which closes the pipe and releases the stdin writer.
+        cmd.kill_on_drop(true);
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
 
@@ -267,30 +255,19 @@ impl Executor {
             .spawn()
             .map_err(|e| RemoteError::execution(format!("tmux launch failed to spawn: {e}")))?;
 
-        // Issue #997 (F1): deliver the API key via stdin, then close it (EOF).
-        // Drop the handle before awaiting output so the remote shell sees EOF
-        // and cannot deadlock waiting for more input.
-        {
-            use tokio::io::AsyncWriteExt;
-            let mut stdin = child.stdin.take().ok_or_else(|| {
-                RemoteError::execution("failed to capture tmux stdin for key transport")
-            })?;
-            stdin
-                .write_all(format!("{api_key}\n").as_bytes())
-                .await
-                .map_err(|e| {
-                    RemoteError::execution(format!("failed to write API key to tmux stdin: {e}"))
-                })?;
-            stdin.flush().await.map_err(|e| {
-                RemoteError::execution(format!("failed to flush API key to tmux stdin: {e}"))
-            })?;
-        }
-
-        let output =
+        let stdin = child.stdin.take().ok_or_else(|| {
+            RemoteError::execution("failed to capture tmux stdin for key transport")
+        })?;
+        // Issue #997 (F1) / #1570: key line then prompt on stdin, written
+        // while the child runs, then closed so the remote shell sees EOF.
+        let (written, output) = tokio::join!(
+            write_stdin_payload(stdin, api_key, prompt),
             tokio::time::timeout(std::time::Duration::from_secs(60), child.wait_with_output())
-                .await
-                .map_err(|_| RemoteError::execution("tmux launch timed out"))?
-                .map_err(|e| RemoteError::execution(format!("tmux launch failed: {e}")))?;
+        );
+        let output = output
+            .map_err(|_| RemoteError::execution("tmux launch timed out"))?
+            .map_err(|e| RemoteError::execution(format!("tmux launch failed: {e}")))?;
+        written?;
 
         if output.status.success() {
             Ok(())
@@ -423,6 +400,42 @@ fi
             cmd.args(["--port", &port.to_string()]);
         }
     }
+}
+
+/// The key is sent as the first stdin line, so a line break inside it would
+/// push the remainder into the prompt file. The error never includes the key.
+fn validate_api_key(api_key: &str) -> Result<(), RemoteError> {
+    if api_key.trim().is_empty() {
+        return Err(RemoteError::execution(
+            "ANTHROPIC_API_KEY not found in environment",
+        ));
+    }
+    if api_key.contains(['\n', '\r']) {
+        return Err(RemoteError::execution(
+            "ANTHROPIC_API_KEY contains a line break",
+        ));
+    }
+    Ok(())
+}
+
+/// Issue #997 (F1) / #1570: write the API key line and then the prompt to
+/// the remote script's stdin, and close the pipe so the remote `cat` sees EOF.
+///
+/// If the remote side closes the pipe early, its exit status, not the write,
+/// decides the outcome. The prompt is never placed in argv.
+async fn write_stdin_payload(
+    stdin: tokio::process::ChildStdin,
+    api_key: &str,
+    prompt: &str,
+) -> Result<(), RemoteError> {
+    write_stdin_async(stdin, &[api_key.as_bytes(), b"\n", prompt.as_bytes()])
+        .await
+        .map(drop)
+        .map_err(|e| {
+            RemoteError::execution(format!(
+                "failed to write API key and prompt to remote stdin: {e}"
+            ))
+        })
 }
 
 #[cfg(test)]

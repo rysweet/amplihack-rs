@@ -7,15 +7,17 @@ use super::*;
 use crate::test_support::{ClearedGraphDbEnv, EnvGuard, env_lock};
 use std::collections::HashMap;
 
+/// `extract_prompt_args(args, prompt_file)` returns `Result<Option<_>>`
+/// (#1570): `Err` only for an unusable `--prompt-file`, `Ok(None)` when no
+/// prompt was given at all.
+fn parse(args: &[&str]) -> Option<ParsedPromptArgs> {
+    let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+    extract_prompt_args(&args, None).expect("argv-only prompt parsing never errors")
+}
+
 #[test]
 fn extract_prompt_args_supports_split_prompt_flag() {
-    let parsed = extract_prompt_args(&[
-        "--model".to_string(),
-        "sonnet".to_string(),
-        "-p".to_string(),
-        "ship parity".to_string(),
-    ])
-    .expect("prompt should parse");
+    let parsed = parse(&["--model", "sonnet", "-p", "ship parity"]).expect("prompt should parse");
 
     assert_eq!(parsed.prompt, "ship parity");
     assert_eq!(parsed.passthrough_args, vec!["--model", "sonnet"]);
@@ -23,15 +25,14 @@ fn extract_prompt_args_supports_split_prompt_flag() {
 
 #[test]
 fn extract_prompt_args_supports_equals_prompt_flag() {
-    let parsed =
-        extract_prompt_args(&["--prompt=ship parity".to_string()]).expect("prompt should parse");
+    let parsed = parse(&["--prompt=ship parity"]).expect("prompt should parse");
     assert_eq!(parsed.prompt, "ship parity");
     assert!(parsed.passthrough_args.is_empty());
 }
 
 #[test]
 fn extract_prompt_args_supports_bare_positional_prompt() {
-    let parsed = extract_prompt_args(&["do quality audit".to_string()]).expect("positional prompt");
+    let parsed = parse(&["do quality audit"]).expect("positional prompt");
     assert_eq!(parsed.prompt, "do quality audit");
     assert!(parsed.passthrough_args.is_empty());
 }
@@ -40,11 +41,7 @@ fn extract_prompt_args_supports_bare_positional_prompt() {
 fn extract_prompt_args_bare_positional_with_flags() {
     // When mixed with flags that take values, we can't distinguish flag values
     // from the prompt, so no positional fallback applies.
-    let result = extract_prompt_args(&[
-        "--model".to_string(),
-        "sonnet".to_string(),
-        "fix all bugs".to_string(),
-    ]);
+    let result = parse(&["--model", "sonnet", "fix all bugs"]);
     // Two non-flag args → ambiguous → no prompt found
     assert!(result.is_none() || result.as_ref().is_none_or(|p| p.prompt != "sonnet"));
 }
@@ -52,22 +49,142 @@ fn extract_prompt_args_bare_positional_with_flags() {
 #[test]
 fn extract_prompt_args_bare_positional_with_flag_only_args() {
     // With only boolean flags (no values), positional fallback works
-    let parsed = extract_prompt_args(&["--verbose".to_string(), "fix all bugs".to_string()])
-        .expect("positional prompt with boolean flags");
+    let parsed =
+        parse(&["--verbose", "fix all bugs"]).expect("positional prompt with boolean flags");
     assert_eq!(parsed.prompt, "fix all bugs");
     assert_eq!(parsed.passthrough_args, vec!["--verbose"]);
 }
 
 #[test]
 fn extract_prompt_args_explicit_p_takes_precedence_over_positional() {
-    let parsed = extract_prompt_args(&[
-        "-p".to_string(),
-        "explicit prompt".to_string(),
-        "bare arg".to_string(),
-    ])
-    .expect("explicit -p should win");
+    let parsed = parse(&["-p", "explicit prompt", "bare arg"]).expect("explicit -p should win");
     assert_eq!(parsed.prompt, "explicit prompt");
     assert_eq!(parsed.passthrough_args, vec!["bare arg"]);
+}
+
+#[test]
+fn extract_prompt_args_without_any_prompt_is_ok_none() {
+    assert!(parse(&[]).is_none());
+    assert!(parse(&["--verbose"]).is_none());
+}
+
+// ── #1570: --prompt-file ──────────────────────────────────────────────────────
+
+fn prompt_file(contents: &str) -> (tempfile::TempDir, PathBuf) {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("task.md");
+    fs::write(&path, contents).unwrap();
+    (dir, path)
+}
+
+#[test]
+fn extract_prompt_args_reads_prompt_file() {
+    let body = "TASK: é € 𝄞 'quotes' $(id)\nsecond line";
+    let (_dir, path) = prompt_file(body);
+    let parsed = extract_prompt_args(&["--model".to_string(), "sonnet".to_string()], Some(&path))
+        .expect("readable prompt file")
+        .expect("prompt file gives a prompt");
+    assert_eq!(
+        parsed.prompt, body,
+        "file contents are the prompt, unchanged"
+    );
+    assert_eq!(parsed.passthrough_args, vec!["--model", "sonnet"]);
+}
+
+#[test]
+fn extract_prompt_args_prompt_file_carries_200k_byte_for_byte() {
+    let mut body = String::from("BEGIN\n");
+    while body.len() < 200 * 1024 {
+        body.push_str("payload é € 𝄞 中文\n");
+    }
+    body.push_str("END");
+    let (_dir, path) = prompt_file(&body);
+    let parsed = extract_prompt_args(&[], Some(&path)).unwrap().unwrap();
+    assert!(
+        parsed.prompt == body,
+        "a 200 KiB prompt file must be read whole"
+    );
+}
+
+#[test]
+fn extract_prompt_args_prompt_file_wins_over_dash_p_forms() {
+    let (_dir, path) = prompt_file("from the file");
+    for args in [
+        vec!["-p", "from argv"],
+        vec!["--prompt", "from argv"],
+        vec!["-p=from argv"],
+        vec!["--prompt=from argv"],
+    ] {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        let parsed = extract_prompt_args(&args, Some(&path))
+            .expect("readable prompt file")
+            .expect("prompt");
+        assert_eq!(parsed.prompt, "from the file", "args {args:?}");
+        assert!(
+            parsed
+                .passthrough_args
+                .iter()
+                .all(|a| !a.contains("from argv")),
+            "the ignored -p value must not be forwarded to the agent; args {args:?} -> {:?}",
+            parsed.passthrough_args
+        );
+        assert!(
+            parsed
+                .passthrough_args
+                .iter()
+                .all(|a| a != "-p" && a != "--prompt"),
+            "the ignored -p flag must be consumed, not forwarded; args {args:?}"
+        );
+    }
+}
+
+#[test]
+fn extract_prompt_args_prompt_file_does_not_swallow_positional_passthrough() {
+    let (_dir, path) = prompt_file("from the file");
+    let parsed = extract_prompt_args(&["--verbose".to_string()], Some(&path))
+        .unwrap()
+        .unwrap();
+    assert_eq!(parsed.prompt, "from the file");
+    assert_eq!(parsed.passthrough_args, vec!["--verbose"]);
+}
+
+#[test]
+fn extract_prompt_args_missing_prompt_file_errors_naming_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("does-not-exist-1570.md");
+    let err = extract_prompt_args(&[], Some(&path)).expect_err("missing file is an error");
+    assert!(
+        format!("{err:#}").contains(path.to_str().unwrap()),
+        "error must name the path; got {err:#}"
+    );
+}
+
+#[test]
+fn extract_prompt_args_unreadable_prompt_file_errors_naming_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let err = extract_prompt_args(&[], Some(dir.path())).expect_err("a directory is unreadable");
+    assert!(
+        format!("{err:#}").contains(dir.path().to_str().unwrap()),
+        "error must name the path; got {err:#}"
+    );
+}
+
+#[test]
+fn extract_prompt_args_blank_prompt_file_errors_naming_path() {
+    for body in ["", "   ", "\n\t \n"] {
+        let (_dir, path) = prompt_file(body);
+        let err = extract_prompt_args(&["-p".to_string(), "argv".to_string()], Some(&path))
+            .expect_err("a prompt file that is empty after trimming is an error");
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.contains(path.to_str().unwrap()),
+            "error must name the path; got {rendered}"
+        );
+        assert!(
+            !rendered.contains("argv"),
+            "an empty prompt file must not fall back to -p; got {rendered}"
+        );
+    }
 }
 
 #[test]
@@ -844,4 +961,139 @@ fn run_session_loop_drives_runner_and_channel_to_stopped() {
 /// the exact prompt sequence that reached the executor.
 fn runner_prompts(runner: &AutoModeRunner<ScriptedExecutor>) -> Vec<String> {
     runner.executor().prompts()
+}
+
+// =============================================================================
+// #1570: caps on the outputs carried between turns
+// =============================================================================
+
+use amplihack_utils::payload_delivery::TRUNCATION_MARKER;
+
+const CAP: usize = 32 * 1024;
+/// Room for the philosophy context and the phase template around the capped
+/// values.
+const TEMPLATE_SLACK: usize = 8 * 1024;
+
+/// `<head>` + filler + `<tail>`, `len` bytes or more, with multi-byte UTF-8 so
+/// a byte cut would land inside a character.
+fn oversized(head: &str, tail: &str, len: usize) -> String {
+    let mut s = String::from(head);
+    while s.len() < len {
+        s.push_str("filler é € 𝄞 ");
+    }
+    s.push_str(tail);
+    s
+}
+
+#[test]
+fn turn_output_caps_are_32_kib() {
+    assert_eq!(channel::MAX_OBJECTIVE_BYTES, CAP);
+    assert_eq!(channel::MAX_PLAN_BYTES, CAP);
+    assert_eq!(channel::MAX_EVALUATION_BYTES, CAP);
+}
+
+#[test]
+fn objective_carried_from_turn_1_is_capped_keeping_the_tail() {
+    let (mut ch, _exec, _proj) = test_channel("do it", 10);
+    let _ = expect_ready(next_prompt(&mut ch)); // Clarify
+    let objective = oversized("OBJ-HEAD-1570 ", " OBJ-TAIL-1570", 200 * 1024);
+    publish(&mut ch, TurnOutput::from_text(objective).with_exit_code(0));
+
+    let plan_prompt = expect_ready(next_prompt(&mut ch));
+    assert!(
+        plan_prompt.contains("OBJ-TAIL-1570"),
+        "the tail of the objective must be kept"
+    );
+    assert!(
+        !plan_prompt.contains("OBJ-HEAD-1570"),
+        "the head of an oversized objective must be dropped"
+    );
+    assert!(
+        plan_prompt.contains(TRUNCATION_MARKER),
+        "a capped objective must carry the truncation marker"
+    );
+    assert!(
+        plan_prompt.len() <= CAP + TEMPLATE_SLACK,
+        "plan prompt is {} bytes; the objective must be capped at 32 KiB",
+        plan_prompt.len()
+    );
+
+    publish(
+        &mut ch,
+        TurnOutput::from_text("short plan").with_exit_code(0),
+    );
+    let execute_prompt = expect_ready(next_prompt(&mut ch));
+    assert!(!execute_prompt.contains("OBJ-HEAD-1570"));
+    assert!(execute_prompt.len() <= CAP + TEMPLATE_SLACK);
+}
+
+#[test]
+fn plan_carried_from_turn_2_is_capped_keeping_the_tail() {
+    let (mut ch, _exec, _proj) = test_channel("do it", 10);
+    let _ = expect_ready(next_prompt(&mut ch)); // Clarify
+    publish(
+        &mut ch,
+        TurnOutput::from_text("objective").with_exit_code(0),
+    );
+    let _ = expect_ready(next_prompt(&mut ch)); // Plan
+    let plan = oversized("PLAN-HEAD-1570 ", " PLAN-TAIL-1570", 200 * 1024);
+    publish(&mut ch, TurnOutput::from_text(plan).with_exit_code(0));
+
+    let execute_prompt = expect_ready(next_prompt(&mut ch));
+    assert!(execute_prompt.contains("PLAN-TAIL-1570"));
+    assert!(!execute_prompt.contains("PLAN-HEAD-1570"));
+    assert!(execute_prompt.contains(TRUNCATION_MARKER));
+    assert!(
+        execute_prompt.len() <= CAP + TEMPLATE_SLACK,
+        "execute prompt is {} bytes; the plan must be capped at 32 KiB",
+        execute_prompt.len()
+    );
+}
+
+#[test]
+fn latest_evaluation_carried_to_adjust_is_capped_keeping_the_tail() {
+    let (mut ch, _exec, _proj) = test_channel("do it", 10);
+    let _ = expect_ready(next_prompt(&mut ch)); // Clarify
+    publish(
+        &mut ch,
+        TurnOutput::from_text("objective").with_exit_code(0),
+    );
+    let _ = expect_ready(next_prompt(&mut ch)); // Plan
+    publish(&mut ch, TurnOutput::from_text("plan").with_exit_code(0));
+    let _ = expect_ready(next_prompt(&mut ch)); // Execute
+    publish(&mut ch, TurnOutput::from_text("did work").with_exit_code(0));
+    let _ = expect_ready(next_prompt(&mut ch)); // Evaluate
+    let evaluation = oversized(
+        "EVAL-HEAD-1570 auto-mode EVALUATION: NEEDS ADJUSTMENT ",
+        " EVAL-TAIL-1570",
+        200 * 1024,
+    );
+    publish(&mut ch, TurnOutput::from_text(evaluation).with_exit_code(0));
+
+    let adjust_prompt = expect_ready(next_prompt(&mut ch));
+    assert!(
+        adjust_prompt.contains("Adjust the plan based on the latest evaluation"),
+        "a NEEDS ADJUSTMENT evaluation must lead to the Adjust phase"
+    );
+    assert!(adjust_prompt.contains("EVAL-TAIL-1570"));
+    assert!(!adjust_prompt.contains("EVAL-HEAD-1570"));
+    assert!(adjust_prompt.contains(TRUNCATION_MARKER));
+    assert!(
+        adjust_prompt.len() <= CAP + TEMPLATE_SLACK,
+        "adjust prompt is {} bytes; the evaluation must be capped at 32 KiB",
+        adjust_prompt.len()
+    );
+}
+
+#[test]
+fn small_turn_outputs_are_carried_unchanged() {
+    let (mut ch, _exec, _proj) = test_channel("do it", 10);
+    let _ = expect_ready(next_prompt(&mut ch));
+    publish(
+        &mut ch,
+        TurnOutput::from_text("SMALL-OBJECTIVE é").with_exit_code(0),
+    );
+    let plan_prompt = expect_ready(next_prompt(&mut ch));
+    assert!(plan_prompt.contains("SMALL-OBJECTIVE é"));
+    assert!(!plan_prompt.contains(TRUNCATION_MARKER));
 }
