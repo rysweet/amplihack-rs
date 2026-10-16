@@ -2,8 +2,11 @@
 //!
 //! A profile is a directory under the profile root that is handed to Claude
 //! Code as `CLAUDE_CONFIG_DIR`. amplihack never reads, copies or refreshes
-//! credentials, and never changes the parent environment.
+//! credentials, and never changes the parent environment. With auto-switch on
+//! (off by default) it may move a login file between profile directories;
+//! see `auto_switch`.
 
+mod auto_switch;
 mod name;
 mod pointer;
 mod run;
@@ -80,6 +83,20 @@ pub enum ProfileError {
     UnsafePermissions(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("profile {profile:?}: its login is in use by a session in profile {host:?}")]
+    Leased { profile: String, host: String },
+    #[error(
+        "profile {profile:?}: its directory holds the login of profile {live:?} for a running session"
+    )]
+    HostsForeignAccount { profile: String, live: String },
+    #[error("auto-switch settings: {0}")]
+    AutoSwitchConfig(String),
+    #[error("auto-switch state is inconsistent: {0}")]
+    AutoSwitchInvariant(String),
+    #[error("auto-switch install: {0}")]
+    AutoSwitchInstall(String),
+    #[error("auto-switch is not available on this platform")]
+    AutoSwitchUnsupported,
     #[error(
         "inherited AMPLIHACK_CLAUDE_PROFILE {value}: {}",
         .source.inherited_reason()
@@ -117,6 +134,19 @@ impl ProfileError {
                 "ensure the profile is owned by your user and run `chmod go-rwx <profile-directory>`"
             }
             Self::Io(_) => "check permissions on the profile root",
+            Self::Leased { .. } | Self::HostsForeignAccount { .. } => {
+                "wait for that session to end, or run `amplihack profile auto-switch status`"
+            }
+            Self::AutoSwitchConfig(_) => {
+                "remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off`"
+            }
+            Self::AutoSwitchInvariant(_) => {
+                "see the Recovery section of docs/howto/claude-profiles.md"
+            }
+            Self::AutoSwitchInstall(_) => {
+                "fix or remove the reported file, then run `amplihack profile auto-switch repair`"
+            }
+            Self::AutoSwitchUnsupported => "auto-switch needs Linux or another Unix; leave it off",
             Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
                 "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"
             }
@@ -141,6 +171,8 @@ impl ProfileError {
             Self::UnsafePermissions(_) => "unsafe permissions".into(),
             Self::Io(e) => format!("i/o error on profile root ({})", e.kind()).into(),
             Self::UnsupportedMode(_) => "not applied with --docker, --auto or Docker".into(),
+            // Profile names here are validated, so the message is safe to repeat.
+            Self::Leased { .. } | Self::HostsForeignAccount { .. } => self.to_string().into(),
             _ => "not usable".into(),
         }
     }
@@ -198,6 +230,19 @@ pub enum ProfileCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Switch accounts automatically when one nears its usage limit
+    AutoSwitch {
+        #[command(subcommand)]
+        command: auto_switch::AutoSwitchCommand,
+    },
+    /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
+    #[command(hide = true)]
+    Statusline {
+        #[arg(long)]
+        root: String,
+        #[arg(long)]
+        owner: String,
+    },
 }
 
 pub fn run_profile(cmd: ProfileCommands) -> Result<()> {
@@ -208,6 +253,11 @@ pub fn run_profile(cmd: ProfileCommands) -> Result<()> {
 }
 
 fn handle(cmd: ProfileCommands) -> Result<()> {
+    // The wrapper's output belongs to Claude's status line: no error lines on
+    // stdout, and its exit code is the original status line's.
+    if let ProfileCommands::Statusline { root, owner } = &cmd {
+        std::process::exit(auto_switch::statusline(root, owner));
+    }
     let store = ProfileStore::from_env()?;
     match cmd {
         ProfileCommands::Add { name } => {
@@ -232,11 +282,26 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;
+            if yes {
+                auto_switch::guard(&store, &name, auto_switch::Action::Remove)?;
+            }
             store.remove(&name, yes)?;
             println!("removed profile {name}");
         }
-        ProfileCommands::Login { name } => run::login(&store, &ProfileName::parse(&name)?)?,
-        ProfileCommands::Run { name, args } => run::run(&store, &ProfileName::parse(&name)?, args)?,
+        ProfileCommands::Login { name } => {
+            let name = ProfileName::parse(&name)?;
+            store.resolve(&name)?;
+            auto_switch::guard(&store, &name, auto_switch::Action::Login)?;
+            run::login(&store, &name)?
+        }
+        ProfileCommands::Run { name, args } => {
+            let name = ProfileName::parse(&name)?;
+            store.resolve(&name)?;
+            auto_switch::guard(&store, &name, auto_switch::Action::Launch { join: false })?;
+            run::run(&store, &name, args)?
+        }
+        ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
+        ProfileCommands::Statusline { .. } => unreachable!("handled above"),
     }
     Ok(())
 }
@@ -336,7 +401,10 @@ pub(super) fn reject_docker_env() -> Result<()> {
 
 /// Re-validates a profile directory immediately before the child is spawned.
 /// This narrows, but does not close, the window before `exec`.
-pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
+///
+/// Holds the auto-switch lock until the returned value is dropped, which the
+/// caller does right after the spawn returns.
+pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_switch::LaunchHold> {
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -350,7 +418,73 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
             dir.display().to_string(),
         )));
     }
-    Ok(())
+    let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
+        && auto_switch::inside_session(dir);
+    auto_switch::guard_launch(&store, &name, join).map_err(with_hint)
+}
+
+/// Set when this process's launch profile was inherited (tier 2), the only
+/// case in which a launch may join a session whose directory hosts another
+/// account. Read again by the pre-spawn check.
+static LAUNCH_MAY_JOIN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Returns logins borrowed by the session that just ended in `dir`.
+pub(crate) fn return_after_session(dir: &std::path::Path) {
+    auto_switch::return_after_session(dir);
+}
+
+/// Variable that marks a launch already running under the rerun supervisor.
+pub(crate) const AUTO_SWITCH_SUPERVISED_ENV: &str = auto_switch::SUPERVISED_ENV;
+
+/// `multitask` seam: the profile a workstream inheriting `inherited` should
+/// export, when auto-switch picks another one.
+pub(crate) fn substitute_inherited_profile(inherited: &str) -> Option<String> {
+    auto_switch::substitute_name(inherited)
+}
+
+/// Runs a nested `-p` launch under the usage-limit rerun supervisor when
+/// auto-switch is on and the profile is inherited. Returns the exit code to
+/// use, or `None` to launch normally. Off, this reads the environment and at
+/// most the settings file.
+pub fn maybe_supervise(
+    flag: Option<&str>,
+    docker: bool,
+    auto: bool,
+    claude_args: &[String],
+) -> Result<Option<i32>> {
+    // Only an inherited profile is supervised.
+    if flag.is_some() {
+        return Ok(None);
+    }
+    let printing = claude_args
+        .iter()
+        .any(|a| a == "-p" || a == "--print" || a.starts_with("--print="));
+    if !printing {
+        return Ok(None);
+    }
+    let Some(inherited) = std::env::var_os(PROFILE_ENV).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    let Some(inherited) = inherited.to_str().map(str::to_string) else {
+        return Ok(None);
+    };
+    // Never where a profile cannot be applied (the check `launch_profile_dir`
+    // makes). After the cheap checks above, so `docker_env_active()` only
+    // runs for an inherited `-p` launch.
+    if unsupported_mode(docker, docker_env_active(), auto).is_some() {
+        return Ok(None);
+    }
+    let store = match ProfileStore::from_env() {
+        Ok(store) => store,
+        Err(e) => {
+            // The launch reports a bad root itself; say why it is unsupervised.
+            if auto_switch::env_forces_on() {
+                eprintln!("warning: auto-switch cannot supervise this step ({e}); running it once");
+            }
+            return Ok(None);
+        }
+    };
+    auto_switch::supervise(&store, &inherited)
 }
 
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then
@@ -410,5 +544,19 @@ fn launch_profile_dir_with(
         eprintln!("warning: default profile '{name}' is not applied in Docker (env-activated)");
         return Ok(None);
     }
-    Ok(resolved.map(|(_, dir)| dir))
+    let Some((name, dir)) = resolved else {
+        return Ok(None);
+    };
+    // Auto-switch (#1569): only an inherited profile is ever redirected or
+    // allowed to join a hosted session; a flag or the pointer never is.
+    let is_inherited = flag.is_none() && inherited.is_some();
+    if is_inherited && let Some(c) = auto_switch::substitute_nested(&store, &name) {
+        let dir = store.resolve(&c)?;
+        auto_switch::guard(&store, &c, auto_switch::Action::Launch { join: false })?;
+        return Ok(Some(dir));
+    }
+    let join = is_inherited && auto_switch::inside_session(&dir);
+    LAUNCH_MAY_JOIN.store(is_inherited, std::sync::atomic::Ordering::Relaxed);
+    auto_switch::guard(&store, &name, auto_switch::Action::Launch { join })?;
+    Ok(Some(dir))
 }
