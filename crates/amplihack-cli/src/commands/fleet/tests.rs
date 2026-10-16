@@ -1,6 +1,6 @@
 use super::*;
 use crate::command_error;
-use crate::test_support::{ClearedGraphDbEnv, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{ClearedGraphDbEnv, home_env_lock};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -42,7 +42,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
     let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
     let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
-    let previous_cwd = set_cwd(temp.path()).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
     unsafe {
         env::set_var("AMPLIHACK_HOME", &amplihack_home);
         env::set_var("AMPLIHACK_TREE_ID", "tree1234");
@@ -57,7 +57,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     .complete("inspect")
     .unwrap();
 
-    restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
     restore_var("AMPLIHACK_HOME", prev_home);
     restore_var("AMPLIHACK_TREE_ID", prev_tree);
     restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);

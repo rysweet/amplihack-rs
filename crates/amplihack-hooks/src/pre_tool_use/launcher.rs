@@ -22,6 +22,7 @@ pub enum LauncherType {
     ClaudeCode,
     Copilot,
     Amplifier,
+    Codex,
     Unknown,
 }
 
@@ -42,7 +43,8 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
             LauncherKind::Copilot => LauncherType::Copilot,
             LauncherKind::Amplifier => LauncherType::Amplifier,
             LauncherKind::Claude => LauncherType::ClaudeCode,
-            LauncherKind::Codex | LauncherKind::Unknown => LauncherType::Unknown,
+            LauncherKind::Codex => LauncherType::Codex,
+            LauncherKind::Unknown => LauncherType::Unknown,
         };
     }
 
@@ -50,14 +52,23 @@ pub(crate) fn detect_launcher_for_dirs(dirs: &ProjectDirs) -> LauncherType {
 }
 
 fn detect_launcher_from_env() -> Option<LauncherType> {
+    // Prefer markers provided by the active host. AMPLIHACK_AGENT_BINARY is
+    // inherited by child processes and can describe their parent session.
     if std::env::var("GITHUB_COPILOT_AGENT").is_ok() || std::env::var("COPILOT_AGENT").is_ok() {
         return Some(LauncherType::Copilot);
+    }
+    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
+        return Some(LauncherType::ClaudeCode);
     }
     if std::env::var("AMPLIFIER_SESSION").is_ok() {
         return Some(LauncherType::Amplifier);
     }
-    if std::env::var("CLAUDE_CODE_SESSION").is_ok() || std::env::var("CLAUDE_SESSION_ID").is_ok() {
-        return Some(LauncherType::ClaudeCode);
+    match std::env::var("AMPLIHACK_AGENT_BINARY").as_deref() {
+        Ok("codex") => return Some(LauncherType::Codex),
+        Ok("claude") => return Some(LauncherType::ClaudeCode),
+        Ok("copilot") => return Some(LauncherType::Copilot),
+        Ok("amplifier") => return Some(LauncherType::Amplifier),
+        _ => {}
     }
     None
 }

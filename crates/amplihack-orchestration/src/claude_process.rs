@@ -395,25 +395,7 @@ async fn run_delivered_command(
         }
     };
 
-    if let Some(payload) = stdin_payload
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        if let Err(e) = stdin.write_all(&payload).await {
-            return ProcessResult::err(
-                format!("failed to write prompt to child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-        if let Err(e) = stdin.flush().await {
-            return ProcessResult::err(
-                format!("failed to flush child stdin: {e}"),
-                process_id,
-                start.elapsed(),
-            );
-        }
-    }
-
+    let stdin = child.stdin.take();
     let stdout_pipe = child.stdout.take();
     let stderr_pipe = child.stderr.take();
 
@@ -425,7 +407,56 @@ async fn run_delivered_command(
         Some(t) => IdleConfig::with_idle(t),
         None => IdleConfig::from_env(),
     };
-    let outcome = wait_with_idle_watchdog(&mut child, stdout_pipe, stderr_pipe, cfg).await;
+    // Drain output while writing stdin. Waiting to start the watchdog until
+    // after a large stdin write can deadlock when the child's output pipe
+    // fills before it has read the complete prompt.
+    let write_stdin = async move {
+        if let (Some(payload), Some(mut stdin)) = (stdin_payload, stdin) {
+            stdin.write_all(&payload).await?;
+            stdin.flush().await?;
+        }
+        Ok::<(), std::io::Error>(())
+    };
+    let mut write_stdin = Box::pin(write_stdin);
+    let mut watchdog = Box::pin(wait_with_idle_watchdog(
+        &mut child,
+        stdout_pipe,
+        stderr_pipe,
+        cfg,
+    ));
+    let outcome = tokio::select! {
+        biased;
+        write_result = &mut write_stdin => {
+            if let Err(e) = write_result {
+                // Do not wait for the idle watchdog after a broken stdin pipe:
+                // a child can keep emitting output forever, which deliberately
+                // keeps that watchdog alive. Cancel it (which aborts its
+                // drainers), then kill and reap the child.
+                drop(watchdog);
+                let _ = child.start_kill();
+                let _ = child.wait().await;
+                return ProcessResult::err(
+                    format!("failed to write prompt to child stdin: {e}"),
+                    process_id,
+                    start.elapsed(),
+                );
+            }
+            watchdog.await
+        }
+        _ = &mut watchdog => {
+            // The child can exit or be killed as idle before it accepts the
+            // entire prompt. Since the writer branch was polled first, it is
+            // still pending here; cancel it rather than wait indefinitely for
+            // a descendant that inherited stdin but does not read it.
+            drop(write_stdin);
+            return ProcessResult::err(
+                "failed to write prompt to child stdin: child exited before prompt delivery completed"
+                    .to_string(),
+                process_id,
+                start.elapsed(),
+            );
+        }
+    };
 
     drop(delivery_handle);
     let duration = start.elapsed();

@@ -152,7 +152,7 @@ uses concise text lines for lifecycle progress and diagnostics.
 
 | Variable | Description |
 | --- | --- |
-| `RECIPE_RUNNER_RS_PATH` | Optional path to the runner binary. |
+| `RECIPE_RUNNER_RS_PATH` | User-owned runner override; Codex validates strictly, while Claude/Copilot preserve nonexistent-path fallback. See [validation policy](./recipe-runner-validation.md). |
 | `AMPLIHACK_RECIPE_RUN_ID` | Stable UUID injected by the wrapper into the child process and copied by the runner into JSONL event `run_id` fields. |
 | `AMPLIHACK_STEP_TIMEOUT` | Global per-step timeout hint set by `--step-timeout`. |
 | `AMPLIHACK_RECIPE_HEARTBEAT_INTERVAL_SECONDS` | Heartbeat interval in seconds; `0` disables heartbeat lines. |

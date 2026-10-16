@@ -60,8 +60,12 @@ esac
 # qa_reason names the first failing check.
 # Free text is sanitised before it reaches the JSON below: no quotes,
 # backslashes or control bytes, so a hostile log line or directory name
-# can neither break the evidence nor carry terminal escapes.
-san() { tr '\n' ' ' | LC_ALL=C tr -d '\000-\037\177"\\'; }
+# can neither break the evidence nor carry terminal escapes. ANSI CSI
+# sequences go whole (ECMA-48: parameter bytes 0x30-0x3F, intermediates
+# 0x20-0x2F, final 0x40-0x7E), tabs, CRs and newlines become spaces and
+# backslashes '/', so a coloured or tabular runner log keeps its words
+# (#1531) instead of leaving `[32m` tails or running columns together.
+san() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n\\' '   /' | LC_ALL=C tr -d '\000-\037\177"'; }
 # Text cut to a byte length is made ASCII first: a byte cut through a
 # multibyte character leaves invalid UTF-8, which every JSON reader
 # rejects, so branch test output could make the evidence unreadable.
