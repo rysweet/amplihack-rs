@@ -4,8 +4,10 @@ use super::models::{Workstream, WorkstreamScope};
 use super::process_scope::normalize_path;
 use super::utils::rand_u32;
 use amplihack_types::workflow;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use tracing::warn;
 
 /// Valid delegate commands for subprocess execution.
@@ -150,9 +152,10 @@ exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
     )
 }
 
-pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> String {
+pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
+    let profile_exports = profile_exports(env_var_os)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
-    format!(
+    Ok(format!(
         r#"#!/bin/bash
 cd '{work_dir}'
 export AMPLIHACK_TREE_ID='{tree_id}'
@@ -164,7 +167,7 @@ export AMPLIHACK_WORKSTREAM_ISSUE='{issue}'
 export AMPLIHACK_WORKSTREAM_PROGRESS_FILE='{progress_file}'
 export AMPLIHACK_WORKSTREAM_STATE_FILE='{state_file}'
 export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
-exec bash launcher.sh
+{profile_exports}exec bash launcher.sh
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -176,7 +179,8 @@ exec bash launcher.sh
         progress_file = ws.progress_file.display(),
         state_file = ws.state_file.display(),
         worktree_path = ws.worktree_path,
-    )
+        profile_exports = profile_exports,
+    ))
 }
 
 pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
@@ -191,16 +195,17 @@ pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
     )
 }
 
-pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> String {
+pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
+    let profile_exports = profile_exports(env_var_os)?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
-    format!(
+    Ok(format!(
         r#"#!/bin/bash
 cd '{work_dir}'
 export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
+{profile_exports}{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -211,7 +216,46 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
-    )
+        profile_exports = profile_exports,
+    ))
+}
+
+fn env_var_os(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
+}
+
+/// Issue #1567: `export` lines that pass the pinned Claude login profile to
+/// the nested `amplihack` launch. tmux sessions do not inherit the client's
+/// environment, so the name (and the root, when one was set) must be written
+/// into the script. `CLAUDE_CONFIG_DIR` is not exported: the nested launch
+/// rebuilds and verifies the dir from the name. Values are not validated
+/// here; the nested launch does that and fails closed.
+///
+/// A value that is set but not valid UTF-8 is an error, not a skipped line:
+/// dropping it would make the nested launch fall back to the default root and
+/// possibly to a different account. The error names the variable only.
+pub(super) fn profile_exports(get: impl Fn(&str) -> Option<OsString>) -> Result<String> {
+    use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
+    let mut out = String::new();
+    for key in [PROFILE_ENV, ROOT_ENV] {
+        let Some(raw) = get(key).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let Some(value) = raw.to_str() else {
+            bail!(
+                "{key} is set but is not valid UTF-8; refusing to start the \
+                 workstream because the nested launch could not keep the parent's \
+                 Claude profile. Unset it or set it to a UTF-8 value"
+            );
+        };
+        out.push_str(&format!("export {key}={}\n", sh_single_quote(value)));
+    }
+    Ok(out)
+}
+
+/// Quotes `value` for POSIX sh: `'...'`, with each `'` written as `'\''`.
+pub(super) fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn session_tree_env(ws: &Workstream) -> (String, u32, String, String) {

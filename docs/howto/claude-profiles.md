@@ -121,13 +121,57 @@ amplihack claude              # uses "work"
 amplihack profile show        # prints name and directory, or "none"
 ```
 
-Resolution order: `--profile` flag, then the default pointer, then none. An
-explicit `--profile` never reads the pointer, so it works even if the pointer
-is dangling or corrupt. With
+Resolution order: `--profile` flag, then an inherited
+`AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
+`--profile` never reads the inherited value or the pointer, so it works even if
+the pointer is dangling or corrupt. With
 no profile, `CLAUDE_CONFIG_DIR` is neither set nor altered, so existing
 behavior (including an ambient `CLAUDE_CONFIG_DIR` you exported yourself) is
 unchanged. When a profile is selected, it overrides the ambient value for the
 child process only.
+
+### Nested sessions keep the parent's profile
+
+Once a launch picks a profile, every amplihack launch started from it uses
+the same profile: recipe agent steps, `multitask` workstreams, and any
+`amplihack claude` you run inside the session. This holds for sessions
+started with `amplihack claude`, `amplihack launch`, `amplihack profile run`
+and `amplihack profile login`. The launch passes the name to
+its children in `AMPLIHACK_CLAUDE_PROFILE` (and the root in
+`AMPLIHACK_CLAUDE_PROFILE_ROOT`, if you set one), and nested launches use it
+ahead of the pointer.
+
+```bash
+amplihack profile switch personal
+amplihack claude --profile work
+# inside the session, and in every recipe step or workstream it starts:
+echo "$AMPLIHACK_CLAUDE_PROFILE"   # work
+amplihack profile switch personal  # changes the default for new shells only
+amplihack claude                   # still runs as "work"
+```
+
+A `profile switch` therefore never moves a running session or orchestration
+to another account part way through. It affects only launches started
+afterwards from a shell without `AMPLIHACK_CLAUDE_PROFILE`.
+
+To pin a profile for a run started from a plain shell, set the variable
+yourself:
+
+```bash
+AMPLIHACK_CLAUDE_PROFILE=work amplihack recipe run default-workflow
+```
+
+If the inherited name is invalid or the profile has been removed, the launch
+fails and does not fall back to the pointer:
+
+```
+error: inherited AMPLIHACK_CLAUDE_PROFILE "work": not found
+hint: unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack profile add <name>`
+```
+
+See the
+[resolution reference](../reference/profile-command.md#resolution-and-environment)
+for how the name reaches each kind of nested launch.
 
 ## List and remove
 
@@ -157,6 +201,39 @@ re-run `remove`.
   `--docker`, `--auto` and env-activated Docker (`AMPLIHACK_USE_DOCKER`) are all
   rejected with an error rather than partially applied. A default pointer under
   env-activated Docker is skipped with a warning.
+  An inherited `AMPLIHACK_CLAUDE_PROFILE` is rejected the same way, so a
+  Docker or `--auto` launch started by hand inside a profiled session fails
+  with `hint: unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto`.
+  These modes keep the `CLAUDE_CONFIG_DIR` they inherit, which inside a
+  profiled session is still the parent's profile, so unset both to run on
+  the default account:
+  `env -u AMPLIHACK_CLAUDE_PROFILE -u CLAUDE_CONFIG_DIR amplihack claude --auto`.
+  Recipe steps and `multitask` workstreams never pass these flags, but they
+  do inherit `AMPLIHACK_USE_DOCKER`. If it is set to a true value in a
+  profiled session and the Docker daemon is running, every nested launch is
+  refused. Unset it before starting the run.
+- `amplihack recipe run` and `amplihack multitask` started from a plain shell
+  (no inherited `AMPLIHACK_CLAUDE_PROFILE`) do not pin a profile: each agent
+  step reads the default pointer itself, so a `profile switch` during the run
+  moves later steps to the new profile. Start the run from inside an
+  `amplihack claude` session, or prefix it with
+  `AMPLIHACK_CLAUDE_PROFILE=<name>`.
+- Removing a profile while sessions pinned to it are running makes their later
+  nested launches fail closed with the inherited-profile error.
+- Fleet and remote VM launches do not pass the profile on. An
+  `amplihack claude` started inside one of them uses the default pointer.
+- Copilot and Codex launches don't set the variables themselves, but they
+  don't remove an inherited value either. A nested `amplihack claude` started
+  from a Copilot session that inherited `AMPLIHACK_CLAUDE_PROFILE` uses that
+  profile and checks it again. Without it, the launch uses the pointer.
+- `amplihack recipe run` refuses context keys in the `AMPLIHACK_` namespace
+  (`-c amplihack_claude_profile=x` is an error), so `-c` cannot choose the
+  profile. A recipe's own YAML `context:` defaults and step `output:` names
+  are not checked yet: the recipe runner exports them to bash steps under
+  their uppercase names, so a recipe that defines `amplihack_claude_profile`
+  can still change the profile used by an `amplihack claude` in its bash
+  steps. It can only pick one of your own profiles, and the directory is
+  still checked before spawn.
 - The profile path is re-validated just before spawn. The check is not atomic;
   a small window remains.
 - On Unix, launches require the profile directory to be owned by the current

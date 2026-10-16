@@ -33,6 +33,7 @@ amplihack launch|claude --profile <name> [...]
 | Item | Value |
 |------|-------|
 | `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. Must be absolute and non-empty. Default `~/.amplihack/claude-profiles/`. |
+| `AMPLIHACK_CLAUDE_PROFILE` | Profile name a launch passes to its children so nested launches use the same profile. Set by amplihack on the child process; may also be set by hand. Empty means unset. See [Resolution and environment](#resolution-and-environment). |
 | `<root>/<name>/` | Profile directory (mode `0700` on Unix; Windows uses its inherited ACL). |
 | Root directory | Created with mode `0700` on Unix; Windows uses its inherited ACL. A symlinked root is refused. An existing custom root is trusted input. |
 | `<root>/.default` | Pointer file: only the profile name (mode `0600` on Unix, max 256 bytes). Windows uses its inherited ACL. Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
@@ -109,14 +110,111 @@ every platform, so `Work` and `work` can never coexist.
 
 ## Resolution and environment
 
-1. `--profile <name>` (explicit; the pointer is not read, so a dangling or
-   corrupt pointer does not block it)
-2. `<root>/.default`
-3. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
+`amplihack claude`, `amplihack launch` and `amplihack profile run` pick a
+profile in this order:
 
-When a profile resolves, `CLAUDE_CONFIG_DIR` is set on the child `Command`
-only (never `set_var`), overriding any ambient value, and only for
-Claude-compatible binaries. Immediately before spawn, the profile path is
+1. `--profile <name>` (or the `<name>` given to `profile run`). The inherited
+   variable and the pointer are not read, so a dangling or corrupt pointer
+   does not block it.
+2. An inherited, non-empty `AMPLIHACK_CLAUDE_PROFILE`. The pointer is not
+   read, even if it is dangling.
+3. `<root>/.default`
+4. none — `CLAUDE_CONFIG_DIR` is left exactly as inherited.
+
+When a profile resolves, three variables are set on the child `Command` only
+(never `set_var`), and only for Claude-compatible binaries. This applies to
+every command that starts Claude with a profile: `amplihack claude`,
+`amplihack launch`, `amplihack profile run` and `amplihack profile login`.
+
+| Variable | Value |
+|----------|-------|
+| `CLAUDE_CONFIG_DIR` | `<root>/<name>`, overriding any ambient value |
+| `AMPLIHACK_CLAUDE_PROFILE` | `<name>` |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `<root>`, only when `AMPLIHACK_CLAUDE_PROFILE_ROOT` was set in the launching process; otherwise left unset so the child uses the default root too |
+
+Copilot and Codex children get none of these, but variables already in the
+environment pass through them unchanged.
+
+### Nested launches keep the parent's profile
+
+Every `amplihack claude` started inside a profiled session (recipe agent
+steps, `multitask`/orch workstreams, a nested `amplihack claude` run by hand)
+inherits `AMPLIHACK_CLAUDE_PROFILE` and so resolves the same profile at tier 2.
+The pin holds for the whole tree of sessions:
+
+- A later `amplihack profile switch` only rewrites the pointer. Running
+  sessions, and every launch started from them, keep their profile.
+- A parent started with `--profile work` while the pointer names `personal`
+  runs every descendant as `work`.
+
+How the name reaches each kind of descendant:
+
+| Launch path | How the variables arrive |
+|-------------|--------------------------|
+| Direct child, `amplihack recipe run` | Inherited environment (the recipe runner is detached with `setsid` but keeps the environment). |
+| Recipe agent steps | Inherited environment. `recipe-runner-rs` builds each step's environment from its own, and never drops `AMPLIHACK_*` variables when it trims the environment to fit (checked at the revision pinned in `claude-plugin/recipe-runner.rev`, `b4a82e7`). Agent steps take no per-step environment. In bash steps, a step's `env:` block can set any variable, including these, and so can the runner's uppercase export of context keys (see [Recipe context cannot set the profile](#recipe-context-cannot-set-the-profile)). |
+| `multitask` / orch workstreams | Inherited environment: each workstream's `run.sh` is started with the parent's full environment. As a backup, the generated `run.sh` also exports `AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT`, single-quoted, when they are set and non-empty, so a `run.sh` re-run by hand or on resume uses the same profile. `CLAUDE_CONFIG_DIR` is not exported; the nested launch rebuilds it from the name and checks it again. If either variable is set but is not valid UTF-8, the workstream is refused before any script is written (the error names the variable, not its value), because leaving it out would send the nested launch to the default root. |
+
+Only the name and the root are passed on. Each nested launch resolves the
+name against the root and runs the full check below again, so an inherited
+`CLAUDE_CONFIG_DIR` is never trusted on its own.
+
+An inherited value is checked exactly like a flag: it is parsed with the
+[name rules](#name-rules) without trimming (so `" work"` is invalid), resolved
+inside the root, and re-validated before spawn. Any failure — an invalid
+name, a value that is not valid UTF-8, a profile that no longer exists, a
+symlinked or out-of-root directory — aborts the launch with the
+inherited-profile error. It never falls back to the pointer or to no profile.
+
+You can set the variable by hand to pin a profile for one shell or command:
+
+```bash
+AMPLIHACK_CLAUDE_PROFILE=work amplihack recipe run default-workflow
+```
+
+A stale export in a shell startup file acts as a per-shell default that beats
+the pointer; `unset AMPLIHACK_CLAUDE_PROFILE` removes it.
+
+`amplihack recipe run` and `amplihack multitask` do not resolve a profile
+themselves. Started from a plain shell with no inherited
+`AMPLIHACK_CLAUDE_PROFILE`, each agent step resolves the pointer on its own,
+so a `profile switch` part way through moves later steps to the new profile.
+Start them from inside an `amplihack claude` session, or set
+`AMPLIHACK_CLAUDE_PROFILE` as above, to pin one profile for the whole run.
+
+Fleet and remote VM launches do not pass the profile on, so nested launches
+inside them use the pointer.
+
+Copilot and Codex launches don't set the variables themselves, but they don't
+remove an inherited value either. A nested `amplihack claude` started from a
+Copilot session that inherited `AMPLIHACK_CLAUDE_PROFILE` uses that profile
+and checks it again. Without it, the launch uses the pointer.
+
+### Recipe context cannot set the profile
+
+`amplihack recipe run` refuses any context key whose uppercase form starts
+with `AMPLIHACK_`, on both the `--set` and the `--context-file` path, before
+the runner starts:
+
+```text
+recipe context key "amplihack_claude_profile" is reserved: the AMPLIHACK_ namespace cannot be set from recipe context
+```
+
+Only the key is printed, never its value. Keys that merely contain
+`amplihack` (such as `use_amplihack`) are allowed.
+
+Known limitation: the recipe runner itself still exports every top-level
+context key to bash steps under its uppercase name. A recipe's own YAML
+`context:` default or a step `output:` named `amplihack_claude_profile` (or
+`amplihack_claude_profile_root`) is not checked by amplihack and can override
+the pinned value for an `amplihack claude` run inside a bash step. The name
+and directory are still validated, so this can only select one of your own
+profiles. The runner fix is tracked in
+[rysweet/amplihack-recipe-runner#146](https://github.com/rysweet/amplihack-recipe-runner/issues/146).
+
+### Pre-spawn check
+
+Immediately before spawn, the profile path is
 re-resolved and re-validated: it must be a real directory (not a symlink),
 its canonical path must equal the expected path under the profile root, and
 it must be owned by the current user with no group/other permission mode bits
@@ -150,6 +248,50 @@ activated through the environment (`AMPLIHACK_USE_DOCKER`). With Docker
 activated that way and only a default pointer, the pointer is not applied and
 a warning is printed.
 
+An inherited, non-empty `AMPLIHACK_CLAUDE_PROFILE` is refused the same way.
+With `--docker`, `--auto` or Docker activated through the environment, the
+launch fails with the inherited-profile error and reason `not applied with
+--docker, --auto or Docker`:
+
+```
+error: inherited AMPLIHACK_CLAUDE_PROFILE "work": not applied with --docker, --auto or Docker
+hint: unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto
+```
+
+The refusal happens before the value is parsed and before the profile root
+is opened, so the value drives no filesystem reads. A value that is not
+valid UTF-8 gets the same refusal, not an invalid-name error. An empty value
+counts as unset and does not trigger it.
+
+These modes never set, change or re-check `CLAUDE_CONFIG_DIR`. A launch
+that gets past the refusal keeps whatever `CLAUDE_CONFIG_DIR` it inherited,
+with no pre-spawn check. Inside a profiled session that is still the
+parent's profile directory, so unsetting `AMPLIHACK_CLAUDE_PROFILE` alone
+would run an `--auto` launch on the parent's account, not the default one.
+Unset both variables for that one command:
+
+```bash
+env -u AMPLIHACK_CLAUDE_PROFILE -u CLAUDE_CONFIG_DIR amplihack claude --auto -- -p "summarise the README"
+```
+
+A `--docker` launch does not forward `CLAUDE_CONFIG_DIR` into the
+container, but unsetting both is still the safe form to use.
+
+Amplihack's own orchestration (recipe agent steps, `multitask`/orch
+workstreams) never passes `--docker` or `--auto` to nested launches. It does
+not clear `AMPLIHACK_USE_DOCKER`, though. A profiled session can carry a
+truthy `AMPLIHACK_USE_DOCKER` if you export it inside the session, or if it
+was exported when the session started but the Docker daemon was not running
+(env-activated Docker only applies when the daemon is up). Once the daemon is
+running, every nested launch of a recipe or `multitask` run started from that
+session is refused with the error above. Unset `AMPLIHACK_USE_DOCKER` before
+starting the run. Inside a container `AMPLIHACK_USE_DOCKER` has no effect,
+so nested launches there are not refused.
+
+A default pointer on its own is never an error in these modes: with
+`--docker` or `--auto` it is not read, and with Docker activated through the
+environment it is skipped with the warning above.
+
 A symlinked profile root is refused by every subcommand and by the pointer
 reads/writes; a missing root is treated as empty.
 
@@ -173,7 +315,27 @@ and exit with status 1. Messages never include file contents.
 | Pointer corrupt or oversized | Re-run `profile switch <name>` |
 | `remove` without `--yes` | Re-run with `--yes` |
 | `--profile` with `--docker`/`--auto` | Launch without the flag combination |
+| Inherited `AMPLIHACK_CLAUDE_PROFILE` with `--docker`, `--auto` or env-activated Docker | `unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto` |
+| Inherited `AMPLIHACK_CLAUDE_PROFILE` is an invalid name or not found | Unset `AMPLIHACK_CLAUDE_PROFILE`, or create the profile with `amplihack profile add <name>` |
+| Inherited `AMPLIHACK_CLAUDE_PROFILE` names a profile that exists but cannot be used | The hint for the underlying cause, e.g. `check permissions on the profile root` for an I/O error or the `chmod go-rwx` hint for unsafe permissions |
+| Recipe context key in the `AMPLIHACK_` namespace (`recipe run -c amplihack_…=…`) | Remove the key; the namespace is reserved |
 | Invalid `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Use an absolute path |
+
+The inherited-profile message names `AMPLIHACK_CLAUDE_PROFILE`, shows the
+value escaped (Rust `{:?}` form) and cut to 64 characters, and gives a fixed
+reason: `invalid name`, `not found`, `refused path`, `unsafe permissions`,
+`i/o error on profile root (<kind>)`, `not usable` or
+`not applied with --docker, --auto or Docker`. `<kind>` is the I/O error
+kind, such as `permission denied`; it never contains the value. For
+example, as printed to stderr:
+
+```
+error: inherited AMPLIHACK_CLAUDE_PROFILE "work": not found
+hint: unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack profile add <name>`
+```
+
+Control characters in the value are escaped, so a malformed value cannot
+write terminal escape sequences.
 
 ## Security notes
 
