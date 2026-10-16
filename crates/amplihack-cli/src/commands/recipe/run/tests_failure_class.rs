@@ -95,6 +95,7 @@ fn transport_level_faults_classify_as_transient() {
         "request timed out",
         r#"{"type":"error","error":{"type":"overloaded_error"}}"#,
         r#"{"type":"error","error":{"type":"rate_limit_error"}}"#,
+        "rate limit exceeded",
     ] {
         let (class, signal) = classify_failure_text(text);
         assert_eq!(
@@ -730,28 +731,19 @@ fn the_weekly_limit_verdict_tells_the_operator_when_to_come_back() {
 }
 
 #[test]
-fn rate_limit_exceeded_keeps_its_transient_meaning() {
-    // Guard against the new markers over-reaching: a short-lived rate-limit
-    // envelope must stay retryable.
-    let (class, signal) = classify_failure_text("rate limit exceeded");
-    assert_eq!(
-        class,
-        FailureClass::TransientTransport,
-        "a rate-limit envelope is still a short-lived transport fault. signal={signal:?}"
-    );
-}
-
-#[test]
 fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
-    // "rate limit" on its own must never become a usage-limit marker: that
-    // would make every provider rate limit non-retryable. Assert only "not
-    // UsageLimit" so the guard does not pin which retryable class it lands in.
-    let (class, signal) = classify_failure_text("rate limit");
-    assert_ne!(
-        class,
-        FailureClass::UsageLimit,
-        "a bare \"rate limit\" is not a usage limit. signal={signal:?}"
-    );
+    // Guard against the new markers over-reaching: a rate-limit phrase must
+    // never become a usage limit, or every provider rate limit would stop
+    // being retried. Assert only "not UsageLimit" so the guard does not pin
+    // which retryable class each phrase lands in.
+    for text in ["rate limit", "rate limit exceeded", "rate_limit_error"] {
+        let (class, signal) = classify_failure_text(text);
+        assert_ne!(
+            class,
+            FailureClass::UsageLimit,
+            "{text:?} is not a usage limit. signal={signal:?}"
+        );
+    }
 }
 
 #[test]
