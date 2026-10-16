@@ -105,7 +105,17 @@ steps:
         | amplihack orch helper extract-field --field pr --default '')"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
 
-      bash "$LOOP_HELPER" \
+      # Issue #1570: task_description is read with write_context_value
+      # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
+      # loop copies to its state directory. The uppercase TASK_DESCRIPTION
+      # alias is not used: the runner omits it for large values.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      TASK_IN="$(umask 077; mktemp)" || exit 1
+      trap 'rm -f -- "$TASK_IN"' EXIT
+      write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \
         --round-recipe "autodrive-crusty-round" \
         --clean-token "CLEAN" \
@@ -114,8 +124,7 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=${REPO_PATH:-.}" \
         --context "pr_number=${PR}" \
-        --context "pr_url=${PR_URL:-}" \
-        --context "task_description=${TASK_DESCRIPTION:-}"
+        --context "pr_url=${PR_URL:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the crusty loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2

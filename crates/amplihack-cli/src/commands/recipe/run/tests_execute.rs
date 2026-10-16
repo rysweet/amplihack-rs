@@ -3358,3 +3358,320 @@ fn fixture_environment() -> crate::test_support::EnvGuard {
     unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
     saved
 }
+
+// -------------------------------------------------------------------------
+// Issue #1570: a nested `amplihack recipe run` removes inherited recipe
+// context before adding its own (docs/reference/large-payload-delivery.md,
+// "Nested recipe environment").
+//
+// Contract assumed by these tests:
+//
+//   // execute.rs
+//   /// `true` when the inherited variable `name` is removed from the runner
+//   /// command. `inherited_names` is the set of every inherited variable name
+//   /// (needed to recognise the uppercase alias of an inherited
+//   /// `RECIPE_VAR_<key>`).
+//   pub(super) fn is_stripped_inherited_name(
+//       name: &str,
+//       inherited_names: &std::collections::BTreeSet<String>,
+//   ) -> bool;
+//   pub(super) fn inherited_env_bytes() -> usize; // skips stripped names
+//   pub(super) fn inherited_env_bytes_from(vars) -> usize; // same, given vars
+//
+// `build_command` is a closure inside `execute_recipe_via_rust`, so the
+// command's environment is observed through the runner stub (the same seam
+// as the step-timeout tests above), which reports each variable as
+// `${NAME-<unset>}`.
+// -------------------------------------------------------------------------
+
+mod issue_1570_nested_environment {
+    use super::super::execute::{inherited_env_bytes_from, is_stripped_inherited_name};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
+
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn predicate_strips_every_recipe_var() {
+        let inherited = names(&[
+            "RECIPE_VAR_task_description",
+            "RECIPE_VAR_a__b",
+            "RECIPE_VAR_x",
+        ]);
+        for name in &inherited {
+            assert!(is_stripped_inherited_name(name, &inherited), "{name}");
+        }
+    }
+
+    #[test]
+    fn predicate_strips_uppercase_alias_of_key_without_double_underscore() {
+        let inherited = names(&["RECIPE_VAR_cycle_history", "CYCLE_HISTORY"]);
+        assert!(is_stripped_inherited_name("CYCLE_HISTORY", &inherited));
+    }
+
+    #[test]
+    fn predicate_keeps_alias_when_key_contains_double_underscore() {
+        let inherited = names(&[
+            "RECIPE_VAR_final_requirements__goal",
+            "FINAL_REQUIREMENTS__GOAL",
+        ]);
+        assert!(!is_stripped_inherited_name(
+            "FINAL_REQUIREMENTS__GOAL",
+            &inherited
+        ));
+    }
+
+    #[test]
+    fn predicate_keeps_uppercase_name_without_matching_recipe_var() {
+        let inherited = names(&["TASK_DESCRIPTION", "RECIPE_VAR_other"]);
+        assert!(!is_stripped_inherited_name("TASK_DESCRIPTION", &inherited));
+    }
+
+    #[test]
+    fn predicate_strips_amplihack_context_file() {
+        let inherited = names(&["AMPLIHACK_CONTEXT_FILE"]);
+        assert!(is_stripped_inherited_name(
+            "AMPLIHACK_CONTEXT_FILE",
+            &inherited
+        ));
+    }
+
+    #[test]
+    fn predicate_never_strips_denylisted_names_even_with_matching_recipe_var() {
+        let inherited = names(&[
+            "RECIPE_VAR_path",
+            "RECIPE_VAR_home",
+            "RECIPE_VAR_ld_preload",
+            "RECIPE_VAR_ifs",
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "IFS",
+        ]);
+        for name in ["PATH", "HOME", "LD_PRELOAD", "IFS"] {
+            assert!(
+                !is_stripped_inherited_name(name, &inherited),
+                "{name} must survive"
+            );
+        }
+        assert!(is_stripped_inherited_name("RECIPE_VAR_path", &inherited));
+        assert!(is_stripped_inherited_name("RECIPE_VAR_home", &inherited));
+    }
+
+    #[test]
+    fn predicate_never_strips_other_amplihack_names() {
+        let inherited = names(&[
+            "RECIPE_VAR_amplihack_home",
+            "AMPLIHACK_HOME",
+            "RECIPE_VAR_amplihack_tree_id",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_CLAUDE_PROFILE",
+        ]);
+        for name in [
+            "AMPLIHACK_HOME",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_CLAUDE_PROFILE",
+        ] {
+            assert!(
+                !is_stripped_inherited_name(name, &inherited),
+                "{name} must survive"
+            );
+        }
+    }
+
+    #[test]
+    fn predicate_never_strips_invalid_identifier_alias() {
+        // `RECIPE_VAR_my-key` uppercases to `MY-KEY`, which is not an
+        // environment identifier and is never removed.
+        let inherited = names(&["RECIPE_VAR_my-key", "MY-KEY"]);
+        assert!(is_stripped_inherited_name("RECIPE_VAR_my-key", &inherited));
+        assert!(!is_stripped_inherited_name("MY-KEY", &inherited));
+    }
+
+    /// Names this module sets in the process environment.
+    const TOUCHED: &[&str] = &[
+        "RECIPE_VAR_issue1570_parent",
+        "ISSUE1570_PARENT",
+        "RECIPE_VAR_issue1570__nested",
+        "ISSUE1570__NESTED",
+        "RECIPE_VAR_issue1570_own",
+        "ISSUE1570_OWN",
+        "RECIPE_VAR_path",
+        "RECIPE_VAR_home",
+        "AMPLIHACK_CONTEXT_FILE",
+        "AMPLIHACK_ISSUE1570_KEEP",
+    ];
+
+    #[test]
+    #[cfg(unix)]
+    fn nested_run_strips_inherited_context_but_keeps_reserved_names() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _fixture_environment = super::fixture_environment();
+        let _touched = crate::test_support::EnvGuard::capture(TOUCHED);
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        let amplihack_home = temp.path().join("amplihack-home");
+        std::fs::create_dir_all(&amplihack_home).unwrap();
+
+        let probes = [
+            ("recipe_var_parent", "RECIPE_VAR_issue1570_parent"),
+            ("alias_parent", "ISSUE1570_PARENT"),
+            ("recipe_var_nested", "RECIPE_VAR_issue1570__nested"),
+            ("alias_nested", "ISSUE1570__NESTED"),
+            ("recipe_var_own", "RECIPE_VAR_issue1570_own"),
+            ("alias_own", "ISSUE1570_OWN"),
+            ("recipe_var_path", "RECIPE_VAR_path"),
+            ("recipe_var_home", "RECIPE_VAR_home"),
+            ("context_file", "AMPLIHACK_CONTEXT_FILE"),
+            ("amplihack_keep", "AMPLIHACK_ISSUE1570_KEEP"),
+            ("path", "PATH"),
+            ("home", "HOME"),
+        ];
+        let fields = probes
+            .iter()
+            .map(|(label, var)| format!("\"{label}\":\"${{{var}-<unset>}}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &runner,
+            format!(
+                "#!/bin/sh\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: nested-env\nsteps: []\n").unwrap();
+
+        let parent_path = std::env::var("PATH").unwrap_or_default();
+        let parent_home = std::env::var("HOME").unwrap_or_default();
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("RECIPE_VAR_issue1570_parent", "parent");
+            std::env::set_var("ISSUE1570_PARENT", "parent");
+            std::env::set_var("RECIPE_VAR_issue1570__nested", "parent");
+            std::env::set_var("ISSUE1570__NESTED", "parent");
+            std::env::set_var("RECIPE_VAR_issue1570_own", "parent");
+            std::env::set_var("ISSUE1570_OWN", "parent");
+            std::env::set_var("RECIPE_VAR_path", "/x");
+            std::env::set_var("RECIPE_VAR_home", "/y");
+            std::env::set_var("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json");
+            std::env::set_var("AMPLIHACK_ISSUE1570_KEEP", "kept");
+        }
+
+        // This run's own context re-adds its alias after the strip.
+        let mut context = BTreeMap::new();
+        context.insert("issue1570_own".to_string(), "child".to_string());
+
+        let result = super::execute::execute_recipe_via_rust(
+            &recipe,
+            &context,
+            true,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+        .expect("recipe run must succeed");
+
+        let got = |label: &str| {
+            result
+                .context
+                .get(label)
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>")
+                .to_string()
+        };
+        assert_eq!(
+            got("recipe_var_parent"),
+            "<unset>",
+            "inherited RECIPE_VAR_* must be removed"
+        );
+        assert_eq!(
+            got("alias_parent"),
+            "<unset>",
+            "uppercase alias must be removed"
+        );
+        assert_eq!(
+            got("recipe_var_nested"),
+            "<unset>",
+            "inherited RECIPE_VAR_* must be removed"
+        );
+        assert_eq!(
+            got("alias_nested"),
+            "parent",
+            "an uppercase name for a key with `__` is not an alias and is kept"
+        );
+        assert_eq!(got("recipe_var_own"), "<unset>");
+        assert_eq!(got("alias_own"), "child", "this run's own context wins");
+        assert_eq!(got("recipe_var_path"), "<unset>");
+        assert_eq!(got("recipe_var_home"), "<unset>");
+        assert_eq!(
+            got("context_file"),
+            "<unset>",
+            "AMPLIHACK_CONTEXT_FILE must be removed"
+        );
+        assert_eq!(
+            got("amplihack_keep"),
+            "kept",
+            "other AMPLIHACK_* names are kept"
+        );
+        assert_eq!(
+            got("path"),
+            parent_path,
+            "PATH must survive RECIPE_VAR_path"
+        );
+        assert_eq!(
+            got("home"),
+            parent_home,
+            "HOME must survive RECIPE_VAR_home"
+        );
+    }
+
+    /// A synthetic environment, so these tests never put a 200 KiB value in
+    /// the shared process environment, where any concurrently spawned
+    /// process would inherit it and fail with E2BIG.
+    fn env(list: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        list.iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    #[test]
+    fn inherited_env_bytes_excludes_a_200_kib_inherited_recipe_var() {
+        let big = "x".repeat(200 * 1024);
+        let base = [("PATH", "/usr/bin:/bin"), ("HOME", "/home/u")];
+        let before = inherited_env_bytes_from(env(&base));
+        let mut list = base.to_vec();
+        list.push(("RECIPE_VAR_issue1570_big", big.as_str()));
+        let with_big = inherited_env_bytes_from(env(&list));
+        list.push(("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json"));
+        let with_context_file = inherited_env_bytes_from(env(&list));
+        assert_eq!(
+            with_big, before,
+            "a stripped RECIPE_VAR_* must not count against the env budget"
+        );
+        assert_eq!(
+            with_context_file, with_big,
+            "a stripped AMPLIHACK_CONTEXT_FILE must not count against the env budget"
+        );
+    }
+
+    #[test]
+    fn inherited_env_bytes_still_counts_kept_names() {
+        let base = [("PATH", "/usr/bin:/bin")];
+        let before = inherited_env_bytes_from(env(&base));
+        let kept = "x".repeat(1000);
+        let mut list = base.to_vec();
+        list.push(("AMPLIHACK_ISSUE1570_KEEP", kept.as_str()));
+        assert!(inherited_env_bytes_from(env(&list)) >= before + 1000);
+    }
+}

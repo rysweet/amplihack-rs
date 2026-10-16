@@ -85,7 +85,23 @@ amplihack multitask cleanup workstreams.json --dry-run
 | `0` | Success (all workstreams completed, or status/cleanup succeeded) |
 | `1` | Error (config not found, workstream failures, invalid arguments) |
 
+## Workstream context in recipe mode
+
+In recipe mode each workstream writes its context to `context.json` (mode
+0600) and its launcher script runs:
+
+```bash
+RECIPE='default-workflow'
+exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
+```
+
+The context is never expanded into command-line arguments, so a workstream
+with a large task description cannot fail with `Argument list too long`, and
+values containing spaces or quotes are passed unchanged. The recipe name is
+validated before it is quoted into the script.
+
 ## Related
 
 - [recipe Command](./recipe-command.md) — Recipes executed by multitask in recipe mode
+- [Recipe context from files](./large-payload-delivery.md#recipe-context-from-files) - How `--context-file` converts JSON values
 - [Environment Variables](./environment-variables.md) — Variables that influence workstream execution

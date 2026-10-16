@@ -254,7 +254,8 @@ fn run_recursive_cycle_passes_all_context_vars() {
         .expect("run-recursive-cycle must have a command field");
 
     // All 13 context variables that were in the old sub_context must be
-    // passed via -c flags to the subprocess invocation.
+    // passed to the subprocess invocation, via -c flags or, for values of
+    // unbounded size (issue #1570), via --context-from-file.
     let required_vars = [
         "task_description",
         "repo_path",
@@ -275,10 +276,11 @@ fn run_recursive_cycle_passes_all_context_vars() {
         // Each should appear as -c var= or -c "var=" pattern
         let pattern = format!("-c {var}=");
         let pattern_quoted = format!("-c \"{var}=");
+        let from_file = format!("--context-from-file {var}=");
         assert!(
-            cmd.contains(&pattern) || cmd.contains(&pattern_quoted),
+            cmd.contains(&pattern) || cmd.contains(&pattern_quoted) || cmd.contains(&from_file),
             "Bug 2: run-recursive-cycle must pass context var '{var}' via \
-             '-c {var}=...' to the subprocess.\n\
+             '-c {var}=...' or '--context-from-file {var}=...' to the subprocess.\n\
              Missing from command."
         );
     }
@@ -293,8 +295,12 @@ fn run_recursive_cycle_uses_tmpfile_for_cycle_history() {
         .and_then(Value::as_str)
         .expect("run-recursive-cycle must have a command field");
 
-    // cycle_history is multi-line JSON — must use heredoc-to-tmpfile pattern
-    // (not direct interpolation) to avoid arg-length limits and shell injection.
+    // cycle_history is multi-line JSON — must go through a tmpfile (not direct
+    // interpolation) to avoid arg-length limits and shell injection. Issue
+    // #1570 replaced the `{{cycle_history}}` heredoc with
+    // `write_context_value`, which writes the value to the tmpfile without
+    // rendering it into the script (a heredoc delimiter inside the value could
+    // end the heredoc early).
     assert!(
         cmd.contains("mktemp"),
         "Bug 2: run-recursive-cycle must use mktemp for cycle_history \
@@ -302,9 +308,11 @@ fn run_recursive_cycle_uses_tmpfile_for_cycle_history() {
     );
 
     assert!(
-        cmd.contains("HEREDOC") || cmd.contains("heredoc") || cmd.contains("<<'"),
-        "Bug 2: run-recursive-cycle must use a heredoc to write cycle_history \
-         to the temp file (single-quoted delimiter prevents shell expansion)."
+        cmd.contains("write_context_value cycle_history \"$")
+            || cmd.contains("HEREDOC")
+            || cmd.contains("<<'"),
+        "Bug 2: run-recursive-cycle must write cycle_history to the temp file \
+         with write_context_value (or a single-quoted heredoc), never inline."
     );
 }
 

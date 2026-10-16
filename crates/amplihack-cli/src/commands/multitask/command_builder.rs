@@ -126,30 +126,44 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
     ctx
 }
 
-pub(super) fn recipe_launcher_script(recipe: &str) -> String {
-    format!(
+/// `true` when `recipe` is a recipe name or path that is safe to single-quote
+/// into the launcher: non-empty, not option-like, and made only of ASCII
+/// letters, digits and `_ . - / + @ :`.
+fn is_valid_launcher_recipe(recipe: &str) -> bool {
+    !recipe.is_empty()
+        && !recipe.starts_with('-')
+        && recipe
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-/+@:".contains(&b))
+}
+
+/// Issue #1570: the launcher hands the workstream context to
+/// `amplihack recipe run` as a file, so no context value ever becomes an
+/// argument and no value is split by the shell.
+pub(super) fn recipe_launcher_script(recipe: &str) -> Result<String> {
+    if !is_valid_launcher_recipe(recipe) {
+        bail!(
+            "invalid recipe name '{}': only ASCII letters, digits and `_ . - / + @ :` \
+             are allowed, and it must not start with '-'",
+            recipe.escape_debug()
+        );
+    }
+    Ok(format!(
         r#"#!/bin/bash
 # Workstream launcher - Rust recipe runner execution.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CONTEXT_JSON="$REPO_ROOT/context.json"
+RECIPE={recipe}
 
-# Build -c flags from context JSON
-CONTEXT_FLAGS=""
-if command -v jq >/dev/null 2>&1 && [ -f "$CONTEXT_JSON" ]; then
-    while IFS='=' read -r key value; do
-        CONTEXT_FLAGS="$CONTEXT_FLAGS -c $key=$value"
-    done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$CONTEXT_JSON")
-fi
-
-echo "Starting recipe: {recipe}"
+echo "Starting recipe: $RECIPE"
 echo "Work dir: $REPO_ROOT"
 
-exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
+exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
 "#,
-        recipe = recipe,
-    )
+        recipe = sh_single_quote(recipe),
+    ))
 }
 
 pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {

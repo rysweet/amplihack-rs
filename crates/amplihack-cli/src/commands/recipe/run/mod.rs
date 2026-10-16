@@ -1,6 +1,8 @@
 use super::*;
 
 mod binary;
+/// Issue #1570: `--context-file` and `--context-from-file`.
+pub(crate) mod context_sources;
 mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
@@ -9,6 +11,7 @@ mod format;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 
+pub use context_sources::resolve_context_args;
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 

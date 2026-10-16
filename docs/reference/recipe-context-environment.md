@@ -137,6 +137,17 @@ A candidate that passes all checks is exported. A candidate that fails any
 check is **skipped** (never exported, never fatal) and a name-only warning is
 emitted (see [Skip logging](#skip-logging)).
 
+> **Reading a value that may be skipped.** Rules 5 and 6 mean an uppercase
+> alias such as `$TASK_DESCRIPTION` that amplihack exports is unset exactly
+> when its value is large. The pinned recipe runner then sets its own
+> `RECIPE_VAR_*` variables and aliases for each bash step at any size, keeping
+> large ones as shell-local variables that child processes do not inherit. A
+> bash step that must see a value of any size reads it with
+> `write_context_value` from a sourced
+> `amplifier-bundle/tools/recipe_context_value.sh`, which also falls back to
+> `AMPLIHACK_CONTEXT_FILE` for runners older than the pin; see
+> [Reading a context value in a bash step](./large-payload-delivery.md#reading-a-context-value-in-a-bash-step).
+
 ### Common mappings
 
 | Context key | Exported environment variable |
@@ -311,6 +322,7 @@ spawn seam writes them first, then layers the subprocess environment builder and
 the correlation variable on top:
 
 ```
+0. command.env_remove(name) for inherited names        // see "Inherited context is not re-exported"
 1. command.envs(context_env_pairs(context, budget))   // context, lowest priority
 2. env_builder.apply_to_command(&mut command)         // AMPLIHACK_*, pager-safe, PATH/HOME fallbacks
 3. command.env("AMPLIHACK_RECIPE_RUN_ID", …)          // correlation id, highest priority
@@ -367,6 +379,34 @@ multi-workstream campaigns require. Per-sub-recipe context *overrides* (the
 step-level `context:` dict on a `type: recipe` step) are resolved inside the
 recipe runner's `{{placeholder}}` layer and are out of scope for the CLI-level
 environment export.
+
+### Inherited context is not re-exported
+
+The guarantee above covers steps *inside* one recipe run, including
+`type: recipe` sub-steps. A bash step that runs `amplihack recipe run` itself
+starts a new top-level run, and that run does **not** carry the parent's
+context forward. Before applying its own context, the CLI removes from the
+child environment:
+
+- every inherited `RECIPE_VAR_<key>`;
+- the uppercase alias of each such `<key>` that contains no `__` (for
+  `RECIPE_VAR_task_description`, also `TASK_DESCRIPTION`);
+- `AMPLIHACK_CONTEXT_FILE`, the file-first context that runners older than
+  the pin set for the parent step, which would otherwise supply the parent's
+  values to a nested step.
+
+Names on the [reserved-name denylist](#reserved-name-denylist), all other
+`AMPLIHACK_*` names and names that are not valid environment identifiers are
+never removed,
+so `RECIPE_VAR_path` in the parent never removes `PATH`. Removed variables are
+also excluded from `inherited_env_bytes()`, so a large parent value no longer
+shrinks the nested run's [aggregate budget](#aggregate-environment-budget).
+
+Without this rule, each nesting level carried every ancestor's context twice
+and added its own, and a large value such as `cycle_history` pushed the nested
+spawn past `ARG_MAX`. A nested recipe now receives only what its step passes
+with `-c`, `--context-from-file` or `--context-file`; see
+[Give a nested recipe the context it needs](../howto/pass-large-recipe-context.md#give-a-nested-recipe-the-context-it-needs).
 
 ---
 
