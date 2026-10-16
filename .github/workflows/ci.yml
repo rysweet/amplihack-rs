@@ -505,6 +505,13 @@ jobs:
       - name: Outside-in — dotted Claude model ids (issue #1527)
         shell: bash
         run: AMPLIHACK_1527_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1527-model-scenario.sh
+      # Issues #1481 and #1525: outside-in check of `amplihack agent-binary`,
+      # its --shell hand-off, the agent binary a recipe step is handed, and a
+      # detached tmux launch, against the binary installed above. Cases that
+      # need recipe-runner-rs or tmux print SKIP when those are missing.
+      - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
+        shell: bash
+        run: AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
