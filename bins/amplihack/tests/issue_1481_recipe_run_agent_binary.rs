@@ -29,10 +29,14 @@ impl Fixture {
         let runner = dir.path().join("recipe-runner-rs");
         // Records what it was handed. The unset/empty distinction matters for
         // the tag, so it is written as an explicit marker rather than "".
+        // `--capabilities` answers the probe a codex selection runs first
+        // (freshness::probe_recipe_runner) without recording anything.
         fs::write(
             &runner,
             format!(
                 "#!/bin/sh\n\
+                 if [ \"$1\" = --capabilities ]; then \
+                   printf '%s\\n' '{{\"schema_version\":1,\"version\":\"stub\",\"capabilities\":[\"codex_exec\"]}}'; exit 0; fi\n\
                  out=\"$(dirname \"$0\")/probe.json\"\n\
                  printf '{{\"agent_binary\":\"%s\",\"source\":\"%s\"}}' \
                    \"${{AMPLIHACK_AGENT_BINARY-<unset>}}\" \"${{{SOURCE_ENV}-<unset>}}\" > \"$out\"\n\

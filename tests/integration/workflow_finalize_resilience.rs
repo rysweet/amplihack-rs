@@ -203,9 +203,46 @@ fn assert_scoped_read(tmp: &Path, expected: &str) {
     }
 }
 
+// The finalization helpers read workflow context from the environment, and any
+// `RECIPE_VAR_*` name switches them to the canonical tier, where an inherited
+// `RECIPE_VAR_repo_path` outranks the `REPO_PATH` a test sets. Run inside a
+// recipe step, these tests would otherwise classify the caller's own worktree
+// and PR. Strip the ambient context so each test sees only what it sets.
+fn without_ambient_workflow_context(command: &mut Command) -> &mut Command {
+    for (key, _) in std::env::vars_os() {
+        let Some(name) = key.to_str() else { continue };
+        if name.starts_with("RECIPE_VAR_")
+            || name.starts_with("TERMINAL_STATE")
+            || name.starts_with("PR_PUBLISH_RESULT_")
+            || name.starts_with("PUBLISH_")
+            || name.starts_with("WORKTREE_SETUP_")
+            || name.starts_with("IMPLEMENTATION_")
+            || name.starts_with("VERIFICATION_")
+            || name.starts_with("FINALIZ")
+            || name.starts_with("AGENTIC_FINALIZER")
+            || matches!(
+                name,
+                "AMPLIHACK_CONTEXT_FILE"
+                    | "REPO_PATH"
+                    | "BRANCH_NAME"
+                    | "BASE_REF"
+                    | "REMOTE_HOST_TYPE"
+                    | "TASK_DESCRIPTION"
+                    | "ISSUE_NUMBER"
+                    | "PR_URL"
+                    | "PR_NUMBER"
+                    | "ALLOW_NO_OP"
+            )
+        {
+            command.env_remove(&key);
+        }
+    }
+    command
+}
+
 fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let mut command = Command::new("bash");
-    command
+    without_ambient_workflow_context(&mut command)
         .arg(workspace_helper_path("workflow_agentic_finalization.sh"))
         .arg(mode);
     for (key, value) in envs {
@@ -915,7 +952,7 @@ fn final_status_does_not_confirm_no_diff_success_with_dirty_worktree() {
     }
     write_file(&repo.join("dirty.txt"), "uncommitted\n");
 
-    let output = Command::new("bash")
+    let output = without_ambient_workflow_context(&mut Command::new("bash"))
         .arg(workspace_helper_path("workflow_final_status.sh"))
         .current_dir(&repo)
         .env("REMOTE_HOST_TYPE", "other")
@@ -979,7 +1016,7 @@ fn final_status_does_not_confirm_closed_obsolete_with_dirty_worktree() {
     }
     write_file(&repo.join("dirty.txt"), "uncommitted\n");
 
-    let output = Command::new("bash")
+    let output = without_ambient_workflow_context(&mut Command::new("bash"))
         .arg(workspace_helper_path("workflow_final_status.sh"))
         .current_dir(&repo)
         .env("REMOTE_HOST_TYPE", "other")
