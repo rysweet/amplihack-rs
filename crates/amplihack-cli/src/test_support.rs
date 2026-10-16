@@ -29,6 +29,17 @@ pub(crate) struct EnvGuard {
 }
 
 impl EnvGuard {
+    /// Capture variables before a fixture's manual mutations. The shared
+    /// environment lock must remain held until this guard drops.
+    pub(crate) fn capture(keys: &[&str]) -> Self {
+        Self {
+            previous: keys
+                .iter()
+                .map(|key| (OsString::from(key), std::env::var_os(key)))
+                .collect(),
+        }
+    }
+
     pub(crate) fn set<const N: usize>(values: [(&str, &str); N]) -> Self {
         let previous = values
             .iter()
@@ -85,9 +96,7 @@ pub(crate) fn restore_cwd(previous: &Path) -> std::io::Result<()> {
 ///
 /// Tests must acquire `env_lock()` (or an alias like `cwd_env_lock()`) before
 /// constructing this guard so concurrent tests don't observe the mutated cwd.
-/// Restore-on-drop is best-effort: if the prior cwd was deleted, the
-/// restoration is silently dropped — but the guard will never leak the test's
-/// chosen cwd into a subsequent test that runs in the same process.
+/// Restore-on-drop reports an error if the previous directory is unavailable.
 pub(crate) struct CwdGuard {
     previous: PathBuf,
 }
@@ -104,7 +113,9 @@ impl CwdGuard {
 
 impl Drop for CwdGuard {
     fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.previous);
+        if let Err(error) = std::env::set_current_dir(&self.previous) {
+            eprintln!("failed to restore fixture working directory: {error}");
+        }
     }
 }
 

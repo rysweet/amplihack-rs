@@ -98,8 +98,7 @@ fn blarify_stale_marker_written_for_code_file_edit() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     // Temporarily change cwd for ProjectDirs resolution.
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let input = serde_json::json!({
         "file_path": "src/main.rs",
@@ -108,9 +107,7 @@ fn blarify_stale_marker_written_for_code_file_edit() {
     });
     mark_blarify_stale_if_needed("Edit", &input);
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     let marker = dir.path().join(".amplihack").join("blarify_stale");
     assert!(marker.exists(), "blarify_stale marker should be written");
@@ -129,8 +126,7 @@ fn blarify_stale_marker_not_written_for_non_code_file() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let input = serde_json::json!({
         "file_path": "docs/README.md",
@@ -139,9 +135,7 @@ fn blarify_stale_marker_not_written_for_non_code_file() {
     });
     mark_blarify_stale_if_needed("Edit", &input);
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     let marker = dir.path().join(".amplihack").join("blarify_stale");
     assert!(
@@ -156,8 +150,7 @@ fn allows_all_tools() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = PostToolUseHook;
     let input = HookInput::PostToolUse {
@@ -168,9 +161,7 @@ fn allows_all_tools() {
     };
     let result = hook.process(input).unwrap();
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     assert!(result.as_object().unwrap().is_empty());
 }
@@ -188,8 +179,7 @@ fn dev_skill_invocation_starts_workflow_tracking() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let warning = update_workflow_enforcement(
         "Skill",
@@ -198,9 +188,7 @@ fn dev_skill_invocation_starts_workflow_tracking() {
     );
     let state = read_workflow_state(&ProjectDirs::from_cwd(), Some("session-1"));
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     assert!(warning.is_none());
     assert!(state.is_some());
@@ -213,8 +201,7 @@ fn workflow_evidence_clears_tracking_state() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     let dirs = ProjectDirs::from_cwd();
     write_workflow_state(
         &dirs,
@@ -234,9 +221,7 @@ fn workflow_evidence_clears_tracking_state() {
     );
     let state = read_workflow_state(&dirs, Some("session-1"));
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     assert!(warning.is_none());
     assert!(state.is_none());
@@ -248,8 +233,7 @@ fn workflow_bypass_warning_fires_once_at_threshold() {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().ok();
-    let _ = std::env::set_current_dir(dir.path());
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
     let hook = PostToolUseHook;
 
     hook.process(HookInput::PostToolUse {
@@ -289,9 +273,7 @@ fn workflow_bypass_warning_fires_once_at_threshold() {
         })
         .unwrap();
 
-    if let Some(orig) = original {
-        let _ = std::env::set_current_dir(orig);
-    }
+    drop(cwd);
 
     let warnings = warning_result["warnings"].as_array().unwrap();
     assert_eq!(warnings.len(), 1);

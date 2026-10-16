@@ -1,0 +1,21 @@
+name: Default workflow recursive step budget
+description: Execute the actual default-workflow recipe topology with harmless leaves, then prove the former cap fails.
+version: "1.0.0"
+config:
+  timeout: 180000
+  retries: 0
+environment:
+  requires: [RECIPE_RUNNER_QA_BINARY]
+agents:
+  - name: cli-agent
+    type: cli
+steps:
+  - name: Current recursive budget succeeds and former budget fails
+    agent: cli-agent
+    action: execute_command
+    target: bash tests/qa/default-workflow-budget.sh
+    timeout: 180000
+assertions: []
+metadata:
+  tags: [cli, recipe, regression]
+  priority: high
