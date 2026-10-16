@@ -106,7 +106,7 @@ pub fn substitute(
         }
     };
     let account = ledger.account_in(inherited.as_str()).to_string();
-    let readings = state.load_usage().accounts;
+    let readings = state.load_usage_or_warn().accounts;
     let now = fsx::now();
     let reading = readings.get(&account)?;
     if !candidate::is_exhausted(Some(reading), cfg.threshold, now) {
@@ -127,7 +127,7 @@ fn record_limit(state: &State, account: &str, reset: i64) {
             return;
         }
     };
-    let mut file = state.load_usage();
+    let mut file = state.load_usage_or_warn();
     let now = fsx::now();
     let seven_day = file.accounts.get(account).and_then(|r| r.seven_day);
     file.accounts.insert(
@@ -236,7 +236,7 @@ pub fn supervise(
             let cfg = eff.config;
             let next = match state.load_ledger() {
                 Ok(ledger) => {
-                    let readings = state.load_usage().accounts;
+                    let readings = state.load_usage_or_warn().accounts;
                     nested_candidate(
                         state,
                         &ledger,

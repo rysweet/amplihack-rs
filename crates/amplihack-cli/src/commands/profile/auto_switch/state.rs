@@ -274,25 +274,46 @@ impl State {
         Ok(())
     }
 
-    /// Readings; a damaged file counts as empty and is overwritten later. A
-    /// key that is not a valid profile name makes the whole file damaged.
+    /// Readings. A missing file is empty; a damaged one (bad JSON, unknown
+    /// version, or a key that is not a valid profile name) is an error that
+    /// names the file and, for bad JSON, only the line and column.
+    pub fn try_load_usage(&self) -> Result<UsageFile, ProfileError> {
+        let Some(raw) = self.read_state("usage.json")? else {
+            return Ok(UsageFile {
+                version: VERSION,
+                accounts: BTreeMap::new(),
+            });
+        };
+        let u: UsageFile = serde_json::from_slice(&raw)
+            .map_err(|e| invariant(format!("{DIR}/usage.json: {}", parse_position(&e))))?;
+        if u.version != VERSION {
+            return Err(invariant(format!("{DIR}/usage.json: unknown version")));
+        }
+        if u.accounts.keys().any(|k| ProfileName::parse(k).is_err()) {
+            return Err(invariant(format!("{DIR}/usage.json: invalid profile name")));
+        }
+        Ok(u)
+    }
+
+    /// Readings; a damaged file counts as empty and is overwritten later.
+    /// Silent, for the status line, which must not print anything of its own.
     pub fn load_usage(&self) -> UsageFile {
-        let empty = UsageFile {
+        self.try_load_usage().unwrap_or_else(|_| UsageFile {
             version: VERSION,
             accounts: BTreeMap::new(),
-        };
-        match self.read_state("usage.json") {
-            Ok(Some(raw)) => match serde_json::from_slice::<UsageFile>(&raw) {
-                Ok(u)
-                    if u.version == VERSION
-                        && u.accounts.keys().all(|k| ProfileName::parse(k).is_ok()) =>
-                {
-                    u
-                }
-                _ => empty,
-            },
-            _ => empty,
-        }
+        })
+    }
+
+    /// As [`State::load_usage`], but tells the user once when the file is
+    /// damaged. For the CLI and the rerun supervisor.
+    pub fn load_usage_or_warn(&self) -> UsageFile {
+        self.try_load_usage().unwrap_or_else(|e| {
+            eprintln!("auto-switch: warning: {e}; usage readings treated as empty");
+            UsageFile {
+                version: VERSION,
+                accounts: BTreeMap::new(),
+            }
+        })
     }
 
     pub fn save_usage(&self, usage: &UsageFile) -> Result<(), ProfileError> {

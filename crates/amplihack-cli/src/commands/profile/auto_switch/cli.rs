@@ -285,7 +285,7 @@ fn status(store: &ProfileStore) -> Result<String> {
     writeln!(out, "in-session swap: {}", swaps_label(&live))?;
     // Missing files read as empty, so this works before the first `on`.
     let ledger = state.load_ledger();
-    let usage = state.load_usage();
+    let usage = state.load_usage_or_warn();
     let wrapper = |n: &ProfileName| statusline::wrapper_state(store, &state.root, n).to_string();
     let rows: Vec<Row> = names
         .iter()

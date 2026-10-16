@@ -208,6 +208,39 @@ fn usage_rejects_traversal_key() {
     assert_eq!(r.state.load_usage().accounts.len(), 2);
 }
 
+/// Review 17d #5: a damaged usage.json is reported (by position only, never
+/// by content) to callers that may print, while `load_usage` stays silent.
+#[test]
+fn damaged_usage_is_reported_without_its_contents() {
+    let r = root();
+    r.state.ensure().unwrap();
+    assert!(
+        r.state.try_load_usage().unwrap().accounts.is_empty(),
+        "a missing file is empty, not an error"
+    );
+    let path = r.state.dir.join("usage.json");
+    let cases = [
+        (
+            "{\"version\":1,\"accounts\":{\"SECRET-SENTINEL\"",
+            "line 1 column",
+        ),
+        ("{\"version\":99,\"accounts\":{}}", "unknown version"),
+        (
+            "{\"version\":1,\"accounts\":{\"../x\":{\"observed_at\":1,\"source\":\"statusline\"}}}",
+            "invalid profile name",
+        ),
+    ];
+    for (body, want) in cases {
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let msg = r.state.try_load_usage().unwrap_err().to_string();
+        assert!(msg.contains("usage.json") && msg.contains(want), "{msg}");
+        assert!(!msg.contains("SECRET-SENTINEL"), "contents leaked: {msg}");
+        assert!(r.state.load_usage().accounts.is_empty());
+        assert!(r.state.load_usage_or_warn().accounts.is_empty());
+    }
+}
+
 #[test]
 fn keep_mode_write_keeps_an_existing_mode_and_makes_new_files_private() {
     let r = root();
