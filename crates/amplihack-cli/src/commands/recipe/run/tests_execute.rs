@@ -982,6 +982,96 @@ fn test_pass_context_empty_returns_none() {
     assert!(tmp.is_none());
 }
 
+/// Issue #1567: a recipe context must not choose the pinned Claude profile.
+#[test]
+fn test_pass_context_refuses_amplihack_keys_on_the_set_path() {
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "fix".to_string());
+    context.insert(
+        "amplihack_claude_profile".to_string(),
+        "secret-work".to_string(),
+    );
+
+    let mut command = Command::new("echo");
+    let err = execute::pass_context(&mut command, &context).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("\"amplihack_claude_profile\""), "{msg}");
+    assert!(msg.contains("reserved"), "{msg}");
+    assert!(
+        !msg.contains("secret-work"),
+        "value must not be printed: {msg}"
+    );
+    assert_eq!(
+        command.get_args().count(),
+        0,
+        "nothing forwarded on refusal"
+    );
+}
+
+#[test]
+fn test_pass_context_refuses_amplihack_keys_on_the_context_file_path() {
+    let medium = "z".repeat(80 * 1024);
+    let mut context = BTreeMap::new();
+    context.insert("note_a".to_string(), medium.clone());
+    context.insert("AMPLIHACK_CLAUDE_PROFILE_ROOT".to_string(), medium.clone());
+
+    let mut command = Command::new("echo");
+    let err = execute::pass_context(&mut command, &context).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("\"AMPLIHACK_CLAUDE_PROFILE_ROOT\""), "{msg}");
+    assert!(!msg.contains(&medium[..64]), "value must not be printed");
+    assert_eq!(
+        command.get_args().count(),
+        0,
+        "no --context-file on refusal"
+    );
+}
+
+/// The refused key is printed escaped, so a key carrying terminal control
+/// bytes cannot rewrite the error output.
+#[test]
+fn test_pass_context_refusal_escapes_the_key() {
+    let mut context = BTreeMap::new();
+    context.insert("amplihack_x\n\u{1b}[2J".to_string(), "v".to_string());
+
+    let mut command = Command::new("echo");
+    let msg = execute::pass_context(&mut command, &context)
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains('\u{1b}') && !msg.contains('\n'), "{msg:?}");
+    assert!(msg.contains(r#""amplihack_x\n\u{1b}[2J""#), "{msg}");
+}
+
+/// A long refused key is cut to 64 characters, like the profile error's value.
+#[test]
+fn test_pass_context_refusal_cuts_a_long_key() {
+    let key = format!("amplihack_{}", "k".repeat(200));
+    let mut context = BTreeMap::new();
+    context.insert(key.clone(), "v".to_string());
+
+    let mut command = Command::new("echo");
+    let msg = execute::pass_context(&mut command, &context)
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains(&key), "full key must not be printed: {msg}");
+    assert!(msg.contains("\"amplihack_k"), "{msg}");
+    assert!(msg.contains("…"), "{msg}");
+}
+
+#[test]
+fn test_pass_context_allows_keys_that_only_contain_amplihack() {
+    let mut context = BTreeMap::new();
+    context.insert("use_amplihack".to_string(), "1".to_string());
+    context.insert("path".to_string(), "/tmp".to_string());
+    let mut command = Command::new("echo");
+    assert!(
+        execute::pass_context(&mut command, &context)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(command.get_args().count(), 4);
+}
+
 #[test]
 #[cfg(unix)]
 fn test_large_context_does_not_hit_e2big() {
@@ -2804,10 +2894,11 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
 // names must win, and untrusted context must never clobber PATH/AMPLIHACK_*.
 // -------------------------------------------------------------------------
 
-/// Even when an attacker-controlled recipe supplies `path`, `ld_preload`, and
-/// `amplihack_home` keys, the child must NOT see those values: PATH is left as
-/// inherited, LD_PRELOAD stays empty, and AMPLIHACK_HOME keeps the
-/// builder-managed value. Meanwhile an ordinary key (`task_description`) is
+/// Even when an attacker-controlled recipe supplies `path` and `ld_preload`
+/// keys, the child must NOT see those values: PATH is left as inherited,
+/// LD_PRELOAD stays empty, and AMPLIHACK_HOME keeps the builder-managed value.
+/// An `amplihack_home` key is refused before the runner starts (#1567).
+/// Meanwhile an ordinary key (`task_description`) is
 /// still exported — proving the export works without opening a clobber hole.
 #[test]
 #[cfg(unix)]
@@ -2837,7 +2928,6 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
         ("task_description", "ok"),
         ("path", "/nonexistent/evil"),
         ("ld_preload", "/evil.so"),
-        ("amplihack_home", "/evil/home"),
     ]);
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
@@ -2853,6 +2943,15 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
+    let refused = execute::execute_recipe_via_rust(
+        &recipe,
+        &ctx(&[("task_description", "ok"), ("amplihack_home", "/evil/home")]),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
 
     restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
     restore_env_var("AMPLIHACK_HOME", prev_home);
@@ -2860,6 +2959,11 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
     restore_env_var("LD_PRELOAD", prev_preload);
 
     let result = result.expect("recipe run must succeed");
+    let refused = refused.expect_err("an amplihack_home context key must be refused");
+    assert!(
+        format!("{refused:#}").contains("\"amplihack_home\" is reserved"),
+        "{refused:#}"
+    );
 
     assert_eq!(
         result.context.get("task"),

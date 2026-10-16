@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -62,6 +62,23 @@ impl EnvGuard {
         }
         Self { previous }
     }
+}
+
+/// Runs `f` under the shared env lock with each variable set (or removed when
+/// `None`). The previous values are restored on return and on panic.
+pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let keys: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
+    let _restore = EnvGuard::capture(&keys);
+    for (key, value) in vars {
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+    f()
 }
 
 impl Drop for EnvGuard {

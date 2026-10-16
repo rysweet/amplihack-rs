@@ -139,3 +139,97 @@ fn profile_run_fails_closed_under_docker_env_before_touching_disk() {
     );
     assert!(!root.exists());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1567 (D2): `profile login` (build_profile_command) pins the profile
+// for any amplihack launch started inside it, like launch/claude and
+// `profile run` do.
+// ---------------------------------------------------------------------------
+
+const PROFILE_VAR: &str = "AMPLIHACK_CLAUDE_PROFILE";
+const ROOT_VAR: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
+fn child_env(cmd: &std::process::Command, key: &str) -> Option<Option<std::ffi::OsString>> {
+    cmd.get_envs()
+        .find(|(k, _)| *k == OsStr::new(key))
+        .map(|(_, v)| v.map(|s| s.to_os_string()))
+}
+
+/// Runs `f` with `ROOT_VAR` set to `value` (or removed), restoring it after.
+fn with_root_env<T>(value: Option<&std::path::Path>, f: impl FnOnce() -> T) -> T {
+    crate::test_support::with_env(&[(ROOT_VAR, value.map(|v| v.as_os_str()))], f)
+}
+
+#[test]
+fn profile_command_pins_the_profile_name_for_descendants() {
+    let (_d, s, name, bin) = setup();
+    let cmd = with_root_env(None, || {
+        build_profile_command(&bin, &s, &name, &[]).unwrap()
+    });
+    assert_eq!(child_env(&cmd, PROFILE_VAR), Some(Some("work".into())));
+    let want = s.resolve(&name).unwrap();
+    assert_eq!(
+        child_env(&cmd, "CLAUDE_CONFIG_DIR"),
+        Some(Some(want.into_os_string()))
+    );
+}
+
+#[test]
+fn profile_command_passes_root_only_when_parent_had_it() {
+    let (_d, s, name, bin) = setup();
+    let without = with_root_env(None, || {
+        build_profile_command(&bin, &s, &name, &[]).unwrap()
+    });
+    assert_eq!(child_env(&without, ROOT_VAR), None);
+
+    let with = with_root_env(Some(s.root()), || {
+        build_profile_command(&bin, &s, &name, &[]).unwrap()
+    });
+    let want_root = s.resolve(&name).unwrap().parent().unwrap().to_path_buf();
+    assert_eq!(
+        child_env(&with, ROOT_VAR),
+        Some(Some(want_root.into_os_string()))
+    );
+    assert_eq!(child_env(&with, PROFILE_VAR), Some(Some("work".into())));
+}
+
+#[test]
+fn profile_command_pin_is_child_only() {
+    let (_d, s, name, bin) = setup();
+    let _g = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let before = std::env::var_os(PROFILE_VAR);
+    let _cmd = build_profile_command(&bin, &s, &name, &[]).unwrap();
+    assert_eq!(std::env::var_os(PROFILE_VAR), before);
+}
+
+#[test]
+fn profile_command_child_sees_the_pinned_name() {
+    let (d, s, name, _) = setup();
+    let p = d.path().join("claude-env");
+    fs::write(&p, "#!/bin/sh\necho \"PIN=$AMPLIHACK_CLAUDE_PROFILE\"\n").unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = BinaryInfo {
+        name: "claude".into(),
+        path: p,
+        version: None,
+    };
+    let mut cmd = with_root_env(None, || {
+        build_profile_command(&bin, &s, &name, &[]).unwrap()
+    });
+    let out = cmd.env_remove("NOT_A_VAR").output().unwrap();
+    assert!(
+        String::from_utf8_lossy(&out.stdout).contains("PIN=work\n"),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+}
+
+#[test]
+fn profile_command_for_missing_profile_sets_no_pin() {
+    let (_d, s, _n, bin) = setup();
+    let missing = ProfileName::parse("nope").unwrap();
+    // Fails before a Command exists, so nothing can be exported.
+    assert!(build_profile_command(&bin, &s, &missing, &[]).is_err());
+}

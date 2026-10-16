@@ -287,6 +287,13 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
+/// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
+/// never mirrored into the env and never forwarded to the runner, so a recipe
+/// cannot choose, for example, the pinned Claude profile (issue #1567).
+fn is_reserved_context_key(key: &str) -> bool {
+    key.to_ascii_uppercase().starts_with("AMPLIHACK_")
+}
+
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
 /// independent of any budget accounting. Returns the uppercased env name on
 /// success, or a static, name-only skip `reason` on rejection. The filters run
@@ -296,7 +303,7 @@ fn validate_context_entry(key: &str, value: &str) -> Result<String, &'static str
     if !is_valid_env_identifier(&name) {
         return Err("invalid_identifier");
     }
-    if name.starts_with("AMPLIHACK_") || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
+    if is_reserved_context_key(key) || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
         return Err("reserved_name");
     }
     if value.contains('\0') {
@@ -529,6 +536,18 @@ pub(super) fn execute_recipe_via_rust(
     // dir is deliberately NOT rebuilt: a retry of a transient transport fault
     // should reuse the same artifact/tmp scratch space it was already given.
     let build_command = |run_id: &str| -> Result<(Command, Option<tempfile::NamedTempFile>)> {
+        // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
+        // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
+        // own `bounded_env` clears the environment for agent steps but always
+        // keeps AMPLIHACK_* variables, which is why only the profile name (not
+        // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
+        // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
+        // `AMPLIHACK_*` keys from `-c` and this run's context. The runner still
+        // exports top-level context keys under their uppercase names
+        // (`legacy_uppercase_alias`), so a recipe's own YAML `context:`
+        // defaults or a step `output:` named `amplihack_claude_profile` can
+        // still override the pinned value until the runner refuses that
+        // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
         command
             .arg(recipe_path)
@@ -1062,6 +1081,12 @@ pub(super) fn pass_context(
 ) -> Result<Option<tempfile::NamedTempFile>> {
     if context.is_empty() {
         return Ok(None);
+    }
+    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
+        anyhow::bail!(
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            crate::commands::profile::escape_for_error(key)
+        );
     }
 
     let total_bytes: usize = context

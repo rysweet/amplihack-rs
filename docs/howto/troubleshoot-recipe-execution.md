@@ -123,7 +123,9 @@ amplihack recipe run /tmp/unbound-check.yaml \
 - **The name is reserved.** Names such as `PATH`, `HOME`, `IFS`, `BASH_ENV`,
   `LD_PRELOAD`, `PYTHONPATH`, and anything beginning with `AMPLIHACK_` are never
   exported from context (a `reason=reserved_name` warning is logged). Read those
-  values from their canonical source instead of from context.
+  values from their canonical source instead of from context. An `AMPLIHACK_*`
+  key passed to `amplihack recipe run` with `-c` or `--context-file` stops the
+  run with `recipe context key "…" is reserved`; remove the key.
 - **The context key is genuinely absent.** Confirm the value is supplied via the
   recipe's `context:` block or a `-c/--context` flag; an unset, un-inferred key
   produces no environment variable.

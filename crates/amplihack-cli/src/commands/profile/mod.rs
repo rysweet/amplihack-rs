@@ -29,8 +29,16 @@ mod tests_verify;
 use anyhow::Result;
 use clap::Subcommand;
 use name::ProfileName;
+use std::borrow::Cow;
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use store::ProfileStore;
+pub(crate) use store::ROOT_ENV;
+
+/// Name of the profile a parent launch resolved. Every launch that applies a
+/// profile sets it on its child, so nested `amplihack` launches keep the same
+/// profile even if the default pointer changes (issue #1567).
+pub const PROFILE_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE";
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProfileError {
@@ -72,6 +80,15 @@ pub enum ProfileError {
     UnsafePermissions(String),
     #[error("i/o error: {0}")]
     Io(#[from] std::io::Error),
+    #[error(
+        "inherited AMPLIHACK_CLAUDE_PROFILE {value}: {}",
+        .source.inherited_reason()
+    )]
+    Inherited {
+        /// Escaped and shortened by `escape_for_error`.
+        value: String,
+        source: Box<ProfileError>,
+    },
 }
 
 impl ProfileError {
@@ -100,7 +117,55 @@ impl ProfileError {
                 "ensure the profile is owned by your user and run `chmod go-rwx <profile-directory>`"
             }
             Self::Io(_) => "check permissions on the profile root",
+            Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
+                "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"
+            }
+            Self::Inherited { source, .. }
+                if matches!(**source, Self::InvalidName(_) | Self::NotFound(_)) =>
+            {
+                "unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack profile add <name>`"
+            }
+            // The profile exists but cannot be used: the cause's own hint applies.
+            Self::Inherited { source, .. } => source.hint(),
         }
+    }
+
+    /// Fixed reason shown in an `Inherited` error. The value is printed once,
+    /// escaped, so nothing that embeds the raw value is repeated here. An I/O
+    /// error shows only its `ErrorKind`, which never contains the value.
+    fn inherited_reason(&self) -> Cow<'static, str> {
+        match self {
+            Self::InvalidName(_) => "invalid name".into(),
+            Self::NotFound(_) => "not found".into(),
+            Self::SymlinkRefused(_) => "refused path".into(),
+            Self::UnsafePermissions(_) => "unsafe permissions".into(),
+            Self::Io(e) => format!("i/o error on profile root ({})", e.kind()).into(),
+            Self::UnsupportedMode(_) => "not applied with --docker, --auto or Docker".into(),
+            _ => "not usable".into(),
+        }
+    }
+}
+
+/// Escapes a value for an error message (no raw control bytes) and
+/// cuts the escaped form to 64 characters, marking a cut with '…'.
+pub(crate) fn escape_for_error(raw: &str) -> String {
+    const MAX: usize = 64;
+    // Escaping never shortens a character, so MAX + 1 raw chars are enough to
+    // tell whether the escaped form needs cutting.
+    let head: String = raw.chars().take(MAX + 1).collect();
+    let escaped = format!("{head:?}");
+    if escaped.chars().count() <= MAX {
+        return escaped;
+    }
+    let mut out: String = escaped.chars().take(MAX).collect();
+    out.push('…');
+    out
+}
+
+fn inherited_error(raw: &str, source: ProfileError) -> ProfileError {
+    ProfileError::Inherited {
+        value: escape_for_error(raw),
+        source: Box::new(source),
     }
 }
 
@@ -200,16 +265,30 @@ fn render_show(store: &ProfileStore) -> Result<String, ProfileError> {
     }
 }
 
+/// Resolution order: `--profile` flag, then a non-empty inherited
+/// `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. A flag
+/// never reads the inherited value or the pointer; an inherited value never
+/// reads the pointer and fails closed if it cannot be used. Docker and
+/// `--auto` are handled by the caller (`launch_profile_dir_with`), which
+/// refuses an inherited value in those modes before this is reached.
 fn resolve_launch_profile(
     store: &ProfileStore,
     flag: Option<&str>,
+    inherited: Option<&str>,
 ) -> Result<Option<(ProfileName, PathBuf)>, ProfileError> {
-    let name = match flag {
-        Some(raw) => ProfileName::parse(raw)?,
-        None => match pointer::read(store.root())? {
-            Some(n) => n,
-            None => return Ok(None),
-        },
+    if let Some(raw) = flag {
+        let name = ProfileName::parse(raw)?;
+        let dir = store.resolve(&name)?;
+        return Ok(Some((name, dir)));
+    }
+    if let Some(raw) = inherited.filter(|v| !v.is_empty()) {
+        return ProfileName::parse(raw)
+            .and_then(|name| store.resolve(&name).map(|dir| (name, dir)))
+            .map(Some)
+            .map_err(|e| inherited_error(raw, e));
+    }
+    let Some(name) = pointer::read(store.root())? else {
+        return Ok(None);
     };
     let dir = store.resolve(&name)?;
     Ok(Some((name, dir)))
@@ -221,21 +300,24 @@ fn validate_launch_flags(
     docker_env: bool,
     auto: bool,
 ) -> Result<(), ProfileError> {
-    if profile.is_none() {
-        return Ok(());
+    match profile {
+        Some(_) => unsupported_mode(docker, docker_env, auto).map_or(Ok(()), Err),
+        None => Ok(()),
     }
-    if docker {
-        return Err(ProfileError::UnsupportedMode("--docker".into()));
-    }
-    if docker_env {
-        return Err(ProfileError::UnsupportedMode(
-            "docker (env-activated)".into(),
-        ));
-    }
-    if auto {
-        return Err(ProfileError::UnsupportedMode("--auto".into()));
-    }
-    Ok(())
+}
+
+/// The launch mode a profile cannot be applied in, if any.
+fn unsupported_mode(docker: bool, docker_env: bool, auto: bool) -> Option<ProfileError> {
+    let mode = if docker {
+        "--docker"
+    } else if docker_env {
+        "docker (env-activated)"
+    } else if auto {
+        "--auto"
+    } else {
+        return None;
+    };
+    Some(ProfileError::UnsupportedMode(mode.into()))
 }
 
 fn docker_env_active() -> bool {
@@ -246,7 +328,10 @@ fn docker_env_active() -> bool {
 
 /// Profiles are not applied in Docker; fail closed rather than drop the profile.
 pub(super) fn reject_docker_env() -> Result<()> {
-    validate_launch_flags(Some(""), false, docker_env_active(), false).map_err(with_hint)
+    match unsupported_mode(false, docker_env_active(), false) {
+        Some(e) => Err(with_hint(e)),
+        None => Ok(()),
+    }
 }
 
 /// Re-validates a profile directory immediately before the child is spawned.
@@ -269,15 +354,58 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
 }
 
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then
-/// the default pointer, then none. Docker and auto launches ignore the pointer.
+/// an inherited `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then
+/// none. Docker and auto launches refuse a non-empty inherited value and skip
+/// the pointer.
 pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Result<Option<PathBuf>> {
     let docker_env = !docker && docker_env_active();
-    validate_launch_flags(flag, docker, docker_env, auto).map_err(with_hint)?;
+    let inherited = std::env::var_os(PROFILE_ENV);
+    launch_profile_dir_with(
+        flag,
+        inherited.as_deref(),
+        docker,
+        docker_env,
+        auto,
+        ProfileStore::from_env,
+    )
+    .map_err(with_hint)
+}
+
+/// `launch_profile_dir` with the environment passed in, so tests do not depend
+/// on the caller's environment. `open_store` is only called when a profile may
+/// be applied.
+fn launch_profile_dir_with(
+    flag: Option<&str>,
+    inherited: Option<&OsStr>,
+    docker: bool,
+    docker_env: bool,
+    auto: bool,
+    open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
+) -> Result<Option<PathBuf>, ProfileError> {
+    validate_launch_flags(flag, docker, docker_env, auto)?;
+    // An explicit flag never reads the inherited value.
+    let inherited = inherited.filter(|v| flag.is_none() && !v.is_empty());
+    // An inherited profile cannot be applied in Docker or with --auto. Refuse
+    // rather than run on the default account, before the value is parsed or
+    // the store is opened.
+    if let Some(raw) = inherited
+        && let Some(mode) = unsupported_mode(docker, docker_env, auto)
+    {
+        return Err(inherited_error(&raw.to_string_lossy(), mode));
+    }
     if docker || auto {
         return Ok(None);
     }
-    let store = ProfileStore::from_env().map_err(with_hint)?;
-    let resolved = resolve_launch_profile(&store, flag).map_err(with_hint)?;
+    let inherited = inherited
+        .map(|v| {
+            v.to_str().ok_or_else(|| {
+                let lossy = v.to_string_lossy();
+                inherited_error(&lossy, ProfileError::InvalidName(lossy.to_string()))
+            })
+        })
+        .transpose()?;
+    let store = open_store()?;
+    let resolved = resolve_launch_profile(&store, flag, inherited)?;
     if docker_env && let Some((name, _)) = &resolved {
         eprintln!("warning: default profile '{name}' is not applied in Docker (env-activated)");
         return Ok(None);
