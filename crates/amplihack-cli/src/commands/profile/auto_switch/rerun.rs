@@ -21,7 +21,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 const TAIL: usize = 64 * 1024;
 
@@ -55,9 +55,11 @@ pub fn nested_candidate(
 }
 
 pub fn profile_names(store: &ProfileStore) -> Vec<ProfileName> {
-    store
-        .list()
-        .unwrap_or_default()
+    let names = store.list().unwrap_or_else(|e| {
+        eprintln!("auto-switch: cannot list profiles, so none can be substituted: {e}");
+        Vec::new()
+    });
+    names
         .iter()
         .filter_map(|n| ProfileName::parse(n).ok())
         .collect()
@@ -96,7 +98,13 @@ pub fn substitute(
     if !state.exists() {
         return None; // no readings yet
     }
-    let ledger = state.load_ledger().ok()?;
+    let ledger = match state.load_ledger() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("auto-switch: no substitute for this launch: {e}");
+            return None;
+        }
+    };
     let account = ledger.account_in(inherited.as_str()).to_string();
     let readings = state.load_usage().accounts;
     let now = fsx::now();
@@ -112,8 +120,12 @@ pub fn substitute(
 }
 
 fn record_limit(state: &State, account: &str, reset: i64) {
-    let Ok(_lock) = state.lock() else {
-        return;
+    let _lock = match state.lock() {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("auto-switch: usage limit for this account not recorded: {e}");
+            return;
+        }
     };
     let mut file = state.load_usage();
     let now = fsx::now();
@@ -167,6 +179,15 @@ pub fn supervise(
         }
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
+    let signals = match Signals::register() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!(
+                "warning: auto-switch cannot catch stop signals ({e}); running this step once"
+            );
+            return Ok(None);
+        }
+    };
 
     let mut profile = inherited.clone();
     if let Some((c, reason)) = substitute(store, state, cfg, &inherited) {
@@ -177,7 +198,15 @@ pub fn supervise(
     let mut n = 0u32;
     loop {
         n += 1;
-        let attempt = match run_attempt(&exe, &args, state, &rerun_dir, &inherited, &profile, n) {
+        let attempt = match run_attempt(
+            &exe,
+            &args,
+            state,
+            &rerun_dir,
+            (profile != inherited).then_some(&profile),
+            n,
+            &signals,
+        ) {
             Ok(a) => a,
             Err(e) if n == 1 && profile == inherited => {
                 eprintln!("warning: auto-switch cannot supervise this step ({e}); running it once");
@@ -187,14 +216,22 @@ pub fn supervise(
         };
         let account = state
             .load_ledger()
-            .map(|l| l.account_in(profile.as_str()).to_string())
-            .unwrap_or_else(|_| profile.to_string());
+            .map(|l| l.account_in(profile.as_str()).to_string());
         tried.push(profile.to_string());
         let limited = usage_limited(&attempt);
         let eff = limited.map(|_| config::effective(&state.root));
         if let (Some(reset), Some(eff)) = (limited, eff)
             && eff.on
         {
+            // Without the ledger the account is unknown: recording the limit
+            // under the profile name could mark the wrong account exhausted.
+            let account = match account {
+                Ok(a) => a,
+                Err(e) => {
+                    eprintln!("auto-switch: no rerun: {e}");
+                    return finish(attempt, None);
+                }
+            };
             record_limit(state, &account, reset);
             let cfg = eff.config;
             let next = match state.load_ledger() {
@@ -215,6 +252,10 @@ pub fn supervise(
                     None
                 }
             };
+            if let (Some(_), Some(sig)) = (&next, signals.received()) {
+                eprintln!("auto-switch: no rerun: this step was told to stop");
+                return finish(attempt, Some(128 + sig));
+            }
             if let Some(next) = next {
                 eprintln!(
                     "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
@@ -227,14 +268,94 @@ pub fn supervise(
                 continue;
             }
         }
-        let mut out = attempt.stdout;
-        out.seek(SeekFrom::Start(0))?;
-        let mut stdout = std::io::stdout().lock();
-        std::io::copy(&mut out, &mut stdout)?;
-        stdout.flush()?;
-        drop(out);
-        let _ = fs::remove_file(&attempt.stdout_path);
-        return Ok(Some(attempt.code));
+        return finish(attempt, None);
+    }
+}
+
+/// Prints `attempt`'s buffered stdout and returns its exit code, or `code`
+/// when given.
+fn finish(attempt: Attempt, code: Option<i32>) -> Result<Option<i32>> {
+    let mut out = attempt.stdout;
+    out.seek(SeekFrom::Start(0))?;
+    let mut stdout = std::io::stdout().lock();
+    std::io::copy(&mut out, &mut stdout)?;
+    stdout.flush()?;
+    drop(out);
+    let _ = fs::remove_file(&attempt.stdout_path);
+    Ok(Some(code.unwrap_or(attempt.code)))
+}
+
+/// Stop signals, caught once for the whole supervised run. signal-hook does
+/// not restore the default action on unregister, so handlers registered per
+/// attempt would leave the supervisor deaf between attempts.
+struct Signals {
+    term: Arc<AtomicBool>,
+    hup: Arc<AtomicBool>,
+    /// SIGINT reaches the attempt through the terminal; catching it here
+    /// keeps the supervisor alive to pass the attempt's output back.
+    int: Arc<AtomicBool>,
+    /// The last stop signal seen, or 0.
+    seen: AtomicI32,
+    ids: Vec<signal_hook::SigId>,
+}
+
+impl Signals {
+    fn register() -> std::io::Result<Self> {
+        let mut s = Self {
+            term: Arc::new(AtomicBool::new(false)),
+            hup: Arc::new(AtomicBool::new(false)),
+            int: Arc::new(AtomicBool::new(false)),
+            seen: AtomicI32::new(0),
+            ids: Vec::new(),
+        };
+        for (sig, flag) in [
+            (libc::SIGTERM, Arc::clone(&s.term)),
+            (libc::SIGHUP, Arc::clone(&s.hup)),
+            (libc::SIGINT, Arc::clone(&s.int)),
+        ] {
+            s.ids.push(signal_hook::flag::register(sig, flag)?);
+        }
+        Ok(s)
+    }
+
+    /// Passes SIGTERM and SIGHUP on to `pid` and remembers every stop signal.
+    fn forward(&self, pid: libc::pid_t) {
+        for (flag, sig) in [(&self.term, libc::SIGTERM), (&self.hup, libc::SIGHUP)] {
+            if flag.swap(false, Ordering::Relaxed) {
+                self.seen.store(sig, Ordering::Relaxed);
+                // SAFETY: plain kill(2) on our own child's pid.
+                unsafe { libc::kill(pid, sig) };
+            }
+        }
+        if self.int.swap(false, Ordering::Relaxed) {
+            self.seen.store(libc::SIGINT, Ordering::Relaxed);
+        }
+    }
+
+    /// The last stop signal received so far, including any not yet forwarded.
+    /// No attempt is running here, so nothing is forwarded.
+    fn received(&self) -> Option<i32> {
+        for (flag, sig) in [
+            (&self.term, libc::SIGTERM),
+            (&self.hup, libc::SIGHUP),
+            (&self.int, libc::SIGINT),
+        ] {
+            if flag.swap(false, Ordering::Relaxed) {
+                self.seen.store(sig, Ordering::Relaxed);
+            }
+        }
+        match self.seen.load(Ordering::Relaxed) {
+            0 => None,
+            sig => Some(sig),
+        }
+    }
+}
+
+impl Drop for Signals {
+    fn drop(&mut self) {
+        for id in self.ids.drain(..) {
+            signal_hook::low_level::unregister(id);
+        }
     }
 }
 
@@ -243,9 +364,9 @@ fn run_attempt(
     args: &[std::ffi::OsString],
     state: &State,
     rerun_dir: &std::path::Path,
-    inherited: &ProfileName,
-    profile: &ProfileName,
+    switch_to: Option<&ProfileName>,
     n: u32,
+    signals: &Signals,
 ) -> Result<Attempt> {
     let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
     let mut opts = fs::OpenOptions::new();
@@ -261,7 +382,7 @@ fn run_attempt(
         .stdin(Stdio::inherit())
         .stdout(stdout.try_clone()?)
         .stderr(Stdio::piped());
-    if profile != inherited {
+    if let Some(profile) = switch_to {
         cmd.env(PROFILE_ENV, profile.as_str())
             .env("CLAUDE_CONFIG_DIR", state.profile_dir(profile.as_str()));
     }
@@ -291,31 +412,13 @@ fn run_attempt(
         tail
     });
 
-    let term = Arc::new(AtomicBool::new(false));
-    let hup = Arc::new(AtomicBool::new(false));
-    // SIGINT reaches the attempt through the terminal; catching it here
-    // keeps the supervisor alive to pass the attempt's output back.
-    let int = Arc::new(AtomicBool::new(false));
-    let ids = [
-        signal_hook::flag::register(libc::SIGTERM, Arc::clone(&term)).ok(),
-        signal_hook::flag::register(libc::SIGHUP, Arc::clone(&hup)).ok(),
-        signal_hook::flag::register(libc::SIGINT, Arc::clone(&int)).ok(),
-    ];
     let status = loop {
-        for (flag, sig) in [(&term, libc::SIGTERM), (&hup, libc::SIGHUP)] {
-            if flag.swap(false, Ordering::Relaxed) {
-                // SAFETY: plain kill(2) on our own child's pid.
-                unsafe { libc::kill(child.id() as libc::pid_t, sig) };
-            }
-        }
+        signals.forward(child.id() as libc::pid_t);
         if let Some(s) = child.try_wait()? {
             break s;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    for id in ids.into_iter().flatten() {
-        signal_hook::low_level::unregister(id);
-    }
     let stderr_tail = reader.join().unwrap_or_default();
     use std::os::unix::process::ExitStatusExt;
     let (code, signalled) = match (status.code(), status.signal()) {

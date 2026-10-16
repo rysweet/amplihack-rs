@@ -112,6 +112,38 @@ pub fn guard(store: &ProfileStore, name: &ProfileName, action: Action) -> Result
     }
 }
 
+/// Keeps swaps out of a profile between the pre-spawn lease check and the
+/// moment Claude's process exists, so liveness scans see the session. Drop it
+/// once the spawn returns.
+#[must_use = "dropping the hold re-opens the window before the spawn"]
+pub struct LaunchHold {
+    #[cfg(unix)]
+    _lock: Option<state::Lock>,
+}
+
+/// [`guard`] for a launch, keeping the state lock held until the returned
+/// value is dropped.
+pub fn guard_launch(
+    store: &ProfileStore,
+    name: &ProfileName,
+    join: bool,
+) -> Result<LaunchHold, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !store.root().join(".auto-switch.d").exists() {
+            return Ok(LaunchHold { _lock: None });
+        }
+        let state = state::State::new(store.root())?;
+        let lock = swap::guard_held(&state, name, Action::Launch { join })?;
+        Ok(LaunchHold { _lock: lock })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store, name, join);
+        Ok(LaunchHold {})
+    }
+}
+
 /// Whether this process's `CLAUDE_CONFIG_DIR` is `dir` (whole canonical
 /// paths), i.e. it runs inside the session using that directory.
 pub fn inside_session(dir: &Path) -> bool {

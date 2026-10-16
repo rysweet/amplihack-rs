@@ -496,10 +496,15 @@ fn run_launch_core(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
-        if let Some(dir) = claude_config_dir.as_deref() {
-            crate::commands::profile::verify_launch_profile_dir(dir)?;
-        }
-        let mut child = match ManagedChild::spawn(cmd) {
+        // Issue #1569: the hold keeps auto-switch swaps out of the profile
+        // until the child exists and liveness scans can see it.
+        let launch_hold = claude_config_dir
+            .as_deref()
+            .map(crate::commands::profile::verify_launch_profile_dir)
+            .transpose()?;
+        let spawned = ManagedChild::spawn(cmd);
+        drop(launch_hold);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 let raw_os_error = err

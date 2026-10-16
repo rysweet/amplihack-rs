@@ -401,7 +401,10 @@ pub(super) fn reject_docker_env() -> Result<()> {
 
 /// Re-validates a profile directory immediately before the child is spawned.
 /// This narrows, but does not close, the window before `exec`.
-pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
+///
+/// Holds the auto-switch lock until the returned value is dropped, which the
+/// caller does right after the spawn returns.
+pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_switch::LaunchHold> {
     let name = dir
         .file_name()
         .and_then(|n| n.to_str())
@@ -417,7 +420,7 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<()> {
     }
     let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
         && auto_switch::inside_session(dir);
-    auto_switch::guard(&store, &name, auto_switch::Action::Launch { join }).map_err(with_hint)
+    auto_switch::guard_launch(&store, &name, join).map_err(with_hint)
 }
 
 /// Set when this process's launch profile was inherited (tier 2), the only

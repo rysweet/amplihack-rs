@@ -459,6 +459,11 @@ are not repeated.
 
 While a step is supervised this way, its error output streams as usual but
 its standard output is held back and printed when the last attempt finishes.
+The recipe runner's heartbeat therefore reports such a step as idle until
+it ends; that is expected, and nothing is stopped because of it.
+If the step is stopped (SIGINT, SIGTERM or SIGHUP), it is not rerun: the
+attempt's output is passed back and amplihack exits with `128` plus the
+signal number.
 A rerun starts the step from the beginning, so anything the failed attempt
 had already done (a push, a comment) may be done again.
 
@@ -580,6 +585,11 @@ do not depend on these two behaviours.
   until Claude rewrites `.claude.json`; see above.
 - **Leases protect against accidents, not attacks.** Any process running as
   you, and root, can read or move these files.
+- **Profiles do not isolate accounts from each other.** Any process running
+  as you, including an agent following injected instructions, can feed the
+  status-line wrapper a fake usage reading and so pull another profile's
+  login into its session. It could already read that login file directly,
+  so this adds no new exposure.
 - **Held-back step output is kept on disk briefly.** A supervised step's
   standard output is in a private file under `<root>/.auto-switch.d/rerun/`
   until the step finishes. If amplihack is killed first, the next recovery

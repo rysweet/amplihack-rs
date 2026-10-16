@@ -82,6 +82,9 @@ fn private_file(path: &Path, body: &str) {
 ///   last stderr line and exits 1;
 /// - with `$KILL_PARENT`, prints the marker and kills its launcher (the
 ///   supervised attempt) with SIGKILL;
+/// - with `$INT_SUPERVISOR`, sends SIGINT to its launcher's parent (the
+///   rerun supervisor, which records it without passing it on), then prints
+///   the marker and exits 1;
 /// - with `$INJECT`, prints that text to stderr, then `done as <profile>`,
 ///   and exits `$EXIT_CODE` (default 1);
 /// - otherwise prints `done as <profile>` and exits `$EXIT_CODE`.
@@ -116,6 +119,11 @@ done
 if [ -n "$KILL_PARENT" ]; then
   echo "Claude AI usage limit reached|$LIMIT_RESET" >&2
   kill -KILL "$PPID"
+  exit 1
+fi
+if [ -n "$INT_SUPERVISOR" ]; then
+  kill -INT "$(cut -d' ' -f4 "/proc/$PPID/stat")"
+  echo "Claude AI usage limit reached|$LIMIT_RESET" >&2
   exit 1
 fi
 if [ -n "$INJECT" ]; then
@@ -2144,6 +2152,26 @@ fn attempt_killed_by_a_signal_never_reruns() {
     let out = f.run(&mut c);
     assert!(!out.status.success());
     assert_eq!(f.attempts(), vec!["X".to_string()]);
+}
+
+/// A stopped step must not be rerun under another account (review 17b #1):
+/// the supervisor keeps its stop-signal handlers for the whole run and checks
+/// them before starting another attempt.
+#[test]
+#[cfg(target_os = "linux")]
+fn stopped_supervisor_never_reruns_a_usage_limited_step() {
+    let f = Fixture::new();
+    f.switch_on();
+    let mut c = f.nested("X");
+    c.env("INT_SUPERVISOR", "1");
+    let out = f.run(&mut c);
+    assert_eq!(out.status.code(), Some(130), "{}", text(&out.stderr));
+    assert_eq!(f.attempts(), vec!["X".to_string()]);
+    assert!(
+        !text(&out.stderr).contains("rerunning this step"),
+        "{}",
+        text(&out.stderr)
+    );
 }
 
 #[test]

@@ -8,7 +8,8 @@ use super::config::Config;
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::state::{
-    CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT, State,
+    CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
+    State,
 };
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
@@ -606,13 +607,24 @@ pub use super::Action;
 /// Refuses an action on `name` while its login is away from home. Runs
 /// recovery first. A no-op (one metadata check) without a state directory.
 pub fn guard(state: &State, name: &ProfileName, action: Action) -> Result<(), ProfileError> {
+    guard_held(state, name, action).map(drop)
+}
+
+/// [`guard`], returning the state lock still held (`None` without a state
+/// directory), so a launch can keep swaps out until its process exists.
+pub fn guard_held(
+    state: &State,
+    name: &ProfileName,
+    action: Action,
+) -> Result<Option<Lock>, ProfileError> {
     if !state.exists() {
-        return Ok(());
+        return Ok(None);
     }
-    let _lock = state.lock()?;
+    let lock = state.lock()?;
     recover(state)?;
     let ledger = state.load_ledger()?;
-    check_lease(state, &ledger, name, action)
+    check_lease(state, &ledger, name, action)?;
+    Ok(Some(lock))
 }
 
 pub fn check_lease(
