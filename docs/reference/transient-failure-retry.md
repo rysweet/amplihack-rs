@@ -34,7 +34,7 @@ unit-tested in isolation
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
-| `usage_limit`         | `session limit`, `usage limit`, `usage_limit_reached`, `quota exceeded`, `monthly limit`, `weekly limit`, `spend limit`. See [Usage-limit markers](#usage-limit-markers) | No               |
+| `usage_limit`         | `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
 | `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
 | `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
@@ -54,6 +54,10 @@ incident the step's `error` said only `agent step failed: amplihack claude
 failed (exit 1)`; the 529 was in the captured stdout, which is why both are read.
 
 ### Usage-limit markers
+
+The markers are `session limit`, `usage limit`, `usage_limit_reached`,
+`quota exceeded`, `monthly limit`, `weekly limit`, `spend limit` and
+`credit balance is too low`.
 
 - **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
   Code's `monthly spend limit` message, so both are markers (#1546).
