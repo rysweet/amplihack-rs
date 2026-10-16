@@ -58,30 +58,22 @@ fn stable_release_packages_signal_enabled_hooks() {
 }
 
 #[test]
-fn stable_release_does_not_enable_unix_signal_hooks_on_windows() {
+fn stable_release_builds_no_windows_target() {
+    // Owner decision: no Windows builds. Every remaining release target is
+    // Unix, so the hook Signal feature is enabled unconditionally.
     let release = read_repo_file(".github/workflows/release.yml");
-    assert!(
-        release.contains("target: x86_64-pc-windows-msvc"),
-        "release.yml must keep the Windows release target in the matrix"
-    );
-    assert!(
-        release.contains("if [ \"${{ matrix.target }}\" != \"x86_64-pc-windows-msvc\" ]; then"),
-        "release.yml must guard the hook Signal feature behind a non-Windows target check"
-    );
-    assert!(
-        release.contains("feature_args=(--features amplihack-hooks-bin/signal)"),
-        "release.yml must enable the hook Signal feature through the guarded argument list"
-    );
-    assert!(
-        release.contains("\"${feature_args[@]}\""),
-        "release.yml must pass the guarded feature argument list to cargo build"
-    );
+    for forbidden in ["windows-msvc", "windows-latest", "exe_suffix"] {
+        assert!(
+            !release.contains(forbidden),
+            "release.yml must not reintroduce a Windows build leg (found `{forbidden}`)"
+        );
+    }
     assert_eq!(
         release
             .matches("--features amplihack-hooks-bin/signal")
             .count(),
         1,
-        "release.yml must not also contain an unconditional hook Signal feature flag"
+        "release.yml must enable the hook Signal feature exactly once in the build step"
     );
 }
 
