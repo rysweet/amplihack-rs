@@ -203,8 +203,19 @@ fn assert_scoped_read(tmp: &Path, expected: &str) {
     }
 }
 
+/// Runs the finalizer with only the environment a test passes in. A test run
+/// launched from inside a recipe step inherits `RECIPE_VAR_repo_path`,
+/// `RECIPE_VAR_pr_url`, `REPO_PATH` and the like from that live run; the
+/// finalizer reads them, so the outcome would depend on the caller's checkout
+/// (e.g. FAILED_DIRTY_WORKTREE whenever it has uncommitted edits).
 fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::Output {
     let mut command = Command::new("bash");
+    command.env_clear();
+    for key in ["PATH", "HOME", "TMPDIR", "LANG", "LC_ALL"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     command
         .arg(workspace_helper_path("workflow_agentic_finalization.sh"))
         .arg(mode);

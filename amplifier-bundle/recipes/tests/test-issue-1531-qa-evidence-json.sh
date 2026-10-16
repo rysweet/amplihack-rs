@@ -54,10 +54,14 @@ mkdir -p "$REPO"
 
 # record <log-file> — the tool's qa record for a repository whose test command
 # prints <log-file>. The tool's stderr goes to <log-file>.err.
+# Only the last line of the tool's stdout is the record; take it with a shell
+# substring, not `| tail -n 1` (issue #1434: no early-exit pipeline stages).
 record() {
-    env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
+    local stdout
+    stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
         AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMAND="cat $1" \
-        bash "$TOOL" 2>"$1.err" | tail -n 1
+        bash "$TOOL" 2>"$1.err")"
+    printf '%s' "${stdout##*$'\n'}"
 }
 
 # check_log <id> <description> <printf-format for the log> [text the summary must keep]...
