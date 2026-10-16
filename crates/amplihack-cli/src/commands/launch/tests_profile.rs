@@ -77,3 +77,83 @@ fn ambient_passes_through_when_no_profile() {
     let cmd = build("claude", None);
     assert!(cfg_env(&cmd).is_none());
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1567: the resolved profile is pinned for every descendant launch.
+// ---------------------------------------------------------------------------
+
+const PROFILE_VAR: &str = "AMPLIHACK_CLAUDE_PROFILE";
+const ROOT_VAR: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
+fn child_env(cmd: &std::process::Command, key: &str) -> Option<Option<std::ffi::OsString>> {
+    cmd.get_envs()
+        .find(|(k, _)| *k == OsStr::new(key))
+        .map(|(_, v)| v.map(|s| s.to_os_string()))
+}
+
+/// Runs `f` with `ROOT_VAR` set to `value` (or removed), restoring it after.
+fn with_root_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+    crate::test_support::with_env(&[(ROOT_VAR, value.map(OsStr::new))], f)
+}
+
+#[test]
+fn profile_name_is_pinned_alongside_config_dir() {
+    let dir = Path::new("/tmp/profiles/work");
+    for name in ["claude", "rusty", "rustyclawd", "amplifier"] {
+        let cmd = build(name, Some(dir));
+        assert!(cfg_env(&cmd).flatten().is_some(), "{name}");
+        assert_eq!(
+            child_env(&cmd, PROFILE_VAR),
+            Some(Some("work".into())),
+            "{name}: AMPLIHACK_CLAUDE_PROFILE must equal the dir's file name"
+        );
+    }
+}
+
+#[test]
+fn profile_root_is_passed_only_when_parent_had_root_env() {
+    let dir = Path::new("/tmp/profiles/work");
+    let without = with_root_env(None, || build("claude", Some(dir)));
+    assert_eq!(child_env(&without, ROOT_VAR), None);
+    assert_eq!(child_env(&without, PROFILE_VAR), Some(Some("work".into())));
+
+    let with = with_root_env(Some("/tmp/profiles"), || build("claude", Some(dir)));
+    assert_eq!(
+        child_env(&with, ROOT_VAR),
+        Some(Some("/tmp/profiles".into())),
+        "the root passed down is the parent of the resolved dir"
+    );
+}
+
+#[test]
+fn copilot_and_codex_get_no_profile_pin() {
+    let dir = Path::new("/tmp/profiles/work");
+    with_root_env(Some("/tmp/profiles"), || {
+        for name in ["copilot", "codex"] {
+            let cmd = build(name, Some(dir));
+            assert_eq!(child_env(&cmd, PROFILE_VAR), None, "{name}");
+            assert_eq!(child_env(&cmd, ROOT_VAR), None, "{name}");
+        }
+    });
+}
+
+#[test]
+fn no_profile_sets_no_profile_pin() {
+    let cmd = with_root_env(Some("/tmp/profiles"), || build("claude", None));
+    assert_eq!(child_env(&cmd, PROFILE_VAR), None);
+    assert_eq!(child_env(&cmd, ROOT_VAR), None);
+}
+
+#[test]
+fn profile_pin_is_child_only() {
+    let _g = crate::test_support::home_env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let prev = std::env::var_os(PROFILE_VAR);
+    let _cmd = build("claude", Some(Path::new("/tmp/profiles/work")));
+    assert_eq!(
+        std::env::var_os(PROFILE_VAR),
+        prev,
+        "building the child must not change the parent environment"
+    );
+}
