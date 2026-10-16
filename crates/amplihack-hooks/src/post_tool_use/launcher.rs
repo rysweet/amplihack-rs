@@ -45,6 +45,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(Some("1"), None);
 
         let dir = tempfile::tempdir().unwrap();
@@ -61,6 +62,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(None, Some("session"));
 
         let dir = tempfile::tempdir().unwrap();
@@ -72,6 +74,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(None, None);
 
         let dir = tempfile::tempdir().unwrap();
@@ -96,6 +99,7 @@ mod tests {
         let _guard = env_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _authoritative_host = crate::test_support::EnvVarGuard::unset("AMPLIHACK_AGENT_BINARY");
         set_launcher_env(Some("1"), None);
 
         let dir = tempfile::tempdir().unwrap();

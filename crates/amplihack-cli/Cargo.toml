@@ -26,6 +26,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
+fs2 = "0.4"
 amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
@@ -80,6 +81,9 @@ uuid = { version = "1", features = ["v4"] }
 # URI as a terminal QR (default-features off to avoid the image/svg stack).
 amplihack-signal = { path = "../amplihack-signal", features = ["signal"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+errno = "0.3"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

@@ -606,4 +606,53 @@ mod tests {
         ])
         .expect("cleanup-stale --dry-run must parse");
     }
+
+    #[test]
+    fn profile_subcommands_parse() {
+        let _env = launcher_env_lock();
+        for args in [
+            vec!["amplihack", "profile", "add", "work"],
+            vec!["amplihack", "profile", "list"],
+            vec!["amplihack", "profile", "show"],
+            vec!["amplihack", "profile", "switch", "work"],
+            vec!["amplihack", "profile", "remove", "work", "--yes"],
+            vec!["amplihack", "profile", "login", "work"],
+            vec!["amplihack", "profile", "run", "work", "--", "--flag", "x"],
+        ] {
+            let cli = Cli::try_parse_from(&args).unwrap_or_else(|e| panic!("{args:?}: {e}"));
+            assert!(matches!(cli.command, Commands::Profile(_)), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn profile_remove_defaults_to_no_yes() {
+        let _env = launcher_env_lock();
+        let cli = Cli::try_parse_from(["amplihack", "profile", "remove", "work"]).unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::Remove {
+                yes, ..
+            }) => {
+                assert!(!yes)
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn launch_and_claude_accept_profile_flag() {
+        let _env = launcher_env_lock();
+        for sub in ["launch", "claude"] {
+            let cli = Cli::try_parse_from(["amplihack", sub, "--profile", "work"]).unwrap();
+            let got = match cli.command {
+                Commands::Launch { profile, .. } | Commands::Claude { profile, .. } => profile,
+                other => panic!("unexpected {other:?}"),
+            };
+            assert_eq!(got.as_deref(), Some("work"), "{sub}");
+        }
+        let cli = Cli::try_parse_from(["amplihack", "launch"]).unwrap();
+        match cli.command {
+            Commands::Launch { profile, .. } => assert!(profile.is_none()),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
 }

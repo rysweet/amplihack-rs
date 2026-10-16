@@ -143,6 +143,7 @@ fn local_install_stages_claude_slash_commands_from_the_source_directory() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -183,6 +184,7 @@ fn local_install_stages_every_source_command_for_claude() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -248,6 +250,7 @@ fn local_install_stages_the_same_command_set_for_claude_and_copilot() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -299,6 +302,7 @@ fn local_install_preserves_a_users_own_file_in_the_claude_command_namespace() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -331,6 +335,7 @@ fn local_install_leaves_no_scratch_namespace_under_claudes_command_root() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -350,6 +355,7 @@ fn uninstall_removes_the_claude_slash_command_directory() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -380,6 +386,7 @@ fn uninstall_preserves_a_claude_command_namespace_the_user_has_added_to() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -410,6 +417,7 @@ fn uninstall_removes_the_command_staging_scratch_root() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let _home = crate::test_support::HomeGuard::set(temp.path());
 
@@ -427,4 +435,18 @@ fn uninstall_removes_the_command_staging_scratch_root() {
         !scratch.exists(),
         "an orphan scratch root left by an interrupted install must be cleaned"
     );
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "AMPLIHACK_SKIP_MMDC",
+        "HOME",
+        "PATH",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

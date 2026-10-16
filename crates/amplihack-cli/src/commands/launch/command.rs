@@ -95,9 +95,11 @@ pub(super) fn build_command(
         extra_args,
         None,
         false, // subprocess_safe
+        None,  // claude_config_dir
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn build_command_for_dir(
     binary: &BinaryInfo,
     resume: bool,
@@ -106,6 +108,7 @@ pub(super) fn build_command_for_dir(
     extra_args: &[String],
     add_dir_override: Option<&Path>,
     subprocess_safe: bool,
+    claude_config_dir: Option<&Path>,
 ) -> Command {
     let mut cmd = Command::new(&binary.path);
 
@@ -116,6 +119,11 @@ pub(super) fn build_command_for_dir(
     let is_claude_compatible = is_claude_compatible_tool(&binary.name);
     if skip_permissions && is_claude_compatible {
         cmd.arg("--dangerously-skip-permissions");
+    }
+
+    // Login profile: child-only, and only for tools that read Claude's config dir.
+    if let (true, Some(dir)) = (is_claude_compatible, claude_config_dir) {
+        cmd.env("CLAUDE_CONFIG_DIR", dir);
     }
 
     inject_uvx_plugin_args(&mut cmd, &binary.name, extra_args, add_dir_override);
@@ -130,11 +138,20 @@ pub(super) fn build_command_for_dir(
     }
     cmd.args(&model.argv);
 
-    if resume {
-        cmd.arg("--resume");
-    }
-    if continue_session {
-        cmd.arg("--continue");
+    if binary.name == "codex" {
+        if resume || continue_session {
+            cmd.arg("resume");
+            if continue_session {
+                cmd.arg("--last");
+            }
+        }
+    } else {
+        if resume {
+            cmd.arg("--resume");
+        }
+        if continue_session {
+            cmd.arg("--continue");
+        }
     }
 
     // Inject --allow-all for Copilot by default (issue #303). Copilot's
