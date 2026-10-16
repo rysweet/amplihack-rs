@@ -657,14 +657,20 @@ while that profile holds its own login. In step 4 it patches only that key
 in `<live dir>/.claude.json`:
 
 - the file is opened without following symlinks and read up to 32 MiB;
-  a larger file is skipped;
-- the new content goes to a temp file in the same directory, which is synced
-  and renamed over the file, keeping the file's existing mode (`0600` if it
-  is new);
-- if the file is missing, cannot be parsed, or no saved block exists, the
-  patch is skipped with a warning and only the login moves;
-- if the file changes while it is being patched, it retries once and then
-  skips with a warning.
+- if the file is missing, larger than that, a symlink, or not a JSON
+  object, the patch is skipped silently and only the login moves;
+- if no saved block exists for the incoming account, the patch is skipped
+  with a warning that ends `/status may name the previous account`;
+- if the saved block is damaged, the patch is skipped with the warning
+  `auto-switch ignored damaged account details: <error>`;
+- if `oauthAccount` already equals the saved block, nothing is written;
+- otherwise the new content goes to a temp file in the same directory, which
+  is synced and renamed over the file, keeping the file's existing mode; if
+  that write fails, it warns `auto-switch could not update
+  <dir>/.claude.json: <error>`;
+- if the file changes while it is being patched (inode, size or mtime
+  differ), it retries once and then skips with the warning
+  `<dir>/.claude.json kept changing; account details not updated`.
 
 `.credentials.json` decides which account is live; `oauthAccount` is only a
 display. Claude keeps `.claude.json` in memory and rewrites it, so a write

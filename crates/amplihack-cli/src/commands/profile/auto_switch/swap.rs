@@ -279,6 +279,7 @@ fn patch_oauth_account(state: &State, dir: &str, account: &str) {
         };
         let unchanged = fs::symlink_metadata(path.join(CLAUDE_JSON)).is_ok_and(|now| {
             now.ino() == before.ino()
+                && now.mtime() == before.mtime()
                 && now.mtime_nsec() == before.mtime_nsec()
                 && now.len() == before.len()
         });
