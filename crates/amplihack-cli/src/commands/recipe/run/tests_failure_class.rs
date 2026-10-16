@@ -747,6 +747,37 @@ fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
 }
 
 #[test]
+fn provider_rate_limit_envelopes_stay_transient_transport() {
+    // The new markers must not pull a short-lived rate limit out of the
+    // retryable class: each of these clears on its own.
+    for text in [
+        "rate limit exceeded",
+        "rate_limit_error",
+        "API Error: 429",
+        "429 Too Many Requests",
+    ] {
+        let (class, signal) = classify_failure_text(text);
+        assert_eq!(
+            class,
+            FailureClass::TransientTransport,
+            "{text:?} is a retryable rate limit. signal={signal:?}"
+        );
+    }
+}
+
+#[test]
+fn environmental_failures_still_beat_a_weekly_or_spend_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) = classify_failure_text(&format!("API Error: 401\n{line}"));
+        assert_eq!(
+            (class, signal),
+            (FailureClass::Environmental, Some("api error: 401")),
+            "environmental failures keep precedence over {line:?}"
+        );
+    }
+}
+
+#[test]
 fn a_daily_request_quota_is_never_a_usage_limit() {
     // "daily limit" is deliberately not a marker (#1546): API daily request
     // quotas use the same phrase and clear on their own, so filing them as
