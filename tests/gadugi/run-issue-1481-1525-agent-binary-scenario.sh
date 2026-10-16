@@ -325,7 +325,7 @@ if command -v tmux >/dev/null 2>&1; then
     tmux -S "$TMUX_SOCKET" -f /dev/null new-session -d -s keeper "sleep 600" </dev/null
   # pane_script <name>: a script, run by the pane from $dir, that resolves from
   # the project directory and writes <name>.out, <name>.err, then <name>.done.
-  # Paths are quoted with printf %q, so a TMPDIR with spaces still works.
+  # Paths are quoted with bash's printf %q, so the pane runs them with bash.
   pane_script() {
     printf 'cd %q && %q agent-binary >%q 2>%q; touch %q\n' \
       "$dir/project" "$BIN" "$dir/$1.out" "$dir/$1.err" "$dir/$1.out.done" > "$dir/$1-pane.sh"
@@ -336,7 +336,7 @@ if command -v tmux >/dev/null 2>&1; then
   # From a Claude Code shell, without the hand-off.
   pane_script plain
   ( cd "$dir" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 \
-      tmux -S "$TMUX_SOCKET" new-session -d -s plain -c "$dir" "sh ./plain-pane.sh" ) </dev/null
+      tmux -S "$TMUX_SOCKET" new-session -d -s plain -c "$dir" "bash ./plain-pane.sh" ) </dev/null
   wait_for "$dir/plain.out"
   if [ "$(cat "$dir/plain.out" 2>/dev/null)" = 'copilot (session_marker)' ] \
      && grep -qF "COPILOT_CLI is set, but this tmux server's global environment holds the same value" "$dir/plain.err"; then
@@ -352,7 +352,7 @@ if command -v tmux >/dev/null 2>&1; then
   pane_script handed
   # shellcheck disable=SC2016
   ( cd "$dir" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 AMPLIHACK_SKIP_AUTO_INSTALL=1 \
-      sh -c 'tmux -S "$1" new-session -d -s handed -c "$3" "$("$2" agent-binary --shell) sh ./handed-pane.sh"' \
+      sh -c 'tmux -S "$1" new-session -d -s handed -c "$3" "$("$2" agent-binary --shell) bash ./handed-pane.sh"' \
       sh "$TMUX_SOCKET" "$BIN" "$dir" ) </dev/null 2>"$dir/handed.launch.err"
   wait_for "$dir/handed.out"
   if [ "$(cat "$dir/handed.out" 2>/dev/null)" = 'claude (env)' ] && [ ! -s "$dir/handed.err" ]; then
