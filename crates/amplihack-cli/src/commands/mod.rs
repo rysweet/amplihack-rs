@@ -83,6 +83,22 @@ fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) ->
     Ok(())
 }
 
+/// Issue #1569: runs a nested `-p` step under the usage-limit rerun
+/// supervisor when auto-switch is on. `true` when the step has already run;
+/// a non-zero exit code ends the process with that code.
+fn run_supervised(
+    profile: Option<&str>,
+    docker: bool,
+    auto: bool,
+    claude_args: &[String],
+) -> Result<bool> {
+    match profile::maybe_supervise(profile, docker, auto, claude_args)? {
+        Some(0) => Ok(true),
+        Some(code) => std::process::exit(code),
+        None => Ok(false),
+    }
+}
+
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
@@ -116,6 +132,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
+            }
+            if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+                return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
@@ -165,6 +184,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
+            }
+            if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+                return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {

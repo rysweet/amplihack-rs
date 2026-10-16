@@ -9,6 +9,10 @@ mod format;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 
+/// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
+/// it and the runner never disagree about what a usage limit is.
+pub(crate) use failure_class::{FailureClass, classify_failure_text};
+
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
 

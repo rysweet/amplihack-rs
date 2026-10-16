@@ -270,7 +270,7 @@ pub(super) fn check_root_not_symlink(root: &Path) -> Result<(), ProfileError> {
     }
 }
 
-fn private_dir_builder() -> fs::DirBuilder {
+pub(super) fn private_dir_builder() -> fs::DirBuilder {
     let mut b = fs::DirBuilder::new();
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
