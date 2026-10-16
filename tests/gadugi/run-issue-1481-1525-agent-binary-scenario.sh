@@ -34,7 +34,13 @@
 # Run by hand: bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
 # It builds amplihack with cargo first. Set AMPLIHACK_1481_QA_BIN to an
 # amplihack binary to skip the build. On success it prints ALL_CASES_PASSED and
-# exits 0. CI's Install Smoke Test job runs it against the installed binary.
+# exits 0.
+#
+# The recipe-run cases need recipe-runner-rs (RECIPE_RUNNER_RS_PATH, or on
+# PATH) and the detached-launch cases need tmux. Without them those cases
+# print SKIP; with AMPLIHACK_1481_QA_REQUIRE_ALL=1 a SKIP fails the scenario.
+# CI's Install Smoke Test job installs both and runs it that way, against the
+# binary it installs.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -111,12 +117,23 @@ flunk() {
   fail=1
 }
 
-# A fresh project directory for case <id>: a git repository, so the walk-up for
-# launcher_context.json stops at it.
+# skip <cases> <why>: a SKIP, or a failure under AMPLIHACK_1481_QA_REQUIRE_ALL=1.
+skip() {
+  if [ "${AMPLIHACK_1481_QA_REQUIRE_ALL:-0}" = 1 ]; then
+    flunk "$1 could not run ($2) and AMPLIHACK_1481_QA_REQUIRE_ALL=1"
+  else
+    echo "SKIP: $1 ($2)"
+  fi
+}
+
+# A fresh project directory for case <id>, with a .git directory so the walk-up
+# for launcher_context.json stops at it. The resolver only checks that .git
+# exists (crates/amplihack-utils/src/agent_binary.rs). `git init` is not used:
+# under an inherited GIT_DIR it creates no .git here.
 new_project() {
   local dir="$WORK/case-$1"
   mkdir -p "$dir/home" "$dir/project"
-  git -C "$dir/project" init -q >/dev/null 2>&1 || mkdir -p "$dir/project/.git"
+  mkdir -p "$dir/project/.git"
   printf '%s\n' "$dir"
 }
 
@@ -225,9 +242,10 @@ expect shell-explicit-clears-stale-tag "env $UNSET_ALL AMPLIHACK_AGENT_BINARY=co
 # The caller is a Claude Code session; the far side holds a Copilot session's
 # marker (what a tmux server started from Copilot gives every new session).
 dir="$(new_project hand-off)"
-prefix="$(cd "$dir/project" && env -i HOME="$dir/home" PATH="$BASE_PATH" CLAUDECODE=1 "$BIN" agent-binary --shell 2>/dev/null)"
+prefix="$(cd "$dir/project" && env -i HOME="$dir/home" PATH="$BASE_PATH" TERM=dumb AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+  CLAUDECODE=1 "$BIN" agent-binary --shell 2>/dev/null </dev/null)"
 # shellcheck disable=SC2086 # the prefix is meant to be word-split, as $(...) is in a tmux command
-( cd "$dir/project" && exec env -i HOME="$dir/home" PATH="$BASE_PATH" COPILOT_CLI=1 \
+( cd "$dir/project" && exec env -i HOME="$dir/home" PATH="$BASE_PATH" TERM=dumb AMPLIHACK_SKIP_AUTO_INSTALL=1 COPILOT_CLI=1 \
     $prefix "$BIN" agent-binary ) </dev/null >"$dir/stdout" 2>"$dir/stderr"
 if [ "$(cat "$dir/stdout")" = 'claude (env)' ] && [ ! -s "$dir/stderr" ]; then
   pass "hand-off -> the far side runs the caller's claude, not its own COPILOT_CLI, silently"
@@ -237,9 +255,10 @@ fi
 
 # A default guess crosses still tagged, so the far side announces it as one.
 dir="$(new_project hand-off-default)"
-prefix="$(cd "$dir/project" && env -i HOME="$dir/home" PATH="$BASE_PATH" "$BIN" agent-binary --shell 2>/dev/null)"
+prefix="$(cd "$dir/project" && env -i HOME="$dir/home" PATH="$BASE_PATH" TERM=dumb AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+  "$BIN" agent-binary --shell 2>/dev/null </dev/null)"
 # shellcheck disable=SC2086
-( cd "$dir/project" && exec env -i HOME="$dir/home" PATH="$BASE_PATH" \
+( cd "$dir/project" && exec env -i HOME="$dir/home" PATH="$BASE_PATH" TERM=dumb AMPLIHACK_SKIP_AUTO_INSTALL=1 \
     $prefix "$BIN" agent-binary ) </dev/null >"$dir/stdout" 2>"$dir/stderr"
 if [ "$(cat "$dir/stdout")" = 'copilot (default)' ] \
    && grep -qF "inherited as a parent's default guess" "$dir/stderr"; then
@@ -262,10 +281,15 @@ author: qa
 steps:
   - id: show
     type: bash
-    command: echo "STEP_SAW binary=${AMPLIHACK_AGENT_BINARY-<unset>} source=${AMPLIHACK_AGENT_BINARY_SOURCE-<unset>}"
+    command: echo "STEP_SAW binary=[${AMPLIHACK_AGENT_BINARY-<unset>}] source=[${AMPLIHACK_AGENT_BINARY_SOURCE-<unset>}]"
 RECIPE
 
 # recipe_case <id> <want STEP_SAW line> <want stderr substring, or -> [VAR=value ...]
+# The values are bracketed, so an unset tag is told apart from an empty one and
+# each tag is matched whole. What recipe run exports
+# (EnvBuilder::with_resolved_agent_binary): the user's own value untagged, with
+# any inherited tag removed; a session marker's or launcher context's answer
+# tagged session:<cli>; the built-in default tagged default:<cli>.
 recipe_case() {
   local id="$1" want_step="$2" want_err="$3"; shift 3
   local dir; dir="$(new_project "$id")"
@@ -279,14 +303,16 @@ recipe_case() {
   if [ "${#problems[@]}" -eq 0 ]; then pass "$id -> $want_step"; else flunk "$id: ${problems[*]}" "$dir/stdout" "$dir/stderr"; fi
 }
 if [ -n "$RUNNER" ] && [ -x "$RUNNER" ]; then
-recipe_case recipe-run-default 'STEP_SAW binary=copilot source=default:copilot' \
+recipe_case recipe-run-default 'STEP_SAW binary=[copilot] source=[default:copilot]' \
   "amplihack: agent steps will run under 'copilot' (no AMPLIHACK_AGENT_BINARY or agent session marker was found)."
-recipe_case recipe-run-entrypoint-marker 'STEP_SAW binary=claude source=' - CLAUDE_CODE_ENTRYPOINT=cli
-recipe_case recipe-run-explicit-overrides-marker 'STEP_SAW binary=claude source=' \
+recipe_case recipe-run-entrypoint-marker 'STEP_SAW binary=[claude] source=[session:claude]' - CLAUDE_CODE_ENTRYPOINT=cli
+recipe_case recipe-run-explicit-overrides-marker 'STEP_SAW binary=[claude] source=[<unset>]' \
   "amplihack: agent steps will run under 'claude' (AMPLIHACK_AGENT_BINARY is set and overrides COPILOT_CLI, the copilot session marker in this environment)" \
   AMPLIHACK_AGENT_BINARY=claude COPILOT_CLI=1
+recipe_case recipe-run-explicit-drops-stale-tag 'STEP_SAW binary=[claude] source=[<unset>]' - \
+  AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=session:copilot
 else
-  echo "SKIP: recipe-run-default, recipe-run-entrypoint-marker, recipe-run-explicit-overrides-marker (no recipe-runner-rs)"
+  skip "recipe-run-default, recipe-run-entrypoint-marker, recipe-run-explicit-overrides-marker, recipe-run-explicit-drops-stale-tag" "no recipe-runner-rs"
 fi
 
 # --- a real detached tmux launch --------------------------------------------
@@ -297,13 +323,20 @@ if command -v tmux >/dev/null 2>&1; then
   # holds COPILOT_CLI=1, and every new session gets it.
   env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm COPILOT_CLI=1 \
     tmux -S "$TMUX_SOCKET" -f /dev/null new-session -d -s keeper "sleep 600" </dev/null
+  # pane_script <name>: a script, run by the pane from $dir, that resolves from
+  # the project directory and writes <name>.out, <name>.err, then <name>.done.
+  # Paths are quoted with printf %q, so a TMPDIR with spaces still works.
+  pane_script() {
+    printf 'cd %q && %q agent-binary >%q 2>%q; touch %q\n' \
+      "$dir/project" "$BIN" "$dir/$1.out" "$dir/$1.err" "$dir/$1.out.done" > "$dir/$1-pane.sh"
+  }
   # wait_for <file>: the pane writes its result, then a .done marker.
   wait_for() { local i=0; while [ ! -e "$1.done" ] && [ "$i" -lt 100 ]; do sleep 0.1; i=$((i + 1)); done; }
 
   # From a Claude Code shell, without the hand-off.
-  ( cd "$dir/project" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 \
-      tmux -S "$TMUX_SOCKET" new-session -d -s plain \
-      "cd '$dir/project' && '$BIN' agent-binary >'$dir/plain.out' 2>'$dir/plain.err'; touch '$dir/plain.out.done'" ) </dev/null
+  pane_script plain
+  ( cd "$dir" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 \
+      tmux -S "$TMUX_SOCKET" new-session -d -s plain -c "$dir" "sh ./plain-pane.sh" ) </dev/null
   wait_for "$dir/plain.out"
   if [ "$(cat "$dir/plain.out" 2>/dev/null)" = 'copilot (session_marker)' ] \
      && grep -qF "COPILOT_CLI is set, but this tmux server's global environment holds the same value" "$dir/plain.err"; then
@@ -313,12 +346,14 @@ if command -v tmux >/dev/null 2>&1; then
   fi
 
   # The same launch with the hand-off, double-quoted as documented.
-  # The inner sh expands $(...) in the caller's shell, as the documented
-  # double-quoted tmux command does; its own arguments arrive as $1..$4.
+  # The inner sh is the caller's Claude Code shell. It expands $(...) itself,
+  # as the documented double-quoted tmux command does; its arguments arrive as
+  # $1..$3.
+  pane_script handed
   # shellcheck disable=SC2016
-  ( cd "$dir/project" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 \
-      sh -c 'tmux -S "$1" new-session -d -s handed "$("$2" agent-binary --shell) sh -c \"cd $3 && $2 agent-binary >$4/handed.out 2>$4/handed.err; touch $4/handed.out.done\""' \
-      sh "$TMUX_SOCKET" "$BIN" "$dir/project" "$dir" ) </dev/null 2>"$dir/handed.launch.err"
+  ( cd "$dir" && env -i HOME="$dir/home" PATH="$TPATH" TERM=xterm CLAUDECODE=1 AMPLIHACK_SKIP_AUTO_INSTALL=1 \
+      sh -c 'tmux -S "$1" new-session -d -s handed -c "$3" "$("$2" agent-binary --shell) sh ./handed-pane.sh"' \
+      sh "$TMUX_SOCKET" "$BIN" "$dir" ) </dev/null 2>"$dir/handed.launch.err"
   wait_for "$dir/handed.out"
   if [ "$(cat "$dir/handed.out" 2>/dev/null)" = 'claude (env)' ] && [ ! -s "$dir/handed.err" ]; then
     pass "tmux-with-hand-off -> the pane runs the caller's claude"
@@ -327,7 +362,7 @@ if command -v tmux >/dev/null 2>&1; then
   fi
   tmux -S "$TMUX_SOCKET" kill-server >/dev/null 2>&1 || true
 else
-  echo "SKIP: tmux-without-hand-off, tmux-with-hand-off (tmux is not installed)"
+  skip "tmux-without-hand-off, tmux-with-hand-off" "tmux is not installed"
 fi
 
 echo "cases passed: $passed"

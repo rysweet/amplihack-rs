@@ -13,8 +13,15 @@ description: >
   hand-off delivering the caller's answer into an environment holding another
   session's marker; what a `recipe run` bash step is handed; and, when tmux is
   installed, a real detached `tmux new-session` launch into a server started
-  from a Copilot session, with and without the hand-off. CI's Install Smoke
-  Test job runs the runner script directly against the binary it installs.
+  from a Copilot session, with and without the hand-off. The recipe-run cases
+  need recipe-runner-rs (RECIPE_RUNNER_RS_PATH or on PATH) and the detached
+  cases need tmux. The step runs the script with AMPLIHACK_1481_QA_REQUIRE_ALL=1,
+  so a case that could not run fails the scenario through the exit code (the
+  output_contains assertions document the cases; gadugi-test does not gate on
+  them). CI's
+  Install Smoke Test job installs both and runs the runner script directly,
+  with AMPLIHACK_1481_QA_REQUIRE_ALL=1, against the binary it installs; CI
+  does not run gadugi-test itself.
 version: "1.0"
 config:
   timeout: 900000
@@ -33,7 +40,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      command: env AMPLIHACK_1481_QA_REQUIRE_ALL=1 tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
     timeout: 880000
   - name: all-agent-binary-cases-pass
     agent: cli-agent
@@ -81,3 +88,8 @@ assertions:
     params:
       target: stdout
       expected: "PASS: recipe-run-default "
+  - name: tmux-hand-off-delivers-the-callers-cli
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: tmux-with-hand-off "
