@@ -366,8 +366,9 @@ mkdir -p "$RUNTIME/bin" "$RUNTIME/empty" "$RUNTIME/home"
 if [[ -n "${AMPLIHACK_BIN:-}" ]]; then
     TOOL="$AMPLIHACK_BIN"
 else
-    # The lint job reaches this gate before sccache setup; build without a wrapper.
-    (cd "$REPO_ROOT" && RUSTC_WRAPPER='' cargo build --locked -p amplihack --bin amplihack)
+    # Built with the caller's RUSTC_WRAPPER: the lint job sets up sccache before
+    # its first cargo call, so this build is cached there.
+    (cd "$REPO_ROOT" && cargo build --locked -p amplihack --bin amplihack)
     TOOL="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack"
 fi
 [[ -x "$TOOL" ]] || { echo "HARNESS-ERROR: real amplihack binary missing" >&2; exit 2; }
