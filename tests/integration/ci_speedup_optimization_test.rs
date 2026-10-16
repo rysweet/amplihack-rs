@@ -325,6 +325,12 @@ fn ci_test_job_keeps_cache_targets_false() {
 /// took 763-1062 s of Lint & Format; through sccache it took 168 s warm.
 #[test]
 fn recipe_gate_builds_do_not_disable_rustc_wrapper() {
+    // An empty or defaulted assignment, `unset`, `env -u`, or a cargo
+    // `rustc-wrapper` override: each bypasses the job's sccache.
+    let disabling = Regex::new(
+        r#"RUSTC_WRAPPER=(?:''|""|\s|\$\{)|unset\s+RUSTC_WRAPPER|-u\s*RUSTC_WRAPPER|rustc-wrapper\s*="#,
+    )
+    .unwrap();
     for script in [
         "amplifier-bundle/recipes/tests/test-bug-834-doc-review-non-fatal.sh",
         "amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh",
@@ -332,12 +338,6 @@ fn recipe_gate_builds_do_not_disable_rustc_wrapper() {
         let path = workspace_root().join(script);
         let content = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("FAIL: cannot read {path:?}: {e}"));
-        // An empty or defaulted assignment, `unset`, `env -u`, or a cargo
-        // `rustc-wrapper` override: each bypasses the job's sccache.
-        let disabling = Regex::new(
-            r#"RUSTC_WRAPPER=(?:''|""|\s|\$\{)|unset\s+RUSTC_WRAPPER|-u\s*RUSTC_WRAPPER|rustc-wrapper\s*="#,
-        )
-        .unwrap();
         assert!(
             !disabling.is_match(&content),
             "FAIL: {script} disables RUSTC_WRAPPER for its cargo build.\n\
