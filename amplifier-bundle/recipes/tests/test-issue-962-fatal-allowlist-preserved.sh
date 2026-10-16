@@ -138,7 +138,9 @@ RUNTIME="$(mktemp -d "${TMPDIR:-${RUNNER_TEMP:-/tmp}}/enforce-verdict.XXXXXX")"
 trap 'rm -rf "$RUNTIME"' EXIT
 mkdir -p "$RUNTIME/bin" "$RUNTIME/home" "$RUNTIME/empty" "$RUNTIME/context-only/amplifier-bundle/tools"
 if [[ -n "${AMPLIHACK_BIN:-}" ]]; then TOOL="$AMPLIHACK_BIN"; else
-    (cd "$REPO_ROOT" && RUSTC_WRAPPER='' cargo build --locked -p amplihack --bin amplihack)
+    # The caller's RUSTC_WRAPPER, as test-bug-834-doc-review-non-fatal.sh builds it, so
+    # that this finds that build current rather than rebuilding with another wrapper.
+    (cd "$REPO_ROOT" && cargo build --locked -p amplihack --bin amplihack)
     TOOL="${CARGO_TARGET_DIR:-$REPO_ROOT/target}/debug/amplihack"
 fi
 [[ -x "$TOOL" ]] || { echo "HARNESS-ERROR: real amplihack binary missing" >&2; exit 2; }
