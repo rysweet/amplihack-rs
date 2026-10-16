@@ -132,15 +132,11 @@ jobs:
           - target: aarch64-apple-darwin
             runner: macos-latest
             gnu_cross_toolchain: false
-          - target: x86_64-pc-windows-msvc
-            runner: windows-latest
-            gnu_cross_toolchain: false
-            exe_suffix: ".exe"
     env:
       # Ported from ci.yml (issue #1358). Without this the release recompiles
-      # the whole tree on all five targets every time: measured 12-28 min per
-      # target and ~59 min for x86_64-pc-windows-msvc. With cancel-in-progress
-      # set, an hour-wide window means any merge inside it kills the release --
+      # the whole tree on every target every time: measured 12-28 min per
+      # target (~59 min for the since-removed Windows target). With
+      # cancel-in-progress set, an hour-wide window means any merge inside it kills the release --
       # five of six runs were cancelled on the night eleven PRs landed, and no
       # release published at all.
       #
@@ -193,25 +189,20 @@ jobs:
         env:
           AMPLIHACK_RELEASE_VERSION: ${{ needs.version-bump.outputs.version }}
         run: |
-          feature_args=()
-          if [ "${{ matrix.target }}" != "x86_64-pc-windows-msvc" ]; then
-            feature_args=(--features amplihack-hooks-bin/signal)
-          fi
           cargo build --release --locked --target ${{ matrix.target }} \
             -p amplihack -p amplihack-hooks-bin \
-            "${feature_args[@]}"
+            --features amplihack-hooks-bin/signal
 
       - name: Package
-        # Use bash on every runner (Git Bash on windows-latest provides
-        # tar+sha256sum) so the .sha256 line format stays byte-identical
-        # across platforms — the npm wrapper's parseChecksumHex relies on
-        # the canonical "<hex>  <file>" sha256sum format. Do NOT switch
-        # this to certutil on Windows; its output is not parseable.
+        # Use bash on every runner so the .sha256 line format stays
+        # byte-identical across platforms — the npm wrapper's
+        # parseChecksumHex relies on the canonical "<hex>  <file>"
+        # sha256sum format.
         shell: bash
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/amplihack${{ matrix.exe_suffix }} dist/ 2>/dev/null || true
-          cp target/${{ matrix.target }}/release/amplihack-hooks${{ matrix.exe_suffix }} dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/amplihack dist/ 2>/dev/null || true
+          cp target/${{ matrix.target }}/release/amplihack-hooks dist/ 2>/dev/null || true
           cd dist && tar czf ../amplihack-${{ matrix.target }}.tar.gz *
           cd .. && sha256sum amplihack-${{ matrix.target }}.tar.gz > amplihack-${{ matrix.target }}.tar.gz.sha256
 
@@ -274,9 +265,6 @@ jobs:
 
             # macOS ARM64 (Apple Silicon)
             curl -fsSL https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-aarch64-apple-darwin.tar.gz | tar xz -C ~/.local/bin/
-
-            # Windows x86_64 (PowerShell)
-            # iwr https://github.com/rysweet/amplihack-rs/releases/download/v${{ needs.version-bump.outputs.version }}/amplihack-x86_64-pc-windows-msvc.tar.gz -OutFile amplihack.tar.gz; tar xzf amplihack.tar.gz
             ```
 
             Or: `amplihack update`

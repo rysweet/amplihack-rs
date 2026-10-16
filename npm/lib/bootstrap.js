@@ -47,9 +47,8 @@ function releaseTargetFor(platform = process.platform, arch = process.arch) {
   if (platform === 'darwin' && arch === 'arm64') {
     return 'aarch64-apple-darwin';
   }
-  if (platform === 'win32' && arch === 'x64') {
-    return 'x86_64-pc-windows-msvc';
-  }
+  // Native Windows has no published release asset (no Windows builds); it
+  // falls through to the source-build path. WSL reports 'linux'.
   return null;
 }
 
