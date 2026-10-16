@@ -105,7 +105,7 @@ The step-02 prompt states the output contract **twice**, under its first and
 its last `##` heading, and shows the same example line both times:
 
 ```
-{"loop_verdict":"CONTINUE","not_converging":[]}
+{"loop_verdict":"STUCK","not_converging":[]}
 ```
 
 1. **First**, directly after the `# Loop-health evaluation` title:
@@ -124,7 +124,7 @@ its last `##` heading, and shows the same example line both times:
    placeholder follows the heading:
 
    ```
-   {"loop_verdict":"CONTINUE","not_converging":[]}
+   {"loop_verdict":"STUCK","not_converging":[]}
 
    CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
    any other word is STUCK.
@@ -134,16 +134,12 @@ The role paragraphs have no heading of their own, so they sit under
 `## OUTPUT CONTRACT`. A separate heading would take the recipe past its
 400-line budget.
 
-The example shows the shape of the answer, not a default verdict. The prompt
-tells the evaluator to answer `STUCK` when it is not sure, but nothing in the
-gate checks that it did.
-
-**Known limitation:** the gate does not reject a `CONTINUE` copied from the
-example. It cannot tell a copied `CONTINUE` from one the evaluator chose, and
-the loops have no iteration cap, so an evaluator that keeps copying the
-example keeps the loop running. Every [fail-safe](#fail-safe-guarantees)
-covers a missing or malformed answer; a well-formed `CONTINUE` passes them
-all.
+The example shows the shape of the answer, not a default verdict. It uses
+`STUCK` on purpose: an evaluator that copies the example instead of deciding
+stops the loop, which is the fail-safe direction. An earlier version showed
+`CONTINUE`, and a copied example was a well-formed `CONTINUE` that passed
+every gate; the loops have no iteration cap, so that could keep a stalled
+loop running.
 
 The order is checked in two places. The shell test reads the step-02 prompt
 on its own, not the whole recipe file, and runs three checks:
@@ -237,9 +233,7 @@ result is `STUCK`, which is what every `verdict` object gave before #1513.
 **Residual risk:** output that *ends* with a quoted object is still read as
 the answer. If the evaluator gives no answer of its own and its last line is a
 `verdict` object copied from the round output, that object is its verdict.
-This is the same risk as a `loop_verdict` object planted in the round output,
-and like the copied `CONTINUE` (see the known limitation under
-[Where the prompt states the contract](#where-the-prompt-states-the-contract)),
+This is the same risk as a `loop_verdict` object planted in the round output:
 nothing in the gate can tell the two apart.
 
 ### Prose token rules
@@ -273,6 +267,16 @@ The prose scan accepts a verdict token only when there is no doubt about it:
   `DONE is premature: two blockers remain.` both give `STUCK` with
   `verdict_source=unparseable_verdict`. This is the rule proposed in the
   issue #1513 discussion; a plain space after the token is not an ending.
+- A legal ending does not rescue a negated qualifier. When the text after
+  the ending, with leading punctuation and spaces removed, starts with the
+  word `not` or `never` (any case), the line is dropped.
+  `CONTINUE: not warranted`, `DONE: not yet`, `CONTINUE -> not really` and
+  `**DONE:** never reached` all give `STUCK` with
+  `verdict_source=unparseable_verdict`. Only whole words count:
+  `DONE: nothing left to fix` and `CONTINUE — notable progress` still match.
+  A negation later in the qualifier (`CONTINUE — the loop made no progress`)
+  is not detected; the prose path is a fallback, and the prompt asks for
+  JSON.
 - A line quoted with `>` does not match; the token must not follow any other
   character.
 - The same token on several lines counts once.
@@ -324,9 +328,7 @@ a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
 If the round verdict is anything else, the pair is inconsistent and the run
 stops as `STUCK`. A `DONE` from the merge loop only hands over to the
 [merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
-again before it merges. A copied `CONTINUE` has the same weakness; see the
-known limitation under
-[Where the prompt states the contract](#where-the-prompt-states-the-contract).
+again before it merges.
 
 The same holds for a token followed by a dashed qualifier. The ending rule
 rejects `DONE is premature`, but a line such as `DONE — but not really` still
@@ -363,6 +365,9 @@ clean, and otherwise the run stops as `STUCK`.
 | `DONE is premature: two blockers remain.` | `STUCK` | `unparseable_verdict` |
 | `DONE-ish, mostly` | `STUCK` | `unparseable_verdict` |
 | `I cannot CONTINUE` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE: not warranted, the loop has stalled` | `STUCK` | `unparseable_verdict` |
+| `DONE: not yet` | `STUCK` | `unparseable_verdict` |
+| `DONE: nothing left to fix` | `DONE` | `evaluator_prose_token` |
 | `continue reading below` | `STUCK` | `unparseable_verdict` |
 | `> CONTINUE` | `STUCK` | `unparseable_verdict` |
 | `DONE` only inside a ```` ``` ```` fenced block | `STUCK` | `unparseable_verdict` |
@@ -652,10 +657,9 @@ Every branch fails toward stopping:
   too. `extract-field` treats a null exactly like an absent field, so the
   `--default true` fail-safe cannot be walked past with a null.
 
-None of these catches a well-formed `CONTINUE` copied from the prompt's
-example; see the known limitation under
-[Where the prompt states the contract](#where-the-prompt-states-the-contract).
-Nor do they catch a verdict copied from the round output. See the residual
+A verdict copied from the prompt's example is `STUCK`, so it stops the loop
+(see [Where the prompt states the contract](#where-the-prompt-states-the-contract)).
+None of these catches a verdict copied from the round output. See the residual
 risks under [The alternate key is final](#the-alternate-key-is-final) and
 [Prose token rules](#prose-token-rules).
 

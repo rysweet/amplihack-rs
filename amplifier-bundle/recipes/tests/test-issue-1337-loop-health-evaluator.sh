@@ -511,6 +511,17 @@ check_rs "1513-prose-negated-sentence" '**DONE** is not reached yet' STUCK unpar
 check_rs "1513-prose-negated-sentence" \
     $'CONTINUE is not warranted; the loop has stalled.\nSTUCK — no diff in two rounds' \
     STUCK evaluator_prose_token
+# A legal ending followed by a qualifier that opens with `not` or `never` is
+# negated too: the separator does not turn the sentence into a verdict.
+check_rs "1513-prose-negated-qualifier" 'CONTINUE: not warranted, the loop has stalled' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" 'DONE: not yet' STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" 'CONTINUE -> not really' STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" '**DONE:** never reached' STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" 'CONTINUE — Not converging' STUCK unparseable_verdict
+# Words that merely start with those letters are not negations.
+check_rs "1513-prose-negated-qualifier" 'DONE: nothing left to fix' DONE evaluator_prose_token
+check_rs "1513-prose-negated-qualifier" 'CONTINUE — notable progress' CONTINUE evaluator_prose_token
 # Endings that remain legal: trailing whitespace, and whitespace before `:`.
 check_rs "1513-prose-ending" 'DONE   ' DONE evaluator_prose_token
 check_rs "1513-prose-ending" 'CONTINUE : findings 3 -> 1' CONTINUE evaluator_prose_token
@@ -716,7 +727,9 @@ fi
 #     in the step-02 prompt alone: the recipe's header comments also mention
 #     the contract, and must not stand in for it.
 # ---------------------------------------------------------------------------
-EXAMPLE_LINE='{"loop_verdict":"CONTINUE","not_converging":[]}'
+# The example is STUCK so a copied example stops the loop instead of
+# authorising another round (the loops have no iteration cap).
+EXAMPLE_LINE='{"loop_verdict":"STUCK","not_converging":[]}'
 p_lines() { printf '%s\n' "${PROMPT}" | LC_ALL=C grep -n "$@"; }  # p_lines <grep args> -> N:text
 p_first() { p_lines "$@" | head -n1 | cut -d: -f1; }
 p_last() { p_lines "$@" | tail -n1 | cut -d: -f1; }

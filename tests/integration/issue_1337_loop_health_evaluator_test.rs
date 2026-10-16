@@ -614,7 +614,8 @@ fn verdict_selection_is_last_object_carrying_the_field_and_the_prompt_says_so() 
 /// order; this keeps it enforced by a plain `cargo test` as well.
 #[test]
 fn evaluator_prompt_states_the_contract_first_and_last() {
-    const EXAMPLE: &str = r#"{"loop_verdict":"CONTINUE","not_converging":[]}"#;
+    // STUCK, so a copied example stops the loop rather than buying a round.
+    const EXAMPLE: &str = r#"{"loop_verdict":"STUCK","not_converging":[]}"#;
     let recipe = recipe_yaml();
     let prompt = field(step(&recipe, "step-02-evaluate-loop-health"), "prompt");
     let lines: Vec<&str> = prompt.lines().collect();

@@ -208,6 +208,20 @@ fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::
     command
         .arg(workspace_helper_path("workflow_agentic_finalization.sh"))
         .arg(mode);
+    // The helper resolves PR metadata from RECIPE_VAR_* before the bare
+    // aliases, so a test run launched from inside a recipe run (auto-drive,
+    // a workflow step) would read that run's PR instead of the fixture's.
+    // Only the fixture's own context may reach the script.
+    for (key, _) in std::env::vars_os() {
+        let key = key.to_string_lossy();
+        if key.starts_with("RECIPE_VAR_")
+            || key.starts_with("TERMINAL_STATE_")
+            || key.starts_with("PR_PUBLISH_RESULT_")
+            || matches!(&*key, "PR_URL" | "PR_NUMBER" | "TERMINAL_STATE")
+        {
+            command.env_remove(&*key);
+        }
+    }
     for (key, value) in envs {
         command.env(key, value);
     }

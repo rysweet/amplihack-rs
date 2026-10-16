@@ -110,7 +110,7 @@ steps:
       `loop_verdict`; prose around it is ignored. `loop_verdict` is exactly one
       of CONTINUE, DONE or STUCK. The contract is repeated at the end. Example:
 
-      {"loop_verdict":"CONTINUE","not_converging":[]}
+      {"loop_verdict":"STUCK","not_converging":[]}
 
       You are the loop-health evaluator for the iterative loop
       **{{loop_name}}** (round just finished: `{{loop_round_label}}`).
@@ -202,7 +202,7 @@ steps:
 
       End with one JSON object on its own line, for example:
 
-      {"loop_verdict":"CONTINUE","not_converging":[]}
+      {"loop_verdict":"STUCK","not_converging":[]}
 
       CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
       any other word is STUCK.
@@ -270,8 +270,7 @@ steps:
             | amplihack orch helper extract-field --field not_converging --default "[]")
           SOURCE="evaluator_alt_key"
         else
-          # Prose token rules: docs/reference/loop-health-evaluator.md. One
-          # byte-matching awk pass, so gawk, mawk and BSD awk agree.
+          # Prose rules (incl. negated qualifiers): docs/reference/loop-health-evaluator.md
           TOKENS=$(printf '%s\n' "$RAW" | LC_ALL=C awk '
             BEGIN {
               lead = "^[[:space:]]*[*]*[[:space:]]*(#+[[:space:]]*)?[*]*"
@@ -287,7 +286,8 @@ steps:
                 m = toupper(substr(line, RSTART, RLENGTH)); m = substr(m, index(m, ":") + 1)
               } else if (match(line, lead "(CONTINUE|DONE|STUCK)" stop)) {
                 m = substr(line, RSTART, RLENGTH)
-              } else next
+              } else next; r = substr(line, RSTART + RLENGTH); sub(/^[^A-Za-z]*/, "", r)
+              if (r ~ /^([Nn][Oo][Tt]|[Nn][Ee][Vv][Ee][Rr])([^A-Za-z]|$)/) next
               if (index(m, "CONTINUE")) print "CONTINUE"
               else if (index(m, "DONE")) print "DONE"
               else if (index(m, "STUCK")) print "STUCK"
