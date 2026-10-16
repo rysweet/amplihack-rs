@@ -6,6 +6,7 @@ use super::store::ProfileStore;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::launch;
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::process::Command;
 
 /// Builds the child command with the profile directory verified at call time.
@@ -19,8 +20,12 @@ pub(super) fn build_profile_command(
     // Validate ownership and mode-bit permissions immediately before creating
     // the child process. `resolve` alone only checks path containment.
     let dir = store.verify_profile_dir(name)?;
+    // `pin_profile_for_descendants` reads the name and root from the path.
+    debug_assert_eq!(dir.file_name(), Some(OsStr::new(name.as_str())));
     let mut cmd = Command::new(&binary.path);
-    cmd.args(args).env("CLAUDE_CONFIG_DIR", dir);
+    cmd.args(args).env("CLAUDE_CONFIG_DIR", &dir);
+    // Amplihack launches started inside this session keep its profile (#1567).
+    launch::pin_profile_for_descendants(&mut cmd, &dir);
     Ok(cmd)
 }
 

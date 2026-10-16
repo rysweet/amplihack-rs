@@ -7,6 +7,8 @@
 
 mod cleanup;
 mod command_builder;
+#[cfg(test)]
+mod command_builder_tests;
 mod default_branch;
 mod launcher;
 #[cfg(test)]
