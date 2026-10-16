@@ -269,14 +269,20 @@ The prose scan accepts a verdict token only when there is no doubt about it:
   issue #1513 discussion; a plain space after the token is not an ending.
 - A legal ending does not rescue a negated qualifier. When the text after
   the ending, with leading punctuation and spaces removed, starts with the
-  word `not` or `never` (any case), the line is dropped.
-  `CONTINUE: not warranted`, `DONE: not yet`, `CONTINUE -> not really` and
-  `**DONE:** never reached` all give `STUCK` with
-  `verdict_source=unparseable_verdict`. Only whole words count:
-  `DONE: nothing left to fix` and `CONTINUE — notable progress` still match.
-  A negation later in the qualifier (`CONTINUE — the loop made no progress`)
-  is not detected; the prose path is a fallback, and the prompt asks for
-  JSON.
+  word `not`, `no` or `never` (any case), a `CONTINUE` or `DONE` line counts
+  as a conflicting token, so the whole answer is `STUCK` with
+  `verdict_source=unparseable_verdict`, whatever other lines say. It is not
+  simply skipped, so it can never leave a different token standing alone. A
+  `STUCK` line keeps its token (`STUCK — no diff`, `STUCK — not converging`):
+  either reading stops the loop, and next to a `CONTINUE` line it is still a
+  conflict. `CONTINUE: not warranted`, `DONE: not yet`,
+  `CONTINUE -> not really`, `**DONE:** never reached` and
+  `DONE: no blockers remain` all give `STUCK`; the last one is a false
+  positive that stops the loop, which is the fail-safe direction. Only whole
+  words count: `DONE: nothing left to fix` and `CONTINUE — notable progress`
+  still match. A negation later in the qualifier
+  (`CONTINUE — the loop made no progress`) is not detected; the prose path is
+  a fallback, and the prompt asks for JSON.
 - A line quoted with `>` does not match; the token must not follow any other
   character.
 - The same token on several lines counts once.
@@ -367,6 +373,7 @@ clean, and otherwise the run stops as `STUCK`.
 | `I cannot CONTINUE` | `STUCK` | `unparseable_verdict` |
 | `CONTINUE: not warranted, the loop has stalled` | `STUCK` | `unparseable_verdict` |
 | `DONE: not yet` | `STUCK` | `unparseable_verdict` |
+| `STUCK — not converging` on one line, `CONTINUE` on another | `STUCK` | `unparseable_verdict` |
 | `DONE: nothing left to fix` | `DONE` | `evaluator_prose_token` |
 | `continue reading below` | `STUCK` | `unparseable_verdict` |
 | `> CONTINUE` | `STUCK` | `unparseable_verdict` |

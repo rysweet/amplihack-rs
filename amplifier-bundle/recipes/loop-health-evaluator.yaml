@@ -287,7 +287,7 @@ steps:
               } else if (match(line, lead "(CONTINUE|DONE|STUCK)" stop)) {
                 m = substr(line, RSTART, RLENGTH)
               } else next; r = substr(line, RSTART + RLENGTH); sub(/^[^A-Za-z]*/, "", r)
-              if (r ~ /^([Nn][Oo][Tt]|[Nn][Ee][Vv][Ee][Rr])([^A-Za-z]|$)/) next
+              if (!index(m, "STUCK") && r ~ /^([Nn][Oo][Tt]?|[Nn][Ee][Vv][Ee][Rr])([^A-Za-z]|$)/) { print "NEGATED"; next }
               if (index(m, "CONTINUE")) print "CONTINUE"
               else if (index(m, "DONE")) print "DONE"
               else if (index(m, "STUCK")) print "STUCK"

@@ -511,14 +511,22 @@ check_rs "1513-prose-negated-sentence" '**DONE** is not reached yet' STUCK unpar
 check_rs "1513-prose-negated-sentence" \
     $'CONTINUE is not warranted; the loop has stalled.\nSTUCK — no diff in two rounds' \
     STUCK evaluator_prose_token
-# A legal ending followed by a qualifier that opens with `not` or `never` is
-# negated too: the separator does not turn the sentence into a verdict.
+# A legal ending followed by a qualifier that opens with `not`, `no` or
+# `never` negates CONTINUE or DONE, and counts as a conflicting token rather
+# than being skipped. A STUCK line keeps its token either way.
 check_rs "1513-prose-negated-qualifier" 'CONTINUE: not warranted, the loop has stalled' \
     STUCK unparseable_verdict
 check_rs "1513-prose-negated-qualifier" 'DONE: not yet' STUCK unparseable_verdict
 check_rs "1513-prose-negated-qualifier" 'CONTINUE -> not really' STUCK unparseable_verdict
 check_rs "1513-prose-negated-qualifier" '**DONE:** never reached' STUCK unparseable_verdict
 check_rs "1513-prose-negated-qualifier" 'CONTINUE — Not converging' STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" 'DONE: no, two blockers remain' STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" $'STUCK — not converging on the review\nCONTINUE' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-negated-qualifier" 'STUCK — not converging on the review' \
+    STUCK evaluator_prose_token
+check_rs "1513-prose-negated-qualifier" $'DONE: not yet\nCONTINUE — progress' \
+    STUCK unparseable_verdict
 # Words that merely start with those letters are not negations.
 check_rs "1513-prose-negated-qualifier" 'DONE: nothing left to fix' DONE evaluator_prose_token
 check_rs "1513-prose-negated-qualifier" 'CONTINUE — notable progress' CONTINUE evaluator_prose_token
