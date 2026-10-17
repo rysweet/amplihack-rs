@@ -16,6 +16,12 @@
 //! the install procedure is invoked automatically and the user sees a
 //! one-line notice on stderr.
 //!
+//! ## Never an implicit downgrade (#1526)
+//!
+//! When the running binary is older than the stamp, nothing is installed and
+//! one warning goes to stderr. Guard #1 runs before the bundle check, Guard #2
+//! under the install lock; explicit `amplihack install` is never guarded.
+//!
 //! ## Failure mode
 //!
 //! Per the project's Zero-BS philosophy, install failures **propagate**
@@ -26,13 +32,15 @@
 use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use anyhow::{Context, Result};
 use fs4::fs_std::FileExt;
 
 use crate::commands::install::bundle_compat_cache;
-use crate::commands::install::version_stamp;
+use crate::commands::install::paths::{home_dir, sanitize_path};
+use crate::commands::install::version_stamp::{self, VersionRelation};
 
 /// Env var that fully disables the auto-restage check.
 ///
@@ -65,6 +73,10 @@ const SKIP_FLAGS: &[&str] = &["--help", "-h", "--version", "-V"];
 /// critical section (issue #502 R5). Sits next to the install stamp under
 /// `~/.amplihack/`.
 const INSTALL_LOCK_FILE: &str = ".install.lock";
+
+/// Issue #1526: set once this process has emitted the implicit-downgrade
+/// warning, so the launch bootstrap does not print it a second time.
+static DOWNGRADE_WARNED: AtomicBool = AtomicBool::new(false);
 
 /// Public entrypoint, called from `bins/amplihack/src/main.rs` immediately
 /// after the update-notice check and before `commands::dispatch`.
@@ -130,11 +142,98 @@ pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
 /// Resolve the path to the install advisory lock file. Mirrors
 /// `version_stamp::installed_version_path` so both files live side-by-side.
 fn install_lock_path() -> Result<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|p| !p.as_os_str().is_empty())
-        .context("HOME is not set")?;
-    Ok(home.join(".amplihack").join(INSTALL_LOCK_FILE))
+    Ok(home_dir()?.join(".amplihack").join(INSTALL_LOCK_FILE))
+}
+
+/// The five-line implicit-downgrade warning (issue #1526).
+///
+/// `installed` is the stamp's framework version, the one the refusal compared
+/// against. `installed_binaries` is its `binaries:` line (`None`: unknown).
+///
+/// When the two agree, every binary in `~/.local/bin` is at that version and
+/// the `installed:` line gives it beside the path. When they differ, an
+/// implicit re-stage kept *some* binaries at the `binaries:` version and may
+/// have upgraded others: `deploy_binaries` decides each one separately, so
+/// `~/.local/bin/amplihack` can be at the framework version while
+/// `amplihack-hooks` stays behind. The stamp does not say which, so no
+/// version is attached to the path; both are printed after it, each
+/// labelled for what it describes.
+fn format_downgrade_warning(
+    running_exe: Option<&Path>,
+    installed_bin: &Path,
+    running: &str,
+    installed: &str,
+    installed_binaries: Option<&str>,
+) -> String {
+    let running_path = match running_exe {
+        Some(exe) => sanitize_path(exe),
+        None => "<unknown>".to_string(),
+    };
+    let installed_version = match installed_binaries {
+        Some(binaries) if binaries == installed => format!(" (v{installed})"),
+        Some(binaries) => format!("; framework v{installed}; binaries kept from v{binaries}"),
+        None => format!("; framework v{installed}; binaries kept from an unknown version"),
+    };
+    format!(
+        "amplihack: warning: not re-staging framework assets — \
+         this amplihack is older than the installed one.\n\
+         \x20 running:   {running_path} (v{running})\n\
+         \x20 installed: {}{installed_version}\n\
+         \x20 Installed binaries and ~/.claude/settings.json were left unchanged.\n\
+         \x20 Run `amplihack install` to replace them with this build.\n",
+        sanitize_path(installed_bin)
+    )
+}
+
+/// Write the implicit-downgrade warning to `notice`, at most once per process
+/// and never under `AMPLIHACK_SKIP_AUTO_INSTALL`. `installed` is the stamp's
+/// framework version; the binaries' version is read from the stamp here.
+///
+/// Best effort: the refusal holds whether or not the warning is written, so
+/// a failure is logged at debug and never fails the command.
+pub(crate) fn warn_implicit_downgrade_once<W: Write>(notice: &mut W, installed: &str) {
+    if env_bypass_set() || DOWNGRADE_WARNED.load(AtomicOrdering::Relaxed) {
+        return;
+    }
+    let home = match home_dir() {
+        Ok(home) => home,
+        Err(e) => {
+            tracing::debug!("self_heal: cannot resolve the installed binary; no warning: {e:#}");
+            return;
+        }
+    };
+    if DOWNGRADE_WARNED.swap(true, AtomicOrdering::Relaxed) {
+        return;
+    }
+    let running_exe = std::env::current_exe()
+        .inspect_err(|e| tracing::debug!("self_heal: cannot resolve the running executable: {e}"))
+        .ok()
+        .map(|exe| crate::commands::install::resolve_running_binary_source(&exe));
+    let installed_bin = crate::path_conflicts::preferred_user_bin(&home)
+        .join(crate::path_conflicts::binary_filename("amplihack"));
+    // The stamp's `binaries:` line: the version of the binaries an implicit
+    // re-stage kept. Unreadable is reported as unknown, never guessed.
+    let installed_binaries = version_stamp::read_binaries_version()
+        .inspect_err(|e| tracing::debug!("self_heal: cannot read the binaries version: {e:#}"))
+        .ok()
+        .flatten();
+    let block = format_downgrade_warning(
+        running_exe.as_deref(),
+        &installed_bin,
+        crate::VERSION,
+        installed,
+        installed_binaries.as_deref(),
+    );
+    if let Err(e) = notice.write_all(block.as_bytes()) {
+        tracing::debug!("self_heal: failed to emit implicit-downgrade warning: {e}");
+    }
+}
+
+/// Test hook for [`DOWNGRADE_WARNED`]. Callers hold
+/// `crate::test_support::env_lock`, so the flag is never raced.
+#[cfg(test)]
+pub(crate) fn set_downgrade_warned(warned: bool) {
+    DOWNGRADE_WARNED.store(warned, AtomicOrdering::Relaxed);
 }
 
 /// Run `body` while holding an exclusive advisory `flock` on the install
@@ -201,6 +300,21 @@ where
     let stamp = version_stamp::read_installed_version().context("reading install version stamp")?;
     let expected = crate::VERSION;
 
+    // Issue #1526 Guard #1: before the #1271 bundle check (a re-stage too)
+    // and the lock, so a refusal parses no recipe YAML and writes nothing.
+    // Bypass keeps its own branch below: it never installs.
+    if !env_bypass_set()
+        && let Some(installed) = stamp.as_deref()
+        && version_stamp::relation(expected, installed) == VersionRelation::Older
+    {
+        // debug: tracing writes to stdout; the warning goes to `notice`.
+        tracing::debug!(
+            "self_heal: binary {expected} is older than install stamp {installed}; refusing implicit re-stage"
+        );
+        warn_implicit_downgrade_once(notice, installed);
+        return Ok(());
+    }
+
     // Issue #502 R6: when bypass is set AND there is a real skew, emit a
     // single-line stderr diagnostic so CI logs surface the drift. Both
     // values are constant or regex-validated semver, so plain formatting
@@ -261,8 +375,21 @@ where
     with_install_lock(|| {
         // Re-check after acquiring the lock — the previous holder may
         // have already brought the stamp current.
-        let stamp_now = version_stamp::read_installed_version()
+        // Quiet: the read above has already reported a malformed stamp.
+        let stamp_now = version_stamp::read_installed_version_quiet()
             .context("re-reading install stamp under lock")?;
+        // Issue #1526 Guard #2: a newer install may have finished while this
+        // process waited on the lock.
+        if let Some(installed) = stamp_now.as_deref()
+            && version_stamp::relation(expected, installed) == VersionRelation::Older
+        {
+            tracing::debug!(
+                "self_heal: install stamp became {installed} while waiting on the install lock; \
+                 binary {expected} refuses implicit re-stage"
+            );
+            warn_implicit_downgrade_once(notice, installed);
+            return Ok(());
+        }
         // Deliberately uncached: a concurrent installer may have rewritten
         // the bundle moments ago, and this is the decision that guards
         // against re-running the installer needlessly.
@@ -274,9 +401,9 @@ where
             );
             return Ok(());
         }
+        // The install writes the stamp itself (issue #1526: not after a
+        // refused binary deploy, which only it knows about).
         install_fn().context("running install during startup self-heal")?;
-        version_stamp::write_installed_version(expected)
-            .context("writing install version stamp after self-heal")?;
         // The bundle just changed under us; drop the memoised verdict so the
         // next invocation revalidates once and re-primes the cache.
         if let Ok(path) = bundle_compat_cache_path() {
@@ -434,6 +561,7 @@ mod tests {
                     None => std::env::remove_var(SKIP_ENV),
                 }
             }
+            set_downgrade_warned(false);
             EnvGuard {
                 prior_home,
                 prior_skip,
@@ -1266,5 +1394,170 @@ steps:
             }
             n => panic!("unexpected installer run count: {n}"),
         }
+    }
+
+    // ----- Issue #1526: never an implicit downgrade -----
+    //
+    // The behavioural tests live in
+    // `commands/install/tests/issue_1526_implicit_downgrade.rs`, and the
+    // precedence table in `version_stamp`. These pin the warning text and the
+    // one failure a refusal must absorb: an unwritable stderr.
+
+    /// Every shape of the warning, byte for byte. The first row is the
+    /// documented example in `docs/features/self-heal-asset-restage.md`.
+    /// SR-5: control characters in a path print as `?`, so it can neither
+    /// forge a line nor smuggle a terminal escape.
+    #[test]
+    fn format_downgrade_warning_cases() {
+        // (case, running exe, installed binary, running, installed framework,
+        //  installed binaries, exact block)
+        type Case<'a> = (
+            &'a str,
+            Option<&'a Path>,
+            &'a Path,
+            &'a str,
+            &'a str,
+            Option<&'a str>,
+            &'a str,
+        );
+        let cases: &[Case] = &[
+            (
+                "documented example",
+                Some(Path::new("/home/dev/.cargo/bin/amplihack")),
+                Path::new("/home/dev/.local/bin/amplihack"),
+                "0.18.0",
+                "0.18.39",
+                Some("0.18.39"),
+                "\
+amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
+  running:   /home/dev/.cargo/bin/amplihack (v0.18.0)
+  installed: /home/dev/.local/bin/amplihack (v0.18.39)
+  Installed binaries and ~/.claude/settings.json were left unchanged.
+  Run `amplihack install` to replace them with this build.
+",
+            ),
+            (
+                "unresolvable running binary: <unknown>",
+                None,
+                Path::new("/home/dev/.local/bin/amplihack"),
+                "1.0.0",
+                "1.0.1",
+                Some("1.0.1"),
+                "\
+amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
+  running:   <unknown> (v1.0.0)
+  installed: /home/dev/.local/bin/amplihack (v1.0.1)
+  Installed binaries and ~/.claude/settings.json were left unchanged.
+  Run `amplihack install` to replace them with this build.
+",
+            ),
+            (
+                "hostile paths: newline, CR and ESC become `?`",
+                Some(Path::new("/tmp/evil\n\u{1b}[2Jdir/amplihack")),
+                Path::new("/home/dev\r\n  installed: forged/.local/bin/amplihack"),
+                "1.0.0",
+                "1.0.1",
+                Some("1.0.1"),
+                concat!(
+                    "amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.\n",
+                    "  running:   /tmp/evil??[2Jdir/amplihack (v1.0.0)\n",
+                    "  installed: /home/dev??  installed: forged/.local/bin/amplihack (v1.0.1)\n",
+                    "  Installed binaries and ~/.claude/settings.json were left unchanged.\n",
+                    "  Run `amplihack install` to replace them with this build.\n",
+                ),
+            ),
+            (
+                // Stamp `0.19.0\nbinaries: unknown` (a pre-#502 install or a
+                // failed copy): the binary's version is not claimed.
+                "binaries unknown: no version is attributed to the named binary",
+                Some(Path::new("/home/dev/.cargo/bin/amplihack")),
+                Path::new("/home/dev/.local/bin/amplihack"),
+                "0.18.5",
+                "0.19.0",
+                None,
+                "\
+amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
+  running:   /home/dev/.cargo/bin/amplihack (v0.18.5)
+  installed: /home/dev/.local/bin/amplihack; framework v0.19.0; binaries kept from an unknown version
+  Installed binaries and ~/.claude/settings.json were left unchanged.
+  Run `amplihack install` to replace them with this build.
+",
+            ),
+            (
+                // Stamp `0.19.0\nbinaries: 0.18.1`. Reached either when
+                // ~/.local/bin/amplihack itself was kept, or when it was
+                // upgraded to 0.19.0 and only hooks/resolver were kept (the
+                // `cargo install --git … amplihack` case: no hooks sibling).
+                // Both versions are printed and neither is pinned to the path.
+                "binaries kept at an older version: neither version is attached to the path",
+                Some(Path::new("/home/dev/.cargo/bin/amplihack")),
+                Path::new("/home/dev/.local/bin/amplihack"),
+                "0.18.5",
+                "0.19.0",
+                Some("0.18.1"),
+                "\
+amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
+  running:   /home/dev/.cargo/bin/amplihack (v0.18.5)
+  installed: /home/dev/.local/bin/amplihack; framework v0.19.0; binaries kept from v0.18.1
+  Installed binaries and ~/.claude/settings.json were left unchanged.
+  Run `amplihack install` to replace them with this build.
+",
+            ),
+        ];
+        for &(case, running_exe, installed_bin, running, installed, binaries, expected) in cases {
+            let block =
+                format_downgrade_warning(running_exe, installed_bin, running, installed, binaries);
+            assert_eq!(block, expected, "{case}");
+        }
+    }
+
+    /// SR-1 (#1526 D3): the warning is best effort. A refusal holds, and the
+    /// command still succeeds, when stderr cannot be written: a closed stderr
+    /// must not turn "left your newer install alone" into a non-zero exit.
+    #[test]
+    fn downgrade_refusal_survives_a_failed_warning_write() {
+        struct FailingWriter;
+        impl Write for FailingWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("stderr closed"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("stderr closed"))
+            }
+        }
+
+        let running = semver::Version::parse(crate::VERSION).expect("crate::VERSION is semver");
+        let newer = format!("{}.0.0", running.major + 1);
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        write_compatible_installed_bundle(tmp.path());
+        version_stamp::write_installed_version(&newer).unwrap();
+        let stamp_path = version_stamp::installed_version_path().unwrap();
+        let stamp_before = fs::read(&stamp_path).unwrap();
+
+        let calls = Cell::new(0u32);
+        let result = ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "recipe", "run", "x"]),
+            &mut FailingWriter,
+            counting_installer(&calls, crate::VERSION),
+        );
+
+        if let Err(e) = result {
+            panic!(
+                "v{} over a v{newer} stamp: a failed warning write must not fail the \
+                 command: {e:#}",
+                crate::VERSION
+            );
+        }
+        assert_eq!(
+            calls.get(),
+            0,
+            "the refusal must hold when the warning cannot be written"
+        );
+        assert_eq!(
+            fs::read(&stamp_path).unwrap(),
+            stamp_before,
+            "the newer install's stamp must be untouched"
+        );
     }
 }

@@ -484,7 +484,7 @@ fn ensure_settings_json_repo_local_backup_is_owner_only() {
 // ─── hooks_registered_in_settings: atomic read (issue #1123 precedent) ───
 
 /// Collapsing the `exists()` probe + read into a single read must preserve the
-/// absent-vs-unreadable distinction. Absent maps to `Ok(false)` exactly as the
+/// absent-vs-unreadable distinction. Absent maps to `Missing` exactly as the
 /// probe did; present-but-unreadable must still be a hard error rather than
 /// being silently reported as "no hooks registered", which would make
 /// `ensure_framework_installed` rewrite a settings file it could not read.
@@ -492,10 +492,11 @@ fn ensure_settings_json_repo_local_backup_is_owner_only() {
 fn hooks_registered_in_settings_distinguishes_absent_from_unreadable() {
     let temp = tempfile::tempdir().unwrap();
 
-    // Absent file → Ok(false), no error.
+    // Absent file → Missing, no error.
     let missing = temp.path().join("does-not-exist.json");
-    assert!(
-        !hooks_registered_in_settings(&missing).unwrap(),
+    assert_eq!(
+        hooks_registered_in_settings(&missing).unwrap(),
+        HookRegistration::Missing,
         "a nonexistent settings.json must read as 'no hooks registered'"
     );
 
@@ -504,20 +505,27 @@ fn hooks_registered_in_settings_distinguishes_absent_from_unreadable() {
     let dir_at_path = temp.path().join("settings.json");
     fs::create_dir(&dir_at_path).unwrap();
     let err = hooks_registered_in_settings(&dir_at_path)
-        .expect_err("an unreadable settings.json must be an error, not Ok(false)");
+        .expect_err("an unreadable settings.json must be an error, not Missing");
     assert!(
         err.to_string().contains("failed to read"),
         "the unreadable case must keep its context message; got: {err}"
     );
 }
 
-/// Malformed JSON is deliberately *not* an error — it maps to `Ok(false)` so
-/// the caller repairs the file. Pinned because the read collapse sits directly
-/// above this branch and must not have disturbed it.
+/// Issue #1526 (SR-8): malformed JSON is its own verdict, never `Missing`, so
+/// the caller does not "repair" (back up and rewrite) a file it cannot parse.
 #[test]
-fn hooks_registered_in_settings_treats_malformed_json_as_unregistered() {
+fn hooks_registered_in_settings_reports_malformed_json_as_unparseable() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("settings.json");
     fs::write(&path, "{ not json").unwrap();
-    assert!(!hooks_registered_in_settings(&path).unwrap());
+    assert_eq!(
+        hooks_registered_in_settings(&path).unwrap(),
+        HookRegistration::Unparseable
+    );
+    fs::write(&path, r#"{"model": "x"}"#).unwrap();
+    assert_eq!(
+        hooks_registered_in_settings(&path).unwrap(),
+        HookRegistration::Missing
+    );
 }
