@@ -876,8 +876,8 @@ The limit applies only when someone runs `amplihack claude -p` and pipes the
 prompt on stdin by hand.
 
 The tests that hold this contract are `tests_issue_1570_reasoner` (stdin
-delivery and two-argument `reasoner_command`), `issue_1570_launcher` and the
-`profile_exports_*` tests in `multitask/command_builder_tests.rs`, and
+delivery and two-argument `reasoner_command`), `multitask/issue_1570_launcher.rs`,
+the `profile_exports_*` tests in `multitask/command_builder_tests.rs`, and
 `test_execute_recipe_via_rust_propagates_agent_binary_env` in
 `recipe/run/tests_execute.rs`.
 
