@@ -488,13 +488,15 @@ followed by `... and N more`.
 
 These rules make the printed commands safe to run:
 
-- **No root over protected source.** A directory removal root is narrowed to
-  the violating path itself when the index (`git ls-files`) holds anything
-  under that directory that is allowlisted, matches no rule, or may be source.
-  With an allowlisted, tracked `docs/build/guide.md`, an untracked
-  `docs/build/scratch.log` gets `rm -rf -- 'docs/build/scratch.log'`, never
-  `-- 'docs/build'`. Allowlisted paths never appear as violations, so only the
-  index can reveal them.
+- **No root over protected paths.** A directory removal root is narrowed to
+  the violating path itself when anything under that directory is protected:
+  an indexed path that is allowlisted, matches no rule, or may be source; a
+  scanned untracked or ignored path the allowlist admits; or a registered
+  sibling worktree under `worktrees/`. With an allowlisted
+  `docs/build/guide.md`, an untracked `docs/build/scratch.log` gets
+  `rm -rf -- 'docs/build/scratch.log'`, never `-- 'docs/build'`; a leaked
+  `worktrees/stale/leak.txt` next to a registered `worktrees/feat/x` gets
+  `rm -rf -- 'worktrees/stale/leak.txt'`, never `-- 'worktrees'`.
 - **Segment-boundary containment.** When a removal root also contains
   pre-existing paths or possibly-source paths, the guard lists the introduced
   paths one by one. It does not untrack the whole directory. Containment is

@@ -452,12 +452,49 @@ pub fn scan_artifacts(
     let allowlist = load_effective_allowlist(config, &repo)?;
     let index = read_index(&repo)?;
     let manifests = manifest_dirs(&index);
+    // Files inside legitimately-registered sibling task worktrees (concurrent
+    // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution:
+    // they are never flagged (issue #857) and never swept into a removal root.
+    let registered = registered_nested_worktree_prefixes(&repo);
+    let mut protected = protected_index_paths(&index, &allowlist, &manifests);
+    protected.extend(
+        registered
+            .iter()
+            .map(|prefix| prefix.trim_end_matches('/').to_string()),
+    );
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     let mut baseline = None;
+    let mut add = |paths: &[String],
+                   source: ArtifactSource,
+                   introduced: Option<&BTreeSet<String>>,
+                   protected: &mut BTreeSet<String>| {
+        for path in paths {
+            if source != ArtifactSource::Tracked
+                && is_inside_registered_nested_worktree(path, &registered)
+            {
+                continue;
+            }
+            // Outside the index only an allowlist entry marks a path as
+            // source; everything else there is matched output or exempt
+            // runtime state.
+            if allowlist.is_allowed(path) {
+                protected.insert(path.clone());
+            }
+            add_violation_if_prohibited(
+                path,
+                source,
+                &allowlist,
+                &manifests,
+                introduced,
+                &mut violations,
+                &mut seen,
+            );
+        }
+    };
 
     if config.mode.scans_staged() {
-        scan_git_paths(
+        let staged = git_paths(
             &repo,
             &[
                 "diff",
@@ -466,13 +503,8 @@ pub fn scan_artifacts(
                 "--name-only",
                 "-z",
             ],
-            ArtifactSource::Staged,
-            &allowlist,
-            &manifests,
-            None,
-            &mut violations,
-            &mut seen,
         )?;
+        add(&staged, ArtifactSource::Staged, None, &mut protected);
     }
 
     if config.mode.scans_worktree() {
@@ -482,33 +514,35 @@ pub fn scan_artifacts(
         // live worktree state the change is carrying right now.
         baseline = resolve_baseline(&repo, config.baseline.as_deref())?;
         let introduced = introduced_paths(&repo, baseline.as_ref())?;
-        for path in &index {
-            add_violation_if_prohibited(
-                path,
-                ArtifactSource::Tracked,
-                &allowlist,
-                &manifests,
-                Some(&introduced),
-                &mut violations,
-                &mut seen,
-            );
-        }
-        scan_git_paths(
-            &repo,
-            &["ls-files", "--others", "--exclude-standard", "-z"],
-            ArtifactSource::Untracked,
-            &allowlist,
-            &manifests,
-            None,
-            &mut violations,
-            &mut seen,
-        )?;
+        add(
+            &index,
+            ArtifactSource::Tracked,
+            Some(&introduced),
+            &mut protected,
+        );
+        let untracked = git_paths(&repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        add(&untracked, ArtifactSource::Untracked, None, &mut protected);
         if config.mode.scans_ignored_present() {
-            scan_ignored_present(&repo, &allowlist, &manifests, &mut violations, &mut seen)?;
+            let ignored = git_paths(
+                &repo,
+                &[
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "-z",
+                ],
+            )?;
+            add(
+                &ignored,
+                ArtifactSource::IgnoredPresent,
+                None,
+                &mut protected,
+            );
         }
     }
 
-    narrow_roots_holding_protected_paths(&mut violations, &index, &allowlist, &manifests);
+    narrow_roots_holding_protected_paths(&mut violations, &protected);
 
     violations.sort_by(|left, right| {
         left.path
@@ -691,15 +725,19 @@ const COVERAGE_REPORT_FILES: &[&str] = &[
     "clover.xml",
 ];
 
-/// Every indexed path (`git ls-files -z`: tracked and staged), normalized.
-/// Read once per scan; it feeds the tracked scan, [`manifest_dirs`] and
-/// [`narrow_roots_holding_protected_paths`].
+/// Every indexed path (`git ls-files -z`: tracked and staged). Read once per
+/// scan; it feeds the tracked scan, [`manifest_dirs`] and the protected set.
+fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
+    git_paths(repo, &["ls-files", "-z"])
+}
+
+/// The NUL-separated paths `git <args>` prints, slash-normalized, without a
+/// trailing `/`, empty entries dropped.
 ///
-/// Fails closed: a git failure is an error, never an empty index, because an
+/// Fails closed: a git failure is an error, never an empty list, because an
 /// unreadable index must not silently change what the guard matches or which
 /// removal commands it prints.
-fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
-    let args = ["ls-files", "-z"];
+fn git_paths(repo: &Path, args: &[&str]) -> Result<Vec<String>, ArtifactGuardError> {
     let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
@@ -720,8 +758,8 @@ fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
     Ok(output
         .stdout
         .split(|byte| *byte == 0)
-        .filter(|raw| !raw.is_empty())
-        .map(|raw| normalize_slashes(&String::from_utf8_lossy(raw)))
+        .map(|raw| normalize_slashes(String::from_utf8_lossy(raw).trim_end_matches('/')))
+        .filter(|path| !path.is_empty())
         .collect())
 }
 
@@ -738,27 +776,34 @@ fn manifest_dirs(index: &[String]) -> BTreeSet<String> {
         .collect()
 }
 
-/// Narrow a directory removal root to the violating path itself whenever the
-/// index holds a *protected* path under that directory: one the allowlist
-/// admits, one no rule matches, or one that may be source (no removal root of
-/// its own). Protected paths never become violations, so without this an
-/// untracked `docs/build/scratch.log` would get `rm -rf -- 'docs/build'` and
-/// delete an allowlisted, tracked `docs/build/guide.md` (issue #1536).
-fn narrow_roots_holding_protected_paths(
-    violations: &mut [ArtifactViolation],
+/// Indexed paths a removal command must never touch: allowlisted, matched by
+/// no rule, or possibly source (matched with no removal root).
+fn protected_index_paths(
     index: &[String],
     allowlist: &ArtifactAllowlist,
     manifests: &BTreeSet<String>,
-) {
-    let protected: BTreeSet<&str> = index
+) -> BTreeSet<String> {
+    index
         .iter()
         .filter(|path| {
             allowlist.is_allowed(path)
                 || rule_for_path(path, ArtifactSource::Tracked, manifests)
                     .is_none_or(|(_, root)| root.is_none())
         })
-        .map(String::as_str)
-        .collect();
+        .cloned()
+        .collect()
+}
+
+/// Narrow a directory removal root to the violating path itself whenever a
+/// `protected` path lies under that directory. Protected paths never become
+/// violations, so without this an untracked `docs/build/scratch.log` would get
+/// `rm -rf -- 'docs/build'` and delete an allowlisted `docs/build/guide.md`,
+/// and a leaked `worktrees/stale/` would get `rm -rf -- 'worktrees'` and
+/// delete every registered sibling worktree (issue #1536).
+fn narrow_roots_holding_protected_paths(
+    violations: &mut [ArtifactViolation],
+    protected: &BTreeSet<String>,
+) {
     for violation in violations {
         let Some(root) = violation.removal_root.as_deref() else {
             continue;
@@ -768,7 +813,7 @@ fn narrow_roots_holding_protected_paths(
         }
         let dir = format!("{root}/");
         if protected
-            .range(dir.as_str()..)
+            .range(dir.clone()..)
             .next()
             .is_some_and(|path| path.starts_with(&dir))
         {
@@ -812,107 +857,6 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
         )));
     }
     Ok(canonical)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn scan_git_paths(
-    repo: &Path,
-    args: &[&str],
-    source: ArtifactSource,
-    allowlist: &ArtifactAllowlist,
-    manifests: &BTreeSet<String>,
-    introduced: Option<&BTreeSet<String>>,
-    violations: &mut Vec<ArtifactViolation>,
-    seen: &mut BTreeSet<(ArtifactSource, String)>,
-) -> Result<(), ArtifactGuardError> {
-    let output = amplihack_git::command()
-        .args(["-C"])
-        .arg(repo)
-        .args(args)
-        .output()
-        .map_err(|error| ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: None,
-            stderr: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let path = String::from_utf8_lossy(raw);
-        add_violation_if_prohibited(
-            &path, source, allowlist, manifests, introduced, violations, seen,
-        );
-    }
-    Ok(())
-}
-
-fn scan_ignored_present(
-    repo: &Path,
-    allowlist: &ArtifactAllowlist,
-    manifests: &BTreeSet<String>,
-    violations: &mut Vec<ArtifactViolation>,
-    seen: &mut BTreeSet<(ArtifactSource, String)>,
-) -> Result<(), ArtifactGuardError> {
-    let args = [
-        "ls-files",
-        "--others",
-        "--ignored",
-        "--exclude-standard",
-        "-z",
-    ];
-    let output = amplihack_git::command()
-        .args(["-C"])
-        .arg(repo)
-        .args(args)
-        .output()
-        .map_err(|error| ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: None,
-            stderr: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-
-    // Files inside legitimately-registered sibling task worktrees (concurrent
-    // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution and
-    // must not be flagged as `nested-worktree` violations (issue #857). Genuine
-    // leaked directories under `worktrees/` (not registered git worktrees) are
-    // still flagged. `git ls-files --others --ignored` recurses into these
-    // gitignored nested worktrees, so we filter their paths out explicitly.
-    let registered_nested = registered_nested_worktree_prefixes(repo);
-
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let path = String::from_utf8_lossy(raw);
-        if is_inside_registered_nested_worktree(&path, &registered_nested) {
-            continue;
-        }
-        add_violation_if_prohibited(
-            &path,
-            ArtifactSource::IgnoredPresent,
-            allowlist,
-            manifests,
-            None,
-            violations,
-            seen,
-        );
-    }
-    Ok(())
 }
 
 /// Repo-relative path prefixes (each ending in `/`) of git worktrees that are

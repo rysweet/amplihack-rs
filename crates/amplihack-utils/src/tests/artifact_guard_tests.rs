@@ -473,6 +473,14 @@ fn ignored_present_inside_registered_sibling_worktree_is_not_flagged() {
         "leaked unregistered worktree must still be flagged: {:?}",
         report.violations
     );
+    // `rm -rf -- 'worktrees'` would delete the registered sibling too.
+    for violation in &report.violations {
+        assert_ne!(
+            violation.removal_root.as_deref(),
+            Some("worktrees"),
+            "a root holding a registered worktree must be narrowed: {violation:?}"
+        );
+    }
 }
 
 #[test]
@@ -1780,5 +1788,34 @@ fn a_directory_holding_allowlisted_source_is_never_a_removal_root() {
             .iter()
             .all(|violation| violation.path != "docs/build/guide.md"),
         "the allowlisted file must not be reported"
+    );
+}
+
+#[test]
+fn an_untracked_allowlisted_file_is_never_swept_into_a_removal_root() {
+    // The allowlisted file is in neither the index nor the violations, so only
+    // the untracked scan itself can protect it.
+    let tmp = repo_on_main();
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "docs/build/guide.md\n",
+    );
+    write_file(&tmp.path().join("docs/build/guide.md"), "# guide\n");
+    write_file(&tmp.path().join("docs/build/scratch.log"), "x\n");
+
+    let config = ArtifactGuardConfig::new(tmp.path())
+        .with_mode(ArtifactGuardMode::Worktree)
+        .with_allowlist(tmp.path().join(".amplihack-artifact-allowlist"));
+    let report = scan_artifacts(&config).expect("scan artifacts");
+
+    let scratch = violation_for(
+        &report.violations,
+        "docs/build/scratch.log",
+        ArtifactSource::Untracked,
+    );
+    assert_eq!(
+        scratch.removal_root.as_deref(),
+        Some("docs/build/scratch.log"),
+        "the root must not take the allowlisted file with it"
     );
 }
