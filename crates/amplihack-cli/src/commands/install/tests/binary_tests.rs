@@ -136,7 +136,7 @@ fn deploy_binaries_copies_hooks_binary_to_local_bin_with_755_perms() {
         std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
     }
 
-    let result = binary::deploy_binaries();
+    let result = binary::deploy_binaries(InstallMode::Explicit, None);
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };
@@ -145,8 +145,9 @@ fn deploy_binaries_copies_hooks_binary_to_local_bin_with_755_perms() {
     }
     crate::test_support::restore_home(previous);
 
-    let deployed = result.expect("deploy_binaries must succeed");
+    let (deployed, kept) = result.expect("deploy_binaries must succeed");
     assert!(!deployed.is_empty(), "must return deployed paths");
+    assert!(kept.is_empty(), "an explicit install keeps nothing");
 
     let dst = temp.path().join(".local/bin/amplihack-hooks");
     assert!(dst.exists(), "amplihack-hooks must be at ~/.local/bin");
@@ -181,7 +182,7 @@ fn deploy_binaries_succeeds_when_local_bin_not_in_path() {
         std::env::set_var("PATH", "/usr/bin:/bin"); // ~/.local/bin intentionally absent
     }
 
-    let result = binary::deploy_binaries();
+    let result = binary::deploy_binaries(InstallMode::Explicit, None);
 
     if let Some(v) = prev_hooks {
         unsafe { std::env::set_var("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", v) };

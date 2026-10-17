@@ -110,6 +110,27 @@ native legs passed (issue #939). It is the same drift class first resolved for
 `publish-snapshot.yml` in #935/#948; `release.yml` is now pinned and fully
 covered by the regression guard below — there is no remaining tracked drift.
 
+### Release tags point at a stamp commit
+
+`main` keeps the base version (`MAJOR.MINOR.0`); the patch number comes from
+the latest `vMAJOR.MINOR.*` tag. The `release` job runs
+`scripts/stamp-release-version.sh X` on the released SHA, which sets the
+version in `Cargo.toml`, the workspace-member entries of `Cargo.lock` and
+`package.json`, commits the result as `chore(release): stamp vX` on a detached
+HEAD and tags that commit (or the released SHA itself when the manifests
+already say X). Nothing is pushed to `main`. `cargo install --git … --tag vX`
+therefore reports X, while `--rev <main SHA>` still reports `MAJOR.MINOR.0`;
+the self-heal [downgrade guard](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)
+covers those builds. Guarded by
+`crates/amplihack-cli/tests/issue_1526_release_version_stamp.rs`.
+
+The workflow token is read-only; only the `release` job has `contents: write`.
+No checkout persists credentials. In the `release` job the token is passed
+only to the steps that query origin for an existing tag and push the new one,
+never to the step that runs the stamp script. Release artifacts are built from
+the released `main` SHA, so they differ from the tagged stamp commit only in
+the manifests.
+
 ### Bumping the pinned toolchain
 
 Bump deliberately, in its own PR:
