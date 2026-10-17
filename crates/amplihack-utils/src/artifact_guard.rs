@@ -95,10 +95,7 @@ impl ArtifactGuardMode {
         )
     }
 
-    /// Whether this mode lists the worktree (tracked, untracked, ignored).
-    /// Without it the guard cannot see untracked files under a directory, so
-    /// callers must not suggest deleting the directory from disk.
-    pub fn scans_worktree(self) -> bool {
+    fn scans_worktree(self) -> bool {
         matches!(
             self,
             Self::All | Self::Worktree | Self::PreCommit | Self::PrePublish
@@ -545,6 +542,28 @@ pub fn scan_artifacts(
         }
     }
 
+    // A mode may skip untracked or ignored files (`staged`, and the gates per
+    // issue #928), yet a directory root still covers them on disk. List every
+    // file outside the index under each candidate root, ignored included, so
+    // an allowlisted one is protected whatever the mode.
+    let dir_roots: BTreeSet<&str> = violations
+        .iter()
+        .filter_map(|violation| {
+            violation
+                .removal_root
+                .as_deref()
+                .filter(|root| *root != violation.path)
+        })
+        .collect();
+    if !dir_roots.is_empty() {
+        let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
+        args.extend(dir_roots);
+        for path in git_paths(&repo, &args)? {
+            if allowlist.is_allowed(&path) {
+                protected.insert(path);
+            }
+        }
+    }
     narrow_roots_holding_protected_paths(&mut violations, &protected);
 
     violations.sort_by(|left, right| {

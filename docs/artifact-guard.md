@@ -491,7 +491,8 @@ These rules make the printed commands safe to run:
 - **No root over protected paths.** A directory removal root is narrowed to
   the violating path itself when anything under that directory is protected:
   an indexed path that is allowlisted, matches no rule, or may be source; a
-  scanned untracked or ignored path the allowlist admits; or a registered
+  untracked or ignored file under the root that the allowlist admits (listed
+  in every mode, even one that does not flag such files); or a registered
   sibling worktree under `worktrees/`. With an allowlisted
   `docs/build/guide.md`, an untracked `docs/build/scratch.log` gets
   `rm -rf -- 'docs/build/scratch.log'`, never `-- 'docs/build'`; a leaked
@@ -501,9 +502,6 @@ These rules make the printed commands safe to run:
   pre-existing paths or possibly-source paths, the guard lists the introduced
   paths one by one. It does not untrack the whole directory. Containment is
   checked at a `/` boundary, so `build` does not contain `buildtools/a.rs`.
-- **No blind deletes.** `--mode staged` never lists untracked files, so it
-  cannot see an allowlisted untracked file under a directory root. In that mode
-  a directory root gets only `git rm -r --cached`, never `rm -rf`.
 - **Commands match the index.** `git rm --cached` is printed only for staged
   or tracked paths. An untracked or ignored path gets a plain `rm`, because
   `git rm --cached` on it fails with `pathspec did not match any files`.

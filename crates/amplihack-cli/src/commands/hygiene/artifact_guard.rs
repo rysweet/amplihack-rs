@@ -186,12 +186,7 @@ fn print_violation_report(report: &ArtifactGuardReport) {
                     "  git rm -r --cached -- '{root}'   # drop from the change, keep on disk"
                 );
             }
-            // A mode that never lists the worktree (`staged`) cannot see an
-            // untracked, allowlisted file under a directory root, so it never
-            // offers to delete that directory from disk.
-            if report.mode.scans_worktree() || group.iter().all(|v| v.path == root) {
-                eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
-            }
+            eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
         }
     }
     if !review.is_empty() {
