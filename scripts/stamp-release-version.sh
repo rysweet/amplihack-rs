@@ -33,7 +33,9 @@ awk -v x="$X" '/^\[/ { ws = ($0 == "[workspace.package]") }
 # A [[package]] block lists `version` before `source`, so buffer each block
 # and stamp it only once it is known to be a path package. Assumes every path
 # package at OLD inherits the workspace version: a member with its own version
-# equal to OLD would be stamped here but not in its Cargo.toml.
+# equal to OLD would be stamped here but not in its Cargo.toml. The release
+# workflow runs `cargo metadata --locked` on the result, so that case fails the
+# release before the tag is pushed.
 awk -v x="$X" -v old="$OLD" '
     function flush() {
         if (n && !src && ver == old) { buf[vl] = "version = \"" x "\""; c++ }

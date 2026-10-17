@@ -300,6 +300,17 @@ fn report_preserved_entries(preserved: &[String], target: &Path) {
     );
 }
 
+/// Issue #1526: the install stamp's version when this binary is older than
+/// it (by semver), else `None`. Every implicit installer checks this first.
+pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
+    Ok(version_stamp::read_installed_version_quiet()
+        .context("reading install version stamp")?
+        .filter(|installed| {
+            version_stamp::relation(crate::VERSION, installed)
+                == version_stamp::VersionRelation::Older
+        }))
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }
@@ -310,11 +321,7 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
-    if let Some(installed) =
-        version_stamp::read_installed_version_quiet().context("reading install version stamp")?
-        && version_stamp::relation(crate::VERSION, &installed)
-            == version_stamp::VersionRelation::Older
-    {
+    if let Some(installed) = newer_install_stamp()? {
         // debug: tracing writes to stdout. The user-facing warning goes to
         // `notice`, once per process: startup self-heal has usually printed it.
         tracing::debug!(
@@ -360,7 +367,9 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
-    if crate::freshness::codex_selected() {
+    // Issue #1526: like the re-stage, this bootstrap only installs a Codex
+    // plugin that is not there yet; refreshing one is `amplihack install`'s job.
+    if crate::freshness::codex_selected() && !codex_plugin::owned_install_present()? {
         let source = find_bundled_framework_root()
             .context("bundled source required to reconcile native Codex resources")?;
         codex_plugin::install(&source.root, &hooks_bin)
@@ -400,6 +409,32 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     }
     println!("✅ Auto-repaired missing hook registrations in settings.json");
     Ok(())
+}
+
+/// Issue #1526: an implicit re-stage does not write `settings_path`, so an
+/// upgrade that adds a hook event leaves it out. Name what is missing on
+/// `notice` (stderr in the binary), and say nothing when nothing is. A file
+/// that is absent, unreadable or not JSON is not reported here: the launch
+/// bootstrap repairs the first and warns about the last.
+pub(super) fn warn_implicit_hook_drift<W: std::io::Write>(notice: &mut W, settings_path: &Path) {
+    let Ok(raw) = fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let missing = missing_hook_registrations(&settings);
+    if missing.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        notice,
+        "amplihack: warning: {} lacks hook registrations this version ({}) adds: {}. \
+         An automatic re-stage never edits settings.json; run `amplihack install` to add them.",
+        paths::sanitize_path(settings_path),
+        crate::VERSION,
+        missing.join(", ")
+    );
 }
 
 /// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
@@ -618,8 +653,6 @@ fn local_install_scoped(
         }
     }
 
-    println!();
-    println!("⚙️  Configuring settings.json:");
     // Honor the interactive hook-scope choice (issue #1119). Repo-local scope
     // resolves against the current working directory — where `amplihack install`
     // runs — and falls back to global if that directory is not a git repo.
@@ -629,11 +662,6 @@ fn local_install_scoped(
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
     let effective_scope = interactive::resolve_hook_scope(requested_scope, &cwd);
     let settings_target = effective_scope.settings_path_for(&cwd);
-    println!(
-        "   Scope: {} → {}",
-        effective_scope.display_name(),
-        settings_target.display()
-    );
     // Issue #911: every DURABLE consumer -- settings.json and the Copilot
     // plugin manifest -- records this path, so it must be the DEPLOYED binary,
     // never `hooks_bin` (the `find_hooks_binary()` source path).
@@ -648,13 +676,22 @@ fn local_install_scoped(
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
     // Issue #1526: an implicit re-stage never writes (or backs up) the
-    // user's settings.json; only `amplihack install` does.
+    // user's settings.json; only `amplihack install` does. Its one output is
+    // a stderr warning when settings.json lacks hooks this build registers,
+    // so an upgrade that adds a hook event is not silently half-installed.
     let (settings_ok, registered_events) = match mode {
         InstallMode::Explicit => {
+            println!();
+            println!("⚙️  Configuring settings.json:");
+            println!(
+                "   Scope: {} → {}",
+                effective_scope.display_name(),
+                settings_target.display()
+            );
             ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?
         }
         InstallMode::Implicit => {
-            println!("   Left unchanged (implicit re-stage; run `amplihack install` to update)");
+            warn_implicit_hook_drift(&mut std::io::stderr(), &settings_target);
             (true, Vec::new())
         }
     };
@@ -678,13 +715,33 @@ fn local_install_scoped(
     // target/debug/amplihack-hooks). The source path lives in a build/worktree
     // dir that gets cleaned, making every hook exit 127; Copilot CLI fails
     // closed on hook errors, denying every tool call in nested sessions (#911).
-    match copilot_plugin::register_copilot_plugin(repo_root, &durable_hooks_bin)
+    // Issue #1526: decided once, before either Copilot writer runs below.
+    let copilot_config = match mode {
+        InstallMode::Explicit => crate::copilot_setup::UserConfig::Merge,
+        InstallMode::Implicit => crate::copilot_setup::UserConfig::for_implicit_install(),
+    };
+    match copilot_plugin::register_copilot_plugin(repo_root, &durable_hooks_bin, copilot_config)
         .context("failed to register Copilot CLI plugin")?
     {
-        true => {
+        copilot_plugin::CopilotRegistration::Registered => {
             println!("  ✅ Copilot CLI plugin amplihack@local refreshed");
         }
-        false => {
+        copilot_plugin::CopilotRegistration::ConfigPreserved { foreign_cache_path } => {
+            // Issue #1526: ~/.copilot/config.json is the user's; an implicit
+            // re-stage refreshed only the plugin directory amplihack owns.
+            println!(
+                "  ✅ Copilot CLI plugin files refreshed; ~/.copilot/config.json not modified"
+            );
+            if let Some(path) = foreign_cache_path {
+                eprintln!(
+                    "amplihack: warning: ~/.copilot/config.json registers amplihack from {}, \
+                     not this install's plugin directory; an automatic re-stage leaves it \
+                     unchanged. Run `amplihack install` to point it here.",
+                    paths::sanitize_text(&path)
+                );
+            }
+        }
+        copilot_plugin::CopilotRegistration::NotDetected => {
             println!("  ↩️  Copilot CLI not detected (~/.copilot missing) — skipping");
         }
     }
@@ -730,8 +787,18 @@ fn local_install_scoped(
 
     if reconcile_codex {
         println!();
-        codex_plugin::install(repo_root, &durable_hooks_bin)
-            .context("failed native Codex installation")?;
+        if mode == InstallMode::Implicit && codex_plugin::owned_install_present()? {
+            // Issue #1526: reconciling an installed Codex plugin rewrites
+            // ~/.codex/hooks.json; an implicit re-stage leaves it alone.
+            eprintln!(
+                "amplihack: notice: an automatic re-stage left the installed Codex plugin \
+                 unchanged. Run `amplihack install` to update it to v{}.",
+                crate::VERSION
+            );
+        } else {
+            codex_plugin::install(repo_root, &durable_hooks_bin)
+                .context("failed native Codex installation")?;
+        }
     }
 
     println!("📝 Generating uninstall manifest:");
@@ -897,7 +964,7 @@ fn local_install_scoped(
     // without requiring a separate `amplihack copilot` launch. Best-effort
     // and intentionally AFTER the version stamp: a failure here must not
     // block the install or leave the version stamp unwritten.
-    match crate::copilot_setup::ensure_copilot_home_staged() {
+    match crate::copilot_setup::ensure_copilot_home_staged(copilot_config) {
         Ok(()) => println!("  ✅ Copilot home staged (~/.copilot/)"),
         Err(err) => {
             tracing::warn!(%err, "failed to stage copilot home during install");

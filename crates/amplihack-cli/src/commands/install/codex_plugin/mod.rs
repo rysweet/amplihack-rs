@@ -74,6 +74,26 @@ mod uninstall;
 pub(super) fn install(source: &Path, hooks_binary: &Path) -> Result<bool> {
     transaction::install(source, hooks_binary)
 }
+/// Whether an earlier install already owns a Codex plugin on this host: a
+/// committed ownership ledger, or a transaction journal left by an
+/// interrupted one. Issue #1526: implicit installers leave such an install
+/// alone, because reconciling it rewrites `~/.codex/hooks.json` and asks
+/// Codex to update its own configuration. Only `amplihack install` does that,
+/// and it is also what recovers an interrupted transaction.
+pub(super) fn owned_install_present() -> Result<bool> {
+    let root = root()?;
+    for name in ["ownership.json", "pending.json"] {
+        match fs::symlink_metadata(root.join(name)) {
+            Ok(_) => return Ok(true),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e)
+                    .with_context(|| format!("failed to inspect {}", root.join(name).display()));
+            }
+        }
+    }
+    Ok(false)
+}
 pub(super) fn uninstall() -> Result<()> {
     uninstall::uninstall()
 }

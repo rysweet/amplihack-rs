@@ -354,6 +354,17 @@ jobs:
 
           sh scripts/stamp-release-version.sh "${VERSION}"
 
+          # The script edits Cargo.lock as text and assumes every workspace
+          # member inherits the workspace version. Have cargo confirm that the
+          # stamped lockfile matches the stamped manifests before anything is
+          # committed or tagged: `cargo install --git ... --tag vX --locked`
+          # fails on a lockfile cargo would rewrite. Not --offline: this runner
+          # has no registry cache, and the crates it fetches are public.
+          if ! cargo metadata --locked --format-version 1 >/dev/null; then
+            echo "::error::Cargo.lock stamped for ${VERSION} does not match the workspace manifests; a member probably pins its own version instead of version.workspace = true"
+            exit 1
+          fi
+
           # Stage by name: the downloaded artifacts/ and the collected
           # release-assets/ are in the working tree too.
           git add Cargo.toml Cargo.lock

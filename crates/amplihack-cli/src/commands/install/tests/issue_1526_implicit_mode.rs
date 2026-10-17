@@ -157,17 +157,51 @@ fn settings_writes(
         .collect()
 }
 
+/// A user's Copilot config holding an earlier install's amplihack entry, in
+/// the user's own formatting, with the plugin disabled. An explicit install
+/// would re-serialize it and stamp a fresh `installed_at`.
+fn copilot_config(home: &Path) -> Vec<u8> {
+    let plugin_dir = home.join(".copilot/installed-plugins/amplihack@local");
+    format!(
+        "// user header\n{{ \"theme\": \"dark\",\n  \"installedPlugins\": [ {{ \"name\": \"amplihack\", \
+         \"enabled\": false, \"version\": \"0.0.1\", \"installed_at\": \"2020-01-01T00:00:00Z\", \
+         \"cache_path\": {} }} ] }}\n",
+        serde_json::to_string(&plugin_dir.display().to_string()).unwrap()
+    )
+    .into_bytes()
+}
+
+fn write_copilot_config(home: &Path) -> Vec<u8> {
+    let body = copilot_config(home);
+    fs::create_dir_all(home.join(".copilot")).unwrap();
+    fs::write(home.join(".copilot/config.json"), &body).unwrap();
+    body
+}
+
 /// The #1526 no-settings-rewrite path on an upgrade: running > stamp
-/// re-stages and deploys, but leaves `settings.json` byte-identical and
-/// writes no backup of it.
+/// re-stages and deploys, but leaves `settings.json` and the user's Copilot
+/// `config.json` byte-identical and writes no backup of either.
 #[test]
 fn implicit_upgrade_restage_never_writes_settings_json() {
     let fx = Fixture::new();
     fx.write_user_settings();
+    let copilot = write_copilot_config(&fx.home);
     version_stamp::write_installed_version(&older_version()).unwrap();
     let before = snapshot(&fx.home);
 
     fx.install(InstallMode::Implicit);
+
+    assert_eq!(
+        fs::read(fx.home.join(".copilot/config.json")).unwrap(),
+        copilot,
+        "an implicit re-stage rewrote ~/.copilot/config.json (#1526)"
+    );
+    assert!(
+        fx.home
+            .join(".copilot/installed-plugins/amplihack@local/hooks.json")
+            .is_file(),
+        "the amplihack-owned plugin directory is still refreshed"
+    );
 
     assert_eq!(
         fs::read(fx.settings()).unwrap(),
@@ -399,4 +433,168 @@ fn implicit_restage_carries_forward_manifest_entries_it_did_not_write() {
         after.binaries.contains(&kept),
         "an implicit re-stage dropped a kept binary from the manifest"
     );
+}
+
+/// With no amplihack entry in `config.json` yet, an implicit re-stage
+/// registers one: that is a first install, not a rewrite. The user's other
+/// keys survive.
+#[test]
+fn implicit_restage_registers_copilot_plugin_only_when_absent() {
+    let fx = Fixture::new();
+    fs::create_dir_all(fx.home.join(".copilot")).unwrap();
+    fs::write(
+        fx.home.join(".copilot/config.json"),
+        b"{ \"theme\": \"dark\" }\n",
+    )
+    .unwrap();
+    version_stamp::write_installed_version(&older_version()).unwrap();
+
+    fx.install(InstallMode::Implicit);
+
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(fx.home.join(".copilot/config.json")).unwrap()).unwrap();
+    assert_eq!(config["theme"], "dark");
+    assert_eq!(config["installedPlugins"][0]["name"], "amplihack");
+}
+
+/// `amplihack install` still rewrites an existing entry.
+#[test]
+fn explicit_install_still_refreshes_copilot_config() {
+    let fx = Fixture::new();
+    let copilot = write_copilot_config(&fx.home);
+
+    fx.install(InstallMode::Explicit);
+
+    let after = fs::read(fx.home.join(".copilot/config.json")).unwrap();
+    assert_ne!(after, copilot, "explicit install must refresh the entry");
+    assert!(String::from_utf8_lossy(&after).contains(crate::VERSION));
+}
+
+/// An implicit re-stage with Codex selected leaves an installed Codex plugin
+/// alone: it never runs Codex, and never touches `~/.codex` or the ledger.
+#[test]
+fn implicit_restage_leaves_an_installed_codex_plugin_alone() {
+    let mut fx = Fixture::new();
+    let marker = fx._outside.path().join("codex-ran");
+    let codex_bin = fx._outside.path().join("codex_bin");
+    fs::create_dir_all(&codex_bin).unwrap();
+    let codex = codex_bin.join("codex");
+    fs::write(
+        &codex,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", marker.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut path_dirs = vec![codex_bin];
+    path_dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    fx._env
+        .set("PATH", std::env::join_paths(path_dirs).unwrap());
+    fs::create_dir_all(fx.home.join(".amplihack/codex")).unwrap();
+    fs::write(
+        fx.home.join(".amplihack/codex/ownership.json"),
+        b"{\"schema_version\":1}",
+    )
+    .unwrap();
+    fs::create_dir_all(fx.home.join(".codex")).unwrap();
+    fs::write(fx.home.join(".codex/hooks.json"), b"{\"hooks\":{}}\n").unwrap();
+    fs::write(fx.home.join(".codex/config.toml"), b"model = \"x\"\n").unwrap();
+    version_stamp::write_installed_version(&older_version()).unwrap();
+    let before = snapshot(&fx.home);
+
+    assert_home_is(&fx.home);
+    local_install_scoped(&fx.repo, None, true, InstallMode::Implicit)
+        .unwrap_or_else(|e| panic!("implicit install failed: {e:#}"));
+
+    let codex_changes: Vec<String> = changes(&before, &snapshot(&fx.home))
+        .into_iter()
+        .filter(|c| c.contains(".codex") || c.contains("amplihack/codex"))
+        .collect();
+    assert_eq!(codex_changes, Vec::<String>::new());
+    assert!(
+        !marker.exists(),
+        "an implicit re-stage ran the Codex binary"
+    );
+}
+
+// ── Hook drift after an implicit upgrade ──
+
+fn settings_with(specs: &[&types::HookSpec]) -> tempfile::NamedTempFile {
+    let mut hooks = serde_json::Map::new();
+    for spec in specs {
+        let types::HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
+        let mut wrapper = serde_json::json!({ "hooks": [{ "type": "command",
+            "command": format!("/home/u/.local/bin/amplihack-hooks {subcmd}") }] });
+        if let Some(matcher) = spec.matcher {
+            wrapper["matcher"] = serde_json::json!(matcher);
+        }
+        hooks
+            .entry(spec.event.to_string())
+            .or_insert_with(|| serde_json::json!([]))
+            .as_array_mut()
+            .unwrap()
+            .push(wrapper);
+    }
+    let file = tempfile::NamedTempFile::new().unwrap();
+    fs::write(
+        file.path(),
+        serde_json::json!({ "hooks": hooks }).to_string(),
+    )
+    .unwrap();
+    file
+}
+
+fn drift_notice(path: &Path) -> String {
+    let mut notice = Vec::new();
+    warn_implicit_hook_drift(&mut notice, path);
+    String::from_utf8(notice).unwrap()
+}
+
+/// settings.json registered by an older release lacks a hook this build
+/// adds: the warning names it and `amplihack install`, on the notice stream.
+#[test]
+fn hook_drift_names_the_missing_events() {
+    let first = &types::AMPLIHACK_HOOK_SPECS[0];
+    let types::HookCommandKind::BinarySubcmd { subcmd } = first.cmd;
+    let file = settings_with(&[first]);
+
+    let notice = drift_notice(file.path());
+
+    assert!(notice.contains("amplihack install"), "{notice}");
+    for spec in &types::AMPLIHACK_HOOK_SPECS[1..] {
+        let types::HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
+        assert!(
+            notice.contains(&format!("{} ({subcmd})", spec.event)),
+            "{notice}"
+        );
+    }
+    assert!(
+        !notice.contains(&format!("{} ({subcmd})", first.event)),
+        "{notice}"
+    );
+}
+
+/// Nothing missing, nothing printed: no unconditional notice.
+#[test]
+fn hook_drift_is_silent_when_settings_are_current() {
+    let all: Vec<&types::HookSpec> = types::AMPLIHACK_HOOK_SPECS.iter().collect();
+    let file = settings_with(&all);
+    assert_eq!(drift_notice(file.path()), "");
+}
+
+/// A file with no amplihack hooks, a missing file and a non-JSON file are
+/// not drift; the launch bootstrap handles them.
+#[test]
+fn hook_drift_ignores_unconfigured_missing_and_unparseable_files() {
+    let empty = settings_with(&[]);
+    assert_eq!(drift_notice(empty.path()), "");
+    assert_eq!(drift_notice(Path::new("/nonexistent/settings.json")), "");
+    let bad = tempfile::NamedTempFile::new().unwrap();
+    fs::write(bad.path(), b"{ not json").unwrap();
+    assert_eq!(drift_notice(bad.path()), "");
 }

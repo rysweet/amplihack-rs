@@ -109,6 +109,42 @@ parse is left unchanged and a warning is printed. Builds of untagged `main`
 commits still report `MAJOR.MINOR.0` (see
 [Release tags point at a stamp commit](../reference/ci-pipeline.md#release-tags-point-at-a-stamp-commit)).
 
+### Other tools' configuration
+
+"User settings" covers every tool's configuration file, not just Claude
+Code's. An implicit re-stage, the launch bootstrap and `amplihack copilot`
+refresh only files under directories amplihack owns. They treat each tool's
+own configuration file this way:
+
+| File | Implicit (self-heal, launch bootstrap, `amplihack copilot`) | `amplihack install` |
+|---|---|---|
+| `~/.claude/settings.json` | never written by a re-stage; the bootstrap fills in hooks only when the file has none (#202) | hooks merged, file backed up |
+| `~/.copilot/config.json` | left byte-identical once it holds any amplihack entry (`installedPlugins`, `plugins` or an amplihack hook); written only when it has none, which is a first install. Decided once per run, before any writer | amplihack entries refreshed |
+| `~/.copilot/installed-plugins/amplihack@local/`, `~/.copilot/.github/hooks/` | refreshed (amplihack-owned) | refreshed |
+| Codex plugin (`~/.codex/hooks.json`, the Codex marketplace) | installed only when no amplihack Codex install exists (`~/.amplihack/codex/ownership.json` or `pending.json`); an existing one, and any interrupted transaction, is left for `amplihack install` | reconciled |
+
+A Copilot entry that a user disabled stays disabled. When `config.json`
+registers amplihack from a different plugin directory, a re-stage leaves it
+unchanged and prints a stderr warning naming `amplihack install`. When a
+re-stage skips an installed Codex plugin, it prints one stderr notice.
+
+### Hooks a newer release adds
+
+Because a re-stage never writes `settings.json`, upgrading the binary any
+way other than `amplihack install` or `amplihack update` (npm wrapper,
+tarball, `cargo install`) does not register hook events the new release
+adds. The re-stage compares this build's amplihack hook registrations with
+the scope's `settings.json`. If the file already has amplihack hooks but
+lacks some of this build's, one line goes to stderr:
+
+```
+amplihack: warning: /home/dev/.claude/settings.json lacks hook registrations this version (1.3.0) adds: PreCompact (pre-compact). An automatic re-stage never edits settings.json; run `amplihack install` to add them.
+```
+
+Nothing is printed when no registration is missing. Nothing is printed for a
+file with no amplihack hooks either, because the launch bootstrap registers
+them. A file that is missing or does not parse is not reported here.
+
 ## Skip rules
 
 The check is intentionally bypassed in cases where running an install would

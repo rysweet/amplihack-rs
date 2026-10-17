@@ -146,7 +146,11 @@ pub(super) fn stage_command_docs(source_commands: &Path, copilot_home: &Path) ->
     Ok(count)
 }
 
-pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Result<bool> {
+pub(super) fn register_plugin(
+    source_commands: &Path,
+    copilot_home: &Path,
+    user_config: super::UserConfig,
+) -> Result<bool> {
     let manifest = source_commands.join("plugin.json");
     if !manifest.is_file() {
         return Ok(false);
@@ -192,6 +196,11 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
         serde_json::to_string_pretty(&plugin_meta)?,
     )?;
 
+    // Issue #1526: the plugin directory above is amplihack's; config.json is
+    // the user's, and an implicit run leaves it alone.
+    if user_config == super::UserConfig::KeepExisting {
+        return Ok(true);
+    }
     let config_path = copilot_home.join("config.json");
     let (mut config, prefix): (Value, String) = if config_path.is_file() {
         let raw = fs::read_to_string(&config_path)
@@ -219,16 +228,19 @@ pub(super) fn register_plugin(source_commands: &Path, copilot_home: &Path) -> Re
         .as_array_mut()
         .ok_or_else(|| anyhow!("plugins is not an array"))?;
 
-    if !arr
+    // An existing entry is left as it is: rewriting the file to change
+    // nothing would only re-format the user's config.
+    if arr
         .iter()
         .any(|p| p.get("name").and_then(Value::as_str) == Some(plugin_name))
     {
-        arr.push(json!({
-            "name": plugin_name,
-            "version": "local",
-            "installed_path": install_dir.display().to_string(),
-        }));
+        return Ok(true);
     }
+    arr.push(json!({
+        "name": plugin_name,
+        "version": "local",
+        "installed_path": install_dir.display().to_string(),
+    }));
 
     let body = serde_json::to_string_pretty(&config)?;
     fs::write(&config_path, jsonc::apply_prefix(&prefix, body))
