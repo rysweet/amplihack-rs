@@ -201,7 +201,7 @@ genuinely require worktree files keep their hard-fail `${VAR:?}` guards.
 |------|-------|----------|
 | 15, 16, 18c | review | Hard-fail (`:?` guard) |
 | 19c | verification | Resilient (fallback chain) |
-| 20b | finalize | Resilient (fallback chain) |
+| 20a, 20b | finalize | Skip with a `WARNING`; never run in `REPO_PATH`, because they stage or commit (issue #1528) |
 | 21 | finalize | Resilient (fallback chain) |
 
 No `|| true`, `set +e`, or `>/dev/null` suppression is used. The fallback is

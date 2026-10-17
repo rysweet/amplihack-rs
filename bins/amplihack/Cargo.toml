@@ -219,6 +219,13 @@ path = "../../tests/integration/artifact_guard_workflow_tests.rs"
 name = "pre_commit_artifact_guard"
 path = "../../tests/integration/pre_commit_artifact_guard_tests.rs"
 
+# Issue #1528: auto-drive phases 2-3 commit only inside the PR's linked
+# worktree. PR-worktree resolver behaviour, loop step-02 and round step-04
+# contracts.
+[[test]]
+name = "autodrive_pr_worktree"
+path = "../../tests/integration/autodrive_pr_worktree_tests.rs"
+
 [[test]]
 name = "doctor_node_remediation"
 path = "../../tests/integration/doctor_node_remediation_test.rs"
