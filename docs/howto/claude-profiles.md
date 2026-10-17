@@ -237,9 +237,9 @@ What the `STATE` column means:
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
 | `not_logged_in` | `amplihack profile login <name>` |
-| `timeout` | Claude did not answer within 30 seconds. Try again. |
+| `timeout` | Claude did not answer in time (30 seconds by default). Try again. |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
-| `error` | The probe could not start; the reason is printed on stderr. |
+| `error` | The probe could not run (the profile directory was refused, or `claude` could not be started, read or waited for); the reason is printed on stderr. |
 
 Claude's own text is shown only when you ask for it, for example to report
 output amplihack does not recognise:
@@ -267,8 +267,8 @@ reset as Unix time (`resets_at`); see the
 
 If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
 also refreshes its readings, so it can choose accounts using numbers taken
-now instead of the last status-line update. With auto-switch on, the table
-also shows where logins are: `leased→work` on a profile whose login is lent
+now instead of the last status-line update. While auto-switch has state
+(`<root>/.auto-switch.d/`), the table also shows where logins are: `leased→work` on a profile whose login is lent
 to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)

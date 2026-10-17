@@ -105,8 +105,8 @@ The deadline can be changed for tests and slow machines:
 | `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` | `30` |
 
 The flag wins over the variable. A flag value out of range is a usage error
-(exit status 2). A variable that is not a number from `1` to `600` prints one
-warning showing the value escaped and cut to 32 characters, then uses `30`:
+(exit status 2). An empty variable counts as unset. A variable that is not a
+number from `1` to `600` prints one warning showing the value escaped and cut to 32 characters, then uses `30`:
 
 ```
 warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS "soon" (use 1 to 600); using 30
@@ -148,7 +148,7 @@ also turns it into a time (`resets_at`, Unix epoch seconds) when it can:
 |------|---------|---------|
 | Month, day, time, zone | `Oct 22, 2am (America/Los_Angeles)` | The year that puts the time between one day before now and 366 days after now: this year, then next year, then last year. |
 | Month, day, year, time, zone | `Jan 2, 2027, 9:30pm (UTC)` | That date. |
-| Time, zone | `4:50pm (America/Los_Angeles)` | Today in that zone, or tomorrow if that time has already passed. |
+| Time, zone | `4:50pm (America/Los_Angeles)` | Today in that zone, or tomorrow if that time passed more than 10 minutes ago. Claude prints whole minutes, so a reset due within the current minute can print as a time a few seconds ago. |
 
 Minutes are optional, `am`/`pm` may be in any case, and spacing is tolerant.
 The zone must be an IANA name; the host's own time zone is never used. If
@@ -170,7 +170,7 @@ Every profile gets exactly one state:
 | `not_logged_in` | No usage line of any kind (model week lines included) was read and Claude reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
 | `timeout` | The probe passed its deadline. |
 | `unparsed` | Nothing recognisable was printed. Run again with `--raw` to see what Claude said. |
-| `error` | The probe could not run. The table prints the reason on stderr and the JSON has it in `error`. |
+| `error` | The probe could not run. The reason goes to stderr in both modes, and the JSON also has it in `error`. |
 
 When several apply, the first in this order wins: `error`, `timeout`,
 `spend_limit`, `session_exhausted`, `weekly_exhausted`, `ok`,
@@ -222,11 +222,11 @@ as a whole number when they are whole and with one decimal place otherwise
 Model-specific week lines are not in the table; they are in the JSON.
 
 Text from Claude and from state files is cleaned before it reaches the
-terminal: control characters (including escape sequences) are replaced, and
-reset text and model labels are cut to 64 characters. The table's layout is
+terminal: control characters (including escape sequences) are replaced, and reset
+text longer than 64 characters is cut to 64 and followed by `…`. The table's layout is
 for people and may change; scripts should use `--json`.
 
-For each `error` row, one line goes to stderr:
+For each `error` row, one line goes to stderr, with or without `--json`:
 
 ```
 warning: profile "review": could not start claude
@@ -257,7 +257,9 @@ Rows are in three groups, and the JSON uses the same order:
    soonest back first. A profile is back when every window at 100% or more
    has reset, so "back at" is the latest of those reset times. If any of
    those windows has no `resets_at`, the back-at time is unknown, and the
-   profile comes after the others. Then by name.
+   profile comes after the others. A `spend_limit` row's back-at time is
+   always unknown, because the window resets do not lift a spend limit.
+   Then by name.
 3. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
    `error`, each by name.
 
@@ -277,7 +279,10 @@ numbers like any other row.
 While a profile's login is lent out, its own directory has no login, so its
 row usually shows `not_logged_in`. That account's numbers are on the row of
 the profile hosting it (`work` above, whose `account` is `personal`). Lease marks come from
-the auto-switch ledger, read once before probing without taking the lock. If
+the auto-switch ledger, read once before probing without taking the lock; the
+default mark is read at the same time. The account a row is recorded under
+is the one from this read, so a swap during the probe is caught when the
+reading is recorded. If
 there is no `<root>/.auto-switch.d/`, there are no lease marks. If the
 default pointer or the ledger cannot be read, a warning goes to stderr and
 the marks it would give are left out; the probes still run.

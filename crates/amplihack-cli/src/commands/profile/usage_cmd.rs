@@ -133,6 +133,10 @@ pub(super) fn run(
         .map(std::path::PathBuf::from);
     let live = detect_live(store, home.as_deref(), &profiles);
     let live_name = live.as_ref().map(|l| l.name.clone());
+    // Read before probing: the account each row is recorded under must be
+    // the one live when its probe started, so that a swap during the probe
+    // shows up in the check under the lock as a moved account.
+    let marks = read_marks(store);
 
     let now = now_secs();
     let probes = probe_all(
@@ -147,7 +151,7 @@ pub(super) fn run(
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
-    let mut rows = build_rows(store, &profiles, probes, live_name.as_ref());
+    let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
     record(store, &rows, swapped.as_ref(), json);
@@ -210,13 +214,14 @@ fn swapped_live(
         .map(|l| l.name)
 }
 
-/// One row per probe, with the default, lease and `~/.claude` marks.
-fn build_rows(
-    store: &ProfileStore,
-    profiles: &[ProfileName],
-    probes: Vec<Probe>,
-    live: Option<&ProfileName>,
-) -> Vec<Row> {
+/// The default profile and the auto-switch leases, each `None` (with a
+/// warning) when it cannot be read.
+struct Marks {
+    default: Option<ProfileName>,
+    lease: Option<auto_switch::LeaseView>,
+}
+
+fn read_marks(store: &ProfileStore) -> Marks {
     let default = pointer::read(store.root()).unwrap_or_else(|e| {
         eprintln!("warning: could not read the default profile ({e}); no default mark");
         None
@@ -225,6 +230,17 @@ fn build_rows(
         eprintln!("warning: could not read auto-switch leases ({e}); no lease marks");
         None
     });
+    Marks { default, lease }
+}
+
+/// One row per probe, with the default, lease and `~/.claude` marks.
+fn build_rows(
+    marks: &Marks,
+    profiles: &[ProfileName],
+    probes: Vec<Probe>,
+    live: Option<&ProfileName>,
+) -> Vec<Row> {
+    let Marks { default, lease } = marks;
     profiles
         .iter()
         .zip(probes)

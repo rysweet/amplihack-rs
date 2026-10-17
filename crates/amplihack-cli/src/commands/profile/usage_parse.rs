@@ -33,6 +33,11 @@ pub const SPEND_LIMIT: &[&str] = &[
 /// A percentage above this is not a reading.
 const MAX_PCT: f64 = 1_000_000.0;
 const DAY: i64 = 86_400;
+/// How far in the past a time-only reset may be and still mean today.
+/// Claude prints whole minutes, so a reset due in the current minute can
+/// read as up to a minute ago; session windows last five hours, so a time
+/// this recent never means tomorrow.
+const TIME_ONLY_SLACK: i64 = 600;
 const ALL_MODELS: &str = "all models";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -183,7 +188,7 @@ fn parse_line(line: &str, now: i64) -> Option<(bool, UsageWindow)> {
 ///
 /// Without a year, the year chosen puts the time in `[now − 1 day, now + 366
 /// days)`, trying this year, then next, then last. A time alone is today in
-/// that zone, or tomorrow if it has passed.
+/// that zone, or tomorrow if it passed more than [`TIME_ONLY_SLACK`] ago.
 pub fn resolve_reset(text: &str, now: i64) -> Option<i64> {
     let caps = RESET.captures(text)?;
     let tz: Tz = caps[7].parse().ok()?;
@@ -205,7 +210,7 @@ pub fn resolve_reset(text: &str, now: i64) -> Option<i64> {
 
     let Some(month) = caps.get(1) else {
         let at = instant(tz, today.and_time(time))?;
-        if at >= now {
+        if at >= now.saturating_sub(TIME_ONLY_SLACK) {
             return Some(at);
         }
         return instant(tz, today.succ_opt()?.and_time(time));

@@ -486,6 +486,20 @@ fn time_only_is_today_or_tomorrow_in_that_zone() {
 }
 
 #[test]
+fn time_only_reset_in_the_current_minute_is_today() {
+    // Claude prints whole minutes: at 12:00:40 a reset due at 12:00:59
+    // prints as 12pm, 40 seconds ago. That is not tomorrow.
+    let noon = NOW; // 12:00 UTC
+    assert_eq!(resolve_reset("12pm (UTC)", noon + 40), Some(noon));
+    assert_eq!(resolve_reset("12pm (UTC)", noon + 600), Some(noon));
+    assert_eq!(
+        resolve_reset("12pm (UTC)", noon + 601),
+        Some(noon + DAY),
+        "more than ten minutes ago: tomorrow"
+    );
+}
+
+#[test]
 fn repeated_hour_at_dst_end_resolves_to_the_earlier_time() {
     // 2026-11-01 01:30 happens twice in Los Angeles: PDT (08:30Z) then PST (09:30Z).
     assert_eq!(

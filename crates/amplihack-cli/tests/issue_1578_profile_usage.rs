@@ -830,6 +830,44 @@ fn a_swap_during_the_probe_is_warned_and_not_recorded() {
 }
 
 #[test]
+fn an_auto_switch_swap_during_the_probe_is_not_recorded() {
+    let f = Fixture::new(true);
+    // While `b` is probed, auto-switch moves `c`'s login into `b`'s
+    // directory. `b`'s numbers were read before that, so they must not be
+    // recorded under `b` or `c`.
+    let state = f.state().display().to_string();
+    let ledger = serde_json::json!({
+        "version": 1,
+        "hosts": {
+            "a": {"live": "d", "swapped_at": now() - 1000, "pre_swap_fingerprint": null},
+            "b": {"live": "c", "swapped_at": now(), "pre_swap_fingerprint": null}
+        }
+    });
+    executable(
+        &f.canned.join("b.hook"),
+        &format!(
+            "#!/bin/sh\numask 077\n\
+             printf '%s' '{ledger}' > '{state}/ledger.tmp'\n\
+             mv '{state}/ledger.tmp' '{state}/ledger.json'\n"
+        ),
+    );
+    let out = f.ok(&["profile", "usage", "--json"]);
+    assert_no_secrets(&out);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(
+            "auto-switch: profile \"b\" changed accounts during the probe; its usage was not recorded"
+        ),
+        "{stderr}"
+    );
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    let b = rows.iter().find(|r| r["profile"] == "b").unwrap();
+    assert_eq!(b["account"], "b", "the account live when the probe started");
+    let u = f.usage_json().expect("usage.json written");
+    assert!(u["accounts"].get("b").is_none(), "{u}");
+}
+
+#[test]
 fn malformed_ledger_warns_once_and_marks_nothing_live() {
     let f = Fixture::new(true);
     f.login_in_default_dir();

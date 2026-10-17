@@ -232,3 +232,18 @@ fn a_symlinked_login_in_default_dir_is_no_login() {
     std::os::unix::fs::symlink(&target, &creds).unwrap();
     assert_eq!(e.live(), (None, None));
 }
+
+#[test]
+fn a_rotator_symlink_even_dangling_is_an_untrusted_ledger() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    let dir = e.store.root().join(".rotator");
+    std::os::unix::fs::symlink(e.store.root().join("missing"), &dir).unwrap();
+    assert_eq!(e.live(), (None, Some(LEDGER_WARNING)), "dangling");
+    fs::remove_file(&dir).unwrap();
+    let real = e.store.root().join("real-rotator");
+    fs::create_dir(&real).unwrap();
+    private(&real.join("ledger.json"), LEDGER_A);
+    std::os::unix::fs::symlink(&real, &dir).unwrap();
+    assert_eq!(e.live(), (None, Some(LEDGER_WARNING)), "to a directory");
+}
