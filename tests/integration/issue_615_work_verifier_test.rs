@@ -430,7 +430,7 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
         .env("COPILOT_HOME", private_home.path().join(".copilot"))
         .env("COPILOT_CONFIG_DIR", private_home.path().join(".copilot"))
         .env("TMPDIR", private_home.path())
-        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env(
             "AMPLIHACK_HOME",
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),

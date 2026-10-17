@@ -281,9 +281,25 @@ let bin = env!("CARGO_BIN_EXE_amplihack-hooks");  // hooks binary
 that produces the binary, points at the exact artifact for the active profile,
 and forces Cargo to build the binary **before** the test runs — eliminating the
 `amplihack binary not found at target/debug/amplihack` transient. Each such test
-is therefore registered as an explicit `[[test]]` in the owning package's
+is therefore compiled as part of a `[[test]]` target in the owning package's
 `Cargo.toml` (`bins/amplihack` for `amplihack`, `bins/amplihack-hooks` for
 `amplihack-hooks`).
+
+For `bins/amplihack`, every file in `tests/integration/` is a **module of one
+test binary**: the single `integration` target, whose crate root is
+`tests/integration/main.rs`. Do not add a new `[[test]]` entry per file. Add the
+file to `tests/integration/` and declare it in `main.rs` with
+`#[path = "<file>.rs"] mod <name>;`. Each separate test target is another
+binary that has to be linked, and sccache cannot cache test binaries, so the
+CI Test job pays for each one on every run. Merging the 74 former targets
+into one cut link work in the uncacheable tail roughly in half (measured
+locally: 235 -> 162 links, 872 s -> 324 s of link time). Run one former
+target's tests with:
+
+```bash
+cargo test -p amplihack --test integration ci_speedup_optimization::
+cargo nextest run -p amplihack -E 'binary(integration) and test(/^ci_speedup_optimization::/)'
+```
 
 ## Disk management
 

@@ -361,6 +361,7 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         .arg("-c")
         .arg(command)
         .current_dir(&repo)
+        .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env("WORKTREE_SETUP_WORKTREE_PATH", &repo)
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",

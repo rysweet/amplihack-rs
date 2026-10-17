@@ -15,7 +15,7 @@
 /// # Running
 ///
 /// ```bash
-/// cargo test --test no_stale_python_patterns -- --nocapture
+/// cargo test -p amplihack --test integration no_stale_python_patterns:: -- --nocapture
 /// ```
 use std::fs;
 use std::path::{Path, PathBuf};

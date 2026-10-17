@@ -286,7 +286,7 @@ The implementation is bound by two compiled assertions in
 Verify the contract:
 
 ```bash
-cargo test -p amplihack --test default_workflow_decomposition
+cargo test -p amplihack --test integration default_workflow_decomposition::
 ```
 
 ---
