@@ -37,6 +37,12 @@ fn read_verdict(log: &str) -> String {
     let dir = tempfile::tempdir().expect("tempdir");
     let log_path = dir.path().join("health.log");
     std::fs::write(&log_path, log).expect("write log");
+    // Other lib tests point PATH at an empty tempdir while they run. They all
+    // hold the crate-wide env lock to do it, so resolving `awk` from PATH must
+    // hold it too, or the spawn races them and finds no awk.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let out = Command::new("awk")
         .env("LC_ALL", "C")
         .arg(autodrive_loop_awk())
