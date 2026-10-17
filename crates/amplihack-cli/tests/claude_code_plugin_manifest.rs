@@ -312,6 +312,25 @@ mod shell {
         }
     }
 
+    /// Spawn a freshly written script under `EXEC_LOCK`. The lock covers the
+    /// writes in `write_exe`, but other tests in this binary spawn `sh`, `id`,
+    /// `touch` and the like without it, and a fork of theirs can still hold a
+    /// script's write descriptor until its own exec. That window is brief, so
+    /// retry on ETXTBSY instead of failing the test.
+    fn spawn_script(cmd: &mut Command) -> std::process::Child {
+        let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut attempts = 0;
+        loop {
+            match cmd.spawn() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => return r.unwrap(),
+            }
+        }
+    }
+
     fn write_exe(path: &Path, body: &str) {
         let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         fs::write(path, body).unwrap();
@@ -352,10 +371,7 @@ mod shell {
         for (k, v) in envs {
             cmd.env(k, v);
         }
-        let mut child = {
-            let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            cmd.spawn().unwrap()
-        };
+        let mut child = spawn_script(&mut cmd);
         // A no-op path exits without reading stdin, so the write can race a
         // closed pipe; that is the behavior under test, not a failure.
         let _ = child.stdin.take().unwrap().write_all(input);
@@ -926,10 +942,7 @@ mod shell {
             .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null());
-        let mut child = {
-            let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-            cmd.spawn().unwrap()
-        };
+        let mut child = spawn_script(&mut cmd);
         let open_stdin = child.stdin.take();
         let exported = wait_for(&env_file);
         drop(open_stdin);
