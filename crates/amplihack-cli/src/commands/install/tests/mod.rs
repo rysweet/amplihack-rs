@@ -11,6 +11,7 @@ mod issue_1266_restage_loop;
 mod issue_1438_skill_publication;
 mod issue_1449_partial_registration;
 mod issue_1526_implicit_downgrade;
+mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
