@@ -7,7 +7,7 @@
 //! Each round therefore carried the whole task in one argv element. The
 //! recipe now writes the task to a file with `write_context_value` and names
 //! it with `--task-file`. The loop copies it once to
-//! `$STATE_DIR/task_description.txt` (0600, temporary file then `mv`), passes
+//! `$STATE_DIR/<loop-name>-task_description.txt` (0600, temporary file then `mv`), passes
 //! `--context-from-file task_description=<file>` to each round, and removes
 //! the copy when it exits. A missing or empty task file is exit 2.
 //!
@@ -240,7 +240,7 @@ fn task_description_is_copied_to_a_private_state_file_and_removed_at_exit() {
         );
     }
     assert!(
-        !run.state_dir.join("task_description.txt").exists(),
+        !run.state_dir.join("crusty-task_description.txt").exists(),
         "autodrive_loop.sh must remove its copy of the task when it exits"
     );
     assert!(!run.cwd.join("pwned").exists() && !run.cwd.join("pwned2").exists());
@@ -281,7 +281,7 @@ fn a_missing_or_empty_task_file_is_exit_2_and_runs_no_round() {
             round_calls(&run).is_empty(),
             "{label}: no round may run without a task"
         );
-        assert!(!run.state_dir.join("task_description.txt").exists());
+        assert!(!run.state_dir.join("crusty-task_description.txt").exists());
     }
 }
 
@@ -302,7 +302,7 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         "exactly two rounds expected; stderr:\n{}",
         run.stderr
     );
-    let expected = run.state_dir.join("task_description.txt");
+    let expected = run.state_dir.join("crusty-task_description.txt");
     for (i, argv) in rounds.iter().enumerate() {
         let path = task_file_arg(argv).unwrap_or_else(|| {
             panic!(
@@ -313,7 +313,7 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         assert_eq!(
             Path::new(&path).canonicalize().ok(),
             expected.canonicalize().ok(),
-            "round {}: --context-from-file must name $STATE_DIR/task_description.txt",
+            "round {}: --context-from-file must name $STATE_DIR/crusty-task_description.txt",
             i + 1
         );
         assert!(

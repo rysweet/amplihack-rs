@@ -822,6 +822,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn run_output_with_timeout_reports_command_and_precise_timeout_context() {
+        // The shell resolves its command from PATH, which other tests point at
+        // an empty tempdir under the env lock; hold it so they cannot race us.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args(["-c", "sleep 5"]);
 
@@ -842,6 +847,11 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn run_output_with_timeout_limited_caps_retained_stdout() {
+        // The shell resolves its command from PATH, which other tests point at
+        // an empty tempdir under the env lock; hold it so they cannot race us.
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let mut cmd = std::process::Command::new("/bin/sh");
         cmd.args(["-c", "head -c 70000 /dev/zero"]);
 

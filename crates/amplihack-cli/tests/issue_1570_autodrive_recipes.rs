@@ -106,6 +106,12 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
     }
     executable(&bin.join("amplihack"), AMPLIHACK_STUB);
     executable(&tools.join("autodrive_loop.sh"), LOOP_STUB);
+    // merge-loop step-02 refuses to start without the crusty re-review beside
+    // the loop driver (PR #1520); the stub loop never runs it.
+    executable(
+        &tools.join("autodrive_crusty_rereview.sh"),
+        "#!/usr/bin/env bash\nexit 0\n",
+    );
     std::fs::copy(
         repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
         tools.join("recipe_context_value.sh"),

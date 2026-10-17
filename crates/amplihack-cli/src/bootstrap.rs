@@ -68,7 +68,15 @@ fn prepare_selected_launcher(tool: &str) -> Result<()> {
                 prepend_path(&managed_bin_dir)?;
                 persist_path_hint(&managed_bin_dir)?;
             }
-            copilot_setup::ensure_copilot_home_staged()?;
+            // Issue #1526: launching is not installing. Staging from a binary
+            // older than the install would write its older hook wrappers over
+            // the newer install's, and the user's config.json is never
+            // rewritten from here, only filled in when amplihack is absent.
+            if install::newer_install_stamp()?.is_none() {
+                copilot_setup::ensure_copilot_home_staged(
+                    copilot_setup::UserConfig::for_implicit_install(),
+                )?;
+            }
         }
         "claude" => {
             // Register amplihack as a Claude Code plugin so the agents,

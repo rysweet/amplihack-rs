@@ -244,12 +244,16 @@ fn autodrive_loop_recipes_do_not_pass_task_description_as_context() {
 fn autodrive_loop_passes_task_description_from_a_state_file() {
     let text = code(&bundle_file("tools/autodrive_loop.sh"));
     assert!(
-        text.contains("task_description.txt"),
-        "autodrive_loop.sh must write $STATE_DIR/task_description.txt"
+        text.contains("autodrive_use_task_file \"$TASK_FILE_IN\"")
+            && text.contains("-task_description.txt"),
+        "autodrive_loop.sh must copy --task-file to $STATE_DIR/<loop>-task_description.txt"
     );
+    // The copy and the round argument live in autodrive_state.sh, which the
+    // loop sources, so the loop stays within the brick budget.
+    let state = code(&bundle_file("tools/autodrive_state.sh"));
     assert!(
-        text.contains("--context-from-file") && text.contains("task_description="),
-        "autodrive_loop.sh must pass --context-from-file task_description=<file> each round"
+        state.contains("--context-from-file") && state.contains("task_description="),
+        "autodrive_use_task_file must pass --context-from-file task_description=<file> each round"
     );
 }
 

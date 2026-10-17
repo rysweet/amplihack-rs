@@ -788,7 +788,7 @@ Python.
 | `consensus-issue-worktree.yaml` | Issue body | `--body-file` |
 | `consensus-publish.yaml`, `consensus-issue-worktree.yaml` | Final requirements | `write_context_value final_requirements.<field>` to a 0600 file |
 | `consensus-merge-finalize.yaml` | Task description | `write_context_value task_description` to a 0600 file, then `jq --rawfile` instead of `--arg` |
-| `tools/autodrive_loop.sh` | Task description | Written once to `$STATE_DIR/task_description.txt` (0600, temp file then `mv`); each round passes `--context-from-file task_description=...` |
+| `tools/autodrive_loop.sh` | Task description | Written once to `$STATE_DIR/<loop-name>-task_description.txt` (0600, temp file then `mv`); each round passes `--context-from-file task_description=...` |
 | `multitask` launcher script | Workstream context | `exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose`, with `context.json` at 0600 |
 
 No recipe declares `max_env_value_bytes`. The runner never limited anything

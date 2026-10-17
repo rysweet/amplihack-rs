@@ -32,11 +32,24 @@ pub(super) fn is_executable(path: &std::path::Path) -> bool {
     }
 }
 
-pub(super) fn home_dir() -> Result<PathBuf> {
+pub(crate) fn home_dir() -> Result<PathBuf> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
         .filter(|path| !path.as_os_str().is_empty())
         .context("HOME is not set")
+}
+
+/// `p.display()` with every control character replaced by `?`, so a path
+/// printed to the terminal cannot forge a line or carry an escape sequence.
+pub(crate) fn sanitize_path(p: &Path) -> String {
+    sanitize_text(&p.display().to_string())
+}
+
+/// `text` with every control character replaced by `?`, for one-line warnings.
+pub(crate) fn sanitize_text(text: &str) -> String {
+    text.chars()
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect()
 }
 
 pub(super) fn preferred_user_bin_dir() -> Result<PathBuf> {
