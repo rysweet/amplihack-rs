@@ -1199,3 +1199,237 @@ mod finalize_skip_reasons {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1528: the phase-1 commit sites (tdd checkpoint, refactor-review
+// checkpoint, publish step-15) commit only at the top of the linked task
+// worktree. Unlike 20a/20b they hard-fail rather than skip: a skipped
+// checkpoint or publish commit would lose work silently.
+// ---------------------------------------------------------------------------
+
+const PHASE1_COMMIT_SITES: [(&str, &str); 3] = [
+    ("workflow-tdd.yaml", "checkpoint-after-implementation"),
+    (
+        "workflow-refactor-review.yaml",
+        "checkpoint-after-review-feedback",
+    ),
+    ("workflow-publish.yaml", "step-15-commit-push"),
+];
+
+const PHASE1_REFUSAL_TAIL: &str = " is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)";
+
+#[test]
+fn phase1_commit_sites_never_fall_back_to_repo_path() {
+    for (recipe, step) in PHASE1_COMMIT_SITES {
+        let loaded = load_recipe(recipe);
+        let command = step_text(&loaded, step, "command");
+        let add = command
+            .find("git add -A")
+            .unwrap_or_else(|| panic!("{step} stages"));
+        assert!(
+            command.contains(STEP_20B_CONTEXT_DEFAULT),
+            "{recipe}/{step}: the worktree default must not fall back to REPO_PATH"
+        );
+        assert!(
+            !command[..add].contains("${REPO_PATH:-}}}"),
+            "{recipe}/{step}: no `${{REPO_PATH:-}}` fallback before staging"
+        );
+        for linked_check in ["--absolute-git-dir", "--git-common-dir", "pwd -P"] {
+            let at = command.find(linked_check).unwrap_or_else(|| {
+                panic!("{recipe}/{step} must verify a linked worktree ({linked_check})")
+            });
+            assert!(
+                at < add,
+                "{recipe}/{step}: {linked_check} must precede staging"
+            );
+        }
+        let refusal = command
+            .find("never commits in REPO_PATH (#1528)")
+            .unwrap_or_else(|| panic!("{recipe}/{step} must name #1528 when it refuses"));
+        let exit = command[refusal..]
+            .find("exit ")
+            .map(|offset| refusal + offset)
+            .unwrap_or_else(|| panic!("{recipe}/{step}: the refusal must exit"));
+        assert!(
+            command[exit..].starts_with("exit 1;") && exit < add,
+            "{recipe}/{step}: the refusal must hard-fail with exit 1 before staging, not skip"
+        );
+    }
+}
+
+#[cfg(unix)]
+mod phase1_commit_runtime {
+    //! Run each phase-1 commit site with no usable task worktree and prove it
+    //! fails, stages nothing and commits nowhere; then run it at the top of a
+    //! linked worktree and prove the check lets it through.
+
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn hgit(dir: &Path, args: &[&str]) -> String {
+        let output = amplihack_git::command()
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    }
+
+    fn checkout_with_pending_change(dir: &Path) {
+        fs::create_dir_all(dir).expect("mkdir");
+        hgit(dir, &["init", "-q", "-b", "main"]);
+        fs::write(dir.join("README.md"), "base\n").expect("write");
+        hgit(dir, &["add", "README.md"]);
+        hgit(dir, &["commit", "-qm", "base"]);
+        fs::write(dir.join("pending.txt"), "must never be staged here\n").expect("write");
+    }
+
+    fn state(dir: &Path) -> (String, String, String) {
+        (
+            hgit(dir, &["rev-parse", "HEAD"]),
+            hgit(dir, &["diff", "--cached", "--raw"]),
+            hgit(dir, &["ls-files", "--others", "--exclude-standard"]),
+        )
+    }
+
+    fn run(
+        command: &str,
+        root: &Path,
+        cwd: &Path,
+        launch: &Path,
+        worktree: Option<&Path>,
+    ) -> std::process::Output {
+        let mut run = Command::new("bash");
+        run.arg("-c")
+            .arg(command)
+            .current_dir(cwd)
+            .env_clear()
+            .env(
+                "PATH",
+                format!("{}:/usr/bin:/bin", root.join("bin").display()),
+            )
+            .env("HOME", root)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("REPO_PATH", launch)
+            .env("AMPLIHACK_HOME", workspace_root());
+        if let Some(worktree) = worktree {
+            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+        }
+        run.output().expect("run step")
+    }
+
+    #[test]
+    fn phase1_commit_sites_hard_fail_outside_a_linked_task_worktree() {
+        for (recipe, step) in PHASE1_COMMIT_SITES {
+            let command = step_text(&load_recipe(recipe), step, "command").to_string();
+            let tmp = TempDir::new().expect("tempdir");
+            let root = fs::canonicalize(tmp.path()).expect("canonicalize");
+            let launch = root.join("launch");
+            let cwd = root.join("cwd");
+            checkout_with_pending_change(&launch);
+            checkout_with_pending_change(&cwd);
+            let linked = root.join("linked");
+            hgit(
+                &launch,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    "task",
+                    linked.to_str().unwrap(),
+                ],
+            );
+            fs::create_dir_all(linked.join("sub")).expect("mkdir sub");
+            fs::write(linked.join("sub/pending.txt"), "not from the top\n").expect("write");
+
+            let bin = root.join("bin");
+            fs::create_dir_all(&bin).expect("mkdir bin");
+            let log = root.join("amplihack.log");
+            let stub = bin.join("amplihack");
+            fs::write(
+                &stub,
+                format!(
+                    "#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> '{}'\nexit 0\n",
+                    log.display()
+                ),
+            )
+            .expect("write stub");
+            fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+            let missing = root.join("gone");
+            let subdir = linked.join("sub");
+            let cases: [(&str, Option<&Path>, bool); 4] = [
+                ("unset", None, false),
+                ("missing directory", Some(&missing), false),
+                ("main checkout, not a linked worktree", Some(&launch), true),
+                ("subdirectory of a linked worktree", Some(&subdir), true),
+            ];
+            for (label, worktree, names_1528) in cases {
+                let before = (state(&launch), state(&cwd), state(&linked));
+                let output = run(&command, &root, &cwd, &launch, worktree);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                assert_ne!(
+                    output.status.code(),
+                    Some(0),
+                    "{step}/{label}: must hard-fail, not skip\nstderr:\n{stderr}"
+                );
+                if names_1528 {
+                    assert!(
+                        stderr
+                            .lines()
+                            .any(|line| line.starts_with(&format!("ERROR: {step}: "))
+                                && line.ends_with(PHASE1_REFUSAL_TAIL)),
+                        "{step}/{label}: expected the #1528 refusal\nstderr:\n{stderr}"
+                    );
+                }
+                assert_eq!(
+                    (state(&launch), state(&cwd), state(&linked)),
+                    before,
+                    "{step}/{label}: nothing may be staged or committed anywhere"
+                );
+                assert!(
+                    !log.exists(),
+                    "{step}/{label}: the refusal happens before the guard or any staging"
+                );
+            }
+
+            // At the top of the linked worktree the check lets the step through
+            // to the artifact guard, and the launch checkout stays untouched.
+            let launch_before = state(&launch);
+            let output = run(&command, &root, &cwd, &launch, Some(&linked));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                !stderr.contains("not the top of a linked task worktree"),
+                "{step}: a linked worktree top must pass the check\nstderr:\n{stderr}"
+            );
+            if step != "step-15-commit-push" || stderr.contains("Staging Changes") {
+                assert!(
+                    fs::read_to_string(&log).is_ok_and(|l| l.contains("artifact-guard")),
+                    "{step}: the step must reach the artifact guard in the linked worktree\nstderr:\n{stderr}"
+                );
+            }
+            assert_eq!(
+                state(&launch),
+                launch_before,
+                "{step}: launch checkout untouched"
+            );
+        }
+    }
+}

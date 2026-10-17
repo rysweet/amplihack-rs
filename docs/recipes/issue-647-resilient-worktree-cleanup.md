@@ -54,6 +54,9 @@ WARNING: WORKTREE_SETUP_WORKTREE_PATH=/tmp/worktrees/feat-auth-1234 not found, f
 | 16 (review) | workflow-pr-review | **Hard-fail** | Needs worktree files to review |
 | 18c (enforce-verdict) | workflow-pr-review | **Hard-fail** | Verifies work artifacts in worktree |
 | **19c (zero-BS)** | workflow-pr-review | **Resilient** | Read-only checks; can use repo root |
+| checkpoint-after-implementation | workflow-tdd | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
+| checkpoint-after-review-feedback | workflow-refactor-review | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
+| 15 (commit-push) | workflow-publish | **Hard-fail** | Stages, commits and pushes; only at the top of the linked task worktree (issue #1528) |
 | **20a (artifact-guard)** | workflow-finalize | **Skips** | Runs the runtime preflight; never in `REPO_PATH` (issue #1528) |
 | **20b (push-cleanup)** | workflow-finalize | **Skips** | Stages, commits and pushes; never in `REPO_PATH` (issue #1528) |
 | **21 (pr-ready)** | workflow-finalize | **Resilient** | Final status check; reads git remote |
@@ -80,6 +83,28 @@ WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commi
 
 The recipe still completes, as #647 requires. See
 [Workflow Runtime Artifacts: lifecycle integration](../reference/workflow-runtime-artifacts.md#lifecycle-integration).
+
+The phase-1 commit sites apply the same check but stop the recipe instead of
+skipping, because a skipped checkpoint or publish commit would lose work
+without notice. These are `checkpoint-after-implementation` in
+`workflow-tdd.yaml`, `checkpoint-after-review-feedback` in
+`workflow-refactor-review.yaml` and `step-15-commit-push` in
+`workflow-publish.yaml`. None of them falls back to `REPO_PATH`. When
+`WORKTREE_SETUP_WORKTREE_PATH` is empty the `${WORKTREE_SETUP_WORKTREE_PATH:?}`
+expansion stops the step; when the `cd` fails the step stops; and when the
+directory is not the top of a linked worktree (the main checkout, or a
+subdirectory of a worktree) the step prints one error and exits `1` before it
+stages anything:
+
+```
+ERROR: checkpoint-after-implementation: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+ERROR: checkpoint-after-review-feedback: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+ERROR: step-15-commit-push: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+```
+
+`workflow-worktree` always produces a linked worktree (issue #858), so a
+correctly propagated worktree path passes the check. Step 15 additionally keeps
+its refusal to commit on `main` or `master`.
 
 ### Fallback Pattern
 

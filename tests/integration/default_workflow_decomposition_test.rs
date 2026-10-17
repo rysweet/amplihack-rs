@@ -1190,19 +1190,35 @@ fn workflow_prep_step_03b_remote_references_keep_numeric_extraction_behavior() {
 }
 
 // ==========================================================================
-// Issue #684: mid-stage steps must fall back to REPO_PATH when the worktree
-// variable is not propagated from sub-recipe context (step-04).
+// Issue #684: mid-stage steps that stage nothing may fall back to REPO_PATH
+// when the worktree variable is not propagated from sub-recipe context
+// (step-04). Steps that stage and commit may not (issue #1528).
 // ==========================================================================
 
 #[test]
-fn mid_stage_worktree_steps_fall_back_to_repo_path() {
-    // These steps are mid-pipeline — they SHOULD hard-fail when REPO_PATH is
-    // also empty (via :?), but MUST accept REPO_PATH as a defensive fallback
-    // so that context propagation failures between sub-recipes don't crash
-    // the entire workflow when a valid repo directory is available.
+fn mid_stage_read_only_steps_fall_back_to_repo_path() {
+    // step-16 creates the PR from already-pushed work and stages nothing, so a
+    // REPO_PATH fallback cannot commit in the launch checkout. It still
+    // hard-fails (via :?) when REPO_PATH is also empty.
+    let command = step_command("workflow-publish", "step-16-create-draft-pr");
+    assert!(
+        command.contains(":-${REPO_PATH:-}"),
+        "workflow-publish/step-16-create-draft-pr must fall back to $REPO_PATH when worktree var is empty"
+    );
+    assert!(
+        command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
+        "workflow-publish/step-16-create-draft-pr must hard-fail when worktree AND REPO_PATH are both empty"
+    );
+}
+
+#[test]
+fn mid_stage_committing_steps_never_fall_back_to_repo_path() {
+    // Issue #1528: REPO_PATH is the launch checkout, where the run worktrees
+    // sit under the ignored `worktrees/`. A step that stages and commits must
+    // run only at the top of the linked task worktree, and must hard-fail
+    // rather than skip, because a skipped commit loses work silently.
     let cases = [
         ("workflow-publish", "step-15-commit-push"),
-        ("workflow-publish", "step-16-create-draft-pr"),
         ("workflow-tdd", "checkpoint-after-implementation"),
         (
             "workflow-refactor-review",
@@ -1212,13 +1228,12 @@ fn mid_stage_worktree_steps_fall_back_to_repo_path() {
     for (recipe, step_id) in cases {
         let command = step_command(recipe, step_id);
         assert!(
-            command.contains(":-${REPO_PATH:-}"),
-            "{recipe}/{step_id} must fall back to $REPO_PATH when worktree var is empty"
+            !command.contains("worktree_path:-${REPO_PATH"),
+            "{recipe}/{step_id} must not fall back to $REPO_PATH (#1528)"
         );
-        // Must still hard-fail if BOTH worktree and REPO_PATH are empty
         assert!(
             command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
-            "{recipe}/{step_id} must hard-fail when worktree AND REPO_PATH are both empty"
+            "{recipe}/{step_id} must hard-fail when the worktree path is empty"
         );
     }
 }
