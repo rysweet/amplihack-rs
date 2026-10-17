@@ -155,7 +155,8 @@ STUB
 # recipe_context_value.sh, found on the same tool ladder as the loop helper.
 cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/amplifier-bundle/tools/" \
   || harness_error "recipe_context_value.sh missing from the bundle"
-export RECIPE_VAR_task_description="drive PR 7"
+printf '{"task_description":"drive PR 7"}' > "$WORK/context.json"
+export AMPLIHACK_CONTEXT_FILE="$WORK/context.json"
 # install_fake_tools <dir> — the stub loop helper, re-review tool and the
 # context reader.
 install_fake_tools() {

@@ -122,6 +122,8 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
     let preflight = serde_json::json!({
         "state_dir": tmp.path().join("state"),
         "pr": "1570",
+        // #1543: every preflight names the tree the loop measures.
+        "repo": repo,
     })
     .to_string();
 
