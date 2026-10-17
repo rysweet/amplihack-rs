@@ -337,37 +337,99 @@ done
 #   2. env var ($COPILOT_SESSION_ID / $CLAUDE_SESSION_ID / etc.)
 #   3. newest session-state dir for the active CLI
 #   4. error
+# _detect_cli_name <value>: print the allowlisted, lowercased agent CLI name in
+# <value>, or nothing. Same rule as the Rust `validate_binary_name`: any control
+# character rejects the value outright, surrounding spaces are trimmed, inner
+# whitespace is not.
+_detect_cli_name() {
+  local value="$1"
+  [[ "$value" =~ [[:cntrl:]] ]] && return 0
+  value="${value#"${value%%[! ]*}"}"
+  value="${value%"${value##*[! ]}"}"
+  value="$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')"
+  if [[ "$value" =~ ^(amplifier|claude|codex|copilot)$ ]]; then
+    printf '%s\n' "$value"
+  fi
+}
+
 detect_cli() {
-  # Resolution precedence (matches Rust resolver, issue #489):
-  #   1. AMPLIHACK_AGENT_BINARY env var (allowlist-validated)
-  #   2. .claude/runtime/launcher_context.json walked up from cwd
-  #   3. parent process chain for a known binary
-  #   4. default: copilot
-  local allowed_re='^(amplifier|claude|codex|copilot)$'
+  # Resolution precedence (issues #489, #1481, #1525). The Rust resolver in
+  # amplihack_utils::agent_binary is authoritative; this script keeps only the
+  # layers that are cheap to state in shell, plus one the resolver lacks:
+  #   1. AMPLIHACK_AGENT_BINARY (allowlist-validated), skipped while
+  #      AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary> (#1481) or
+  #      session:<same binary>
+  #   2. a session marker: the CLI actually hosting this process, which
+  #      outranks any file. The list is agent_binary::SESSION_MARKERS, in
+  #      order; tests/issue_1525_migrate_detect_cli_parity.sh fails if they
+  #      drift apart. A value tagged session:<binary> is a marker of that CLI,
+  #      ranked after its last entry: amplihack exported it to describe a
+  #      session, not to choose one (crusty review of #1490 at baaafb18).
+  #   3. the parent process chain. Shell only; the Rust resolver has no such
+  #      layer. Like a marker it is evidence of the running session, so it too
+  #      ranks above the file.
+  #   4. everything else is `amplihack agent-binary`, the resolver itself: a
+  #      fresh (24h) .claude/runtime/launcher_context.json walked up from
+  #      $PWD, with its trust, size and symlink checks, then the copilot
+  #      default. It names on stderr every context file it could not use and
+  #      why. Layers 1 and 2 have already declined, and the resolver applies
+  #      the same rules to them, so they do not answer there either.
+  #      This skill ships with amplihack, so amplihack is on PATH wherever it
+  #      runs. Without it, or with a build too old to have the subcommand, a
+  #      warning says the launcher context was not read, and the answer is
+  #      copilot.
+  local described=""
   if [[ -n "${AMPLIHACK_AGENT_BINARY:-}" ]]; then
     local override
-    override="$(printf '%s' "${AMPLIHACK_AGENT_BINARY}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-    if [[ "$override" =~ $allowed_re ]]; then
+    override="$(_detect_cli_name "${AMPLIHACK_AGENT_BINARY}")"
+    # Issue #1481: a parent that only had the built-in default exports it with
+    # AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>. While that tag still names
+    # this value it is a guess, not an instruction, so fall through. A launcher
+    # or recipe run exports session:<binary>, which describes a session and
+    # ranks with the markers below.
+    # Trim surrounding whitespace only, as the Rust resolver does.
+    local source_tag="${AMPLIHACK_AGENT_BINARY_SOURCE:-}"
+    source_tag="${source_tag#"${source_tag%%[![:space:]]*}"}"
+    source_tag="${source_tag%"${source_tag##*[![:space:]]}"}"
+    if [[ -n "$override" && "$source_tag" == "session:$override" ]]; then
+      described="$override"
+    elif [[ -n "$override" && "$source_tag" != "default:$override" ]]; then
       echo "$override"
       return
     fi
   fi
-  local cur="$PWD"
-  local hops=0
-  while [[ -n "$cur" && "$cur" != "/" && $hops -lt 32 ]]; do
-    local ctx="$cur/.claude/runtime/launcher_context.json"
-    if [[ -f "$ctx" ]]; then
-      local parsed
-      parsed="$(jq -r '.launcher // empty' "$ctx" 2>/dev/null | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]' || true)"
-      if [[ "$parsed" =~ ^(amplifier|claude|codex|copilot)$ ]]; then
-        echo "$parsed"
-        return
-      fi
-      break
+  local -a session_markers=(
+    CLAUDECODE:claude
+    CLAUDE_CODE:claude
+    CLAUDE_CODE_SESSION_ID:claude
+    CLAUDE_PROJECT_DIR:claude
+    CLAUDE_CODE_ENTRYPOINT:claude
+    COPILOT_CLI:copilot
+    GITHUB_COPILOT:copilot
+    GITHUB_COPILOT_AGENT:copilot
+    COPILOT_AGENT:copilot
+  )
+  # A described binary answers once the walk has passed its CLI's markers
+  # without finding one set, and after every marker for a CLI with none
+  # (agent_binary::rank_session_markers).
+  local entry marker cli previous=""
+  for entry in "${session_markers[@]}"; do
+    cli="${entry##*:}"
+    if [[ -n "$described" && "$previous" == "$described" && "$cli" != "$described" ]]; then
+      echo "$described"
+      return
     fi
-    cur="$(dirname "$cur")"
-    hops=$((hops + 1))
+    previous="$cli"
+    marker="${entry%%:*}"
+    if [[ -n "${!marker:-}" ]]; then
+      echo "$cli"
+      return
+    fi
   done
+  if [[ -n "$described" ]]; then
+    echo "$described"
+    return
+  fi
   local pid="$PPID"
   while [[ -n "$pid" && "$pid" != "1" ]]; do
     local cmd
@@ -379,7 +441,24 @@ detect_cli() {
     esac
     pid="$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ' || true)"
   done
-  echo copilot
+  if ! command -v amplihack >/dev/null 2>&1; then
+    log_warn "amplihack not found; no launcher context was read. Assuming copilot."
+    echo copilot
+    return
+  fi
+  # `amplihack agent-binary` prints `<binary> (<source>)` on stdout. Its
+  # notices -- an inferred answer, a context file it skipped -- go to stderr,
+  # which is left on the user's terminal.
+  local resolved="" name=""
+  if resolved="$(amplihack agent-binary)"; then
+    name="$(_detect_cli_name "${resolved%% *}")"
+  fi
+  if [[ -z "$name" ]]; then
+    log_warn "amplihack agent-binary did not name an agent CLI; no launcher context was read. Assuming copilot."
+    echo copilot
+    return
+  fi
+  echo "$name"
 }
 
 detect_session_id() {
@@ -866,6 +945,11 @@ case "$CLI" in
     ;;
 esac
 
+# The remote session runs the agent CLI itself ($CLI --resume ...), named
+# outright, so there is no agent binary to hand across this tmux boundary.
+# Detached `amplihack recipe run` launches are different: they must pass
+# "$(amplihack agent-binary --shell)" in (issue #1525; see the dev-orchestrator
+# skill's reference.md).
 if [[ -n "$RESUME_CMD" ]]; then
   log_info "Starting tmux '$TMUX_NAME' on $DEST_HOST: $RESUME_CMD"
   azlin connect -y "$DEST_HOST" -- bash -c "
