@@ -26,7 +26,7 @@
 //!
 //! ```bash
 //! cargo build                                  # compile the binary first
-//! cargo test --test security_hygiene           # run only these tests
+//! cargo test -p amplihack --test integration security_hygiene::           # run only these tests
 //! ```
 
 use std::fs;

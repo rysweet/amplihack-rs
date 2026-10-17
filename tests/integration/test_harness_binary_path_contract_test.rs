@@ -15,9 +15,12 @@
 //!   1. Every affected test must resolve the binary via
 //!      `env!("CARGO_BIN_EXE_amplihack")` / `env!("CARGO_BIN_EXE_amplihack-hooks")`
 //!      and must NOT hand-roll `target/debug/<bin>`.
-//!   2. `skip_update_check_flag_test.rs` — currently an orphan file not wired
-//!      as a `[[test]]` — must be wired into `bins/amplihack/Cargo.toml` so it
-//!      actually compiles/runs AND so `CARGO_BIN_EXE_amplihack` resolves for it.
+//!   2. `skip_update_check_flag_test.rs` — originally an orphan file not wired
+//!      as a `[[test]]` — must be compiled into a `bins/amplihack` test target
+//!      so it actually compiles/runs AND so `CARGO_BIN_EXE_amplihack` resolves
+//!      for it. Since all integration tests became modules of the single
+//!      `integration` target, that means a `mod` line in
+//!      `tests/integration/main.rs`.
 //!
 //! Using `env!` (compile-time) rather than `option_env!`/`var_os` (soft, with a
 //! hardcoded fallback) also forces the binary to be built as a test
@@ -175,8 +178,17 @@ fn soft_lookup_tests_are_tightened_to_hard_env() {
 }
 
 // ---------------------------------------------------------------------------
-// 4. skip_update_check_flag_test.rs must be wired as a [[test]] target
+// 4. skip_update_check_flag_test.rs must be compiled into a bins/amplihack
+//    test target
 // ---------------------------------------------------------------------------
+//
+// All `tests/integration/*.rs` files are modules of ONE test binary: the
+// `integration` [[test]] target of bins/amplihack, rooted at
+// `tests/integration/main.rs`. So "wired" now means two things, both of which
+// must hold for the file to compile, run in CI, and see
+// `CARGO_BIN_EXE_amplihack`:
+//   (a) the manifest declares the `integration` target with that root, and
+//   (b) the root declares skip_update_check_flag_test.rs as a module.
 
 #[test]
 fn skip_update_check_flag_test_is_wired_into_bin_package() {
@@ -187,14 +199,36 @@ fn skip_update_check_flag_test_is_wired_into_bin_package() {
     let manifest = std::fs::read_to_string(&cargo)
         .unwrap_or_else(|e| panic!("FAIL: cannot read {cargo:?}: {e}"));
     assert!(
-        manifest.contains("../../tests/integration/skip_update_check_flag_test.rs"),
-        "FAIL: skip_update_check_flag_test.rs is an orphan file — it is not\n\
-         declared as a `[[test]]` in bins/amplihack/Cargo.toml, so it never\n\
-         compiles/runs in CI and `CARGO_BIN_EXE_amplihack` is unavailable to it.\n\
-         Add:\n\
+        manifest.contains("name = \"integration\"")
+            && manifest.contains("path = \"../../tests/integration/main.rs\""),
+        "FAIL: bins/amplihack/Cargo.toml must declare the single integration\n\
+         test binary that every tests/integration/*.rs file is compiled into:\n\
          \n\
            [[test]]\n\
-           name = \"skip_update_check_flag\"\n\
-           path = \"../../tests/integration/skip_update_check_flag_test.rs\"\n"
+           name = \"integration\"\n\
+           path = \"../../tests/integration/main.rs\"\n"
+    );
+
+    let root = read_test_source("tests/integration/main.rs");
+    let wired = root
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .windows(2)
+        .any(|w| {
+            w[0] == "#[path = \"skip_update_check_flag_test.rs\"]"
+                && w[1].starts_with("mod ")
+                && w[1].ends_with(';')
+        });
+    assert!(
+        wired,
+        "FAIL: skip_update_check_flag_test.rs is an orphan file. It is not\n\
+         declared as a module in tests/integration/main.rs (the root of the\n\
+         `integration` test binary), so it never compiles/runs in CI and\n\
+         `CARGO_BIN_EXE_amplihack` is unavailable to it.\n\
+         Add to tests/integration/main.rs:\n\
+         \n\
+           #[path = \"skip_update_check_flag_test.rs\"]\n\
+           mod skip_update_check_flag;\n"
     );
 }

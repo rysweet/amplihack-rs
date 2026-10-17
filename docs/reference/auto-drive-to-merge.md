@@ -358,7 +358,7 @@ Every recipe file stays inside the 400-line brick budget.
 | Structural + wiring | `tests/integration/auto_drive_to_merge_test.rs` |
 
 ```bash
-cargo test -p amplihack --test auto_drive_to_merge
+cargo test -p amplihack --test integration auto_drive_to_merge::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 ```
 

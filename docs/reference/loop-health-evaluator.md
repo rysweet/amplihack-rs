@@ -356,7 +356,7 @@ Run them with:
 
 ```bash
 cargo test -p amplihack-cli normalise_loop_verdict
-cargo test -p amplihack --test issue_1337_loop_health_evaluator
+cargo test -p amplihack --test integration issue_1337_loop_health_evaluator::
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
 

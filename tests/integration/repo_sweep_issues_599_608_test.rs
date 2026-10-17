@@ -22,7 +22,7 @@
 //! # Running
 //!
 //! ```bash
-//! cargo test --test repo_sweep_issues_599_608 -- --nocapture
+//! cargo test -p amplihack --test integration repo_sweep_issues_599_608:: -- --nocapture
 //! ```
 
 use std::fs;

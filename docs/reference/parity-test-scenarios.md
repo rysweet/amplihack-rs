@@ -260,7 +260,7 @@ bootstrap prompts from interfering with the captured output.
 **Current verification:**
 
 ```sh
-cargo test -p amplihack --test cli_launch --locked
+cargo test -p amplihack --test integration cli_launch:: --locked
 scripts/probe-no-python.sh
 ```
 

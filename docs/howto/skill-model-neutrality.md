@@ -92,8 +92,8 @@ Registered acceptance commands are shown below. Cargo target names come from `bi
 ```bash
 cargo test -p amplihack-domain-agents --test bundled_skill_catalog
 cargo test -p amplihack-domain-agents skill_catalog
-cargo test -p amplihack --test skill_frontmatter_name --test skill_frontmatter_type
-cargo test -p amplihack --test issue_849_skill_mirror_citation
+cargo test -p amplihack --test integration -- skill_frontmatter_name:: skill_frontmatter_type::
+cargo test -p amplihack --test integration issue_849_skill_mirror_citation::
 cargo test -p amplihack-cli issue_1438_skill_publication
 cargo test -p amplihack-cli real_corpus_publishes_all_130_skills_in_isolated_home
 cargo test -p amplihack-cli issue_1277_stages_top_level_and_nested_skills_with_all_support_files
