@@ -57,8 +57,7 @@ context:
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
   loop_repo_path: "."
-  # step-02's agent starts here, never in a judged loop_repo_path (#1528).
-  loop_agent_working_dir: "."
+  loop_agent_working_dir: "."  # step-02's agent starts here, never in loop_repo_path (#1528)
   loop_baseline_ref: ""
   loop_child_exit_code: ""
   loop_findings_current: ""
@@ -75,17 +74,12 @@ steps:
   # ---------------------------------------------------------------------------
   # Step 1 — collect the evidence deterministically.
   #
-  # Its own brick (`loop-evidence-collector.yaml`): measurement and judgement
-  # are different jobs with different failure modes, and the measurement half
-  # is testable without a model. Everything it computes is measured, not
-  # impressed — git counts, token repetition, set differences over findings,
-  # literal signal comparison. The agent in step-02 gets that AS DATA alongside
-  # the raw material, so its judgement is anchored to observations rather than
-  # to a prose summary of them.
-  #
+  # Its own brick (`loop-evidence-collector.yaml`), testable without a model:
+  # git counts, token repetition, set differences over findings, literal
+  # signal comparison — measured, not impressed. Step-02 gets that AS DATA
+  # beside the raw material, so its judgement is anchored to observations.
   # The sub-recipe's `loop_evidence` output lands in this recipe's context, so
-  # step-02's `condition:` and the reads below see it exactly as they would a
-  # local step's output.
+  # step-02's `condition:` and the reads below see it as a local step's.
   # ---------------------------------------------------------------------------
   - id: "step-01-collect-loop-evidence"
     type: "recipe"
@@ -121,6 +115,10 @@ steps:
       whether another round is worth spending. You are NOT counting attempts.
       A loop on round 12 that is converging should CONTINUE; a loop on round 2
       that produced nothing twice should be STUCK. Judge the evidence.
+
+      Do not create, edit, move, rename, delete or archive any file in the
+      auto-drive state directory (the directory holding crusty-round-*.json,
+      merge-ready-round-*.json and phases.tsv).
 
       ## Measured evidence (computed, not summarised)
 

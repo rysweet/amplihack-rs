@@ -1340,6 +1340,11 @@ fn run_loop_step_02(
         &tools.join("autodrive_loop.sh"),
         "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$STUB_LOGS/loop.argv\"\nexit 0\n",
     );
+    // The merge loop's before-round step (#1517); it only has to exist here.
+    write_exec(
+        &tools.join("autodrive_crusty_rereview.sh"),
+        "#!/usr/bin/env bash\nexit 0\n",
+    );
     write_exec(
         &tools.join("autodrive_pr_worktree.sh"),
         "#!/usr/bin/env bash\n\
@@ -1516,17 +1521,26 @@ fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
             .and_then(Value::as_str)
             .unwrap_or_else(|| panic!("{recipe}: context must declare review_dir"));
         assert_eq!(default, "", "{recipe}: review_dir has no default");
-        let first = ctx
+        // The guard runs before any agent and before any sub-recipe. The
+        // merge round finds its tools first (step-00-tools-dir, #1517); that
+        // step starts no agent.
+        let all = ctx
             .get("steps")
             .and_then(Value::as_sequence)
-            .and_then(|s| s.first())
-            .and_then(|s| s.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        assert_eq!(
-            first, "step-00-review-dir-guard",
-            "{recipe}: the guard runs before anything else"
+            .unwrap_or_else(|| panic!("{recipe}: no steps"));
+        let guard = all
+            .iter()
+            .position(|s| s.get("id").and_then(Value::as_str) == Some("step-00-review-dir-guard"))
+            .unwrap_or_else(|| panic!("{recipe}: no step-00-review-dir-guard"));
+        let first_judged = all
+            .iter()
+            .position(|s| {
+                s.get("agent").is_some() || s.get("type").and_then(Value::as_str) == Some("recipe")
+            })
+            .unwrap_or_else(|| panic!("{recipe}: no agent or recipe step"));
+        assert!(
+            guard < first_judged,
+            "{recipe}: the guard runs before any agent or sub-recipe step"
         );
     }
 
@@ -1548,11 +1562,18 @@ fn run_review_dir_guard(recipe: &str, repo: &Path, review: Option<&Path>) -> Out
         .arg(&command)
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
-        .env("REPO_PATH", repo);
+        .env("REPO_PATH", repo)
+        .env("AUTODRIVE_LAUNCH_TOOLS", launch_tools());
     if let Some(review) = review {
         cmd.env("REVIEW_DIR", review);
     }
     cmd.output().expect("run step-00")
+}
+
+/// The launch-side tools dir autodrive_loop.sh hands each round
+/// (`autodrive_launch_tools`): this checkout's amplifier-bundle/tools.
+fn launch_tools() -> PathBuf {
+    workspace_root().join("amplifier-bundle/tools")
 }
 
 #[test]
@@ -1662,11 +1683,10 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
             "{}",
             ctx("the block must start by entering repo_path")
         );
-        let linked = position(&lines, &ctx("linked-worktree check"), |l| {
-            l.contains("--absolute-git-dir")
-        });
-        let head = position(&lines, &ctx("head-branch check"), |l| {
-            l.contains("gh pr view {{pr_number}} --json headRefName")
+        // The linked-worktree and head-branch checks live in the launch-side
+        // autodrive_worktree_guard.sh; the block calls it, and stops on it.
+        let checks = position(&lines, &ctx("commit-dir check"), |l| {
+            l.starts_with("bash \"{{autodrive_launch_tools}}/autodrive_worktree_guard.sh\" commit-dir {{pr_number}}")
         });
         let identity = position(&lines, &ctx("identity helper"), |l| {
             l.contains("amplihack_prepare_git_commit_identity")
@@ -1680,12 +1700,17 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
         let add = position(&lines, &ctx("git add -A"), |l| l == "git add -A");
         let commit = position(&lines, &ctx("git commit"), |l| l.starts_with("git commit"));
 
-        let linked_line = &lines[linked];
+        let tool = logical_lines(&read(&launch_tools().join("autodrive_worktree_guard.sh")));
+        let linked_line = tool
+            .iter()
+            .find(|l| l.contains("--absolute-git-dir"))
+            .unwrap_or_else(|| panic!("autodrive_worktree_guard.sh: no linked-worktree check"));
         for required in [
             "--path-format=absolute --git-common-dir",
-            "case \"$CD\" in /*)",
-            "[ \"$GD\" != \"$CD\" ]",
+            "case \"$cd\" in /*)",
+            "[ \"$gd\" != \"$cd\" ]",
             "*) false",
+            "|| stop ",
         ] {
             assert!(
                 linked_line.contains(required),
@@ -1693,10 +1718,14 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
                 ctx(&format!("linked check needs `{required}`: {linked_line}"))
             );
         }
-        let head_line = &lines[head];
+        let head_line = tool
+            .iter()
+            .find(|l| l.contains("gh pr view \"$pr\" --json headRefName"))
+            .unwrap_or_else(|| panic!("autodrive_worktree_guard.sh: no head-branch check"));
         for required in [
-            "[ -n \"$PR_HEAD\" ]",
-            "[ \"$(git branch --show-current)\" = \"$PR_HEAD\" ]",
+            "[ -n \"$pr_head\" ]",
+            "[ \"$(git branch --show-current)\" = \"$pr_head\" ]",
+            "|| stop ",
         ] {
             assert!(
                 head_line.contains(required),
@@ -1704,7 +1733,14 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
                 ctx(&format!("head check needs `{required}`: {head_line}"))
             );
         }
-        for at in [cd, linked, head] {
+        for line in [linked_line, head_line] {
+            assert!(
+                !line.contains("2>/dev/null") && !line.contains("|| true"),
+                "{}",
+                ctx(&format!("checks must not be silenced: {line}"))
+            );
+        }
+        for at in [cd, checks] {
             let line = &lines[at];
             assert!(
                 line.contains("|| {") && line.contains("STOP") && line.contains("exit 1; }"),
@@ -1736,16 +1772,15 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
             );
         }
         assert!(
-            cd < linked
-                && linked < head
-                && head < identity
+            cd < checks
+                && checks < identity
                 && identity < guards[0]
                 && guards[0] < add
                 && add < guards[1]
                 && guards[1] < commit,
             "{}",
             ctx(&format!(
-                "order must be cd -> linked check -> head check -> identity -> guard -> add -> guard -> commit:\n{}",
+                "order must be cd -> commit-dir check -> identity -> guard -> add -> guard -> commit:\n{}",
                 lines.join("\n")
             ))
         );
@@ -1826,16 +1861,27 @@ fn run_round_block_env(
     guard_fail_on: u32,
     envs: &[(&str, &Path)],
 ) -> Output {
+    let ah = repo.sb.root.join("ah");
     let block = commit_block(&step_field(recipe, step, "prompt"));
+    // `autodrive_launch_tools` is the real launch-side tools dir, so the
+    // block runs the real commit-dir check; the merge round's
+    // `autodrive_tools_dir` (git-identity.sh) is the stub below.
     let script = block
         .replace("{{repo_path}}", repo_path.to_str().expect("utf-8"))
-        .replace("{{pr_number}}", "7");
+        .replace("{{pr_number}}", "7")
+        .replace(
+            "{{autodrive_launch_tools}}",
+            launch_tools().to_str().expect("utf-8"),
+        )
+        .replace(
+            "{{autodrive_tools_dir}}",
+            ah.join("amplifier-bundle/tools").to_str().expect("utf-8"),
+        );
     assert!(
         !script.contains("{{"),
         "unsubstituted placeholder:\n{script}"
     );
 
-    let ah = repo.sb.root.join("ah");
     write_exec(
         &ah.join("amplifier-bundle/tools/git-identity.sh"),
         "amplihack_prepare_git_commit_identity() { :; }\n",

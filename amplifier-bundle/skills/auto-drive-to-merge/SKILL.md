@@ -33,7 +33,11 @@ criterion, then merge. Three phases, two loops, one gate.
 
 ```mermaid
 flowchart TD
-    A[task] --> B[Phase 1: BUILD<br/>default-workflow, no_merge=true]
+    A[task] --> P0{criterion 1 needs gadugi?<br/>Node repo, or AUTODRIVE_QA_SCENARIO_DIR}
+    P0 -->|no: Rust CLI, Python| B[Phase 1: BUILD<br/>default-workflow, no_merge=true]
+    P0 -->|yes| P{gadugi-test on PATH?}
+    P -->|no| STOP0[stop: gadugi-test-not-installed]
+    P -->|yes| B
     B --> C{PR exists?}
     C -->|no| STOP1[stop: nothing to review]
     C -->|yes| D[Phase 2: CRUSTY LOOP]
@@ -47,13 +51,14 @@ flowchart TD
     D4 -->|STUCK| STOP2[stop + escalate<br/>nothing merged]
     D4 -->|DONE + verdict CLEAN| E[Phase 3: MERGE-READY LOOP]
 
-    E --> E1[sync base, run qa-team scenarios,<br/>wait for CI to a terminal state]
+    E --> E0[code commits since the clean crusty round?<br/>re-run the crusty loop at phase 2's depth]
+    E0 --> E1[sync base, run the repository's tests<br/>and, where required, gadugi scenarios,<br/>wait for CI to a terminal state]
     E1 --> E2[merge-ready skill criteria]
     E2 --> E3[structured verdict:<br/>MERGE_READY / NOT_MERGE_READY]
     E3 -->|NOT_MERGE_READY| E4[clear blockers, commit, push]
     E4 --> E5[loop-health-evaluator]
     E3 -->|MERGE_READY| E5
-    E5 -->|CONTINUE| E1
+    E5 -->|CONTINUE| E0
     E5 -->|STUCK| STOP2
     E5 -->|DONE + verdict MERGE_READY| F[MERGE GATE]
 
@@ -64,6 +69,13 @@ flowchart TD
     H -->|no| STOP3
     H -->|yes| I[MERGED]
 ```
+
+## Prerequisites
+
+| Tool | Why | Install |
+| --- | --- | --- |
+| `gadugi-test`, only where criterion 1 needs it | Merge-ready criterion 1 follows qa-team's repo-type table. A Node repository runs its qa-team scenarios with `gadugi-test`. So does any repository where the operator sets `AUTODRIVE_QA_SCENARIO_DIR`. A Rust CLI repository runs `cargo test`, a Python repository runs `pytest`, and neither needs `gadugi-test`. `autodrive_gadugi_required` in `autodrive_trust.sh` makes this decision for every step. Where `gadugi-test` is needed, `amplihack install` does not install it, and no agent can. The recipe's first step, `autodrive-prerequisites`, stops the run with `ERROR: gadugi-test-not-installed` before the build when it is missing, so the missing tool costs seconds rather than a build and a crusty loop. The install is pinned to the gadugi-agentic-test commit auto-drive was tested with, because auto-drive depends on how gadugi-test 1.0.x behaves: one `--scenario` per run (gadugi-agentic-test #207) and a scenario decided by its commands' exit codes alone. | `npm install -g github:rysweet/gadugi-agentic-test#6c120657798995b1b53399a5acf3693d418a2d8b` |
+| `gh`, authenticated | Platform facts, CI, review threads and the merge itself. | [GitHub CLI](https://cli.github.com/) |
 
 ## Invoking it
 
@@ -108,7 +120,11 @@ structurally one layer down by **#1327** (sealed recursion ceiling) and
 **#1332** (width cap + free-memory floor), both refusing with exit code `79`
 before a child runs. Rounds here run **sequentially at constant session
 depth** — each child inherits the same `AMPLIHACK_SESSION_DEPTH` — so a long
-loop never walks toward that ceiling. `AMPLIHACK_MAX_DEPTH` is propagated
+loop never walks toward that ceiling. No round recipe starts a loop: when
+commits made after the clean crusty round need crusty again, the merge-ready
+loop runs the crusty loop before its next round, from its own shell, at the
+depth phase 2's crusty loop runs at. Started from inside a merge round, that
+loop would be one recipe runner deeper and refused with exit `79`. `AMPLIHACK_MAX_DEPTH` is propagated
 untouched and is **never** raised; the loop driver aborts if it changes.
 
 ## Structured verdicts only

@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # test-issue-1531-qa-evidence-json.sh — regression test for #1531.
 #
-# autodrive-merge-evidence.yaml splices the last lines of the qa-team runner's
-# log (qa_summary) and the scenario file list (qa_scenarios) into a JSON record
-# built with printf. A runner that prints ANSI colour (gadugi-test does) put raw
-# ESC bytes into qa_summary, the record was invalid JSON, and the merge round
-# read a passing QA run as qa_status=MISSING.
+# The merge loop's QA evidence record splices the last lines of the repository
+# test command's log (qa_summary) and the scenario file list (qa_scenarios)
+# into a JSON record built with printf. A runner that prints ANSI colour
+# (gadugi-test does) put raw ESC bytes into qa_summary, the record was invalid
+# JSON, and the merge round read a passing QA run as qa_status=MISSING.
 #
-# This takes the recipe's own json_text sanitiser, SUMMARY and SCEN assignments
-# and record printf (extracted from the YAML, not copied), runs them over logs
-# with colour, cursor and erase sequences, quotes, backslashes, tabs, multibyte
-# text and control bytes, and over awkward scenario file names. It checks that
-# every record is valid strict-UTF-8 JSON and that the runner's own words
-# survive the sanitising.
+# The record is built by amplifier-bundle/tools/autodrive_qa_evidence.sh, which
+# step-02-qa-team-scenarios of autodrive-merge-evidence.yaml runs. This runs
+# that tool, unmodified, on a scratch Rust repository whose test command
+# (AUTODRIVE_QA_COMMAND) prints logs with colour, cursor and erase sequences,
+# quotes, backslashes, tabs, multibyte text and control bytes, and over awkward
+# scenario file names. It checks that every record is valid strict-UTF-8 JSON
+# and that the runner's own words survive the sanitising.
 #
 # Usage: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
@@ -21,31 +22,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
-RECIPE="${REPO_ROOT}/amplifier-bundle/recipes/autodrive-merge-evidence.yaml"
+TOOL="${REPO_ROOT}/amplifier-bundle/tools/autodrive_qa_evidence.sh"
 
 harness_error() { echo "HARNESS-ERROR: $*" >&2; exit 2; }
 
-[[ -f "$RECIPE" ]] || harness_error "recipe not found: $RECIPE"
+[[ -f "$TOOL" ]] || harness_error "tool not found: $TOOL"
 # python3 decodes strictly; jq accepts invalid UTF-8, so it cannot stand in for
 # the real consumer (`amplihack orch helper extract-json` rejects it).
 command -v python3 >/dev/null 2>&1 || harness_error "python3 is required to validate the JSON strictly"
 valid_json() { python3 -c 'import json,sys; json.loads(sys.stdin.buffer.read().decode("utf-8"))' 2>/dev/null; }
-
-# one_line <description> <ERE> — the single recipe line matching <ERE>, unindented.
-one_line() {
-    local found
-    found="$(grep -E "$2" "$RECIPE" | sed 's/^[[:space:]]*//')"
-    [[ -n "$found" && "$(printf '%s\n' "$found" | wc -l)" -eq 1 ]] \
-        || harness_error "expected exactly one $1 line in $RECIPE"
-    printf '%s' "$found"
-}
-JSON_TEXT_DEF="$(one_line "json_text()" '^[[:space:]]*json_text\(\) *\{')"
-SUMMARY_LINE="$(one_line 'SUMMARY="$(tail ... "$LOG" ...)"' '^[[:space:]]*SUMMARY="\$\(tail -n [0-9]+ "\$LOG"')"
-SCEN_LINE="$(one_line 'SCEN="$(ls tests/parity/scenarios/* ...)"' '^[[:space:]]*SCEN="\$\(ls tests/parity/scenarios/')"
-# The record: from `OUT="$(printf` through the first line not ending in a backslash.
-OUT_STMT="$(awk '/^[[:space:]]*OUT="\$\(printf /{f=1} f{print; if ($0 !~ /\\$/) exit}' "$RECIPE")"
-[[ -n "$OUT_STMT" ]] || harness_error "record printf (OUT=\"\$(printf ...)\") not found in $RECIPE"
-eval "$JSON_TEXT_DEF"
+field_of() { python3 -c 'import json,sys; print(json.loads(sys.stdin.buffer.read().decode("utf-8"))[sys.argv[1]])' "$1"; }
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -53,20 +39,30 @@ pass() { PASS_COUNT=$((PASS_COUNT + 1)); echo "  PASS[$1]: $2"; }
 fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/issue-1531.XXXXXX")"
+WORK="$(cd "$WORK" && pwd -P)"
 trap 'rm -rf "$WORK"' EXIT
 
-# record <log-file> [scenario-dir] — the recipe's qa record for a run whose log
-# is <log-file>, with SCEN listed from <scenario-dir> when given.
-record() {
-    local LOG="$1" STATUS=PASS TYPE=rust-cli CMD="cargo test" RC=0 SCEN="" SUMMARY="" OUT=""
-    local HEAD_SHA=0123456789abcdef0123456789abcdef01234567 AUTODRIVE_ROUND_LABEL=round-1
-    if [[ -n "${2:-}" ]]; then SCEN="$(cd "$2" && eval "$SCEN_LINE" && printf '%s' "$SCEN")"; fi
-    eval "$SUMMARY_LINE"
-    eval "$OUT_STMT"
-    printf '%s' "$OUT"
-}
+# A scratch Rust repository with one commit, written via plumbing (no hooks).
+REPO="$WORK/repo"
+mkdir -p "$REPO"
+: > "$REPO/Cargo.toml"
+( cd "$REPO" && git init -q . && git add -A \
+  && c="$(GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid GIT_COMMITTER_NAME=t \
+          GIT_COMMITTER_EMAIL=t@example.invalid git commit-tree "$(git write-tree)" -m init)" \
+  && git update-ref HEAD "$c" ) >/dev/null 2>&1 \
+  || harness_error "could not create a scratch git repo"
 
-summary_of() { python3 -c 'import json,sys; print(json.loads(sys.stdin.buffer.read().decode("utf-8"))["qa_summary"])'; }
+# record <log-file> — the tool's qa record for a repository whose test command
+# prints <log-file>. The tool's stderr goes to <log-file>.err.
+# Only the last line of the tool's stdout is the record; take it with a shell
+# substring, not `| tail -n 1` (issue #1434: no early-exit pipeline stages).
+record() {
+    local stdout
+    stdout="$(env -i HOME="$WORK" TMPDIR="$WORK" PATH="/usr/bin:/bin" REPO_PATH="$REPO" \
+        AUTODRIVE_ROUND_LABEL=round-1 AUTODRIVE_QA_COMMAND="cat $1" \
+        bash "$TOOL" 2>"$1.err")"
+    printf '%s' "${stdout##*$'\n'}"
+}
 
 # check_log <id> <description> <printf-format for the log> [text the summary must keep]...
 check_log() {
@@ -76,10 +72,10 @@ check_log() {
     printf "$fmt" > "$log"
     out="$(record "$log")"
     if ! printf '%s' "$out" | valid_json; then
-        fail "$id" "$desc: record is not valid JSON: $(printf '%q' "${out:0:200}")"
+        fail "$id" "$desc: record is not valid JSON: $(printf '%q' "${out:0:200}") | stderr: $(tail -n 3 "$log.err" | tr '\n' '|')"
         return 0
     fi
-    summary="$(printf '%s' "$out" | summary_of)"
+    summary="$(printf '%s' "$out" | field_of qa_summary)"
     for want in "$@"; do
         if [[ "$summary" != *"$want"* ]]; then
             ok=0
@@ -123,16 +119,15 @@ check_log plain "an ordinary log" \
     'test result: ok. 12 passed; 0 failed; 0 ignored\n' "test result: ok. 12 passed; 0 failed; 0 ignored"
 
 echo "== #1531: qa_scenarios is valid JSON for awkward file names =="
-SC="$WORK/repo"
-mkdir -p "$SC/tests/parity/scenarios"
-touch "$SC/tests/parity/scenarios/say \"hi\".yaml" "$SC/tests/parity/scenarios/back\\slash.yaml" \
-      "$SC/tests/parity/scenarios/$(printf 'tab\tname').yaml" "$SC/tests/parity/scenarios/plain.yaml"
+mkdir -p "$REPO/tests/parity/scenarios"
+touch "$REPO/tests/parity/scenarios/say \"hi\".yaml" "$REPO/tests/parity/scenarios/back\\slash.yaml" \
+      "$REPO/tests/parity/scenarios/$(printf 'tab\tname').yaml" "$REPO/tests/parity/scenarios/plain.yaml"
 printf 'ok\n' > "$WORK/scen.log"
-out="$(record "$WORK/scen.log" "$SC")"
+out="$(record "$WORK/scen.log")"
 if printf '%s' "$out" | valid_json; then
     pass scenarios "quotes, backslashes and tabs in scenario file names"
 else
-    fail scenarios "record is not valid JSON: $out"
+    fail scenarios "record is not valid JSON: $out | stderr: $(tail -n 3 "$WORK/scen.log.err" | tr '\n' '|')"
 fi
 if [[ "$out" == *"tests/parity/scenarios/plain.yaml"* ]]; then
     pass scenarios-text "ordinary scenario names are listed unchanged"
