@@ -24,13 +24,14 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
 const DEFAULT_TIMEOUT_SECS: u64 = 30;
-const MAX_TIMEOUT_SECS: u64 = 600;
+pub(super) const MAX_TIMEOUT_SECS: u64 = 600;
 /// Probes running at once.
 const MAX_PARALLEL: usize = 8;
 /// Bytes kept from each of stdout and stderr; the rest is read and dropped.
 const STREAM_CAP: usize = 64 * 1024;
-/// How long to wait for the pipes to close after the child exits. A process
-/// the child started can hold them open; it is not waited for.
+/// How long to wait for the pipes to close after the child exits. Only a
+/// process that left the child's group can still hold them open; it is not
+/// waited for, and the probe fails with [`ErrorReason::ReadFailed`].
 const READ_GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(25);
 /// Reset text and labels are cut to this many characters in the table.
@@ -115,6 +116,11 @@ pub(super) fn run(
     let (secs, warning) = timeout_secs(timeout_flag, std::env::var_os(TIMEOUT_ENV).as_deref());
     if let Some(w) = warning {
         eprintln!("{w}");
+    }
+    // Shown whether or not auto-switch is set up: every row may hold that
+    // credential's numbers.
+    if let Some(var) = env_credential_var(|k| std::env::var_os(k)) {
+        eprintln!("{}", env_credential_warning(var));
     }
     let profiles = selected_profiles(store, names)?;
     if profiles.is_empty() {
@@ -304,6 +310,11 @@ pub(super) fn env_credential_var(get: impl Fn(&str) -> Option<OsString>) -> Opti
         .find(|k| get(k).is_some_and(|v| !v.is_empty()))
 }
 
+/// Names the variable, never its value.
+pub(super) fn env_credential_warning(var: &str) -> String {
+    format!("warning: {var} is set; claude may report that credential's usage, not each profile's")
+}
+
 // ---------------------------------------------------------------------------
 // Probing
 // ---------------------------------------------------------------------------
@@ -467,7 +478,8 @@ pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: boo
     while !(out.done() && err.done()) && exited.elapsed() < READ_GRACE {
         std::thread::sleep(Duration::from_millis(10));
     }
-    if out.failed() || err.failed() {
+    // A pipe still open means the output may be cut short; never parse it.
+    if !(out.done() && err.done()) || out.failed() || err.failed() {
         return Probe::failed(ErrorReason::ReadFailed, raw(&out, &err));
     }
     let (stdout, stderr) = (out.text(), err.text());

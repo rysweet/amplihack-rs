@@ -14,7 +14,6 @@ use std::sync::LazyLock;
 /// step with the phrase table in docs/reference/profile-command.md.
 pub const NOT_LOGGED_IN: &[&str] = &[
     "not logged in",
-    "please run /login",
     "run /login",
     "invalid api key",
     "login required",

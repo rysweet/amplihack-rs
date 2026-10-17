@@ -521,6 +521,30 @@ fn an_env_credential_skips_recording_and_is_named_not_echoed() {
     }
 }
 
+#[test]
+fn an_env_credential_is_warned_about_even_without_auto_switch() {
+    let f = Fixture::new(false);
+    for args in [&["profile", "usage"][..], &["profile", "usage", "--json"]] {
+        let out = f
+            .cmd(args)
+            .env("ANTHROPIC_API_KEY", ENV_KEY_VALUE)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{}", text(&out.stderr));
+        assert!(
+            text(&out.stderr).contains(
+                "warning: ANTHROPIC_API_KEY is set; claude may report that credential's usage, not each profile's"
+            ),
+            "{args:?}: {}",
+            text(&out.stderr)
+        );
+        assert!(!f.state().exists(), "no auto-switch state created");
+        for stream in [&out.stdout, &out.stderr] {
+            assert!(!text(stream).contains(ENV_KEY_VALUE), "value echoed");
+        }
+    }
+}
+
 /// Plain words, so secret scanners do not mistake the test value for a key.
 const ENV_KEY_VALUE: &str = "value-of-the-env-key";
 

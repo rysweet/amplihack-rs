@@ -117,3 +117,12 @@ fn docs_describe_logins_live_in_default_dir() {
     }
     assert!(REFERENCE.contains("| `live_in` | string or `null` |"));
 }
+
+#[test]
+fn reference_quotes_the_env_credential_warning() {
+    let warning = super::usage_cmd::env_credential_warning("ANTHROPIC_API_KEY");
+    assert!(
+        REFERENCE.contains(&format!("`{warning}`")),
+        "reference must quote: {warning}"
+    );
+}

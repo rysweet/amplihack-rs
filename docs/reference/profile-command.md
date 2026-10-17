@@ -185,7 +185,7 @@ without regard to case in stdout and stderr:
 | State | Phrases |
 |-------|---------|
 | `spend_limit` | `spend limit`, `spending limit`, `usage limit for your organization`, `organization has reached` |
-| `not_logged_in` | `not logged in`, `please run /login`, `run /login`, `invalid api key`, `login required`, `authentication_error`, `oauth token has expired` |
+| `not_logged_in` | `not logged in`, `run /login`, `invalid api key`, `login required`, `authentication_error`, `oauth token has expired` |
 
 A spend-limit phrase wins even when usage lines were read, and such a row is
 not recorded: the session and weekly resets do not lift a spend limit, so
@@ -203,7 +203,7 @@ The reasons for `error` are fixed text, never the underlying I/O error:
 |--------|------|
 | `profile directory refused` | The profile cannot be resolved, or its directory fails the check just before spawn. |
 | `could not start claude` | Spawning `claude` failed. |
-| `could not read claude output` | Reading the child's stdout or stderr failed. |
+| `could not read claude output` | Reading the child's stdout or stderr failed, or a pipe was still open 2 seconds after the child exited (a process that left its group still held it), so the output may be cut short. |
 | `could not wait for claude` | Waiting for the child failed. It is killed and reaped first. |
 
 #### Table output
@@ -479,6 +479,10 @@ hold:
    `claude` may report the usage of that credential rather than the
    profile's login. The warning names the variable, never its value:
    `auto-switch: ANTHROPIC_API_KEY is set; usage record not updated`.
+   Whether or not auto-switch is set up, and with or without `--json`, one
+   more line goes to stderr before probing, because every row may show that
+   credential's numbers:
+   `warning: ANTHROPIC_API_KEY is set; claude may report that credential's usage, not each profile's`.
 3. The global state lock can be taken within the usual wait. Otherwise:
    `auto-switch: state is busy; usage record not updated`.
 4. No swap is in progress (no `journal.json`). `profile usage` never runs

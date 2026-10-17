@@ -250,7 +250,7 @@ pub enum ProfileCommands {
         #[arg(long)]
         raw: bool,
         /// Per-profile deadline in seconds (default 30)
-        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=600))]
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=usage_cmd::MAX_TIMEOUT_SECS))]
         timeout_secs: Option<u64>,
     },
     /// Switch accounts automatically when one nears its usage limit
