@@ -145,6 +145,18 @@ printf '%s\n' "$@" > "${LOOP_ARGV_FILE:-/dev/null}"
 printf '%s\n' "${AMPLIHACK_HOME:-<unset>}" > "${LOOP_HOME_FILE:-/dev/null}"
 echo '{"loop_result":"DONE"}'
 STUB
+# #1520: merge step-02 requires the crusty re-review tool next to the loop
+# helper. The stub loop never runs it; it only has to exist.
+cat > "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" <<'STUB'
+#!/usr/bin/env bash
+echo '{"before_round_result":"NO_REREVIEW"}'
+STUB
+# install_fake_tools <dir> — the stub loop helper and re-review tool.
+install_fake_tools() {
+  mkdir -p "$1"
+  cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" "$1/"
+}
 
 # --- fixture -----------------------------------------------------------------
 # make_fixture <name> [worktree-dir-name] -> sets MAIN WT SHA_A SHA_B
@@ -211,7 +223,8 @@ if [[ -z "$RESOLVED" ]]; then
   fail T1-QA "the merge preflight emitted no repo; the evidence steps would measure the main checkout"
 else
   rm -f "$WORK/qa.json" "$WORK/cargo.pwd"
-  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AUTODRIVE_QA_EVIDENCE="$WORK/qa.json" \
+  # #1520: the step runs the launch tree's autodrive_qa_evidence.sh.
+  run_body "$QA_STEP" REPO_PATH="$RESOLVED" AMPLIHACK_HOME="$REPO_ROOT" AUTODRIVE_QA_EVIDENCE="$WORK/qa.json" \
     CARGO_PWD_MARKER="$WORK/cargo.pwd" AUTODRIVE_ROUND_LABEL=round-1
   check_eq T1-QA-sha "qa evidence head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
   check_eq T1-QA-status "qa-team ran (stub runner passed)" PASS "$(field "$OUT" qa_status)"
@@ -262,8 +275,7 @@ for loop in merge crusty; do
 done
 
 echo "== T11: with AMPLIHACK_HOME unset, step-02 pins it to the launch tree =="
-mkdir -p "$MAIN/amplifier-bundle/tools"
-cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" "$MAIN/amplifier-bundle/tools/"
+install_fake_tools "$MAIN/amplifier-bundle/tools"
 preflight merge
 PF="$OUT"
 : > "$WORK/home-seen"
@@ -277,9 +289,8 @@ echo "== T11b: tools from ~/.amplihack, PR worktree ships its own tools — AMPL
 # The common case outside amplihack-rs: the launch checkout has no bundle, so
 # the loop helper comes from ~/.amplihack. A PR that adds amplifier-bundle/tools
 # must not become the rounds' tool root.
-mkdir -p "$HOME/.amplihack/amplifier-bundle/tools" "$WT/amplifier-bundle/tools"
-cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" "$HOME/.amplihack/amplifier-bundle/tools/"
-cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" "$WT/amplifier-bundle/tools/"
+install_fake_tools "$HOME/.amplihack/amplifier-bundle/tools"
+install_fake_tools "$WT/amplifier-bundle/tools"
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
