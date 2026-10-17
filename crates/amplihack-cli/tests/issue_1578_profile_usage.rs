@@ -305,13 +305,20 @@ fn names(rows: &[serde_json::Value]) -> Vec<&str> {
         .collect()
 }
 
+/// No login token and nothing from the rotator's ledger beyond the name.
 fn assert_no_secrets(out: &Output) {
     for s in [text(&out.stdout), text(&out.stderr)] {
-        assert!(
-            !s.contains("SENTINEL"),
-            "credential or env secret printed: {s}"
-        );
+        for secret in ["SENTINEL", "SECRET-HASH"] {
+            assert!(!s.contains(secret), "secret {secret:?} printed: {s}");
+        }
     }
+}
+
+fn warning_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|l| l.starts_with("warning:"))
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -680,7 +687,10 @@ impl Fixture {
     /// Moves `c`'s login into `~/.claude`, where `claude` reports 40/55.
     fn login_in_default_dir(&self) {
         fs::remove_file(self.root.join("c/.credentials.json")).unwrap();
-        private_file(&self.home.join(".claude/.credentials.json"), "{}");
+        private_file(
+            &self.home.join(".claude/.credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"SENTINEL-TOKEN-default"}}"#,
+        );
         self.canned(
             ".claude",
             &format!(
@@ -711,6 +721,7 @@ impl Fixture {
         assert_eq!(u["accounts"]["c"]["seven_day"]["used_percentage"], 55.0);
 
         let out = self.ok(&["profile", "usage"]);
+        assert_no_secrets(&out);
         let stdout = text(&out.stdout);
         let row = table_rows(&stdout)
             .into_iter()
@@ -765,7 +776,7 @@ fn no_ledger_is_quiet_and_marks_nothing_live() {
     );
     let (rows, stderr) = f.json(&["profile", "usage", "--json"]);
     assert!(rows.iter().all(|r| r["live_in"].is_null()));
-    assert!(!stderr.contains("~/.claude"), "{stderr}");
+    assert!(warning_lines(&stderr).is_empty(), "{stderr}");
     // c is probed through its own directory, not ~/.claude. The fake
     // `claude` does not check for a login, so its canned 5% comes back.
     let c = rows.iter().find(|r| r["profile"] == "c").unwrap();
@@ -827,11 +838,7 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
     let (rows, stderr) = f.json(&["profile", "usage", "--json"]);
     assert!(rows.iter().all(|r| r["live_in"].is_null()));
     let warning = "warning: could not read the login rotator's ledger; no profile is marked live in ~/.claude";
-    assert_eq!(
-        stderr.lines().filter(|l| *l == warning).count(),
-        1,
-        "{stderr}"
-    );
+    assert_eq!(warning_lines(&stderr), [warning], "{stderr}");
     assert_eq!(
         fs::read_to_string(f.root.join(".rotator/ledger.json")).unwrap(),
         "not json"

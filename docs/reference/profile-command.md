@@ -311,7 +311,16 @@ The live profile is found once, before probing, and nothing is written:
    | Names a profile that still has something at `<root>/<live>/.credentials.json` (a dangling symlink counts) | No profile is live. That profile is probed through its own directory as normal, because its own login is stronger evidence than a ledger that is probably out of date. | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` |
    | Names a profile with no `.credentials.json` | That profile is live. | nothing |
 
-   The account match below is never tried when a ledger file exists.
+   The account match below is never tried when a ledger file exists, or
+   when amplihack cannot tell whether it exists (for example, a
+   `<root>/.rotator/` directory you cannot search). The second case is
+   treated as an unreadable ledger.
+
+   The ledger is taken at its word: amplihack does not compare the account
+   in `~/.claude.json` with the named profile's account. If the ledger names
+   the wrong profile (the rotator stopped partway through a swap, or someone
+   ran `/login` in `~/.claude`), that profile's row shows the numbers of the
+   login that is actually in `~/.claude`.
 
    The ledger is trusted only if the profile root and `<root>/.rotator` are
    real directories (not symlinks) owned by you that no other user can write
@@ -354,7 +363,9 @@ Keychain and writes no `~/.claude/.credentials.json`, so step 1 finds no
 login and no row is marked. When names are given, the mark appears only if
 the live profile is one of them, and the warnings above are printed only if
 at least one named profile has no `.credentials.json` of its own (a profile
-with its own login is never live, so the warning could not concern it).
+with its own login is never live, so the warning could not concern it). The
+own-login warning is the exception and is always printed, because the profile
+it is about has a login.
 
 ##### Swaps during the probe
 

@@ -146,9 +146,7 @@ pub(super) fn run(
     );
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
-    let swapped = live
-        .filter(|l| !default_live::still_live(store, home.as_deref(), l))
-        .map(|l| l.name);
+    let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(store, &profiles, probes, live_name.as_ref());
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
@@ -180,17 +178,36 @@ fn detect_live(
     profiles: &[ProfileName],
 ) -> Option<default_live::Live> {
     let (live, warning) = default_live::detect(store, home);
-    if let Some(w) = warning.filter(|_| live_warning_applies(store, profiles)) {
+    if let Some(w) = warning.filter(|w| live_warning_applies(store, profiles, w)) {
         eprintln!("{w}");
     }
     live.filter(|l| profiles.contains(&l.name))
 }
 
-/// Whether a live-detection warning can concern any selected profile.
-pub(super) fn live_warning_applies(store: &ProfileStore, profiles: &[ProfileName]) -> bool {
-    profiles
-        .iter()
-        .any(|n| default_live::could_be_live(store, n))
+/// Whether a live-detection warning can concern any selected profile. The
+/// own-login warning always can: the profile it is about has a login, so
+/// [`default_live::could_be_live`] says nothing about it.
+pub(super) fn live_warning_applies(
+    store: &ProfileStore,
+    profiles: &[ProfileName],
+    warning: &str,
+) -> bool {
+    warning == default_live::OWN_LOGIN_WARNING
+        || profiles
+            .iter()
+            .any(|n| default_live::could_be_live(store, n))
+}
+
+/// The live profile, if the login in `~/.claude` was swapped while it was
+/// probed. Repeats the detection, so it misses a profile that became live
+/// during the run and a swap away and back under a ledger without `since`.
+fn swapped_live(
+    store: &ProfileStore,
+    home: Option<&std::path::Path>,
+    live: Option<default_live::Live>,
+) -> Option<ProfileName> {
+    live.filter(|l| !default_live::still_live(store, home, l))
+        .map(|l| l.name)
 }
 
 /// One row per probe, with the default, lease and `~/.claude` marks.

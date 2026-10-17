@@ -72,12 +72,20 @@ pub(super) fn still_live(store: &ProfileStore, home: Option<&Path>, live: &Live)
 /// without its own login can be. Used to skip warnings that cannot concern
 /// any selected profile.
 pub(super) fn could_be_live(store: &ProfileStore, name: &super::name::ProfileName) -> bool {
-    !super::auto_switch::exists(
-        &store
-            .root()
-            .join(name.as_str())
-            .join(super::auto_switch::CREDS),
-    )
+    #[cfg(unix)]
+    {
+        !super::auto_switch::exists(
+            &store
+                .root()
+                .join(name.as_str())
+                .join(super::auto_switch::CREDS),
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store, name);
+        false
+    }
 }
 
 /// The live profile, if any, and at most one warning to print. `home` is
@@ -135,16 +143,23 @@ mod unix {
         if !fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
             return (None, None);
         }
-        if exists(&store.root().join(LEDGER_DIR).join(LEDGER_FILE)) {
-            return match read_ledger(store.root()) {
+        // Only a ledger that is not there falls back to the account match.
+        // One inside a `.rotator` that cannot be searched is unreadable, not
+        // missing. A root that cannot be searched is left to the account
+        // match, which reports it as unlistable.
+        let dir = store.root().join(LEDGER_DIR);
+        match fs::symlink_metadata(dir.join(LEDGER_FILE)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => from_account(store, home),
+            Err(_) if fs::symlink_metadata(&dir).is_err() => from_account(store, home),
+            Err(_) => (None, Some(LEDGER_WARNING)),
+            Ok(_) => match read_ledger(store.root()) {
                 Some(l) => match from_ledger(store, l) {
                     Ok(live) => (live, None),
                     Err(w) => (None, Some(w)),
                 },
                 None => (None, Some(LEDGER_WARNING)),
-            };
+            },
         }
-        from_account(store, home)
     }
 
     /// The ledger, if the profile root is private, `.rotator` is a real

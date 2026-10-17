@@ -911,7 +911,7 @@ fn usage_sources_never_touch_credentials_the_environment_or_a_shell() {
 }
 
 #[test]
-fn live_warnings_are_skipped_when_every_selected_profile_has_its_own_login() {
+fn which_live_warnings_apply_to_the_selected_profiles() {
     use super::name::ProfileName;
     use super::store::ProfileStore;
     use super::usage_cmd::live_warning_applies;
@@ -924,9 +924,22 @@ fn live_warnings_are_skipped_when_every_selected_profile_has_its_own_login() {
     store.add(&a).unwrap();
     store.add(&b).unwrap();
     std::fs::write(store.root().join("a/.credentials.json"), "{}").unwrap();
-    assert!(!live_warning_applies(&store, std::slice::from_ref(&a)));
-    assert!(live_warning_applies(&store, std::slice::from_ref(&b)));
-    assert!(live_warning_applies(&store, &[a, b]));
+    let ledger = super::default_live::LEDGER_WARNING;
+    assert!(!live_warning_applies(
+        &store,
+        std::slice::from_ref(&a),
+        ledger
+    ));
+    assert!(live_warning_applies(
+        &store,
+        std::slice::from_ref(&b),
+        ledger
+    ));
+    assert!(live_warning_applies(&store, &[a.clone(), b], ledger));
+    // The profile the own-login warning is about has a login, so it is
+    // shown even when every selected profile has one.
+    let own = super::default_live::OWN_LOGIN_WARNING;
+    assert!(live_warning_applies(&store, std::slice::from_ref(&a), own));
 }
 
 #[test]

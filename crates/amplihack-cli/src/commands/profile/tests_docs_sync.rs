@@ -115,6 +115,8 @@ fn docs_describe_logins_live_in_default_dir() {
     ] {
         assert!(REFERENCE.contains(w), "reference is missing {w:?}");
     }
+    let swap = super::usage_cmd::swap_warning(&super::name::ProfileName::parse("work").unwrap());
+    assert!(REFERENCE.contains(&swap), "reference is missing {swap:?}");
     assert!(REFERENCE.contains("| `live_in` | string or `null` |"));
 }
 

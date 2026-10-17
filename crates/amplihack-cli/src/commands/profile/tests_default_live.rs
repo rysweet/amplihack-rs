@@ -204,3 +204,31 @@ fn an_unlistable_profile_root_marks_none_and_warns() {
     assert_eq!(got, (None, Some(LIST_WARNING)));
     assert_eq!(e.live(), (Some("a".into()), None), "listable again");
 }
+
+#[test]
+fn a_ledger_that_cannot_be_looked_at_is_unreadable_not_missing() {
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return; // root can search any directory
+    }
+    let e = env();
+    // Without the ledger, `a` would be live by the account match.
+    e.claude_json("a", &account("u1", "me@example.com"));
+    e.ledger(r#"{"live":null}"#);
+    let dir = e.store.root().join(".rotator");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o000)).unwrap();
+    let got = e.live();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+    assert_eq!(got, (None, Some(LEDGER_WARNING)));
+}
+
+#[test]
+fn a_symlinked_login_in_default_dir_is_no_login() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    let creds = e.home.join(".claude/.credentials.json");
+    let target = e.home.join("real-credentials.json");
+    fs::rename(&creds, &target).unwrap();
+    std::os::unix::fs::symlink(&target, &creds).unwrap();
+    assert_eq!(e.live(), (None, None));
+}
