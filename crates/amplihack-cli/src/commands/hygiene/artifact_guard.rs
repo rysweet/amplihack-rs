@@ -161,7 +161,17 @@ fn print_violation_report(report: &ArtifactGuardReport) {
         if untouchable.iter().any(|path| is_within(path, &root)) {
             for violation in &group {
                 let path = &violation.path;
-                eprintln!("  git rm --cached -- '{path}'   # drop from the change, keep on disk");
+                // The root is shell-safe, but the rest of the path is not
+                // checked by `split_removable`.
+                if is_shell_safe(path) {
+                    eprintln!(
+                        "  git rm --cached -- '{path}'   # drop from the change, keep on disk"
+                    );
+                } else {
+                    eprintln!(
+                        "  # {path:?} has a name that is unsafe in a shell command; untrack it by hand after review"
+                    );
+                }
             }
             eprintln!(
                 "  # (listed per path: '{root}' also holds pre-existing entries this change must not touch)"
@@ -322,7 +332,7 @@ fn split_removable<'a>(
     let mut review = Vec::new();
     for violation in violations {
         match violation.removal_root.as_deref() {
-            Some(root) if !root.chars().any(|c| c == '\'' || c.is_control()) => {
+            Some(root) if is_shell_safe(root) => {
                 removable
                     .entry(root.to_string())
                     .or_default()
@@ -332,6 +342,12 @@ fn split_removable<'a>(
         }
     }
     (removable, review)
+}
+
+/// Whether `text` can be printed inside a single-quoted shell word without
+/// ending the quoting or forging a report line.
+fn is_shell_safe(text: &str) -> bool {
+    !text.chars().any(|c| c == '\'' || c.is_control())
 }
 
 /// Whether `path` is `root` or beneath it, at a `/` boundary (`build` does not

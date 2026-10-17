@@ -918,6 +918,31 @@ fn cli_never_prints_a_removal_command_for_a_root_holding_a_quote() {
 }
 
 #[test]
+fn cli_never_prints_a_per_path_command_for_a_path_holding_a_quote() {
+    // The root `node_modules` is shell-safe and shared with pre-existing
+    // entries, so the guard lists per path; the path itself must still not be
+    // interpolated into a single-quoted shell word.
+    let tmp = repo_with_preexisting_tracked_node_modules();
+    let name = "node_modules/x'; touch PWNED; echo '/index.js";
+    write_file(&tmp.path().join(name), "y\n");
+    run_git(tmp.path(), &["add", "-f", "node_modules"]);
+    run_git(tmp.path(), &["commit", "-qm", "quote-shaped package"]);
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        !combined.contains("touch PWNED; echo '/index.js'"),
+        "a quote in the path must not reach a shell command; got:\n{combined}"
+    );
+    assert!(
+        combined.contains("unsafe in a shell command"),
+        "the path must be routed to manual handling; got:\n{combined}"
+    );
+}
+
+#[test]
 fn cli_gives_a_glob_shaped_tracked_path_no_allowlist_line() {
     let tmp = repo_on_task_branch();
     let name = "build/a*b.txt";
