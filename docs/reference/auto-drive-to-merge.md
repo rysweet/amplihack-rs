@@ -73,7 +73,7 @@ Resolution runs in step-01 (the preflight) of `autodrive-crusty-loop.yaml` and
 - the phase is going to run (`should_run` would be `true`).
 
 The PR number used is the build phase's `PR_NUMBER`, or `pr_number` itself
-when the build phase reported none. It is never guessed from the launch
+when the build phase reported none or a non-numeric one. It is never guessed from the launch
 checkout while `pr_number` was supplied. A `pr_number` that is not a positive
 number, with no `PR_NUMBER` to override it, is refused before resolution:
 

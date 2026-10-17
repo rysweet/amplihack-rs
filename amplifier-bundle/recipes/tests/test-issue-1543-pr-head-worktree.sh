@@ -362,6 +362,13 @@ else
 fi
 cat "$GH_LOG" >> "$GH_LOG_SAVE"; export GH_LOG="$GH_LOG_SAVE"
 
+echo "== T17b: a non-numeric PR_NUMBER falls back to the operator's pr_number =="
+for loop in merge crusty; do
+  preflight "$loop" PR_NUMBER=n/a
+  check_eq "T17b-$loop-rc" "$loop preflight succeeds" 0 "$RC"
+  check_eq "T17b-$loop-pr" "$loop preflight pr is AUTODRIVE_PR_INPUT" 7 "$(field "$OUT" pr)"
+done
+
 echo "== T18: a non-numeric pr_number with PR_NUMBER empty — refuse with the input named =="
 for loop in merge crusty; do
   preflight "$loop" PR_NUMBER= AUTODRIVE_PR_INPUT=abc

@@ -63,7 +63,8 @@ steps:
       . "$STATE_HELPER"
 
       # #1543: the operator's own pr_number outranks a guess from the launch checkout.
-      PR="${PR_NUMBER:-${AUTODRIVE_PR_INPUT:-}}"
+      PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="${AUTODRIVE_PR_INPUT:-}" ;; esac
       [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
       [ -z "${AUTODRIVE_PR_INPUT:-}" ] || [ -n "$PR" ] \
