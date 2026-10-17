@@ -60,6 +60,8 @@ pub mod litellm_callbacks;
 pub mod litellm_proxy;
 pub mod llm_client;
 pub mod observability;
+/// Stdin writer and UTF-8-safe truncation for large child payloads (issue #1570).
+pub mod payload_delivery;
 pub mod plugin_cli;
 pub mod plugin_manager;
 pub(crate) mod plugin_manager_paths;
@@ -70,8 +72,8 @@ pub mod prerequisites;
 pub mod process;
 pub mod project_init;
 pub(crate) mod project_init_detect;
-/// Subprocess prompt-delivery helper (argv/tempfile/stdin). See Simard
-/// issue #1897.
+/// Subprocess prompt-delivery helper (argv/tempfile/stdin/file-reference).
+/// See Simard issue #1897 and amplihack-rs issue #1570.
 pub mod prompt_delivery;
 pub mod resolve_bundle_asset;
 /// `IS_SANDBOX=1` for `claude --dangerously-skip-permissions` as root (issue #1482).

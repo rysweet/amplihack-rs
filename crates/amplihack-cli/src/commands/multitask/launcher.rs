@@ -20,17 +20,19 @@ use std::time::Instant;
 
 /// Write recipe-mode launcher scripts for a workstream.
 pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<()> {
-    // Built first so a refused profile export leaves no partial scripts behind.
+    // Built first so a refused profile export or recipe name leaves no
+    // partial scripts behind.
     let run_content = command_builder::recipe_run_script(ws, delegate)?;
+    let launcher_content = command_builder::recipe_launcher_script(&ws.recipe)?;
     let resume_context = command_builder::build_resume_context(ws);
     let safe_context = serde_json::to_string(&resume_context)?;
 
-    // Write context JSON so the launcher script can pass it via -c flags
+    // Issue #1570: the launcher passes this file with `--context-file`. It
+    // holds the task description, so only the owner may read it.
     let context_json = ws.work_dir.join("context.json");
-    fs::write(&context_json, &safe_context)?;
+    write_private_file(&context_json, safe_context.as_bytes())?;
 
     let launcher_sh = ws.work_dir.join("launcher.sh");
-    let launcher_content = command_builder::recipe_launcher_script(&ws.recipe);
     write_executable_script(&launcher_sh, &launcher_content)?;
     set_executable(&launcher_sh)?;
 
@@ -52,6 +54,28 @@ pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<
     set_executable(&run_sh)?;
 
     Ok(())
+}
+
+/// Write `contents` to `path` with mode 0600 on Unix, tightening the mode of
+/// an existing file before its contents are replaced.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write as _;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(0o600);
+        if path.exists() {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600))
+                .with_context(|| format!("restrict permissions of {}", path.display()))?;
+        }
+    }
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("write {}", path.display()))?;
+    file.write_all(contents)
+        .with_context(|| format!("write {}", path.display()))
 }
 
 pub(super) fn write_executable_script(path: &std::path::Path, content: &str) -> Result<()> {

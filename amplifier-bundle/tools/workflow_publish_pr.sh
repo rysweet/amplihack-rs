@@ -27,6 +27,12 @@ GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}
 [ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
+# write_body_file keeps the PR body out of argv: gh reads it with --body-file,
+# truncated below GitHub's 65,536-character limit (issue #1570).
+BODY_FILE_HELPER="${WORKFLOW_BODY_FILE_HELPER:-${SCRIPT_DIR}/workflow_body_file.sh}"
+[ -f "$BODY_FILE_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the body-file helper at $BODY_FILE_HELPER" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "$BODY_FILE_HELPER"
 
 emit_publish_result() {
   jq -nc \
@@ -176,10 +182,17 @@ gh_pr_view_with_retry() {
 }
 
 gh_pr_create_with_retry() {
-  local status
+  local status=0 body_file
+  body_file="$(umask 077; mktemp)" || return 1
+  if ! printf '%s' "$PR_BODY" | write_body_file "$body_file" "the workflow publish step log"; then
+    rm -f -- "$body_file"
+    echo "ERROR: could not write the PR body file" >&2
+    return 1
+  fi
   # WRITE path: no REST fallback (never blind-create); rate limits wait for reset.
-  _gh_retry_core "pr create" pr create --draft --title "$PR_TITLE" --body "$PR_BODY" && return 0
-  status=$?
+  _gh_retry_core "pr create" pr create --draft --title "$PR_TITLE" --body-file "$body_file" || status=$?
+  rm -f -- "$body_file"
+  [ "$status" -eq 0 ] && return 0
   echo "ERROR: gh pr create failed (exit $status) — PR may already exist for this branch or GitHub API is unavailable" >&2
   return "$status"
 }

@@ -112,13 +112,23 @@ steps:
       # or .claude hooks. Only each round's commit step works in the worktree.
       REVIEW_DIR="$(pwd -P)"
       PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
+      # Issue #1570: task_description is read with write_context_value
+      # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
+      # loop copies to its state directory. The uppercase TASK_DESCRIPTION
+      # alias is not used: the runner omits it for large values.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      TASK_IN="$(umask 077; mktemp)" || exit 1
+      trap 'rm -f -- "$TASK_IN"' EXIT
+      write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
       # Commits after the clean crusty round go back to crusty BEFORE each
       # merge round, from this shell, so that crusty loop runs at this step's
       # depth like phase 2's. Started from a merge round step it would be one
       # runner deeper and refused with exit 79 (PR #1520 review).
       REREVIEW="$(dirname "$LOOP_HELPER")/autodrive_crusty_rereview.sh"
       [ -f "$REREVIEW" ] || { echo "ERROR: autodrive-tools-not-found: ${REREVIEW} (the crusty re-review must come from the loop driver's install)" >&2; exit 1; }
-      bash "$LOOP_HELPER" \
+      bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "merge-ready" \
         --before-round "$REREVIEW" \
         --round-recipe "autodrive-merge-round" \
@@ -130,7 +140,6 @@ steps:
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
-        --context "task_description=${TASK_DESCRIPTION:-}" \
         --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
         --context "autodrive_state_dir=${DIR}"
       RC=$?

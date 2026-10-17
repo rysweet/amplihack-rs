@@ -29,7 +29,8 @@
 #             and NEVER retried into.
 #
 # --before-round <script> (optional) runs `bash <script> --repo <repo> --review-dir
-# <dir> --state-dir <dir> -c <key=value>...`, with the context the round gets,
+# <dir> --state-dir <dir> -c <key=value>... --context-from-file
+# task_description=<file>`, with the context the round gets,
 # before EVERY round, round 1 included. It runs in this shell's process tree,
 # so a loop it starts runs at the depth of THIS loop, never one recipe runner
 # deeper. The merge-ready loop uses it for autodrive_crusty_rereview.sh, which
@@ -50,7 +51,7 @@ set -uo pipefail
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
-REPO="."; REVIEW_DIR=""; STATE_DIR=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""
+REPO="."; REVIEW_DIR=""; STATE_DIR=""; TASK_FILE_IN=""; ROUND_CTX=(); BEFORE_ROUND=""; CTX_REFUSED=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -61,6 +62,7 @@ while [ $# -gt 0 ]; do
     --repo)          REPO="${2:-}"; shift 2 ;;
     --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
+    --task-file)     TASK_FILE_IN="${2:-}"; shift 2 ;;
     --context)       case "${2:-}" in review_dir=*|autodrive_launch_tools=*) CTX_REFUSED="${2%%=*}" ;; esac; ROUND_CTX+=("-c" "${2:-}"); shift 2 ;;
     --before-round)  BEFORE_ROUND="${2:-}"; shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -88,6 +90,7 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 autodrive_private_dir "$STATE_DIR" || exit 2
 CALLER_UMASK="$(umask)"
 umask 077
+autodrive_use_task_file "$TASK_FILE_IN" "${STATE_DIR}/${LOOP_NAME}-task_description.txt" || exit 2 # issue #1570
 
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX

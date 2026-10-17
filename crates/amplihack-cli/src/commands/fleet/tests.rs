@@ -4426,7 +4426,11 @@ fn fleet_admiral_advisory_completion_resolves_without_stalling() {
 fn fleet_admiral_start_agent_updates_task_state_and_log() {
     let temp = tempfile::tempdir().unwrap();
     let azlin = temp.path().join("azlin");
-    write_executable(&azlin, "#!/bin/sh\nexit 0\n");
+    // Issue #1570: stage 1 reads the prompt from stdin and prints a path.
+    write_executable(
+        &azlin,
+        "#!/bin/sh\ncat >/dev/null\nprintf '/tmp/tmp.prompt\\n'\nexit 0\n",
+    );
 
     let task = FleetTask {
         id: "queued-task".to_string(),
@@ -5302,7 +5306,7 @@ fn reasoner_command_sets_is_sandbox_only_when_amplihack_enables_it() {
         (SkipPermissionsEnv::NotRoot, None),
         (SkipPermissionsEnv::AlreadySandboxed, None),
     ] {
-        let command = reasoning::reasoner_command(path, "inspect", &decision).unwrap();
+        let command = reasoning::reasoner_command(path, &decision).unwrap();
         assert!(command.get_args().any(|arg| arg == SKIP_PERMISSIONS_FLAG));
         assert_eq!(
             command_is_sandbox(&command).as_deref(),
@@ -5316,8 +5320,8 @@ fn reasoner_command_sets_is_sandbox_only_when_amplihack_enables_it() {
             value: "0".to_string(),
         },
     ] {
-        let error = reasoning::reasoner_command(path, "inspect", &decision)
-            .expect_err("claude would refuse the flag");
+        let error =
+            reasoning::reasoner_command(path, &decision).expect_err("claude would refuse the flag");
         assert!(error.to_string().contains("IS_SANDBOX=1"), "{error}");
     }
 }

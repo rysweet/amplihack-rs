@@ -95,6 +95,7 @@ fn stdin_delivery_can_round_trip_representative_prompt_without_shell_quoting() {
         supports_argv: true,
         supports_tempfile: false,
         supports_stdin: true,
+        supports_file_reference: false,
         tempfile_flag: None,
     };
     let mut command = Command::new("/bin/cat");
@@ -127,6 +128,7 @@ fn stdin_delivery_does_not_abort_on_nul_and_payload_is_spawn_safe() {
         supports_argv: true,
         supports_tempfile: false,
         supports_stdin: true,
+        supports_file_reference: false,
         tempfile_flag: None,
     };
     let mut command = Command::new("/bin/cat");

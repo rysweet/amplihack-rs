@@ -164,11 +164,12 @@ manifest_resolves() {
 # autodrive-merge-loop.yaml step-02 runs it, from a step at session depth 2.
 merge_loop() {
   git -C "$FX" update-ref --no-deref HEAD "$1"
+  printf 'drive the PR to merge' > "$WORK/task.txt"
   env -i HOME="$WORK/home" PATH="$WORK/bin:$SYS_PATH" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
     AMPLIHACK_BIN="$WORK/bin/amplihack" REAL_AMPLIHACK="$REAL" FIXTURE="$FX" CALLS="$3" \
     AMPLIHACK_SESSION_DEPTH=2 AMPLIHACK_MAX_DEPTH=3 AMPLIHACK_TREE_ID=scenario \
     bash "$TOOLS/autodrive_loop.sh" --loop-name merge-ready --round-recipe autodrive-merge-round \
-      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --review-dir "$WORK" --state-dir "$2" \
+      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --review-dir "$WORK" --state-dir "$2" --task-file "$WORK/task.txt" \
       --context "repo_path=$FX" --context "pr_number=42" --context "autodrive_state_dir=$2" \
       --before-round "$TOOLS/autodrive_crusty_rereview.sh"
 }

@@ -1336,10 +1336,21 @@ fn run_loop_step_02(
     let launch = root.join("launch");
     fs::create_dir_all(&logs).expect("mkdir logs");
     fs::create_dir_all(&launch).expect("mkdir launch");
+    // The loop stub also keeps the task it was handed with --task-file
+    // (#1570), read while the step's private file still exists.
     write_exec(
         &tools.join("autodrive_loop.sh"),
-        "#!/usr/bin/env bash\nprintf '%s\\n' \"$@\" > \"$STUB_LOGS/loop.argv\"\nexit 0\n",
+        "#!/usr/bin/env bash\n\
+         printf '%s\\n' \"$@\" > \"$STUB_LOGS/loop.argv\"\n\
+         prev=''; for a in \"$@\"; do [ \"$prev\" = --task-file ] && cat -- \"$a\" > \"$STUB_LOGS/loop.task\"; prev=\"$a\"; done\n\
+         exit 0\n",
     );
+    // Step-02 reads task_description with the real helper (#1570).
+    fs::copy(
+        tools_dir().join("recipe_context_value.sh"),
+        tools.join("recipe_context_value.sh"),
+    )
+    .expect("copy recipe_context_value.sh");
     // The merge loop's before-round step (#1517); it only has to exist here.
     write_exec(
         &tools.join("autodrive_crusty_rereview.sh"),
@@ -1376,6 +1387,7 @@ fn run_loop_step_02(
         .env("AMPLIHACK_HOME", root.join("ah"))
         .env("REPO_PATH", &launch)
         .env(preflight_var, r#"{"state_dir":"/stub/state","pr":"7"}"#)
+        .env("RECIPE_VAR_task_description", "drive PR 7 to merge")
         .env("STUB_LOGS", &logs)
         .env("STUB_RESOLVE_FAIL", if resolve_fails { "1" } else { "0" })
         .output()
@@ -1439,6 +1451,21 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
         assert!(
             argv.iter().any(|arg| arg == "repo_path=/stub/wt"),
             "{recipe}: {argv:?}"
+        );
+        // The rounds run in the PR worktree and still get the task, through
+        // the task file rather than as an argv element (#1528 with #1570).
+        assert!(
+            argv.iter().any(|arg| arg == "--task-file"),
+            "{recipe}: loop gets --task-file: {argv:?}"
+        );
+        assert_eq!(
+            read(&root.join("logs/loop.task")),
+            "drive PR 7 to merge",
+            "{recipe}: the task reaches the loop"
+        );
+        assert!(
+            !argv.iter().any(|arg| arg.contains("task_description")),
+            "{recipe}: the task never travels as an argv element: {argv:?}"
         );
         // The launch checkout reaches the loop exactly once, as the review
         // dir where the read-only judging agents start (#1528). It

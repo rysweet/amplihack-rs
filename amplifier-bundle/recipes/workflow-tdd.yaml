@@ -258,9 +258,6 @@ steps:
   - id: "checkpoint-after-implementation"
     type: "bash"
     condition: "resume_checkpoint != 'checkpoint-after-implementation' and resume_checkpoint != 'checkpoint-after-review-feedback'"
-    # FIX (#4231): Limit env var size to prevent E2BIG when prior steps
-    # (implementation, test_spec, design_spec) produce large outputs.
-    max_env_value_bytes: 65536
     command: |
       set -euo pipefail
       export GIT_PAGER=cat

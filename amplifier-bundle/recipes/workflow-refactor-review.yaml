@@ -204,7 +204,6 @@ steps:
   # --------------------------------------------------------------------------
   - id: "checkpoint-after-review-feedback"
     type: "bash"
-    max_env_value_bytes: 65536
     command: |
       set -euo pipefail
       export GIT_PAGER=cat

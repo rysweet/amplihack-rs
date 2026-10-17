@@ -35,35 +35,30 @@ steps:
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
 
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      _TASK_DESC="$TASK_DESCRIPTION"
-      _REQS_SUMMARY="$FINAL_REQUIREMENTS_TASK_SUMMARY"
-      _IS_CRITICAL="$IS_CRITICAL_CODE"
-      _ISSUE_NUM="$ISSUE_NUMBER"
-      SHORT_DESC=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-72)
-      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
-      COMMIT_MSG=$(cat <<COMMIT_EOF
-      feat: ${SHORT_DESC}
-
-      Implements $_REQS_SUMMARY
-
-      Consensus Mechanisms Used:
-      - Multi-Agent Debate: Requirements clarification
-      - Multi-Agent Debate: Architecture design
-      - N-Version Programming: $_IS_CRITICAL
-      - Expert Panel: Refactoring review
-
-      Requirements validated by consensus process.
-
-      Resolves #$_ISSUE_NUM
-      COMMIT_EOF
-      )
+      # Issue #1570: agent text is read with write_context_value (RECIPE_VAR_* or
+      # AMPLIHACK_CONTEXT_FILE) into private files and never placed in argv.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      umask 077
+      TASK_FILE=$(mktemp); REQS_SUMMARY_FILE=$(mktemp); COMMIT_MSG_FILE=$(mktemp)
+      trap 'rm -f -- "$TASK_FILE" "$REQS_SUMMARY_FILE" "$COMMIT_MSG_FILE"' EXIT
+      write_context_value task_description "$TASK_FILE" || exit 1
+      write_context_value final_requirements.task_summary "$REQS_SUMMARY_FILE" || { echo "WARN: final_requirements.task_summary is not available; leaving it empty" >&2; : > "$REQS_SUMMARY_FILE"; }
+      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _ISSUE_NUM="${ISSUE_NUMBER:-}"
+      SHORT_DESC=$(tr '\n\r' ' ' < "$TASK_FILE" | cut -c1-72)
+      {
+        printf 'feat: %s\n\nImplements ' "$SHORT_DESC"
+        cat -- "$REQS_SUMMARY_FILE"
+        printf '\n\nConsensus Mechanisms Used:\n- Multi-Agent Debate: Requirements clarification\n- Multi-Agent Debate: Architecture design\n- N-Version Programming: %s\n- Expert Panel: Refactoring review\n\nRequirements validated by consensus process.\n\nResolves #%s\n' "$_IS_CRITICAL" "$_ISSUE_NUM"
+      } > "$COMMIT_MSG_FILE"
 
       COMMITTED=false
       if [ -n "$(git diff --cached --name-only)" ]; then
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         amplihack_prepare_git_commit_identity
-        if git commit -m "$COMMIT_MSG"; then
+        if git commit -F "$COMMIT_MSG_FILE"; then
           COMMITTED=true
         else
           commit_rc=$?
@@ -103,54 +98,33 @@ steps:
         exit 1
       fi
 
-      # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
-      _TASK_DESC="$TASK_DESCRIPTION"
-      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
-      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
-      _IS_CRITICAL="$IS_CRITICAL_CODE"
-      _TDD_TOTAL="$TDD_TESTS_TOTAL_TESTS"
-      _LOCAL_PASSED="$LOCAL_TESTING_ALL_SCENARIOS_PASSED"
-      _ISSUE_NUM="$ISSUE_NUMBER"
-      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
-      PR_BODY=$(cat <<PR_EOF
-      ## Description
-      $_TASK_DESC
+      # Issue #1570: agent text is read with write_context_value (RECIPE_VAR_* or
+      # AMPLIHACK_CONTEXT_FILE) into private files and never placed in argv.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      . "$H/workflow_body_file.sh" || exit 1
+      umask 077
+      TASK_FILE=$(mktemp) && REQS_FILE=$(mktemp) && MECH_FILE=$(mktemp) && PR_BODY_FILE=$(mktemp) || exit 1
+      trap 'rm -f -- "$TASK_FILE" "$REQS_FILE" "$MECH_FILE" "$PR_BODY_FILE"' EXIT
+      write_context_value task_description "$TASK_FILE" || exit 1
+      write_context_value final_requirements.explicit_requirements "$REQS_FILE" || { echo "WARN: final_requirements.explicit_requirements is not available; leaving it empty" >&2; : > "$REQS_FILE"; }
+      write_context_value final_requirements.consensus_mechanism_used "$MECH_FILE" || { echo "WARN: final_requirements.consensus_mechanism_used is not available; leaving it empty" >&2; : > "$MECH_FILE"; }
+      _IS_CRITICAL="${IS_CRITICAL_CODE:-}"
+      _TDD_TOTAL="${TDD_TESTS_TOTAL_TESTS:-}"
+      _LOCAL_PASSED="${LOCAL_TESTING_ALL_SCENARIOS_PASSED:-}"
+      _ISSUE_NUM="${ISSUE_NUMBER:-}"
+      {
+        printf '## Description\n'; cat -- "$TASK_FILE"
+        printf '\n\n## Requirements (Consensus-Validated)\n'; cat -- "$REQS_FILE"
+        printf '\n\n## Design Decisions\nArchitecture consensus achieved with:\n- Architect, API Designer, Database, Security, Tester agents\n- 3 rounds of structured debate\n- All conflicts resolved with documented rationale\n\n'
+        printf '## Consensus Mechanisms Applied\n- [x] Multi-Agent Debate: Requirements ('; cat -- "$MECH_FILE"
+        printf ')\n- [x] Multi-Agent Debate: Architecture design\n- [x] N-Version Programming: %s\n- [x] Expert Panel: Refactoring review\n\n' "$_IS_CRITICAL"
+        printf '## Test Plan\n- Unit tests: %s tests\n- Local testing: %s\n- Coverage: All requirements mapped to tests\n\n' "$_TDD_TOTAL" "$_LOCAL_PASSED"
+        printf '## Checklist\n- [x] Consensus design followed\n- [x] All tests passing\n- [x] Pre-commit hooks passing\n- [x] Local testing completed\n- [x] No stubs/TODOs/placeholders\n\nResolves #%s\n\n---\nLabel: consensus-validated\n' "$_ISSUE_NUM"
+      } | write_body_file "$PR_BODY_FILE" "the consensus-publish step10 log" || exit 1
 
-      ## Requirements (Consensus-Validated)
-      $_REQS_EXPLICIT
-
-      ## Design Decisions
-      Architecture consensus achieved with:
-      - Architect, API Designer, Database, Security, Tester agents
-      - 3 rounds of structured debate
-      - All conflicts resolved with documented rationale
-
-      ## Consensus Mechanisms Applied
-      - [x] Multi-Agent Debate: Requirements ($_REQS_MECHANISM)
-      - [x] Multi-Agent Debate: Architecture design
-      - [x] N-Version Programming: $_IS_CRITICAL
-      - [x] Expert Panel: Refactoring review
-
-      ## Test Plan
-      - Unit tests: $_TDD_TOTAL tests
-      - Local testing: $_LOCAL_PASSED
-      - Coverage: All requirements mapped to tests
-
-      ## Checklist
-      - [x] Consensus design followed
-      - [x] All tests passing
-      - [x] Pre-commit hooks passing
-      - [x] Local testing completed
-      - [x] No stubs/TODOs/placeholders
-
-      Resolves #$_ISSUE_NUM
-
-      ---
-      Label: consensus-validated
-      PR_EOF
-      )
-
-      PR_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
+      PR_TITLE=$(tr '\n\r' ' ' < "$TASK_FILE" | cut -c1-200)
       PR_CREATED=false
       if git remote get-url origin >/dev/null 2>&1; then
         # FIX (#495): capture gh stderr so we can emit a workflow-command
@@ -160,7 +134,7 @@ steps:
         _pr_stderr_file=$(mktemp -t consensus-pr-XXXXXX)
         if gh pr create \
           --title "$PR_TITLE" \
-          --body "$PR_BODY" \
+          --body-file "$PR_BODY_FILE" \
           --label "consensus-validated" 2>"$_pr_stderr_file"; then
           PR_CREATED=true
         else

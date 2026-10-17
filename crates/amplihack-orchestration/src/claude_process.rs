@@ -12,14 +12,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use amplihack_utils::idle_watchdog::{IdleConfig, wait_with_idle_watchdog};
+use amplihack_utils::payload_delivery::{StdinDelivery, write_stdin_async};
 use amplihack_utils::prompt_delivery::{
     DeliveryCaps, DeliveryHandle, DeliveryMode, PromptDelivery, deliver, from_env,
-    sanitize_prompt_nul, select_mode,
+    sanitize_prompt_nul,
 };
 use async_trait::async_trait;
 use once_cell::sync::Lazy;
 use thiserror::Error;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
 
 /// Pre-split command lookup: maps `AMPLIHACK_DELEGATE` value to its binary
@@ -115,8 +115,8 @@ where
 {
     let mut command = StdCommand::new(program);
     command.args(args);
-    let selected_mode = select_mode(requested, prompt.len(), &caps);
     let delivery_handle = deliver(&mut command, prompt, requested, &caps)?;
+    let selected_mode = delivery_handle.mode();
     let stdin_payload = (selected_mode == DeliveryMode::Stdin)
         .then(|| sanitize_prompt_nul(prompt).as_bytes().to_vec());
     Ok(DeliveredProcessCommand {
@@ -322,7 +322,7 @@ impl ProcessRunner for TokioProcessRunner {
             args,
             &opts.prompt,
             from_env(),
-            delivery_caps_for_delegate(delegate.as_deref()),
+            delivery_caps_for_program(program),
         ) {
             Ok(command) => command,
             Err(e) => {
@@ -410,12 +410,16 @@ async fn run_delivered_command(
     // Drain output while writing stdin. Waiting to start the watchdog until
     // after a large stdin write can deadlock when the child's output pipe
     // fills before it has read the complete prompt.
+    //
+    // The child's status decides the result (issue #1570, D1/R5). A child
+    // that closes stdin early (`BrokenPipe`) or exits before reading the
+    // whole prompt is judged by its exit status, not by the unfinished write.
+    let payload_bytes = stdin_payload.as_ref().map_or(0, Vec::len);
     let write_stdin = async move {
-        if let (Some(payload), Some(mut stdin)) = (stdin_payload, stdin) {
-            stdin.write_all(&payload).await?;
-            stdin.flush().await?;
+        match (stdin_payload, stdin) {
+            (Some(payload), Some(stdin)) => write_stdin_async(stdin, &[&payload]).await,
+            _ => Ok(StdinDelivery::Complete),
         }
-        Ok::<(), std::io::Error>(())
     };
     let mut write_stdin = Box::pin(write_stdin);
     let mut watchdog = Box::pin(wait_with_idle_watchdog(
@@ -424,34 +428,47 @@ async fn run_delivered_command(
         stderr_pipe,
         cfg,
     ));
-    let outcome = tokio::select! {
+    let delivered: Result<_, String> = tokio::select! {
         biased;
-        write_result = &mut write_stdin => {
-            if let Err(e) = write_result {
-                // Do not wait for the idle watchdog after a broken stdin pipe:
-                // a child can keep emitting output forever, which deliberately
-                // keeps that watchdog alive. Cancel it (which aborts its
-                // drainers), then kill and reap the child.
-                drop(watchdog);
-                let _ = child.start_kill();
-                let _ = child.wait().await;
-                return ProcessResult::err(
-                    format!("failed to write prompt to child stdin: {e}"),
-                    process_id,
-                    start.elapsed(),
-                );
+        write_result = &mut write_stdin => match write_result {
+            Ok(StdinDelivery::Complete) => Ok((&mut watchdog).await),
+            // The child closed stdin. If it exits promptly its status
+            // decides; one that keeps running (and perhaps keeps emitting
+            // output, which keeps the idle watchdog alive) did so without
+            // its prompt and is killed below.
+            Ok(StdinDelivery::ReaderClosed) => {
+                match tokio::time::timeout(READER_CLOSED_GRACE, &mut watchdog).await {
+                    Ok(outcome) => {
+                        warn_prompt_incomplete(&process_id, payload_bytes);
+                        Ok(outcome)
+                    }
+                    Err(_) => Err("child closed stdin before prompt delivery completed".to_string()),
+                }
             }
-            watchdog.await
-        }
-        _ = &mut watchdog => {
-            // The child can exit or be killed as idle before it accepts the
-            // entire prompt. Since the writer branch was polled first, it is
-            // still pending here; cancel it rather than wait indefinitely for
-            // a descendant that inherited stdin but does not read it.
+            Err(e) => Err(e.to_string()),
+        },
+        outcome = &mut watchdog => {
+            // The child exited, or was killed as idle, before it accepted the
+            // entire prompt. The writer branch was polled first, so it is
+            // still pending; cancel it rather than wait indefinitely for a
+            // descendant that inherited stdin but does not read it.
             drop(write_stdin);
+            warn_prompt_incomplete(&process_id, payload_bytes);
+            Ok(outcome)
+        }
+    };
+    let outcome = match delivered {
+        Ok(outcome) => outcome,
+        Err(reason) => {
+            // Do not wait for the idle watchdog here: a child can keep
+            // emitting output forever, which deliberately keeps that watchdog
+            // alive. Cancel it (which aborts its drainers), then kill and
+            // reap the child.
+            drop(watchdog);
+            let _ = child.start_kill();
+            let _ = child.wait().await;
             return ProcessResult::err(
-                "failed to write prompt to child stdin: child exited before prompt delivery completed"
-                    .to_string(),
+                format!("failed to write prompt to child stdin: {reason}"),
                 process_id,
                 start.elapsed(),
             );
@@ -489,8 +506,29 @@ async fn run_delivered_command(
     }
 }
 
-fn delivery_caps_for_delegate(_delegate: Option<&str>) -> DeliveryCaps {
-    DeliveryCaps::argv_only()
+/// How long a child that closed stdin early has to exit before the unfinished
+/// prompt write counts as a delivery failure.
+const READER_CLOSED_GRACE: Duration = Duration::from_secs(1);
+
+/// Log an unfinished prompt write by size only; the payload is never logged.
+fn warn_prompt_incomplete(process_id: &str, payload_bytes: usize) {
+    tracing::warn!(
+        process_id,
+        payload_bytes,
+        "prompt delivery incomplete when child exited"
+    );
+}
+
+/// Issue #1570: `claude -p` reads its prompt from stdin when no positional
+/// prompt is given, so a bare `claude` child receives large prompts there
+/// instead of in one argv element. The `amplihack copilot` and
+/// `amplihack amplifier` delegates have no stdin contract and stay on argv.
+fn delivery_caps_for_program(program: &str) -> DeliveryCaps {
+    if program == "claude" {
+        DeliveryCaps::argv_only().with_stdin()
+    } else {
+        DeliveryCaps::argv_only()
+    }
 }
 
 pub async fn run_delivered_command_for_test(

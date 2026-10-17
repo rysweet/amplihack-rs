@@ -159,6 +159,14 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   # agents would start (--working-dir, review_dir, loop_agent_working_dir).
   # Newlines inside an argument (loop_history) are flattened to spaces.
   { printf '%s' "$*" | tr '\n' ' '; echo; } >> "${STUB_CALLS:-/dev/null}.argv"
+  # The task text each recipe received through --context-from-file (#1570),
+  # read while the loop's private copy still exists: "<recipe> <text>".
+  prev=""; for a in "$@"; do
+    if [ "$prev" = "--context-from-file" ]; then
+      case "$a" in task_description=*) { printf '%s ' "$RECIPE"; cat -- "${a#*=}" 2>/dev/null || printf '<unreadable>'; echo; } >> "${STUB_CALLS:-/dev/null}.task" ;; esac
+    fi
+    prev="$a"
+  done
   # The session depth each child recipe was started at, when a test asks.
   printf '%s %s\n' "$RECIPE" "${AMPLIHACK_SESSION_DEPTH:-unset}" >> "${STUB_DEPTH_LOG:-/dev/null}"
   # The umask each child recipe was started with, when a test asks for it.
@@ -245,10 +253,11 @@ run_loop() { # run_loop <state-dir-suffix>
   LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
   mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
   export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows"
+  printf 'drive the PR to merge' > "${LOOP_LOGS}/task.txt"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${WORK}" --state-dir "${LOOP_DIR}" \
+      --repo "${WORK}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
   LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
@@ -518,6 +527,9 @@ export STUB_ROUND_FINDINGS=""
 # its stop rule. Build such a worktree, tamper with both recipes in it, and
 # require that the loop still hands `recipe run` the launch-side copies.
 TAMPERED="${WORK}/tampered-pr-worktree"
+# Every loop needs a task (#1570); without one it refuses before the checks
+# below are reached, and a refusal test would pass for the wrong reason.
+T1528_TASK="${WORK}/task-1528.txt"; printf 'drive the PR to merge' > "${T1528_TASK}"
 mkdir -p "${TAMPERED}/amplifier-bundle/recipes"
 git -C "${TAMPERED}" init -q 2>/dev/null
 for r in autodrive-crusty-round autodrive-merge-round loop-health-evaluator; do
@@ -530,7 +542,7 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 RECIPES_REAL="$(cd "${RECIPES}" && pwd -P)"
 if [ "$rc" -eq 0 ] \
@@ -565,7 +577,7 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 ( cd "${LAUNCH}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     --context "repo_path=${TAMPERED}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
 ROUND_ARGV="$(grep -F 'autodrive-crusty-round.yaml' "${LOOP_DIR}.calls.argv" 2>/dev/null | head -n1)"
@@ -580,6 +592,17 @@ if [ "$rc" -eq 0 ] && [ -n "${ROUND_ARGV}" ] && [ -n "${HEALTH_ARGV}" ] \
   pass "1528-judging-agents-launch-side" "review and evaluator agents start in the launch checkout, not the PR worktree"
 else
   fail "1528-judging-agents-launch-side" "rc=${rc}; round: ${ROUND_ARGV}; health: ${HEALTH_ARGV}; err: $(tail -n5 "${LOOP_DIR}.err")"
+fi
+# The same round, run in the PR worktree, still receives the task (#1528 with
+# #1570): the loop copies --task-file into its state dir and hands the copy to
+# the round as --context-from-file, whatever --repo is.
+if [ "$rc" -eq 0 ] \
+   && printf '%s' "${ROUND_ARGV}" | grep -qE -- "--working-dir (${TAMPERED}|${TAMPERED_REAL}) " \
+   && printf '%s' "${ROUND_ARGV}" | grep -qF -- "--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt" \
+   && [ "$(grep '^autodrive-crusty-round ' "${LOOP_DIR}.calls.task" 2>/dev/null | head -n1)" = "autodrive-crusty-round drive the PR to merge" ]; then
+  pass "1528-1570-task-reaches-worktree-round" "a round launched in the PR worktree receives task_description through the loop's task file"
+else
+  fail "1528-1570-task-reaches-worktree-round" "rc=${rc}; round: ${ROUND_ARGV}; task seen: $(cat "${LOOP_DIR}.calls.task" 2>/dev/null)"
 fi
 
 # A review dir that IS the tree under review, or sits inside it, is refused
@@ -598,7 +621,7 @@ for case_ in explicit inside default context; do
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" \
+      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
       >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err" ); rc=$?
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
@@ -621,7 +644,7 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh" --loop-name "crusty" \
     --round-recipe "autodrive-crusty-round" --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
    && grep -qF 'inside the tree under review' "${LOOP_DIR}.err" \
@@ -639,7 +662,7 @@ PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${LOOP}" --loop-name "crusty" \
     --round-recipe "${TAMPERED}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ]; then
   pass "1528-round-recipe-by-path-refused" "a round recipe given by path is refused before any round runs"
@@ -687,10 +710,11 @@ run_loop_before() { # run_loop_before <state-dir-suffix> [before-round path]: ru
   LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
   mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
   export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows" STUB_HISTORY_LOG="${LOOP_LOGS}/history"
+  printf 'drive the PR to merge' > "${LOOP_LOGS}/task.txt"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" AMPLIHACK_SESSION_DEPTH=2 \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${WORK}" --state-dir "${LOOP_DIR}" --context "pr_number=42" \
+      --repo "${WORK}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" --context "pr_number=42" \
       --before-round "${2:-${BR_HOOK}}" >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
   LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
@@ -703,10 +727,11 @@ export STUB_HEALTH_SEQ="${WORK}/health-seq-before"
 run_loop_before before-ok; rc=$?
 unset STUB_HEALTH_SEQ
 BR_REVIEW="$(pwd -P)"
-BR_WANT="before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 depth=2
+BR_TASK="--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt"
+BR_WANT="before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
 loop-health-evaluator
-before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 depth=2
+before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
 loop-health-evaluator"
 if [ "$rc" -eq 0 ] && [ "$(cat "${LOOP_LOGS}/calls" 2>/dev/null)" = "${BR_WANT}" ]; then
@@ -3680,13 +3705,15 @@ else
     local seed="$1" repo="$2"; shift 2
     RRT_N=$((RRT_N + 1)); RRT_DIR="${WORK_PHYS}/rrt-${RRT_N}"; RRT_LOGS="${WORK_PHYS}/rrt-${RRT_N}.logs"
     mkdir -p "${RRT_LOGS}"; seed_crusty "${RRT_DIR}" "${seed}"; mkdir -p "${RRT_DIR}"
+    printf 't' > "${RRT_LOGS}/task.txt"
     env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
       GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
       STUB_CALLS="${RRT_LOGS}/calls" STUB_SHOW_CALLS="${RRT_LOGS}/shows" STUB_DEPTH_LOG="${RRT_LOGS}/depths" \
       STUB_HEALTH_RESOLVES=0 STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_ROUND_RC=0 \
       STUB_HEALTH_RC=0 STUB_HEALTH_STDOUT= STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= STUB_CRUSTY_RECORD= "$@" \
       bash "${RR_TOOL}" --repo "${repo}" --review-dir "${WORK_PHYS}" --state-dir "${RRT_DIR}" \
-        -c "repo_path=${repo}" -c "pr_number=42" -c "pr_url=u" -c "task_description=t" -c "autodrive_qa_evidence=x" \
+        -c "repo_path=${repo}" -c "pr_number=42" -c "pr_url=u" -c "autodrive_qa_evidence=x" \
+        --context-from-file "task_description=${RRT_LOGS}/task.txt" \
       >"${RRT_LOGS}/out" 2>"${RRT_LOGS}/err"; RRT_RC=$?
     RRT_OUT="$(tail -n 1 "${RRT_LOGS}/out")"
   }
@@ -3772,6 +3799,7 @@ loop-health-evaluator 2" ]; then
   # both are started at the loop's own depth, and the loop converges.
   fx_head "${FX_CODE}"
   RRE_DIR="${WORK_PHYS}/rre-state"; RRE_LOGS="${WORK_PHYS}/rre.logs"; mkdir -p "${RRE_LOGS}"
+  printf 'drive the PR to merge' > "${RRE_LOGS}/task.txt"
   seed_crusty "${RRE_DIR}" clean
   env PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     GH_MODE=green GH_HEAD="${CR_SHA2}" GH_BASE=main AMPLIHACK_SESSION_DEPTH=2 \
@@ -3780,7 +3808,7 @@ loop-health-evaluator 2" ]; then
     STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 \
     STUB_ROUND_RC=0 STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= \
     bash "${LOOP}" --loop-name merge-ready --round-recipe autodrive-merge-round --clean-token MERGE_READY \
-      --verdict-field merge_ready_verdict --repo "${FX}" --state-dir "${RRE_DIR}" \
+      --verdict-field merge_ready_verdict --repo "${FX}" --state-dir "${RRE_DIR}" --task-file "${RRE_LOGS}/task.txt" \
       --context "repo_path=${FX}" --context "pr_number=42" --before-round "${RR_TOOL}" \
     >"${RRE_LOGS}/out" 2>"${RRE_LOGS}/err"; rc=$?
   RRE_WANT="autodrive-crusty-round 2
@@ -4368,13 +4396,14 @@ done
 # under umask 077 (that step's own umask is section 6b, case 29).
 fx_head "${CR_SHA2}"
 E2E="${WORK_PHYS}/umask-e2e"; mkdir -p "${E2E}.tmp"; chmod 0700 "${E2E}.tmp"
+printf 'drive the PR to merge' > "${E2E}.task"
 E2E_ENV=("${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
   STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 STUB_HEALTH_RESOLVES=0 AMPLIHACK_BIN="${STUB_BIN}/amplihack")
 e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
   local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5
   env -i "${E2E_ENV[@]}" STUB_ROUND_BODY="${body}" "$@" \
-    bash -c 'umask 0002; exec bash "$1" --loop-name "$2" --round-recipe "$3" --clean-token "$4" --verdict-field "$5" --repo "$6" --state-dir "$7"' \
-    _ "${LOOP}" "${name}" "${recipe}" "${token}" "${vfield}" "${FX}" "${E2E_DIR}" >"${E2E}.${name}.out" 2>"${E2E}.${name}.err"
+    bash -c 'umask 0002; exec bash "$1" --loop-name "$2" --round-recipe "$3" --clean-token "$4" --verdict-field "$5" --repo "$6" --state-dir "$7" --task-file "$8"' \
+    _ "${LOOP}" "${name}" "${recipe}" "${token}" "${vfield}" "${FX}" "${E2E_DIR}" "${E2E}.task" >"${E2E}.${name}.out" 2>"${E2E}.${name}.err"
 }
 E2E_PRE="$(env -i "${E2E_ENV[@]}" bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-01-crusty-loop-preflight)" 2>"${E2E}.pre.err")"
 E2E_DIR="$(printf '%s' "${E2E_PRE}" | jq -r '.state_dir // empty' 2>/dev/null)"
@@ -4522,6 +4551,9 @@ autodrive_pr_state() { echo OPEN; }
 autodrive_state_dir() { echo "${FAKE_CALLS_DIR}/derived"; }
 autodrive_record_crusty_loop_done() { autodrive_mark_phase_done "$1" "crusty-loop"; }
 EOF
+# Issue #1570: the loop steps read task_description through the real
+# recipe_context_value.sh helper, so the fake bundle carries the real copy.
+cp "${TOOLS}/recipe_context_value.sh" "${FAKE_TOOLS}/recipe_context_value.sh"
 # merge-loop step-02 refuses to start without the crusty re-review beside the
 # loop driver (PR #1520); this run never reaches it, so it is only a file.
 printf '%s\n' 'exit 0' > "${FAKE_TOOLS}/autodrive_crusty_rereview.sh"
@@ -4576,8 +4608,9 @@ for b in CL2 CL3 ML2 ML3 ML4 BU3 REPORT CR3 CR5 CR6 MR3 MR5; do
 done
 
 # crusty-loop step-02: the preflight's state_dir reaches the loop driver.
-run_body "$CL2" RECIPE_VAR_crusty_loop_preflight="$PRE"
+run_body "$CL2" RECIPE_VAR_crusty_loop_preflight="$PRE" RECIPE_VAR_task_description="drive PR 42"
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
+   && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null \
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
@@ -4597,14 +4630,74 @@ else
 fi
 
 # merge-loop step-02, step-03 and step-04.
-run_body "$ML2" RECIPE_VAR_merge_loop_preflight="$PRE"
+run_body "$ML2" RECIPE_VAR_merge_loop_preflight="$PRE" RECIPE_VAR_task_description="drive PR 42"
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
+   && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && grep -qxF "autodrive_qa_evidence=${SD}/qa-evidence.json" "${CALLS}/loop-args" 2>/dev/null \
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ]; then
   pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir through RECIPE_VAR_merge_loop_preflight and runs the loop in the resolved PR worktree"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"
+fi
+
+# #1528 with #1570, end to end: the real step-02 bodies drive the REAL loop
+# driver. Only the PR-worktree resolver, the before-round re-review and the
+# amplihack `recipe run` boundary are stand-ins. The round must start in the
+# resolved PR worktree and still receive task_description, which reaches the
+# step only as RECIPE_VAR_task_description and the loop only as --task-file.
+INT_HOME="${WORK_PHYS}/int-home"; INT_TOOLS="${INT_HOME}/amplifier-bundle/tools"
+mkdir -p "${INT_TOOLS}" "${INT_HOME}/amplifier-bundle/recipes"
+cp "${TOOLS}"/*.sh "${INT_TOOLS}/"
+cp "${RECIPES}"/*.yaml "${INT_HOME}/amplifier-bundle/recipes/"
+INT_WT="${WORK_PHYS}/int-pr-worktree"; mkdir -p "${INT_WT}"
+git -C "${INT_WT}" init -q 2>/dev/null
+git -C "${INT_WT}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
+printf '%s\n' 'printf "%s\n" "$@" > "${FAKE_CALLS_DIR}/resolver-args"' "echo '${INT_WT}'" \
+  > "${INT_TOOLS}/autodrive_pr_worktree.sh"
+cat > "${INT_TOOLS}/autodrive_crusty_rereview.sh" <<'REREVIEW'
+printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/rereview-args"
+prev=""; for a in "$@"; do
+  [ "$prev" = "--context-from-file" ] && case "$a" in task_description=*) cat -- "${a#*=}" > "${FAKE_CALLS_DIR}/rereview-task" ;; esac
+  prev="$a"
+done
+echo '{"before_round_result":"crusty-rereview-not-needed","range":"none","crusty_loop_result":""}'
+REREVIEW
+int_run() { # int_run <body> <preflight-var> <round-record>
+  local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"
+  local pre="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${sd}\",\"reason\":\"r\"}"
+  set_stub "$3" 0 "$H_DONE"
+  BODY_N=$((BODY_N + 1)); CALLS="${WORK_PHYS}/body-${BODY_N}"; mkdir -p "${CALLS}"
+  env "${UNSET_ALIASES[@]}" \
+    PATH="${STUB_BIN}:${PATH}" AMPLIHACK_HOME="${INT_HOME}" REPO_PATH="${WORK}/notgit" \
+    HOME="${WORK}/nohome" FAKE_CALLS_DIR="${CALLS}" STUB_CALLS="${CALLS}/calls" STUB_SHOW_CALLS="${CALLS}/shows" \
+    "$2=${pre}" RECIPE_VAR_task_description="drive PR 42 to merge" \
+    bash -c "$1" >"${CALLS}/out" 2>"${CALLS}/err"
+  BODY_RC=$?
+  BODY_OUT="$(cat "${CALLS}/out")"; BODY_ERR="$(cat "${CALLS}/err")"
+}
+int_round_ok() { # int_round_ok <round-recipe>: the round ran in INT_WT and got the task
+  local argv
+  argv="$(grep -F "/$1.yaml" "${CALLS}/calls.argv" 2>/dev/null | head -n1)"
+  [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
+    && printf '%s' "${argv}" | grep -qF -- "--working-dir ${INT_WT} " \
+    && printf '%s' "${argv}" | grep -qF "repo_path=${INT_WT}" \
+    && [ "$(grep "^$1 " "${CALLS}/calls.task" 2>/dev/null | head -n1)" = "$1 drive PR 42 to merge" ] \
+    && ! grep -qF 'task_description=drive' "${CALLS}/calls.argv"
+}
+int_run "$CL2" RECIPE_VAR_crusty_loop_preflight '{"crusty_verdict":"CLEAN"}'
+if [ "$BODY_RC" -eq 0 ] && int_round_ok autodrive-crusty-round; then
+  pass "1528-1570-crusty-loop-e2e" "crusty-loop step-02 runs the real loop in the PR worktree and the round receives task_description"
+else
+  fail "1528-1570-crusty-loop-e2e" "rc=${BODY_RC}; argv: $(cat "${CALLS}/calls.argv" 2>/dev/null); task: $(cat "${CALLS}/calls.task" 2>/dev/null); err: $(tail -n 8 "${CALLS}/err")"
+fi
+int_run "$ML2" RECIPE_VAR_merge_loop_preflight '{"merge_ready_verdict":"MERGE_READY","blocker_count":0}'
+if int_round_ok autodrive-merge-round \
+   && [ "$(arg_after --repo "${CALLS}/rereview-args")" = "${INT_WT}" ] \
+   && [ "$(cat "${CALLS}/rereview-task" 2>/dev/null)" = "drive PR 42 to merge" ]; then
+  pass "1528-1570-merge-loop-e2e" "merge-loop step-02 runs the real loop in the PR worktree; the re-review and the round both receive task_description"
+else
+  fail "1528-1570-merge-loop-e2e" "rc=${BODY_RC}; argv: $(cat "${CALLS}/calls.argv" 2>/dev/null); task: $(cat "${CALLS}/calls.task" 2>/dev/null); rereview: $(cat "${CALLS}/rereview-args" 2>/dev/null); err: $(tail -n 8 "${CALLS}/err")"
 fi
 run_body "$ML3" RECIPE_VAR_merge_loop_preflight="$PRE"
 if [ "$(arg_after --state-dir "${CALLS}/gate-args")" = "${SD}" ] \
