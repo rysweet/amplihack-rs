@@ -151,11 +151,18 @@ cat > "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" <<'STUB'
 #!/usr/bin/env bash
 echo '{"before_round_result":"NO_REREVIEW"}'
 STUB
-# install_fake_tools <dir> — the stub loop helper and re-review tool.
+# #1570: loop step-02 reads task_description through the shipped
+# recipe_context_value.sh, found on the same tool ladder as the loop helper.
+cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/amplifier-bundle/tools/" \
+  || harness_error "recipe_context_value.sh missing from the bundle"
+export RECIPE_VAR_task_description="drive PR 7"
+# install_fake_tools <dir> — the stub loop helper, re-review tool and the
+# context reader.
 install_fake_tools() {
   mkdir -p "$1"
   cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" \
-     "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" "$1/"
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" "$1/"
 }
 
 # --- fixture -----------------------------------------------------------------
