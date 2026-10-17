@@ -68,10 +68,11 @@ pub(super) fn check_version(dirs: &ProjectDirs) -> Option<String> {
     }
 
     // Mirrors CLI version resolution: prefer the build-time
-    // `AMPLIHACK_RELEASE_VERSION` override, fall back to Cargo.toml.
+    // `AMPLIHACK_RELEASE_VERSION` override, fall back to
+    // `<CARGO_PKG_VERSION>-dev` (issue #1526).
     const FALLBACK_VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
         Some(v) => v,
-        None => env!("CARGO_PKG_VERSION"),
+        None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
     };
     let package_version = std::env::var("AMPLIHACK_VERSION")
         .ok()
