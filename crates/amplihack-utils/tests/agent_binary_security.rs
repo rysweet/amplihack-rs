@@ -21,6 +21,7 @@ fn clear_env() {
     // SAFETY: tests serialized; env mutation unsafe in edition 2024.
     unsafe {
         std::env::remove_var("AMPLIHACK_AGENT_BINARY");
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
         // Layer 2 must be silent too. These tests exercise the persisted layer
         // and the built-in default, both of which sit BELOW the live session
         // marker -- and the marker is exported by whichever CLI is running the
@@ -41,6 +42,10 @@ fn set_env(value: &str) {
     // SAFETY: see clear_env.
     unsafe {
         std::env::set_var("AMPLIHACK_AGENT_BINARY", value);
+        // A value set here is a choice. Without this, a `default:<binary>` tag
+        // inherited from a recipe step running the suite would make the
+        // resolver skip it (issue #1481).
+        std::env::remove_var(amplihack_utils::agent_binary::SOURCE_ENV);
     }
 }
 
@@ -172,11 +177,14 @@ fn s5_symlink_escape_is_blocked() {
     let outer = TempDir::new().unwrap();
     let attacker = TempDir::new().unwrap();
     // Place valid (allowlisted) but unintended config outside the cwd tree.
+    // It must be fresh: a file with no timestamp is rejected whatever the
+    // symlink check does, which left this test unable to fail.
     let attacker_runtime = attacker.path().join(".claude").join("runtime");
     fs::create_dir_all(&attacker_runtime).unwrap();
+    let now = chrono::Utc::now().to_rfc3339();
     fs::write(
         attacker_runtime.join("launcher_context.json"),
-        r#"{"launcher":"claude"}"#,
+        format!(r#"{{"launcher":"claude","timestamp":"{now}"}}"#),
     )
     .unwrap();
     // Symlink the entire .claude inside outer to attacker's .claude.

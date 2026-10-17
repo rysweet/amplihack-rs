@@ -14,7 +14,7 @@
 //!
 //! ```bash
 //! cargo build                          # build the debug binary first
-//! cargo test --test fleet_probe        # run these tests
+//! cargo test -p amplihack --test integration fleet_probe::        # run these tests
 //! ```
 //!
 //! Each test skips gracefully if the binary has not been compiled yet.

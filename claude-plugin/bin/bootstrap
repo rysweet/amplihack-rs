@@ -56,8 +56,15 @@ append_env "export AMPLIHACK_HOME=\"$root\""
 append_env 'export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"'
 # This plugin only runs inside Claude Code, so recipe agent steps must too.
 # Without a live CLAUDECODE marker the resolver falls back to copilot (#1481).
+# An explicit AMPLIHACK_AGENT_BINARY is kept. One amplihack tagged as a guess
+# (default:<cli>) or as a description of another session (session:<cli>) is
+# not a choice, and is replaced. A tmux server started from an `amplihack
+# copilot` session hands its session:copilot to every pane, a Claude Code one
+# included (crusty review of #1490 at baaafb18). The replacement is tagged
+# session:claude, as a launcher's is, so it ranks with the session markers
+# and a CLI started further down still answers for itself.
 # shellcheck disable=SC2016 # expand when sourced, so an explicit choice wins
-append_env 'export AMPLIHACK_AGENT_BINARY="${AMPLIHACK_AGENT_BINARY:-claude}"'
+append_env 'if [ -z "${AMPLIHACK_AGENT_BINARY:-}" ] || [ "${AMPLIHACK_AGENT_BINARY_SOURCE:-}" = "default:$AMPLIHACK_AGENT_BINARY" ] || [ "${AMPLIHACK_AGENT_BINARY_SOURCE:-}" = "session:$AMPLIHACK_AGENT_BINARY" ]; then export AMPLIHACK_AGENT_BINARY=claude AMPLIHACK_AGENT_BINARY_SOURCE=session:claude; fi'
 # Cloud containers run as root, where claude refuses the
 # --dangerously-skip-permissions that recipe agent steps pass (#1482).
 if [ "${CLAUDE_CODE_REMOTE:-}" = "true" ] && [ "$(id -u 2>/dev/null)" = 0 ]; then

@@ -733,7 +733,7 @@ Every recipe file stays inside the 400-line brick budget.
 | Structural + wiring, including `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 
 ```bash
-cargo test -p amplihack --test auto_drive_to_merge
+cargo test -p amplihack --test integration auto_drive_to_merge::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 ```
 

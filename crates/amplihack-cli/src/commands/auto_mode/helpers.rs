@@ -139,7 +139,8 @@ pub fn build_auto_command_with_prompt_delivery(
         .with_amplihack_session_id()
         .with_incremented_session_tree_context()
         .with_amplihack_vars_with_node_options(options.node_options.as_deref())
-        .with_agent_binary(options.tool.slug())
+        // Issue #1481: an inherited default guess naming this tool stays tagged.
+        .with_launched_agent_binary(options.tool.slug())
         .with_amplihack_home()
         .with_asset_resolver()
         .with_project_graph_db(&options.project_dir)?;

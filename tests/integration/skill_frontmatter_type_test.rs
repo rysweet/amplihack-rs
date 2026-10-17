@@ -37,7 +37,7 @@
 //! # Running
 //!
 //! ```bash
-//! cargo test --test skill_frontmatter_type -- --nocapture
+//! cargo test -p amplihack --test integration skill_frontmatter_type:: -- --nocapture
 //! ```
 
 use std::fs;

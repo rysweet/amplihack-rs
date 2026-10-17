@@ -1,9 +1,9 @@
 //! Each case selects exactly one existing guarded scenario.
 //!
-//! Every case takes the crate-wide env lock, as the bundled scenarios do:
-//! recovery reads process-global state that concurrently running install
-//! tests mutate, and without the lock the injected sync interruption can be
-//! observed by the wrong scenario.
+//! Every case holds the crate's environment lock, as the looped originals do.
+//! `recover_install` rejects a working directory that changed under it, and
+//! tests that hold the lock move the process cwd, so an unlocked case failed
+//! with "Codex invocation working directory changed" in a full `--lib` run.
 use super::*;
 
 fn env_lock() -> std::sync::MutexGuard<'static, ()> {
