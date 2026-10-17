@@ -243,12 +243,10 @@ steps:
         NOT_CONVERGING='["loop-health evaluator produced no output; a missing verdict is STUCK, never CONTINUE"]'
         echo "WARNING: step-02-evaluate-loop-health produced no output. Treating as STUCK per the issue #1337 fail-safe contract." >&2
       else
-        # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
-        # agent output is DATA on stdin, never interpolated into a command.
+        # Agent output is DATA on stdin (docs/reference/structured-verdict-parsing.md).
         # Resolution order (issue #1513), first hit wins:
         #   1. the LAST object carrying `loop_verdict`       -> evaluator
-        #   2. a `verdict` object on the LAST non-blank line (final,
-        #      unknown value is STUCK; earlier ones are quotes) -> evaluator_alt_key
+        #   2. a `verdict` object on the LAST non-blank line  -> evaluator_alt_key
         #   3. exactly one distinct line-leading prose token  -> evaluator_prose_token
         #   4. anything else is STUCK                         -> unparseable_verdict
         VJSON=$(printf '%s' "$RAW" \
@@ -288,6 +286,8 @@ steps:
                 m = substr(line, RSTART, RLENGTH)
               } else next; r = substr(line, RSTART + RLENGTH); sub(/^[^A-Za-z]*/, "", r)
               if (!index(m, "STUCK") && r ~ /^([Nn][Oo][Tt]?|[Nn][Ee][Vv][Ee][Rr])([^A-Za-z]|$)/) { print "NEGATED"; next }
+              lr = " " tolower(r) " "; gsub(/n'\''t|n’t/, " not ", lr); w = index(m, "DONE") ? "not|never|continue|stuck" : "done|stuck"
+              if (!index(m, "STUCK") && lr ~ ("[^a-z](" w ")[^a-z]")) { print "NEGATED"; next }
               if (index(m, "CONTINUE")) print "CONTINUE"
               else if (index(m, "DONE")) print "DONE"
               else if (index(m, "STUCK")) print "STUCK"

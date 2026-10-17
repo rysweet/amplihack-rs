@@ -527,6 +527,24 @@ check_rs "1513-prose-negated-qualifier" 'STUCK — not converging on the review'
     STUCK evaluator_prose_token
 check_rs "1513-prose-negated-qualifier" $'DONE: not yet\nCONTINUE — progress' \
     STUCK unparseable_verdict
+# Later in the line, DONE yields to any negation or contrary verdict word, and
+# CONTINUE to a contrary verdict word: the sentence contradicts its token.
+check_rs "1513-prose-late-negation" 'DONE: the loop is not done yet, two concerns remain.' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" \
+    'DONE — nothing more to do... wait, CI is red, so this is STUCK really.' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" "DONE: the review isn't clean" STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" 'DONE: or CONTINUE, hard to say' STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" 'CONTINUE: pointless, the loop is stuck.' \
+    STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" 'CONTINUE — or call it done' STUCK unparseable_verdict
+# A plain reason to continue may itself be negative; that is not a contradiction.
+check_rs "1513-prose-late-negation" 'CONTINUE — CI is not green yet, one more round' \
+    CONTINUE evaluator_prose_token
+check_rs "1513-prose-late-negation" 'DONE: all clear, no blockers remain' DONE evaluator_prose_token
+check_rs "1513-prose-late-negation" 'CONTINUE — notably undone work remains' \
+    CONTINUE evaluator_prose_token
 # Words that merely start with those letters are not negations.
 check_rs "1513-prose-negated-qualifier" 'DONE: nothing left to fix' DONE evaluator_prose_token
 check_rs "1513-prose-negated-qualifier" 'CONTINUE — notable progress' CONTINUE evaluator_prose_token

@@ -280,9 +280,20 @@ The prose scan accepts a verdict token only when there is no doubt about it:
   `DONE: no blockers remain` all give `STUCK`; the last one is a false
   positive that stops the loop, which is the fail-safe direction. Only whole
   words count: `DONE: nothing left to fix` and `CONTINUE — notable progress`
-  still match. A negation later in the qualifier
-  (`CONTINUE — the loop made no progress`) is not detected; the prose path is
-  a fallback, and the prompt asks for JSON.
+  still match.
+- Later in the line a contradiction is caught too, weighted by which mistake
+  is dangerous. A `DONE` line is a conflicting token when the rest of the
+  line contains the whole word `not`, `never`, `continue` or `stuck`, or any
+  `n't` contraction: `DONE: the loop is not done yet`,
+  `DONE — wait, CI is red, so this is STUCK really` and
+  `DONE: the review isn't clean` all give `STUCK`. A `CONTINUE` line is a
+  conflicting token only when the rest of the line contains the whole word
+  `done` or `stuck` (`CONTINUE: pointless, the loop is stuck`), because a
+  reason to continue is often negative: `CONTINUE — CI is not green yet` still
+  gives `CONTINUE`. A later `no` is not a negation for either token, so
+  `DONE: all clear, no blockers remain` gives `DONE`. Other negations later in
+  the line (`CONTINUE — the loop made no progress`) are not detected; the
+  prose path is a fallback, and the prompt asks for JSON.
 - A line quoted with `>` does not match; the token must not follow any other
   character.
 - The same token on several lines counts once.
@@ -373,6 +384,9 @@ clean, and otherwise the run stops as `STUCK`.
 | `I cannot CONTINUE` | `STUCK` | `unparseable_verdict` |
 | `CONTINUE: not warranted, the loop has stalled` | `STUCK` | `unparseable_verdict` |
 | `DONE: not yet` | `STUCK` | `unparseable_verdict` |
+| `DONE: the loop is not done yet, two concerns remain.` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE: pointless, the loop is stuck.` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE — CI is not green yet, one more round` | `CONTINUE` | `evaluator_prose_token` |
 | `STUCK — not converging` on one line, `CONTINUE` on another | `STUCK` | `unparseable_verdict` |
 | `DONE: nothing left to fix` | `DONE` | `evaluator_prose_token` |
 | `continue reading below` | `STUCK` | `unparseable_verdict` |
