@@ -503,11 +503,11 @@ for loop in merge crusty; do
   if [[ "$RC" -ne 0 ]]; then pass "T14-$loop" "$loop preflight refuses"; else fail "T14-$loop" "$loop preflight succeeded on a failed lookup"; fi
 done
 
-echo "== T15: usage errors exit 2 =="
+echo "== T19: usage errors exit 2 =="
 for args in "--pr abc" "--pr 0" "--pr" ""; do
   # shellcheck disable=SC2086
   (cd "$WORK" && bash "$TOOL" $args --repo "$MAIN" >/dev/null 2>&1); TRC=$?
-  check_eq "T15[${args:-<none>}]" "bad --pr is a usage error" 2 "$TRC"
+  check_eq "T19[${args:-<none>}]" "bad --pr is a usage error" 2 "$TRC"
 done
 
 echo "== T4: build and crusty skipped as already done, the merge gate merged =="
