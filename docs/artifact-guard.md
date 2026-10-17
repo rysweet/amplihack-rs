@@ -501,6 +501,9 @@ These rules make the printed commands safe to run:
   pre-existing paths or possibly-source paths, the guard lists the introduced
   paths one by one. It does not untrack the whole directory. Containment is
   checked at a `/` boundary, so `build` does not contain `buildtools/a.rs`.
+- **No blind deletes.** `--mode staged` never lists untracked files, so it
+  cannot see an allowlisted untracked file under a directory root. In that mode
+  a directory root gets only `git rm -r --cached`, never `rm -rf`.
 - **Commands match the index.** `git rm --cached` is printed only for staged
   or tracked paths. An untracked or ignored path gets a plain `rm`, because
   `git rm --cached` on it fails with `pathspec did not match any files`.

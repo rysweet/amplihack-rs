@@ -1199,3 +1199,30 @@ fn cli_suggests_plain_rm_for_an_untracked_path_in_a_shared_root() {
         "an untracked path must never get git rm --cached; got:\n{combined}"
     );
 }
+
+#[test]
+fn cli_staged_mode_never_deletes_a_directory_it_cannot_see_into() {
+    // `--mode staged` never lists untracked files, so it cannot know that the
+    // allowlisted `node_modules/p/keep.js` sits under the `node_modules` root.
+    let tmp = repo_on_task_branch();
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "node_modules/p/keep.js\n",
+    );
+    write_file(&tmp.path().join("node_modules/p/keep.js"), "keep\n");
+    write_file(&tmp.path().join("node_modules/junk.js"), "junk\n");
+    run_git(tmp.path(), &["add", "-f", "node_modules/junk.js"]);
+
+    let output = run_guard(tmp.path(), "staged");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("git rm -r --cached -- 'node_modules'"),
+        "the index-only remedy is still printed; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("rm -rf -- 'node_modules'"),
+        "staged mode must not offer to delete a directory it never listed; got:\n{combined}"
+    );
+}

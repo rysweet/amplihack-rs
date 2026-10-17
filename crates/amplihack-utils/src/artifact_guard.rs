@@ -95,7 +95,10 @@ impl ArtifactGuardMode {
         )
     }
 
-    fn scans_worktree(self) -> bool {
+    /// Whether this mode lists the worktree (tracked, untracked, ignored).
+    /// Without it the guard cannot see untracked files under a directory, so
+    /// callers must not suggest deleting the directory from disk.
+    pub fn scans_worktree(self) -> bool {
         matches!(
             self,
             Self::All | Self::Worktree | Self::PreCommit | Self::PrePublish
