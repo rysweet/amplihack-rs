@@ -1,8 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use amplihack_utils::artifact_guard::{
-    ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactViolation,
+    self, ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactViolation,
     PreExistingPolicy, scan_artifacts,
 };
 use anyhow::Result;
@@ -269,32 +269,43 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
 fn print_path_group(root: &str, group: &[&ArtifactViolation]) {
     let rules = distinct_rules(group);
     let root = display_path(root);
-    eprintln!("  {root}/  — {} path(s), rule {rules}", group.len());
-    for violation in group.iter().take(ADVISORY_PATHS_PER_ROOT) {
-        eprintln!("      {}", display_path(&violation.path));
+    let paths = distinct_paths(group);
+    eprintln!("  {root}/  — {} path(s), rule {rules}", paths.len());
+    for path in paths.iter().take(ADVISORY_PATHS_PER_ROOT) {
+        eprintln!("      {}", display_path(path));
     }
-    if group.len() > ADVISORY_PATHS_PER_ROOT {
+    if paths.len() > ADVISORY_PATHS_PER_ROOT {
         eprintln!(
             "      ... and {} more under {root}/",
-            group.len() - ADVISORY_PATHS_PER_ROOT
+            paths.len() - ADVISORY_PATHS_PER_ROOT
         );
     }
+}
+
+/// Each distinct path in `group`, sorted. A path can be reported once per
+/// source (staged and tracked); remedy output names it once.
+fn distinct_paths<'a>(group: &[&'a ArtifactViolation]) -> BTreeSet<&'a str> {
+    group.iter().map(|v| v.path.as_str()).collect()
 }
 
 /// The way forward for paths that may be source: an exact-path allowlist entry
 /// where the path has a literal form the allowlist parser reads back as that
 /// one path, manual review otherwise, and never a removal command.
 fn print_review_remedy(review: &[&ArtifactViolation]) {
-    let mut entries = Vec::new();
-    let mut manual = Vec::new();
+    let mut entries = BTreeSet::new();
+    let mut unliteral = BTreeSet::new();
+    let mut refused = BTreeSet::new();
     let mut omitted = 0;
     for (_, group) in group_by_root(review) {
-        omitted += group.len().saturating_sub(ADVISORY_PATHS_PER_ROOT);
-        for violation in group.into_iter().take(ADVISORY_PATHS_PER_ROOT) {
-            if is_plain_path(&violation.path) {
-                entries.push(violation.path.as_str());
+        let paths = distinct_paths(&group);
+        omitted += paths.len().saturating_sub(ADVISORY_PATHS_PER_ROOT);
+        for path in paths.into_iter().take(ADVISORY_PATHS_PER_ROOT) {
+            if !is_plain_path(path) {
+                unliteral.insert(path);
+            } else if !artifact_guard::is_valid_allowlist_entry(path) {
+                refused.insert(path);
             } else {
-                manual.push(violation.path.as_str());
+                entries.insert(path);
             }
         }
     }
@@ -306,9 +317,14 @@ fn print_review_remedy(review: &[&ArtifactViolation]) {
             eprintln!("      {entry}");
         }
     }
-    for path in manual {
+    for path in unliteral {
         eprintln!(
             "  {path:?} needs manual review: it has no literal .amplihack-artifact-allowlist form; rename it instead."
+        );
+    }
+    for path in refused {
+        eprintln!(
+            "  {path:?} cannot be allowlisted (root artifact names are refused by the allowlist parser); rename it or remove it in a reviewed change."
         );
     }
     if omitted > 0 {

@@ -1714,3 +1714,19 @@ fn a_base_branch_merge_is_not_attributed_to_the_pr() {
         report.blocking_violations()
     );
 }
+
+#[test]
+fn is_valid_allowlist_entry_matches_the_parser_rules() {
+    for refused in ["build", "node_modules", "logs", "/abs", "*"] {
+        assert!(
+            !super::is_valid_allowlist_entry(refused),
+            "{refused:?} must be refused, as the allowlist parser refuses it"
+        );
+    }
+    for accepted in ["docs/build", "src/logs.rs", "pkg/node_modules/x.js"] {
+        assert!(
+            super::is_valid_allowlist_entry(accepted),
+            "{accepted:?} must be accepted, as the allowlist parser accepts it"
+        );
+    }
+}

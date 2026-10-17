@@ -258,7 +258,8 @@ pub struct ArtifactViolation {
     pub provenance: ArtifactProvenance,
     /// The narrowest repo-relative path that is wholly generated: the path
     /// itself or a `/`-bounded prefix of it, never a parent of the matched
-    /// segment. `None` means the path may be source, so callers must never
+    /// segment. Exception: `plugin-bundle` uses the bundle's parent directory
+    /// (pre-existing behaviour; narrowing it is a follow-up). `None` means the path may be source, so callers must never
     /// suggest removing or untracking it (issue #1536).
     pub removal_root: Option<String>,
 }
@@ -1181,6 +1182,14 @@ fn build_artifact_match(
 
 fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// Whether `entry` would be accepted as a line in
+/// `.amplihack-artifact-allowlist`, using the exact rules the allowlist parser
+/// enforces. Callers suggesting allowlist entries must check this so they never
+/// recommend an entry the parser then rejects (issue #1536).
+pub fn is_valid_allowlist_entry(entry: &str) -> bool {
+    validate_allowlist_entry(entry, Path::new(".amplihack-artifact-allowlist"), 0).is_ok()
 }
 
 fn validate_allowlist_entry(

@@ -476,6 +476,13 @@ For such a path the report says it needs manual review instead. A tracked
 `build/a*b.txt`, for example, is listed as possibly source with no allowlist
 line and no removal command.
 
+The guard also checks every suggestion against the parser's own rules, so it
+never suggests an entry the parser would refuse. A tracked file that is itself
+a root artifact name, such as a `build` script or a `logs` file, cannot be
+allowlisted. The report says so and tells you to rename or remove it instead.
+A path reported by more than one source (for example both staged and tracked)
+is listed once.
+
 A directory with more than a few possibly-source paths lists the first few,
 followed by `... and N more`.
 
@@ -852,7 +859,9 @@ untrack it as a side effect of unrelated work.
 
 If the report says the path needs manual review, it has no literal allowlist
 form (for example `build/a*b.txt`). Rename it, or remove it in a reviewed
-change. A glob entry would also allowlist other paths.
+change. A glob entry would also allowlist other paths. If it says the path
+cannot be allowlisted, the path is a root artifact name such as `build`, which
+the parser refuses. Rename it or remove it in a reviewed change.
 
 For an intentional fixture, add the narrowest allowlist entry that preserves the
 test:

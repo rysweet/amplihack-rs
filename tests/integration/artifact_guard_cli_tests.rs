@@ -1028,3 +1028,63 @@ fn cli_help_lists_the_base_branch_before_upstream_in_the_baseline_order() {
         "origin/HEAD must come before @{{upstream}} in the baseline order; got:\n{help}"
     );
 }
+
+#[test]
+fn cli_never_suggests_an_allowlist_entry_the_parser_rejects() {
+    let tmp = repo_on_task_branch();
+    write_file(&tmp.path().join("build"), "#!/bin/sh\necho build\n");
+    run_git(tmp.path(), &["add", "-f", "build"]);
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let report = combined(&output);
+    assert_eq!(output.status.code(), Some(1), "{report}");
+
+    let suggested: Vec<&str> = report
+        .split_once("add a reviewed entry to .amplihack-artifact-allowlist:")
+        .map(|(_, rest)| {
+            rest.lines()
+                .skip(1)
+                .take_while(|line| line.starts_with("      "))
+                .map(str::trim)
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        !suggested.contains(&"build"),
+        "`build` is refused by the allowlist parser and must not be suggested; got:\n{report}"
+    );
+    let refusal = "\"build\" cannot be allowlisted";
+    assert_eq!(
+        report.matches(refusal).count(),
+        1,
+        "the refused path must be named exactly once; got:\n{report}"
+    );
+    let (_, remedy) = report
+        .split_once("Exact commands for the paths above:")
+        .unwrap_or_else(|| panic!("refusal must print its remedy section; got:\n{report}"));
+    let listed = remedy
+        .split_once("First violation detail:")
+        .map_or(remedy, |(head, _)| head)
+        .lines()
+        .filter(|line| line.trim() == "build")
+        .count();
+    assert!(
+        listed <= 1,
+        "a path reported as both staged and tracked must be listed once; got:\n{report}"
+    );
+
+    // Following every suggestion must never turn the violation into a config error.
+    if !suggested.is_empty() {
+        write_file(
+            &tmp.path().join(".amplihack-artifact-allowlist"),
+            &format!("{}\n", suggested.join("\n")),
+        );
+        let rerun = run_guard(tmp.path(), "pre-commit");
+        let rerun_combined = combined(&rerun);
+        assert_ne!(rerun.status.code(), Some(2), "{rerun_combined}");
+        assert!(
+            !rerun_combined.contains("unsafe allowlist entry"),
+            "{rerun_combined}"
+        );
+    }
+}
