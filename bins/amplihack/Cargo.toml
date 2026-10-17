@@ -29,6 +29,9 @@ clap = { workspace = true }
 
 [dev-dependencies]
 amplihack-git = { workspace = true }
+# Issue #1525: the detached-launch hand-off test strips every entry of
+# `agent_binary::SESSION_MARKERS`, the one canonical list, rather than a copy.
+amplihack-utils = { workspace = true }
 # Issues #538 / #1378: the install-completeness and update-prompt integration
 # tests live in THIS package so `env!("CARGO_BIN_EXE_amplihack")` resolves and
 # Cargo builds the binary as a test prerequisite. They previously sat in

@@ -108,15 +108,17 @@ export AMPLIHACK_AGENT_BINARY=copilot
 
 ### `AMPLIHACK_AGENT_BINARY`
 
-Sets the agent binary used for all subprocess orchestration. Defaults to
-`claude` with a warning if unset.
+Sets the agent CLI used for agent steps. It must be one of `claude`,
+`copilot`, `codex` or `amplifier`; anything else, including a path, is
+rejected. When it is unset, amplihack uses the session markers of the CLI you
+are running in, then a fresh `.claude/runtime/launcher_context.json`, then the
+default, `copilot`. `amplihack agent-binary` prints the current answer and why.
+The full rules, and how to hand the answer to a detached `tmux` launch, are in
+[Active Agent Binary](./active-agent-binary.md).
 
 ```bash
 # Use GitHub Copilot as the orchestration agent
 export AMPLIHACK_AGENT_BINARY=copilot
-
-# Use a fully-qualified path
-export AMPLIHACK_AGENT_BINARY=/usr/local/bin/my-agent
 ```
 
 This makes amplihack agent-agnostic: `amplihack <command>` will use the
