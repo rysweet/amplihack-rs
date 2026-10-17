@@ -54,6 +54,7 @@ async fn tokio_stdin_delivery_writes_flushes_closes_and_awaits_child() {
             supports_argv: true,
             supports_tempfile: false,
             supports_stdin: true,
+            supports_file_reference: false,
             tempfile_flag: None,
         },
     )
@@ -90,6 +91,7 @@ async fn stdin_delivery_drains_large_child_output_while_writing_prompt() {
             supports_argv: true,
             supports_tempfile: false,
             supports_stdin: true,
+            supports_file_reference: false,
             tempfile_flag: None,
         },
     )
@@ -128,6 +130,7 @@ async fn stdin_write_failure_kills_and_reaps_output_streaming_child() {
             supports_argv: true,
             supports_tempfile: false,
             supports_stdin: true,
+            supports_file_reference: false,
             tempfile_flag: None,
         },
     )
@@ -187,6 +190,7 @@ async fn stdin_writer_is_cancelled_when_exited_child_leaves_nonreader() {
             supports_argv: true,
             supports_tempfile: false,
             supports_stdin: true,
+            supports_file_reference: false,
             tempfile_flag: None,
         },
     )
@@ -200,14 +204,9 @@ async fn stdin_writer_is_cancelled_when_exited_child_leaves_nonreader() {
     .expect("writer must be cancelled after the direct child exits")
     .expect("test runner should return a process result");
 
-    assert_eq!(result.exit_code, -1);
-    assert!(
-        result
-            .stderr
-            .contains("failed to write prompt to child stdin:"),
-        "expected incomplete-prompt error, got {:?}",
-        result.stderr
-    );
+    // Issue #1570: the unfinished write is logged, and the direct child's
+    // exit status decides the result.
+    assert_eq!(result.exit_code, 0, "stderr: {:?}", result.stderr);
     let descendant_pid = std::fs::read_to_string(&pid_file)
         .expect("fixture should record inherited-stdin descendant pid")
         .trim()
@@ -277,6 +276,7 @@ async fn process_runner_uses_delivery_path_for_large_delegate_prompt() {
                 supports_argv: true,
                 supports_tempfile: false,
                 supports_stdin: true,
+                supports_file_reference: false,
                 tempfile_flag: None,
             },
             "cat",
@@ -286,4 +286,47 @@ async fn process_runner_uses_delivery_path_for_large_delegate_prompt() {
 
     assert_eq!(result.exit_code, 0);
     assert_eq!(result.output, prompt);
+}
+
+/// Issue #1570: Claude caps are argv plus stdin. A prompt larger than
+/// `MAX_ARG_STRLEN` must be selected for stdin, kept out of argv, and reach
+/// the child byte-for-byte.
+#[tokio::test]
+async fn claude_caps_route_prompt_over_max_arg_strlen_to_stdin_byte_exact() {
+    const MAX_ARG_STRLEN: usize = 131_072;
+    let pattern = "claude stdin: 'quoted' \"double\" $HOME é € 中 𝄞\n";
+    let mut prompt = String::new();
+    while prompt.len() < 200 * 1024 {
+        prompt.push_str(pattern);
+    }
+
+    let delivered = build_command_with_prompt_delivery(
+        "cat",
+        std::iter::empty::<&str>(),
+        &prompt,
+        PromptDelivery::Auto,
+        DeliveryCaps::argv_only().with_stdin(),
+    )
+    .expect("claude-like delivered command should build");
+
+    assert_eq!(delivered.selected_mode, DeliveryMode::Stdin);
+    assert!(
+        delivered
+            .command
+            .get_args()
+            .all(|a| a.len() <= MAX_ARG_STRLEN),
+        "no argv element may exceed MAX_ARG_STRLEN"
+    );
+    assert!(delivered.delivery_handle.tempfile_path().is_none());
+
+    let result = run_delivered_command_for_test(delivered, Duration::from_secs(10))
+        .await
+        .expect("cat should exit after stdin is closed");
+    assert_eq!(result.exit_code, 0, "stderr: {}", result.stderr);
+    assert!(
+        result.output == prompt,
+        "stdin must arrive byte-for-byte ({} bytes out, {} expected)",
+        result.output.len(),
+        prompt.len()
+    );
 }

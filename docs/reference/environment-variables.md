@@ -804,7 +804,7 @@ inherited environment and a reservation; this variable pins it explicitly.
 
 Essential keys are always exported regardless of the budget. Non-essential keys
 are filled smallest-first until the budget is exhausted; any key dropped from the
-mirror is still delivered to the runner via the `--context-file` path for
+mirror is still delivered to the runner as a `--set` argument for
 `{{placeholder}}` substitution.
 
 ```sh

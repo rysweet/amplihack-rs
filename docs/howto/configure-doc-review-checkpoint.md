@@ -36,9 +36,11 @@ succeeded. References may be absent, especially during a fresh design phase.
 
 ## Diagnose missing feedback
 
-The reader uses `AMPLIHACK_CONTEXT_FILE` when supplied, then relevant canonical
-`RECIPE_VAR_doc_review_feedback` input, then legacy `DOC_REVIEW_FEEDBACK` only
-when canonical input is absent. A supplied invalid file or empty canonical root
+The reader takes canonical `RECIPE_VAR_doc_review_feedback` input from the
+step's shell, including a large value the recipe runner kept as a shell-local
+variable, then legacy `DOC_REVIEW_FEEDBACK` only when canonical input is
+absent. When a runner older than the pin in `claude-plugin/recipe-runner.rev`
+supplies `AMPLIHACK_CONTEXT_FILE`, the reader uses that file first. A supplied invalid file or empty canonical root
 cannot revive legacy success. Correct the producer or authoritative transport;
 do not add an `OK` alias to mask missing feedback.
 

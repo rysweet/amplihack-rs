@@ -25,7 +25,7 @@
 
 use std::env;
 use std::fmt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use thiserror::Error;
 
@@ -97,12 +97,9 @@ pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
                 prompt_len = prompt.len(),
                 "completion requested — delegating to launcher subprocess"
             );
-            let output = Command::new(&binary)
-                .args(["-p", prompt, "--print"])
-                .output()
-                .map_err(|e| {
-                    LlmClientError::LauncherError(format!("failed to spawn {binary}: {e}"))
-                })?;
+            let output = run_launcher(&binary, prompt).map_err(|e| {
+                LlmClientError::LauncherError(format!("failed to spawn {binary}: {e}"))
+            })?;
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 return Err(LlmClientError::LauncherError(format!(
@@ -114,6 +111,57 @@ pub fn completion(prompt: &str) -> Result<String, LlmClientError> {
             Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         }
     }
+}
+
+/// Run `binary --print -p` with the prompt delivered through
+/// [`crate::prompt_delivery`] (issue #1570). The binary's file name decides:
+/// `claude` reads a large prompt on stdin; `copilot` gets a file reference
+/// plus `--add-dir` for the prompt file's directory, so it may read it. That
+/// directory is private to this call and holds only the prompt file, so the
+/// grant never covers the shared temp root; any
+/// other launcher keeps argv, since it may ignore a file reference.
+fn run_launcher(binary: &str, prompt: &str) -> std::io::Result<std::process::Output> {
+    use crate::prompt_delivery::{DeliveryCaps, DeliveryMode, deliver, from_env};
+
+    let caps = match std::path::Path::new(binary)
+        .file_name()
+        .and_then(|name| name.to_str())
+    {
+        Some("claude") => DeliveryCaps::argv_only().with_stdin(),
+        Some("copilot") => DeliveryCaps::argv_only().with_file_reference(),
+        _ => DeliveryCaps::argv_only(),
+    };
+    let mut cmd = Command::new(binary);
+    cmd.args(["--print", "-p"]);
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+    // `deliver` switches stdin to a pipe in stdin mode. The handle owns any
+    // prompt file and must outlive the child.
+    let handle = deliver(&mut cmd, prompt, from_env(), &caps)?;
+    if handle.mode() == DeliveryMode::FileReference
+        && let Some(dir) = handle.tempfile_path().and_then(std::path::Path::parent)
+    {
+        cmd.arg("--add-dir").arg(dir);
+    }
+    let mut child = cmd.spawn()?;
+    let writer = match (handle.mode(), child.stdin.take()) {
+        (DeliveryMode::Stdin, Some(stdin)) => {
+            let payload = crate::prompt_delivery::sanitize_prompt_nul(prompt)
+                .into_owned()
+                .into_bytes();
+            Some(crate::payload_delivery::spawn_stdin_writer(stdin, payload))
+        }
+        _ => None,
+    };
+    let output = child.wait_with_output();
+    if let Some(writer) = writer
+        && let Err(error) = writer.finish()
+    {
+        tracing::warn!(%error, "writing the prompt to the launcher's stdin failed");
+    }
+    drop(handle);
+    output
 }
 
 /// Resolve the binary name for a given launcher type.
@@ -191,6 +239,10 @@ fn detect_launcher_from(env: EnvReader) -> LauncherType {
 
     LauncherType::Unknown
 }
+
+#[cfg(all(test, unix))]
+#[path = "llm_client_launcher_tests.rs"]
+mod launcher_tests;
 
 #[cfg(test)]
 mod tests {

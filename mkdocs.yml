@@ -107,6 +107,10 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Large Payload Delivery:
+          - Explanation: concepts/large-payload-delivery.md
+          - How-To: howto/pass-large-recipe-context.md
+          - Reference: reference/large-payload-delivery.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md

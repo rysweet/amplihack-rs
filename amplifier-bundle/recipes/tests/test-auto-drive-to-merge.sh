@@ -130,10 +130,11 @@ LOOP_DIR=""; LOOP_OUT=""
 run_loop() { # run_loop <state-dir-suffix>
   LOOP_DIR="${WORK}/loop-$1"; mkdir -p "${LOOP_DIR}"
   export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+  printf 'drive the PR to merge' > "${LOOP_DIR}/task.txt"
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${WORK}" --state-dir "${LOOP_DIR}" \
+      --repo "${WORK}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_DIR}/task.txt" \
       >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err"
   local rc=$?
   LOOP_OUT="$(cat "${LOOP_DIR}/out")"
