@@ -149,10 +149,15 @@ fn install_lock_path() -> Result<PathBuf> {
 ///
 /// `installed` is the stamp's framework version, the one the refusal compared
 /// against. `installed_binaries` is its `binaries:` line (`None`: unknown).
-/// The `installed:` line names `~/.local/bin/amplihack`, so it prints the
-/// binaries' version; the framework version is added only when it differs,
-/// and is labelled as such, so the line never claims a version the binary
-/// does not have.
+///
+/// When the two agree, every binary in `~/.local/bin` is at that version and
+/// the `installed:` line gives it beside the path. When they differ, an
+/// implicit re-stage kept *some* binaries at the `binaries:` version and may
+/// have upgraded others: `deploy_binaries` decides each one separately, so
+/// `~/.local/bin/amplihack` can be at the framework version while
+/// `amplihack-hooks` stays behind. The stamp does not say which, so no
+/// version is attached to the path; both are printed after it, each
+/// labelled for what it describes.
 fn format_downgrade_warning(
     running_exe: Option<&Path>,
     installed_bin: &Path,
@@ -165,15 +170,15 @@ fn format_downgrade_warning(
         None => "<unknown>".to_string(),
     };
     let installed_version = match installed_binaries {
-        Some(binaries) if binaries == installed => format!("v{installed}"),
-        Some(binaries) => format!("v{binaries}; framework v{installed}"),
-        None => format!("version unknown; framework v{installed}"),
+        Some(binaries) if binaries == installed => format!(" (v{installed})"),
+        Some(binaries) => format!("; framework v{installed}; binaries kept from v{binaries}"),
+        None => format!("; framework v{installed}; binaries kept from an unknown version"),
     };
     format!(
         "amplihack: warning: not re-staging framework assets — \
          this amplihack is older than the installed one.\n\
          \x20 running:   {running_path} (v{running})\n\
-         \x20 installed: {} ({installed_version})\n\
+         \x20 installed: {}{installed_version}\n\
          \x20 Installed binaries and ~/.claude/settings.json were left unchanged.\n\
          \x20 Run `amplihack install` to replace them with this build.\n",
         sanitize_path(installed_bin)
@@ -206,8 +211,8 @@ pub(crate) fn warn_implicit_downgrade_once<W: Write>(notice: &mut W, installed: 
         .map(|exe| crate::commands::install::resolve_running_binary_source(&exe));
     let installed_bin = crate::path_conflicts::preferred_user_bin(&home)
         .join(crate::path_conflicts::binary_filename("amplihack"));
-    // The stamp's `binaries:` line, so `installed:` names the version of the
-    // binary it names. Unreadable is reported as unknown, never guessed.
+    // The stamp's `binaries:` line: the version of the binaries an implicit
+    // re-stage kept. Unreadable is reported as unknown, never guessed.
     let installed_binaries = version_stamp::read_binaries_version()
         .inspect_err(|e| tracing::debug!("self_heal: cannot read the binaries version: {e:#}"))
         .ok()
@@ -1464,7 +1469,7 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
             (
                 // Stamp `0.19.0\nbinaries: unknown` (a pre-#502 install or a
                 // failed copy): the binary's version is not claimed.
-                "binaries unknown: framework version is labelled, not attributed to the binary",
+                "binaries unknown: no version is attributed to the named binary",
                 Some(Path::new("/home/dev/.cargo/bin/amplihack")),
                 Path::new("/home/dev/.local/bin/amplihack"),
                 "0.18.5",
@@ -1473,13 +1478,18 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
                 "\
 amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
   running:   /home/dev/.cargo/bin/amplihack (v0.18.5)
-  installed: /home/dev/.local/bin/amplihack (version unknown; framework v0.19.0)
+  installed: /home/dev/.local/bin/amplihack; framework v0.19.0; binaries kept from an unknown version
   Installed binaries and ~/.claude/settings.json were left unchanged.
   Run `amplihack install` to replace them with this build.
 ",
             ),
             (
-                "binaries kept at an older version: both versions, each labelled",
+                // Stamp `0.19.0\nbinaries: 0.18.1`. Reached either when
+                // ~/.local/bin/amplihack itself was kept, or when it was
+                // upgraded to 0.19.0 and only hooks/resolver were kept (the
+                // `cargo install --git … amplihack` case: no hooks sibling).
+                // Both versions are printed and neither is pinned to the path.
+                "binaries kept at an older version: neither version is attached to the path",
                 Some(Path::new("/home/dev/.cargo/bin/amplihack")),
                 Path::new("/home/dev/.local/bin/amplihack"),
                 "0.18.5",
@@ -1488,7 +1498,7 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
                 "\
 amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
   running:   /home/dev/.cargo/bin/amplihack (v0.18.5)
-  installed: /home/dev/.local/bin/amplihack (v0.18.1; framework v0.19.0)
+  installed: /home/dev/.local/bin/amplihack; framework v0.19.0; binaries kept from v0.18.1
   Installed binaries and ~/.claude/settings.json were left unchanged.
   Run `amplihack install` to replace them with this build.
 ",

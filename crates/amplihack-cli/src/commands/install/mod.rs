@@ -938,7 +938,10 @@ fn local_install_scoped(
 
     // Issue #1526: the framework is now current, but kept binaries are still
     // at the version the old stamp recorded (or unknown). Record both, so the
-    // next launch does not re-stage and the guard keeps failing safe.
+    // next launch does not re-stage and the guard keeps failing safe. The
+    // `binaries:` line is the kept binaries' version only: binaries this run
+    // replaced (often `amplihack` itself) are at `crate::VERSION`, so readers
+    // must not attach it to any one path (see `format_downgrade_warning`).
     if kept_binaries.is_empty() {
         version_stamp::write_installed_version(crate::VERSION)
     } else if stamp.as_deref() == Some(crate::VERSION) {

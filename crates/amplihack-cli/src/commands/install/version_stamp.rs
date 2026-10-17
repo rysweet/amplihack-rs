@@ -72,7 +72,7 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
 }
 
 /// Issue #1526: record the framework as staged at `framework` while the
-/// binaries in `~/.local/bin` stay at `binaries` (`None`: unknown). Equal
+/// binaries kept in `~/.local/bin` stay at `binaries` (`None`: unknown). Equal
 /// versions write the plain one-line stamp.
 pub(crate) fn write_installed_versions(framework: &str, binaries: Option<&str>) -> Result<()> {
     match binaries {
@@ -156,8 +156,10 @@ pub(crate) fn read_installed_version_quiet() -> Result<Option<String>> {
     Ok(read_stamp(false)?.map(|stamp| stamp.framework))
 }
 
-/// Issue #1526: the version of the binaries in `~/.local/bin`, or `None`
-/// when there is no stamp or it records them as unknown. The implicit
+/// Issue #1526: the version of the binaries an implicit re-stage kept in
+/// `~/.local/bin`, or `None` when there is no stamp or it records them as
+/// unknown. Binaries that re-stage replaced are at the framework version, so
+/// this is not the version of any one named binary. The implicit
 /// replacement guard compares against this, never the framework version.
 /// Quiet: only an implicit re-stage reads it, after self-heal has already
 /// reported a malformed stamp this process.

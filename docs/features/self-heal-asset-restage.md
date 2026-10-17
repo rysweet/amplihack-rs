@@ -100,12 +100,18 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
   Run `amplihack install` to replace them with this build.
 ```
 
-The `installed:` line gives the version of the binary it names, taken from
-the stamp's `binaries:` line. When that differs from the framework version the
-refusal compared against, both are printed and labelled, for example
-`(v0.18.1; framework v0.19.0)`. When the stamp records the binaries as unknown
-(a pre-#502 install, or a copy that failed), the line reads
-`(version unknown; framework v0.19.0)` rather than guessing.
+The `installed:` line gives a version beside the path only when every binary
+in `~/.local/bin` is at it, that is when the stamp has no `binaries:` line.
+After an implicit re-stage that kept some binaries, the binaries can be at
+different versions: `amplihack` is refreshed from the running executable,
+while `amplihack-hooks` and `amplihack-asset-resolver` are kept unless a copy
+sits beside it (as after `cargo install --git … amplihack`, which installs no
+hooks binary). The stamp does not record which binary is at which version, so
+the line names the path and then both versions, each labelled, for example
+`installed: ~/.local/bin/amplihack; framework v0.19.0; binaries kept from v0.18.1`.
+When the stamp records the kept binaries as unknown (a pre-#502 install, or a
+copy that failed), it ends `binaries kept from an unknown version` rather than
+guessing.
 
 Control characters in printed paths appear as `?`. The launch bootstrap
 (`ensure_framework_installed`) applies the same check first; an unreadable
@@ -173,7 +179,7 @@ latency to short-circuit invocations.
 | Path | `~/.amplihack/.installed-version` |
 |------|-----------------------------------|
 | Format | Plain text, no trailing newline. One line, or two after an implicit re-stage kept a binary (#1526). |
-| Contents | Line one: the framework version, matching `^\d+\.\d+\.\d+(-[\w.]+)?$` (e.g. `0.8.111`, `0.9.0-rc1`). Optional line two: `binaries: <version>` or `binaries: unknown`, the version of the binaries in `~/.local/bin` when it differs from line one. Builds that predate the second line treat a two-line stamp as malformed and re-stage. |
+| Contents | Line one: the framework version, matching `^\d+\.\d+\.\d+(-[\w.]+)?$` (e.g. `0.8.111`, `0.9.0-rc1`). Optional line two: `binaries: <version>` or `binaries: unknown`, the version of the binaries an implicit re-stage kept in `~/.local/bin` when it differs from line one. Binaries that re-stage replaced are at line one's version; the stamp does not record which binaries those are. Builds that predate the second line treat a two-line stamp as malformed and re-stage. |
 | Write semantics | Atomic — staged at `.installed-version.tmp` and renamed into place, mirroring the existing `write_layout_marker` pattern in `commands::install::mod`. A crashed write can never leave a half-written stamp. |
 | Read semantics | Missing file returns `None` (treated as "no prior install"). Malformed contents (failing the semver regex) are treated as "no prior install" so a corrupt stamp triggers a clean re-install rather than wedging the binary. All other I/O errors propagate. |
 | File mode | `0o600` (owner read/write only). The stamp lives under `~/.amplihack` which is also owner-private; the explicit mode prevents drift if the user has loosened the parent's umask. |

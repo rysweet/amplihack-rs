@@ -296,6 +296,41 @@ fn implicit_restage_never_replaces_hooks_with_a_path_copy() {
         Some(older_version().as_str()),
         "the kept hooks binary is still at the old stamp's version"
     );
+
+    // The mixed state crusty flagged: `amplihack` was upgraded (its source is
+    // the running executable) while hooks were kept, so the `binaries:`
+    // version above is not the version of ~/.local/bin/amplihack.
+    let installed_self = crate::path_conflicts::preferred_user_bin(&fx.home)
+        .join(crate::path_conflicts::binary_filename("amplihack"));
+    let running_self =
+        crate::commands::install::resolve_running_binary_source(&std::env::current_exe().unwrap());
+    assert_eq!(
+        fs::read(&installed_self).unwrap(),
+        fs::read(&running_self).unwrap(),
+        "fixture: the implicit re-stage must upgrade ~/.local/bin/amplihack while keeping hooks"
+    );
+    // A later, older build's refusal must not print the kept version beside
+    // the upgraded binary's path.
+    let framework = version_stamp::read_installed_version_quiet()
+        .unwrap()
+        .expect("stamp written");
+    crate::self_heal::set_downgrade_warned(false);
+    let mut notice = Vec::new();
+    crate::self_heal::warn_implicit_downgrade_once(&mut notice, &framework);
+    let notice = String::from_utf8(notice).unwrap();
+    let line = notice
+        .lines()
+        .find(|l| l.trim_start().starts_with("installed:"))
+        .unwrap_or_else(|| panic!("no `installed:` line in the warning:\n{notice}"));
+    assert_eq!(
+        line,
+        format!(
+            "  installed: {}; framework v{framework}; binaries kept from v{}",
+            paths::sanitize_path(&installed_self),
+            older_version()
+        ),
+        "the warning attributed the kept hooks' version to the upgraded amplihack binary"
+    );
 }
 
 /// Review M2: from the pre-#502 state (binaries installed, no stamp), the
