@@ -1819,3 +1819,25 @@ fn an_untracked_allowlisted_file_is_never_swept_into_a_removal_root() {
         "the root must not take the allowlisted file with it"
     );
 }
+
+#[test]
+fn removal_root_check_rejects_anything_but_the_path_or_a_bounded_prefix() {
+    // Enforced in release builds: a root failing it becomes None (manual
+    // review), never a removal command.
+    use super::is_removal_root_of;
+    assert!(is_removal_root_of("node_modules", "node_modules/a/b.js"));
+    assert!(is_removal_root_of(
+        "coverage/lcov.info",
+        "coverage/lcov.info"
+    ));
+    for (root, path) in [
+        ("", "a/b"),
+        ("/node_modules", "/node_modules/a"),
+        ("a/../b", "a/../b/c"),
+        ("a//b", "a//b/c"),
+        ("build", "buildtools/a.rs"),
+        ("other", "node_modules/a.js"),
+    ] {
+        assert!(!is_removal_root_of(root, path), "{root:?} for {path:?}");
+    }
+}

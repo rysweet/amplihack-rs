@@ -636,7 +636,9 @@ fn merge_base(repo: &Path, rev: &str) -> Option<String> {
     let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
-        .args(["merge-base", "HEAD", rev])
+        // `--end-of-options`: a `--baseline` value starting with `-` must be
+        // read as a revision, never as an option.
+        .args(["merge-base", "--end-of-options", "HEAD", rev])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -946,18 +948,18 @@ fn add_violation_if_prohibited(
     if path.is_empty() || allowlist.is_allowed(&path) {
         return;
     }
-    let Some((rule, removal_root)) = rule_for_path(&path, source, manifests) else {
+    let Some((rule, mut removal_root)) = rule_for_path(&path, source, manifests) else {
         return;
     };
-    debug_assert!(
-        removal_root.as_deref().is_none_or(|root| {
-            !root.is_empty()
-                && !root.starts_with('/')
-                && !root.split('/').any(|part| part == ".." || part.is_empty())
-                && (root == path || path.starts_with(&format!("{root}/")))
-        }),
-        "removal root {removal_root:?} must be the path {path:?} or a /-bounded prefix of it"
-    );
+    // Checked in release builds too: a root that is not the path or a
+    // /-bounded prefix of it could name files the violation does not cover.
+    // Fail safe to manual review (no removal command) rather than panic.
+    if removal_root
+        .as_deref()
+        .is_some_and(|root| !is_removal_root_of(root, &path))
+    {
+        removal_root = None;
+    }
     if seen.insert((source, path.clone())) {
         let provenance = provenance_for(&path, introduced);
         violations.push(ArtifactViolation {
@@ -969,6 +971,15 @@ fn add_violation_if_prohibited(
             removal_root,
         });
     }
+}
+
+/// Whether `root` is `path` itself or a `/`-bounded prefix of it, relative,
+/// with no empty or `..` component.
+fn is_removal_root_of(root: &str, path: &str) -> bool {
+    !root.is_empty()
+        && !root.starts_with('/')
+        && !root.split('/').any(|part| part == ".." || part.is_empty())
+        && (root == path || path.starts_with(&format!("{root}/")))
 }
 
 /// Sources scanned without an `introduced` set are live worktree/index state
@@ -1056,6 +1067,8 @@ fn rule_for_path(
         );
     }
     if path == "dist/plugin.js" || path.ends_with("/dist/plugin.js") {
+        // Only `dist/plugin.js` itself lacks the `/plugin.js` suffix; falling
+        // back to the file's own path never widens the removal.
         let parent = path.strip_suffix("/plugin.js").unwrap_or(path);
         return with_root("plugin-bundle", Some(parent.to_string()));
     }
@@ -1069,6 +1082,8 @@ fn rule_for_path(
         let root = [".copilot/session-state", ".amplihack/session-state"]
             .into_iter()
             .find(|dir| path.starts_with(dir))
+            // Any other session artifact is removed as itself: the file's own
+            // path is the narrowest possible root.
             .unwrap_or(path);
         return with_root("workflow-session-artifact", Some(root.to_string()));
     }

@@ -484,7 +484,7 @@ fn cli_pre_publish_exits_0_and_reports_a_preexisting_condition_with_a_way_forwar
         "pre-existing",
         "NOT blocking",
         "node_modules/leftpad/index.js",
-        "git rm -r --cached -- 'node_modules'",
+        "git --literal-pathspecs rm -r --cached -- 'node_modules'",
         "--mode all",
         "--preexisting block",
     ] {
@@ -519,7 +519,7 @@ fn cli_pre_publish_exits_1_and_names_paths_for_artifacts_this_change_introduced(
     for required in [
         "dist/plugin.js",
         "introduced",
-        "git rm -r --cached -- 'dist'",
+        "git --literal-pathspecs rm -r --cached -- 'dist'",
         "re-run to confirm",
     ] {
         assert!(
@@ -657,11 +657,11 @@ fn cli_never_prints_a_remedy_that_would_untrack_the_preexisting_tree() {
         .split_once("Exact commands for the paths above:")
         .unwrap_or_else(|| panic!("refusal must print exact commands; got:\n{combined}"));
     assert!(
-        refusal.contains("git rm --cached -- 'node_modules/newdep/index.js'"),
+        refusal.contains("git --literal-pathspecs rm --cached -- 'node_modules/newdep/index.js'"),
         "the remedy must name the introduced path exactly; got:\n{refusal}"
     );
     assert!(
-        !refusal.contains("git rm -r --cached -- 'node_modules'"),
+        !refusal.contains("rm -r --cached -- 'node_modules'"),
         "the refusal's remedy must never sweep the pre-existing tree along with the \
          one path this change added; got:\n{refusal}"
     );
@@ -702,7 +702,7 @@ fn commit_paths(repo: &Path, paths: &[(&str, &str)], message: &str) {
 
 /// No command in the output removes anything from the index or the disk.
 fn assert_no_removal_commands(combined: &str) {
-    for forbidden in ["git rm -r --cached", "git rm --cached", "rm -rf"] {
+    for forbidden in ["rm -r --cached", "rm --cached", "rm -rf"] {
         assert!(
             !combined.contains(forbidden),
             "a path that may be source must never get `{forbidden}`; got:\n{combined}"
@@ -751,7 +751,7 @@ fn cli_still_blocks_a_staged_coverage_report_with_an_exact_remedy() {
     for required in [
         "coverage/lcov.info",
         "build-artifact",
-        "git rm -r --cached -- 'coverage/lcov.info'",
+        "git --literal-pathspecs rm -r --cached -- 'coverage/lcov.info'",
     ] {
         assert!(
             combined.contains(required),
@@ -922,7 +922,7 @@ fn cli_shared_root_containment_respects_the_segment_boundary() {
         "the untracked build/ leftover keeps its root remedy; got:\n{combined}"
     );
     assert!(
-        !combined.contains("git rm -r --cached -- 'build'"),
+        !combined.contains("rm -r --cached -- 'build'"),
         "nothing under build/ is indexed, so git rm --cached would fail; got:\n{combined}"
     );
     for line in combined.lines().filter(|line| line.contains("rm ")) {
@@ -1150,16 +1150,50 @@ fn cli_never_suggests_removing_a_directory_that_holds_allowlisted_source() {
             "no removal command may sweep the allowlisted source: {line}"
         );
         assert!(
-            !line.contains("git rm"),
+            !line.contains("--cached"),
             "an untracked leftover must not get a git rm that fails: {line}"
         );
     }
 }
 
+/// Assert the report prints the literal-pathspec `git rm -r --cached` for
+/// `root`, run that exact command with `--dry-run`, and return the paths git
+/// says it would untrack.
+fn dry_run_printed_untrack(repo: &Path, combined: &str, root: &str) -> Vec<String> {
+    let printed = format!("git --literal-pathspecs rm -r --cached -- '{root}'");
+    assert!(
+        combined.contains(&printed),
+        "the remedy must untrack {root:?} as a literal path; got:\n{combined}"
+    );
+    let output = amplihack_git::command()
+        .args([
+            "--literal-pathspecs",
+            "rm",
+            "-r",
+            "--cached",
+            "--dry-run",
+            "--",
+            root,
+        ])
+        .current_dir(repo)
+        .output()
+        .expect("run git rm --dry-run");
+    assert!(
+        output.status.success(),
+        "the printed command must succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_string)
+        .collect()
+}
+
 #[test]
-fn cli_never_prints_a_git_pathspec_magic_root() {
-    // `git rm -r --cached -- ':!src/node_modules'` would untrack every file in
-    // the repository: git reads `:!` as "everything except", even after `--`.
+fn cli_untracks_a_pathspec_magic_root_as_one_literal_path() {
+    // Without `--literal-pathspecs`, `git rm -r --cached -- ':!src/node_modules'`
+    // would untrack every file in the repository: git reads `:!` as
+    // "everything except", even after `--`.
     let tmp = repo_on_task_branch();
     write_file(&tmp.path().join(":!src/node_modules/x/index.js"), "y\n");
     run_git(tmp.path(), &["add", "-f", "--", ":(literal):!src"]);
@@ -1168,11 +1202,36 @@ fn cli_never_prints_a_git_pathspec_magic_root() {
     let combined = combined(&output);
 
     assert_eq!(output.status.code(), Some(1), "{combined}");
-    assert!(
-        combined.contains("index.js"),
-        "the path must still be reported; got:\n{combined}"
+    let removed = dry_run_printed_untrack(tmp.path(), &combined, ":!src/node_modules");
+    assert_eq!(
+        removed,
+        vec!["rm ':!src/node_modules/x/index.js'".to_string()],
+        "the printed command must untrack only the leaked tree; got:\n{combined}"
     );
-    assert_no_removal_commands(&combined);
+}
+
+#[test]
+fn cli_untracks_a_glob_named_root_as_one_literal_path() {
+    // `pkg[1]` read as a glob also matches `pkg1`, whose tree is not the
+    // leftover being removed.
+    let tmp = repo_on_task_branch();
+    write_file(&tmp.path().join("pkg1/node_modules/keep.js"), "keep\n");
+    write_file(&tmp.path().join("pkg[1]/node_modules/x.js"), "x\n");
+    run_git(
+        tmp.path(),
+        &["add", "-f", "--", ":(literal)pkg1", ":(literal)pkg[1]"],
+    );
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    let removed = dry_run_printed_untrack(tmp.path(), &combined, "pkg[1]/node_modules");
+    assert_eq!(
+        removed,
+        vec!["rm 'pkg[1]/node_modules/x.js'".to_string()],
+        "the printed command must not reach pkg1/; got:\n{combined}"
+    );
 }
 
 #[test]
@@ -1195,7 +1254,7 @@ fn cli_suggests_plain_rm_for_an_untracked_path_in_a_shared_root() {
         "the untracked path must get a plain rm; got:\n{combined}"
     );
     assert!(
-        !combined.contains("git rm --cached -- 'node_modules/newdep/index.js'"),
+        !combined.contains("rm --cached -- 'node_modules/newdep/index.js'"),
         "an untracked path must never get git rm --cached; got:\n{combined}"
     );
 }

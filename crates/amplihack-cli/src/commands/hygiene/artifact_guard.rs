@@ -165,11 +165,12 @@ fn print_violation_report(report: &ArtifactGuardReport) {
                 // checked by `split_removable`.
                 if !is_command_safe(path) {
                     eprintln!(
-                        "  # {path:?} has a name that is unsafe in a shell command or git pathspec; handle it by hand after review"
+                        "  # {path:?} has a name that is unsafe in a shell command; handle it by hand after review"
                     );
                 } else if is_indexed(violation) {
                     eprintln!(
-                        "  git rm --cached -- '{path}'   # drop from the change, keep on disk"
+                        "  {}   # drop from the change, keep on disk",
+                        git_rm_cached(path, false)
                     );
                 } else {
                     // Not in the index: `git rm --cached` would fail with
@@ -183,7 +184,8 @@ fn print_violation_report(report: &ArtifactGuardReport) {
         } else {
             if group.iter().any(|violation| is_indexed(violation)) {
                 eprintln!(
-                    "  git rm -r --cached -- '{root}'   # drop from the change, keep on disk"
+                    "  {}   # drop from the change, keep on disk",
+                    git_rm_cached(&root, true)
                 );
             }
             eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
@@ -191,7 +193,7 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     }
     if !review.is_empty() {
         eprintln!(
-            "  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:"
+            "  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
         );
         for (root, group) in group_by_root(&review) {
             print_path_group(&root, &group);
@@ -256,13 +258,22 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
         } else {
             format!("{root}/")
         };
-        eprintln!(
-            "  - Clean up in a dedicated change: git rm -r --cached -- '{root}' && echo '{ignore}' >> .gitignore && git commit -m 'chore: untrack {root}'"
-        );
+        let untrack = git_rm_cached(&root, true);
+        if is_literal_ignore_pattern(&root) {
+            eprintln!(
+                "  - Clean up in a dedicated change: {untrack} && echo '{ignore}' >> .gitignore && git commit -m 'chore: untrack {root}'"
+            );
+        } else {
+            // A .gitignore line is a pattern, not a literal path; the guard
+            // will not write one that could match more than this root.
+            eprintln!(
+                "  - Clean up in a dedicated change: {untrack} && git commit -m 'chore: untrack {root}'   # write its .gitignore entry by hand"
+            );
+        }
     }
     if !review.is_empty() {
         eprintln!(
-            "  - Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:"
+            "  - Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
         );
         print_review_remedy(&review);
     }
@@ -276,15 +287,17 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
 
 fn print_path_group(root: &str, group: &[&ArtifactViolation]) {
     let rules = distinct_rules(group);
-    let root = display_path(root);
+    // Escape the root and its `/` together: `"x"/` would read as a quoted
+    // name followed by a stray slash.
+    let root = display_path(&format!("{root}/"));
     let paths = distinct_paths(group);
-    eprintln!("  {root}/  — {} path(s), rule {rules}", paths.len());
+    eprintln!("  {root}  — {} path(s), rule {rules}", paths.len());
     for path in paths.iter().take(ADVISORY_PATHS_PER_ROOT) {
         eprintln!("      {}", display_path(path));
     }
     if paths.len() > ADVISORY_PATHS_PER_ROOT {
         eprintln!(
-            "      ... and {} more under {root}/",
+            "      ... and {} more under {root}",
             paths.len() - ADVISORY_PATHS_PER_ROOT
         );
     }
@@ -369,16 +382,32 @@ fn split_removable<'a>(
 }
 
 /// Whether `path` can be printed inside a single-quoted shell word without
-/// ending the quoting or forging a report line, *and* reaches `git rm` as that
-/// one literal path. Git reads its arguments as pathspecs even after `--`: a
-/// leading `:` is pathspec magic (`':!src/node_modules'` means "everything
-/// except that", so `git rm -r --cached` would untrack the whole repository),
-/// and `*`, `?`, `[` and `\` are glob syntax.
+/// ending the quoting or forging a report line. Inside single quotes the shell
+/// treats every other character literally, `rm` takes its arguments as plain
+/// paths, and [`git_rm_cached`] turns off git's pathspec reading, so nothing
+/// else needs to be refused.
 fn is_command_safe(path: &str) -> bool {
-    !path.starts_with(':')
-        && !path
-            .chars()
-            .any(|c| matches!(c, '\'' | '*' | '?' | '[' | '\\') || c.is_control())
+    !path.chars().any(|c| c == '\'' || c.is_control())
+}
+
+/// The `git rm --cached` command that untracks exactly `path` (recursively when
+/// `recursive`). Git reads arguments as pathspecs even after `--`: a leading
+/// `:` is pathspec magic (`':!src/node_modules'` means "everything except
+/// that", so a plain `git rm -r --cached` would untrack the whole repository)
+/// and `*`, `?`, `[` are globs. `--literal-pathspecs` makes git read `path` as
+/// the one path it names. `path` must be [`is_command_safe`].
+fn git_rm_cached(path: &str, recursive: bool) -> String {
+    let flags = if recursive { "-r --cached" } else { "--cached" };
+    format!("git --literal-pathspecs rm {flags} -- '{path}'")
+}
+
+/// Whether `root` written to `.gitignore` matches only itself: no glob or
+/// escape characters, no leading `!` (negation) or `#` (comment), and no
+/// surrounding whitespace.
+fn is_literal_ignore_pattern(root: &str) -> bool {
+    root.trim() == root
+        && !root.starts_with(['!', '#'])
+        && !root.chars().any(|c| matches!(c, '*' | '?' | '[' | '\\'))
 }
 
 /// Whether the violating path is in the index, so `git rm --cached` can
@@ -492,4 +521,64 @@ fn distinct_rules(violations: &[&ArtifactViolation]) -> String {
     rules.sort_unstable();
     rules.dedup();
     rules.join(", ")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_rm_reads_pathspec_magic_as_a_literal_path() {
+        assert!(is_command_safe(":!x/node_modules"));
+        assert_eq!(
+            git_rm_cached(":!x/node_modules", true),
+            "git --literal-pathspecs rm -r --cached -- ':!x/node_modules'"
+        );
+    }
+
+    #[test]
+    fn git_rm_reads_glob_characters_as_a_literal_path() {
+        assert!(is_command_safe("build/[a]*.log"));
+        assert_eq!(
+            git_rm_cached("build/[a]*.log", false),
+            "git --literal-pathspecs rm --cached -- 'build/[a]*.log'"
+        );
+    }
+
+    #[test]
+    fn quotes_and_control_characters_are_not_command_safe() {
+        assert!(!is_command_safe("it's/node_modules"));
+        assert!(!is_command_safe("a\nb/node_modules"));
+        assert!(is_command_safe("plain/node_modules"));
+    }
+
+    #[test]
+    fn gitignore_entries_are_written_only_for_literal_roots() {
+        assert!(is_literal_ignore_pattern("pkg/node_modules"));
+        for root in [
+            "pkg[1]/node_modules",
+            "!keep/dist",
+            "#c/dist",
+            "a*/dist",
+            "a\\b",
+        ] {
+            assert!(!is_literal_ignore_pattern(root), "{root}");
+        }
+    }
+
+    #[test]
+    fn untracked_and_tracked_violations_get_matching_commands() {
+        let make = |source| ArtifactViolation {
+            path: "build/new.log".to_string(),
+            source,
+            rule_id: "build-artifact".to_string(),
+            remediation: String::new(),
+            provenance: artifact_guard::ArtifactProvenance::Introduced,
+            removal_root: Some("build/new.log".to_string()),
+        };
+        assert!(is_indexed(&make(ArtifactSource::Staged)));
+        assert!(is_indexed(&make(ArtifactSource::Tracked)));
+        assert!(!is_indexed(&make(ArtifactSource::Untracked)));
+        assert!(!is_indexed(&make(ArtifactSource::IgnoredPresent)));
+    }
 }

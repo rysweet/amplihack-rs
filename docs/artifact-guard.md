@@ -257,7 +257,7 @@ Remediation:
   - If intentional source material, add a narrow reviewed entry to .amplihack-artifact-allowlist.
 
 Exact commands for the paths above:
-  git rm -r --cached -- 'dist'   # drop from the change, keep on disk
+  git --literal-pathspecs rm -r --cached -- 'dist'   # drop from the change, keep on disk
   rm -rf -- 'dist'               # or delete the leftover outright
   ...
 ```
@@ -274,7 +274,7 @@ These paths are committed in the baseline main (735b3633e9cd) and are untouched 
       ... and 663 more under node_modules/
 
 Way forward (none of these is required to finish the current change):
-  - Clean up in a dedicated change: git rm -r --cached -- 'node_modules' && echo 'node_modules/' >> .gitignore && git commit -m 'chore: untrack node_modules'
+  - Clean up in a dedicated change: git --literal-pathspecs rm -r --cached -- 'node_modules' && echo 'node_modules/' >> .gitignore && git commit -m 'chore: untrack node_modules'
   - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo /repo --mode all
   - Enforce it here anyway: --preexisting block (or AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block).
 ```
@@ -439,7 +439,8 @@ entirely generated, or *none* when the guard cannot be sure:
 A removal root is always the matched path itself, or a prefix of it that ends at
 a `/`. It is never a parent of the matched segment. For example, a new
 `apps/coverage/node_modules/a/index.js` next to a tracked
-`apps/coverage/package.json` yields `git rm -r --cached -- 'apps/coverage/node_modules'`
+`apps/coverage/package.json` yields
+`git --literal-pathspecs rm -r --cached -- 'apps/coverage/node_modules'`
 and never `-- 'apps/coverage'`.
 
 When the removal root is *none*, neither report prints `git rm -r --cached`,
@@ -447,7 +448,7 @@ When the removal root is *none*, neither report prints `git rm -r --cached`,
 The report says the path may be source and gives two ways forward:
 
 ```text
-  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:
+  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:
   build/  — 1 path(s), rule build-artifact
       build/notes.md
   If a path is intentional source, add a reviewed entry to .amplihack-artifact-allowlist:
@@ -505,12 +506,20 @@ These rules make the printed commands safe to run:
 - **Commands match the index.** `git rm --cached` is printed only for staged
   or tracked paths. An untracked or ignored path gets a plain `rm`, because
   `git rm --cached` on it fails with `pathspec did not match any files`.
+- **Git reads every path literally.** Git reads `git rm` arguments as
+  pathspecs even after `--`: a leading `:` is pathspec magic
+  (`':!src/node_modules'` means "everything except that path", so a plain
+  `git rm -r --cached` on it untracks the whole repository), and `*`, `?` and
+  `[` are globs (`pkg[1]` also matches `pkg1`). Every printed `git rm` is
+  therefore `git --literal-pathspecs rm`, which names exactly the path shown.
+  `rm` already reads its arguments literally. The advisory cleanup chain only
+  adds the `echo '<root>' >> .gitignore` step when the root is also a literal
+  `.gitignore` pattern (no `*`, `?`, `[`, `\`, leading `!` or `#`); otherwise it
+  tells you to write that entry by hand.
 - **No unsafe roots.** A removal root that contains `'` or a control character
-  is treated as *none*, and so is one git would not read as a literal path:
-  a leading `:` (pathspec magic; `':!src/node_modules'` means "everything
-  except that path", so `git rm -r --cached` on it untracks the whole
-  repository) or any of `*`, `?`, `[` and `\`. The same check applies to each
-  path listed one by one. A possibly-source path that is safe to print
+  is treated as *none*, because it cannot be printed inside a single-quoted
+  shell word. The same check applies to each path listed one by one. A
+  possibly-source path that is safe to print
   is printed as plain text. Any other path is printed in escaped form (quoted,
   with `\"` and control characters escaped) and gets no allowlist suggestion,
   so a file name cannot inject shell syntax or fake a report line.
@@ -973,7 +982,7 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 1
 ```
 
 The refusal names `dist/plugin.js`, marks it `introduced`, and prints the exact
-`git rm -r --cached -- 'dist'` that clears it. The pre-existing tree is still
+`git --literal-pathspecs rm -r --cached -- 'dist'` that clears it. The pre-existing tree is still
 listed above it, still not the reason for the refusal.
 
 To audit or enforce the whole condition anyway:
