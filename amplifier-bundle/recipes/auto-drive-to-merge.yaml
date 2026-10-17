@@ -132,9 +132,9 @@ steps:
       set -uo pipefail
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      PR="$(g "${BUILD_RESULT:-}" pr '')"
-      MERGE="$(g "${MERGE_GATE_RESULT:-}" merge_result NOT_MERGED)"
-      CRUSTY="$(g "${CRUSTY_LOOP_RESULT:-}" loop_result unknown)"
+      PR="$(g "${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}" pr '')"
+      MERGE="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result NOT_MERGED)"
+      CRUSTY="$(g "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" loop_result unknown)"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;

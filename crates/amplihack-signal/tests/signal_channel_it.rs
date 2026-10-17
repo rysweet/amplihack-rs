@@ -380,9 +380,17 @@ async fn stop_command_quits_group_and_closes_the_channel() {
         matches!(np, NextPrompt::Closed),
         "`stop` must drive the channel to NextPrompt::Closed, got {np:?}"
     );
-    settle().await;
+    // A positive assertion, so poll rather than trust a fixed `settle()`: the
+    // actor's quit request can take longer than 200 ms to reach the fake on a
+    // loaded host running the whole workspace suite.
+    let quit = tokio::time::timeout(HANG_GUARD, async {
+        while !fake.quit_groups().iter().any(|g| g == "grp-stop==") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(
-        fake.quit_groups().iter().any(|g| g == "grp-stop=="),
+        quit.is_ok(),
         "`stop` must quit the operator-only group; quit_groups={:?}",
         fake.quit_groups()
     );
