@@ -104,6 +104,59 @@ escalate() { # escalate <verdict> <why>
     "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr -d '"' | tr '\n' ' ')"
 }
 
+# --- recipes come from THIS bundle, never from the tree under review -------
+# `--repo` is the pull request's linked worktree (issue #1528). A recipe run BY
+# NAME with `--working-dir` there is looked up in that worktree's own
+# `amplifier-bundle/recipes` first (`recipe_search_dirs`, resolve.rs), so in a
+# repository that ships these recipes the PR under review would supply its own
+# review prompt (`autodrive-crusty-round`), its own merge round and its own
+# stop rule (`loop-health-evaluator`), and a round's fix-up commit could
+# rewrite the next round's reviewer. That is a self-approval path to the
+# Crusty CLEAN that governance requires.
+#
+# So both recipes are resolved here, to absolute paths in the bundle that holds
+# this script (the launch side), and only those paths are handed to
+# `recipe run`. A recipe run by path searches its own directory first for
+# sub-recipes (`build_search_dirs`, run/mod.rs), so `loop-evidence-collector`
+# and `autodrive-merge-evidence` come from the same launch-side bundle.
+# Agents still WORK in `--repo`; they just do not get to choose their checker.
+LOOP_BUNDLE_RECIPES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../recipes" 2>/dev/null && pwd -P || printf '')"
+REPO_REAL="$(cd "$REPO" 2>/dev/null && pwd -P || printf '')"
+
+launch_side_recipe() { # launch_side_recipe <name> -> absolute path on stdout, or fails
+  local name="$1" path
+  case "$name" in
+    */*|*.yaml|*.yml)
+      echo "ERROR: loop '${LOOP_NAME}': recipe '${name}' must be a bare name; it is resolved in the launch-side bundle, never by path." >&2
+      return 1 ;;
+  esac
+  if [ -z "$LOOP_BUNDLE_RECIPES" ]; then
+    echo "ERROR: loop '${LOOP_NAME}': no amplifier-bundle/recipes next to $(dirname "${BASH_SOURCE[0]}")." >&2
+    return 1
+  fi
+  path="${LOOP_BUNDLE_RECIPES}/${name}.yaml"
+  if [ ! -f "$path" ]; then
+    echo "ERROR: loop '${LOOP_NAME}': required recipe '${name}' is not in the launch-side bundle (${LOOP_BUNDLE_RECIPES})." >&2
+    return 1
+  fi
+  # The checker must not live inside the tree it checks. This catches a loop
+  # helper that was itself picked up from the pull request worktree.
+  if [ -n "$REPO_REAL" ]; then
+    case "$path/" in
+      "$REPO_REAL"/*)
+        echo "ERROR: loop '${LOOP_NAME}': recipe '${name}' resolved to ${path}, inside the tree under review (${REPO_REAL}). The reviewed tree never supplies its own reviewer or stop rule." >&2
+        return 1 ;;
+    esac
+  fi
+  printf '%s\n' "$path"
+}
+
+ROUND_RECIPE_PATH="$(launch_side_recipe "$ROUND_RECIPE")" || {
+  printf '{"loop":"%s","loop_result":"UNTRUSTED_RECIPE","round_label":"preflight","reason":"round recipe %s does not resolve in the launch-side bundle"}\n' \
+    "$LOOP_NAME" "$ROUND_RECIPE"
+  exit 1
+}
+
 # --- preflight: the terminator must resolve BEFORE round 1 ------------------
 # Both loops delegate termination to `loop-health-evaluator`, invoked by name.
 # When that recipe cannot be resolved, the first round still runs in full — a
@@ -111,10 +164,12 @@ escalate() { # escalate <verdict> <why>
 # "returned STUCK (or an unreadable verdict)", which names the loop as the
 # problem instead of the missing dependency. Resolve it first and refuse by
 # name, before a single round is spent.
-if ! "$AMPLIHACK_BIN" recipe show loop-health-evaluator >/dev/null 2>&1; then
+HEALTH_RECIPE_PATH="$(launch_side_recipe loop-health-evaluator 2>/dev/null)" || HEALTH_RECIPE_PATH=""
+if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
   echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve." >&2
   echo "  It is this loop's ONLY terminator (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
-  echo "  Install or update the amplifier bundle so 'loop-health-evaluator' resolves, then re-run. Check with: ${AMPLIHACK_BIN} recipe show loop-health-evaluator" >&2
+  echo "  It is loaded from the launch-side bundle (${LOOP_BUNDLE_RECIPES:-<none>}), never from the tree under review." >&2
+  echo "  Install or update the amplifier bundle so 'loop-health-evaluator' resolves there, then re-run. Check with: ${AMPLIHACK_BIN} recipe show ${LOOP_BUNDLE_RECIPES:-<bundle>/recipes}/loop-health-evaluator.yaml" >&2
   printf '{"loop":"%s","loop_result":"MISSING_DEPENDENCY","round_label":"preflight","reason":"the required recipe loop-health-evaluator does not resolve"}\n' \
     "$LOOP_NAME"
   exit 1
@@ -137,7 +192,7 @@ while :; do
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
-  "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE" \
+  "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
@@ -178,7 +233,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
-  "$AMPLIHACK_BIN" recipe run loop-health-evaluator \
+  "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \

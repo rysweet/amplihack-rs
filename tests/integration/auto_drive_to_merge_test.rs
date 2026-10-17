@@ -188,9 +188,19 @@ fn composer_delegates_to_the_three_phases_in_order() {
 #[test]
 fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
+    // Resolved to an absolute path in the launch-side bundle, never by name
+    // under `--working-dir <PR worktree>`: a name lookup there would load the
+    // PR's own copy of its stop rule (#1528, crusty round 2).
     assert!(
-        driver.contains("recipe run loop-health-evaluator"),
-        "the loop driver must invoke the shared loop-health-evaluator brick by name"
+        driver.contains("launch_side_recipe loop-health-evaluator")
+            && driver.contains("recipe run \"$HEALTH_RECIPE_PATH\""),
+        "the loop driver must invoke the shared loop-health-evaluator brick from the launch-side bundle"
+    );
+    assert!(
+        driver.contains("recipe run \"$ROUND_RECIPE_PATH\"")
+            && !driver.contains("recipe run \"$ROUND_RECIPE\" ")
+            && !driver.contains("recipe run loop-health-evaluator"),
+        "no recipe may reach `recipe run` by bare name; the reviewed tree would answer the lookup"
     );
     for ctx in [
         "loop_name=",
@@ -732,7 +742,7 @@ fn exit_79_is_terminal_and_never_retried_into() {
         .find("if terminal_refusal \"$ROUND_RC\"")
         .expect("round refusal check");
     let evaluator_at = driver
-        .find("recipe run loop-health-evaluator")
+        .find("recipe run \"$HEALTH_RECIPE_PATH\"")
         .expect("evaluator call");
     assert!(
         refusal_at < evaluator_at,
@@ -1054,10 +1064,10 @@ fn the_loop_refuses_before_round_one_when_its_terminator_is_missing() {
     // the loop for a missing dependency.
     let driver = read(&tool_path("autodrive_loop.sh"));
     let preflight = driver
-        .find("recipe show loop-health-evaluator")
+        .find("recipe show \"$HEALTH_RECIPE_PATH\"")
         .expect("the driver must resolve loop-health-evaluator up front");
     let first_round = driver
-        .find("recipe run \"$ROUND_RECIPE\"")
+        .find("recipe run \"$ROUND_RECIPE_PATH\"")
         .expect("the driver must run the round recipe");
     assert!(
         preflight < first_round,

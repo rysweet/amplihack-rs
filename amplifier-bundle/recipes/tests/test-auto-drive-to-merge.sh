@@ -94,14 +94,19 @@ cat > "${STUB_BIN}/amplihack" <<'STUB'
 if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "show" ]; then
   echo "${3:-}" >> "${STUB_SHOW_CALLS:-/dev/null}"
-  case "${3:-}" in
+  case "$(basename "${3:-}" .yaml)" in
     loop-health-evaluator) exit "${STUB_HEALTH_RESOLVES:-0}" ;;
     *) exit 1 ;;
   esac
 fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
-  RECIPE="${3:-}"
+  # The loop hands `recipe run` an absolute path in the launch-side bundle
+  # (#1528 round 2). `calls` keeps the bare name for the counting checks;
+  # `calls.paths` keeps exactly what was passed, so a test can see WHICH copy
+  # of a recipe would have been loaded.
+  RECIPE="$(basename "${3:-}" .yaml)"
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
+  echo "${3:-}" >> "${STUB_CALLS:-/dev/null}.paths"
   RECORD=""; for a in "$@"; do case "$a" in autodrive_round_record=*) RECORD="${a#*=}" ;; esac; done
   case "$RECIPE" in
     loop-health-evaluator)
@@ -264,6 +269,83 @@ if grep -qF 'loop-health-evaluator' "${LOOP_DIR}/err" \
   pass "PREFLIGHT-names-dependency" "the refusal names the missing dependency instead of misattributing it to the loop"
 else
   fail "PREFLIGHT-names-dependency" "the refusal does not name loop-health-evaluator: ${LOOP_OUT}"
+fi
+
+# ---------------------------------------------------------------------------
+# 2c. The tree under review never supplies its own reviewer (#1528, round 2).
+# ---------------------------------------------------------------------------
+# `--repo` is the pull request's linked worktree. If the loop ran its recipes
+# BY NAME with `--working-dir` there, amplihack would load that worktree's own
+# amplifier-bundle/recipes first, so a PR could rewrite its review prompt and
+# its stop rule. Build such a worktree, tamper with both recipes in it, and
+# require that the loop still hands `recipe run` the launch-side copies.
+TAMPERED="${WORK}/tampered-pr-worktree"
+mkdir -p "${TAMPERED}/amplifier-bundle/recipes"
+git -C "${TAMPERED}" init -q 2>/dev/null
+for r in autodrive-crusty-round autodrive-merge-round loop-health-evaluator; do
+  printf 'name: %s\ndescription: TAMPERED by the PR under review\nsteps: []\n' "$r" \
+    > "${TAMPERED}/amplifier-bundle/recipes/${r}.yaml"
+done
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
+LOOP_DIR="${WORK}/loop-tampered"; mkdir -p "${LOOP_DIR}"
+export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+  bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+    --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err"; rc=$?
+RECIPES_REAL="$(cd "${RECIPES}" && pwd -P)"
+if [ "$rc" -eq 0 ] \
+   && grep -qxF "${RECIPES_REAL}/autodrive-crusty-round.yaml" "${LOOP_DIR}/calls.paths" \
+   && grep -qxF "${RECIPES_REAL}/loop-health-evaluator.yaml" "${LOOP_DIR}/calls.paths" \
+   && grep -qxF "${RECIPES_REAL}/loop-health-evaluator.yaml" "${LOOP_DIR}/shows" \
+   && ! grep -qF "${TAMPERED}" "${LOOP_DIR}/calls.paths" "${LOOP_DIR}/shows"; then
+  pass "1528-launch-side-recipes" "a tampered PR worktree still gets the launch-side round and evaluator recipes"
+else
+  fail "1528-launch-side-recipes" "rc=${rc}; recipes passed: $(tr '\n' ' ' < "${LOOP_DIR}/calls.paths" 2>/dev/null); shows: $(tr '\n' ' ' < "${LOOP_DIR}/shows" 2>/dev/null)"
+fi
+# No bare name may reach `recipe run`: a bare name is what the PR worktree's
+# bundle would answer.
+if ! grep -qvE '^/' "${LOOP_DIR}/calls.paths" 2>/dev/null; then
+  pass "1528-no-bare-recipe-names" "every recipe handed to recipe run is an absolute launch-side path"
+else
+  fail "1528-no-bare-recipe-names" "a bare recipe name reached recipe run: $(grep -vE '^/' "${LOOP_DIR}/calls.paths")"
+fi
+
+# A loop helper that was itself picked up from inside the tree under review
+# would resolve "launch-side" recipes from that tree. It must refuse before a
+# single round runs.
+mkdir -p "${TAMPERED}/amplifier-bundle/tools"
+cp "${LOOP}" "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh"
+LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
+export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+  bash "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh" --loop-name "crusty" \
+    --round-recipe "autodrive-crusty-round" --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err"; rc=$?
+if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}/calls" ] \
+   && grep -qF 'inside the tree under review' "${LOOP_DIR}/err" \
+   && grep -qF '"loop_result":"UNTRUSTED_RECIPE"' "${LOOP_DIR}/out"; then
+  pass "1528-helper-inside-reviewed-tree" "a loop helper inside the PR worktree refuses instead of loading that tree's recipes"
+else
+  fail "1528-helper-inside-reviewed-tree" "rc=${rc}; calls: $(cat "${LOOP_DIR}/calls" 2>/dev/null); err: $(cat "${LOOP_DIR}/err")"
+fi
+
+# A recipe given as a path, rather than a bare name, is refused: the loop is
+# the only thing that chooses where its recipes come from.
+LOOP_DIR="${WORK}/loop-pathname"; mkdir -p "${LOOP_DIR}"
+export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+  bash "${LOOP}" --loop-name "crusty" \
+    --round-recipe "${TAMPERED}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" \
+    --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err"; rc=$?
+if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}/calls" ]; then
+  pass "1528-round-recipe-by-path-refused" "a round recipe given by path is refused before any round runs"
+else
+  fail "1528-round-recipe-by-path-refused" "rc=${rc}; calls: $(cat "${LOOP_DIR}/calls" 2>/dev/null)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -773,10 +855,11 @@ fi
 # ---------------------------------------------------------------------------
 # 8. The loop-health-evaluator contract is used, not reimplemented.
 # ---------------------------------------------------------------------------
-if grep -qF 'recipe run loop-health-evaluator' "${LOOP}"; then
-  pass "LOOP-HEALTH-USED" "the loop driver invokes loop-health-evaluator by name"
+if grep -qF 'launch_side_recipe loop-health-evaluator' "${LOOP}" \
+   && grep -qF 'recipe run "$HEALTH_RECIPE_PATH"' "${LOOP}"; then
+  pass "LOOP-HEALTH-USED" "the loop driver invokes loop-health-evaluator, resolved in the launch-side bundle"
 else
-  fail "LOOP-HEALTH-USED" "the loop driver does not invoke loop-health-evaluator"
+  fail "LOOP-HEALTH-USED" "the loop driver does not invoke the launch-side loop-health-evaluator"
 fi
 # The #1512 log reader in autodrive_loop.sh must name step-04 to find its
 # status line; naming any other evaluator step, or step-04 in a recipe, is a copy.

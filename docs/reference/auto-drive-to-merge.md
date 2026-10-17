@@ -722,7 +722,7 @@ so the launch checkout's index is never touched (issue #1528).
 | --- | --- | --- |
 | Phase 1, `autodrive-build` | Launch checkout | Not there. `default-workflow` commits in its own task worktree (issue #858). |
 | Loop preflights, `autodrive_pr_worktree.sh resolve`, the merge gate, phase bookkeeping | Launch checkout | No. The resolver may run `git worktree add`; the merge happens on GitHub. |
-| Every round step and its agents, `autodrive-merge-evidence`, `loop-health-evaluator` | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
+| Every round step and its agents, `autodrive-merge-evidence`, `loop-health-evaluator` (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
 
 The loop state directory stays keyed to the launch repository, so resuming is
 unchanged.
@@ -764,6 +764,38 @@ worktree. So does `autodrive-merge-evidence`, which enters `repo_path` before it
 merges the base branch and pushes, and `autodrive_loop.sh` reads each round's
 baseline `HEAD` there. When resolution fails, `step-02` exits `1` and no round
 runs. There is no fallback to `REPO_PATH`.
+
+### Where the round and evaluator recipes come from
+
+Running in the pull request worktree does not mean loading recipes from it.
+`amplihack recipe run <name> --working-dir DIR` looks the name up in
+`DIR`'s repository's `amplifier-bundle/recipes` first (`recipe_search_dirs` in
+`crates/amplihack-cli/src/commands/recipe/resolve.rs`). In a repository that
+ships these recipes, amplihack-rs itself, a by-name call with the pull request
+worktree as `--working-dir` would run the pull request's own
+`autodrive-crusty-round`, `autodrive-merge-round` and `loop-health-evaluator`.
+The change under review would then supply its own review prompt and its own
+stop rule, and a round's fix-up commit would change how the next round runs.
+
+`autodrive_loop.sh` therefore never passes a bare recipe name to `recipe run`.
+It resolves `--round-recipe` and `loop-health-evaluator` to absolute paths in
+the `amplifier-bundle/recipes` next to its own `tools/` directory (the
+launch-side bundle) and runs those paths. A recipe run by path searches its
+own directory first for sub-recipes, so `loop-evidence-collector` and
+`autodrive-merge-evidence` come from that bundle too. Only `--working-dir`,
+`repo_path` and the baseline `HEAD` point at the pull request worktree.
+
+The loop refuses, with `"loop_result":"UNTRUSTED_RECIPE"` and before any round
+runs, when:
+
+- `--round-recipe` is a path rather than a bare name; or
+- the resolved recipe lies inside `--repo`, which means the loop helper itself
+  was picked up from the tree under review.
+
+`amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` covers both refusals
+and checks that a pull request worktree whose own copies of these recipes have
+been tampered with still gets the launch-side copies
+(`1528-launch-side-recipes`).
 
 The resolver sits next to `autodrive_loop.sh` in the launch-side bundle, never
 in the pull request worktree. The loops always resolve by `--pr`. The merge
