@@ -27,6 +27,28 @@ Unreleased changes appear at the top under `[Unreleased]`.
   merged; archiving never recreates a branch the remote has deleted, and adding
   `/worktrees/` never merges into an unterminated last line of `info/exclude`.
 
+- **A recipe run downgraded the install and rewrote settings (#1526)** — a
+  `cargo install --git` build of v0.18.39 reported `0.18.0`, re-staged over
+  `~/.local/bin` and rewrote `~/.claude/settings.json` with no explicit
+  install. Automatic re-stages (startup self-heal and the launch bootstrap)
+  now run in implicit mode. They never write `settings.json` (except the #202
+  repair when no amplihack hooks are registered), never replace an installed
+  binary unless the running version is newer by semver, and do nothing when
+  the running binary is older than `~/.amplihack/.installed-version`. In that
+  case they print one stderr warning naming both paths and versions.
+  `amplihack install` can still downgrade. Release tags now point at a
+  `chore(release): stamp vX` commit, or at the released commit itself for a
+  `vMAJOR.MINOR.0` release whose manifests already say X, so
+  `cargo install --tag vX` reports X. A `--rev` build of a `main` commit still
+  reports the base version; the guard covers it.
+  **Upgrade note:** automatic re-stages (self-heal, the launch bootstrap and
+  `amplihack copilot`) now also leave an existing amplihack entry in
+  `~/.copilot/config.json` alone; they no longer refresh it on a version
+  change (a selected Codex plugin is still reconciled, per #1538). Run `amplihack install` to refresh it.
+  The same applies to hook events a new release adds to `settings.json`; a
+  re-stage prints a one-line warning naming the missing ones.
+  See [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
+
 - **Artifact Guard blocked verified work over a pre-existing repository
   condition (#1422)** — the guard now distinguishes artifacts the change under
   review *introduced* from artifacts the repository already carried, and the

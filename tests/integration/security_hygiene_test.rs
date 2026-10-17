@@ -981,8 +981,14 @@ fn tc_sec_21_fleet_status_error_does_not_expose_home_path() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
+    // A throwaway HOME under /tmp: the developer's real ~/.amplihack (an
+    // install stamp from some other build, say) must not leak its
+    // diagnostics, and their paths, into what this test inspects.
+    let home = tempfile::tempdir().expect("tempdir for HOME");
+
     // Point AZLIN_PATH to a non-existent file to trigger an error.
     let output = Command::new(&bin)
+        .env("HOME", home.path())
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "status"])
         .env(
