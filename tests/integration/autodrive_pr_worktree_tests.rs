@@ -1436,7 +1436,7 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
             "{recipe}: {argv:?}"
         );
         // The launch checkout reaches the loop exactly once, as the review
-        // dir where the read-only judging agents start (#1528, round 3). It
+        // dir where the read-only judging agents start (#1528). It
         // never reaches `--repo` or `repo_path`, where commits happen.
         let review_at = argv
             .iter()

@@ -39,7 +39,7 @@ context:
   autodrive_resolved_concerns_file: ""
 
 steps:
-  # Judging agents start OUTSIDE the tree under review (#1528, round 3).
+  # Judging agents start OUTSIDE the tree under review (#1528).
   # `repo_path` is the PR worktree; the agent CLI loads AGENTS.md, CLAUDE.md
   # and .claude hooks from its working directory, so an agent started there
   # is instructed by the branch it judges. `review_dir` (the launch checkout,

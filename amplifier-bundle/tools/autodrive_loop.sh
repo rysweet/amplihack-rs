@@ -167,7 +167,7 @@ launch_side_recipe() { # launch_side_recipe <name> -> absolute path on stdout, o
 # and .claude/settings.json hooks. Started in the PR worktree, the crusty
 # reviewer, the merge-ready assessor and the loop-health analyzer would be
 # instructed by the branch they judge, and a round's fix-up commit could
-# rewrite the next round's reviewer (#1528, round 3).
+# rewrite the next round's reviewer (#1528).
 #
 # So the read-only judging agents start in `--review-dir`: the launch checkout
 # by default (this script's working directory). Only the commit step

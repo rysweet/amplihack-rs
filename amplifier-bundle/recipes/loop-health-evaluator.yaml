@@ -22,8 +22,9 @@ author: "Amplihack Team"
 tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 #
-# Composition: step-01 invokes the measurement half, loop-evidence-collector.yaml;
-# this file owns the judgement, the verdict resolution, and the gate.
+# Composition: the deterministic measurement half lives in
+# `loop-evidence-collector.yaml` and is invoked as step-01. This file owns the
+# judgement, the verdict resolution, and the gate.
 #
 # Consumption contract (see docs/reference/loop-health-evaluator.md):
 #   - type: "recipe" step invoking this brick after each round of your loop
@@ -36,8 +37,9 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # so every step-output read below uses the dual-name idiom; drop it and the
 # recipe goes silently inert.
 #
-# No step here declares a timeout: per issue #439 the recipe runner owns the
-# ceiling, so no step has a seconds-scale or single-digit-minute bound.
+# No step in this file declares a timeout. Per issue #439 the recipe runner
+# owns the ceiling; there is deliberately no seconds-scale or single-digit-
+# minute bound on any step here.
 
 recursion:
   max_depth: 6

@@ -316,7 +316,7 @@ else
   fail "1528-no-bare-recipe-names" "a bare recipe name reached recipe run: $(grep -vE '^/' "${LOOP_DIR}/calls.paths")"
 fi
 
-# The judging agents start on the launch side too (#1528, round 3). The recipe
+# The judging agents start on the launch side too (#1528). The recipe
 # FILES are not the only instructions an agent takes from its working
 # directory: the agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from
 # it. The round gets the launch checkout as `review_dir` (where its review /
