@@ -559,7 +559,9 @@ pub fn scan_artifacts(
         let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
         args.extend(dir_roots);
         for path in git_paths(&repo, &args)? {
-            if allowlist.is_allowed(&path) {
+            // A nested repository is listed as one directory entry and never
+            // looked into, so whatever it holds is protected as a whole.
+            if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
                 protected.insert(path);
             }
         }

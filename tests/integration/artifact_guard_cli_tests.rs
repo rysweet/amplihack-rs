@@ -1235,3 +1235,29 @@ fn cli_never_deletes_an_allowlisted_file_the_mode_does_not_scan() {
         }
     }
 }
+
+#[test]
+fn cli_never_deletes_a_nested_repository_under_a_directory_root() {
+    // `git ls-files --others` lists a nested repository as one entry and never
+    // looks inside, so an allowlisted file in it is invisible to the guard.
+    let tmp = repo_on_task_branch();
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "node_modules/vend/keep.js\n",
+    );
+    run_git(tmp.path(), &["init", "-q", "node_modules/vend"]);
+    write_file(&tmp.path().join("node_modules/vend/keep.js"), "keep\n");
+    write_file(&tmp.path().join("node_modules/junk.js"), "junk\n");
+    run_git(tmp.path(), &["add", "-f", "node_modules/junk.js"]);
+
+    let output = run_guard(tmp.path(), "staged");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    for line in combined.lines().filter(|line| line.contains("rm ")) {
+        assert!(
+            !line.contains("'node_modules'"),
+            "no command may sweep the nested repository: {line}"
+        );
+    }
+}
