@@ -1105,8 +1105,9 @@ fn literal_mask_separates_messages_from_commands() {
 
 #[test]
 fn helper_never_forces_stages_commits_or_rewrites_checkouts() {
-    // AC3 (c) and the M3 rule: the only writes are `git worktree add` and the
-    // fetch into the remote-tracking ref.
+    // AC3 (c) and the M3 rule: the only writes are `git worktree add`, the
+    // fetch into the remote-tracking ref and a fast-forward-only fetch into the
+    // local branch.
     let script = read(&helper());
     let mut problems = Vec::new();
     let mut adds = 0;
@@ -1164,6 +1165,13 @@ fn helper_never_forces_stages_commits_or_rewrites_checkouts() {
                     fetches += 1;
                     if !line.contains(">&2") {
                         problems.push(format!("`fetch` must write to stderr: {line}"));
+                    }
+                    // A fetch may update a local branch only as a
+                    // fast-forward: no `+` on a refspec that writes refs/heads/.
+                    if args.iter().any(|arg| {
+                        arg.trim_matches('"').starts_with('+') && arg.contains(":refs/heads/")
+                    }) {
+                        problems.push(format!("forced fetch into a local branch: {line}"));
                     }
                 }
                 "branch"
@@ -2348,4 +2356,169 @@ fn round_step_04_commits_in_the_pr_worktree_despite_an_inherited_git_dir_and_ind
             "{recipe}: main checkout untouched"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Currency against origin: a resumed run never reviews a stale tip (#1528)
+// ---------------------------------------------------------------------------
+
+impl Repo {
+    fn origin_tip(&self, branch: &str) -> String {
+        self.sb.git(
+            &self.origin,
+            &["rev-parse", &format!("refs/heads/{branch}")],
+        )
+    }
+
+    fn local_tip(&self, branch: &str) -> String {
+        self.sb
+            .git(&self.main, &["rev-parse", &format!("refs/heads/{branch}")])
+    }
+
+    /// Add a commit to the local `branch` without checking it out anywhere.
+    fn commit_on_local(&self, branch: &str, message: &str) {
+        let parent = self.local_tip(branch);
+        let parent = parent.trim();
+        let tree = self
+            .sb
+            .git(&self.main, &["rev-parse", &format!("{parent}^{{tree}}")]);
+        let commit = self.sb.git(
+            &self.main,
+            &["commit-tree", tree.trim(), "-p", parent, "-m", message],
+        );
+        self.sb.git(
+            &self.main,
+            &[
+                "update-ref",
+                &format!("refs/heads/{branch}"),
+                commit.trim(),
+                parent,
+            ],
+        );
+    }
+}
+
+#[test]
+fn fast_forwards_a_local_branch_that_is_behind_origin() {
+    // The resume case: the phase-1 worktree is gone, the local branch was left
+    // behind at `main`, and the PR has since moved on origin.
+    let repo = repo();
+    repo.local_branch("feat/x");
+    repo.push_from_elsewhere("feat/x");
+    assert_ne!(repo.local_tip("feat/x"), repo.origin_tip("feat/x"));
+    let before = repo.snapshot();
+
+    let path = resolved_path(&repo.resolve_head("feat/x"), "local branch behind origin");
+
+    assert_eq!(path, canonical(&repo.main.join("worktrees/feat/x")));
+    assert_eq!(
+        repo.sb.git(Path::new(&path), &["rev-parse", "HEAD"]),
+        repo.origin_tip("feat/x"),
+        "the new worktree must be at origin's tip, not the stale local one"
+    );
+    assert_eq!(repo.local_tip("feat/x"), repo.origin_tip("feat/x"));
+    assert_eq!(repo.snapshot(), before, "main checkout untouched");
+}
+
+#[test]
+fn keeps_a_local_branch_that_is_ahead_of_origin() {
+    // Unpushed local work is never rewound.
+    let repo = repo();
+    repo.push_from_elsewhere("feat/x");
+    repo.sb
+        .git(&repo.main, &["fetch", "-q", "origin", "feat/x:feat/x"]);
+    repo.commit_on_local("feat/x", "unpushed");
+    let local = repo.local_tip("feat/x");
+    assert_ne!(local, repo.origin_tip("feat/x"));
+
+    let path = resolved_path(&repo.resolve_head("feat/x"), "local branch ahead of origin");
+
+    assert_eq!(repo.sb.git(Path::new(&path), &["rev-parse", "HEAD"]), local);
+    assert_eq!(
+        repo.local_tip("feat/x"),
+        local,
+        "the local branch is not rewound"
+    );
+}
+
+#[test]
+fn refuses_a_local_branch_that_has_diverged_from_origin() {
+    let repo = repo();
+    repo.local_branch("feat/x");
+    repo.commit_on_local("feat/x", "local only");
+    repo.push_from_elsewhere("feat/x");
+    let local = repo.local_tip("feat/x");
+    let before = repo.snapshot();
+    let records = repo.worktree_records();
+
+    let output = repo.resolve_head("feat/x");
+    assert_refused(&output, 1, "diverged local branch");
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("diverged") && stderr.contains("#1528"),
+        "the refusal must say the branch has diverged:\n{stderr}"
+    );
+
+    assert_eq!(
+        repo.local_tip("feat/x"),
+        local,
+        "the local branch is untouched"
+    );
+    assert_eq!(repo.worktree_records(), records, "no worktree created");
+    assert!(!repo.main.join("worktrees/feat/x").exists());
+    assert_eq!(repo.snapshot(), before);
+}
+
+#[test]
+fn refuses_an_existing_worktree_that_is_behind_origin() {
+    // The matched worktree is never updated in place; the operator is told.
+    let repo = repo();
+    repo.local_branch("feat/x");
+    let side = repo.sb.root.join("side/x");
+    repo.add_worktree(&side, "feat/x");
+    repo.push_from_elsewhere("feat/x");
+    let head = repo.sb.git(&side, &["rev-parse", "HEAD"]);
+    let before = repo.snapshot();
+
+    let output = repo.resolve_head("feat/x");
+    assert_refused(&output, 1, "existing worktree behind origin");
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("behind") && stderr.contains("#1528"),
+        "the refusal must say the worktree is behind origin:\n{stderr}"
+    );
+
+    assert_eq!(
+        repo.sb.git(&side, &["rev-parse", "HEAD"]),
+        head,
+        "worktree untouched"
+    );
+    assert_eq!(repo.snapshot(), before);
+
+    // Once the operator fast-forwards it, the same worktree resolves.
+    repo.sb
+        .git(&side, &["merge", "-q", "--ff-only", "origin/feat/x"]);
+    let path = resolved_path(&repo.resolve_head("feat/x"), "after fast-forward");
+    assert_eq!(path, canonical(&side));
+}
+
+#[test]
+fn refuses_when_origin_cannot_be_asked() {
+    // Currency cannot be checked, so the resolver stops rather than guess.
+    let repo = repo();
+    repo.local_branch("feat/x");
+    let side = repo.sb.root.join("side/x");
+    repo.add_worktree(&side, "feat/x");
+    let missing = repo.sb.root.join("no-such-origin.git");
+    repo.sb.git(
+        &repo.main,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            missing.to_str().expect("utf-8"),
+        ],
+    );
+
+    assert_refused(&repo.resolve_head("feat/x"), 1, "unreachable origin");
 }

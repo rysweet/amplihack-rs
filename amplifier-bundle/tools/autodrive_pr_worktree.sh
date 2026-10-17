@@ -36,15 +36,29 @@
 #   backtick, a backslash or a control character (the path is substituted into
 #   agent prompts as `cd "{{repo_path}}"`).
 #
-#   Stale local branch: if refs/heads/<branch> exists locally and is behind
-#   origin, a newly created worktree checks out the stale local tip. The
-#   round's push then fails non-fast-forward and step-04 stops. It never
-#   forces.
+#   Currency against origin: before a worktree is reported or created, origin
+#   is asked whether it has the branch (`git ls-remote --exit-code`). If it
+#   does, its tip is fetched into refs/remotes/origin/<branch> and:
+#     - an existing linked worktree whose HEAD does not contain that tip
+#       (behind or diverged) is refused; it is never updated in place, so the
+#       operator fast-forwards it (`git -C <path> merge --ff-only
+#       origin/<branch>`) and resumes;
+#     - a local branch with no worktree that is at or ahead of origin is used
+#       as it is; one that is behind is fast-forwarded with
+#       `git fetch origin refs/heads/<branch>:refs/heads/<branch>` (no `+`, so
+#       git itself refuses anything but a fast-forward); one that has
+#       diverged is refused.
+#   Origin answering "no such branch" leaves a local branch as the only copy
+#   and it is used as it is. Origin that cannot be asked at all is refused:
+#   currency cannot be checked, and a resumed run would otherwise spend a
+#   round reviewing a stale tree only to stop on a non-fast-forward push.
 #
 # READ-ONLY INVARIANT (hard): the only writes are a fetch into the
-# remote-tracking ref (`refs/remotes/origin/<branch>`, no tags) and
-# `git worktree add` of a NEW worktree for the branch. Nothing is ever forced,
-# staged, committed, checked out in an existing tree, pruned or deleted.
+# remote-tracking ref (`refs/remotes/origin/<branch>`, no tags), a
+# fast-forward-only fetch into refs/heads/<branch> when that branch is checked
+# out nowhere, and `git worktree add` of a NEW worktree for the branch. Nothing
+# is ever forced, rewound, staged, committed, checked out in an existing tree,
+# pruned or deleted.
 #
 # The main repository work tree comes from workflow_worktree_root.sh, so both
 # helpers agree on where `worktrees/` lives.
@@ -254,6 +268,21 @@ EOF
         refuse "more than one linked worktree has the branch checked out; remove the extra ones"
     fi
 
+    # Ask origin for the branch so a stale local tip is never reported or
+    # checked out (#1528). ls-remote exits 2 only when the ref is absent.
+    local remote_rc=0 on_origin=0
+    GIT_TERMINAL_PROMPT=0 git ls-remote --exit-code --heads origin "refs/heads/$head" >/dev/null \
+        || remote_rc=$?
+    case "$remote_rc" in
+        0)
+            GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin "+refs/heads/${head}:refs/remotes/origin/${head}" >&2 \
+                || refuse "cannot fetch the branch from origin to check the local tip is current"
+            on_origin=1
+            ;;
+        2) ;;
+        *) refuse "cannot ask origin whether it has the branch, so the local tip cannot be checked against it" ;;
+    esac
+
     local found
     if [ "$matches" = 1 ]; then
         safe_path "$match_path" || refuse "the matching worktree's path contains shell metacharacters or control characters"
@@ -262,6 +291,12 @@ EOF
         safe_path "$found" || refuse "the matching worktree's path contains shell metacharacters or control characters"
         verify_worktree "$found" "$head" "$common" \
             || refuse "the registered worktree is not a linked worktree of this repository on the branch"
+        if [ "$on_origin" = 1 ]; then
+            local tip
+            tip="$(git -C "$found" rev-parse --verify -q HEAD)" || refuse "cannot read the matching worktree's HEAD"
+            git merge-base --is-ancestor "refs/remotes/origin/$head" "$tip" \
+                || refuse "the matching worktree is behind or has diverged from origin; fast-forward it with 'git -C <worktree> merge --ff-only' onto the origin branch, then resume"
+        fi
         printf '%s\n' "$found"
         return 0
     fi
@@ -272,10 +307,16 @@ EOF
     check_target_components "$main_root" "$head"
 
     if git show-ref --verify --quiet "refs/heads/$head"; then
+        if [ "$on_origin" = 1 ] \
+            && ! git merge-base --is-ancestor "refs/remotes/origin/$head" "refs/heads/$head"; then
+            # Behind or diverged. No `+`: git refuses anything but a
+            # fast-forward, and the branch is checked out nowhere (above).
+            GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin "refs/heads/${head}:refs/heads/${head}" >&2 \
+                || refuse "the local branch has diverged from origin and cannot be fast-forwarded; reconcile it yourself, then resume"
+        fi
         git worktree add "$target" "$head" >&2 || refuse "git worktree add failed"
     else
-        GIT_TERMINAL_PROMPT=0 git fetch --no-tags origin "+refs/heads/${head}:refs/remotes/origin/${head}" >&2 \
-            || refuse "the branch is neither local nor fetchable from origin"
+        [ "$on_origin" = 1 ] || refuse "the branch is neither local nor on origin"
         git worktree add --track -b "$head" "$target" "origin/$head" >&2 || refuse "git worktree add failed"
     fi
 
