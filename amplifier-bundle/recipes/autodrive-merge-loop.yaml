@@ -96,14 +96,15 @@ steps:
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
       [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
+      PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
       bash "$LOOP_HELPER" \
         --loop-name "merge-ready" \
         --round-recipe "autodrive-merge-round" \
         --clean-token "MERGE_READY" \
         --verdict-field "merge_ready_verdict" \
-        --repo "${REPO_PATH:-.}" \
+        --repo "$PR_WORKTREE" \
         --state-dir "$DIR" \
-        --context "repo_path=${REPO_PATH:-.}" \
+        --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
         --context "task_description=${TASK_DESCRIPTION:-}" \

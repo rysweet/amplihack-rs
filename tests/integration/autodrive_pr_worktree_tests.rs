@@ -649,7 +649,8 @@ fn resolves_the_head_branch_through_gh_for_a_pr() {
 
 #[test]
 fn refuses_a_pr_gh_cannot_resolve() {
-    let cases: [(&str, fn(&Sandbox)); 2] = [
+    type Setup = fn(&Sandbox);
+    let cases: [(&str, Setup); 2] = [
         ("gh fails", |sb| sb.gh_fail()),
         ("gh prints nothing", |sb| sb.gh_head("")),
     ];
@@ -1049,9 +1050,7 @@ fn git_invocations(line: &str) -> Vec<Vec<String>> {
             continue;
         }
         let rest = &line[at + 3..];
-        let end = rest
-            .find(|c: char| matches!(c, ';' | '|' | '&' | ')' | '`'))
-            .unwrap_or(rest.len());
+        let end = rest.find([';', '|', '&', ')', '`']).unwrap_or(rest.len());
         invocations.push(
             rest[..end]
                 .split_whitespace()

@@ -408,16 +408,17 @@ amplihack recipe run autodrive-crusty-loop \
 ### `autodrive_pr_worktree.sh resolve`
 
 ```text
-autodrive_pr_worktree.sh resolve [--repo DIR] (--pr N | --head BRANCH)
+autodrive_pr_worktree.sh resolve --repo DIR (--pr N | --head BRANCH)
 ```
 
 | Option | Meaning |
 | --- | --- |
-| `--repo DIR` | Any checkout of the repository, main or linked. Defaults to the current directory. A relative path is resolved from the current directory, never through `CDPATH`. |
-| `--pr N` | Read the head branch with `gh pr view N --json headRefName,isCrossRepository`. `N` must be digits. |
+| `--repo DIR` | Required. Any checkout of the repository, main or linked. A relative path is resolved from the current directory, never through `CDPATH`. |
+| `--pr N` | Read the head branch with `gh pr view N --json headRefName,isCrossRepository`, run inside `--repo`. `N` must be a positive number without a leading zero; anything else is a usage error and `gh` never runs. |
 | `--head BRANCH` | Use `BRANCH` directly. `gh` is never called. |
 
-Exactly one of `--pr` and `--head` is required. Each option may appear once.
+Exactly one of `--pr` and `--head` is required. Each option may appear once,
+and an option value that is empty or starts with `-` counts as missing.
 
 The resolver picks the worktree in this order:
 
@@ -473,6 +474,7 @@ worktree, set the identity, guard, stage, guard again, commit, push.
 ```bash
 cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+# The recipes split the next two checks over continuation lines.
 GD="$(git rev-parse --absolute-git-dir)" && CD="$(git rev-parse --path-format=absolute --git-common-dir)" && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && case "$CD" in /*) [ "$GD" != "$CD" ] ;; *) false ;; esac || { echo "STOP: not a linked worktree; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
 PR_HEAD="$(gh pr view {{pr_number}} --json headRefName --jq .headRefName)" && [ -n "$PR_HEAD" ] && [ "$(git branch --show-current)" = "$PR_HEAD" ] || { echo "STOP: this worktree is not on the PR head branch (#1528)" >&2; exit 1; }
 # … source git-identity.sh (issue #1394) …
@@ -480,8 +482,8 @@ amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not 
 amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
 git add -A
 amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
-git commit -m "address crusty review: <what changed>"
-git push
+git commit -m "address crusty review: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
+git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
 ```
 
 | Line | Why |

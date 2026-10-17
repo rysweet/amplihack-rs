@@ -236,9 +236,26 @@ steps:
       - **Unresolved review threads** — answer them and resolve them.
       - **Missing docs or evidence** — write them.
 
-      Commit normally so the repository's hooks run, then push:
+      Commit normally so the repository's hooks run, then push. Run the block below as one shell command, in one invocation, exactly as
+      written: every check ends in `exit 1`, and a check that fails must stop
+      everything after it. It enters the PR's linked worktree, drops any
+      inherited repository variables, and stops before staging anything
+      unless it stands in a linked worktree on the PR head branch. Never commit
+      from the main checkout or from another checkout (#1528).
 
       ```bash
+      cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
+      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+      # Stop unless this is the top of a LINKED worktree: in the main checkout
+      # the git dir and the common dir are the same directory (#1528).
+      GD="$(git rev-parse --absolute-git-dir)" && CD="$(git rev-parse --path-format=absolute --git-common-dir)" \
+        && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] \
+        && case "$CD" in /*) [ "$GD" != "$CD" ] ;; *) false ;; esac \
+        || { echo "STOP: not a linked worktree; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
+      # Stop unless the worktree is on the PR head branch (an empty answer never matches).
+      PR_HEAD="$(gh pr view {{pr_number}} --json headRefName --jq .headRefName)" && [ -n "$PR_HEAD" ] \
+        && [ "$(git branch --show-current)" = "$PR_HEAD" ] \
+        || { echo "STOP: this worktree is not on the PR head branch (#1528)" >&2; exit 1; }
       # Commit as the workflow's identity, not as whatever git is configured
       # with in this worktree (issue #1394). The helper only exports into the
       # shell that sources it, so it has to be sourced here, in this block.
@@ -247,14 +264,21 @@ steps:
       done
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 
-      amplihack hygiene artifact-guard --repo . --mode pre-commit
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused before staging (#1528)" >&2; exit 1; }
       git add -A
-      git commit -m "clear merge-ready blockers: <what changed>"
-      git push
+      amplihack hygiene artifact-guard --repo . --mode pre-commit || { echo "STOP: artifact guard refused after staging; fix the cause, never bypass (#1528)" >&2; exit 1; }
+      git commit -m "clear merge-ready blockers: <what changed>" || { echo "STOP: the commit failed; fix what the hook reports, never bypass it (#1528)" >&2; exit 1; }
+      git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
       ```
 
-      The artifact guard runs first so a stray runtime artifact never rides
-      into the PR; if it objects, remove the artifact rather than silencing it.
+      The artifact guard runs before staging and again after staging, so a
+      stray runtime artifact never rides into the PR; if it objects, remove
+      the artifact rather than silencing it.
+
+      Stage only through the block. Never stage ignored files, and never stage
+      anything under `worktrees/`: those are other checkouts, and staging one
+      records a gitlink to another checkout in this PR (#1528). Never force a
+      path past `.gitignore` or past a guard refusal.
 
       If a hook fails, fix the cause. Never reach for a flag that skips hooks,
       and never reach for a branch-protection bypass at merge time. Both are

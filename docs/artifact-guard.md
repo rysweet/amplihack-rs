@@ -700,24 +700,34 @@ No entry applies to the `run-worktree-gitlink` rule. See
 
 ## Workflow and pre-commit coverage
 
-Artifact Guard will run before every broad staging operation in the bundled
-recipes, not just publish and finalize. The initial guarded recipe set is every
-recipe that currently invokes `git add -A`:
+Artifact Guard runs before and after every broad staging operation in the
+bundled recipes, not just publish and finalize. A guard before `git add -A`
+cannot see a run-worktree gitlink that the add itself creates, so every commit
+block runs guard, `git add -A`, guard, commit (issue #1528). The guarded recipe
+set is every recipe that invokes `git add -A`:
 
 | Recipe | Guard placement |
 | --- | --- |
-| `workflow-finalize.yaml` | Before final broad staging |
-| `workflow-publish.yaml` | Before publication staging and before any broad staging in remediation paths |
-| `workflow-refactor-review.yaml` | Before broad staging |
-| `workflow-tdd.yaml` | Before broad staging |
-| `workflow-pr-review.yaml` | Before broad staging |
-| `consensus-publish.yaml` | Before broad staging |
-| `consensus-pr-feedback.yaml` | Before broad staging |
+| `workflow-finalize.yaml` | Before and after final broad staging in `step-20b-push-cleanup`, which runs only at the top of the linked task worktree and skips with a warning otherwise. See [Workflow Runtime Artifacts: lifecycle integration](reference/workflow-runtime-artifacts.md#lifecycle-integration). |
+| `workflow-publish.yaml` | Before and after publication staging, and before and after broad staging in the outside-in fix loop (one chained line ending in `\|\| { …; exit 1; }`) |
+| `workflow-refactor-review.yaml` | Before and after broad staging |
+| `workflow-tdd.yaml` | Before and after broad staging |
+| `workflow-pr-review.yaml` | Before and after broad staging |
+| `consensus-publish.yaml` | Before and after broad staging |
+| `consensus-pr-feedback.yaml` | Before and after broad staging |
 | `autodrive-crusty-round.yaml` | Before and after `git add -A` in the `step-04` commit block, which runs only inside the pull request's worktree. See [Auto Drive To Merge: the round commit block](reference/auto-drive-to-merge.md#the-round-commit-block). |
 | `autodrive-merge-round.yaml` | Same as `autodrive-crusty-round.yaml` |
 
+In bash steps, which run under `set -e`, the post-add guard shares the add
+line: `git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish`.
+Both guards use the same `--mode`. No bundled recipe or tool force-adds
+(`git add -f`), since a forced add is how an ignored run worktree becomes a
+gitlink.
+
 Future recipe changes must preserve the rule: any new `git add -A` or equivalent
-broad-staging step needs an Artifact Guard gate immediately before it.
+broad-staging step that commits needs an Artifact Guard gate immediately before
+it and again between it and the commit, and each gate must be able to stop the
+step.
 
 Before those gates run, bundled workflows also run the narrow workflow runtime
 preflight documented in [Workflow Runtime Artifacts Reference](reference/workflow-runtime-artifacts.md).

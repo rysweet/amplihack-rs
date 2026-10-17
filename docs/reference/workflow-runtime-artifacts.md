@@ -151,17 +151,21 @@ paths are a successful no-op. For each existing target, the helper:
 6. Fails non-zero if validation or deletion fails.
 
 Before it removes `worktrees`, the helper runs `git worktree list --porcelain`
-in the target. It keeps the directory, prints one warning on stderr and moves
-on to the next path, without failing, when:
+in the target. It keeps the directory, prints a warning on stderr and moves on
+to the next path, without failing, when:
 
 | Condition | Warning |
 | --- | --- |
-| A registered worktree lies under `<repo>/worktrees` | `WARNING: runtime cleanup kept <repo>/worktrees: it holds registered worktrees (#1528)` |
+| The target is a main checkout and a registered worktree lies under `<repo>/worktrees` | `WARNING: runtime cleanup kept <repo>/worktrees: it holds registered worktrees (#1528)` |
 | `git worktree list` fails, so the helper cannot prove the directory is safe to delete | `WARNING: runtime cleanup kept <repo>/worktrees: git worktree list failed (#1528)` |
 
 In a repository's main checkout, `worktrees` holds the live worktrees of every
-run launched from it, so it is kept. Anything under it that no worktree
-registration covers, such as a scratch directory left by an agent, is removed
+run launched from it, so it is never removed there, whether or not anything
+under it is registered (issue #1494). The helper also prints
+`INFO: leaving <repo>/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)`
+and adds `/worktrees/` to the repository's `info/exclude`, so the kept
+directory never shows as untracked. In a linked task worktree, `worktrees`
+holds this run's nested scratch worktrees, which are deregistered and removed
 as described above (issue #808). `.claude/runtime` is cleaned either way.
 
 Some steps run the preflight in `REPO_PATH`, which is the launch checkout:
@@ -177,8 +181,9 @@ preflight_known_workflow_runtime_artifacts "$worktree"
 ```
 
 Runs cleanup, then verifies that the known runtime artifact paths are absent.
-The one exception is a `worktrees` that cleanup kept on purpose, because it
-holds a registered worktree or the worktree list failed. Use this function before guard-sensitive lifecycle operations.
+The one exception is a `worktrees` that cleanup kept on purpose: a main
+checkout's, or any whose worktree list failed. Use this function before
+guard-sensitive lifecycle operations.
 
 ### Deterministic finalization cleanup (issue #808)
 
@@ -322,8 +327,8 @@ stage, commit, publish, or finalize
 ```
 
 If `.claude/runtime` or `worktrees/` remains after preflight, the lifecycle step
-fails visibly, except for a `worktrees/` that holds a registered worktree,
-which preflight keeps on purpose. If any unrelated artifact remains, Artifact Guard fails visibly.
+fails visibly, except for a `worktrees/` that preflight keeps on purpose (a main checkout's, or one
+whose worktree list failed). If any unrelated artifact remains, Artifact Guard fails visibly.
 
 ## Regression contract
 

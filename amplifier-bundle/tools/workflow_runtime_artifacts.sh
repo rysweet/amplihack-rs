@@ -52,6 +52,18 @@ _amplihack_exclude_worktrees_dir() {
   return 0
 }
 
+# _amplihack_lists_worktree_under <porcelain-listing> <dir/>
+# True when a `git worktree list --porcelain` listing registers a worktree under
+# <dir/>. Both sides are compared as physical paths, since git reports them so.
+_amplihack_lists_worktree_under() {
+  local listing="$1" dir="$2" physical wt
+  physical="$(cd -P -- "$dir" 2>/dev/null && pwd -P)/" || physical="$dir"
+  while IFS= read -r wt; do
+    case "$wt" in "$dir"* | "$physical"*) return 0 ;; esac
+  done < <(printf '%s\n' "$listing" | sed -n 's/^worktree //p')
+  return 1
+}
+
 cleanup_known_workflow_runtime_artifacts() {
   local repo="${1:-.}"
   if ! is_git_worktree "$repo"; then
@@ -70,10 +82,24 @@ cleanup_known_workflow_runtime_artifacts() {
       # their uncommitted work. Recipe steps do call this from the main checkout
       # (finalize preflight when a run starts there), and a bare `rm -rf` then
       # destroyed every concurrent run's worktree (issue #1494). Leave it alone.
-      if [ "$rel" = "worktrees" ] && ! _amplihack_is_linked_worktree "$repo"; then
-        echo "INFO: leaving $repo/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" >&2
-        _amplihack_exclude_worktrees_dir "$repo"
-        continue
+      #
+      # Issue #1528: read the worktree list fail-loud first. If it cannot be
+      # read, nothing proves the directory is safe to delete, so keep it.
+      if [ "$rel" = "worktrees" ]; then
+        local listing
+        if ! listing="$(git -C "$repo" worktree list --porcelain 2>/dev/null)"; then
+          echo "WARNING: runtime cleanup kept $repo/worktrees: git worktree list failed (#1528)" >&2
+          _amplihack_is_linked_worktree "$repo" || _amplihack_exclude_worktrees_dir "$repo"
+          continue
+        fi
+        if ! _amplihack_is_linked_worktree "$repo"; then
+          if _amplihack_lists_worktree_under "$listing" "$repo/worktrees/"; then
+            echo "WARNING: runtime cleanup kept $repo/worktrees: it holds registered worktrees (#1528)" >&2
+          fi
+          echo "INFO: leaving $repo/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" >&2
+          _amplihack_exclude_worktrees_dir "$repo"
+          continue
+        fi
       fi
       # On a *dedicated* (linked) task worktree, the `worktrees/` children are
       # leaked nested scratch worktrees created by this run. Record their
