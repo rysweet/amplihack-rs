@@ -320,7 +320,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          bash scripts/stamp-release-version.sh "${VERSION}"
+          sh scripts/stamp-release-version.sh "${VERSION}"
 
           # Stage by name: the downloaded artifacts/ and the collected
           # release-assets/ are in the working tree too.

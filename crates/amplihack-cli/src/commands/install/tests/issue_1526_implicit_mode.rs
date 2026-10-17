@@ -147,7 +147,10 @@ impl Fixture {
 }
 
 /// Settings writes or backups under HOME, as relative paths.
-fn settings_writes(home: &Path, before: &std::collections::BTreeMap<PathBuf, Vec<u8>>) -> Vec<String> {
+fn settings_writes(
+    home: &Path,
+    before: &std::collections::BTreeMap<PathBuf, Vec<u8>>,
+) -> Vec<String> {
     changes(before, &snapshot(home))
         .into_iter()
         .filter(|c| c.contains("settings.json"))

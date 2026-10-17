@@ -1,5 +1,6 @@
 //! Binary resolution and deployment for amplihack-hooks.
 
+use super::InstallMode;
 use super::paths::{find_binary, home_dir, is_executable};
 use anyhow::{Context, Result, bail};
 use std::fs;
@@ -88,10 +89,58 @@ pub(super) fn validate_hook_command_string(cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Issue #1526: may an implicit re-stage running `running` write its binary
+/// over a destination, given the install `stamp`?
+///
+/// An empty slot is always filled. An occupied one is replaced only when both
+/// versions parse and `running` is strictly newer by semver precedence; an
+/// equal, older, missing or unparseable version keeps the installed binary.
+pub(super) fn implicit_deploy_allowed(
+    dst_exists: bool,
+    running: &str,
+    stamp: Option<&str>,
+) -> bool {
+    if !dst_exists {
+        return true;
+    }
+    match (
+        semver::Version::parse(running),
+        stamp.map(semver::Version::parse),
+    ) {
+        (Ok(running), Some(Ok(stamp))) => running.cmp_precedence(&stamp).is_gt(),
+        _ => false,
+    }
+}
+
+/// Whether this install may write `src` to `dst`. In implicit mode a refusal
+/// is reported on stderr, naming both binaries and versions.
+fn may_deploy(mode: InstallMode, stamp: Option<&str>, src: &Path, dst: &Path) -> bool {
+    // A source that already is the destination is a no-op copy, not a
+    // replacement. symlink_metadata: a dangling symlink still occupies `dst`.
+    let same_file = matches!(
+        (src.canonicalize(), dst.canonicalize()),
+        (Ok(s), Ok(d)) if s == d
+    );
+    if mode == InstallMode::Explicit
+        || same_file
+        || implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
+    {
+        return true;
+    }
+    eprintln!(
+        "amplihack: warning: not replacing {dst:?} (v{}) with {src:?} (v{}) during an implicit \
+         re-stage; run `amplihack install` to replace it.",
+        stamp.unwrap_or("unknown"),
+        crate::VERSION,
+    );
+    false
+}
+
 /// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
 /// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
-/// Returns the list of deployed paths for the manifest.
-pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
+/// Returns the list of deployed paths for the manifest. The hooks binary is
+/// always first, even when an implicit re-stage kept the installed one.
+pub(super) fn deploy_binaries(mode: InstallMode, stamp: Option<&str>) -> Result<Vec<PathBuf>> {
     use super::filesystem::deploy_binary;
 
     let home = home_dir()?;
@@ -101,13 +150,15 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 
     let hooks_src = find_hooks_binary()?;
     let hooks_dst = local_bin.join("amplihack-hooks");
-    deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
-        format!(
-            "failed to deploy {} to {}",
-            hooks_src.display(),
-            hooks_dst.display()
-        )
-    })?;
+    if may_deploy(mode, stamp, &hooks_src, &hooks_dst) {
+        deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
+            format!(
+                "failed to deploy {} to {}",
+                hooks_src.display(),
+                hooks_dst.display()
+            )
+        })?;
+    }
 
     let mut deployed = vec![hooks_dst.clone()];
 
@@ -119,13 +170,15 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     // is recoverable — but aborting before the asset restage leaves the
     // framework stale, which is the regression we must avoid.
     if let Ok(self_exe) = std::env::current_exe() {
-        if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
+        let self_src = resolve_running_binary_source(&self_exe);
+        if may_deploy(mode, stamp, &self_src, &local_bin.join("amplihack"))
+            && let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe)
+        {
             deployed.push(self_dst);
         }
 
-        // Resolve the real source so the asset-resolver is looked up next to
-        // the freshly-installed binary, not the deleted-marker path.
-        let self_src = resolve_running_binary_source(&self_exe);
+        // The real source (`self_src`) is used so the asset-resolver is looked
+        // up next to the freshly-installed binary, not the deleted-marker path.
         let resolver_src = self_src
             .parent()
             .map(|dir| dir.join("amplihack-asset-resolver"))
@@ -133,7 +186,8 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
             .or_else(|| find_binary("amplihack-asset-resolver"));
         if let Some(resolver_src) = resolver_src {
             let resolver_dst = local_bin.join("amplihack-asset-resolver");
-            if resolver_src != resolver_dst {
+            if resolver_src != resolver_dst && may_deploy(mode, stamp, &resolver_src, &resolver_dst)
+            {
                 match deploy_binary(&resolver_src, &resolver_dst) {
                     Ok(()) => deployed.push(resolver_dst),
                     Err(e) => {

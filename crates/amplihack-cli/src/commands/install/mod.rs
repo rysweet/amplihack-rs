@@ -65,13 +65,38 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Who asked for an install (issue #1526).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallMode {
+    /// `amplihack install` or `amplihack update`: replaces the binaries in
+    /// `~/.local/bin` whatever their version, and merges hooks into
+    /// settings.json. A deliberate downgrade goes through here.
+    Explicit,
+    /// A re-stage started by startup self-heal or the launch bootstrap. It
+    /// never writes settings.json, and replaces an installed binary only when
+    /// this build is strictly newer than the install stamp.
+    Implicit,
+}
+
 pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()> {
-    run_install_scoped(local, interactive, force_refresh, true)
+    run_install_scoped(
+        local,
+        interactive,
+        force_refresh,
+        true,
+        InstallMode::Explicit,
+    )
 }
 
 /// Repair generic assets without reconciling an unrelated optional provider.
 pub(crate) fn repair_framework_assets() -> Result<()> {
-    run_install_scoped(None, false, false, crate::freshness::codex_selected())
+    run_install_scoped(
+        None,
+        false,
+        false,
+        crate::freshness::codex_selected(),
+        InstallMode::Implicit,
+    )
 }
 
 fn run_install_scoped(
@@ -79,6 +104,7 @@ fn run_install_scoped(
     interactive: bool,
     force_refresh: bool,
     reconcile_codex: bool,
+    mode: InstallMode,
 ) -> Result<()> {
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
@@ -95,7 +121,7 @@ fn run_install_scoped(
         if !canonical.is_dir() {
             bail!("--local path is not a directory: {}", canonical.display());
         }
-        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex);
+        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex, mode);
     }
 
     // Issue #675: when triggered by `amplihack update`, force_refresh=true
@@ -116,7 +142,12 @@ fn run_install_scoped(
                 bundled.root.display(),
                 bundled.origin.describe()
             );
-            return local_install_scoped(&bundled.root, wizard_config.as_ref(), reconcile_codex);
+            return local_install_scoped(
+                &bundled.root,
+                wizard_config.as_ref(),
+                reconcile_codex,
+                mode,
+            );
         }
     } else {
         println!("📦 Forcing fresh framework download from upstream...");
@@ -125,7 +156,12 @@ fn run_install_scoped(
     println!("⚠️  Bundled framework source not found, falling back to network download...");
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install_scoped(&extracted_root, wizard_config.as_ref(), reconcile_codex)?;
+    local_install_scoped(
+        &extracted_root,
+        wizard_config.as_ref(),
+        reconcile_codex,
+        mode,
+    )?;
 
     // Network-fallback hard-error: every entry in the active layout's
     // destination set must have been staged. Read the .layout marker the
@@ -430,13 +466,14 @@ fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
 ) -> Result<()> {
-    local_install_scoped(repo_root, wizard_config, true)
+    local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
 }
 
 fn local_install_scoped(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
     reconcile_codex: bool,
+    mode: InstallMode,
 ) -> Result<()> {
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
@@ -448,7 +485,15 @@ fn local_install_scoped(
     // Phase 0: deploy binaries
     println!();
     println!("🦀 Deploying binaries:");
-    let deployed_binaries = deploy_binaries()?;
+    // Issue #1526: read before anything below rewrites it. An implicit
+    // re-stage compares each installed binary against this stamp.
+    let stamp = match mode {
+        InstallMode::Explicit => None,
+        InstallMode::Implicit => version_stamp::read_installed_version()
+            .inspect_err(|e| tracing::warn!("cannot read install stamp: {e:#}"))
+            .unwrap_or_default(),
+    };
+    let deployed_binaries = deploy_binaries(mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in &deployed_binaries {
         println!("  ✅ Deployed {}", p.display());
@@ -595,8 +640,17 @@ fn local_install_scoped(
         .first()
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
-    let (settings_ok, registered_events) =
-        ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?;
+    // Issue #1526: an implicit re-stage never writes (or backs up) the
+    // user's settings.json; only `amplihack install` does.
+    let (settings_ok, registered_events) = match mode {
+        InstallMode::Explicit => {
+            ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?
+        }
+        InstallMode::Implicit => {
+            println!("   Left unchanged (implicit re-stage; run `amplihack install` to update)");
+            (true, Vec::new())
+        }
+    };
 
     println!();
     println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
@@ -705,15 +759,37 @@ fn local_install_scoped(
             new_dirs.push(dir);
         }
     }
+    let mut binaries: Vec<String> = deployed_binaries
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut hook_registrations = registered_events;
+    // Issue #1526: an implicit re-stage may keep binaries and settings.json
+    // as an earlier install left them. That install's manifest entries still
+    // describe them, so uninstall must keep finding them. Only binaries we
+    // deploy, in the directory we deploy them to, are carried forward.
+    if mode == InstallMode::Implicit {
+        let bin_dir = paths::preferred_user_bin_dir()?;
+        for previous_bin in previous.binaries {
+            let path = Path::new(&previous_bin);
+            let ours = path.parent() == Some(bin_dir.as_path())
+                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"]
+                        .iter()
+                        .any(|b| n == crate::path_conflicts::binary_filename(b))
+                });
+            if ours && path.symlink_metadata().is_ok() && !binaries.contains(&previous_bin) {
+                binaries.push(previous_bin);
+            }
+        }
+        hook_registrations = previous.hook_registrations;
+    }
 
     let mut manifest = InstallManifest {
         files,
         dirs: new_dirs,
-        binaries: deployed_binaries
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect(),
-        hook_registrations: registered_events,
+        binaries,
+        hook_registrations,
         ..InstallManifest::default()
     };
 
