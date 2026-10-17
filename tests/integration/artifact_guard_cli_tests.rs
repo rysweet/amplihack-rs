@@ -876,6 +876,35 @@ fn cli_names_the_nested_node_modules_root_never_the_app_directory() {
 }
 
 #[test]
+fn cli_groups_output_inside_an_exempt_app_under_the_output_directory() {
+    // Found in outside-in testing: the review section headed this group
+    // `apps/coverage/`, naming the exempt application as the artifact.
+    let tmp = repo_on_task_branch();
+    commit_paths(
+        tmp.path(),
+        &[
+            ("apps/coverage/package.json", "{}\n"),
+            ("apps/coverage/dist/main.js", "x\n"),
+        ],
+        "coverage app with a committed bundle",
+    );
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("  apps/coverage/dist/  — 1 path(s)"),
+        "the group must be headed by the dist directory; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("  apps/coverage/  —"),
+        "the group must never be headed by the application directory; got:\n{combined}"
+    );
+    assert_no_removal_commands(&combined);
+}
+
+#[test]
 fn cli_shared_root_containment_respects_the_segment_boundary() {
     // `buildtools/out/a.txt` is a tracked, possibly-source path; it is not
     // inside `build`, so the untracked `build/` leftover keeps its whole-root

@@ -426,15 +426,29 @@ const ARTIFACT_ROOT_COMPONENTS: &[&str] = &[
     "session-state",
 ];
 
+/// Root names that may also be the name of a real project directory
+/// (`apps/coverage/` with its own manifest, issue #1536).
+const GENERIC_ROOT_COMPONENTS: &[&str] = &["dist", "build", "coverage", "out", "logs", "outputs"];
+
+/// The display root a violation is grouped under: the shortest prefix ending in
+/// an unambiguous root name (`node_modules`, `.cache`, ...). When the path holds
+/// only generic names, the deepest one is used, so `apps/coverage/dist/main.js`
+/// is grouped under `apps/coverage/dist`, never under the `apps/coverage`
+/// project the guard exempted.
 fn artifact_root(path: &str) -> String {
-    let mut prefix: Vec<&str> = Vec::new();
+    let mut end = 0;
+    let mut generic = None;
     for component in path.split('/') {
-        prefix.push(component);
+        end += component.len();
         if ARTIFACT_ROOT_COMPONENTS.contains(&component) {
-            return prefix.join("/");
+            if !GENERIC_ROOT_COMPONENTS.contains(&component) {
+                return path[..end].to_string();
+            }
+            generic = Some(end);
         }
+        end += 1;
     }
-    path.to_string()
+    generic.map_or_else(|| path.to_string(), |end| path[..end].to_string())
 }
 
 fn group_by_root<'a>(
