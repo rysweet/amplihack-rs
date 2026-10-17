@@ -100,7 +100,17 @@ fn parse_window(w: &serde_json::Value, now: i64) -> Option<Window> {
         serde_json::Value::String(s) => chrono::DateTime::parse_from_rfc3339(s).ok()?.timestamp(),
         _ => return None,
     };
-    if resets_at < now.saturating_sub(DAY) || resets_at > now.saturating_add(8 * DAY) {
+    plausible(pct, resets_at, now)
+}
+
+/// A window worth recording: a finite percentage (clamped to 0–100) whose
+/// reset is between one day ago and eight days from now. The one bounds rule
+/// for status-line input and `profile usage` readings.
+pub fn plausible(pct: f64, resets_at: i64, now: i64) -> Option<Window> {
+    if !pct.is_finite()
+        || resets_at < now.saturating_sub(DAY)
+        || resets_at > now.saturating_add(8 * DAY)
+    {
         return None;
     }
     Some(Window {
