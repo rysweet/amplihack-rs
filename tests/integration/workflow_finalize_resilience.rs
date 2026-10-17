@@ -208,6 +208,16 @@ fn run_agentic_finalization(mode: &str, envs: &[(&str, &str)]) -> std::process::
     command
         .arg(workspace_helper_path("workflow_agentic_finalization.sh"))
         .arg(mode);
+    // Start from an empty environment. When the suite runs inside a recipe,
+    // inherited context such as `RECIPE_VAR_pr_url` or `PR_URL` belongs to a
+    // higher-precedence tier than the values each test injects, so the
+    // script would report the enclosing run's PR instead of the fixture's.
+    command.env_clear();
+    for key in ["PATH", "HOME", "TMPDIR"] {
+        if let Some(value) = std::env::var_os(key) {
+            command.env(key, value);
+        }
+    }
     for (key, value) in envs {
         command.env(key, value);
     }

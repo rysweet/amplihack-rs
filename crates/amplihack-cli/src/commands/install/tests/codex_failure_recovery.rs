@@ -223,6 +223,14 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
     create_exe_stub(&bin, "amplihack-hooks");
     create_exe_stub(&bin, "recipe-runner-rs");
     let path = format!("{}:/usr/bin:/bin", bin.display());
+    // An inherited AMPLIHACK_HOME (for example from an enclosing amplihack
+    // session) would become the staging source instead of `source`, so the
+    // skill count below would describe that installation. Clear it for the
+    // duration of the test; the guard restores it afterwards.
+    let _home_guard = EnvGuard::capture(&["AMPLIHACK_HOME"]);
+    unsafe {
+        std::env::remove_var("AMPLIHACK_HOME");
+    }
     let _env = EnvGuard::set([
         ("HOME", home.to_str().unwrap()),
         ("CODEX_HOME", home.join(".codex").to_str().unwrap()),
