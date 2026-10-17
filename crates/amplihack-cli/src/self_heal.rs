@@ -188,7 +188,7 @@ pub(crate) fn is_implicit_downgrade(running: &str, installed: &str) -> bool {
 /// pasteable shell command, because `{:?}` does not escape shell syntax. The
 /// PATH clause appears only when the two binaries live in different
 /// directories: otherwise reordering PATH cannot help.
-pub(crate) fn format_downgrade_warning(
+fn format_downgrade_warning(
     running_exe: Option<&Path>,
     installed_bin: &Path,
     running: &str,
@@ -1419,11 +1419,6 @@ steps:
     // two pure pieces, the precedence predicate and the warning text, plus
     // the one failure a refusal must absorb: an unwritable stderr.
 
-    /// The header line of the downgrade warning, as documented in
-    /// `docs/features/self-heal-asset-restage.md#the-warning`.
-    const DOWNGRADE_HEADER: &str = "amplihack: warning: not re-staging framework assets — \
-                                    this amplihack is older than the installed one.";
-
     #[test]
     fn is_implicit_downgrade_follows_semver_precedence() {
         // (running, installed, is a downgrade)
@@ -1486,38 +1481,6 @@ steps:
             "is_implicit_downgrade precedence violations:\n{}",
             failures.join("\n")
         );
-    }
-
-    /// Assert the structural contract every warning block must meet: exactly
-    /// five lines, each newline-terminated, nothing a terminal would act on.
-    fn assert_five_safe_lines(block: &str) {
-        assert_eq!(
-            block.matches('\n').count(),
-            5,
-            "the warning must be exactly five newline-terminated lines: {block:?}"
-        );
-        assert!(
-            block.ends_with('\n'),
-            "the last line must be terminated: {block:?}"
-        );
-        assert!(
-            !block.contains('\r') && !block.contains('\u{1b}') && !block.contains('\u{202e}'),
-            "a raw CR, ESC or RIGHT-TO-LEFT OVERRIDE reached the terminal: {block:?}"
-        );
-        assert!(
-            !block.contains("export PATH"),
-            "the remedy is prose, never a pasteable `export PATH=` command: {block:?}"
-        );
-        assert!(
-            block.starts_with(DOWNGRADE_HEADER),
-            "the first line must be the documented header: {block:?}"
-        );
-        for line in block.lines().skip(1) {
-            assert!(
-                line.starts_with("  "),
-                "detail lines are indented two spaces: {line:?}"
-            );
-        }
     }
 
     /// Every shape of the warning, byte for byte. The first row is the
@@ -1601,7 +1564,6 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
         for &(case, running_exe, installed_bin, running, installed, expected) in cases {
             let block = format_downgrade_warning(running_exe, installed_bin, running, installed);
             assert_eq!(block, expected, "{case}");
-            assert_five_safe_lines(&block);
         }
     }
 

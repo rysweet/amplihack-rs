@@ -1274,19 +1274,20 @@ amplihack copilot --print 'run tests'
 `yes`, `please-skip`, etc.). An empty string (`AMPLIHACK_SKIP_AUTO_INSTALL=""`)
 is treated as **unset** and the check still runs.
 
-**Diagnostic on skip-with-mismatch:** when the bypass is active *and* the
-stamp does not match `crate::VERSION` (missing, older or newer), or the
-installed framework bundle is incompatible (#1271), `amplihack` emits one line
-on stderr before dispatch:
+**Diagnostic on skip-with-mismatch:** when the bypass is active *and*
+self-heal would have run, `amplihack` emits one line on stderr before
+dispatch:
 
 ```
-amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=0.8.55 current=0.8.111; installed_bundle="compatible")
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=<old> current=<new>; installed_bundle="compatible")
 ```
 
-This makes the "stale assets, intentionally" state visible in CI logs. A
-matching stamp with a compatible bundle produces no output. With a stamp newer
-than the binary, this line replaces the #1526 downgrade warning; see
-[Bypass diagnostic](../features/self-heal-asset-restage.md#bypass-diagnostic).
+This makes the "stale assets, intentionally" state visible in CI logs.
+A matching stamp with a compatible bundle produces no output.
+
+**Does not suppress the downgrade guard:** a binary older than the stamp
+prints the #1526 downgrade warning instead of this line and changes nothing.
+See [Self-Heal — Never an implicit downgrade](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
 
 **What it does not do:**
 

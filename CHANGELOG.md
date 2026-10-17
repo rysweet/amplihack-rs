@@ -27,24 +27,21 @@ Unreleased changes appear at the top under `[Unreleased]`.
   merged; archiving never recreates a branch the remote has deleted, and adding
   `/worktrees/` never merges into an unterminated last line of `info/exclude`.
 
-- **An older amplihack re-staged over a newer install (#1526)** — startup
-  self-heal and the launch bootstrap now refuse an automatic re-stage when the
-  running binary is older than `~/.amplihack/.installed-version` by semver
-  precedence. A refusal changes no file: binaries, `~/.claude/settings.json`,
-  the stamp and the bundle-compat memo stay byte-identical (a refusal that
-  loses the install-lock race may already have created `.install.lock` and
-  the memo). One best-effort stderr warning naming both binaries and versions
-  is printed per process, by self-heal or, when self-heal was skipped, by the
-  bootstrap; the command's exit status is unchanged, and the bootstrap's own
-  log line is at `debug`. With `AMPLIHACK_SKIP_AUTO_INSTALL` set, the bypass
-  line is printed instead of the warning. Explicit `amplihack install` still
-  downgrades.
-  Release tags now point at a `chore(release): stamp vX` child of the released
-  commit, or at that commit itself for the first release of a `MAJOR.MINOR`
-  series, whose manifests already say X. Either way a build of the tag reports
-  X. Tags cut before this change are not re-tagged, and a `--rev` build of a
-  `main` commit still reports the base version; the guard covers both. See
-  [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
+- **A recipe run downgraded the install and rewrote settings (#1526)** — a
+  `cargo install --git` build of v0.18.39 reported `0.18.0`, re-staged over
+  `~/.local/bin` and rewrote `~/.claude/settings.json` with no explicit
+  install. Automatic re-stages (startup self-heal and the launch bootstrap)
+  now run in implicit mode. They never write `settings.json` (except the #202
+  repair when no amplihack hooks are registered), never replace an installed
+  binary unless the running version is newer by semver, and do nothing when
+  the running binary is older than `~/.amplihack/.installed-version`. In that
+  case they print one stderr warning naming both paths and versions.
+  `amplihack install` can still downgrade. Release tags now point at a
+  `chore(release): stamp vX` commit, or at the released commit itself for a
+  `vMAJOR.MINOR.0` release whose manifests already say X, so
+  `cargo install --tag vX` reports X. A `--rev` build of a `main` commit still
+  reports the base version; the guard covers it.
+  See [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
 
 - **Artifact Guard blocked verified work over a pre-existing repository
   condition (#1422)** — the guard now distinguishes artifacts the change under

@@ -16,8 +16,8 @@
 
 use super::helpers::*;
 use super::issue_1526_implicit_downgrade::{
-    IsolatedHome, args, assert_home_is, assert_refusal_warning, backups_under, changes,
-    counting_installer, newer_version, snapshot,
+    IsolatedHome, args, assert_home_is, assert_refusal_warning, changes, counting_installer,
+    newer_version, snapshot,
 };
 use super::*;
 use std::cell::Cell;
@@ -117,22 +117,11 @@ fn bootstrap_with_a_newer_stamp_stages_nothing() {
         "under AMPLIHACK_SKIP_AUTO_INSTALL the bootstrap refuses without a warning"
     );
 
-    assert!(
-        !home.join(".amplihack").join(".claude").exists(),
-        "the bootstrap must not stage framework assets over a v{newer} install"
-    );
-    assert!(
-        !crate::path_conflicts::preferred_user_bin(home).exists(),
-        "the bootstrap must not deploy binaries over a v{newer} install"
-    );
-    assert!(
-        !home.join(".claude").exists(),
-        "the bootstrap must not create ~/.claude over a v{newer} install"
-    );
     assert_eq!(
-        changes(&before, &snapshot(home), ""),
+        changes(&before, &snapshot(home)),
         Vec::<String>::new(),
-        "nothing under HOME may change, the stamp included"
+        "over a v{newer} install the bootstrap must change nothing under HOME: no staged \
+         assets, no binaries, no ~/.claude, the stamp untouched"
     );
 }
 
@@ -184,26 +173,9 @@ fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
     );
 
     assert_eq!(
-        String::from_utf8_lossy(&fs::read(&settings).unwrap()),
-        String::from_utf8_lossy(sentinel),
-        "the launch bootstrap of an older binary must never rewrite ~/.claude/settings.json"
-    );
-    assert_eq!(
-        backups_under(home),
-        Vec::<std::path::PathBuf>::new(),
-        "a refusal must not leave settings or install backups"
-    );
-    assert!(
-        !home
-            .join(".claude")
-            .join("commands")
-            .join("amplihack")
-            .exists(),
-        "a refusal must not restage slash commands"
-    );
-    assert_eq!(
-        changes(&before, &snapshot(home), ""),
+        changes(&before, &snapshot(home)),
         Vec::<String>::new(),
-        "nothing under HOME may change"
+        "an older binary must change nothing under HOME: settings.json byte-identical, \
+         no backups, no slash commands restaged"
     );
 }

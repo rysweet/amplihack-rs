@@ -466,19 +466,9 @@ fn bad_arguments_are_usage_errors_that_touch_nothing() {
 #[test]
 fn inconsistent_manifests_fail_closed_and_touch_nothing() {
     type Mutation = fn(&Scratch, &str);
+    // A path package not at the workspace version: see
+    // `unexpected_path_package_is_named_in_the_error`.
     let cases: &[(&str, Mutation)] = &[
-        ("a path package not at the workspace version", |s, old| {
-            let lock = s.read("Cargo.lock").replacen(
-                &format!("name = \"amplihack-cli\"\nversion = \"{old}\"\n"),
-                "name = \"amplihack-cli\"\nversion = \"0.0.1\"\n",
-                1,
-            );
-            assert!(
-                lock.contains("version = \"0.0.1\""),
-                "mutation did not apply"
-            );
-            s.write("Cargo.lock", lock);
-        }),
         (
             "a dependency naming a workspace member as `<name> <version>`",
             |s, old| {
@@ -550,7 +540,12 @@ fn unexpected_path_package_is_named_in_the_error() {
         "name = \"amplihack-cli\"\nversion = \"0.0.1\"\n",
         1,
     );
+    assert!(
+        lock.contains("version = \"0.0.1\""),
+        "mutation did not apply"
+    );
     scratch.write("Cargo.lock", lock);
+    let before = scratch.contents();
 
     let out = scratch.stamp(&[&target_version()]);
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
@@ -558,6 +553,11 @@ fn unexpected_path_package_is_named_in_the_error() {
         combined(&out).contains("unexpected path package amplihack-cli at 0.0.1"),
         "the error must name the package and its version:\n{}",
         describe(&out)
+    );
+    assert_eq!(
+        scratch.contents(),
+        before,
+        "validation must finish before any file is written"
     );
 }
 
@@ -776,6 +776,15 @@ fn release_job_stamps_a_child_commit_and_pushes_only_the_tag() {
     at("git add Cargo.toml Cargo.lock package.json");
     at("git commit");
     at("chore(release): stamp");
+    // Second layer: whatever is staged is checked against the three manifests
+    // before the commit, so a stray path fails the job instead of shipping.
+    let staged_check = at("git diff --cached --name-only");
+    assert!(
+        at("git add Cargo.toml Cargo.lock package.json") < staged_check
+            && staged_check < at("git commit"),
+        "the staged paths must be checked between `git add` and `git commit`"
+    );
+    at("only the three manifests may be committed");
     at("ls-remote --exit-code --tags origin");
     at("cat-file -p");
     for (n, l) in &lines {

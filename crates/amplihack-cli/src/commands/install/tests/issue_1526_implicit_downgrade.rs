@@ -12,24 +12,23 @@
 //! (`self_heal::ensure_assets_match_binary_version_with`) with a stamp newer
 //! than `crate::VERSION`:
 //!
-//! - (a) under `recipe run` and `launch` the installer is never called, not a
+//! - under `recipe run` and `launch` the installer is never called, not a
 //!   byte under HOME changes (stamp, binaries, `settings.json`, staged bundle;
 //!   no backup, no `.bundle-compat-cache.json` memo, no install lock), no
 //!   recipe YAML is read, and one warning names both binaries and both
 //!   versions — even when the installed bundle is incompatible (the #1271
 //!   repair is a re-stage too);
-//! - (b) with the real `run_install` as the installer, nothing under HOME
-//!   changes: binaries, `settings.json`, backups, stamp;
-//! - (d) a newer stamp that lands while this process waits on the install
-//!   lock is still refused (Linux, where `/proc/locks` shows the waiter).
+//! - with the real `run_install` as the installer, nothing under HOME changes;
+//! - a newer stamp that lands while this process waits on the install lock is
+//!   still refused (Linux, where `/proc/locks` shows the waiter).
 //!
-//! The R6 cases pin what must NOT change: the bypass line, and an upgrade or
-//! an unparseable stamp still re-staging.
+//! The R6 cases pin what must NOT change: the bypass line, and an unparseable
+//! stamp still re-staging. An upgrade re-staging is `self_heal`'s own
+//! `stamp_mismatch_triggers_install`. The launch bootstrap's refusal is in
+//! `issue_1526_launch_bootstrap.rs`.
 //!
-//! Everything here uses only items that already exist on `main` (plus
-//! `semver`, already a dependency), so copying this file onto an unfixed
-//! checkout shows the behavioural failure rather than a compile error. All
-//! stamps are derived from `crate::VERSION`, so the tests hold for any release.
+//! All stamps are derived from `crate::VERSION`, so the tests hold for any
+//! release.
 
 use super::helpers::*;
 use super::*;
@@ -44,46 +43,10 @@ use std::path::{Path, PathBuf};
 /// `docs/features/self-heal-asset-restage.md#the-warning`).
 pub(super) const WARNING_HEADER: &str = "amplihack: warning: not re-staging framework assets";
 
-// ── Versions, all derived from crate::VERSION ──
-
-fn running_version() -> semver::Version {
-    semver::Version::parse(crate::VERSION).expect("crate::VERSION is semver")
-}
-
 /// A stamp strictly above `crate::VERSION`: the next major release.
 pub(super) fn newer_version() -> String {
-    let newer = format!("{}.0.0", running_version().major + 1);
-    let parsed = semver::Version::parse(&newer).unwrap();
-    assert_eq!(
-        parsed.cmp_precedence(&running_version()),
-        std::cmp::Ordering::Greater,
-        "test setup: {newer} must outrank {}",
-        crate::VERSION
-    );
-    newer
-}
-
-/// A stamp strictly below `crate::VERSION`: decrement the first non-zero
-/// component and zero the rest (`0.0.0` becomes `0.0.0-0`).
-fn older_version() -> String {
-    let v = running_version();
-    let older = if v.major > 0 {
-        format!("{}.0.0", v.major - 1)
-    } else if v.minor > 0 {
-        format!("0.{}.0", v.minor - 1)
-    } else if v.patch > 0 {
-        format!("0.0.{}", v.patch - 1)
-    } else {
-        "0.0.0-0".to_string()
-    };
-    let parsed = semver::Version::parse(&older).unwrap();
-    assert_eq!(
-        parsed.cmp_precedence(&v),
-        std::cmp::Ordering::Less,
-        "test setup: {older} must rank below {}",
-        crate::VERSION
-    );
-    older
+    let running = semver::Version::parse(crate::VERSION).expect("crate::VERSION is semver");
+    format!("{}.0.0", running.major + 1)
 }
 
 // ── Environment isolation (SR-D4) ──
@@ -195,19 +158,13 @@ pub(super) fn snapshot(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
     out
 }
 
-/// Paths under `prefix` that were added (`+`), removed (`-`) or changed (`~`)
-/// between two snapshots: readable in a failure message, unlike two maps of
-/// file bytes. An empty `prefix` covers the whole snapshot.
+/// Paths that were added (`+`), removed (`-`) or changed (`~`) between two
+/// snapshots: readable in a failure message, unlike two maps of file bytes.
 pub(super) fn changes(
     before: &BTreeMap<PathBuf, Vec<u8>>,
     after: &BTreeMap<PathBuf, Vec<u8>>,
-    prefix: &str,
 ) -> Vec<String> {
-    let paths: std::collections::BTreeSet<&PathBuf> = before
-        .keys()
-        .chain(after.keys())
-        .filter(|rel| rel.starts_with(prefix))
-        .collect();
+    let paths: std::collections::BTreeSet<&PathBuf> = before.keys().chain(after.keys()).collect();
     paths
         .into_iter()
         .filter_map(|rel| match (before.get(rel), after.get(rel)) {
@@ -219,70 +176,10 @@ pub(super) fn changes(
         .collect()
 }
 
-/// Settings and install-time backups a re-stage writes. A refusal must leave
-/// none behind. Searched recursively: the install backup really lives at
-/// `~/.amplihack/.claude/runtime/sessions/`, not where the name suggests.
-pub(super) fn backups_under(root: &Path) -> Vec<PathBuf> {
-    snapshot(root)
-        .into_keys()
-        .filter(|rel| {
-            let name = rel
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            name.starts_with("settings.json.backup.")
-                || (name.starts_with("install_") && name.ends_with("_backup.json"))
-        })
-        .collect()
-}
-
-// ── Installed-bundle fixtures (mirror self_heal's own tests) ──
-
-fn write_compatible_installed_bundle(home: &Path) {
-    let recipes = home.join(".amplihack/amplifier-bundle/recipes");
-    fs::create_dir_all(&recipes).unwrap();
-    fs::write(
-        recipes.join("smart-orchestrator.yaml"),
-        r#"name: "smart-orchestrator"
-description: "Composable smart task orchestrator"
-steps:
-  - id: "smart-classify-route"
-    type: "recipe"
-    recipe: "smart-classify-route"
-  - id: "smart-execute-routing"
-    type: "recipe"
-    recipe: "smart-execute-routing"
-  - id: "smart-reflect-loop"
-    type: "recipe"
-    recipe: "smart-reflect-loop"
-  - id: "smart-validate-summarize"
-    type: "recipe"
-    recipe: "smart-validate-summarize"
-"#,
-    )
-    .unwrap();
-    for recipe in bundle_compat::REQUIRED_SMART_RECIPES {
-        fs::write(
-            recipes.join(format!("{recipe}.yaml")),
-            format!(
-                "name: \"{recipe}\"\nsteps:\n  - id: smoke\n    type: bash\n    command: 'true'\n"
-            ),
-        )
-        .unwrap();
-    }
-    fs::write(
-        recipes.join("_recipe_manifest.json"),
-        r#"{
-  "smart-classify-route": "250c8da0ee348745",
-  "smart-execute-routing": "11612506ae846a47",
-  "smart-orchestrator": "8d55ee4817dbc815",
-  "smart-reflect-loop": "7b8101dfce096480",
-  "smart-validate-summarize": "007548c49e9654fb"
-}
-"#,
-    )
-    .unwrap();
-}
+// ── Installed-bundle fixtures ──
+//
+// A healthy install is `helpers::create_minimal_staged_assets`, whose bundle
+// passes the #1271 check.
 
 /// The pre-composable smart-orchestrator the #1271 repair exists to replace.
 fn write_stale_installed_smart_orchestrator(home: &Path) {
@@ -320,10 +217,6 @@ pub(super) fn counting_installer(calls: &Cell<u32>) -> impl FnOnce() -> anyhow::
         calls.set(calls.get() + 1);
         version_stamp::write_installed_version(crate::VERSION)
     }
-}
-
-fn stamp_bytes() -> Vec<u8> {
-    fs::read(version_stamp::installed_version_path().unwrap()).expect("the stamp exists")
 }
 
 /// The refusal reached the user exactly once, named both binaries and both
@@ -375,14 +268,14 @@ pub(super) fn assert_refusal_warning(notice: &str, home: &Path, installed_versio
     );
 }
 
-// ── (a) The refusal ──
+// ── The refusal ──
 
 const SENTINEL_SETTINGS: &[u8] =
     b"{\n  \"model\": \"sentinel\",\n  \"permissions\": { \"allow\": [\"Bash(ls:*)\"] }\n}\n";
 
 /// What a newer binary's install left behind: both binaries in `~/.local/bin`
-/// and a user's `~/.claude/settings.json`. Returns the settings path.
-fn plant_newer_install(home: &Path, newer: &str) -> PathBuf {
+/// and a user's `~/.claude/settings.json`.
+fn plant_newer_install(home: &Path, newer: &str) {
     let local_bin = crate::path_conflicts::preferred_user_bin(home);
     for name in ["amplihack", "amplihack-hooks"] {
         let path = create_exe_stub(&local_bin, &crate::path_conflicts::binary_filename(name));
@@ -398,7 +291,6 @@ fn plant_newer_install(home: &Path, newer: &str) -> PathBuf {
     let settings = home.join(".claude").join("settings.json");
     fs::create_dir_all(settings.parent().unwrap()).unwrap();
     fs::write(&settings, SENTINEL_SETTINGS).unwrap();
-    settings
 }
 
 /// R8(1). The version check comes first, so the refusal does no I/O at all:
@@ -412,7 +304,7 @@ fn newer_stamp_refuses_implicit_restage_and_changes_nothing_under_home() {
     type WriteBundle = fn(&Path);
     let newer = newer_version();
     let bundles: [(&str, WriteBundle); 2] = [
-        ("compatible", write_compatible_installed_bundle),
+        ("compatible", create_minimal_staged_assets),
         ("incompatible", write_stale_installed_smart_orchestrator),
     ];
     for argv in [
@@ -454,27 +346,12 @@ fn newer_stamp_refuses_implicit_restage_and_changes_nothing_under_home() {
                 "{case}: the refusal comes before the bundle verdict, so it must not read \
                  the installed bundle's recipe YAML"
             );
-            for written in [
-                ".bundle-compat-cache.json",
-                ".bundle-compat-cache.json.tmp",
-                ".install.lock",
-            ] {
-                assert!(
-                    !home.join(".amplihack").join(written).exists(),
-                    "{case}: the refusal comes before the bundle verdict and the install \
-                     lock, so it must not create ~/.amplihack/{written}"
-                );
-            }
             assert_eq!(
-                backups_under(home),
-                Vec::<PathBuf>::new(),
-                "{case}: a refusal must not write settings or install backups"
-            );
-            assert_eq!(
-                changes(&before, &after, ""),
+                changes(&before, &after),
                 Vec::<String>::new(),
-                "{case}: a refusal must leave every byte under HOME unchanged: the \
-                 stamp, ~/.local/bin, settings.json and the staged bundle"
+                "{case}: a refusal must leave every byte under HOME unchanged (the stamp, \
+                 ~/.local/bin, settings.json, the staged bundle) and create nothing: no \
+                 backup, no .bundle-compat-cache.json, no .install.lock"
             );
             assert_refusal_warning(&notice, home, &newer);
         }
@@ -493,7 +370,7 @@ fn bypass_with_a_newer_stamp_prints_only_the_unchanged_bypass_line() {
     let home = tmp.path();
     let mut env = IsolatedHome::new(home);
     env.set("AMPLIHACK_SKIP_AUTO_INSTALL", "1");
-    write_compatible_installed_bundle(home);
+    create_minimal_staged_assets(home);
     version_stamp::write_installed_version(&newer).unwrap();
 
     let calls = Cell::new(0u32);
@@ -521,45 +398,6 @@ fn bypass_with_a_newer_stamp_prints_only_the_unchanged_bypass_line() {
     );
 }
 
-/// The #488 upgrade path: a binary newer than the stamp still re-stages.
-#[test]
-fn older_stamp_still_restages_forward() {
-    let older = older_version();
-    let tmp = tempfile::tempdir().unwrap();
-    let home = tmp.path();
-    let _env = IsolatedHome::new(home);
-    write_compatible_installed_bundle(home);
-    version_stamp::write_installed_version(&older).unwrap();
-
-    let calls = Cell::new(0u32);
-    let mut notice = Vec::new();
-    ensure_assets_match_binary_version_with(
-        &args(&["amplihack", "recipe", "run", "x"]),
-        &mut notice,
-        counting_installer(&calls),
-    )
-    .expect("an upgrade re-stage must succeed");
-
-    assert_eq!(
-        calls.get(),
-        1,
-        "v{} over a v{older} stamp must re-stage",
-        crate::VERSION
-    );
-    assert_eq!(
-        String::from_utf8(notice).unwrap(),
-        format!(
-            "amplihack: framework assets re-staged for v{}\n",
-            crate::VERSION
-        ),
-        "an upgrade prints the normal notice and no downgrade warning"
-    );
-    assert_eq!(
-        version_stamp::read_installed_version().unwrap().as_deref(),
-        Some(crate::VERSION)
-    );
-}
-
 /// A stamp the reader rejects — build metadata included, so equal precedence
 /// with `+build` — reads back as missing and still stages (#502). With nothing
 /// to compare against, it is never a downgrade.
@@ -569,7 +407,7 @@ fn unparseable_or_build_metadata_stamp_still_stages() {
         let tmp = tempfile::tempdir().unwrap();
         let home = tmp.path();
         let _env = IsolatedHome::new(home);
-        write_compatible_installed_bundle(home);
+        create_minimal_staged_assets(home);
         let stamp_path = version_stamp::installed_version_path().unwrap();
         fs::create_dir_all(stamp_path.parent().unwrap()).unwrap();
         fs::write(stamp_path, &raw).unwrap();
@@ -596,12 +434,11 @@ fn unparseable_or_build_metadata_stamp_still_stages() {
     }
 }
 
-// ── (b) The real installer, end to end ──
+// ── The real installer, end to end ──
 
 /// The #1526 failure as it happened: the real `run_install` behind self-heal,
 /// a newer install already in `~/.local/bin`, and a user's `settings.json`.
-/// A refusal must leave every byte under HOME as it was, the
-/// bundle-compatibility memo included.
+/// A refusal must leave every byte under HOME as it was.
 #[test]
 fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
     let home_dir = tempfile::tempdir().unwrap();
@@ -628,10 +465,8 @@ fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
     env.set("PATH", std::env::join_paths(path_dirs).unwrap());
 
     let newer = newer_version();
-    let local_bin = crate::path_conflicts::preferred_user_bin(home);
-    let settings = plant_newer_install(home, &newer);
+    plant_newer_install(home, &newer);
     version_stamp::write_installed_version(&newer).unwrap();
-    let stamp_before = stamp_bytes();
     let before = snapshot(home);
 
     let calls = Cell::new(0u32);
@@ -647,56 +482,20 @@ fn real_run_install_behind_self_heal_never_touches_a_newer_install() {
         },
     );
     let notice = String::from_utf8_lossy(&notice).into_owned();
-    let after = snapshot(home);
 
     assert_eq!(
-        String::from_utf8_lossy(&fs::read(&settings).unwrap()),
-        String::from_utf8_lossy(SENTINEL_SETTINGS),
-        "an implicit re-stage by an older binary rewrote ~/.claude/settings.json (#1526)"
-    );
-    assert_eq!(
-        changes(&before, &after, ".local/bin"),
+        changes(&before, &snapshot(home)),
         Vec::<String>::new(),
-        "an implicit re-stage by an older binary replaced binaries in ~/.local/bin (#1526)"
-    );
-    assert_eq!(
-        backups_under(home),
-        Vec::<PathBuf>::new(),
-        "a refusal must not write settings or install backups"
-    );
-    assert!(
-        !local_bin
-            .join(crate::path_conflicts::binary_filename(
-                "amplihack-asset-resolver"
-            ))
-            .exists(),
-        "a refusal must not deploy amplihack-asset-resolver"
-    );
-    assert_eq!(
-        changes(&before, &after, ".claude"),
-        Vec::<String>::new(),
-        "a refusal must not publish anything into ~/.claude"
-    );
-    assert!(
-        !home.join(".amplihack").join(".claude").exists(),
-        "a refusal must not stage framework assets"
-    );
-    assert_eq!(
-        stamp_bytes(),
-        stamp_before,
-        "a refusal must not rewrite the stamp"
+        "an implicit re-stage by an older binary must leave every byte under HOME \
+         unchanged: ~/.local/bin, ~/.claude/settings.json, backups, staged assets and \
+         the stamp (#1526)"
     );
     assert_eq!(calls.get(), 0, "the installer must never be called");
     result.expect("a refusal is not a failure");
     assert_refusal_warning(&notice, home, &newer);
-    assert_eq!(
-        changes(&before, &after, ""),
-        Vec::<String>::new(),
-        "a refusal must leave every byte under HOME unchanged"
-    );
 }
 
-// ── (d) The race under the install lock ──
+// ── The race under the install lock ──
 
 /// Poll `/proc/locks` until a blocked flock waiter (`->`) on inode `ino`
 /// appears. Returns false on timeout.
@@ -717,9 +516,10 @@ fn wait_for_blocked_flock_waiter(ino: u64, timeout: std::time::Duration) -> bool
     false
 }
 
-/// A process that passed the pre-lock check with an older stamp waits on the
-/// install lock; a newer install finishes and releases it. Re-reading the
-/// stamp under the lock must refuse, not install over the newer one.
+/// A process that passed the pre-lock check (no stamp yet, so it means to
+/// install) waits on the install lock; a newer install finishes and releases
+/// it. Re-reading the stamp under the lock must refuse, not install over the
+/// newer one.
 ///
 /// Deterministic: the newer stamp is written only after `/proc/locks` shows
 /// this process blocked on the lock file, so the worker is guaranteed to be
@@ -731,13 +531,11 @@ fn newer_stamp_landing_while_waiting_on_the_install_lock_is_still_refused() {
     use std::os::unix::fs::MetadataExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    let older = older_version();
     let newer = newer_version();
     let tmp = tempfile::tempdir().unwrap();
     let home = tmp.path();
     let _env = IsolatedHome::new(home);
-    write_compatible_installed_bundle(home);
-    version_stamp::write_installed_version(&older).unwrap();
+    create_minimal_staged_assets(home);
 
     // Hold the install lock the way a concurrent (newer) installer would.
     let lock_path = home.join(".amplihack").join(".install.lock");

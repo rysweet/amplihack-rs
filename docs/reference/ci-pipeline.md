@@ -110,6 +110,29 @@ native legs passed (issue #939). It is the same drift class first resolved for
 `publish-snapshot.yml` in #935/#948; `release.yml` is now pinned and fully
 covered by the regression guard below — there is no remaining tracked drift.
 
+### Release tags point at a stamp commit
+
+`main` keeps the base version (`MAJOR.MINOR.0`) in `Cargo.toml`, and the
+patch number comes from the latest `vMAJOR.MINOR.*` tag. To make a build of
+the tag report the release, the `release` job runs
+`scripts/stamp-release-version.sh X` on the released SHA. The script sets the
+`[workspace.package]` version, the workspace-member entries in `Cargo.lock`
+and `package.json`. The job commits the result as `chore(release): stamp vX`
+on a detached HEAD, checks that only those three files changed, and pushes
+`vX` pointing at that commit. Nothing is pushed to `main`.
+
+The first release of a series (`vMAJOR.MINOR.0`) is the exception: the
+manifests already say X, so the script exits 0 without changing a file, the
+job makes no commit and tags the released SHA directly. A re-run accepts a
+tag on the SHA itself or on a single-parent stamp child of it. Either way
+`cargo install --git https://github.com/rysweet/amplihack-rs --tag vX amplihack`
+reports X, while `--rev <main SHA>` still reports `MAJOR.MINOR.0`. The
+self-heal [downgrade guard](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)
+covers those builds. The script rejects anything but `MAJOR.MINOR.PATCH`
+(exit 2) before it opens a file, and exits 1 without writing if a manifest
+fails validation. Guarded by
+`crates/amplihack-cli/tests/issue_1526_release_version_stamp.rs`.
+
 ### Bumping the pinned toolchain
 
 Bump deliberately, in its own PR:
@@ -332,203 +355,6 @@ level; only `release` escalates to `contents: write`, and only on `v*` tags.
 Because CI triggers on `pull_request` (not `pull_request_target`), fork PRs run
 read-only with no secret access — the explicit block makes that visible and
 stops a future job from inheriting broad default permissions.
-
-## Release tags point at a stamped commit (#1526)
-
-The Auto Release workflow (`.github/workflows/release.yml`) puts tag `vX` on a
-one-commit child of the released SHA in which the manifests say X, so a
-`cargo install --git … --tag vX` build reports X. The released SHA is the
-commit the run was triggered on: `main` for push runs, or whatever ref a
-`workflow_dispatch` run was started from.
-
-```
-main ── A ── B                   Cargo.toml: version = "1.0.0"
-              \
-               S  ← tag v1.0.7   chore(release): stamp v1.0.7
-```
-
-The stamp commit changes only version lines: `version` under
-`[workspace.package]` in `Cargo.toml`, the `version` of every `Cargo.lock`
-`[[package]]` with no `source` line (the workspace members), and the
-top-level `"version"` in `package.json`.
-
-### Release job steps
-
-Once every build artifact exists (#1356), the `Stamp version and create tag`
-step of the `release` job runs, in this order:
-
-1. **Look up `vX` on origin** with `git ls-remote --exit-code --tags`.
-   - Exit 2 (no such tag): continue to step 2.
-   - Exit 0: a re-run finds the tag its earlier attempt pushed. The step
-     accepts the tag, and goes straight to publishing, only if it points at
-     the released SHA itself, or at a commit whose first parent is the
-     released SHA **and** whose subject is exactly `chore(release): stamp vX`.
-     Any other `vX` fails the job, so these artifacts are never attached to
-     someone else's tag.
-   - Any other exit fails the job.
-2. **Check `HEAD`** is the released SHA.
-3. **Stamp and stage.** Run `bash scripts/stamp-release-version.sh "$VERSION"`,
-   stage `Cargo.toml`, `Cargo.lock` and `package.json` by name, and fail if
-   anything else is staged. Staging by name keeps the downloaded
-   `artifacts/` and `release-assets/`, which are also in the working tree,
-   out of the commit.
-4. **Commit** `chore(release): stamp vX`. When the manifests already say X
-   (the first release of a `MAJOR.MINOR` series), nothing is staged, no commit
-   is made, and the tag goes on the released SHA itself.
-5. **Tag and push.** Create the annotated tag `vX` and push `refs/tags/vX`
-   only. No branch is pushed and nothing is forced. This is the last git step
-   before `softprops/action-gh-release` creates the release.
-
-No git failure in the step is ignored: there is no `|| true`, and the
-`ls-remote` exit status is checked explicitly.
-
-`version-bump` treats the triggering commit as already released when a series
-tag points at it, or at its stamp commit (first parent is the commit, subject
-is `chore(release): stamp vX`). A re-run of the same SHA therefore rebuilds the
-same X instead of taking a new patch number.
-
-### Permissions
-
-Unlike `ci.yml`, `release.yml` grants `contents: write` at the top level,
-because the `release` job pushes the tag and creates the release. Every job
-inherits it, including the `build` matrix. No checkout sets
-`persist-credentials: false`; the tag push uses the credentials the `release`
-checkout persists. No job pushes a branch.
-
-The binaries are built from the released SHA with
-`AMPLIHACK_RELEASE_VERSION=X`. The tagged tree differs from that SHA only in
-the version lines.
-
-### What a failed or cancelled run leaves behind
-
-- **Any failure up to and including the tag push** (tag lookup, stamp,
-  commit, tag or push): the job stops, so this run pushes no tag and creates
-  no release, and it burns no version number (#1356). The stamp commit only
-  ever existed in the runner's checkout.
-- **Failed or cancelled after the tag push.** If
-  `softprops/action-gh-release` fails, or the run is cancelled before it
-  finishes, tag `vX` exists with no release. This window was already there
-  before #1526 (tag, then release) and is no wider. Re-running the same run
-  publishes the release, because step 1 recognises the tag as its own. A
-  later run for a newer commit bumps past `vX` instead, and `vX` stays a tag
-  with no release. Closing the window would need the workflow to delete tags,
-  which it does not do.
-
-### Which builds report which version
-
-| Build | Reports |
-| --- | --- |
-| Release binaries attached to the GitHub release | X (`AMPLIHACK_RELEASE_VERSION`) |
-| `cargo install --git https://github.com/rysweet/amplihack-rs --tag vX amplihack` | X (the stamped manifests) |
-| `--tag` build of a tag cut before #1526 merged | The base version at that commit: `v0.18.39` reports `0.18.0`. The first release of a series, such as `v1.0.0`, reports its own version |
-| `cargo install --git https://github.com/rysweet/amplihack-rs --rev <SHA> amplihack`, or any build of a `main` commit, including the one a release was cut from | The base version in `Cargo.toml` |
-
-Tags cut before #1526 merged are not re-tagged; the stamp applies from the
-first release the updated workflow cuts. The last row is what #1526 hit, and
-the stamp does not change it. Instead, self-heal never lets such a build
-re-stage over a newer install; see
-[Never an implicit downgrade](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
-
-Release tags are not ancestors of `main`, except the first release of a series
-and tags cut before #1526 merged. For a stamped tag, `git rev-parse 'v1.0.7^'`
-gives the commit the release was cut from.
-
-### `scripts/stamp-release-version.sh`
-
-Bash and POSIX `awk` with `LC_ALL=C`. It needs no Rust toolchain, because the
-`release` job does not install one. Run it from the repository root with
-exactly one argument; a second run with the same X changes nothing. With 34
-workspace members:
-
-```sh
-bash scripts/stamp-release-version.sh 1.0.7
-git diff --shortstat
-#  3 files changed, 36 insertions(+), 36 deletions(-)
-```
-
-The old version is the `[workspace.package]` version in `Cargo.toml`. In
-`Cargo.lock` the script rewrites the `version` line of every `[[package]]`
-block with no `source` line (the workspace members), and it refuses to run
-unless every one of them is at the old version. A registry crate at the same
-version, such as `anstream 1.0.0`, has a `source` line and keeps its version.
-No `source`, `checksum` or `dependencies` line changes.
-
-| Exit | Meaning |
-| --- | --- |
-| `0` | Stamped, or already at X. The checks still run first. |
-| `1` | A [check](#checks-before-any-write) failed, and no file changed. Also any failure while writing; see [Temporary files](#temporary-files) for what that can leave. |
-| `2` | Usage error: not exactly one argument, or X is not `MAJOR.MINOR.PATCH` (digits only, no leading zeros, no `v`, no pre-release such as `1.0.0-rc.1`, no build metadata such as `1.0.0+m`) |
-
-#### Checks before any write
-
-Every check runs before the first file is written, on every run. The script
-exits `1` when:
-
-- **Any of the three files** is missing or unreadable, is empty, contains a
-  carriage return (CRLF line endings), or does not end with a newline; or a
-  `<file>.stamp-tmp` already exists, as a file or a symlink (see
-  [Temporary files](#temporary-files)).
-- **`Cargo.toml`**: `[workspace.package]` does not have exactly one `version`
-  line, that line is not exactly `version = "…"`, or its value is not
-  `MAJOR.MINOR.PATCH`.
-- **`Cargo.lock`**: there is no `[[package]]` without a `source` line; such a
-  block has no `name` or `version` line; two of them share a name; one of them
-  is at any version other than the old one; or a dependency entry names a
-  workspace member with any version (`"amplihack-hooks 9.9.9"`), because that
-  version would need stamping too.
-- **`package.json`**: there is not exactly one top-level (two-space-indented)
-  `"version"` line, the line has another form, or its value is not the old
-  version.
-
-A member already at X counts as "not at the old version", so a partly stamped
-tree is refused, not finished:
-
-```
-stamp-release-version: error: Cargo.lock: unexpected path package amplihack-hooks at 1.0.7 (expected 1.0.0)
-```
-
-#### Temporary files
-
-The script writes each new file to a sibling in the current directory
-(`Cargo.toml.stamp-tmp`, `Cargo.lock.stamp-tmp`, `package.json.stamp-tmp`) and
-then renames it over the original with `mv -f`.
-
-- A leftover `<file>.stamp-tmp`, whether a file or a symlink (dangling or
-  not), is refused up front. The script never follows or removes one it did
-  not create; delete it after checking where it came from.
-- Each temp file is created under `set -C` (noclobber), so a file planted
-  after that check makes the run fail instead of being overwritten.
-- The `EXIT` trap removes only the temp files this run created, so a failure
-  while writing them leaves none behind.
-- The renames are per file. A failure part-way through them can leave some
-  manifests stamped. The `release` job stops there, so a partly stamped tree
-  never reaches a pushed ref, and running the script again on that tree exits
-  `1`.
-
-#### Output
-
-The status line goes to stdout: `stamped …` when files changed, `already at …`
-on a second run.
-
-```
-stamped 1.0.7 (was 1.0.0): Cargo.toml 1, Cargo.lock 34, package.json 1
-already at 1.0.7; nothing to do
-```
-
-Errors go to stderr, prefixed `stamp-release-version: error: ` and followed by
-the `usage:` line where it applies. A rejected argument is printed with
-`printf %q`, so it cannot start a new line:
-
-```
-stamp-release-version: error: v1.0.7 is not MAJOR.MINOR.PATCH (no "v" prefix, suffix or leading zeros)
-usage: stamp-release-version <MAJOR.MINOR.PATCH>
-```
-
-Every line starts with fixed text, so nothing the script prints can be read as
-a GitHub Actions workflow command (`::…`).
-
-Guarded by `crates/amplihack-cli/tests/issue_1526_release_version_stamp.rs`,
-which runs the script on copies of the real manifests.
 
 ## Related references
 
