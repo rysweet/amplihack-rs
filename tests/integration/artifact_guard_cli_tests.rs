@@ -666,3 +666,340 @@ fn cli_never_prints_a_remedy_that_would_untrack_the_preexisting_tree() {
          one path this change added; got:\n{refusal}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1536: a tracked `apps/coverage/` application was flagged as a build
+// artifact and the report told the operator to untrack it -- deleting source
+// from the index. The CLI must pass evidently-source directories, never print
+// a removal command for a path that may be source (it points at the allowlist
+// instead), and not charge a base-branch merge to the PR.
+// ---------------------------------------------------------------------------
+
+/// A repository on `main` with a task branch checked out.
+fn repo_on_task_branch() -> TempDir {
+    let tmp = TempDir::new().expect("tempdir");
+    run_git(tmp.path(), &["init", "-q"]);
+    run_git(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        tmp.path(),
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(tmp.path(), &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&tmp.path().join("README.md"), "# fixture\n");
+    run_git(tmp.path(), &["add", "README.md"]);
+    run_git(tmp.path(), &["commit", "-qm", "initial"]);
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/change"]);
+    tmp
+}
+
+fn commit_paths(repo: &Path, paths: &[(&str, &str)], message: &str) {
+    for (path, content) in paths {
+        write_file(&repo.join(path), content);
+        run_git(repo, &["add", "-f", "--", path]);
+    }
+    run_git(repo, &["commit", "-qm", message]);
+}
+
+/// No command in the output removes anything from the index or the disk.
+fn assert_no_removal_commands(combined: &str) {
+    for forbidden in ["git rm -r --cached", "git rm --cached", "rm -rf"] {
+        assert!(
+            !combined.contains(forbidden),
+            "a path that may be source must never get `{forbidden}`; got:\n{combined}"
+        );
+    }
+}
+
+#[test]
+fn cli_passes_a_tracked_app_named_coverage() {
+    let tmp = repo_on_task_branch();
+    commit_paths(
+        tmp.path(),
+        &[
+            ("apps/coverage/package.json", "{\"name\":\"coverage\"}\n"),
+            ("apps/coverage/tsconfig.json", "{}\n"),
+            ("apps/coverage/src/index.ts", "export const x = 1;\n"),
+        ],
+        "add the coverage app",
+    );
+
+    for mode in ["pre-commit", "pre-publish"] {
+        let output = run_guard(tmp.path(), mode);
+        let combined = combined(&output);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "tracked apps/coverage source must pass {mode}\n{combined}"
+        );
+        assert!(
+            !String::from_utf8_lossy(&output.stderr).contains("apps/coverage"),
+            "{mode} must not report apps/coverage at all; got:\n{combined}"
+        );
+    }
+}
+
+#[test]
+fn cli_still_blocks_a_staged_coverage_report_with_an_exact_remedy() {
+    let tmp = repo_on_task_branch();
+    write_file(&tmp.path().join("coverage/lcov.info"), "TN:\n");
+    run_git(tmp.path(), &["add", "-f", "coverage/lcov.info"]);
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    for required in [
+        "coverage/lcov.info",
+        "build-artifact",
+        "git rm -r --cached -- 'coverage/lcov.info'",
+    ] {
+        assert!(
+            combined.contains(required),
+            "missing `{required}`; got:\n{combined}"
+        );
+    }
+    assert!(
+        !combined.contains("-- 'coverage'"),
+        "the remedy must name the generated file, not its directory; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_still_blocks_a_tracked_dist_bundle_next_to_a_root_manifest() {
+    let tmp = repo_on_task_branch();
+    commit_paths(
+        tmp.path(),
+        &[
+            ("package.json", "{\"name\":\"root\"}\n"),
+            ("dist/app.js", "bundle\n"),
+        ],
+        "oops: commit the bundle",
+    );
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("dist/app.js") && combined.contains("build-artifact"),
+        "a root package.json must not exempt dist/; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_points_a_tracked_ambiguous_path_at_the_allowlist_instead_of_untracking_it() {
+    let tmp = repo_on_task_branch();
+    commit_paths(tmp.path(), &[("build/notes.md", "# notes\n")], "notes");
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    let (_, remedy) = combined
+        .split_once("Exact commands for the paths above:")
+        .unwrap_or_else(|| panic!("refusal must print its remedy section; got:\n{combined}"));
+    assert!(
+        remedy.contains(".amplihack-artifact-allowlist") && remedy.contains("build/notes.md"),
+        "the remedy must suggest an allowlist entry for the exact path; got:\n{remedy}"
+    );
+    assert_no_removal_commands(&combined);
+
+    // The suggested exact-path entry is one the allowlist parser accepts.
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "build/notes.md\n",
+    );
+    let rerun = run_guard(tmp.path(), "pre-publish");
+    assert_eq!(
+        rerun.status.code(),
+        Some(0),
+        "the suggested allowlist entry must clear the path\n{}{}",
+        String::from_utf8_lossy(&rerun.stdout),
+        String::from_utf8_lossy(&rerun.stderr)
+    );
+}
+
+#[test]
+fn cli_advisory_report_never_suggests_untracking_a_preexisting_ambiguous_path() {
+    let tmp = TempDir::new().expect("tempdir");
+    run_git(tmp.path(), &["init", "-q"]);
+    run_git(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        tmp.path(),
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(tmp.path(), &["config", "user.name", "Artifact Guard Test"]);
+    commit_paths(tmp.path(), &[("build/notes.md", "# notes\n")], "notes");
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/change"]);
+    commit_paths(tmp.path(), &[("src/lib.rs", "pub fn f() {}\n")], "work");
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(0), "{combined}");
+    assert!(
+        combined.contains("build/notes.md") && combined.contains(".amplihack-artifact-allowlist"),
+        "the advisory report must name the path and the allowlist; got:\n{combined}"
+    );
+    assert_no_removal_commands(&combined);
+    assert!(
+        !combined.contains(">> .gitignore"),
+        "no untrack-and-ignore chain for a path that may be source; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_names_the_nested_node_modules_root_never_the_app_directory() {
+    let tmp = repo_on_task_branch();
+    commit_paths(
+        tmp.path(),
+        &[("apps/coverage/package.json", "{}\n")],
+        "coverage app",
+    );
+    write_file(
+        &tmp.path().join("apps/coverage/node_modules/a/index.js"),
+        "module.exports = 1;\n",
+    );
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("-- 'apps/coverage/node_modules'"),
+        "the remedy must target the node_modules tree; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("-- 'apps/coverage'"),
+        "the remedy must never target the application directory; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_shared_root_containment_respects_the_segment_boundary() {
+    // `buildtools/out/a.txt` is a tracked, possibly-source path; it is not
+    // inside `build`, so the untracked `build/` leftover keeps its whole-root
+    // remedy and nothing under `buildtools` is ever removed.
+    let tmp = repo_on_task_branch();
+    commit_paths(tmp.path(), &[("buildtools/out/a.txt", "a\n")], "tools");
+    write_file(&tmp.path().join("build/x.o"), "obj\n");
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("git rm -r --cached -- 'build'")
+            && combined.contains("rm -rf -- 'build'"),
+        "the untracked build/ leftover keeps its root remedy; got:\n{combined}"
+    );
+    for line in combined.lines().filter(|line| line.contains("rm ")) {
+        assert!(
+            !line.contains("buildtools"),
+            "no removal command may touch buildtools: {line}"
+        );
+    }
+}
+
+#[test]
+fn cli_never_prints_a_removal_command_for_a_root_holding_a_quote() {
+    let tmp = repo_on_task_branch();
+    write_file(&tmp.path().join("it's/build/x.o"), "obj\n");
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("x.o"),
+        "the path must still be reported; got:\n{combined}"
+    );
+    assert_no_removal_commands(&combined);
+}
+
+#[test]
+fn cli_gives_a_glob_shaped_tracked_path_no_allowlist_line() {
+    let tmp = repo_on_task_branch();
+    let name = "build/a*b.txt";
+    if fs::write(tmp.path().join("probe*name"), "").is_err() {
+        // The filesystem rejects `*` in names; nothing to test here.
+        return;
+    }
+    fs::remove_file(tmp.path().join("probe*name")).expect("remove probe");
+    commit_paths(tmp.path(), &[(name, "a\n")], "glob-shaped name");
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("a*b.txt") && combined.contains("manual review"),
+        "a path with no literal allowlist form needs manual review; got:\n{combined}"
+    );
+    assert_no_removal_commands(&combined);
+}
+
+#[test]
+fn cli_does_not_attribute_a_base_branch_merge_to_the_pr() {
+    let root = TempDir::new().expect("tempdir");
+    let origin = root.path().join("origin.git");
+    let work = root.path().join("work");
+    run_git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+    run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(root.path(), &["clone", "-q", "origin.git", "work"]);
+    run_git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        &work,
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(&work, &["config", "user.name", "Artifact Guard Test"]);
+    commit_paths(&work, &[("README.md", "# fixture\n")], "initial");
+    run_git(&work, &["push", "-q", "-u", "origin", "main"]);
+
+    run_git(&work, &["checkout", "-q", "-b", "feature"]);
+    commit_paths(&work, &[("src/lib.rs", "pub fn f() {}\n")], "feature work");
+    run_git(&work, &["push", "-q", "-u", "origin", "feature"]);
+
+    run_git(&work, &["checkout", "-q", "main"]);
+    commit_paths(&work, &[("build/out.log", "log\n")], "main: build log");
+    run_git(&work, &["push", "-q", "origin", "main"]);
+
+    run_git(&work, &["checkout", "-q", "feature"]);
+    run_git(&work, &["fetch", "-q", "origin"]);
+    run_git(
+        &work,
+        &["merge", "-q", "--no-ff", "-m", "merge main", "origin/main"],
+    );
+    run_git(&work, &["remote", "set-head", "origin", "main"]);
+
+    let output = run_guard(&work, "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a path the base branch merged in is not the PR's change\n{combined}"
+    );
+    assert!(
+        combined.contains("origin/HEAD"),
+        "the report must name the base-branch baseline; got:\n{combined}"
+    );
+}
+
+#[test]
+fn cli_help_lists_the_base_branch_before_upstream_in_the_baseline_order() {
+    let error = Cli::try_parse_from(["amplihack", "hygiene", "artifact-guard", "--help"])
+        .expect_err("clap help exits through an error-like display result");
+    let help = error.to_string();
+
+    let base = help
+        .find("origin/HEAD")
+        .unwrap_or_else(|| panic!("help must name origin/HEAD; got:\n{help}"));
+    let upstream = help
+        .find("@{upstream}")
+        .unwrap_or_else(|| panic!("help must name @{{upstream}}; got:\n{help}"));
+    assert!(
+        base < upstream,
+        "origin/HEAD must come before @{{upstream}} in the baseline order; got:\n{help}"
+    );
+}

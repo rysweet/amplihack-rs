@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use amplihack_utils::artifact_guard::{
@@ -127,7 +127,7 @@ fn print_violation_report(report: &ArtifactGuardReport) {
             "{:<16} {:<14} {:<48} {}",
             violation.source.to_string(),
             violation.provenance.to_string(),
-            violation.path,
+            display_path(&violation.path),
             violation.rule_id
         );
     }
@@ -147,11 +147,18 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     // where one new package lands inside 668 vendored ones -- a
     // `git rm -r --cached node_modules` would untrack all 668 as a side effect,
     // which is precisely the unrelated change the run was told not to make.
-    let shared: BTreeSet<String> = artifact_roots(&report.advisory_violations())
-        .into_iter()
+    //
+    // Removal commands come only from `removal_root`, never from the display
+    // grouping, and never for a path that may be source (issue #1536).
+    let (removable, review) = split_removable(&blocking);
+    let advisory = report.advisory_violations();
+    let untouchable: Vec<&str> = advisory
+        .iter()
+        .chain(review.iter())
+        .map(|violation| violation.path.as_str())
         .collect();
-    for (root, group) in group_by_root(&blocking) {
-        if shared.contains(&root) {
+    for (root, group) in removable {
+        if untouchable.iter().any(|path| is_within(path, &root)) {
             for violation in &group {
                 let path = &violation.path;
                 eprintln!("  git rm --cached -- '{path}'   # drop from the change, keep on disk");
@@ -164,6 +171,15 @@ fn print_violation_report(report: &ArtifactGuardReport) {
             eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
         }
     }
+    if !review.is_empty() {
+        eprintln!(
+            "  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
+        );
+        for (root, group) in group_by_root(&review) {
+            print_path_group(&root, &group);
+        }
+        print_review_remedy(&review);
+    }
     eprintln!(
         "  amplihack hygiene artifact-guard --repo {} --mode {}   # re-run to confirm",
         report.repo.display(),
@@ -172,7 +188,7 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     eprintln!();
     eprintln!("First violation detail:");
     if let Some(first) = blocking.first() {
-        eprintln!("  {}: {}", first.path, first.remediation);
+        eprintln!("  {}: {}", display_path(&first.path), first.remediation);
     }
 }
 
@@ -209,24 +225,28 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
     }
     eprintln!();
     for (root, group) in group_by_root(&advisory) {
-        let rules = distinct_rules(&group);
-        eprintln!("  {root}/  — {} path(s), rule {rules}", group.len());
-        for violation in group.iter().take(ADVISORY_PATHS_PER_ROOT) {
-            eprintln!("      {}", violation.path);
-        }
-        if group.len() > ADVISORY_PATHS_PER_ROOT {
-            eprintln!(
-                "      ... and {} more under {root}/",
-                group.len() - ADVISORY_PATHS_PER_ROOT
-            );
-        }
+        print_path_group(&root, &group);
     }
     eprintln!();
     eprintln!("Way forward (none of these is required to finish the current change):");
-    for root in artifact_roots(&advisory) {
+    let (removable, review) = split_removable(&advisory);
+    for (root, group) in removable {
+        // A file root (a coverage report) is ignored as itself, a directory
+        // root as the directory.
+        let ignore = if group.iter().all(|violation| violation.path == root) {
+            root.clone()
+        } else {
+            format!("{root}/")
+        };
         eprintln!(
-            "  - Clean up in a dedicated change: git rm -r --cached -- '{root}' && echo '{root}/' >> .gitignore && git commit -m 'chore: untrack {root}'"
+            "  - Clean up in a dedicated change: git rm -r --cached -- '{root}' && echo '{ignore}' >> .gitignore && git commit -m 'chore: untrack {root}'"
         );
+    }
+    if !review.is_empty() {
+        eprintln!(
+            "  - Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
+        );
+        print_review_remedy(&review);
     }
     eprintln!(
         "  - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo {} --mode all",
@@ -234,6 +254,115 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
     );
     eprintln!("  - Enforce it here anyway: --preexisting block (or {PREEXISTING_ENV}=block).");
     eprintln!();
+}
+
+fn print_path_group(root: &str, group: &[&ArtifactViolation]) {
+    let rules = distinct_rules(group);
+    let root = display_path(root);
+    eprintln!("  {root}/  — {} path(s), rule {rules}", group.len());
+    for violation in group.iter().take(ADVISORY_PATHS_PER_ROOT) {
+        eprintln!("      {}", display_path(&violation.path));
+    }
+    if group.len() > ADVISORY_PATHS_PER_ROOT {
+        eprintln!(
+            "      ... and {} more under {root}/",
+            group.len() - ADVISORY_PATHS_PER_ROOT
+        );
+    }
+}
+
+/// The way forward for paths that may be source: an exact-path allowlist entry
+/// where the path has a literal form the allowlist parser reads back as that
+/// one path, manual review otherwise, and never a removal command.
+fn print_review_remedy(review: &[&ArtifactViolation]) {
+    let mut entries = Vec::new();
+    let mut manual = Vec::new();
+    let mut omitted = 0;
+    for (_, group) in group_by_root(review) {
+        omitted += group.len().saturating_sub(ADVISORY_PATHS_PER_ROOT);
+        for violation in group.into_iter().take(ADVISORY_PATHS_PER_ROOT) {
+            if is_plain_path(&violation.path) {
+                entries.push(violation.path.as_str());
+            } else {
+                manual.push(violation.path.as_str());
+            }
+        }
+    }
+    if !entries.is_empty() {
+        eprintln!(
+            "  If a path is intentional source, add a reviewed entry to .amplihack-artifact-allowlist:"
+        );
+        for entry in entries {
+            eprintln!("      {entry}");
+        }
+    }
+    for path in manual {
+        eprintln!(
+            "  {path:?} needs manual review: it has no literal .amplihack-artifact-allowlist form; rename it instead."
+        );
+    }
+    if omitted > 0 {
+        eprintln!(
+            "  ... and {omitted} more path(s); list them with --mode all before allowlisting."
+        );
+    }
+    eprintln!("  Otherwise remove it in a dedicated, reviewed change.");
+}
+
+/// Split violations into those with a removal root safe to print inside a
+/// single-quoted shell word, grouped by that root, and those that must only
+/// ever be reviewed (no root, or a root holding `'` or a control character).
+fn split_removable<'a>(
+    violations: &[&'a ArtifactViolation],
+) -> (
+    BTreeMap<String, Vec<&'a ArtifactViolation>>,
+    Vec<&'a ArtifactViolation>,
+) {
+    let mut removable: BTreeMap<String, Vec<&'a ArtifactViolation>> = BTreeMap::new();
+    let mut review = Vec::new();
+    for violation in violations {
+        match violation.removal_root.as_deref() {
+            Some(root) if !root.chars().any(|c| c == '\'' || c.is_control()) => {
+                removable
+                    .entry(root.to_string())
+                    .or_default()
+                    .push(violation);
+            }
+            _ => review.push(*violation),
+        }
+    }
+    (removable, review)
+}
+
+/// Whether `path` is `root` or beneath it, at a `/` boundary (`build` does not
+/// contain `buildtools/a.rs`).
+fn is_within(path: &str, root: &str) -> bool {
+    path == root
+        || path
+            .strip_prefix(root)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether `path` reads back from an allowlist line as exactly itself and is
+/// safe to print as plain text: no glob characters, backslashes, quotes or
+/// control characters, no leading `#`, and no surrounding whitespace.
+fn is_plain_path(path: &str) -> bool {
+    !path.is_empty()
+        && path.trim() == path
+        && !path.starts_with('#')
+        && !path
+            .chars()
+            .any(|c| matches!(c, '*' | '?' | '\\' | '\'' | '"') || c.is_control())
+}
+
+/// `path` as plain text when [`is_plain_path`], otherwise escaped so a file
+/// name cannot forge a report line or inject shell syntax.
+fn display_path(path: &str) -> String {
+    if is_plain_path(path) {
+        path.to_string()
+    } else {
+        format!("{path:?}")
+    }
 }
 
 fn short_commit(commit: &str) -> &str {
@@ -287,13 +416,6 @@ fn group_by_root<'a>(
             .push(violation);
     }
     grouped.into_iter().collect()
-}
-
-fn artifact_roots(violations: &[&ArtifactViolation]) -> Vec<String> {
-    group_by_root(violations)
-        .into_iter()
-        .map(|(root, _)| root)
-        .collect()
 }
 
 fn distinct_rules(violations: &[&ArtifactViolation]) -> String {
