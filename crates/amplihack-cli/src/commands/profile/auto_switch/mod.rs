@@ -39,6 +39,8 @@ mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
+mod tests_record;
+#[cfg(all(test, unix))]
 mod tests_usage;
 
 use super::ProfileError;
@@ -52,6 +54,13 @@ pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
+/// File helpers `default_live` reuses for its read-only checks.
+#[cfg(unix)]
+pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+#[cfg(unix)]
+pub(super) use state::CREDS;
+#[cfg(unix)]
+pub(super) use swap::read_claude_json;
 
 #[cfg(not(unix))]
 #[derive(Debug, clap::Subcommand)]
@@ -267,5 +276,167 @@ pub fn supervise(store: &ProfileStore, inherited: &str) -> anyhow::Result<Option
     {
         let _ = (store, inherited);
         Ok(None)
+    }
+}
+
+/// Who holds which login, from the ledger: directory → account live there.
+/// Read for marks and attribution in `profile usage`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LeaseView {
+    pub hosts: std::collections::BTreeMap<String, String>,
+}
+
+impl LeaseView {
+    /// The account whose login is in directory `dir`.
+    pub fn account_in<'a>(&'a self, dir: &'a str) -> &'a str {
+        self.hosts.get(dir).map_or(dir, String::as_str)
+    }
+
+    /// The directory account `name` is live in, other than its own.
+    pub fn leased_to(&self, name: &str) -> Option<&str> {
+        self.hosts
+            .iter()
+            .find(|(dir, live)| live.as_str() == name && dir.as_str() != name)
+            .map(|(dir, _)| dir.as_str())
+    }
+}
+
+/// One window as `profile usage` read it.
+// Only the Unix recorder reads the fields.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObservedWindow {
+    pub used_percentage: f64,
+    pub resets_at: Option<i64>,
+}
+
+/// What `profile usage` saw in one profile directory, and the account it
+/// believed was live there when it probed.
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq)]
+pub struct Observation {
+    pub profile: String,
+    pub account: String,
+    pub session: Option<ObservedWindow>,
+    pub week: Option<ObservedWindow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RecordOutcome {
+    /// Auto-switch is off and has no state directory: nothing was created.
+    NotSetUp,
+    /// Another process held the state lock.
+    Busy,
+    /// A swap journal exists; recovery is left to launches and the status line.
+    SwapInProgress,
+    /// `written`: accounts whose reading was updated. `moved`: profiles whose
+    /// live account changed while they were probed, so were not recorded.
+    Recorded {
+        written: Vec<String>,
+        moved: Vec<String>,
+    },
+}
+
+/// Whether readings may be recorded under `root`: the effective setting is
+/// on, or the state directory already exists (the status line's gate).
+pub fn recording_enabled(root: &Path) -> bool {
+    #[cfg(unix)]
+    return config::effective(root).on || fsx::exists(&root.join(state::DIR));
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        false
+    }
+}
+
+/// The ledger's leases, read without the lock. `None` without a state
+/// directory. The root and state directory must pass the same trust checks
+/// as every other state read.
+pub fn lease_view(root: &Path) -> Result<Option<LeaseView>, ProfileError> {
+    #[cfg(unix)]
+    {
+        if !fsx::exists(&root.join(state::DIR)) {
+            return Ok(None);
+        }
+        let state = state::State::new(root)?;
+        fsx::check_root_private(&state.root)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("profile root {e}")))?;
+        fsx::check_private_dir(&state.dir)
+            .map_err(|e| ProfileError::AutoSwitchInvariant(format!("{}: {e}", state::DIR)))?;
+        let ledger = state.load_ledger()?;
+        Ok(Some(LeaseView {
+            hosts: ledger
+                .hosts
+                .into_iter()
+                .map(|(dir, h)| (dir, h.live))
+                .collect(),
+        }))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = root;
+        Ok(None)
+    }
+}
+
+/// Records `profile usage` observations as status-line readings. Takes the
+/// lock for a bounded wait, never runs swap recovery, re-checks each
+/// profile's live account under the lock, applies the status-line bounds,
+/// keeps a stored window that has not reset when only the other one was
+/// read, and writes `usage.json` at most once.
+pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutcome, ProfileError> {
+    #[cfg(unix)]
+    {
+        use usage::{Reading, ReadingSource, Window};
+        if !recording_enabled(root) {
+            return Ok(RecordOutcome::NotSetUp);
+        }
+        let state = state::State::new(root)?;
+        let Some(_lock) = state.try_lock(statusline::LOCK_WAIT)? else {
+            return Ok(RecordOutcome::Busy);
+        };
+        if state.load_journal()?.is_some() {
+            return Ok(RecordOutcome::SwapInProgress);
+        }
+        let ledger = state.load_ledger()?;
+        let now = fsx::now();
+        let bounded = |w: Option<ObservedWindow>| {
+            w.and_then(|w| usage::plausible(w.used_percentage, w.resets_at?, now))
+        };
+        let still_valid = |w: Option<Window>| w.filter(|w| w.resets_at > now);
+        let mut file = None;
+        let (mut written, mut moved) = (Vec::new(), Vec::new());
+        for o in observed {
+            if ledger.account_in(&o.profile) != o.account {
+                moved.push(o.profile.clone());
+                continue;
+            }
+            let (five_hour, seven_day) = (bounded(o.session), bounded(o.week));
+            if five_hour.is_none() && seven_day.is_none() {
+                continue;
+            }
+            let file = file.get_or_insert_with(|| state.load_usage_or_warn());
+            let old = file.accounts.get(&o.account);
+            let reading = Reading {
+                five_hour: five_hour.or_else(|| still_valid(old.and_then(|r| r.five_hour))),
+                seven_day: seven_day.or_else(|| still_valid(old.and_then(|r| r.seven_day))),
+                observed_at: now,
+                // Deliberate: the usage file's format is fixed, and a
+                // `/usage` reading means the same as a status-line one.
+                source: ReadingSource::Statusline,
+            };
+            let merged = usage::merge(old, reading);
+            file.accounts.insert(o.account.clone(), merged);
+            written.push(o.account.clone());
+        }
+        if let Some(file) = file {
+            state.save_usage(&file)?;
+        }
+        Ok(RecordOutcome::Recorded { written, moved })
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (root, observed);
+        Ok(RecordOutcome::NotSetUp)
     }
 }
