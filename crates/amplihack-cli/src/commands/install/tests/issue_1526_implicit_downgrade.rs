@@ -40,7 +40,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// First line of the downgrade warning (see
-/// `docs/features/self-heal-asset-restage.md#the-warning`).
+/// `docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526`).
 pub(super) const WARNING_HEADER: &str = "amplihack: warning: not re-staging framework assets";
 
 /// A stamp strictly above `crate::VERSION`: the next major release.
@@ -68,6 +68,7 @@ impl IsolatedHome {
         let lock = crate::test_support::env_lock()
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        crate::self_heal::set_downgrade_warned(false);
         let mut env = Self {
             saved: Vec::new(),
             _lock: lock,
@@ -244,14 +245,21 @@ pub(super) fn assert_refusal_warning(notice: &str, home: &Path, installed_versio
     let exe = std::env::current_exe().expect("the test binary has a current_exe");
     let running = line("running:");
     assert!(
-        running.contains(&format!("{exe:?} (v{})", crate::VERSION)),
+        running.contains(&format!(
+            "{} (v{})",
+            paths::sanitize_path(&exe),
+            crate::VERSION
+        )),
         "`running:` must name this executable and its version; got {running:?}"
     );
     let installed_bin = crate::path_conflicts::preferred_user_bin(home)
         .join(crate::path_conflicts::binary_filename("amplihack"));
     let installed = line("installed:");
     assert!(
-        installed.contains(&format!("{installed_bin:?} (v{installed_version})")),
+        installed.contains(&format!(
+            "{} (v{installed_version})",
+            paths::sanitize_path(&installed_bin)
+        )),
         "`installed:` must name ~/.local/bin/amplihack and the stamp version; got {installed:?}"
     );
     assert!(

@@ -206,10 +206,12 @@ fn implicit_restage_does_not_create_settings_json() {
 }
 
 /// No stamp to compare against (the #502 self-heal): assets re-stage, but a
-/// binary already in `~/.local/bin` is kept. Its version is unknown, so
-/// replacing it could be the #1526 downgrade.
+/// binary already in `~/.local/bin` is kept, because its version is unknown.
+/// Security F1: the stamp then stays absent. Stamping this build would record
+/// binaries it never wrote, and let a later build that is newer than this one
+/// but older than the kept binaries replace them.
 #[test]
-fn implicit_restage_without_a_stamp_keeps_installed_binaries() {
+fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_writes_no_stamp() {
     let fx = Fixture::new();
     fx.write_user_settings();
     let installed = fx.plant_installed_hooks();
@@ -224,10 +226,10 @@ fn implicit_restage_without_a_stamp_keeps_installed_binaries() {
     );
     assert_eq!(fs::read(fx.settings()).unwrap(), USER_SETTINGS);
     assert_eq!(settings_writes(&fx.home, &before), Vec::<String>::new());
-    assert_eq!(
-        version_stamp::read_installed_version().unwrap().as_deref(),
-        Some(crate::VERSION),
-        "assets still re-stage with no stamp (#502)"
+    assert!(
+        !version_stamp::installed_version_path().unwrap().exists(),
+        "a re-stage that kept an installed binary must not stamp v{} over it",
+        crate::VERSION
     );
 }
 

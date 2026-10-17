@@ -59,76 +59,47 @@ self-heals automatically — closing the upgrade gap permanently.
 
 ## Never an implicit downgrade (#1526)
 
-In [#1526](https://github.com/rysweet/amplihack-rs/issues/1526) a recipe run
-used a `cargo install --git` build of the v0.18.39 commit that reported
-`0.18.0`. It re-staged over v0.18.39, replaced `~/.local/bin/amplihack` and
-rewrote `~/.claude/settings.json`. An automatic re-stage (self-heal or the
-launch bootstrap) now runs in **implicit mode**. Only an explicit
-`amplihack install` runs in explicit mode, which can downgrade and write
-settings as before.
+An automatic re-stage (self-heal or the launch bootstrap) runs in **implicit
+mode**: it never writes `~/.claude/settings.json`, and it replaces a binary in
+`~/.local/bin` only when the running version is strictly newer than the stamp
+by semver precedence (`0.18.9 < 0.18.10`, `1.2.0-dev < 1.2.0`). An empty slot
+is always filled. Explicit `amplihack install` is unchanged, and is the way to
+downgrade on purpose.
 
-The running version and the stamp are compared by semver precedence, so
-`0.18.0 < 0.18.39`, `0.18.9 < 0.18.10` and `1.2.0-dev < 1.2.0`.
-
-| Running vs stamp | Assets and stamp | Binaries in `~/.local/bin` | `~/.claude/settings.json` |
+| Running vs stamp | Assets | Binaries | Stamp |
 |---|---|---|---|
-| running older | untouched | untouched | untouched |
+| older | untouched | untouched | untouched |
 | equal | no-op, or the #1271 bundle repair | untouched | untouched |
-| running newer | re-staged, stamp written | replaced | **not written**¹ |
-| stamp missing or unparseable | re-staged (#502) | deployed only where no file exists | **not written**¹ |
+| newer | re-staged | replaced | written |
+| missing or unparseable | re-staged (#502) | empty slots filled | written only if no binary was kept |
 
-¹ Except the #202 hook repair in the launch bootstrap (below), which can
-create or fill in `settings.json`.
-
-The #1271 repair at equal versions re-stages a stale bundle but never replaces
-a binary, because the running version is not newer.
-
-A binary that already exists is replaced only when both versions parse and the
-running one is newer. A dangling symlink counts as an existing file. Any other
-case keeps the file and prints:
+A kept binary is reported on stderr:
 
 ```
-amplihack: warning: not replacing /home/dev/.local/bin/amplihack (vunknown) with /home/dev/.cargo/bin/amplihack (v1.2.0) during implicit re-stage; run 'amplihack install' to replace it.
+amplihack: warning: not replacing /home/dev/.local/bin/amplihack (installed stamp: unknown) with /home/dev/.cargo/bin/amplihack (v1.2.0) during an implicit re-stage; run `amplihack install` to replace it.
 ```
 
-On a downgrade, self-heal stops before the bundle check, before the
-`AMPLIHACK_SKIP_AUTO_INSTALL` bypass, and again after taking the install lock.
-Nothing is written. It prints one line on stderr, at most once per process,
-and the command still runs with its usual exit status:
+With no stamp the kept binary's version is unknown, so the stamp stays absent
+and each launch re-stages and warns until `amplihack install` is run. On a
+downgrade nothing is written, and one warning is printed per process; the
+command keeps its usual exit status:
 
 ```
-amplihack: warning: skipping implicit re-stage: running /home/dev/.cargo/bin/amplihack (v0.18.0) is older than installed /home/dev/.local/bin/amplihack (v0.18.39); installed binaries and ~/.claude/settings.json left unchanged. Run 'amplihack install' to downgrade deliberately.
+amplihack: warning: not re-staging framework assets — this amplihack is older than the installed one.
+  running:   /home/dev/.cargo/bin/amplihack (v0.18.0)
+  installed: /home/dev/.local/bin/amplihack (v0.18.39)
+  Installed binaries and ~/.claude/settings.json were left unchanged.
+  Run `amplihack install` to replace them with this build.
 ```
 
-Control characters in paths are printed as `?`. To downgrade on purpose, run
-`amplihack install` with the older binary.
-
-**Launch bootstrap.** `ensure_framework_installed` (run by `amplihack claude`
-and other launches) checks the same rule first. On a downgrade it returns
-before staging assets, topping up `~/.claude/commands/amplihack/`, reconciling
-Codex or repairing hooks.
-
-**Known risk: the bootstrap takes no lock.** Self-heal re-checks the stamp
-under `~/.amplihack/.install.lock`; the bootstrap reads it once, unlocked. If
-a newer `amplihack install` writes the stamp after an older binary's bootstrap
-has read it, that bootstrap can still stage assets over the new install. The
-next launch of the newer binary re-stages them. Binaries and `settings.json`
-are not exposed, because implicit mode never replaces a binary with an older
-one and writes settings only for the #202 repair.
-
-**One exception: the #202 hook repair.** When the running binary is not older,
-the bootstrap still writes `settings.json` if the file is missing, or if it
-parses and has **zero** `amplihack-hooks` registrations. This restores
-silently unwired hooks (#202) and cannot overwrite a working configuration.
-The hook commands point at `~/.local/bin/amplihack-hooks` (#911). A
-`settings.json` that does not parse is left byte-identical, with a warning.
-
-**Limit.** A build of an untagged `main` commit, such as
-`cargo install --git … --rev <SHA>`, still reports the base `MAJOR.MINOR.0`
-from `Cargo.toml`. So do builds of tags cut before #1526. Release tags cut
-since then report their own version (see
+Control characters in printed paths appear as `?`. The launch bootstrap
+(`ensure_framework_installed`) applies the same check first; an unreadable
+stamp now fails the launch, as it already failed self-heal. When the binary is
+not older, its #202 hook repair still writes `settings.json` if the file is
+missing or parses with no amplihack hooks. A `settings.json` that does not
+parse is left unchanged and a warning is printed. Builds of untagged `main`
+commits still report `MAJOR.MINOR.0` (see
 [Release tags point at a stamp commit](../reference/ci-pipeline.md#release-tags-point-at-a-stamp-commit)).
-For the other builds this guard turns the downgrade into a warning.
 
 ## Skip rules
 
@@ -208,9 +179,9 @@ without requiring the user to remember the bypass was set. The line is
 written exactly once per process. A matching stamp with a compatible bundle
 produces no output.
 
-The bypass does not suppress the [downgrade guard](#never-an-implicit-downgrade-1526).
-That guard runs first, so a stamp newer than the binary prints the downgrade
-warning instead of this line.
+Under the bypass a stamp newer than the binary also prints this line rather
+than the [downgrade warning](#never-an-implicit-downgrade-1526): the bypass
+never re-stages, so there is nothing for the guard to refuse.
 
 See also: [Environment Variables — `AMPLIHACK_SKIP_AUTO_INSTALL`](../reference/environment-variables.md#amplihack_skip_auto_install).
 
@@ -248,10 +219,10 @@ out explicitly so reviewers do not mistake it for a Zero-BS violation.
 
 | File | Role |
 |------|------|
-| `crates/amplihack-cli/src/self_heal.rs` | Decision logic, advisory lock acquisition, bypass diagnostic, the #1526 downgrade guards (`is_implicit_downgrade`, semver precedence; an unparseable side is never a downgrade) and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
-| `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `write_installed_version`, `installed_version_path`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
-| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (covers both bundled and network-fallback paths). `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
-| `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp (`implicit_deploy_allowed`; a missing or unparseable version keeps the installed binary) and warns on stderr naming both binaries. |
+| `crates/amplihack-cli/src/self_heal.rs` | Decision logic, advisory lock acquisition, bypass diagnostic, the #1526 downgrade guards and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
+| `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `write_installed_version`, `installed_version_path`) and the #1526 semver comparison (`relation`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
+| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (covers both bundled and network-fallback paths), except an implicit one that kept an installed binary. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
+| `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp (`implicit_deploy_allowed`), warns on stderr naming both binaries, and reports whether it kept any. |
 | `bins/amplihack/src/main.rs` | Calls `self_heal::ensure_assets_match_binary_version(&args)` after the existing update notice and before `Cli::parse_from`. |
 
 Dependencies introduced: [`fs2`](https://crates.io/crates/fs2) for the

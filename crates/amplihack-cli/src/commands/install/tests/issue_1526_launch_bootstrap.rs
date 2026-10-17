@@ -179,3 +179,45 @@ fn bootstrap_with_a_newer_stamp_leaves_settings_without_hooks_untouched() {
          no backups, no slash commands restaged"
     );
 }
+
+/// S5 (SR-8): a settings.json that does not parse is never "repaired". With a
+/// stamp that is not newer the bootstrap reaches the #202 check; it must warn
+/// and leave the file byte-identical, with no backup beside it.
+#[test]
+fn bootstrap_leaves_unparseable_settings_untouched() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let fixture = tempfile::tempdir().unwrap();
+    let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
+    let mut env = IsolatedHome::new(home);
+    env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
+
+    create_minimal_staged_assets(home);
+    let claude = home.join(".claude");
+    let settings = claude.join("settings.json");
+    fs::create_dir_all(&claude).unwrap();
+    let corrupt: &[u8] = b"{ \"model\": \"sentinel\", ";
+    fs::write(&settings, corrupt).unwrap();
+    version_stamp::write_installed_version(crate::VERSION).unwrap();
+
+    assert_home_is(home);
+    ensure_framework_installed_with(&mut Vec::new())
+        .expect("an unparseable settings.json warns; it does not fail the launch");
+
+    assert_eq!(
+        fs::read(&settings).unwrap(),
+        corrupt,
+        "settings.json was rewritten"
+    );
+    let backups: Vec<String> = fs::read_dir(&claude)
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|name| name.starts_with("settings.json") && name != "settings.json")
+        .collect();
+    assert_eq!(
+        backups,
+        Vec::<String>::new(),
+        "no backup of a file left unchanged"
+    );
+}

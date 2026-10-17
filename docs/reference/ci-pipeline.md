@@ -112,26 +112,20 @@ covered by the regression guard below — there is no remaining tracked drift.
 
 ### Release tags point at a stamp commit
 
-`main` keeps the base version (`MAJOR.MINOR.0`) in `Cargo.toml`, and the
-patch number comes from the latest `vMAJOR.MINOR.*` tag. To make a build of
-the tag report the release, the `release` job runs
-`scripts/stamp-release-version.sh X` on the released SHA. The script sets the
-`[workspace.package]` version, the workspace-member entries in `Cargo.lock`
-and `package.json`. The job commits the result as `chore(release): stamp vX`
-on a detached HEAD, checks that only those three files changed, and pushes
-`vX` pointing at that commit. Nothing is pushed to `main`.
-
-The first release of a series (`vMAJOR.MINOR.0`) is the exception: the
-manifests already say X, so the script exits 0 without changing a file, the
-job makes no commit and tags the released SHA directly. A re-run accepts a
-tag on the SHA itself or on a single-parent stamp child of it. Either way
-`cargo install --git https://github.com/rysweet/amplihack-rs --tag vX amplihack`
-reports X, while `--rev <main SHA>` still reports `MAJOR.MINOR.0`. The
-self-heal [downgrade guard](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)
-covers those builds. The script rejects anything but `MAJOR.MINOR.PATCH`
-(exit 2) before it opens a file, and exits 1 without writing if a manifest
-fails validation. Guarded by
+`main` keeps the base version (`MAJOR.MINOR.0`); the patch number comes from
+the latest `vMAJOR.MINOR.*` tag. The `release` job runs
+`scripts/stamp-release-version.sh X` on the released SHA, which sets the
+version in `Cargo.toml`, the workspace-member entries of `Cargo.lock` and
+`package.json`, commits the result as `chore(release): stamp vX` on a detached
+HEAD and tags that commit (or the released SHA itself when the manifests
+already say X). Nothing is pushed to `main`. `cargo install --git … --tag vX`
+therefore reports X, while `--rev <main SHA>` still reports `MAJOR.MINOR.0`;
+the self-heal [downgrade guard](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)
+covers those builds. Guarded by
 `crates/amplihack-cli/tests/issue_1526_release_version_stamp.rs`.
+
+The workflow token is read-only; only the `release` job has `contents: write`.
+The `version-bump` and `build` checkouts do not persist credentials.
 
 ### Bumping the pinned toolchain
 

@@ -12,6 +12,7 @@
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use std::cmp::Ordering;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -119,6 +120,16 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
 /// startup, which is the desired self-heal behaviour. Returns `Err` for any
 /// IO error other than `NotFound` so corruption fails loud.
 pub(crate) fn read_installed_version() -> Result<Option<String>> {
+    read_stamp(true)
+}
+
+/// [`read_installed_version`] without the malformed-stamp warning, for the
+/// launch bootstrap: startup self-heal has already reported it this process.
+pub(crate) fn read_installed_version_quiet() -> Result<Option<String>> {
+    read_stamp(false)
+}
+
+fn read_stamp(warn_malformed: bool) -> Result<Option<String>> {
     let path = installed_version_path()?;
     let raw = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -132,14 +143,41 @@ pub(crate) fn read_installed_version() -> Result<Option<String>> {
         // R4: one-line warning so operators see the rejection in CI logs.
         // Use `{:?}` so embedded newlines / control chars cannot forge a
         // second log line or inject terminal escapes.
-        eprintln!(
-            "amplihack: ignoring malformed install stamp at {} (contents={:?}); will re-stage",
-            path.display(),
-            trimmed
-        );
+        if warn_malformed {
+            eprintln!(
+                "amplihack: ignoring malformed install stamp at {} (contents={:?}); will re-stage",
+                path.display(),
+                trimmed
+            );
+        }
         return Ok(None);
     }
     Ok(Some(trimmed.to_string()))
+}
+
+/// Issue #1526: a running version against an installed one, by semver
+/// precedence (build metadata ignored). Each caller decides what `Unknown`,
+/// an unparseable side, means for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionRelation {
+    Older,
+    Equal,
+    Newer,
+    Unknown,
+}
+
+pub(crate) fn relation(running: &str, installed: &str) -> VersionRelation {
+    match (
+        semver::Version::parse(running),
+        semver::Version::parse(installed),
+    ) {
+        (Ok(running), Ok(installed)) => match running.cmp_precedence(&installed) {
+            Ordering::Less => VersionRelation::Older,
+            Ordering::Equal => VersionRelation::Equal,
+            Ordering::Greater => VersionRelation::Newer,
+        },
+        _ => VersionRelation::Unknown,
+    }
 }
 
 #[cfg(test)]
@@ -398,5 +436,76 @@ mod tests {
             read_installed_version().expect("read").as_deref(),
             Some("1.2.3")
         );
+    }
+
+    /// Issue #1526: precedence, not string or `Ord` order.
+    #[test]
+    fn relation_follows_semver_precedence() {
+        use VersionRelation::*;
+        // (running, installed, relation)
+        let mut table: Vec<(&str, &str, VersionRelation)> = vec![
+            ("1.0.0", "1.0.1", Older),
+            ("1.0.1", "1.0.0", Newer),
+            ("1.0.0", "1.0.0", Equal),
+            ("1.0.0+snapshot.abc", "1.0.0", Equal),
+            ("1.0.0-rc.1", "1.0.0", Older),
+            // The #1526 reporter's pair: a main build under a v0.18.39 stamp.
+            ("0.18.0", "0.18.39", Older),
+            // Numeric, not lexical: "9" sorts after "39" as a string.
+            ("0.18.9", "0.18.39", Older),
+            ("0.18.39", "0.18.9", Newer),
+            ("1.0.0-rc.2", "1.0.0-rc.10", Older),
+            ("1.0.0-rc.10", "1.0.0-rc.2", Newer),
+            ("1.0.0", "1.0.0-rc.1", Newer),
+            // Build metadata never decides.
+            ("1.0.0+zzz", "1.0.0+aaa", Equal),
+            ("1.0.0+snapshot.8a9647a", "1.0.1", Older),
+            ("1.9.99", "2.0.0", Older),
+            ("2.0.0", "1.99.99", Newer),
+        ];
+        for bad in [
+            "",
+            "not-a-version",
+            "v1.0.0",
+            "1.0",
+            "01.2.3",    // leading zero: passes the stamp regex, fails semver
+            "1.2.3-a_b", // underscore: passes the stamp regex, fails semver
+            "١.2.3",     // Arabic-Indic digit: `\d` accepts it, semver does not
+            "99999999999999999999999.0.0", // overflows u64
+        ] {
+            table.push((bad, "9999.0.0", Unknown));
+            table.push(("0.0.1", bad, Unknown));
+        }
+        let wrong: Vec<String> = table
+            .iter()
+            .filter_map(|&(running, installed, want)| {
+                let got = relation(running, installed);
+                (got != want)
+                    .then(|| format!("{running:?} vs {installed:?}: want {want:?}, got {got:?}"))
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "precedence violations:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// The quiet reader agrees with the loud one, including on a malformed
+    /// stamp, which reads as missing.
+    #[test]
+    fn quiet_read_matches_read() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+        assert_eq!(read_installed_version_quiet().unwrap(), None);
+
+        write_installed_version("1.2.3").expect("write");
+        assert_eq!(
+            read_installed_version_quiet().unwrap().as_deref(),
+            Some("1.2.3")
+        );
+
+        fs::write(installed_version_path().unwrap(), b"garbage\n").unwrap();
+        assert_eq!(read_installed_version_quiet().unwrap(), None);
     }
 }

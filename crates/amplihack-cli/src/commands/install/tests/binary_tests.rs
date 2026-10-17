@@ -145,8 +145,9 @@ fn deploy_binaries_copies_hooks_binary_to_local_bin_with_755_perms() {
     }
     crate::test_support::restore_home(previous);
 
-    let deployed = result.expect("deploy_binaries must succeed");
+    let (deployed, refused_any) = result.expect("deploy_binaries must succeed");
     assert!(!deployed.is_empty(), "must return deployed paths");
+    assert!(!refused_any, "an explicit install refuses nothing");
 
     let dst = temp.path().join(".local/bin/amplihack-hooks");
     assert!(dst.exists(), "amplihack-hooks must be at ~/.local/bin");

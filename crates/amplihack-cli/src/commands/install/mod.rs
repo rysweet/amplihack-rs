@@ -300,21 +300,6 @@ fn report_preserved_entries(preserved: &[String], target: &Path) {
     );
 }
 
-/// The install stamp's trimmed contents, or `None` when there is no stamp.
-///
-/// Unlike [`version_stamp::read_installed_version`] this prints nothing for a
-/// malformed stamp: startup self-heal has already reported (and re-staged
-/// over) one in this process. The caller only acts on contents that parse as
-/// semver, so nothing here is trusted beyond that.
-fn installed_stamp_quiet() -> Result<Option<String>> {
-    let path = version_stamp::installed_version_path()?;
-    match fs::read_to_string(&path) {
-        Ok(raw) => Ok(Some(raw.trim().to_string())),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
-    }
-}
-
 pub(crate) fn ensure_framework_installed() -> Result<()> {
     ensure_framework_installed_with(&mut std::io::stderr())
 }
@@ -325,8 +310,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     // Issue #1526: this bootstrap is an implicit installer too. A binary older
     // than the installed stamp must not stage, top up commands or repair
     // settings.json over the newer install.
-    if let Some(installed) = installed_stamp_quiet().context("reading install version stamp")?
-        && crate::self_heal::is_implicit_downgrade(crate::VERSION, &installed)
+    if let Some(installed) =
+        version_stamp::read_installed_version_quiet().context("reading install version stamp")?
+        && version_stamp::relation(crate::VERSION, &installed)
+            == version_stamp::VersionRelation::Older
     {
         // debug: tracing writes to stdout. The user-facing warning goes to
         // `notice`, once per process: startup self-heal has usually printed it.
@@ -377,63 +364,65 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             .context("failed native Codex reconciliation")?;
     }
     let settings_path = global_settings_path()?;
-    if !hooks_registered_in_settings(&settings_path)? {
-        tracing::warn!("hooks not registered in settings.json — auto-repairing");
-        let timestamp = unix_timestamp();
-        let (settings_ok, _events) =
-            ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin)?;
-        if !settings_ok {
-            bail!(
-                "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
-                 Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
+    match hooks_registered_in_settings(&settings_path)? {
+        HookRegistration::Registered => return Ok(()),
+        HookRegistration::Missing => {}
+        HookRegistration::Unparseable => {
+            // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
+            tracing::warn!("settings.json is not valid JSON; skipping hook auto-repair");
+            eprintln!(
+                "amplihack: warning: {} is not valid JSON; hook registrations were not \
+                 checked or repaired. Fix the file, then run `amplihack install`.",
+                paths::sanitize_path(&settings_path)
             );
+            return Ok(());
         }
-        // Verify the repair actually worked
-        if !hooks_registered_in_settings(&settings_path)? {
-            bail!(
-                "hooks still not registered after auto-repair.\n\
-                 Run `amplihack install` manually to fix hook wiring."
-            );
-        }
-        println!("✅ Auto-repaired missing hook registrations in settings.json");
     }
+    tracing::warn!("hooks not registered in settings.json — auto-repairing");
+    let timestamp = unix_timestamp();
+    let (settings_ok, _events) =
+        ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin)?;
+    if !settings_ok {
+        bail!(
+            "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
+             Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
+        );
+    }
+    // Verify the repair actually worked
+    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered {
+        bail!(
+            "hooks still not registered after auto-repair.\n\
+             Run `amplihack install` manually to fix hook wiring."
+        );
+    }
+    println!("✅ Auto-repaired missing hook registrations in settings.json");
     Ok(())
 }
 
-/// Check whether amplihack hooks are registered in `~/.claude/settings.json`.
-///
-/// Returns `true` if the settings file exists and its `hooks` section contains
-/// at least one entry referencing `amplihack-hooks` (the native binary).
-///
-/// The absent case is read off the failed read rather than a preceding
-/// `exists()` probe, matching the four sites collapsed in issue #1123. Two
-/// reasons, and the second is the one that matters: it drops a `stat` from a
-/// path that runs on every `amplihack claude` launch, and it closes the TOCTOU
-/// window where the file is created or removed between the probe and the read
-/// (a probe-then-read reports the state of the file at probe time, which is not
-/// the state it then reads). `NotFound` maps to the same `Ok(false)` the probe
-/// produced; every other error keeps the existing context message, so a
-/// present-but-unreadable settings file is still a hard error and is not
-/// silently reported as "no hooks registered".
-///
-/// One behaviour change is deliberate: `EACCES` while traversing a parent
-/// directory used to reach `exists() == false` and so `Ok(false)`, and now
-/// returns `Err`, which `ensure_framework_installed`'s `?` propagates and which
-/// fails the launch. Fail-closed is the right default for a security-relevant
-/// config we cannot read — "unreadable" is not evidence that no hooks are
-/// registered — but it is a real delta, so it is written down rather than
-/// discovered.
-fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
+/// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HookRegistration {
+    Registered,
+    /// The file is absent, or parses with no amplihack hook.
+    Missing,
+    Unparseable,
+}
+
+/// Classify the settings file. Absence is read off the failed read (no
+/// `exists()` probe, issue #1123); any other read error, such as EACCES, is
+/// an `Err`, because an unreadable file is not evidence that hooks are missing.
+pub(super) fn hooks_registered_in_settings(settings_path: &Path) -> Result<HookRegistration> {
     let raw = match fs::read_to_string(settings_path) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HookRegistration::Missing);
+        }
         Err(e) => {
             return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
         }
     };
-    let json: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(HookRegistration::Unparseable);
     };
     let has_hooks = json
         .get("hooks")
@@ -458,7 +447,11 @@ fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
             })
         })
         .unwrap_or(false);
-    Ok(has_hooks)
+    Ok(if has_hooks {
+        HookRegistration::Registered
+    } else {
+        HookRegistration::Missing
+    })
 }
 
 #[cfg(test)]
@@ -489,11 +482,12 @@ fn local_install_scoped(
     // re-stage compares each installed binary against this stamp.
     let stamp = match mode {
         InstallMode::Explicit => None,
+        // Safe: `None` makes `implicit_deploy_allowed` refuse every occupied slot.
         InstallMode::Implicit => version_stamp::read_installed_version()
             .inspect_err(|e| tracing::warn!("cannot read install stamp: {e:#}"))
             .unwrap_or_default(),
     };
-    let deployed_binaries = deploy_binaries(mode, stamp.as_deref())?;
+    let (deployed_binaries, refused_any) = deploy_binaries(mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in &deployed_binaries {
         println!("  ✅ Deployed {}", p.display());
@@ -865,8 +859,14 @@ fn local_install_scoped(
     println!("============================================================");
     println!();
 
-    version_stamp::write_installed_version(crate::VERSION)
-        .context("writing installed-version stamp")?;
+    // Issue #1526: after a refused deploy the stamp would describe binaries
+    // this install did not write, and let a later, older build replace them.
+    if mode == InstallMode::Implicit && refused_any {
+        tracing::debug!("kept installed binaries; install stamp left unchanged");
+    } else {
+        version_stamp::write_installed_version(crate::VERSION)
+            .context("writing installed-version stamp")?;
+    }
 
     // Stage assets to ~/.copilot/skills/ so Copilot CLI picks them up
     // without requiring a separate `amplihack copilot` launch. Best-effort

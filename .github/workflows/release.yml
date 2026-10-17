@@ -5,8 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Read-only by default; only the `release` job, which pushes the tag and
+# publishes the release, gets `contents: write` (#1526 SR-12).
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -36,6 +38,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
           token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - name: Compute next version from tags
         id: bump
@@ -169,6 +172,7 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-bump.outputs.sha }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
         with:
           targets: ${{ matrix.target }}
@@ -239,6 +243,8 @@ jobs:
     name: Create Release
     needs: [version-bump, build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -324,7 +330,8 @@ jobs:
 
           # Stage by name: the downloaded artifacts/ and the collected
           # release-assets/ are in the working tree too.
-          git add Cargo.toml Cargo.lock package.json
+          git add Cargo.toml Cargo.lock
+          if [ -f package.json ]; then git add package.json; fi
           STAGED=$(git diff --cached --name-only)
           while IFS= read -r path; do
             case "${path}" in
