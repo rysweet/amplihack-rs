@@ -505,57 +505,10 @@ fn explicit_install_still_refreshes_copilot_config() {
     assert!(String::from_utf8_lossy(&after).contains(crate::VERSION));
 }
 
-/// An implicit re-stage with Codex selected leaves an installed Codex plugin
-/// alone: it never runs Codex, and never touches `~/.codex` or the ledger.
-#[test]
-fn implicit_restage_leaves_an_installed_codex_plugin_alone() {
-    let mut fx = Fixture::new();
-    let marker = fx._outside.path().join("codex-ran");
-    let codex_bin = fx._outside.path().join("codex_bin");
-    fs::create_dir_all(&codex_bin).unwrap();
-    let codex = codex_bin.join("codex");
-    fs::write(
-        &codex,
-        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 1\n", marker.display()),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    let mut path_dirs = vec![codex_bin];
-    path_dirs.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-    fx._env
-        .set("PATH", std::env::join_paths(path_dirs).unwrap());
-    fs::create_dir_all(fx.home.join(".amplihack/codex")).unwrap();
-    fs::write(
-        fx.home.join(".amplihack/codex/ownership.json"),
-        b"{\"schema_version\":1}",
-    )
-    .unwrap();
-    fs::create_dir_all(fx.home.join(".codex")).unwrap();
-    fs::write(fx.home.join(".codex/hooks.json"), b"{\"hooks\":{}}\n").unwrap();
-    fs::write(fx.home.join(".codex/config.toml"), b"model = \"x\"\n").unwrap();
-    version_stamp::write_installed_version(&older_version()).unwrap();
-    let before = snapshot(&fx.home);
-
-    assert_home_is(&fx.home);
-    local_install_scoped(&fx.repo, None, true, InstallMode::Implicit)
-        .unwrap_or_else(|e| panic!("implicit install failed: {e:#}"));
-
-    let codex_changes: Vec<String> = changes(&before, &snapshot(&fx.home))
-        .into_iter()
-        .filter(|c| c.contains(".codex") || c.contains("amplihack/codex"))
-        .collect();
-    assert_eq!(codex_changes, Vec::<String>::new());
-    assert!(
-        !marker.exists(),
-        "an implicit re-stage ran the Codex binary"
-    );
-}
+// A selected Codex is reconciled by an implicit re-stage exactly as by
+// `amplihack install` (issue #1538); that contract, including its strict
+// failures and preserved `~/.codex` state, is pinned end to end in
+// `tests/integration/issue_1538_startup_provider.rs`.
 
 // ── Hook drift after an implicit upgrade ──
 

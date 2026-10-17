@@ -43,8 +43,8 @@ Unreleased changes appear at the top under `[Unreleased]`.
   reports the base version; the guard covers it.
   **Upgrade note:** automatic re-stages (self-heal, the launch bootstrap and
   `amplihack copilot`) now also leave an existing amplihack entry in
-  `~/.copilot/config.json` and an installed Codex plugin alone; they no longer
-  refresh them on a version change. Run `amplihack install` to refresh them.
+  `~/.copilot/config.json` alone; they no longer refresh it on a version
+  change (a selected Codex plugin is still reconciled, per #1538). Run `amplihack install` to refresh it.
   The same applies to hook events a new release adds to `settings.json`; a
   re-stage prints a one-line warning naming the missing ones.
   See [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).

@@ -134,12 +134,11 @@ own configuration file this way:
 | `~/.claude/settings.json` | never written by a re-stage; the bootstrap fills in hooks only when the file has none (#202) | hooks merged, file backed up |
 | `~/.copilot/config.json` | left byte-identical once it holds any amplihack entry (`installedPlugins`, `plugins` or an amplihack hook); written only when it has none, which is a first install. Decided once per run, before any writer | amplihack entries refreshed |
 | `~/.copilot/installed-plugins/amplihack@local/`, `~/.copilot/.github/hooks/` | refreshed (amplihack-owned) | refreshed |
-| Codex plugin (`~/.codex/hooks.json`, the Codex marketplace) | installed only when no amplihack Codex install exists (`~/.amplihack/codex/ownership.json` or `pending.json`); an existing one, and any interrupted transaction, is left for `amplihack install` | reconciled |
+| Codex plugin (`~/.codex/hooks.json`, the Codex marketplace) | reconciled only when Codex is the selected client, exactly as by `amplihack install`; a legacy or changed ownership proof, or a Codex without native plugin support, fails the command and leaves `~/.codex` untouched (#1538). Never touched by a binary older than the install | reconciled |
 
 A Copilot entry that a user disabled stays disabled. When `config.json`
 registers amplihack from a different plugin directory, a re-stage leaves it
-unchanged and prints a stderr warning naming `amplihack install`. When a
-re-stage skips an installed Codex plugin, it prints one stderr notice.
+unchanged and prints a stderr warning naming `amplihack install`.
 
 ### Hooks a newer release adds
 

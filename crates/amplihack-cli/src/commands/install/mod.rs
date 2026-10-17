@@ -367,9 +367,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
-    // Issue #1526: like the re-stage, this bootstrap only installs a Codex
-    // plugin that is not there yet; refreshing one is `amplihack install`'s job.
-    if crate::freshness::codex_selected() && !codex_plugin::owned_install_present()? {
+    // Issue #1538: a selected Codex is reconciled strictly, installed or not.
+    // The Codex transaction is a no-op when current and preserves every byte
+    // on failure; an older binary never gets here (#1526 refuses it first).
+    if crate::freshness::codex_selected() {
         let source = find_bundled_framework_root()
             .context("bundled source required to reconcile native Codex resources")?;
         codex_plugin::install(&source.root, &hooks_bin)
@@ -787,18 +788,11 @@ fn local_install_scoped(
 
     if reconcile_codex {
         println!();
-        if mode == InstallMode::Implicit && codex_plugin::owned_install_present()? {
-            // Issue #1526: reconciling an installed Codex plugin rewrites
-            // ~/.codex/hooks.json; an implicit re-stage leaves it alone.
-            eprintln!(
-                "amplihack: notice: an automatic re-stage left the installed Codex plugin \
-                 unchanged. Run `amplihack install` to update it to v{}.",
-                crate::VERSION
-            );
-        } else {
-            codex_plugin::install(repo_root, &durable_hooks_bin)
-                .context("failed native Codex installation")?;
-        }
+        // Issue #1538: reconcile_codex is only set when Codex is the selected
+        // client, so an implicit re-stage reconciles it as strictly as
+        // `amplihack install`. Issue #1526's downgrade refusal runs earlier.
+        codex_plugin::install(repo_root, &durable_hooks_bin)
+            .context("failed native Codex installation")?;
     }
 
     println!("📝 Generating uninstall manifest:");
