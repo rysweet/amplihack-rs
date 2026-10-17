@@ -173,7 +173,7 @@ fn format_downgrade_warning(
 /// Best effort: the refusal holds whether or not the warning is written, so
 /// a failure is logged at debug and never fails the command.
 pub(crate) fn warn_implicit_downgrade_once<W: Write>(notice: &mut W, installed: &str) {
-    if env_bypass_set() || DOWNGRADE_WARNED.swap(true, AtomicOrdering::Relaxed) {
+    if env_bypass_set() || DOWNGRADE_WARNED.load(AtomicOrdering::Relaxed) {
         return;
     }
     let home = match home_dir() {
@@ -183,6 +183,9 @@ pub(crate) fn warn_implicit_downgrade_once<W: Write>(notice: &mut W, installed: 
             return;
         }
     };
+    if DOWNGRADE_WARNED.swap(true, AtomicOrdering::Relaxed) {
+        return;
+    }
     let running_exe = std::env::current_exe()
         .inspect_err(|e| tracing::debug!("self_heal: cannot resolve the running executable: {e}"))
         .ok()
@@ -346,7 +349,8 @@ where
     with_install_lock(|| {
         // Re-check after acquiring the lock — the previous holder may
         // have already brought the stamp current.
-        let stamp_now = version_stamp::read_installed_version()
+        // Quiet: the read above has already reported a malformed stamp.
+        let stamp_now = version_stamp::read_installed_version_quiet()
             .context("re-reading install stamp under lock")?;
         // Issue #1526 Guard #2: a newer install may have finished while this
         // process waited on the lock.

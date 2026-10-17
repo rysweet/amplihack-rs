@@ -107,10 +107,17 @@ fn may_deploy(mode: InstallMode, stamp: Option<&str>, src: &Path, dst: &Path) ->
     // `dst`. A source that already is the destination is a no-op copy.
     mode == InstallMode::Explicit
         || implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
-        || matches!(
-            (src.canonicalize(), dst.canonicalize()),
-            (Ok(s), Ok(d)) if s == d
-        )
+        || same_file(src, dst)
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Issue #1526: an implicit copy that failed left the installed binary in
+/// place, so the stamp must not record it at this build's version.
+fn kept_after_failed_copy(mode: InstallMode, dst: &Path) -> bool {
+    mode == InstallMode::Implicit && dst.symlink_metadata().is_ok()
 }
 
 const HOOKS_BIN: &str = "amplihack-hooks";
@@ -186,6 +193,8 @@ pub(super) fn deploy_binaries(
             kept.push(self_dst);
         } else if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
             deployed.push(self_dst);
+        } else if !same_file(&self_src, &self_dst) && kept_after_failed_copy(mode, &self_dst) {
+            kept.push(self_dst);
         }
 
         // The real source (`self_src`) is used so the asset-resolver is looked
@@ -218,6 +227,9 @@ pub(super) fn deploy_binaries(
                             resolver_dst.display()
                         );
                         tracing::warn!("amplihack-asset-resolver deploy skipped: {e:#}");
+                        if kept_after_failed_copy(mode, &resolver_dst) {
+                            kept.push(resolver_dst);
+                        }
                     }
                 }
             }

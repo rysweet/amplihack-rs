@@ -150,7 +150,8 @@ pub(crate) fn read_installed_version() -> Result<Option<String>> {
 }
 
 /// [`read_installed_version`] without the malformed-stamp warning, for the
-/// launch bootstrap: startup self-heal has already reported it this process.
+/// launch bootstrap and the re-read under the install lock: startup self-heal
+/// has already reported it this process.
 pub(crate) fn read_installed_version_quiet() -> Result<Option<String>> {
     Ok(read_stamp(false)?.map(|stamp| stamp.framework))
 }
@@ -158,8 +159,10 @@ pub(crate) fn read_installed_version_quiet() -> Result<Option<String>> {
 /// Issue #1526: the version of the binaries in `~/.local/bin`, or `None`
 /// when there is no stamp or it records them as unknown. The implicit
 /// replacement guard compares against this, never the framework version.
+/// Quiet: only an implicit re-stage reads it, after self-heal has already
+/// reported a malformed stamp this process.
 pub(crate) fn read_binaries_version() -> Result<Option<String>> {
-    Ok(read_stamp(true)?.and_then(|stamp| stamp.binaries))
+    Ok(read_stamp(false)?.and_then(|stamp| stamp.binaries))
 }
 
 struct Stamp {
@@ -545,6 +548,8 @@ mod tests {
             // Numeric, not lexical: "9" sorts after "39" as a string.
             ("0.18.9", "0.18.39", Older),
             ("0.18.39", "0.18.9", Newer),
+            ("0.18.9", "0.18.10", Older),
+            ("0.18.10", "0.18.9", Newer),
             ("1.0.0-rc.2", "1.0.0-rc.10", Older),
             ("1.0.0-rc.10", "1.0.0-rc.2", Newer),
             ("1.0.0", "1.0.0-rc.1", Newer),

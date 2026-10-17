@@ -133,8 +133,11 @@ tmp+rename). An implicit re-stage that kept an installed binary adds a second
 line, `binaries: <version|unknown>`
 ([details](../features/self-heal-asset-restage.md#stamp-file)). This stamp is read on every subsequent launch
 by the [self-heal check](../features/self-heal-asset-restage.md): if the
-stamp is missing or differs from `crate::VERSION`, install is run
-automatically before the requested command dispatches. Manual installs and
+stamp is missing, unparseable or older than `crate::VERSION`, an implicit
+re-stage runs before the requested command dispatches. A stamp newer than the
+running binary is never re-staged over; a warning is printed instead
+([details](../features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526)).
+Manual installs and
 the self-heal path therefore converge on the same source of truth.
 
 ### Output

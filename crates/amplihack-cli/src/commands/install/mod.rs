@@ -499,7 +499,10 @@ fn local_install_scoped(
     };
     let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
-    for p in &deployed_binaries {
+    for p in deployed_binaries
+        .iter()
+        .filter(|p| !kept_binaries.contains(p))
+    {
         println!("  ✅ Deployed {}", p.display());
     }
     let preferred_amplihack =
@@ -870,6 +873,9 @@ fn local_install_scoped(
     // at the version the old stamp recorded (or unknown). Record both, so the
     // next launch does not re-stage and the guard keeps failing safe.
     if kept_binaries.is_empty() {
+        version_stamp::write_installed_version(crate::VERSION)
+    } else if stamp.as_deref() == Some(crate::VERSION) {
+        // Kept binaries already at this version: nothing to replace, no warning.
         version_stamp::write_installed_version(crate::VERSION)
     } else {
         let kept: Vec<String> = kept_binaries

@@ -74,10 +74,12 @@ and is the way to downgrade on purpose.
 |---|---|---|---|
 | older | untouched | untouched | untouched |
 | equal | no-op, or the #1271 bundle repair | untouched | untouched |
-| newer | re-staged | replaced | written |
+| newer | re-staged | replaced if newer than the stamp's binaries version, from this build's own copies | written |
 | missing or unparseable | re-staged (#502) | empty slots filled | written; binaries recorded as unknown if one was kept |
 
-When a re-stage keeps any installed binary, one line goes to stderr:
+When a re-stage keeps an installed binary (including one whose copy failed)
+that the stamp does not already record at the running version, one line goes
+to stderr:
 
 ```
 amplihack: warning: kept /home/dev/.local/bin/amplihack-hooks, /home/dev/.local/bin/amplihack (installed version: unknown) during an implicit re-stage for v1.2.0; run `amplihack install` to replace them.

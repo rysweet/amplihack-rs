@@ -360,3 +360,43 @@ fn explicit_install_still_replaces_binaries_and_writes_settings() {
         "explicit install merges, it does not discard user settings"
     );
 }
+
+/// An implicit re-stage that keeps binaries and settings.json must keep the
+/// earlier install's manifest entries for them, so `amplihack uninstall`
+/// still finds the hook registrations and the kept binaries.
+#[test]
+fn implicit_restage_carries_forward_manifest_entries_it_did_not_write() {
+    let fx = Fixture::new();
+    fx.write_user_settings();
+    fx.install(InstallMode::Explicit);
+    let path = manifest::manifest_path().unwrap();
+    let before = manifest::read_manifest(&path).unwrap();
+    assert!(
+        !before.hook_registrations.is_empty(),
+        "fixture: the explicit install must register hooks"
+    );
+    // Not the hooks binary: `deploy_binaries` lists it whether kept or not,
+    // so only a binary absent from that list exercises the carry-forward.
+    let kept = crate::path_conflicts::preferred_user_bin(&fx.home)
+        .join(crate::path_conflicts::binary_filename("amplihack"))
+        .to_string_lossy()
+        .into_owned();
+    assert!(
+        before.binaries.contains(&kept),
+        "fixture: the explicit install must deploy and record {kept}"
+    );
+
+    // No stamp: the re-stage keeps every installed binary.
+    fs::remove_file(version_stamp::installed_version_path().unwrap()).unwrap();
+    fx.install(InstallMode::Implicit);
+
+    let after = manifest::read_manifest(&path).unwrap();
+    assert_eq!(
+        after.hook_registrations, before.hook_registrations,
+        "an implicit re-stage dropped the hook registrations it left in place"
+    );
+    assert!(
+        after.binaries.contains(&kept),
+        "an implicit re-stage dropped a kept binary from the manifest"
+    );
+}
