@@ -539,6 +539,11 @@ check_rs "1513-prose-late-negation" 'DONE: or CONTINUE, hard to say' STUCK unpar
 check_rs "1513-prose-late-negation" 'CONTINUE: pointless, the loop is stuck.' \
     STUCK unparseable_verdict
 check_rs "1513-prose-late-negation" 'CONTINUE — or call it done' STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" 'DONE — but not really' STUCK unparseable_verdict
+check_rs "1513-prose-late-negation" 'DONE: I cannot confirm CI is green' STUCK unparseable_verdict
+# Residual risk (loop-health-evaluator.md): a contradiction with none of the
+# detected words still reads as DONE; ROUND_CLEAN is the control behind it.
+check_rs "1513-residual-dashed-qualifier" 'DONE — two blockers remain' DONE evaluator_prose_token
 # A plain reason to continue may itself be negative; that is not a contradiction.
 check_rs "1513-prose-late-negation" 'CONTINUE — CI is not green yet, one more round' \
     CONTINUE evaluator_prose_token

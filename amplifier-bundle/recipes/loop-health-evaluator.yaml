@@ -286,7 +286,7 @@ steps:
                 m = substr(line, RSTART, RLENGTH)
               } else next; r = substr(line, RSTART + RLENGTH); sub(/^[^A-Za-z]*/, "", r)
               if (!index(m, "STUCK") && r ~ /^([Nn][Oo][Tt]?|[Nn][Ee][Vv][Ee][Rr])([^A-Za-z]|$)/) { print "NEGATED"; next }
-              lr = " " tolower(r) " "; gsub(/n'\''t|n’t/, " not ", lr); w = index(m, "DONE") ? "not|never|continue|stuck" : "done|stuck"
+              lr = " " tolower(r) " "; gsub(/n'\''t|n’t/, " not ", lr); w = index(m, "DONE") ? "not|never|cannot|continue|stuck" : "done|stuck"
               if (!index(m, "STUCK") && lr ~ ("[^a-z](" w ")[^a-z]")) { print "NEGATED"; next }
               if (index(m, "CONTINUE")) print "CONTINUE"
               else if (index(m, "DONE")) print "DONE"

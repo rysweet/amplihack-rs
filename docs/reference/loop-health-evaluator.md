@@ -283,7 +283,7 @@ The prose scan accepts a verdict token only when there is no doubt about it:
   still match.
 - Later in the line a contradiction is caught too, weighted by which mistake
   is dangerous. A `DONE` line is a conflicting token when the rest of the
-  line contains the whole word `not`, `never`, `continue` or `stuck`, or any
+  line contains the whole word `not`, `never`, `cannot`, `continue` or `stuck`, or any
   `n't` contraction: `DONE: the loop is not done yet`,
   `DONE — wait, CI is red, so this is STUCK really` and
   `DONE: the review isn't clean` all give `STUCK`. A `CONTINUE` line is a
@@ -348,9 +348,12 @@ stops as `STUCK`. A `DONE` from the merge loop only hands over to the
 again before it merges.
 
 The same holds for a token followed by a dashed qualifier. The ending rule
-rejects `DONE is premature`, but a line such as `DONE — but not really` still
-reads as `DONE`, because a dash after the token is how evaluators actually
-write their reason (`CONTINUE — round 1 made real progress`). The control
+rejects `DONE is premature`, and the later-contradiction rule turns
+`DONE — but not really` into `STUCK`, but a qualifier that contradicts the
+token without any of the detected words, such as `DONE — two blockers remain`,
+still reads as `DONE`. A dash after the token is how evaluators actually
+write their reason (`CONTINUE — round 1 made real progress`), so it stays a
+legal ending. The control
 that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
 in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
 clean, and otherwise the run stops as `STUCK`.
