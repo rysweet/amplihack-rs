@@ -370,6 +370,47 @@ fn newer_stamp_refuses_implicit_restage_and_changes_nothing_under_home() {
     }
 }
 
+/// The `installed:` line names `~/.local/bin/amplihack`, so it must not print
+/// the stamp's framework version as that binary's version. With a stamp of
+/// `<newer>\nbinaries: unknown` (a pre-#502 install or a failed copy) the
+/// binary's version is reported as unknown and the framework version is
+/// labelled as such.
+#[test]
+fn refusal_warning_does_not_attribute_the_framework_version_to_unknown_binaries() {
+    let newer = newer_version();
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let _env = IsolatedHome::new(home);
+    create_minimal_staged_assets(home);
+    version_stamp::write_installed_versions(&newer, None).unwrap();
+
+    let calls = Cell::new(0u32);
+    let mut notice = Vec::new();
+    ensure_assets_match_binary_version_with(
+        &args(&["amplihack", "recipe", "run", "x"]),
+        &mut notice,
+        counting_installer(&calls),
+    )
+    .expect("a refusal is not a failure");
+    let notice = String::from_utf8(notice).unwrap();
+
+    assert_eq!(calls.get(), 0, "an older binary must not install");
+    let installed_bin = crate::path_conflicts::preferred_user_bin(home)
+        .join(crate::path_conflicts::binary_filename("amplihack"));
+    let installed = notice
+        .lines()
+        .find(|l| l.trim_start().starts_with("installed:"))
+        .unwrap_or_else(|| panic!("no `installed:` line in the warning:\n{notice}"));
+    assert_eq!(
+        installed,
+        format!(
+            "  installed: {} (version unknown; framework v{newer})",
+            paths::sanitize_path(&installed_bin)
+        ),
+        "the binaries' version is unknown, so it must not be printed as v{newer}"
+    );
+}
+
 // ── R6: what must not change ──
 
 /// The bypass is checked before the downgrade guard: with it set, an older

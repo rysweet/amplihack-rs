@@ -100,6 +100,13 @@ amplihack: warning: not re-staging framework assets — this amplihack is older 
   Run `amplihack install` to replace them with this build.
 ```
 
+The `installed:` line gives the version of the binary it names, taken from
+the stamp's `binaries:` line. When that differs from the framework version the
+refusal compared against, both are printed and labelled, for example
+`(v0.18.1; framework v0.19.0)`. When the stamp records the binaries as unknown
+(a pre-#502 install, or a copy that failed), the line reads
+`(version unknown; framework v0.19.0)` rather than guessing.
+
 Control characters in printed paths appear as `?`. The launch bootstrap
 (`ensure_framework_installed`) applies the same check first; an unreadable
 stamp now fails the launch, as it already failed self-heal. When the binary is
