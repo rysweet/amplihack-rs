@@ -625,6 +625,67 @@ mod tests {
     }
 
     #[test]
+    fn profile_usage_parses_flags_and_names() {
+        let _env = launcher_env_lock();
+        let cli =
+            Cli::try_parse_from(["amplihack", "profile", "usage", "--json", "--raw", "a", "b"])
+                .unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                names,
+                json,
+                raw,
+                timeout_secs,
+            }) => {
+                assert_eq!(names, ["a", "b"]);
+                assert!(json && raw);
+                assert_eq!(timeout_secs, None);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["amplihack", "profile", "usage"]).unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                names,
+                json,
+                raw,
+                ..
+            }) => assert!(names.is_empty() && !json && !raw),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_usage_timeout_flag_is_hidden_and_bounded() {
+        let _env = launcher_env_lock();
+        for ok in ["1", "600"] {
+            let cli = Cli::try_parse_from(["amplihack", "profile", "usage", "--timeout-secs", ok])
+                .unwrap();
+            match cli.command {
+                Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                    timeout_secs,
+                    ..
+                }) => assert_eq!(timeout_secs, Some(ok.parse().unwrap())),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        for bad in ["0", "601", "-1", "soon"] {
+            assert!(
+                Cli::try_parse_from(["amplihack", "profile", "usage", "--timeout-secs", bad])
+                    .is_err(),
+                "--timeout-secs {bad} must be refused"
+            );
+        }
+        let help = Cli::try_parse_from(["amplihack", "profile", "usage", "--help"])
+            .unwrap_err()
+            .to_string();
+        for want in ["--json", "--raw", "[NAMES]..."] {
+            assert!(help.contains(want), "help lists {want}: {help}");
+        }
+        assert!(!help.contains("timeout-secs"), "hidden flag shown: {help}");
+    }
+
+    #[test]
     fn profile_remove_defaults_to_no_yes() {
         let _env = launcher_env_lock();
         let cli = Cli::try_parse_from(["amplihack", "profile", "remove", "work"]).unwrap();

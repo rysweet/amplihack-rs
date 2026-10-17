@@ -13,6 +13,7 @@ amplihack profile switch <name>
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
+amplihack profile usage [--json] [--raw] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
 amplihack profile auto-switch off
 amplihack profile auto-switch status
@@ -34,10 +35,523 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks. |
 | `login <name>` | Always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
+| `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases).
+
+### Usage command
+
+```
+amplihack profile usage [--json] [--raw] [<name>...]
+```
+
+Shows how much of each profile's current session and weekly quota is used
+and when each resets, so you can see which accounts have capacity. With no
+names it covers every profile under the root, as `list` does. Each name must
+pass the [name rules](#name-rules) and must exist. A name given twice is
+probed once.
+
+| Flag | Effect |
+|------|--------|
+| `--json` | Print a JSON array instead of the table. See [JSON output](#json-output). |
+| `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile. Without it, that text is dropped once parsed. |
+| `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
+
+#### How a profile is probed
+
+For each profile, amplihack runs the `claude` binary directly, as `login`
+does (the binary selection is ignored, and `AMPLIHACK_CLAUDE_BINARY_PATH` is
+honoured):
+
+```
+claude -p /usage
+```
+
+The child gets `CLAUDE_CONFIG_DIR=<profile dir>` on its own `Command`; the
+environment of amplihack itself is never changed. The one exception is a
+profile whose login is [live in `~/.claude`](#logins-in-claude): its child
+has `CLAUDE_CONFIG_DIR` removed instead, so `claude` reads `~/.claude` and
+`~/.claude.json`. It is never set to `~/.claude`: when `CLAUDE_CONFIG_DIR`
+is set, `claude` reads `.claude.json` from inside that directory
+(`~/.claude/.claude.json`), not the `~/.claude.json` the default login uses,
+so it would report the wrong account or none. Removing the variable is
+exactly what "use the default directory" means. That child still gets
+`AMPLIHACK_CLAUDE_PROFILE=<name>`, like every other probe. There is no
+shell, stdin is `/dev/null`, and no other arguments are passed. The profile directory is
+checked again just before spawn, as for every launch.
+
+- Profiles are probed in parallel, at most 8 at a time.
+- Each probe has a 30-second deadline from spawn. When it passes, the child is
+  killed and the profile's state is `timeout`.
+- On Unix each child runs in its own process group. When the probe ends,
+  whether by the deadline or a normal exit, the whole group is killed, so
+  processes `claude` started (MCP servers, for example) do not outlive it.
+  A process that left the group itself is not tracked. On other platforms
+  only the child is killed.
+- stdout and stderr are each read up to 64 KiB. Anything after that is
+  dropped and the rest is still parsed.
+- Running `/usage` does not appear to use quota: an exhausted session still
+  answers, and its session percentage does not change. This is `claude`'s
+  behaviour, not something amplihack controls. `claude` contacts Anthropic to
+  answer it; amplihack itself makes no network calls.
+
+The deadline can be changed for tests and slow machines:
+
+| Setting | Values | Default |
+|---------|--------|---------|
+| `--timeout-secs <n>` (hidden flag) | `1` to `600` | — |
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` | `30` |
+
+The flag wins over the variable. A flag value out of range is a usage error
+(exit status 2). A variable that is not a number from `1` to `600` prints one
+warning showing the value escaped and cut to 32 characters, then uses `30`:
+
+```
+warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS "soon" (use 1 to 600); using 30
+```
+
+#### What is read
+
+These lines of stdout are read. Each one has a percentage and usually a
+reset time:
+
+```
+Current session: 100% used · resets Oct 16, 4:50pm (America/Los_Angeles)
+Current week (all models): 68% used · resets Oct 22, 2am (America/Los_Angeles)
+Current week (Fable): 0% used · resets Oct 22, 2am (America/Los_Angeles)
+```
+
+Claude leaves out the reset when the window has not started, for example
+`Current session: 0% used` when no session is open. Such a line is still
+read: `resets_text` and `resets_at` are `null`, and the table shows `-` for
+the reset.
+
+| Line | Field |
+|------|-------|
+| `Current session` | `session` |
+| `Current week (all models)` | `week_all` |
+| `Current week (<anything else>)` | one entry in `week_models`, in the order printed |
+
+The separator before `resets` may be `·`, `•`, `-` or missing. Anything
+after `used` other than a reset clause makes the line unreadable. Extra spaces
+and decimal percentages (`12.5%`) are accepted. A line whose percentage is
+not a finite number, or is above 1,000,000, is ignored. Every other line is
+ignored. The parser never guesses a number: a value it cannot read is left
+out.
+
+The reset text is kept exactly as Claude printed it (`resets_text`). amplihack
+also turns it into a time (`resets_at`, Unix epoch seconds) when it can:
+
+| Form | Example | Meaning |
+|------|---------|---------|
+| Month, day, time, zone | `Oct 22, 2am (America/Los_Angeles)` | The year that puts the time between one day before now and 366 days after now: this year, then next year, then last year. |
+| Month, day, year, time, zone | `Jan 2, 2027, 9:30pm (UTC)` | That date. |
+| Time, zone | `4:50pm (America/Los_Angeles)` | Today in that zone, or tomorrow if that time has already passed. |
+
+Minutes are optional, `am`/`pm` may be in any case, and spacing is tolerant.
+The zone must be an IANA name; the host's own time zone is never used. If
+the zone is unknown, the time does not exist in that zone (a daylight-saving
+gap) or the text has another form, `resets_at` is `null` and only the text is
+shown. A time that occurs twice (the hour repeated when daylight saving
+ends) resolves to the earlier one.
+
+#### States
+
+Every profile gets exactly one state:
+
+| State | Meaning |
+|-------|---------|
+| `ok` | The session line or the all-models week line was read, and neither is at 100%. |
+| `session_exhausted` | The session is at 100% or more. |
+| `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
+| `spend_limit` | Claude reported that the organisation's spend limit was reached. Any percentages read are kept. |
+| `not_logged_in` | No usage line of any kind (model week lines included) was read and Claude reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
+| `timeout` | The probe passed its deadline. |
+| `unparsed` | Nothing recognisable was printed. Run again with `--raw` to see what Claude said. |
+| `error` | The probe could not run. The table prints the reason on stderr and the JSON has it in `error`. |
+
+When several apply, the first in this order wins: `error`, `timeout`,
+`spend_limit`, `session_exhausted`, `weekly_exhausted`, `ok`,
+`not_logged_in`, `unparsed`. A model-specific week line at 100% (for example
+`Current week (Opus)`) does not make a profile exhausted; the profile can
+still be used with other models. The exit status of `claude` does not decide
+the state: output that parses counts even after a non-zero exit.
+
+The spend-limit and not-logged-in states are recognised by phrases, matched
+without regard to case in stdout and stderr:
+
+| State | Phrases |
+|-------|---------|
+| `spend_limit` | `spend limit`, `spending limit`, `usage limit for your organization`, `organization has reached` |
+| `not_logged_in` | `not logged in`, `run /login`, `invalid api key`, `login required`, `authentication_error`, `oauth token has expired` |
+
+A spend-limit phrase wins even when usage lines were read, and such a row is
+not recorded: the session and weekly resets do not lift a spend limit, so
+recording its percentages would make auto-switch treat the profile as
+usable. A normal `/usage` reading contains none of these phrases.
+
+The not-logged-in phrases count only when no usage line of any kind was
+read; a model week line alone is enough to rule them out. New
+wording from Claude that matches none of these gives `unparsed`, never a
+guessed state. Scripts should treat a state they do not know as `unparsed`.
+
+The reasons for `error` are fixed text, never the underlying I/O error:
+
+| Reason | When |
+|--------|------|
+| `profile directory refused` | The profile cannot be resolved, or its directory fails the check just before spawn. |
+| `could not start claude` | Spawning `claude` failed. |
+| `could not read claude output` | Reading the child's stdout or stderr failed, or a pipe was still open 2 seconds after the child exited (a process that left its group still held it), so the output may be cut short. |
+| `could not wait for claude` | Waiting for the child failed. It is killed and reaped first. |
+
+#### Table output
+
+```
+PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
+review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
+work      * hosts:personal  ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
+team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
+personal  leased→work       not_logged_in      -        -                                     -     -
+```
+
+`SESSION` and `WEEK` are the session and all-models week. Percentages print
+as a whole number when they are whole and with one decimal place otherwise
+(`12.5%`). `-` means no value. Reset columns show Claude's text as printed.
+Model-specific week lines are not in the table; they are in the JSON.
+
+Text from Claude and from state files is cleaned before it reaches the
+terminal: control characters (including escape sequences) are replaced, and
+reset text and model labels are cut to 64 characters. The table's layout is
+for people and may change; scripts should use `--json`.
+
+For each `error` row, one line goes to stderr:
+
+```
+warning: profile "review": could not start claude
+```
+
+With `--raw`, each row is followed by what Claude printed, indented and
+cleaned of control characters other than newlines:
+
+```
+team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
+  raw stdout:
+    You are currently using your subscription to power your Claude Code usage
+
+    Current session: 100% used · resets Oct 16, 4:50pm (America/Los_Angeles)
+    Current week (all models): 68% used · resets Oct 22, 2am (America/Los_Angeles)
+  raw stderr:
+    (empty)
+```
+
+#### Ordering
+
+Rows are in three groups, and the JSON uses the same order:
+
+1. **Usable** (`ok`): least used first, by the higher of the session and
+   all-models week percentages. A missing window, or one whose reset time has
+   passed, counts as 0%. Then by name.
+2. **Exhausted** (`session_exhausted`, `weekly_exhausted`, `spend_limit`):
+   soonest back first. A profile is back when every window at 100% or more
+   has reset, so "back at" is the latest of those reset times. If any of
+   those windows has no `resets_at`, the back-at time is unknown, and the
+   profile comes after the others. Then by name.
+3. **Unavailable**: `not_logged_in`, then `timeout`, then `unparsed`, then
+   `error`, each by name.
+
+#### Marks
+
+| Mark | Meaning |
+|------|---------|
+| `*` | The default profile, as in `list`. |
+| `leased→<dir>` | This profile's login is live in profile `<dir>`'s directory, lent by [auto-switch](#leases). |
+| `hosts:<account>` | This profile's directory currently holds the login of profile `<account>`, so the numbers on this row belong to `<account>`. |
+| `live in ~/.claude` | This profile's login is in the default directory `~/.claude`, and the numbers on this row were read from there. See [Logins in `~/.claude`](#logins-in-claude). |
+
+Several marks are separated by a space (`* live in ~/.claude`); none
+prints `-`. A row marked `live in ~/.claude` is placed by its state and
+numbers like any other row.
+
+While a profile's login is lent out, its own directory has no login, so its
+row usually shows `not_logged_in`. That account's numbers are on the row of
+the profile hosting it (`work` above, whose `account` is `personal`). Lease marks come from
+the auto-switch ledger, read once before probing without taking the lock. If
+there is no `<root>/.auto-switch.d/`, there are no lease marks. If the
+default pointer or the ledger cannot be read, a warning goes to stderr and
+the marks it would give are left out; the probes still run.
+
+#### Logins in `~/.claude`
+
+A login rotator outside amplihack can move one account's login into the
+default directory `~/.claude`. While it is there, that profile's own
+directory has no `.credentials.json`. `profile usage` does not report that
+profile as `not_logged_in`: it probes it against `~/.claude` instead, marks
+the row `live in ~/.claude`, and sets `live_in` to `"~/.claude"` in the JSON.
+
+The default profile (`*`) is unrelated to `~/.claude`. The default profile
+is the one `amplihack claude` uses when no profile is named; `~/.claude` is
+the directory `claude` uses when `CLAUDE_CONFIG_DIR` is not set. A row can
+have either mark, both, or neither.
+
+The live profile is found once, before probing, and nothing is written:
+
+1. `~/.claude/.credentials.json` must be a regular file. If it is missing or
+   is a symlink, no profile is live.
+2. **Rotator ledger.** If `<root>/.rotator/ledger.json` exists, it decides.
+   Its `live` field names the profile and `since` is used only for the
+   [check after the probes](#swaps-during-the-probe); other fields are
+   ignored. The checks run in this order, and the first that fails decides:
+
+   | `live` in a trusted ledger | Result | stderr |
+   |----------------------------|--------|--------|
+   | Missing or `null` | No profile is live. This is the rotator's idle state. | nothing |
+   | Not a string, fails the [name rules](#name-rules) (for example `"../x"`), or names a profile whose directory does not exist or fails the usual directory check | No profile is live. | the ledger warning below |
+   | Names a profile that still has something at `<root>/<live>/.credentials.json` (a dangling symlink counts) | No profile is live. That profile is probed through its own directory as normal, because its own login is stronger evidence than a ledger that is probably out of date. | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` |
+   | Names a profile with no `.credentials.json` | That profile is live. | nothing |
+
+   The account match below is never tried when a ledger file exists.
+
+   The ledger is trusted only if the profile root and `<root>/.rotator` are
+   real directories (not symlinks) owned by you that no other user can write
+   to (group write is allowed only when the group is your own per-user
+   group), and `ledger.json` is not a symlink, is owned by
+   you, is not writable by group or others, and is at most 64 KiB. If any of
+   these fails, or the file is not valid JSON, no profile is live and one
+   warning goes to stderr; the account match below is not tried:
+
+   ```
+   warning: could not read the login rotator's ledger; no profile is marked live in ~/.claude
+   ```
+
+   No warning text is ever built from the ledger's contents.
+3. **Account match**, only when there is no ledger file. A missing
+   `ledger.json`, with or without a `<root>/.rotator/` directory, is the
+   normal case when no rotator is installed, and prints nothing. A profile counts as
+   live if its directory passes the usual check, it has no
+   `.credentials.json`, and the `oauthAccount` in its `.claude.json` matches
+   the one in `~/.claude.json`:
+   - when both have an `accountUuid`, the uuids decide;
+   - otherwise both `emailAddress` values are compared without regard to
+     case;
+   - an empty or non-string value counts as missing and never matches.
+
+   If the profile root cannot be listed, none is marked and
+   `warning: could not list profiles; no profile is marked live in ~/.claude`
+   goes to stderr. If more than one profile matches, none is marked and one
+   warning goes to stderr:
+
+   ```
+   warning: more than one profile matches the account in ~/.claude; none is marked live
+   ```
+
+At most one row is marked. If `HOME` is unset or empty, no row is marked.
+The ownership and mode checks above exist only on Unix, so on Windows and
+other non-Unix platforms no row is marked and no warning is printed. In
+practice this works on Linux only: on macOS Claude keeps the login in the
+Keychain and writes no `~/.claude/.credentials.json`, so step 1 finds no
+login and no row is marked. When names are given, the mark appears only if
+the live profile is one of them, and the warnings above are printed only if
+at least one named profile has no `.credentials.json` of its own (a profile
+with its own login is never live, so the warning could not concern it).
+
+##### Swaps during the probe
+
+After every probe has finished, the same evidence is checked again: the
+ledger's `live` and `since` fields, or the matched account. `since` is only
+compared for equality; it is never printed or stored. If the evidence
+changed or can no longer be read, the login in `~/.claude` may have been
+swapped during the probe. The row is still shown, with its numbers and its
+mark, but its usage is [not recorded](#refreshing-auto-switch-readings)
+(the other rows are recorded as usual), and one line goes to stderr. The
+profile name in it is cleaned of control characters:
+
+```
+warning: the login in ~/.claude changed while profile "work" was probed; its usage was not recorded
+```
+
+On such a row, the numbers and any `--raw` text may belong to the login that
+replaced it. Run the command again for current numbers.
+
+The check has two known gaps. Closing them would need a lock on the
+rotator's ledger, which amplihack does not take:
+
+- A profile that becomes live only after the run started is not detected.
+  Its row is probed through its own directory, which by then has no login.
+- A swap from A to B and back to A during the run is missed when the ledger
+  has no `since` field, because the evidence before and after is the same.
+
+`profile usage` never writes, creates or locks anything under
+`<root>/.rotator/`; the rotator owns those files.
+
+##### Warnings about `~/.claude`
+
+Each of these is one fixed line on stderr. None of them changes the exit
+status, and none marks a profile live when there is doubt.
+
+| Warning | Cause |
+|---------|-------|
+| `warning: could not read the login rotator's ledger; no profile is marked live in ~/.claude` | `ledger.json` exists but is not trusted (wrong owner, writable by group or others, a symlink, over 64 KiB, or `.rotator` is not a real directory you own), is not valid JSON, or its `live` value is not a usable profile name or names a profile that does not exist. |
+| `warning: more than one profile matches the account in ~/.claude; none is marked live` | No ledger, and more than one profile with no login matches the account in `~/.claude.json`. |
+| `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
+| `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
+| `warning: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded` | The evidence for the live profile changed during the probe. See [Swaps during the probe](#swaps-during-the-probe). |
+
+#### JSON output
+
+`--json` prints one JSON array of row objects, in [display order](#ordering).
+stdout holds only the JSON; warnings go to stderr. With no profiles it prints
+`[]`. This is the stable interface for scripts, and the key table below is
+its specification. Keys are only ever added, never renamed or removed, and
+there is no version field.
+
+```json
+[
+  {
+    "profile": "work",
+    "account": "personal",
+    "default": true,
+    "leased_to": null,
+    "live_in": null,
+    "state": "ok",
+    "session": {
+      "label": "session",
+      "used_percentage": 20.0,
+      "resets_text": "Oct 16, 7pm (America/Los_Angeles)",
+      "resets_at": 1792202400
+    },
+    "week_all": {
+      "label": "all models",
+      "used_percentage": 30.0,
+      "resets_text": "Oct 22, 2am (America/Los_Angeles)",
+      "resets_at": 1792659600
+    },
+    "week_models": [
+      {
+        "label": "Fable",
+        "used_percentage": 0.0,
+        "resets_text": "Oct 22, 2am (America/Los_Angeles)",
+        "resets_at": 1792659600
+      }
+    ],
+    "error": null
+  }
+]
+```
+
+| Key | Type | Meaning |
+|-----|------|---------|
+| `profile` | string | Profile name. |
+| `account` | string | The account whose login is live in the profile's directory: the profile's own name unless it [hosts](#leases) another account. The numbers belong to this account. |
+| `default` | bool | Whether this is the default profile. |
+| `leased_to` | string or `null` | The directory this profile's login is lent to. |
+| `live_in` | string or `null` | `"~/.claude"` when this profile's login is [live in `~/.claude`](#logins-in-claude) and its numbers were read from there; otherwise `null`. The key is always present, and at most one row has a non-null value. The value is always the literal `~/.claude`, never the expanded home path. |
+| `state` | string | One of the [states](#states). |
+| `session` | window or `null` | The `Current session` line. |
+| `week_all` | window or `null` | The `Current week (all models)` line. |
+| `week_models` | array of windows | Every other `Current week (<model>)` line, in the order printed. Empty if none. |
+| `error` | string or `null` | The [reason](#states) for an `error` row, otherwise `null`. |
+| `raw` | object | Only with `--raw`: `{"stdout": "...", "stderr": "..."}`. The key is absent, not `null`, without `--raw`. |
+
+A window is `{label, used_percentage, resets_text, resets_at}`. `label` is
+`session` for the session window, `all models` for the all-models week, and
+the model name as printed (for example `Fable`) for a model week.
+`used_percentage` is a number as read (not clamped). `resets_text` is
+`null` when the line had no reset. `resets_at` is Unix epoch seconds, or
+`null` when there was no [reset text](#what-is-read) or it could not be
+resolved. JSON strings are not cleaned; they use JSON escaping.
+
+#### Refreshing auto-switch readings
+
+After printing, `profile usage` records what it read as auto-switch
+[readings](#readings), so candidate selection uses fresh numbers rather than
+only the last status-line update. The format of `usage.json` does not
+change. Nothing is recorded, and the output is the same, unless all of these
+hold:
+
+1. Auto-switch is set up: its [effective setting](#toggle-and-precedence) is
+   on, or `<root>/.auto-switch.d/` exists. Otherwise nothing is created, and
+   without `--json` one line goes to stderr:
+   `note: auto-switch not set up; usage record not updated`.
+2. None of `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN` or
+   `CLAUDE_CODE_OAUTH_TOKEN` is set to a non-empty value. With one set,
+   `claude` may report the usage of that credential rather than the
+   profile's login. The warning names the variable, never its value:
+   `auto-switch: ANTHROPIC_API_KEY is set; usage record not updated`.
+   Whether or not auto-switch is set up, and with or without `--json`, one
+   more line goes to stderr before probing, because every row may show that
+   credential's numbers:
+   `warning: ANTHROPIC_API_KEY is set; claude may report that credential's usage, not each profile's`.
+3. The global state lock can be taken within the usual wait. Otherwise:
+   `auto-switch: state is busy; usage record not updated`.
+4. No swap is in progress (no `journal.json`). `profile usage` never runs
+   recovery. Otherwise:
+   `auto-switch: swap in progress; usage record not updated`.
+
+Then, under the lock, for each row:
+
+- Only `ok`, `session_exhausted` and `weekly_exhausted` rows are recorded.
+  `spend_limit`, `not_logged_in`, `timeout`, `unparsed` and `error` rows are
+  not.
+- A row [live in `~/.claude`](#logins-in-claude) is recorded against its own
+  profile and account. It is not recorded if the login in `~/.claude`
+  changed during the probe.
+- The ledger is read again. If the account live in the profile's directory
+  changed while the probe ran, the row is not recorded:
+  `auto-switch: profile "work" changed accounts during the probe; its usage was not recorded`.
+- The reading goes to the account live in the directory (the row's
+  `account`), not necessarily the profile with that name.
+- `session` becomes `five_hour` and `week_all` becomes `seven_day`.
+  Model-specific lines are not recorded. Each window must pass the same
+  checks as a status-line reading: a finite percentage, clamped to `0`–`100`,
+  and a `resets_at` from one day before to eight days after now. A window
+  with no `resets_at` is not recorded.
+- If neither window passes, nothing is recorded for that account. If only
+  one passes, the other is kept from the stored reading while its reset time
+  is still in the future.
+- The reading has `observed_at` set to now and `source` set to `statusline`,
+  and is merged with the stored one the usual way.
+
+`usage.json` is written once, atomically, at the end. The 300-second
+quiet period after a swap does not apply: `/usage` asks the live login
+directly, so its answer is current. Any failure while recording prints one
+`auto-switch:` warning to stderr and the exit status stays 0.
+
+On platforms without auto-switch (Windows and other non-Unix), there are no
+lease marks, `account` is always the profile's own name, and nothing is
+recorded or noted.
+
+#### Exit status and refusals
+
+| Status | When |
+|--------|------|
+| `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures do not change it. |
+| `1` | Setup failed: Docker is active, the profile root is invalid, a name is invalid or does not exist, or `claude` cannot be found. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. |
+| `2` | Command-line usage error, such as `--timeout-secs 0`. |
+
+With no profiles, the table form prints
+`` no profiles; create one with `amplihack profile add <name>` `` and the JSON
+form prints `[]`.
+
+Like `profile run`, `usage` is refused when Docker is activated through the
+environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
+
+#### Privacy
+
+- Credential files are never opened, read or printed.
+- Claude's text appears only with `--raw`. Without it, it is dropped after
+  parsing and never stored, logged or recorded. `--raw` prints Claude's text
+  as it is, so it can include account details such as an e-mail address or
+  organisation name. Read it before you paste it into an issue or chat.
+- Error reasons are fixed text. Messages contain profile names, states,
+  percentages and times only, never token values, e-mail addresses or
+  organisation IDs. `account` and `leased_to` are profile names.
+- For [logins in `~/.claude`](#logins-in-claude), the only new text is the
+  literal label `~/.claude`. Account uuids, e-mail addresses, the rotator
+  ledger's other fields and credential paths are never printed. Credential
+  files are only checked for existence, without following symlinks.
+
 
 ## Configuration
 
@@ -476,7 +990,8 @@ A *reading* is the latest usage seen for one account:
 ```
 
 That is `<root>/.auto-switch.d/usage.json`. Times are Unix epoch seconds.
-`source` is `statusline` for readings from the wrapper and
+`source` is `statusline` for readings from the wrapper or from
+[`profile usage`](#refreshing-auto-switch-readings), and
 `usage_limit_failure` for a reading recorded from a step that hit its usage
 limit (see [Usage-limit reruns](#usage-limit-reruns)).
 
@@ -498,6 +1013,8 @@ limit (see [Usage-limit reruns](#usage-limit-reruns)).
   directory are not recorded and do not trigger another swap. After that, a
   reading identical to the last reading before the swap (same percentages and
   reset times) is still ignored, because it describes the previous account.
+  Readings recorded by `profile usage` skip this quiet period; see
+  [Refreshing auto-switch readings](#refreshing-auto-switch-readings).
 - **Merging.** The reading with the newer `observed_at` wins; on a tie, the
   one with the higher usage wins.
 - **Errors.** A damaged `usage.json` is treated as empty and overwritten by
@@ -889,6 +1406,10 @@ is no fallback for other storage.
 
 Errors print one line to stderr as `error: <message>` plus `hint: <next step>`
 and exit with status 1. Messages never include file contents.
+
+`profile usage` reports a profile it cannot read as a
+[state](#states) on that profile's row, not as an error; only its setup
+failures use this format.
 
 | Condition | Hint |
 |-----------|------|
