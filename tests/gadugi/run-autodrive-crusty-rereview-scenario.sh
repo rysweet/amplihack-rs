@@ -105,7 +105,11 @@ if [ "${1:-} ${2:-}" = "recipe run" ]; then
   done
   HEAD="$(git -C "$FIXTURE" rev-parse HEAD)"
   case "${3:-}" in
-    loop-health-evaluator) echo "LOOP_HEALTH: DONE — converged"; exit 0 ;;
+    # autodrive_loop.sh (#1512) trusts only the runner formatter's last
+    # completed step-04 block, so the stub prints exactly that.
+    loop-health-evaluator)
+      printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: DONE — converged\n'
+      exit 0 ;;
     autodrive-crusty-round)
       # As step-06 of autodrive-crusty-round.yaml does: under umask 077, the
       # old record goes first, then the new one is written under the label
