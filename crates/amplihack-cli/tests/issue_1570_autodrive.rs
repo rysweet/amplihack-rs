@@ -56,7 +56,11 @@ case "${1:-} ${2:-}" in
       h=$(cat "$STUB_STATE/health" 2>/dev/null || echo 0)
       h=$((h + 1))
       printf '%s' "$h" > "$STUB_STATE/health"
-      if [ "$h" -lt 2 ]; then echo "LOOP_HEALTH: CONTINUE"; exit 0; fi
+      # The loop trusts only the runner's step-04 status block (#1512).
+      if [ "$h" -lt 2 ]; then
+        printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: CONTINUE\n'
+        exit 0
+      fi
       echo "LOOP_HEALTH: STUCK"; exit 1
     fi
     prev=
