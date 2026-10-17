@@ -221,3 +221,79 @@ fn bootstrap_leaves_unparseable_settings_untouched() {
         "no backup of a file left unchanged"
     );
 }
+
+/// Issue #1538 makes an implicit re-stage reconcile a selected Codex as
+/// strictly as `amplihack install`. That is safe only because an older binary
+/// never reaches the reconcile: self-heal's Guard #1 and the bootstrap's
+/// stamp check both return first. With Codex selected, an installed Codex
+/// ledger and a Codex on PATH, neither entry point may run Codex or touch
+/// `~/.codex` or the ledger under a newer stamp.
+#[test]
+fn newer_stamp_with_codex_selected_never_runs_codex() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path();
+    let fixture = tempfile::tempdir().unwrap();
+    let hooks_stub = create_exe_stub(&fixture.path().join("stub_bin"), "amplihack-hooks");
+    let marker = fixture.path().join("codex-ran");
+    let codex_bin = fixture.path().join("codex_bin");
+    fs::create_dir_all(&codex_bin).unwrap();
+    let codex = codex_bin.join("codex");
+    fs::write(
+        &codex,
+        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", marker.display()),
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&codex, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut env = IsolatedHome::new(home);
+    env.set("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", &hooks_stub);
+    env.set("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL", "1");
+    let mut path_dirs = vec![codex_bin];
+    path_dirs.extend(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    ));
+    env.set("PATH", std::env::join_paths(path_dirs).unwrap());
+
+    create_minimal_staged_assets(home);
+    fs::create_dir_all(home.join(".amplihack/codex")).unwrap();
+    fs::write(
+        home.join(".amplihack/codex/ownership.json"),
+        b"{\"schema_version\":1}",
+    )
+    .unwrap();
+    fs::create_dir_all(home.join(".codex")).unwrap();
+    fs::write(home.join(".codex/hooks.json"), b"{\"hooks\":{}}\n").unwrap();
+    fs::write(home.join(".codex/config.toml"), b"model = \"x\"\n").unwrap();
+    let newer = newer_version();
+    version_stamp::write_installed_version(&newer).unwrap();
+    let before = snapshot(home);
+
+    assert_home_is(home);
+    crate::self_heal::set_downgrade_warned(false);
+    crate::freshness::with_provider("codex", || {
+        assert!(crate::freshness::codex_selected());
+        let calls = Cell::new(0u32);
+        crate::self_heal::ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "codex"]),
+            &mut Vec::new(),
+            counting_installer(&calls),
+        )
+        .expect("a downgrade refusal is not a self-heal failure");
+        assert_eq!(calls.get(), 0, "self-heal must not install over v{newer}");
+        ensure_framework_installed_with(&mut Vec::new())
+            .expect("a downgrade refusal is not a launch failure");
+    });
+
+    assert!(
+        !marker.exists(),
+        "an older binary ran Codex under a v{newer} stamp"
+    );
+    assert_eq!(
+        changes(&before, &snapshot(home)),
+        Vec::<String>::new(),
+        "an older binary must leave ~/.codex and the Codex ledger untouched"
+    );
+}
