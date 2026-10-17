@@ -152,6 +152,8 @@ steps:
     context:
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{pr_number}}"
+      existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
@@ -162,6 +164,8 @@ steps:
     context:
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{pr_number}}"
+      existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
@@ -174,9 +178,22 @@ steps:
       set -uo pipefail
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      PR="$(g "${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}" pr '')"
-      MERGE="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result NOT_MERGED)"
-      CRUSTY="$(g "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" loop_result unknown)"
+      # #1543: a phase skipped as already done leaves its bare output empty;
+      # read every phase output through its RECIPE_VAR_ name as well, and take
+      # the PR from the run's own pr_number before the phase outputs.
+      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
+      MG="${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}"
+      CR="${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}"
+      PR=""
+      for C in "${PR_NUMBER:-}" "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
+        case "$C" in ''|*[!0-9]*) continue ;; esac
+        PR="$C"; break
+      done
+      MERGE="$(g "$MG" merge_result NOT_MERGED)"
+      CRUSTY="$(g "$CR" loop_result unknown)"
+      # Only plain tokens reach the report; anything else cannot forge a key.
+      [[ "$MERGE" =~ ^[A-Za-z0-9_-]*$ ]] || MERGE="NOT_MERGED"
+      [[ "$CRUSTY" =~ ^[A-Za-z0-9_-]*$ ]] || CRUSTY="unknown"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;

@@ -65,7 +65,7 @@ AUTODRIVE_RECIPES=(
   autodrive-merge-loop
 )
 AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
-  autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh)
+  autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
 # the round reads the directory from its output. A scalar output reaches bash
 # as RECIPE_VAR_<output> and as the upper-case name (recipe-runner 0.3.8,
@@ -4411,7 +4411,10 @@ rec_field() { "$REAL_AMPLIHACK" orch helper extract-json < "$1" \
   | "$REAL_AMPLIHACK" orch helper extract-field --field "$2" --default MISSING; }
 
 SD="${WORK}/state-ok"; mkdir -p "${SD}"
-PRE="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${SD}\",\"reason\":\"r\"}"
+# #1543: step-02 of both loops refuses a preflight without repo, so it is part
+# of the fixture; the loop must get it as --repo.
+PR_REPO="${WORK}/pr-worktree"; mkdir -p "${PR_REPO}"
+PRE="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${SD}\",\"repo\":\"${PR_REPO}\",\"reason\":\"r\"}"
 
 CL2="$(body_of autodrive-crusty-loop step-02-crusty-loop)"
 CL3="$(body_of autodrive-crusty-loop step-03-record-crusty-phase)"
@@ -4433,9 +4436,10 @@ done
 run_body "$CL2" RECIPE_VAR_crusty_loop_preflight="$PRE" RECIPE_VAR_task_description="drive PR 42"
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
+   && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${PR_REPO}" ] \
    && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null \
    && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
-  pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir and pr through RECIPE_VAR_crusty_loop_preflight"
+  pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir, pr and repo through RECIPE_VAR_crusty_loop_preflight"
 else
   fail "1511-crusty-loop-02" "crusty-loop step-02 did not get past the state_dir guard, or its stderr says 'no state_dir' (rc=${BODY_RC}); stderr: ${BODY_ERR}"
 fi
@@ -4453,8 +4457,9 @@ fi
 run_body "$ML2" RECIPE_VAR_merge_loop_preflight="$PRE" RECIPE_VAR_task_description="drive PR 42"
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
+   && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${PR_REPO}" ] \
    && grep -qxF "autodrive_qa_evidence=${SD}/qa-evidence.json" "${CALLS}/loop-args" 2>/dev/null; then
-  pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir through RECIPE_VAR_merge_loop_preflight"
+  pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir and repo through RECIPE_VAR_merge_loop_preflight"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"
 fi

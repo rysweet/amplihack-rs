@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-06
+last_updated: 2026-10-17
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -21,6 +21,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 ## Contents
 
 - [The three phases](#the-three-phases)
+- [PR head and worktree resolution](#pr-head-and-worktree-resolution)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
 - [How the merge round applies merge-ready](#how-the-merge-round-applies-merge-ready)
@@ -31,6 +32,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
 - [Recursion context propagation](#recursion-context-propagation)
 - [Resumability](#resumability)
+- [The run report](#the-run-report)
 - [No short timeouts](#no-short-timeouts)
 - [Files](#files)
 - [Tests](#tests)
@@ -48,6 +50,205 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 
 Phase 1 is a no-op when an open PR already exists for the branch, and the whole
 workflow short-circuits when the PR is already merged.
+
+## PR head and worktree resolution
+
+Every evidence step measures the PR head, whichever directory the run starts
+from. A run launched from the repository's main checkout with `pr_number` set
+does not record the main checkout's HEAD as `head_sha`, and does not run QA on
+the main checkout's tree.
+
+```bash
+# Launched from the main checkout; feat/x is checked out in worktrees/feat/x.
+amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
+```
+
+### When resolution runs
+
+Resolution runs in step-01 (the preflight) of `autodrive-crusty-loop.yaml` and
+`autodrive-merge-loop.yaml` when both of these hold:
+
+- the user supplied `pr_number`. The composer passes it to both loops as
+  `autodrive_pr_input`, together with `existing_branch`;
+- the phase is going to run (`should_run` would be `true`).
+
+When `pr_number` was not supplied, nothing changes. The loops use
+`${REPO_PATH:-.}`, call no `gh` head lookup, and never refuse on these grounds.
+
+When resolution does run, `REPO_PATH` must be an absolute path or `.`. The
+preflight changes into `REPO_PATH` and then passes it to the resolver again,
+so a relative path such as `sub` is looked up as `sub/sub`. The resolver
+refuses it with exit `3` and the loop does not start. It never falls back to
+the current directory.
+
+### The resolver
+
+`amplifier-bundle/tools/autodrive_pr_head.sh` is read-only. It never creates,
+fetches into, checks out, commits in, or otherwise changes any worktree.
+
+```bash
+amplifier-bundle/tools/autodrive_pr_head.sh --pr 1543 --branch feat/x --repo .
+```
+
+On success it prints one JSON line on stdout. Values in angle brackets are
+placeholders:
+
+```json
+{"pr":"1543","head_sha":"<40-hex headRefOid>","head_ref":"feat/x","worktree":"<repo>/worktrees/feat/x","worktree_head":"<40-hex HEAD>","head_matches":"true","reason":"ok"}
+```
+
+| Argument | Required | Meaning |
+| --- | --- | --- |
+| `--pr N` | yes | PR number. Must match `^[1-9][0-9]*$`. |
+| `--branch B` | no | The run's `existing_branch`. Tried before the PR's `headRefName`. |
+| `--repo R` | no | Repository to search. Defaults to `.`. |
+
+The tool reads `headRefOid`, `headRefName` and `state` with one
+`gh pr view N --json` call, then picks the worktree in this order:
+
+1. `R` itself, if `git branch --show-current` there equals `B` or
+   `headRefName`. This covers a main checkout that has the PR branch checked out.
+2. The `git -C R worktree list --porcelain` entry whose branch is
+   `refs/heads/B`, then `refs/heads/<headRefName>`. Prunable and bare entries
+   are skipped, and so is any entry whose git common dir is not `R`'s.
+3. Otherwise, refuse.
+
+Branch names are compared as literal strings. A branch called `--force` is
+matched, not passed to `git` as an option.
+
+On success the tool prints exactly one JSON line on stdout and exits `0`.
+On failure, stdout is **empty**. The tool writes one line to stderr in the form
+`autodrive_pr_head: <reason>: <detail>`, sometimes followed by more lines, and
+exits non-zero. The preflight acts on the exit code alone. It never parses a
+failure from stdout, so there is no failure JSON for the resolver and the
+preflight to disagree about.
+
+| Field | Meaning |
+| --- | --- |
+| `head_sha` | The PR's `headRefOid` on GitHub. |
+| `head_ref` | The PR's `headRefName`. |
+| `worktree` | Absolute, symlink-resolved path of the chosen worktree. |
+| `worktree_head` | `git rev-parse HEAD` in that worktree. |
+| `head_matches` | `"true"` when `worktree_head` equals `head_sha`, else `"false"`. |
+
+| Exit | `reason` | Cause |
+| --- | --- | --- |
+| `0` | `ok` (in the JSON) | Worktree found. |
+| `2` | `usage` (on stderr) | Bad or missing arguments. |
+| `3` | `no-pr-worktree` (on stderr) | No worktree has the PR branch checked out. |
+| `3` | `ambiguous-pr-worktree` (on stderr) | More than one worktree matches. Each matching path follows on its own stderr line. |
+| `4` | `pr-lookup-failed` (on stderr) | `gh pr view` failed, or returned an empty `headRefName` or a `headRefOid` that is not 40 or 64 hex characters. A `gh` failure is summarised as `gh pr view failed (rc=N)`. `gh`'s own output is never echoed, so auth errors and tokens do not reach the log. |
+
+### Refusal
+
+When resolution fails, the preflight exits non-zero before it emits
+`should_run`. Neither the round steps nor the merge gate run. There is no
+fallback to the current directory. Each message names the loop that refused:
+`merge loop` from `autodrive-merge-loop.yaml`, `crusty loop` from
+`autodrive-crusty-loop.yaml`. The crusty loop runs first, so on a fresh run you
+normally see the crusty-loop wording.
+
+The resolver's own stderr line comes first, then the preflight's `ERROR`.
+
+**No worktree** (resolver exit `3`, `no-pr-worktree`):
+
+```
+autodrive_pr_head: no-pr-worktree: PR #1543 head branch 'feat/x' has no worktree (searched --repo '<repo>' and git worktree list)
+ERROR: PR #1543 head branch 'feat/x' has no single worktree (searched REPO_PATH=<repo> and git worktree list); refusing to enter the crusty loop (#1543)
+```
+
+To recover, check the branch out in a worktree and re-run. Local state is
+kept, so finished phases are not redone:
+
+```bash
+git worktree add worktrees/feat/x feat/x
+amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
+```
+
+**Ambiguous worktree** (resolver exit `3`, `ambiguous-pr-worktree`). Each
+matching path is listed:
+
+```
+autodrive_pr_head: ambiguous-pr-worktree: PR #1543 branch 'feat/x' is checked out in 2 worktrees; check another branch out in all but one, or remove the extras
+  <repo>/worktrees/feat/x
+  <repo>/worktrees/feat/x-copy
+ERROR: PR #1543 head branch 'feat/x' has no single worktree (searched REPO_PATH=<repo> and git worktree list); refusing to enter the crusty loop (#1543)
+```
+
+To recover, check another branch out in all but one of the listed worktrees,
+or remove the extras with `git worktree remove <path>`, then re-run.
+
+**Any other resolver failure** (fail closed, exits non-zero with the reason):
+
+- the resolver is missing from the tools directory the state helper was found in;
+- it exits non-zero for any other reason, including `2` (usage) and `4`
+  (`pr-lookup-failed`, reported as `gh pr view failed (rc=N)` with no `gh` or
+  auth output);
+- it exits `0` but stdout is not one parseable JSON line, `worktree` is empty,
+  or `head_sha` is not 40 or 64 hex characters.
+
+```
+autodrive_pr_head: pr-lookup-failed: gh pr view failed (rc=1) for PR #1543
+ERROR: PR #1543 head lookup failed (autodrive_pr_head exit 4); refusing to enter the crusty loop (#1543)
+```
+
+### A worktree behind the PR head
+
+If the worktree's HEAD is not `headRefOid`, resolution does not refuse. The
+resolver sets `head_matches` to `"false"` and prints both SHAs and the
+recovery command on stderr:
+
+```
+WARNING: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha>; run: git -C <repo>/worktrees/feat/x pull --ff-only
+```
+
+Evidence records the worktree's real `git rev-parse HEAD`, never `headRefOid`.
+
+Nothing in the run closes the gap. The round's base-sync step fetches and
+merges only the **base** branch and then runs `git push`. It never pulls the PR
+branch. On a stale worktree that push fails as a non-fast-forward, which is
+only a warning. Base-merge commits and crusty-fix commits then land on the
+stale head, so the worktree diverges further from the PR.
+
+The only enforcement is the merge gate. It refuses evidence whose `head_sha`
+is not the PR head it is about to merge (see [No silent merge](#no-silent-merge)).
+The merge loop keeps refusing until you bring the worktree up to date and
+re-run:
+
+```bash
+git -C worktrees/feat/x pull --ff-only
+amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
+```
+
+If `pull --ff-only` fails because local commits have already diverged, rebase
+or reset the worktree onto `origin/feat/x` yourself before re-running.
+
+### What uses the resolved worktree
+
+The preflight adds `repo` (the worktree) and `head_sha` to its JSON. Every path
+string in that JSON is escaped, so a worktree path containing `"` cannot forge
+`should_run` or any other field.
+
+| Step | Uses `repo` for |
+| --- | --- |
+| step-02, both loops | `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` through the same `${X:-${RECIPE_VAR_x:-}}` fallback as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, `qa-team` run and its `head_sha`, CI wait, crusty review and fixes, round records, loop baseline. |
+| merge-loop step-04, crusty-loop step-03 | **Nothing.** These steps write only inside `state_dir`, so they do not depend on the working directory. |
+| merge-loop step-03 (merge gate) | **Nothing.** The gate stays on the launch side and binds to `headRefOid` from `gh`. Resolver output never reaches it. |
+
+Tools are still looked up from the launch side. If `AMPLIHACK_HOME` is unset,
+step-02 sets it to the tree it took `autodrive_loop.sh` from: the launch
+checkout, `~/.copilot` or `~/.amplihack`. The rounds' tool lookups therefore
+never fall through to an `amplifier-bundle/tools/` that the PR branch adds,
+and tools on the PR branch cannot produce the QA evidence the gate reads. An
+`AMPLIHACK_HOME` that is already set is never changed.
+
+**Known residual risk.** Recipes are discovered relative to the loop's
+working directory, which is now the PR worktree. If the PR branch carries its
+own `amplifier-bundle/recipes/` (in practice, only when the run drives
+amplihack-rs itself), the round recipes may come from the PR, not the launch
+tree. The merge gate is not affected: it stays on the launch side and binds
+to `headRefOid`. The round steps run the PR's own code by design (tests,
+hooks, `qa-team`), so drive only PRs whose code you are prepared to run.
 
 ## Why there is no iteration cap
 
@@ -775,13 +976,13 @@ already used the dual-name form.
 A read is one `${<NAME>:-` occurrence, so a line that reads the same output
 twice counts twice. Reads made inside a bundled tool, such as the merge
 round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 29 in all:
+here; that file uses the same form. There are 30 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 3 |
 | `autodrive-build.yaml` | 1 |
-| `autodrive-crusty-loop.yaml` | 5 |
+| `autodrive-crusty-loop.yaml` | 6 |
 | `autodrive-crusty-round.yaml` | 7 |
 | `autodrive-merge-loop.yaml` | 5 |
 | `autodrive-merge-round.yaml` | 8 |
@@ -1281,6 +1482,42 @@ Resolved concern ids are handed back to crusty on a resumed run. Crusty may
 still re-raise one — but only with new evidence in the current diff, and it is
 asked to say what that evidence is.
 
+## The run report
+
+`autodrive-report` reports the merge the run made, even when earlier phases
+were skipped as already done. A run given `pr_number` for an open PR whose
+build and crusty phases are already complete writes the human-readable line to
+**stderr** and only the JSON to **stdout**. The JSON is the step's output:
+
+```
+AUTO_DRIVE_TO_MERGE: MERGED — PR #27 (crusty loop: unknown, merge gate: MERGED)
+```
+
+```json
+{"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED"}
+```
+
+Each phase result is read from its environment variable, then from the
+`RECIPE_VAR_` form: `${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}`, and the
+same for `MERGE_GATE_RESULT` and `CRUSTY_LOOP_RESULT`. A skipped phase leaves
+its own result empty, so the report does not depend on it.
+
+`pr` is the first non-empty value of:
+
+1. `PR_NUMBER`, then `RECIPE_VAR_pr_number`;
+2. the merge gate result's `pr`;
+3. the build result's `pr`.
+
+The chosen `pr` must be all digits; anything else is reported as `""`.
+`merge_result` and `crusty_loop` must match `^[A-Za-z0-9_-]*$`; anything else
+becomes `NOT_MERGED` or `unknown`. The outcome mapping is:
+
+| `merge_result` | `outcome` |
+| --- | --- |
+| `MERGED`, `ALREADY_MERGED` | `MERGED` |
+| `DRY_RUN` | `DRY_RUN` |
+| anything else | `NOT_MERGED` |
+
 ## No short timeouts
 
 No step in any of these recipes declares `timeout` or `timeout_seconds`, and no
@@ -1312,6 +1549,7 @@ or single-digit-minute bound is introduced.
 | `amplifier-bundle/tools/autodrive_round_evidence.sh` | tool | The merge round's deterministic step bodies, and the crusty range the re-review reads: crusty range and evidence, the qa evidence hash, the measured downgrade, the findings and the round record. |
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
+| `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | The criteria the merge round reads. |
 
@@ -1322,7 +1560,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Test | Location |
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
+| PR head and worktree resolution, refusal, run report (#1543) | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
+| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -1330,6 +1569,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 cargo test -p amplihack --test integration auto_drive_to_merge::
 cargo test -p amplihack --test integration merge_ready_platform_contract::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
 ```

@@ -97,7 +97,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `task_description` | `""` | What to build. Passed to `default-workflow`. |
 | `requirements` | `""` | Extra requirements, passed through. |
 | `repo_path` | `.` | Repository to work in. |
-| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. |
+| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. With `pr_number`, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
 | `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. |
 
