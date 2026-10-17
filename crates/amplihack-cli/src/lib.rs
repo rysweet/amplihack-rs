@@ -4,6 +4,7 @@
 //! binary discovery, environment construction, process management with signal
 //! handling, and nesting detection.
 
+pub(crate) mod agent_binary_notice;
 pub mod auto_mode_append;
 pub mod auto_mode_completion_signals;
 pub mod auto_mode_completion_verifier;

@@ -103,6 +103,7 @@ esac
                 .env("AMPLIHACK_AGENT_BINARY", "claude")
                 .env("AMPLIHACK_SOURCE_ROOT", &source)
                 .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+                .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
                 .env(
                     "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                     tools.join("amplihack-hooks"),
@@ -169,6 +170,9 @@ esac
             .env("AMPLIHACK_AGENT_BINARY", "codex")
             .env("AMPLIHACK_SOURCE_ROOT", &source)
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
+            // A newer published release would otherwise prompt "Update now?"
+            // on this tty and consume the stdin the launch must receive.
+            .env("AMPLIHACK_NO_UPDATE_CHECK", "1")
             .env(
                 "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
                 tools.join("amplihack-hooks"),
