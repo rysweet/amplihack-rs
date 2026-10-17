@@ -22,9 +22,8 @@ author: "Amplihack Team"
 tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
 #
-# Composition: the deterministic measurement half lives in
-# `loop-evidence-collector.yaml` and is invoked as step-01. This file owns the
-# judgement, the verdict resolution, and the gate.
+# Composition: step-01 invokes the measurement half, loop-evidence-collector.yaml;
+# this file owns the judgement, the verdict resolution, and the gate.
 #
 # Consumption contract (see docs/reference/loop-health-evaluator.md):
 #   - type: "recipe" step invoking this brick after each round of your loop
@@ -37,9 +36,8 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # so every step-output read below uses the dual-name idiom; drop it and the
 # recipe goes silently inert.
 #
-# No step in this file declares a timeout. Per issue #439 the recipe runner
-# owns the ceiling; there is deliberately no seconds-scale or single-digit-
-# minute bound on any step here.
+# No step here declares a timeout: per issue #439 the recipe runner owns the
+# ceiling, so no step has a seconds-scale or single-digit-minute bound.
 
 recursion:
   max_depth: 6
@@ -57,6 +55,8 @@ context:
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
   loop_repo_path: "."
+  # step-02's agent starts here, never in a judged loop_repo_path (#1528).
+  loop_agent_working_dir: "."
   loop_baseline_ref: ""
   loop_child_exit_code: ""
   loop_findings_current: ""
@@ -99,7 +99,7 @@ steps:
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
     agent: "amplihack:analyzer"
-    working_dir: "{{loop_repo_path}}"
+    working_dir: "{{loop_agent_working_dir}}"
     prompt: |
       # Loop-health evaluation — is this loop still doing useful work?
 

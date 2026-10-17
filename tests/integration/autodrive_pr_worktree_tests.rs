@@ -1435,12 +1435,167 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
             argv.iter().any(|arg| arg == "repo_path=/stub/wt"),
             "{recipe}: {argv:?}"
         );
+        // The launch checkout reaches the loop exactly once, as the review
+        // dir where the read-only judging agents start (#1528, round 3). It
+        // never reaches `--repo` or `repo_path`, where commits happen.
+        let review_at = argv
+            .iter()
+            .position(|arg| arg == "--review-dir")
+            .unwrap_or_else(|| panic!("{recipe}: loop gets --review-dir: {argv:?}"));
+        assert_eq!(argv[review_at + 1], launch, "{recipe}: {argv:?}");
         assert!(
             !argv
                 .iter()
-                .any(|arg| arg.contains(&launch) || arg == "repo_path=."),
-            "{recipe}: the launch checkout must not reach the loop: {argv:?}"
+                .enumerate()
+                .any(|(i, arg)| i != review_at + 1
+                    && (arg.contains(&launch) || arg == "repo_path=.")),
+            "{recipe}: the launch checkout must reach the loop only as --review-dir: {argv:?}"
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Round 3: judging agents never start in the tree they judge (#1528)
+// ---------------------------------------------------------------------------
+
+fn agent_steps(recipe: &str) -> Vec<(String, String)> {
+    load_recipe(recipe)
+        .get("steps")
+        .and_then(Value::as_sequence)
+        .expect("recipe has steps")
+        .iter()
+        .filter(|step| step.get("agent").is_some())
+        .map(|step| {
+            let id = step
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or("?")
+                .to_string();
+            let wd = step
+                .get("working_dir")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{recipe}: agent step `{id}` must set working_dir"))
+                .to_string();
+            (id, wd)
+        })
+        .collect()
+}
+
+/// The agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from its
+/// working directory. Only the commit step (step-04) may start in the PR
+/// worktree; the review, merge-ready assessment and loop-health analyzer start
+/// in the launch-side review dir, so the branch under review never instructs
+/// the agent that decides whether it passes or when the loop stops.
+#[test]
+fn judging_agents_do_not_take_working_dir_from_the_pr_worktree() {
+    for (recipe, commit_step) in ROUNDS {
+        let steps = agent_steps(recipe);
+        assert!(
+            steps.len() >= 2,
+            "{recipe}: expected a judging and a commit agent: {steps:?}"
+        );
+        for (id, wd) in &steps {
+            if id == commit_step {
+                assert_eq!(
+                    wd, "{{repo_path}}",
+                    "{recipe}: {id} commits in the PR worktree"
+                );
+            } else {
+                assert_eq!(
+                    wd, "{{review_dir}}",
+                    "{recipe}: judging agent `{id}` must start in review_dir, not the PR worktree"
+                );
+            }
+        }
+        // A review_dir default of "." would resolve against the round's
+        // working dir, the PR worktree. It must be empty, and refused.
+        let ctx = load_recipe(recipe);
+        let default = ctx
+            .get("context")
+            .and_then(|c| c.get("review_dir"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{recipe}: context must declare review_dir"));
+        assert_eq!(default, "", "{recipe}: review_dir has no default");
+        let first = ctx
+            .get("steps")
+            .and_then(Value::as_sequence)
+            .and_then(|s| s.first())
+            .and_then(|s| s.get("id"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        assert_eq!(
+            first, "step-00-review-dir-guard",
+            "{recipe}: the guard runs before anything else"
+        );
+    }
+
+    let steps = agent_steps("loop-health-evaluator.yaml");
+    assert_eq!(
+        steps,
+        vec![(
+            "step-02-evaluate-loop-health".to_string(),
+            "{{loop_agent_working_dir}}".to_string()
+        )],
+        "the analyzer starts in loop_agent_working_dir, never in loop_repo_path"
+    );
+}
+
+fn run_review_dir_guard(recipe: &str, repo: &Path, review: Option<&Path>) -> Output {
+    let command = step_field(recipe, "step-00-review-dir-guard", "command");
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        .arg(&command)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("REPO_PATH", repo);
+    if let Some(review) = review {
+        cmd.env("REVIEW_DIR", review);
+    }
+    cmd.output().expect("run step-00")
+}
+
+#[test]
+fn round_review_dir_guard_refuses_the_tree_under_review() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canonicalize");
+    let pr = root.join("pr-worktree");
+    let launch = root.join("launch");
+    fs::create_dir_all(pr.join("sub")).expect("mkdir pr");
+    fs::create_dir_all(&launch).expect("mkdir launch");
+    // A symlink that points into the PR worktree is still the PR worktree.
+    std::os::unix::fs::symlink(&pr, root.join("alias")).expect("symlink");
+
+    for (recipe, _) in ROUNDS {
+        let ok = run_review_dir_guard(recipe, &pr, Some(&launch));
+        assert_eq!(
+            ok.status.code(),
+            Some(0),
+            "{recipe}: launch side passes\n{}",
+            describe(&ok)
+        );
+        let cases: [(&str, Option<PathBuf>); 6] = [
+            ("missing", None),
+            ("empty", Some(PathBuf::new())),
+            ("same", Some(pr.clone())),
+            ("inside", Some(pr.join("sub"))),
+            ("symlinked", Some(root.join("alias"))),
+            ("absent", Some(root.join("nope"))),
+        ];
+        for (label, review) in &cases {
+            let out = run_review_dir_guard(recipe, &pr, review.as_deref());
+            assert_ne!(
+                out.status.code(),
+                Some(0),
+                "{recipe}/{label}: must refuse\n{}",
+                describe(&out)
+            );
+            assert!(
+                text(&out.stderr).contains("#1528"),
+                "{recipe}/{label}: say why\n{}",
+                describe(&out)
+            );
+        }
     }
 }
 

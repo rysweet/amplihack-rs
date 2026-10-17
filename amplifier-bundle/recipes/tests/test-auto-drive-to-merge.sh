@@ -107,6 +107,10 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   RECIPE="$(basename "${3:-}" .yaml)"
   echo "$RECIPE" >> "${STUB_CALLS:-/dev/null}"
   echo "${3:-}" >> "${STUB_CALLS:-/dev/null}.paths"
+  # Full argv, one call per line, so a test can see where each recipe's
+  # agents would start (--working-dir, review_dir, loop_agent_working_dir).
+  # Newlines inside an argument (loop_history) are flattened to spaces.
+  { printf '%s' "$*" | tr '\n' ' '; echo; } >> "${STUB_CALLS:-/dev/null}.argv"
   RECORD=""; for a in "$@"; do case "$a" in autodrive_round_record=*) RECORD="${a#*=}" ;; esac; done
   case "$RECIPE" in
     loop-health-evaluator)
@@ -311,6 +315,65 @@ if ! grep -qvE '^/' "${LOOP_DIR}/calls.paths" 2>/dev/null; then
 else
   fail "1528-no-bare-recipe-names" "a bare recipe name reached recipe run: $(grep -vE '^/' "${LOOP_DIR}/calls.paths")"
 fi
+
+# The judging agents start on the launch side too (#1528, round 3). The recipe
+# FILES are not the only instructions an agent takes from its working
+# directory: the agent CLI loads AGENTS.md, CLAUDE.md and .claude hooks from
+# it. The round gets the launch checkout as `review_dir` (where its review /
+# merge-ready agent starts) and the evaluator runs with that checkout as its
+# working dir and `loop_agent_working_dir`. The tampered worktree is only ever
+# `repo_path` / `loop_repo_path`, where the commit step and the measurements go.
+LAUNCH="${WORK}/launch-checkout"; mkdir -p "${LAUNCH}"
+LAUNCH_REAL="$(cd "${LAUNCH}" && pwd -P)"
+TAMPERED_REAL="$(cd "${TAMPERED}" && pwd -P)"
+LOOP_DIR="${WORK}/loop-review-dir"; mkdir -p "${LOOP_DIR}"
+export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+( cd "${LAUNCH}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+  bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+    --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" \
+    --context "repo_path=${TAMPERED}" \
+    >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err" ); rc=$?
+ROUND_ARGV="$(grep -F 'autodrive-crusty-round.yaml' "${LOOP_DIR}/calls.argv" 2>/dev/null | head -n1)"
+HEALTH_ARGV="$(grep -F 'loop-health-evaluator.yaml' "${LOOP_DIR}/calls.argv" 2>/dev/null | head -n1)"
+REVIEWS="$(printf '%s\n' "${ROUND_ARGV}" | tr ' ' '\n' | grep '^review_dir=')"
+if [ "$rc" -eq 0 ] && [ -n "${ROUND_ARGV}" ] && [ -n "${HEALTH_ARGV}" ] \
+   && [ "${REVIEWS}" = "review_dir=${LAUNCH_REAL}" ] \
+   && printf '%s' "${HEALTH_ARGV}" | grep -qF -- "--working-dir ${LAUNCH_REAL} " \
+   && printf '%s' "${HEALTH_ARGV}" | grep -qF "loop_agent_working_dir=${LAUNCH_REAL}" \
+   && printf '%s' "${HEALTH_ARGV}" | grep -qF "loop_repo_path=${TAMPERED}" \
+   && ! printf '%s' "${HEALTH_ARGV}" | grep -qE -- "--working-dir (${TAMPERED}|${TAMPERED_REAL}) |loop_agent_working_dir=(${TAMPERED}|${TAMPERED_REAL})"; then
+  pass "1528-judging-agents-launch-side" "review and evaluator agents start in the launch checkout, not the PR worktree"
+else
+  fail "1528-judging-agents-launch-side" "rc=${rc}; round: ${ROUND_ARGV}; health: ${HEALTH_ARGV}; err: $(tail -n5 "${LOOP_DIR}/err")"
+fi
+
+# A review dir that IS the tree under review, or sits inside it, is refused
+# before a single round runs: given explicitly, defaulted from the loop's own
+# working directory, or smuggled in as a round --context.
+mkdir -p "${TAMPERED}/sub"
+for case_ in explicit inside default context; do
+  LOOP_DIR="${WORK}/loop-review-refused-${case_}"; mkdir -p "${LOOP_DIR}"
+  export STUB_CALLS="${LOOP_DIR}/calls" STUB_SHOW_CALLS="${LOOP_DIR}/shows"
+  case "$case_" in
+    explicit) RD_ARGS=(--review-dir "${TAMPERED}"); RUN_IN="${LAUNCH}" ;;
+    inside)   RD_ARGS=(--review-dir "${TAMPERED}/sub"); RUN_IN="${LAUNCH}" ;;
+    default)  RD_ARGS=(); RUN_IN="${TAMPERED}" ;;
+    context)  RD_ARGS=(--context "review_dir=${TAMPERED}"); RUN_IN="${LAUNCH}" ;;
+  esac
+  ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
+    bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
+      --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+      --repo "${TAMPERED}" "${RD_ARGS[@]}" --state-dir "${LOOP_DIR}" \
+      >"${LOOP_DIR}/out" 2>"${LOOP_DIR}/err" ); rc=$?
+  if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}/calls" ] \
+     && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}/out" \
+     && grep -qF '#1528' "${LOOP_DIR}/err"; then
+    pass "1528-review-dir-refused-${case_}" "a review dir in the tree under review is refused before any round"
+  else
+    fail "1528-review-dir-refused-${case_}" "rc=${rc}; calls: $(cat "${LOOP_DIR}/calls" 2>/dev/null); out: $(cat "${LOOP_DIR}/out")"
+  fi
+done
 
 # A loop helper that was itself picked up from inside the tree under review
 # would resolve "launch-side" recipes from that tree. It must refuse before a

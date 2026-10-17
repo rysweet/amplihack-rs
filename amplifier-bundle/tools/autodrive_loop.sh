@@ -34,7 +34,7 @@ set -uo pipefail
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 
 LOOP_NAME=""; ROUND_RECIPE=""; CLEAN_TOKEN=""; VERDICT_FIELD=""
-REPO="."; STATE_DIR=""; ROUND_CTX=()
+REPO="."; REVIEW_DIR=""; STATE_DIR=""; ROUND_CTX=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -43,8 +43,18 @@ while [ $# -gt 0 ]; do
     --clean-token)   CLEAN_TOKEN="${2:-}"; shift 2 ;;
     --verdict-field) VERDICT_FIELD="${2:-}"; shift 2 ;;
     --repo)          REPO="${2:-}"; shift 2 ;;
+    --review-dir)    REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir)     STATE_DIR="${2:-}"; shift 2 ;;
-    --context)       ROUND_CTX+=("-c" "${2:-}"); shift 2 ;;
+    --context)
+      # The review dir is chosen by --review-dir and checked below; a round
+      # context may not override where the judging agent starts (#1528).
+      case "${2:-}" in
+        review_dir=*)
+          echo "ERROR: autodrive_loop.sh: review_dir is set only by --review-dir, never by --context (#1528)" >&2
+          printf '{"loop":"%s","loop_result":"UNTRUSTED_REVIEW_DIR","round_label":"preflight","reason":"review_dir passed as a round context"}\n' "${LOOP_NAME:-}"
+          exit 1 ;;
+      esac
+      ROUND_CTX+=("-c" "${2:-}"); shift 2 ;;
     *) echo "ERROR: autodrive_loop.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -119,7 +129,7 @@ escalate() { # escalate <verdict> <why>
 # `recipe run`. A recipe run by path searches its own directory first for
 # sub-recipes (`build_search_dirs`, run/mod.rs), so `loop-evidence-collector`
 # and `autodrive-merge-evidence` come from the same launch-side bundle.
-# Agents still WORK in `--repo`; they just do not get to choose their checker.
+# The commit step still WORKS in `--repo`; it just does not choose its checker.
 LOOP_BUNDLE_RECIPES="$(cd "$(dirname "${BASH_SOURCE[0]}")/../recipes" 2>/dev/null && pwd -P || printf '')"
 REPO_REAL="$(cd "$REPO" 2>/dev/null && pwd -P || printf '')"
 
@@ -150,6 +160,36 @@ launch_side_recipe() { # launch_side_recipe <name> -> absolute path on stdout, o
   fi
   printf '%s\n' "$path"
 }
+
+# --- review agents start OUTSIDE the tree under review ---------------------
+# The recipe files are not the only instructions an agent takes from its
+# working directory: the agent CLI also loads that tree's AGENTS.md, CLAUDE.md
+# and .claude/settings.json hooks. Started in the PR worktree, the crusty
+# reviewer, the merge-ready assessor and the loop-health analyzer would be
+# instructed by the branch they judge, and a round's fix-up commit could
+# rewrite the next round's reviewer (#1528, round 3).
+#
+# So the read-only judging agents start in `--review-dir`: the launch checkout
+# by default (this script's working directory). Only the commit step
+# (step-04 of each round) works in `--repo`. The judging agents read the PR
+# through `gh pr diff` and `git -C <worktree>`, never by loading it as a
+# project. A review dir equal to, or inside, the tree under review is refused.
+[ -n "$REVIEW_DIR" ] || REVIEW_DIR="$(pwd -P)"
+REVIEW_REAL="$(cd "$REVIEW_DIR" 2>/dev/null && pwd -P || printf '')"
+REVIEW_REFUSAL=""
+if [ -z "$REVIEW_REAL" ]; then
+  REVIEW_REFUSAL="review dir '${REVIEW_DIR}' is not a directory"
+elif [ -n "$REPO_REAL" ]; then
+  case "$REVIEW_REAL/" in
+    "$REPO_REAL"/*) REVIEW_REFUSAL="review dir ${REVIEW_REAL} is the tree under review (${REPO_REAL}) or inside it; launch auto-drive from a checkout other than the PR worktree" ;;
+  esac
+fi
+if [ -n "$REVIEW_REFUSAL" ]; then
+  echo "ERROR: loop '${LOOP_NAME}': ${REVIEW_REFUSAL}. The reviewed tree never supplies its reviewer's instructions (#1528)." >&2
+  printf '{"loop":"%s","loop_result":"UNTRUSTED_REVIEW_DIR","round_label":"preflight","reason":"%s"}\n' \
+    "$LOOP_NAME" "$(printf '%s' "$REVIEW_REFUSAL" | tr -d '"')"
+  exit 1
+fi
 
 ROUND_RECIPE_PATH="$(launch_side_recipe "$ROUND_RECIPE")" || {
   printf '{"loop":"%s","loop_result":"UNTRUSTED_RECIPE","round_label":"preflight","reason":"round recipe %s does not resolve in the launch-side bundle"}\n' \
@@ -197,7 +237,8 @@ while :; do
       -c "autodrive_round_record=${RECORD}" \
       -c "autodrive_round_label=${ROUND_LABEL}" \
       -c "autodrive_resolved_concerns_file=${STATE_DIR}/resolved-concerns.txt" \
-      "${ROUND_CTX[@]}" >"$LOG" 2>&1
+      "${ROUND_CTX[@]}" \
+      -c "review_dir=${REVIEW_REAL}" >"$LOG" 2>&1
   ROUND_RC=$?
   tail -n 200 "$LOG" >&2 || true
 
@@ -233,13 +274,16 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
+  # The evaluator measures `loop_repo_path` (the PR worktree) by path; its
+  # analyzer agent starts in the review dir, never in the tree it judges.
   "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
-      --working-dir "$REPO" \
+      --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
       -c "loop_history=${HISTORY}" \
       -c "loop_last_round_output=$(tail -c 20000 "$LOG" 2>/dev/null || true)" \
       -c "loop_repo_path=${REPO}" \
+      -c "loop_agent_working_dir=${REVIEW_REAL}" \
       -c "loop_baseline_ref=${BASELINE}" \
       -c "loop_child_exit_code=${ROUND_RC}" \
       -c "loop_findings_current=${FINDINGS}" \

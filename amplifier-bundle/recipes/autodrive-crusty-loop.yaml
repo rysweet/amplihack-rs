@@ -108,6 +108,11 @@ steps:
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
       esac
 
+      # The launch checkout. The read-only judging agents (review, merge-ready
+      # assessment, loop-health analyzer) start here, never in the PR worktree,
+      # so the branch under review does not supply their AGENTS.md, CLAUDE.md
+      # or .claude hooks. Only each round's commit step works in the worktree.
+      REVIEW_DIR="$(pwd -P)"
       PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
       bash "$LOOP_HELPER" \
         --loop-name "crusty" \
@@ -115,6 +120,7 @@ steps:
         --clean-token "CLEAN" \
         --verdict-field "crusty_verdict" \
         --repo "$PR_WORKTREE" \
+        --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
         --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \

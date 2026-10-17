@@ -722,7 +722,8 @@ so the launch checkout's index is never touched (issue #1528).
 | --- | --- | --- |
 | Phase 1, `autodrive-build` | Launch checkout | Not there. `default-workflow` commits in its own task worktree (issue #858). |
 | Loop preflights, `autodrive_pr_worktree.sh resolve`, the merge gate, phase bookkeeping | Launch checkout | No. The resolver may run `git worktree add`; the merge happens on GitHub. |
-| Every round step and its agents, `autodrive-merge-evidence`, `loop-health-evaluator` (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
+| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the launch checkout (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
+| Round bash steps, the `step-04` fix agents, `autodrive-merge-evidence`, the evaluator's measurements (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
 
 The loop state directory stays keyed to the launch repository, so resuming is
 unchanged.
@@ -756,13 +757,15 @@ and starts the loop with:
 bash "$LOOP_HELPER" ... \
   --repo "$PR_WORKTREE" \
   --context "repo_path=$PR_WORKTREE" \
+  --review-dir "$REVIEW_DIR" \
   ...
 ```
 
 Every round step that uses `{{repo_path}}` therefore runs in the pull request
 worktree. So does `autodrive-merge-evidence`, which enters `repo_path` before it
 merges the base branch and pushes, and `autodrive_loop.sh` reads each round's
-baseline `HEAD` there. When resolution fails, `step-02` exits `1` and no round
+baseline `HEAD` there. The judging agents use `{{review_dir}}` instead; see
+[Where the judging agents start](#where-the-judging-agents-start). When resolution fails, `step-02` exits `1` and no round
 runs. There is no fallback to `REPO_PATH`.
 
 ### Where the round and evaluator recipes come from
@@ -796,6 +799,54 @@ runs, when:
 and checks that a pull request worktree whose own copies of these recipes have
 been tampered with still gets the launch-side copies
 (`1528-launch-side-recipes`).
+
+### Where the judging agents start
+
+Recipe files are not the only instructions an agent takes from where it
+starts. The agent CLI also loads `AGENTS.md`, `CLAUDE.md` and
+`.claude/settings.json` hooks from its working directory, and in this
+repository `AGENTS.md` is tracked. An agent started in the pull request
+worktree is therefore instructed by the branch it is judging, and a round's
+fix-up commit could change the instructions given to the next round's
+reviewer. That is the same self-approval path as loading the recipes from the
+worktree, so it is closed the same way.
+
+Only the commit step moves into the pull request worktree. The read-only
+judging agents — the crusty review, the merge-ready assessment and the
+loop-health analyzer, which together decide the Crusty `CLEAN`, `MERGE_READY`
+and when a loop stops — start in the **review dir**: the launch checkout.
+
+- Each loop's `step-02` passes `--review-dir "$REVIEW_DIR"`, the launch
+  checkout's real path, to `autodrive_loop.sh`.
+- `autodrive_loop.sh` hands it to every round as `review_dir`, after the
+  caller's `--context` values, and runs `loop-health-evaluator` with
+  `--working-dir` set to it and `loop_agent_working_dir` set to it.
+  `loop_repo_path` stays the pull request worktree, where the evidence is
+  measured.
+- Both round recipes run `step-00-review-dir-guard` first. It stops the round
+  when `review_dir` is empty, missing, or equal to or inside `repo_path`
+  (symlinks resolved). `review_dir` has no default, because `.` would resolve
+  to the pull request worktree.
+- The judging prompts tell the agent where it is and to read the pull request
+  as data — `gh pr diff`, `gh pr view`, `git -C <worktree> show HEAD:<path>` —
+  never by `cd`-ing into the worktree or opening its files with file tools,
+  which can load the branch's nested instruction files. Instruction files in
+  the diff are code under review.
+
+The loop refuses, with `"loop_result":"UNTRUSTED_REVIEW_DIR"` and before any
+round runs, when the review dir is the tree under review or inside it — given
+by `--review-dir`, defaulted from the loop's own working directory, or passed as
+`--context review_dir=...`. Launch auto-drive from a checkout other than the
+pull request's worktree (normally the main checkout).
+
+`test-auto-drive-to-merge.sh` checks, against the tampered worktree, that the
+round gets the launch checkout as `review_dir` and the evaluator starts there
+(`1528-judging-agents-launch-side`), and covers each refusal
+(`1528-review-dir-refused-*`). `autodrive_pr_worktree_tests.rs` checks that in
+both round recipes every agent step except `step-04` takes `working_dir` from
+`review_dir`, that the evaluator's analyzer takes it from
+`loop_agent_working_dir`, and runs `step-00-review-dir-guard` against each bad
+review dir.
 
 The resolver sits next to `autodrive_loop.sh` in the launch-side bundle, never
 in the pull request worktree. The loops always resolve by `--pr`. The merge
@@ -954,10 +1005,12 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 - **`gh` must work inside the round.** `step-04` reads the head branch again; if
   `gh` fails, the block stops, and the loop-health evaluator sees a stalled
   round instead of a commit.
-- **Round agents start in the pull request worktree**, so the agent CLI reads
-  that branch's `AGENTS.md` and `.claude/settings.json`, and `git commit` there
-  runs that branch's `.pre-commit-config.yaml`. Review a pull request that
-  changes them as code that runs during its own review.
+- **The `step-04` fix agent is the one agent that starts in the pull request
+  worktree**, so it loads that branch's `AGENTS.md` and `.claude/` hooks, and
+  its `git commit` runs that branch's `.pre-commit-config.yaml`. That is the
+  same as any developer committing on the branch. It does not reach a verdict:
+  the review, the merge-ready assessment and the loop-health analyzer start in
+  the launch checkout and judge the fix-up commit as code.
 - **The block is a prompt.** An agent can still deviate from it. The structural
   fix (rounds start in the pull request worktree) and the guard after staging,
   which refuses a run-worktree gitlink however it got there, cover that case.
