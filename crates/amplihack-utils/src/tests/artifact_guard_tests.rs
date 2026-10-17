@@ -1373,7 +1373,15 @@ fn rule_table_with_a_manifest_set() {
             ".yarn/cache/x.zip",
             Untracked,
             &[],
-            Some(("cache-artifact", Some(".yarn/cache"))),
+            Some(("cache-artifact", Some(".yarn/cache/x.zip"))),
+        ),
+        // Zero-install repos commit `.yarn/cache`; a root over it would sweep
+        // archives the run never listed.
+        (
+            "pkg/.yarn/cache/new.zip",
+            Staged,
+            &[],
+            Some(("cache-artifact", Some("pkg/.yarn/cache/new.zip"))),
         ),
         (
             "apps/web/.next/cache/webpack/x.pack",

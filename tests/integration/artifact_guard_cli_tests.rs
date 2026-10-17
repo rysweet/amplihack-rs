@@ -484,7 +484,7 @@ fn cli_pre_publish_exits_0_and_reports_a_preexisting_condition_with_a_way_forwar
         "pre-existing",
         "NOT blocking",
         "node_modules/leftpad/index.js",
-        "git --literal-pathspecs rm -r --cached -- 'node_modules'",
+        "git rm -r --cached -- 'node_modules'",
         "--mode all",
         "--preexisting block",
     ] {
@@ -519,7 +519,7 @@ fn cli_pre_publish_exits_1_and_names_paths_for_artifacts_this_change_introduced(
     for required in [
         "dist/plugin.js",
         "introduced",
-        "git --literal-pathspecs rm -r --cached -- 'dist'",
+        "git rm -r --cached -- 'dist'",
         "re-run to confirm",
     ] {
         assert!(
@@ -657,11 +657,11 @@ fn cli_never_prints_a_remedy_that_would_untrack_the_preexisting_tree() {
         .split_once("Exact commands for the paths above:")
         .unwrap_or_else(|| panic!("refusal must print exact commands; got:\n{combined}"));
     assert!(
-        refusal.contains("git --literal-pathspecs rm --cached -- 'node_modules/newdep/index.js'"),
+        refusal.contains("git rm --cached -- 'node_modules/newdep/index.js'"),
         "the remedy must name the introduced path exactly; got:\n{refusal}"
     );
     assert!(
-        !refusal.contains("rm -r --cached -- 'node_modules'"),
+        !refusal.contains("git rm -r --cached -- 'node_modules'"),
         "the refusal's remedy must never sweep the pre-existing tree along with the \
          one path this change added; got:\n{refusal}"
     );
@@ -751,7 +751,7 @@ fn cli_still_blocks_a_staged_coverage_report_with_an_exact_remedy() {
     for required in [
         "coverage/lcov.info",
         "build-artifact",
-        "git --literal-pathspecs rm -r --cached -- 'coverage/lcov.info'",
+        "git rm -r --cached -- 'coverage/lcov.info'",
     ] {
         assert!(
             combined.contains(required),

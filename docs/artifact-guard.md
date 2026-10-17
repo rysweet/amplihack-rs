@@ -257,7 +257,7 @@ Remediation:
   - If intentional source material, add a narrow reviewed entry to .amplihack-artifact-allowlist.
 
 Exact commands for the paths above:
-  git --literal-pathspecs rm -r --cached -- 'dist'   # drop from the change, keep on disk
+  git rm -r --cached -- 'dist'   # drop from the change, keep on disk
   rm -rf -- 'dist'               # or delete the leftover outright
   ...
 ```
@@ -274,7 +274,7 @@ These paths are committed in the baseline main (735b3633e9cd) and are untouched 
       ... and 663 more under node_modules/
 
 Way forward (none of these is required to finish the current change):
-  - Clean up in a dedicated change: git --literal-pathspecs rm -r --cached -- 'node_modules' && echo 'node_modules/' >> .gitignore && git commit -m 'chore: untrack node_modules'
+  - Clean up in a dedicated change: git rm -r --cached -- 'node_modules' && echo 'node_modules/' >> .gitignore && git commit -m 'chore: untrack node_modules'
   - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo /repo --mode all
   - Enforce it here anyway: --preexisting block (or AMPLIHACK_ARTIFACT_GUARD_PREEXISTING=block).
 ```
@@ -430,6 +430,7 @@ entirely generated, or *none* when the guard cannot be sure:
 | `node-modules` | The path up to and including the `node_modules` segment, for example `apps/coverage/node_modules` |
 | `plugin-bundle` | The directory holding `plugin.js`, for example `dist` |
 | `cache-artifact`, `claude-runtime`, `nested-worktree`, `workflow-session-artifact` | The path up to and including the matched segment |
+| `cache-artifact` under `.yarn/cache` | The file itself, because Yarn zero-install repositories commit that directory |
 | `build-artifact` on `target` or `.next` | The path up to and including that segment |
 | `build-artifact` on `index.scip` | The file itself |
 | `build-artifact` on `lcov.info`, `coverage-final.json`, `coverage-summary.json`, or `clover.xml` inside an output directory | The file itself |
@@ -440,7 +441,7 @@ A removal root is always the matched path itself, or a prefix of it that ends at
 a `/`. It is never a parent of the matched segment. For example, a new
 `apps/coverage/node_modules/a/index.js` next to a tracked
 `apps/coverage/package.json` yields
-`git --literal-pathspecs rm -r --cached -- 'apps/coverage/node_modules'`
+`git rm -r --cached -- 'apps/coverage/node_modules'`
 and never `-- 'apps/coverage'`.
 
 When the removal root is *none*, neither report prints `git rm -r --cached`,
@@ -510,8 +511,9 @@ These rules make the printed commands safe to run:
   pathspecs even after `--`: a leading `:` is pathspec magic
   (`':!src/node_modules'` means "everything except that path", so a plain
   `git rm -r --cached` on it untracks the whole repository), and `*`, `?` and
-  `[` are globs (`pkg[1]` also matches `pkg1`). Every printed `git rm` is
-  therefore `git --literal-pathspecs rm`, which names exactly the path shown.
+  `[` are globs (`pkg[1]` also matches `pkg1`). When a path holds any of
+  these (or `\`), the printed command is `git --literal-pathspecs rm`, which
+  names exactly the path shown; every other path keeps the plain `git rm` form.
   `rm` already reads its arguments literally. The advisory cleanup chain only
   adds the `echo '<root>' >> .gitignore` step when the root is also a literal
   `.gitignore` pattern (no `*`, `?`, `[`, `\`, leading `!` or `#`); otherwise it
@@ -982,7 +984,7 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 1
 ```
 
 The refusal names `dist/plugin.js`, marks it `introduced`, and prints the exact
-`git --literal-pathspecs rm -r --cached -- 'dist'` that clears it. The pre-existing tree is still
+`git rm -r --cached -- 'dist'` that clears it. The pre-existing tree is still
 listed above it, still not the reason for the refusal.
 
 To audit or enforce the whole condition anyway:

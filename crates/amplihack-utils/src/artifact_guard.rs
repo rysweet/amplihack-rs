@@ -455,7 +455,7 @@ pub fn scan_artifacts(
     // Files inside legitimately-registered sibling task worktrees (concurrent
     // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution:
     // they are never flagged (issue #857) and never swept into a removal root.
-    let registered = registered_nested_worktree_prefixes(&repo);
+    let registered = registered_nested_worktree_prefixes(&repo)?;
     let mut protected = protected_index_paths(&index, &allowlist, &manifests);
     protected.extend(
         registered
@@ -888,19 +888,27 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
 /// Repo-relative path prefixes (each ending in `/`) of git worktrees that are
 /// registered under `<repo>/worktrees/`. These are legitimate concurrent task
 /// worktrees created by other recipe runs — not leaked scratch — so the artifact
-/// guard must never flag their contents (issue #857). Best-effort: returns empty
-/// on any git error so the guard fails safe (keeps scanning).
-fn registered_nested_worktree_prefixes(repo: &Path) -> Vec<String> {
-    let Ok(output) = amplihack_git::command()
+/// guard must never flag their contents (issue #857), and no removal root may
+/// cover them (issue #1536). Fails closed: a git error is an error, because an
+/// empty list would let `rm -rf -- 'worktrees'` sweep every sibling worktree.
+fn registered_nested_worktree_prefixes(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
+    let args = ["worktree", "list", "--porcelain"];
+    let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
-        .args(["worktree", "list", "--porcelain"])
+        .args(args)
         .output()
-    else {
-        return Vec::new();
-    };
+        .map_err(|error| ArtifactGuardError::Git {
+            args: args.join(" "),
+            code: None,
+            stderr: error.to_string(),
+        })?;
     if !output.status.success() {
-        return Vec::new();
+        return Err(ArtifactGuardError::Git {
+            args: args.join(" "),
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+        });
     }
     let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     let mut prefixes = Vec::new();
@@ -920,7 +928,7 @@ fn registered_nested_worktree_prefixes(repo: &Path) -> Vec<String> {
             prefixes.push(format!("{rel}/"));
         }
     }
-    prefixes
+    Ok(prefixes)
 }
 
 /// Whether `raw_path` (a repo-relative scan path) lies inside one of the
@@ -1116,7 +1124,10 @@ fn prefix_through(path: &str, matches: impl Fn(&str, &str) -> bool) -> Option<St
 }
 
 /// The cache directory [`is_cache_path`] matched: the first cache segment, or
-/// the `.yarn/cache` / `.next/cache` pair.
+/// the `.next/cache` pair. A `.yarn/cache` file is its own root: Yarn
+/// zero-install repositories commit that directory, so a root over it would
+/// untrack or delete archives this run never listed (it was the file itself
+/// before issue #1536, too).
 fn cache_root(path: &str) -> Option<String> {
     let parts: Vec<&str> = path.split('/').collect();
     let mut end = 0;
@@ -1125,8 +1136,12 @@ fn cache_root(path: &str) -> Option<String> {
         if CACHE_COMPONENTS.contains(part) {
             return Some(path[..end].to_string());
         }
-        if matches!(*part, ".yarn" | ".next") && parts.get(index + 1) == Some(&"cache") {
-            return Some(path[..end + "/cache".len()].to_string());
+        if parts.get(index + 1) == Some(&"cache") {
+            match *part {
+                ".next" => return Some(path[..end + "/cache".len()].to_string()),
+                ".yarn" => return Some(path.to_string()),
+                _ => {}
+            }
         }
         end += 1;
     }

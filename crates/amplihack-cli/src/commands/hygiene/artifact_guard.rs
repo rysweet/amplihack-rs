@@ -395,15 +395,29 @@ fn is_command_safe(path: &str) -> bool {
 /// `:` is pathspec magic (`':!src/node_modules'` means "everything except
 /// that", so a plain `git rm -r --cached` would untrack the whole repository)
 /// and `*`, `?`, `[` are globs. `--literal-pathspecs` makes git read `path` as
-/// the one path it names. `path` must be [`is_command_safe`].
+/// the one path it names. It is added only when `path` holds such a
+/// character, so ordinary paths keep the established `git rm --cached` form.
+/// `path` must be [`is_command_safe`].
 fn git_rm_cached(path: &str, recursive: bool) -> String {
     let flags = if recursive { "-r --cached" } else { "--cached" };
-    format!("git --literal-pathspecs rm {flags} -- '{path}'")
+    let git = if has_pathspec_magic(path) {
+        "git --literal-pathspecs"
+    } else {
+        "git"
+    };
+    format!("{git} rm {flags} -- '{path}'")
 }
 
-/// Whether `root` written to `.gitignore` matches only itself: no glob or
+/// Whether git would read `path` as anything but itself: a leading `:` (magic
+/// signature) or a glob or escape character anywhere.
+fn has_pathspec_magic(path: &str) -> bool {
+    path.starts_with(':') || path.chars().any(|c| matches!(c, '*' | '?' | '[' | '\\'))
+}
+
+/// Whether `root` written to `.gitignore` is read as a plain name: no glob or
 /// escape characters, no leading `!` (negation) or `#` (comment), and no
-/// surrounding whitespace.
+/// surrounding whitespace. A single-segment root such as `dist` stays
+/// unanchored, as before #1536, so it also ignores nested `dist/` directories.
 fn is_literal_ignore_pattern(root: &str) -> bool {
     root.trim() == root
         && !root.starts_with(['!', '#'])
@@ -542,6 +556,18 @@ mod tests {
         assert_eq!(
             git_rm_cached("build/[a]*.log", false),
             "git --literal-pathspecs rm --cached -- 'build/[a]*.log'"
+        );
+    }
+
+    #[test]
+    fn git_rm_keeps_the_plain_form_for_ordinary_paths() {
+        assert_eq!(
+            git_rm_cached("node_modules", true),
+            "git rm -r --cached -- 'node_modules'"
+        );
+        assert_eq!(
+            git_rm_cached("a\\b/node_modules", true),
+            "git --literal-pathspecs rm -r --cached -- 'a\\b/node_modules'"
         );
     }
 
