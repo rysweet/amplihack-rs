@@ -230,18 +230,37 @@ fn run_sh_exports_session_tree_vars() {
 
 #[test]
 fn launcher_has_strict_error_handling() {
+    // Test-only modules (declared under `#[cfg(test)]` in mod.rs) quote the
+    // launcher too, so skip them. read_dir order is unspecified, so check
+    // every remaining match rather than whichever file comes first.
+    let mod_rs = fs::read_to_string(multitask_dir().join("mod.rs")).unwrap();
+    let test_modules: Vec<String> = mod_rs
+        .lines()
+        .collect::<Vec<_>>()
+        .windows(2)
+        .filter(|w| w[0].trim() == "#[cfg(test)]")
+        .filter_map(|w| w[1].trim().strip_prefix("mod "))
+        .map(|m| m.trim_end_matches(';').to_string())
+        .collect();
+    let mut templates = 0;
     for entry in fs::read_dir(multitask_dir()).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().and_then(|e| e.to_str()) != Some("rs") {
             continue;
         }
+        let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if test_modules.iter().any(|m| m == stem) {
+            continue;
+        }
         let content = fs::read_to_string(&path).unwrap();
         if content.contains("amplihack recipe run") && content.contains("launcher.sh") {
+            templates += 1;
             assert!(
                 content.contains("set -euo pipefail"),
-                "launcher.sh template must include 'set -euo pipefail'"
+                "launcher.sh template in {} must include 'set -euo pipefail'",
+                path.display()
             );
-            return;
         }
     }
+    assert!(templates > 0, "No launcher.sh template found");
 }
