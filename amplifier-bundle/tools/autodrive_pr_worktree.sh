@@ -168,15 +168,8 @@ cmd_resolve() {
     done
     [ "$seen_repo" = 1 ] || usage_error "--repo is required"
     [ $((seen_pr + seen_head)) = 1 ] || usage_error "exactly one of --pr or --head is required"
-    if [ "$seen_pr" = 1 ]; then
-        case "$pr" in
-            [1-9] | [1-9]*[0-9]) ;;
-            *) usage_error "--pr must be a positive PR number" ;;
-        esac
-        case "$pr" in
-            *[!0-9]*) usage_error "--pr must be a positive PR number" ;;
-        esac
-        [ "${#pr}" -le 9 ] || usage_error "--pr must be a positive PR number"
+    if [ "$seen_pr" = 1 ] && ! [[ "$pr" =~ ^[1-9][0-9]{0,8}$ ]]; then
+        usage_error "--pr must be a positive PR number"
     fi
 
     cd -P -- "$repo" || refuse "--repo is not an accessible directory"
