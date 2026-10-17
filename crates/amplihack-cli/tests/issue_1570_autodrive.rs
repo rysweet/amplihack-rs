@@ -36,9 +36,15 @@ fn repo_root() -> PathBuf {
 
 const STUB: &str = r#"#!/usr/bin/env bash
 set -u
+# The loop pipes one `orch helper` call into another, so two stubs can run at
+# once; take the call number under a lock so no two calls share a log file.
+exec 9>"$STUB_STATE/calls.lock"
+flock 9
 n=$(cat "$STUB_STATE/calls" 2>/dev/null || echo 0)
 n=$((n + 1))
 printf '%s' "$n" > "$STUB_STATE/calls"
+flock -u 9
+exec 9>&-
 printf '%s\0' "$@" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
