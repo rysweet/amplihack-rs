@@ -5,9 +5,12 @@ use super::super::*;
 /// commands — must skip the update check to avoid polluting scripted output.
 #[test]
 fn test_skip_update_check_when_noninteractive_env_set() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = super::SkipSignalEnvGuard::capture_and_clear();
     unsafe { std::env::set_var("AMPLIHACK_NONINTERACTIVE", "1") };
     let result = should_skip_update_check_for_subcommand("launch");
-    unsafe { std::env::remove_var("AMPLIHACK_NONINTERACTIVE") };
     assert!(
         result,
         "should_skip_update_check_for_subcommand('launch') must return true \
@@ -18,9 +21,12 @@ fn test_skip_update_check_when_noninteractive_env_set() {
 /// When AMPLIHACK_PARITY_TEST=1 is set, the update check must be suppressed.
 #[test]
 fn test_skip_update_check_when_parity_test_env_set() {
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = super::SkipSignalEnvGuard::capture_and_clear();
     unsafe { std::env::set_var("AMPLIHACK_PARITY_TEST", "1") };
     let result = should_skip_update_check_for_subcommand("launch");
-    unsafe { std::env::remove_var("AMPLIHACK_PARITY_TEST") };
     assert!(
         result,
         "should_skip_update_check_for_subcommand('launch') must return true \
@@ -31,11 +37,10 @@ fn test_skip_update_check_when_parity_test_env_set() {
 /// The `mode` subcommand is not a launch command — update checks must be skipped.
 #[test]
 fn test_skip_update_check_for_mode_subcommand() {
-    unsafe {
-        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
-        std::env::remove_var("AMPLIHACK_PARITY_TEST");
-        std::env::remove_var(NO_UPDATE_CHECK_ENV);
-    }
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = super::SkipSignalEnvGuard::capture_and_clear();
     assert!(
         should_skip_update_check_for_subcommand("mode"),
         "should_skip_update_check_for_subcommand('mode') must return true — \
@@ -46,11 +51,10 @@ fn test_skip_update_check_for_mode_subcommand() {
 /// The `plugin` subcommand is not a launch command — update checks must be skipped.
 #[test]
 fn test_skip_update_check_for_plugin_subcommand() {
-    unsafe {
-        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
-        std::env::remove_var("AMPLIHACK_PARITY_TEST");
-        std::env::remove_var(NO_UPDATE_CHECK_ENV);
-    }
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = super::SkipSignalEnvGuard::capture_and_clear();
     assert!(
         should_skip_update_check_for_subcommand("plugin"),
         "should_skip_update_check_for_subcommand('plugin') must return true"
@@ -60,11 +64,10 @@ fn test_skip_update_check_for_plugin_subcommand() {
 /// Unknown subcommands must skip the update check.
 #[test]
 fn test_skip_update_check_for_unknown_subcommand() {
-    unsafe {
-        std::env::remove_var("AMPLIHACK_NONINTERACTIVE");
-        std::env::remove_var("AMPLIHACK_PARITY_TEST");
-        std::env::remove_var(NO_UPDATE_CHECK_ENV);
-    }
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let _env = super::SkipSignalEnvGuard::capture_and_clear();
     assert!(
         should_skip_update_check_for_subcommand("totally-unknown-command"),
         "should_skip_update_check_for_subcommand('totally-unknown-command') must return true"

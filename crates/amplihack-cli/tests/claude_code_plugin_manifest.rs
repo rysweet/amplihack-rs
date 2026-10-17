@@ -543,6 +543,78 @@ mod shell {
         assert!(exported.contains("AMPLIHACK_AGENT_BINARY"));
     }
 
+    /// Crusty review of #1490 at baaafb18: the line used to be
+    /// `${AMPLIHACK_AGENT_BINARY:-claude}`, which kept the `copilot` that a
+    /// tmux server started from an `amplihack copilot` session hands to every
+    /// pane, and treated it as a choice. A value amplihack tagged as a guess
+    /// or as another session's description is replaced; a choice is kept.
+    #[test]
+    fn bootstrap_replaces_an_inherited_description_and_keeps_a_choice() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        for tool in ["amplihack", "amplihack-hooks", "recipe-runner-rs"] {
+            write_exe(&stub.path().join(tool), "#!/bin/sh\n");
+        }
+        let bin = bootstrap_fixture();
+        let env_file = home.path().join("env.sh");
+        let env_file_str = env_file.to_str().unwrap();
+        let envs = [
+            ("CLAUDE_ENV_FILE", env_file_str),
+            ("CLAUDE_PLUGIN_ROOT", "/plugin/root"),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success(), "{out:?}");
+
+        // What a Bash tool command sees after Claude Code sources the file.
+        let sourced = |inherited: &[(&str, &str)]| {
+            let mut command = Command::new("sh");
+            command
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", home.path())
+                .arg("-c")
+                .arg(
+                    ". \"$1\" && printf '%s|%s' \"$AMPLIHACK_AGENT_BINARY\" \
+                     \"${AMPLIHACK_AGENT_BINARY_SOURCE-<unset>}\"",
+                )
+                .arg("sh")
+                .arg(&env_file);
+            for (key, value) in inherited {
+                command.env(key, value);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let binary = "AMPLIHACK_AGENT_BINARY";
+        let tag = "AMPLIHACK_AGENT_BINARY_SOURCE";
+        assert_eq!(sourced(&[]), "claude|session:claude");
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "session:copilot")]),
+            "claude|session:claude"
+        );
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "default:copilot")]),
+            "claude|session:claude"
+        );
+        // A choice: untagged, or set after a tag that names something else.
+        assert_eq!(sourced(&[(binary, "copilot")]), "copilot|<unset>");
+        assert_eq!(
+            sourced(&[(binary, "codex"), (tag, "session:copilot")]),
+            "codex|session:copilot"
+        );
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "tmux_server:COPILOT_CLI")]),
+            "copilot|tmux_server:COPILOT_CLI"
+        );
+    }
+
     #[test]
     fn bootstrap_explains_how_to_install_when_auto_install_is_off() {
         let home = tempfile::tempdir().unwrap();

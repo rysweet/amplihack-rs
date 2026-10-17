@@ -231,13 +231,10 @@ fn existing_framework_reconciles_native_resources_when_codex_arrives() {
         ("AMPLIHACK_CODEX_BINARY_PATH", ""),
         ("CODEX_BINARY_PATH", ""),
     ]);
-    // A test run launched from an amplihack session inherits that session's
-    // AMPLIHACK_HOME, which would point the install at the caller's framework
-    // copy instead of this fixture's HOME.
-    let _home_guard = EnvGuard::capture(&["AMPLIHACK_HOME"]);
-    unsafe {
-        std::env::remove_var("AMPLIHACK_HOME");
-    }
+    // The plugin's skills are staged from AMPLIHACK_HOME when it is set. An
+    // amplihack session exports one, and its skill count is not this
+    // fixture's, so the test must not inherit it.
+    let _home = EnvGuard::unset(["AMPLIHACK_HOME"]);
     super::super::local_install(&source, None).unwrap();
     assert!(!home.join(".amplihack/codex/ownership.json").exists());
     let codex = create_exe_stub(&bin, "codex");

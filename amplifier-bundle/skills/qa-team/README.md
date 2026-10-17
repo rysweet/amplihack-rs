@@ -85,8 +85,8 @@ Use QA Team when you need more than a single implementation test:
 Example local parity command:
 
 ```bash
-cargo test -p amplihack --test cli_launch --locked
-cargo test -p amplihack --test no_python_probe --locked
+cargo test -p amplihack --test integration cli_launch:: --locked
+cargo test -p amplihack --test integration no_python_probe:: --locked
 ```
 
 Example shadow-mode command:

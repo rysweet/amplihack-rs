@@ -964,8 +964,8 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
 ```bash
-AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test auto_drive_to_merge
-AMPLIHACK_SKIP_AUTO_INSTALL=1 cargo test -p amplihack --test merge_ready_platform_contract
+cargo test -p amplihack --test integration auto_drive_to_merge::
+cargo test -p amplihack --test integration merge_ready_platform_contract::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
