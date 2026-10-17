@@ -15,8 +15,10 @@ credentials live outside the configuration directory. See Claude Code's
 Profiles rely on Claude Code's documented `CLAUDE_CONFIG_DIR` variable.
 amplihack never modifies `~/.claude` and makes no network calls for this
 feature. See [What a new profile inherits](#what-a-new-profile-inherits).
-To move work to another account automatically when one runs out of quota,
-see [Switch accounts automatically](#switch-accounts-automatically).
+To see which accounts have quota left, see
+[Check usage across profiles](#check-usage-across-profiles). To move work to
+another account automatically when one runs out of quota, see
+[Switch accounts automatically](#switch-accounts-automatically).
 
 ## What a new profile inherits
 
@@ -198,6 +200,145 @@ whose own login is parked, or whose directory is hosting another account.
 End the sessions involved and run `amplihack profile auto-switch status`
 until it shows `hosted directories: none`.
 
+## Check usage across profiles
+
+To see which accounts have quota left, run:
+
+```bash
+amplihack profile usage
+```
+
+```
+PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
+review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
+work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
+team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
+scratch   -                 not_logged_in      -        -                                     -     -
+```
+
+amplihack runs `claude -p /usage` under every profile at once, with
+`CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
+`Current week` lines. Checking does not appear to use quota, and an
+exhausted account still answers. The profiles with the most room come first. Exhausted ones
+follow, soonest back first, and the reset column says when. Profiles that
+could not be read come last. `*` marks the default.
+
+To check only some profiles, name them:
+
+```bash
+amplihack profile usage work team
+```
+
+What the `STATE` column means:
+
+| State | What to do |
+|-------|------------|
+| `ok` | Ready to use. |
+| `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
+| `spend_limit` | Your organisation's spend limit was reached. |
+| `not_logged_in` | `amplihack profile login <name>` |
+| `timeout` | Claude did not answer within 30 seconds. Try again. |
+| `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
+| `error` | The probe could not start; the reason is printed on stderr. |
+
+Claude's own text is shown only when you ask for it, for example to report
+output amplihack does not recognise:
+
+```bash
+amplihack profile usage --raw scratch
+```
+
+`--raw` text can include your e-mail address or organisation name. Read it
+before you share it.
+
+For scripts, use `--json`. This picks the profile with the most capacity:
+
+```bash
+amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profile'
+```
+
+```
+review
+```
+
+Each JSON row also has the per-model week lines (`week_models`) and each
+reset as Unix time (`resets_at`); see the
+[reference](../reference/profile-command.md#json-output).
+
+If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
+also refreshes its readings, so it can choose accounts using numbers taken
+now instead of the last status-line update. With auto-switch on, the table
+also shows where logins are: `leased→work` on a profile whose login is lent
+to `work`'s session, and `hosts:personal` on the profile holding it. The
+numbers on a `hosts:` row belong to the hosted account. See
+[Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
+for when a reading is not recorded.
+
+The command exits with status 0 whenever the probes ran, whatever their
+states. Like `profile run`, it is refused under Docker.
+
+### A profile shows `live in ~/.claude`
+
+If you use a login rotator that moves one account's login into the default
+`~/.claude` directory, that profile's own directory has no login while it is
+there. `profile usage` checks that account through `~/.claude` instead and
+marks the row:
+
+```
+PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
+team      live in ~/.claude  ok     40%      Oct 16, 8pm (America/Los_Angeles)  55%   Oct 22, 2am (America/Los_Angeles)
+```
+
+The numbers on that row are the account's real usage, and the row is not
+`not_logged_in`. In the JSON the row has `"live_in": "~/.claude"`; every
+other row has `null`:
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.live_in != null) | .profile'
+```
+
+```
+team
+```
+
+amplihack finds the profile from the rotator's ledger,
+`<root>/.rotator/ledger.json`. Without a ledger it looks for the one profile
+with no login whose account matches the account in `~/.claude.json`; if you
+do not use a rotator, there is no ledger and nothing is printed. amplihack
+only reads the rotator's files and never changes them.
+
+This needs Linux. On macOS Claude keeps the login in the Keychain rather
+than in `~/.claude/.credentials.json`, so no profile is ever shown as
+`live in ~/.claude`; on Windows the mark is never shown either.
+
+The live profile's check runs with `CLAUDE_CONFIG_DIR` unset rather than set
+to `~/.claude`. With the variable set, `claude` would look for
+`~/.claude/.claude.json` instead of the real `~/.claude.json` and could read
+the wrong account.
+
+When the evidence about which profile is live is unreliable or conflicting,
+amplihack marks none and prints one warning line, for example:
+
+```
+warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude
+```
+
+That one means the ledger is out of date: the named profile still has its
+own login, so amplihack checks it through its own directory. The other
+warnings are listed in
+[Warnings about `~/.claude`](../reference/profile-command.md#warnings-about-claude).
+
+`live in ~/.claude` is not the same as `*`: `*` is the profile
+`amplihack claude` uses by default.
+
+If the rotator swaps logins while the check runs, the row's numbers may
+belong to the new login. amplihack says so on stderr and does not record
+them for auto-switch. Run the command again for current numbers. This check
+cannot see a profile that became live after the command started, or a swap
+away and back again when the ledger has no `since` time. See
+[Logins in `~/.claude`](../reference/profile-command.md#logins-in-claude)
+for the exact rules and warnings.
+
 ## Switch accounts automatically
 
 When one account is close to its five-hour or seven-day usage limit,
@@ -214,8 +355,10 @@ Auto-switch does three things:
 | A recipe agent step that fails with a usage limit | The step is run again under the next profile with quota left instead of ending the run. |
 
 amplihack learns how much quota each account has used from the status line
-Claude Code already computes. It sends no requests of its own, makes no
-network calls, and never reads, parses, copies or refreshes a token.
+Claude Code already computes, and from
+[`profile usage`](#check-usage-across-profiles) when you run it. Auto-switch
+sends no requests of its own, makes no network calls, and never reads,
+parses, copies or refreshes a token.
 
 ### 1. Install the usage meter
 
@@ -598,8 +741,9 @@ do not depend on these two behaviours.
   happen twice.
 - **File modes are kept.** Patching `.claude.json` or `settings.json` keeps
   the file's mode; a `settings.json` that `install` creates is `0600`.
-- **Readings come only from sessions with the wrapper.** A profile that has
-  never run a session since the switch was turned on has no reading.
+- **Readings come only from sessions with the wrapper and from
+  `profile usage`.** A profile that has done neither since the switch was
+  turned on has no reading. Run `amplihack profile usage` to fill them in.
 
 ## Limits
 
@@ -662,7 +806,8 @@ do not depend on these two behaviours.
   (`amplihack profile switch <name>`); it does not fall back silently.
 - Profiles are not a security boundary against other processes of the same OS
   user. Anyone able to read your home directory can read the profile.
-- No token vault, token refresh or usage probing exists by design. Automatic
+- No token vault or token refresh exists by design. Usage is checked only
+  when you run `amplihack profile usage`, which asks Claude itself. Automatic
   switching is opt-in and only moves logins between your own profiles; see
   [Switch accounts automatically](#switch-accounts-automatically) and the
   [ccswitch review](../reviews/ccswitch-review.md).

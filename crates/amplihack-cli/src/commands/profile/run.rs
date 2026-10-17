@@ -19,28 +19,61 @@ pub(super) fn build_profile_command(
 ) -> Result<Command, ProfileError> {
     // Validate ownership and mode-bit permissions immediately before creating
     // the child process. `resolve` alone only checks path containment.
+    let (mut cmd, dir) = pinned_command(binary, store, name, args)?;
+    cmd.env("CLAUDE_CONFIG_DIR", &dir);
+    Ok(cmd)
+}
+
+/// Like [`build_profile_command`], but for a profile whose login is live in
+/// `~/.claude`: `CLAUDE_CONFIG_DIR` is removed (never set to `~/.claude`), so
+/// `claude` reads `~/.claude` and `~/.claude.json`. The profile is still
+/// pinned for descendants and its directory still checked.
+pub(super) fn build_default_dir_command(
+    binary: &BinaryInfo,
+    store: &ProfileStore,
+    name: &ProfileName,
+    args: &[String],
+) -> Result<Command, ProfileError> {
+    let (mut cmd, _) = pinned_command(binary, store, name, args)?;
+    cmd.env_remove("CLAUDE_CONFIG_DIR");
+    Ok(cmd)
+}
+
+fn pinned_command(
+    binary: &BinaryInfo,
+    store: &ProfileStore,
+    name: &ProfileName,
+    args: &[String],
+) -> Result<(Command, std::path::PathBuf), ProfileError> {
     let dir = store.verify_profile_dir(name)?;
     // `pin_profile_for_descendants` reads the name and root from the path.
     debug_assert_eq!(dir.file_name(), Some(OsStr::new(name.as_str())));
     let mut cmd = Command::new(&binary.path);
-    cmd.args(args).env("CLAUDE_CONFIG_DIR", &dir);
+    cmd.args(args);
     // Amplihack launches started inside this session keep its profile (#1567).
     launch::pin_profile_for_descendants(&mut cmd, &dir);
-    Ok(cmd)
+    Ok((cmd, dir))
 }
 
-pub(super) fn login(store: &ProfileStore, name: &ProfileName) -> Result<()> {
+/// The `claude` binary `login` and `usage` run directly (honouring
+/// `AMPLIHACK_CLAUDE_BINARY_PATH`; the launcher's binary selection is not
+/// used).
+pub(super) fn resolve_claude_binary() -> Result<BinaryInfo> {
     let target = amplihack_utils::launch_target::resolve(
         "claude",
         amplihack_utils::launch_target::OverrideOrigin::User,
     )
     .target
     .context("could not find a working claude binary; install Claude Code first")?;
-    let binary = BinaryInfo {
+    Ok(BinaryInfo {
         name: "claude".into(),
         path: target.path,
         version: Some(target.version),
-    };
+    })
+}
+
+pub(super) fn login(store: &ProfileStore, name: &ProfileName) -> Result<()> {
+    let binary = resolve_claude_binary()?;
     let status = build_profile_command(&binary, store, name, &[])
         .map_err(super::with_hint)?
         .status()

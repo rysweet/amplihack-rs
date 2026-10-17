@@ -23,7 +23,8 @@ use std::time::Duration;
 /// to the original command but not parsed.
 const MAX_PASSTHROUGH: u64 = 16 * 1024 * 1024;
 const MAX_SETTINGS: u64 = 1024 * 1024;
-const LOCK_WAIT: Duration = Duration::from_millis(50);
+/// How long a reading waits for the state lock before giving up.
+pub(super) const LOCK_WAIT: Duration = Duration::from_millis(50);
 const SETTINGS: &str = "settings.json";
 const MARKER: &str = "profile statusline";
 

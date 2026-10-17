@@ -203,7 +203,7 @@ fn finish(state: &State, ledger: &mut Ledger, j: &Journal) -> Result<(), Profile
 // oauthAccount
 // ---------------------------------------------------------------------------
 
-fn read_claude_json(dir: &Path) -> Option<(serde_json::Value, fs::Metadata)> {
+pub fn read_claude_json(dir: &Path) -> Option<(serde_json::Value, fs::Metadata)> {
     let (raw, meta) =
         fsx::read_bounded_nofollow(&dir.join(CLAUDE_JSON), MAX_CLAUDE_JSON).ok()??;
     let v: serde_json::Value = serde_json::from_slice(&raw).ok()?;
