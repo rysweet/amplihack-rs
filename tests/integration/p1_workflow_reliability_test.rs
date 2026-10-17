@@ -115,7 +115,7 @@ fn run_gate(verdict_json: &str, implementation: &str, allow_no_op: &str) -> Gate
         .env("COPILOT_HOME", private_home.path().join(".copilot"))
         .env("COPILOT_CONFIG_DIR", private_home.path().join(".copilot"))
         .env("TMPDIR", private_home.path())
-        .env("PATH", path_with_amplihack_bin())
+        .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env(
             "AMPLIHACK_HOME",
             PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."),
@@ -627,22 +627,5 @@ mod ws4_no_python_lock_tool {
             }
         }
         check_dir(&skills_dir);
-    }
-}
-
-/// The ambient `PATH` with the directory of the `amplihack` binary under test in
-/// front. The gate script calls a bare `amplihack orch helper ...`; with the ambient
-/// `PATH` alone it resolved to whatever `amplihack` happened to be installed (none on a
-/// clean CI runner, a stale one on a developer's machine), so the test passed or failed
-/// with the order other tests ran in rather than with this tree's binary.
-fn path_with_amplihack_bin() -> String {
-    let dir = std::path::Path::new(env!("CARGO_BIN_EXE_amplihack"))
-        .parent()
-        .expect("the amplihack binary has a parent directory")
-        .to_string_lossy()
-        .into_owned();
-    match std::env::var("PATH") {
-        Ok(path) if !path.is_empty() => format!("{dir}:{path}"),
-        _ => dir,
     }
 }

@@ -15,6 +15,8 @@
 //! `#[path = "<name>.rs"] mod <name>;` line below. Do NOT add a new
 //! `[[test]]` entry to the manifest.
 
+#[path = "amplihack_path.rs"]
+mod amplihack_path;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
 
