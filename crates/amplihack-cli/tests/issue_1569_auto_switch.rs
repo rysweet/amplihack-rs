@@ -245,7 +245,20 @@ impl Fixture {
     }
 
     fn run(&self, c: &mut Command) -> Output {
-        let out = c.output().unwrap();
+        // A test that has just written an executable (a copied amplihack, a
+        // stub script) can see exec fail with ETXTBSY: another test thread's
+        // fork can inherit the still-open write descriptor until its own exec
+        // closes it. The window is brief, so retry instead of failing the test.
+        let mut attempts = 0;
+        let out = loop {
+            match c.output() {
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                    attempts += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                r => break r.unwrap(),
+            }
+        };
         let mut p = self.printed.borrow_mut();
         p.extend_from_slice(&out.stdout);
         p.extend_from_slice(&out.stderr);

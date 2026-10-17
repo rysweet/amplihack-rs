@@ -233,3 +233,13 @@ fn profile_command_for_missing_profile_sets_no_pin() {
     // Fails before a Command exists, so nothing can be exported.
     assert!(build_profile_command(&bin, &s, &missing, &[]).is_err());
 }
+
+#[test]
+fn default_dir_command_removes_config_dir_and_keeps_the_pin() {
+    use super::run::build_default_dir_command;
+    let (_d, s, name, bin) = setup();
+    let cmd = build_default_dir_command(&bin, &s, &name, &[]).unwrap();
+    let envs: Vec<_> = cmd.get_envs().collect();
+    assert!(envs.contains(&(OsStr::new("CLAUDE_CONFIG_DIR"), None)));
+    assert!(envs.contains(&(OsStr::new(super::PROFILE_ENV), Some(OsStr::new("work")))));
+}

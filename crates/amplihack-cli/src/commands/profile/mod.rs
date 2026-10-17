@@ -7,13 +7,18 @@
 //! see `auto_switch`.
 
 mod auto_switch;
+mod default_live;
 mod name;
 mod pointer;
 mod run;
 mod store;
+mod usage_cmd;
+mod usage_parse;
 
 #[cfg(test)]
 mod tests_commands;
+#[cfg(all(test, unix))]
+mod tests_default_live;
 #[cfg(test)]
 mod tests_docs_sync;
 #[cfg(test)]
@@ -26,6 +31,10 @@ mod tests_run;
 mod tests_seed;
 #[cfg(test)]
 mod tests_store;
+#[cfg(test)]
+mod tests_usage_cmd;
+#[cfg(test)]
+mod tests_usage_parse;
 #[cfg(test)]
 mod tests_verify;
 
@@ -230,6 +239,20 @@ pub enum ProfileCommands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    /// Show each profile's session and weekly usage, most capacity first
+    Usage {
+        /// Profiles to probe (default: all)
+        names: Vec<String>,
+        /// Print a JSON array instead of the table
+        #[arg(long)]
+        json: bool,
+        /// Also print what `claude` wrote to stdout and stderr
+        #[arg(long)]
+        raw: bool,
+        /// Per-profile deadline in seconds (default 30)
+        #[arg(long, hide = true, value_parser = clap::value_parser!(u64).range(1..=usage_cmd::MAX_TIMEOUT_SECS))]
+        timeout_secs: Option<u64>,
+    },
     /// Switch accounts automatically when one nears its usage limit
     AutoSwitch {
         #[command(subcommand)]
@@ -300,6 +323,12 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             auto_switch::guard(&store, &name, auto_switch::Action::Launch { join: false })?;
             run::run(&store, &name, args)?
         }
+        ProfileCommands::Usage {
+            names,
+            json,
+            raw,
+            timeout_secs,
+        } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Statusline { .. } => unreachable!("handled above"),
     }
