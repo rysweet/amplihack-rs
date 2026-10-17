@@ -199,8 +199,9 @@ fn skip_update_check_flag_test_is_wired_into_bin_package() {
     let manifest = std::fs::read_to_string(&cargo)
         .unwrap_or_else(|e| panic!("FAIL: cannot read {cargo:?}: {e}"));
     assert!(
-        manifest.contains("name = \"integration\"")
-            && manifest.contains("path = \"../../tests/integration/main.rs\""),
+        manifest.contains(
+            "[[test]]\nname = \"integration\"\npath = \"../../tests/integration/main.rs\"\n"
+        ),
         "FAIL: bins/amplihack/Cargo.toml must declare the single integration\n\
          test binary that every tests/integration/*.rs file is compiled into:\n\
          \n\
@@ -230,5 +231,74 @@ fn skip_update_check_flag_test_is_wired_into_bin_package() {
          \n\
            #[path = \"skip_update_check_flag_test.rs\"]\n\
            mod skip_update_check_flag;\n"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard: no file in tests/integration is left out of every test binary
+// ---------------------------------------------------------------------------
+
+/// Every top-level `tests/integration/*.rs` file must be compiled by some test
+/// target: declared as a module in `main.rs` (the `amplihack` package's single
+/// `integration` binary), or named by another package's `[[test]] path`. A file
+/// that is neither is silently never compiled, and its tests never run.
+#[test]
+fn every_integration_test_file_is_wired_into_a_test_binary() {
+    let dir = workspace_root().join("tests/integration");
+    let root = read_test_source("tests/integration/main.rs");
+    let declared: Vec<String> = root
+        .lines()
+        .filter_map(|line| {
+            line.trim()
+                .strip_prefix("#[path = \"")
+                .and_then(|rest| rest.strip_suffix("\"]"))
+                .map(str::to_owned)
+        })
+        .collect();
+
+    let mut owned_elsewhere = Vec::new();
+    for group in ["bins", "crates"] {
+        let entries = std::fs::read_dir(workspace_root().join(group))
+            .unwrap_or_else(|e| panic!("FAIL: cannot read {group}/: {e}"));
+        for entry in entries.flatten() {
+            if entry.file_name() == "amplihack" && group == "bins" {
+                continue;
+            }
+            let Ok(manifest) = std::fs::read_to_string(entry.path().join("Cargo.toml")) else {
+                continue;
+            };
+            for line in manifest.lines() {
+                if let Some(file) = line
+                    .trim()
+                    .strip_prefix("path = \"../../tests/integration/")
+                    .and_then(|rest| rest.strip_suffix('"'))
+                {
+                    owned_elsewhere.push(file.to_owned());
+                }
+            }
+        }
+    }
+
+    let mut orphans = Vec::new();
+    let files =
+        std::fs::read_dir(&dir).unwrap_or_else(|e| panic!("FAIL: cannot read {dir:?}: {e}"));
+    for entry in files.flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if !name.ends_with(".rs") || name == "main.rs" || !entry.path().is_file() {
+            continue;
+        }
+        if !declared.contains(&name) && !owned_elsewhere.contains(&name) {
+            orphans.push(name);
+        }
+    }
+    orphans.sort();
+    assert!(
+        orphans.is_empty(),
+        "FAIL: these tests/integration files are compiled by no test target, so their\n\
+         tests never run: {orphans:?}\n\
+         Declare each in tests/integration/main.rs:\n\
+         \n\
+           #[path = \"<file>.rs\"]\n\
+           mod <name>;\n"
     );
 }

@@ -58,8 +58,9 @@ base64 = "0.22"
 # the release binary above).
 amplihack-cli = { workspace = true, features = ["test-support"] }
 
-# All tests/integration/*.rs files are modules of ONE test binary, rooted at
-# tests/integration/main.rs. One binary instead of 74 cuts link work in the
+# This package's tests/integration/*.rs files are modules of ONE test binary,
+# rooted at tests/integration/main.rs (hook_dispatch_test.rs, hook_aliases_test.rs
+# and lbug_ffi_test.rs belong to amplihack-hooks and amplihack-cli). One binary instead of 74 cuts link work in the
 # CI Test job (sccache cannot cache test binaries). Add new integration test
 # files as `mod` lines in main.rs, not as new [[test]] entries here.
 # Run one former target with:

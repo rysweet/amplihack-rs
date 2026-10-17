@@ -1,7 +1,9 @@
 //! Single integration-test binary for the `amplihack` package.
 //!
-//! Every file in this directory used to be its own `[[test]]` target in
-//! `bins/amplihack/Cargo.toml`, so Cargo compiled and linked ~74 separate
+//! Every file in this directory that belongs to the `amplihack` package used to
+//! be its own `[[test]]` target in `bins/amplihack/Cargo.toml` (three others,
+//! `hook_dispatch_test.rs`, `hook_aliases_test.rs` and `lbug_ffi_test.rs`, belong
+//! to `amplihack-hooks` and `amplihack-cli`), so Cargo compiled and linked ~74 separate
 //! test executables (none of which sccache can cache: they are bin crate
 //! types). They are now modules of this one crate root, wired as the
 //! single `[[test]] name = "integration"` target. Each module keeps the
