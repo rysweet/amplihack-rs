@@ -207,11 +207,12 @@ fn implicit_restage_does_not_create_settings_json() {
 
 /// No stamp to compare against (the #502 self-heal): assets re-stage, but a
 /// binary already in `~/.local/bin` is kept, because its version is unknown.
-/// Security F1: the stamp then stays absent. Stamping this build would record
-/// binaries it never wrote, and let a later build that is newer than this one
-/// but older than the kept binaries replace them.
+/// Security F1: the stamp records the framework as current and the binaries
+/// as unknown. Stamping them at this build would record binaries it never
+/// wrote, and let a later build that is newer than this one but older than
+/// the kept binaries replace them.
 #[test]
-fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_writes_no_stamp() {
+fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_stamps_them_unknown() {
     let fx = Fixture::new();
     fx.write_user_settings();
     let installed = fx.plant_installed_hooks();
@@ -226,11 +227,83 @@ fn implicit_restage_without_a_stamp_keeps_installed_binaries_and_writes_no_stamp
     );
     assert_eq!(fs::read(fx.settings()).unwrap(), USER_SETTINGS);
     assert_eq!(settings_writes(&fx.home, &before), Vec::<String>::new());
-    assert!(
-        !version_stamp::installed_version_path().unwrap().exists(),
+    assert_eq!(
+        version_stamp::read_installed_version().unwrap().as_deref(),
+        Some(crate::VERSION),
+        "the framework was re-staged, so the stamp records it as current"
+    );
+    assert_eq!(
+        version_stamp::read_binaries_version().unwrap(),
+        None,
         "a re-stage that kept an installed binary must not stamp v{} over it",
         crate::VERSION
     );
+}
+
+/// Review M1: the stamp check vouches only for this build's own binaries. A
+/// hooks binary found elsewhere on PATH, of unknown version, must not replace
+/// an installed one, even when this build is newer than the stamp.
+#[test]
+fn implicit_restage_never_replaces_hooks_with_a_path_copy() {
+    let mut fx = Fixture::new();
+    fx._env.unset("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH");
+    let installed = fx.plant_installed_hooks();
+    version_stamp::write_installed_version(&older_version()).unwrap();
+
+    fx.install(InstallMode::Implicit);
+
+    assert_eq!(
+        fs::read(fx.installed_hooks()).unwrap(),
+        installed,
+        "an implicit re-stage replaced installed hooks with a PATH copy"
+    );
+    assert_eq!(
+        version_stamp::read_binaries_version().unwrap().as_deref(),
+        Some(older_version().as_str()),
+        "the kept hooks binary is still at the old stamp's version"
+    );
+}
+
+/// Review M2: from the pre-#502 state (binaries installed, no stamp), the
+/// first launch re-stages and stamps the framework; the second neither
+/// re-stages nor replaces a binary.
+#[test]
+fn pre_502_state_restages_once_then_stops() {
+    let fx = Fixture::new();
+    let installed = fx.plant_installed_hooks();
+    let installs = std::cell::Cell::new(0);
+    let launch = |notice: &mut Vec<u8>| {
+        crate::self_heal::ensure_assets_match_binary_version_with(
+            &super::issue_1526_implicit_downgrade::args(&["amplihack", "launch"]),
+            notice,
+            || {
+                installs.set(installs.get() + 1);
+                local_install_scoped(&fx.repo, None, false, InstallMode::Implicit)
+            },
+        )
+        .expect("launch")
+    };
+
+    let mut first = Vec::new();
+    launch(&mut first);
+    assert_eq!(installs.get(), 1, "the first launch re-stages");
+    assert!(String::from_utf8_lossy(&first).contains("re-staged"));
+
+    let before = snapshot(&fx.home);
+    let mut second = Vec::new();
+    launch(&mut second);
+    assert_eq!(installs.get(), 1, "the second launch must not re-stage");
+    assert!(second.is_empty(), "the second launch printed {second:?}");
+    let changed: Vec<String> = changes(&before, &snapshot(&fx.home))
+        .into_iter()
+        .filter(|c| !c.contains(crate::commands::install::bundle_compat_cache::CACHE_FILE))
+        .collect();
+    assert_eq!(
+        changed,
+        Vec::<String>::new(),
+        "the second launch wrote files"
+    );
+    assert_eq!(fs::read(fx.installed_hooks()).unwrap(), installed);
 }
 
 /// The same with an equal stamp: an equal version is not newer, so the

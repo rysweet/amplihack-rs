@@ -89,6 +89,10 @@ impl IsolatedHome {
         self.put(name, Some(value.as_ref()));
     }
 
+    pub(super) fn unset(&mut self, name: &'static str) {
+        self.put(name, None);
+    }
+
     fn put(&mut self, name: &'static str, value: Option<&OsStr>) {
         if !self.saved.iter().any(|(saved, _)| *saved == name) {
             self.saved.push((name, std::env::var_os(name)));

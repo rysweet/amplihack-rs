@@ -128,8 +128,10 @@ These variables are read during install. All are optional; the installer works w
 ### Version stamp
 
 Every successful install writes the binary version into
-`~/.amplihack/.installed-version` (single-line plain text, no trailing
-newline, atomic tmp+rename). This stamp is read on every subsequent launch
+`~/.amplihack/.installed-version` (plain text, no trailing newline, atomic
+tmp+rename). An implicit re-stage that kept an installed binary adds a second
+line, `binaries: <version|unknown>`
+([details](../features/self-heal-asset-restage.md#stamp-file)). This stamp is read on every subsequent launch
 by the [self-heal check](../features/self-heal-asset-restage.md): if the
 stamp is missing or differs from `crate::VERSION`, install is run
 automatically before the requested command dispatches. Manual installs and

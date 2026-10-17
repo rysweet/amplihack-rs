@@ -125,7 +125,11 @@ covers those builds. Guarded by
 `crates/amplihack-cli/tests/issue_1526_release_version_stamp.rs`.
 
 The workflow token is read-only; only the `release` job has `contents: write`.
-The `version-bump` and `build` checkouts do not persist credentials.
+No checkout persists credentials. In the `release` job the token is passed
+only to the steps that query origin for an existing tag and push the new one,
+never to the step that runs the stamp script. Release artifacts are built from
+the released `main` SHA, so they differ from the tagged stamp commit only in
+the manifests.
 
 ### Bumping the pinned toolchain
 

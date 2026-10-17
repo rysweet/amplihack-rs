@@ -91,6 +91,8 @@ jobs:
             SERIES_TAGS=$(git tag --list "v${MAJOR}.${MINOR}.*")
             while IFS= read -r t; do
               [ -n "${t}" ] || continue
+              # A root commit has no parent; empty PARENT then fails the
+              # comparison below, which is the intended answer.
               PARENT=$(git rev-parse -q --verify "${t}^{commit}^1" || true)
               [ "${PARENT}" = "${HEAD_SHA}" ] || continue
               if [ "$(git log -1 --format=%s "${t}^{commit}")" = "chore(release): stamp ${t}" ]; then
@@ -249,6 +251,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: ${{ needs.version-bump.outputs.sha }}
+          # The token goes only to the steps that talk to origin, never to
+          # the one that runs the stamp script.
+          persist-credentials: false
 
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -261,19 +266,25 @@ jobs:
           find artifacts -name '*.sha256' -exec cp {} release-assets/ \;
           ls -la release-assets/
 
-      - name: Stamp version and create tag
+      - name: Check for an existing tag
         # Issue #1526: tag a one-commit child of the released `main` SHA whose
         # manifests say X, so a source build of the tag reports X. Only the
         # tag is pushed; `main` is never written. No git failure is ignored:
         # a failed push stops the job before the release is published, so
         # no tag or release exists and the version number is not burned
         # (#1356).
+        id: existing
         env:
           VERSION: ${{ needs.version-bump.outputs.version }}
           SHA: ${{ needs.version-bump.outputs.sha }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          # Credentials for this step's git calls only (checkout kept none).
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
           TAG="v${VERSION}"
           SUBJECT="chore(release): stamp ${TAG}"
 
@@ -282,6 +293,7 @@ jobs:
           # before #1526), or on a stamp commit whose first parent is SHA.
           # Any other vX must not have these artifacts attached to it.
           status=0
+          # `|| status=$?` records the exit code; 2 (no such tag) is expected.
           git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null || status=$?
           case "${status}" in
             0)
@@ -289,6 +301,7 @@ jobs:
               TAGGED=$(git rev-parse --verify "refs/tags/${TAG}^{commit}")
               if [ "${TAGGED}" = "${SHA}" ]; then
                 echo "${TAG} already exists on ${SHA}; publishing"
+                echo "exists=true" >> "${GITHUB_OUTPUT}"
                 exit 0
               fi
               # The fetched commit is a shallow boundary, so `^1` cannot see
@@ -304,18 +317,31 @@ jobs:
               TAGGED_SUBJECT=$(git log -1 --format=%s "${TAGGED}")
               if [ "${PARENT}" = "${SHA}" ] && [ "${TAGGED_SUBJECT}" = "${SUBJECT}" ]; then
                 echo "${TAG} already exists on stamp commit ${TAGGED} (parent ${SHA}); publishing"
+                echo "exists=true" >> "${GITHUB_OUTPUT}"
                 exit 0
               fi
               echo "::error::${TAG} already exists on ${TAGGED}, which is neither ${SHA} nor its stamp commit; refusing to publish these artifacts under it"
               exit 1
               ;;
             2)
+              echo "exists=false" >> "${GITHUB_OUTPUT}"
               ;;
             *)
               echo "::error::checking origin for ${TAG} failed (git ls-remote exit ${status})"
               exit 1
               ;;
           esac
+
+      - name: Stamp version and create tag
+        # No token in this step: it runs repository code (the stamp script).
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.version-bump.outputs.version }}
+          SHA: ${{ needs.version-bump.outputs.sha }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          SUBJECT="chore(release): stamp ${TAG}"
 
           HEAD_NOW=$(git rev-parse HEAD)
           if [ "${HEAD_NOW}" != "${SHA}" ]; then
@@ -351,6 +377,19 @@ jobs:
             git commit -m "${SUBJECT}"
           fi
           git tag -a "${TAG}" -m "Release ${TAG}"
+
+      - name: Push tag
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          VERSION: ${{ needs.version-bump.outputs.version }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.https://github.com/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "${GITHUB_TOKEN}" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
+          TAG="v${VERSION}"
           git push origin "refs/tags/${TAG}"
 
       - name: Create GitHub Release

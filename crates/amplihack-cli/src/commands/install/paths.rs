@@ -42,9 +42,12 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
 /// `p.display()` with every control character replaced by `?`, so a path
 /// printed to the terminal cannot forge a line or carry an escape sequence.
 pub(crate) fn sanitize_path(p: &Path) -> String {
-    p.display()
-        .to_string()
-        .chars()
+    sanitize_text(&p.display().to_string())
+}
+
+/// `text` with every control character replaced by `?`, for one-line warnings.
+pub(crate) fn sanitize_text(text: &str) -> String {
+    text.chars()
         .map(|c| if c.is_control() { '?' } else { c })
         .collect()
 }

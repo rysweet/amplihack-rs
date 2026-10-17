@@ -321,6 +321,9 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             "binary {} is older than install stamp {installed}; skipping launch bootstrap",
             crate::VERSION
         );
+        // This calls back into `self_heal`, which depends on `install`. The
+        // cycle is deliberate: the warning shares self_heal's once-per-process
+        // flag and its AMPLIHACK_SKIP_AUTO_INSTALL check.
         crate::self_heal::warn_implicit_downgrade_once(notice, &installed);
         return Ok(());
     }
@@ -479,15 +482,22 @@ fn local_install_scoped(
     println!();
     println!("🦀 Deploying binaries:");
     // Issue #1526: read before anything below rewrites it. An implicit
-    // re-stage compares each installed binary against this stamp.
+    // re-stage compares each installed binary against the binaries' version.
     let stamp = match mode {
         InstallMode::Explicit => None,
-        // Safe: `None` makes `implicit_deploy_allowed` refuse every occupied slot.
-        InstallMode::Implicit => version_stamp::read_installed_version()
-            .inspect_err(|e| tracing::warn!("cannot read install stamp: {e:#}"))
+        // Safe: `None` makes `implicit_deploy_allowed` refuse every occupied
+        // slot, so an unreadable stamp only costs a warning.
+        InstallMode::Implicit => version_stamp::read_binaries_version()
+            .inspect_err(|e| {
+                eprintln!(
+                    "amplihack: warning: cannot read the install stamp; keeping installed \
+                     binaries: {}",
+                    paths::sanitize_text(&format!("{e:#}"))
+                )
+            })
             .unwrap_or_default(),
     };
-    let (deployed_binaries, refused_any) = deploy_binaries(mode, stamp.as_deref())?;
+    let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
     for p in &deployed_binaries {
         println!("  ✅ Deployed {}", p.display());
@@ -766,13 +776,10 @@ fn local_install_scoped(
         let bin_dir = paths::preferred_user_bin_dir()?;
         for previous_bin in previous.binaries {
             let path = Path::new(&previous_bin);
-            let ours = path.parent() == Some(bin_dir.as_path())
-                && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
-                    ["amplihack", "amplihack-hooks", "amplihack-asset-resolver"]
-                        .iter()
-                        .any(|b| n == crate::path_conflicts::binary_filename(b))
-                });
-            if ours && path.symlink_metadata().is_ok() && !binaries.contains(&previous_bin) {
+            if binary::is_deployed_binary(path, &bin_dir)
+                && path.symlink_metadata().is_ok()
+                && !binaries.contains(&previous_bin)
+            {
                 binaries.push(previous_bin);
             }
         }
@@ -859,14 +866,26 @@ fn local_install_scoped(
     println!("============================================================");
     println!();
 
-    // Issue #1526: after a refused deploy the stamp would describe binaries
-    // this install did not write, and let a later, older build replace them.
-    if mode == InstallMode::Implicit && refused_any {
-        tracing::debug!("kept installed binaries; install stamp left unchanged");
-    } else {
+    // Issue #1526: the framework is now current, but kept binaries are still
+    // at the version the old stamp recorded (or unknown). Record both, so the
+    // next launch does not re-stage and the guard keeps failing safe.
+    if kept_binaries.is_empty() {
         version_stamp::write_installed_version(crate::VERSION)
-            .context("writing installed-version stamp")?;
+    } else {
+        let kept: Vec<String> = kept_binaries
+            .iter()
+            .map(|p| paths::sanitize_path(p))
+            .collect();
+        eprintln!(
+            "amplihack: warning: kept {} (installed version: {}) during an implicit re-stage \
+             for v{}; run `amplihack install` to replace them.",
+            kept.join(", "),
+            stamp.as_deref().unwrap_or("unknown"),
+            crate::VERSION,
+        );
+        version_stamp::write_installed_versions(crate::VERSION, stamp.as_deref())
     }
+    .context("writing installed-version stamp")?;
 
     // Stage assets to ~/.copilot/skills/ so Copilot CLI picks them up
     // without requiring a separate `amplihack copilot` launch. Best-effort

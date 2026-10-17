@@ -61,27 +61,33 @@ self-heals automatically — closing the upgrade gap permanently.
 
 An automatic re-stage (self-heal or the launch bootstrap) runs in **implicit
 mode**: it never writes `~/.claude/settings.json`, and it replaces a binary in
-`~/.local/bin` only when the running version is strictly newer than the stamp
-by semver precedence (`0.18.9 < 0.18.10`, `1.2.0-dev < 1.2.0`). An empty slot
-is always filled. Explicit `amplihack install` is unchanged, and is the way to
-downgrade on purpose.
+`~/.local/bin` only when the running version is strictly newer than the
+stamp's binaries version by semver precedence (`0.18.9 < 0.18.10`,
+`1.2.0-dev < 1.2.0`). It replaces `amplihack-hooks` and
+`amplihack-asset-resolver` only with the copies next to the running
+executable (or `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH`); a copy found
+elsewhere on `PATH` has an unknown version and may only fill an empty slot.
+An empty slot is always filled. Explicit `amplihack install` is unchanged,
+and is the way to downgrade on purpose.
 
 | Running vs stamp | Assets | Binaries | Stamp |
 |---|---|---|---|
 | older | untouched | untouched | untouched |
 | equal | no-op, or the #1271 bundle repair | untouched | untouched |
 | newer | re-staged | replaced | written |
-| missing or unparseable | re-staged (#502) | empty slots filled | written only if no binary was kept |
+| missing or unparseable | re-staged (#502) | empty slots filled | written; binaries recorded as unknown if one was kept |
 
-A kept binary is reported on stderr:
+When a re-stage keeps any installed binary, one line goes to stderr:
 
 ```
-amplihack: warning: not replacing /home/dev/.local/bin/amplihack (installed stamp: unknown) with /home/dev/.cargo/bin/amplihack (v1.2.0) during an implicit re-stage; run `amplihack install` to replace it.
+amplihack: warning: kept /home/dev/.local/bin/amplihack-hooks, /home/dev/.local/bin/amplihack (installed version: unknown) during an implicit re-stage for v1.2.0; run `amplihack install` to replace them.
 ```
 
-With no stamp the kept binary's version is unknown, so the stamp stays absent
-and each launch re-stages and warns until `amplihack install` is run. On a
-downgrade nothing is written, and one warning is printed per process; the
+The stamp then records the framework as current and the binaries at the
+version the previous stamp gave them, or as unknown (see
+[Stamp file](#stamp-file)). The next launch finds the framework current and
+neither re-stages nor warns, and the guard still refuses to replace the kept
+binaries until `amplihack install` is run. On a downgrade nothing is written, and one warning is printed per process; the
 command keeps its usual exit status:
 
 ```
@@ -121,8 +127,8 @@ latency to short-circuit invocations.
 
 | Path | `~/.amplihack/.installed-version` |
 |------|-----------------------------------|
-| Format | Plain text, single line, no trailing newline. |
-| Contents | A semantic version string matching `^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.\-]+)?$` (e.g. `0.8.111`, `0.9.0-rc1`). |
+| Format | Plain text, no trailing newline. One line, or two after an implicit re-stage kept a binary (#1526). |
+| Contents | Line one: the framework version, matching `^\d+\.\d+\.\d+(-[\w.]+)?$` (e.g. `0.8.111`, `0.9.0-rc1`). Optional line two: `binaries: <version>` or `binaries: unknown`, the version of the binaries in `~/.local/bin` when it differs from line one. Builds that predate the second line treat a two-line stamp as malformed and re-stage. |
 | Write semantics | Atomic — staged at `.installed-version.tmp` and renamed into place, mirroring the existing `write_layout_marker` pattern in `commands::install::mod`. A crashed write can never leave a half-written stamp. |
 | Read semantics | Missing file returns `None` (treated as "no prior install"). Malformed contents (failing the semver regex) are treated as "no prior install" so a corrupt stamp triggers a clean re-install rather than wedging the binary. All other I/O errors propagate. |
 | File mode | `0o600` (owner read/write only). The stamp lives under `~/.amplihack` which is also owner-private; the explicit mode prevents drift if the user has loosened the parent's umask. |
@@ -220,9 +226,9 @@ out explicitly so reviewers do not mistake it for a Zero-BS violation.
 | File | Role |
 |------|------|
 | `crates/amplihack-cli/src/self_heal.rs` | Decision logic, advisory lock acquisition, bypass diagnostic, the #1526 downgrade guards and once-per-process warning, and public entrypoint `ensure_assets_match_binary_version(args)`. Uses closure injection (mirroring `update::post_install::run_post_update_install`) so unit tests can verify the decision tree without running a real install. |
-| `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `write_installed_version`, `installed_version_path`) and the #1526 semver comparison (`relation`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
-| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (covers both bundled and network-fallback paths), except an implicit one that kept an installed binary. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
-| `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp (`implicit_deploy_allowed`), warns on stderr naming both binaries, and reports whether it kept any. |
+| `crates/amplihack-cli/src/commands/install/version_stamp.rs` | Atomic stamp read/write helpers (`read_installed_version`, `read_binaries_version`, `write_installed_version`, `write_installed_versions`, `installed_version_path`) and the #1526 semver comparison (`relation`). Performs symlink refusal via `symlink_metadata`, semver-regex validation of contents, and `0o600` permission enforcement on write. |
+| `crates/amplihack-cli/src/commands/install/mod.rs` | `local_install` writes the stamp on every successful install (covers both bundled and network-fallback paths); an implicit one that kept an installed binary also records the binaries' version, or `unknown`. `InstallMode::{Explicit, Implicit}` selects whether settings are written and binaries may be replaced; `ensure_framework_installed` applies the downgrade check before the launch bootstrap changes anything. |
+| `crates/amplihack-cli/src/commands/install/binary.rs` | `deploy_binaries` keeps an existing destination in implicit mode unless the running binary is strictly newer than the stamp's binaries version (`implicit_deploy_allowed`) and the source is this build's own copy, and returns the binaries it kept. |
 | `bins/amplihack/src/main.rs` | Calls `self_heal::ensure_assets_match_binary_version(&args)` after the existing update notice and before `Cli::parse_from`. |
 
 Dependencies introduced: [`fs2`](https://crates.io/crates/fs2) for the
