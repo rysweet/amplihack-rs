@@ -13,6 +13,8 @@ use thiserror::Error;
 
 mod gitlink;
 
+pub use gitlink::{is_at_or_under, is_in_reserved_worktrees_dir};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactGuardConfig {
     repo: PathBuf,
@@ -569,7 +571,9 @@ fn add_run_worktree_gitlinks(
         &["diff", "--cached", "--name-only", "-z"],
         &mut staged,
     )?;
-    let remediation = rule(RUN_WORKTREE_GITLINK).map_or("", |rule| rule.remediation);
+    let remediation = rule(RUN_WORKTREE_GITLINK)
+        .expect("RUN_WORKTREE_GITLINK is in DEFAULT_RULES")
+        .remediation;
     for path in gitlinks {
         let source = if staged.contains(&path) {
             ArtifactSource::Staged

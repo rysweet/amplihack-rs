@@ -151,13 +151,10 @@ paths are a successful no-op. For each existing target, the helper:
 6. Fails non-zero if validation or deletion fails.
 
 Before it removes `worktrees`, the helper runs `git worktree list --porcelain`
-in the target. It keeps the directory, prints a warning on stderr and moves on
-to the next path, without failing, when:
-
-| Condition | Warning |
-| --- | --- |
-| The target is a main checkout and a registered worktree lies under `<repo>/worktrees` | `WARNING: runtime cleanup kept <repo>/worktrees: it holds registered worktrees (#1528)` |
-| `git worktree list` fails, so the helper cannot prove the directory is safe to delete | `WARNING: runtime cleanup kept <repo>/worktrees: git worktree list failed (#1528)` |
+in the target. If that fails, the helper cannot prove the directory is safe to
+delete, so it keeps it, passes Git's own error through on stderr, prints
+`WARNING: runtime cleanup kept <repo>/worktrees: git worktree list failed (#1528)`
+and moves on to the next path without failing.
 
 In a repository's main checkout, `worktrees` holds the live worktrees of every
 run launched from it, so it is never removed there, whether or not anything

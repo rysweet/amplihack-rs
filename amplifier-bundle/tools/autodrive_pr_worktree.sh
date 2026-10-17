@@ -36,6 +36,11 @@
 #   backtick, a backslash or a control character (the path is substituted into
 #   agent prompts as `cd "{{repo_path}}"`).
 #
+#   Stale local branch: if refs/heads/<branch> exists locally and is behind
+#   origin, a newly created worktree checks out the stale local tip. The
+#   round's push then fails non-fast-forward and step-04 stops. It never
+#   forces.
+#
 # READ-ONLY INVARIANT (hard): the only writes are a fetch into the
 # remote-tracking ref (`refs/remotes/origin/<branch>`, no tags) and
 # `git worktree add` of a NEW worktree for the branch. Nothing is ever forced,
@@ -49,11 +54,13 @@ export LC_ALL=C
 
 # Repository-selecting variables (amplihack_git::REPOSITORY_ENV_VARS) would
 # point every git call at another repository; CDPATH would make `cd` resolve a
-# relative --repo elsewhere and print the result on stdout.
+# relative --repo elsewhere and print the result on stdout; GH_REPO would make
+# `gh pr view` look the PR up in a repository other than the `origin` that is
+# fetched and pushed.
 unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
     GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
     GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH \
-    GIT_WORK_TREE CDPATH
+    GIT_WORK_TREE CDPATH GH_REPO
 
 log() { printf '%s\n' "$*" >&2; }
 

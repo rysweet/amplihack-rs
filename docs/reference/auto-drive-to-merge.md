@@ -473,7 +473,7 @@ worktree, set the identity, guard, stage, guard again, commit, push.
 
 ```bash
 cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
 # The recipes split the next two checks over continuation lines.
 GD="$(git rev-parse --absolute-git-dir)" && CD="$(git rev-parse --path-format=absolute --git-common-dir)" && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ] && case "$CD" in /*) [ "$GD" != "$CD" ] ;; *) false ;; esac || { echo "STOP: not a linked worktree; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
 PR_HEAD="$(gh pr view {{pr_number}} --json headRefName --jq .headRefName)" && [ -n "$PR_HEAD" ] && [ "$(git branch --show-current)" = "$PR_HEAD" ] || { echo "STOP: this worktree is not on the PR head branch (#1528)" >&2; exit 1; }
@@ -488,7 +488,7 @@ git push || { echo "STOP: the push failed (#1528)" >&2; exit 1; }
 
 | Line | Why |
 | --- | --- |
-| `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE` | An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. |
+| `unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO` | An inherited `GIT_DIR` would make the main checkout the current repository, and `GIT_INDEX_FILE` would make `git add` and `git commit` use an index the guard never read. An inherited `GH_REPO` would make `gh pr view` ask a different repository than the `origin` the push goes to. |
 | `--show-toplevel` equals `pwd -P` | Refuses a subdirectory of some other checkout. |
 | Git directory differs from the absolute common directory | True only for a linked worktree. Refuses the main checkout. Needs Git 2.31 or later. |
 | Current branch equals the pull request's head | Refuses a linked worktree on some other branch. |

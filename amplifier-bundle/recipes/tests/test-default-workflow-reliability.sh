@@ -318,7 +318,7 @@ assert_runtime_preflight_keeps_main_checkout_worktrees() {
         || fail "issue #1528: preflight must never delete a main checkout's worktrees/ while it holds a registered worktree"
     git -C "${repo}" worktree list --porcelain | grep -qxF "worktree ${repo}/worktrees/feat/other" \
         || fail "issue #1528: the run worktree must stay registered"
-    grep -qxF "WARNING: runtime cleanup kept ${repo}/worktrees: it holds registered worktrees (#1528)" "${stderr_file}" \
+    grep -qxF "INFO: leaving ${repo}/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" "${stderr_file}" \
         || fail "issue #1528: preflight must say why it kept worktrees/ (got: $(cat "${stderr_file}"))"
     [[ ! -e "${repo}/.claude/runtime" ]] \
         || fail "issue #1528: .claude/runtime is still cleaned when worktrees/ is kept"

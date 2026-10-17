@@ -225,7 +225,7 @@ steps:
 
       ```bash
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
-      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
+      unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
       # Stop unless this is the top of a LINKED worktree: in the main checkout
       # the git dir and the common dir are the same directory (#1528).
       GD="$(git rev-parse --absolute-git-dir)" && CD="$(git rev-parse --path-format=absolute --git-common-dir)" \

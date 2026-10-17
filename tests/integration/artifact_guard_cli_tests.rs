@@ -1222,19 +1222,25 @@ fn control_character_path_prints_no_command() {
 
 #[test]
 fn control_character_repo_path_prints_no_rerun_command() {
-    let tmp = TempDir::new().expect("tempdir");
-    let repo = tmp.path().join("re\npo");
-    gitlink_repo_at(&repo);
-    write_file(&repo.join("dist/plugin.js"), "generated\n");
-    hgit(&repo, &["add", "-f", "dist/plugin.js"]);
+    // A tab stays on one porcelain line, so the scan reports (exit 1). A
+    // newline splits the main checkout's own `worktree` record before `HEAD`,
+    // so the worktree list is ambiguous and the guard refuses (exit 2,
+    // SEC-V6). Neither prints a re-run line.
+    for (name, code) in [("re\tpo", 1), ("re\npo", 2)] {
+        let tmp = TempDir::new().expect("tempdir");
+        let repo = tmp.path().join(name);
+        gitlink_repo_at(&repo);
+        write_file(&repo.join("dist/plugin.js"), "generated\n");
+        hgit(&repo, &["add", "-f", "dist/plugin.js"]);
 
-    let output = guard(&repo, &["--mode", "pre-commit"], &[]);
-    let text = combined(&output);
-    assert_eq!(output.status.code(), Some(1), "{text}");
-    assert!(
-        !text.contains("artifact-guard --repo"),
-        "no re-run line may embed a repository path with a control character; got:\n{text}"
-    );
+        let output = guard(&repo, &["--mode", "pre-commit"], &[]);
+        let text = combined(&output);
+        assert_eq!(output.status.code(), Some(code), "{name:?}: {text}");
+        assert!(
+            !text.contains("artifact-guard --repo"),
+            "{name:?}: no re-run line may embed a repository path with a control character; got:\n{text}"
+        );
+    }
 }
 
 #[test]
@@ -1515,6 +1521,29 @@ fn forged_worktree_record_from_a_newline_path_exits_2_in_every_mode() {
     hgit(
         tmp.path(),
         &["worktree", "add", "-q", &forged, "-b", "forged"],
+    );
+
+    for mode in ALL_MODES {
+        let output = guard(tmp.path(), &["--mode", mode], &[]);
+        assert_exit_2_without_report(
+            &output,
+            "artifact guard could not list worktrees: ambiguous worktree records",
+            &format!("mode {mode}"),
+        );
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn newline_path_without_a_forged_record_exits_2_in_every_mode() {
+    // SEC-V6 with real git: `worktrees/a<LF>b` prints `worktree …/a`, a stray
+    // `b`, then `HEAD`. The stray line before `HEAD` is refused, not skipped.
+    let tmp = repo_that_would_print_commands();
+    let top = canonical(tmp.path());
+    let path = format!("{top}/worktrees/a\nb");
+    hgit(
+        tmp.path(),
+        &["worktree", "add", "-q", &path, "-b", "newline"],
     );
 
     for mode in ALL_MODES {

@@ -1143,11 +1143,17 @@ mod finalize_skip_reasons {
 
         let gone = "worktree path gone";
         let not_linked = "worktree path is not a linked worktree";
+        let not_a_repo = format!(
+            "not a git repo at {} (#537)",
+            fs::canonicalize(&plain)
+                .expect("canonicalize plain")
+                .display()
+        );
         let cases: [(&str, Option<&Path>, &str); 5] = [
             ("unset", None, gone),
             ("missing", Some(&root.join("missing")), gone),
             ("a file", Some(&file), gone),
-            ("not a git directory", Some(&plain), not_linked),
+            ("not a git directory", Some(&plain), &not_a_repo),
             ("main checkout", Some(&launch), not_linked),
         ];
         for (label, worktree, reason) in cases {

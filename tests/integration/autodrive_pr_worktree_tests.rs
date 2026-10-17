@@ -1963,11 +1963,11 @@ fn helper_hardens_its_environment_before_running_git() {
     for var in amplihack_git::REPOSITORY_ENV_VARS
         .iter()
         .copied()
-        .chain(["CDPATH"])
+        .chain(["CDPATH", "GH_REPO"])
     {
         assert!(
             unset_words.contains(&var),
-            "helper must `unset {var}` (amplihack_git::REPOSITORY_ENV_VARS, SEC-V1/V3)"
+            "helper must `unset {var}` (amplihack_git::REPOSITORY_ENV_VARS, CDPATH, GH_REPO; SEC-V1/V3)"
         );
     }
     let last_unset = unset_lines.iter().map(|(at, _)| *at).max().expect("unset");
@@ -2296,7 +2296,7 @@ fn round_step_04_blocks_unset_inherited_repository_variables_after_cd() {
         let lines = logical_lines(&commit_block(&step_field(recipe, step, "prompt")));
         assert_eq!(
             lines.get(1).map(String::as_str),
-            Some("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE"),
+            Some("unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO"),
             "{recipe} {step}: the line right after `cd` unsets the repository variables:\n{}",
             lines.join("\n")
         );

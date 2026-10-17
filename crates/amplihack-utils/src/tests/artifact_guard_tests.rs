@@ -1964,6 +1964,42 @@ fn ambiguous_worktree_records_fail_the_scan_in_every_mode() {
 }
 
 #[test]
+fn a_stray_line_before_head_is_an_ambiguous_record() {
+    // SEC-V6: a path `worktrees/a<LF>b` prints `worktree …/a`, then `b`, then
+    // `HEAD …`. Git always follows `worktree` with `HEAD` or `bare`, so the
+    // stray `b` means a path held a newline; recording `…/a` would register a
+    // path that does not exist.
+    let porcelain = "worktree /r\nHEAD x\nbranch refs/heads/main\n\n\
+                     worktree /r/worktrees/a\nb\nHEAD y\ndetached\n\n";
+    match super::gitlink::parse_worktree_porcelain(porcelain) {
+        Err(super::ArtifactGuardError::WorktreeList(payload)) => {
+            assert_eq!(payload, "ambiguous worktree records");
+        }
+        other => panic!("expected WorktreeList(ambiguous); got {other:#?}"),
+    }
+}
+
+#[test]
+fn optional_lines_after_head_or_bare_still_parse() {
+    // The strict second-line check must not refuse the attribute lines Git
+    // prints after `HEAD`/`bare`.
+    let porcelain = "worktree /r\nbare\n\n\
+                     worktree /r/worktrees/a\nHEAD a\nbranch refs/heads/a\nlocked\n\n\
+                     worktree /r/worktrees/b\nHEAD b\ndetached\nlocked held by ci\n\n\
+                     worktree /r/worktrees/c\nHEAD c\ndetached\n\
+                     prunable gitdir file points to non-existent location\n\n";
+    let records = super::gitlink::parse_worktree_porcelain(porcelain).expect("valid porcelain");
+    let records: Vec<String> = records
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        records,
+        ["/r", "/r/worktrees/a", "/r/worktrees/b", "/r/worktrees/c"]
+    );
+}
+
+#[test]
 fn gitlink_violations_are_listed_before_every_other_violation() {
     // D8: gitlinks sort first, so the CLI's table, its commands and its
     // `First violation detail` all lead with the one that cannot be

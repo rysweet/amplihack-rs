@@ -46,10 +46,20 @@ pub(super) fn registered_worktrees(top: &Path) -> Result<Vec<String>, ArtifactGu
 }
 
 /// The `worktree <abs>` paths of newline-separated porcelain output (never
-/// `-z`, which older Git lacks). A `worktree` line that arrives before the
-/// open record has shown `HEAD` or `bare` means a path held a newline and
-/// forged a second record, so the whole list is refused rather than guessed.
-fn parse_worktree_porcelain(porcelain: &str) -> Result<Vec<PathBuf>, ArtifactGuardError> {
+/// `-z`, which older Git lacks). Git always follows `worktree <path>` with
+/// `HEAD <sha>` or `bare`, so the whole list is refused rather than guessed
+/// when a record's second line is anything else, or when a second `worktree`
+/// line arrives before the open record is complete: both mean a path held a
+/// newline.
+///
+/// This is a heuristic for records with no `HEAD`, not proof against forgery:
+/// a path can embed a complete, well-formed record. That is harmless here,
+/// because the forged path is always a prefix of the real one, so the real
+/// root stays registered; the auto-drive resolver also asks Git about the
+/// matched path directly.
+pub(super) fn parse_worktree_porcelain(
+    porcelain: &str,
+) -> Result<Vec<PathBuf>, ArtifactGuardError> {
     let ambiguous = || ArtifactGuardError::WorktreeList(WL_AMBIGUOUS.to_string());
     let mut records = Vec::new();
     // `Some(seen_head_or_bare)` while a record is open.
@@ -75,7 +85,9 @@ fn parse_worktree_porcelain(porcelain: &str) -> Result<Vec<PathBuf>, ArtifactGua
                 return Err(ambiguous());
             }
             open = Some(true);
-        } else if open.is_none() {
+        } else if open != Some(true) {
+            // Before a record is open, or between `worktree` and `HEAD`/`bare`:
+            // a stray line means a path held a newline.
             return Err(ambiguous());
         }
     }
@@ -126,15 +138,21 @@ pub(super) fn index_gitlinks(top: &Path) -> Result<BTreeSet<String>, ArtifactGua
 /// Whether the gitlink at `path` records a run worktree rather than a real
 /// submodule. See the module docs.
 pub(super) fn is_run_worktree_gitlink(path: &str, registered: &[String]) -> bool {
-    let first = path.split('/').next().unwrap_or_default();
-    first.eq_ignore_ascii_case("worktrees")
+    is_in_reserved_worktrees_dir(path)
         || registered
             .iter()
             .any(|worktree| is_at_or_under(path, worktree))
 }
 
+/// Whether the repo-relative `path` has `worktrees` as its first component
+/// (ASCII case-insensitive), the directory reserved for run worktrees.
+pub fn is_in_reserved_worktrees_dir(path: &str) -> bool {
+    let first = path.split('/').next().unwrap_or_default();
+    first.eq_ignore_ascii_case("worktrees")
+}
+
 /// Whether `path` equals `root` or lies beneath it.
-pub(super) fn is_at_or_under(path: &str, root: &str) -> bool {
+pub fn is_at_or_under(path: &str, root: &str) -> bool {
     path.strip_prefix(root)
         .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
 }

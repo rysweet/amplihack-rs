@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use amplihack_utils::artifact_guard::{
     ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactViolation,
-    PreExistingPolicy, RUN_WORKTREE_GITLINK, scan_artifacts,
+    PreExistingPolicy, RUN_WORKTREE_GITLINK, is_at_or_under, is_in_reserved_worktrees_dir,
+    scan_artifacts,
 };
 use anyhow::Result;
 
@@ -394,20 +395,13 @@ fn cleanup_command(root: &str) -> Option<String> {
 /// a registered worktree, or its first component is `worktrees` in any ASCII
 /// case, where an unregistered directory can still hold a run's work.
 fn never_delete_reason(root: &str, registered: &[String]) -> Option<&'static str> {
-    let at_or_under = |path: &str, base: &str| {
-        path.strip_prefix(base)
-            .is_some_and(|rest| rest.is_empty() || rest.starts_with('/'))
-    };
     if registered
         .iter()
-        .any(|worktree| at_or_under(worktree, root) || at_or_under(root, worktree))
+        .any(|worktree| is_at_or_under(worktree, root) || is_at_or_under(root, worktree))
     {
         return Some(NEVER_DELETE_REGISTERED);
     }
-    let first = root.split('/').next().unwrap_or_default();
-    first
-        .eq_ignore_ascii_case("worktrees")
-        .then_some(NEVER_DELETE_RESERVED)
+    is_in_reserved_worktrees_dir(root).then_some(NEVER_DELETE_RESERVED)
 }
 
 fn no_command_comment(path: &str) -> String {
