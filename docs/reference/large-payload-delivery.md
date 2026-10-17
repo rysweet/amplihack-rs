@@ -1,7 +1,7 @@
 ---
 title: "Large Payload Delivery Reference"
 description: "API, constants, per-tool channels and shell helpers that keep large prompts, recipe context and GitHub bodies out of single argv elements and environment values."
-last_updated: 2026-10-16
+last_updated: 2026-10-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -10,6 +10,7 @@ related:
   - ../howto/pass-large-recipe-context.md
   - ../amplihack-rs-parity.md
   - ./recipe-cli-reference.md
+  - ./profile-command.md
 ---
 
 # Large Payload Delivery Reference
@@ -34,6 +35,7 @@ environment string) or `ARG_MAX`. For the reasoning behind it, see
 - [Reading a context value in a bash step](#reading-a-context-value-in-a-bash-step)
 - [Shell helper: `workflow_body_file.sh`](#shell-helper-workflow_body_filesh)
 - [Recipe and shell sites](#recipe-and-shell-sites)
+- [Claude profiles and auto-switch](#claude-profiles-and-auto-switch)
 - [Security contract](#security-contract)
 - [Sites that still use argv](#sites-that-still-use-argv)
 
@@ -808,6 +810,77 @@ copies of the lookup, its not-found check and the `.` that sources the helper,
 and fails if any copy differs from the others, ignoring only the name of the
 variable that receives the directory.
 
+## Claude profiles and auto-switch
+
+Payload delivery and [Claude profile selection](./profile-command.md) apply to
+the same launches. Each launch keeps both: the prompt or context travels by
+stdin, a private file or bounded argv, and the profile travels by the small,
+bounded variables `AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT`.
+
+| Launch | Payload channel | Profile and agent binary |
+| --- | --- | --- |
+| Fleet reasoner (`NativeReasonerBackend::complete`) | `reasoner_command(path, decision)` argv plus the prompt on stdin through `run_output_with_timeout_stdin` | `EnvBuilder::with_launched_agent_binary("claude")` tags the child as a Claude session |
+| `amplihack recipe run` | Context from `--context-file` and `--set`; the environment mirror built by `context_env_pairs` stays inside `resolve_context_env_budget()` | The runner's agent binary comes from `with_resolved_agent_binary(...)` in the same command builder, after the context mirror is applied |
+| `multitask` recipe-mode workstream | `launcher.sh` passes `context.json` (mode 0600) to `amplihack recipe run` with `--context-file` | `run.sh` exports the two profile variables, single-quoted; the exports come before `exec bash launcher.sh` |
+| Recipe agent step (`recipe-runner-rs`) | The step prompt as `-p <prompt>` argv; the system prompt as `--system-prompt` when small, or as a 0600 file passed with `--append-system-prompt-file` when large. Never stdin | Inherited profile; auto-switch may substitute or rerun under another profile |
+
+A recipe-mode workstream writes two scripts. `run.sh` sets the session
+variables and the profile, then hands over to `launcher.sh`. With the profile
+`work` set, the end of `run.sh` looks like this (the session-tree and
+workstream `export` lines above it are omitted):
+
+```bash
+export AMPLIHACK_CLAUDE_PROFILE='work'
+export AMPLIHACK_CLAUDE_PROFILE_ROOT='/home/user/.amplihack/claude-profiles'
+exec bash launcher.sh
+```
+
+`launcher.sh` (from `recipe_launcher_script`) sets `RECIPE` to the
+single-quoted recipe name and `CONTEXT_JSON` to the `context.json` beside it,
+then passes the context by file:
+
+```bash
+exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
+```
+
+Both profile values are quoted with the same `sh_single_quote` helper that
+quotes the recipe name. The exported `AMPLIHACK_CLAUDE_PROFILE` is not always
+the inherited name: auto-switch may substitute another profile before
+`run.sh` is written. A profile variable that is set but not valid UTF-8 stops
+the workstream before `run.sh` or `context.json` is written. The error names
+the variable, never its value.
+
+### Supervised reruns and stdin
+
+When auto-switch supervises a nested `amplihack claude -p` launch (see
+[Usage-limit reruns](./profile-command.md#usage-limit-reruns)), each attempt
+inherits the supervisor's stdin. The first attempt reads the prompt to the
+end, so a rerun of a launch whose prompt was piped on stdin starts with an
+empty stdin. The prompt is lost, not exposed: it is never copied to argv, the
+environment or the rerun buffer.
+
+amplihack's own large-payload sites take other paths, and none of these sites are affected:
+
+- the fleet reasoner starts the `claude` binary directly, not through
+  `amplihack claude`, so it is never supervised;
+- `--auto` launches are excluded from supervision, so auto mode's per-turn
+  stdin prompt is never rerun;
+- `amplihack recipe run` passes context to the runner as `--set` argv, and
+  `recipe-runner-rs` gives each agent step its prompt as `-p` argv (plus a
+  0600 system-prompt file for large prompts), never on stdin. A rerun gets the
+  same argv and reads the same prompt file again;
+- multitask workstreams pass context in `context.json`, which every attempt
+  can read again.
+
+The limit applies only when someone runs `amplihack claude -p` and pipes the
+prompt on stdin by hand.
+
+The tests that hold this contract are `tests_issue_1570_reasoner` (stdin
+delivery and two-argument `reasoner_command`), `issue_1570_launcher` and the
+`profile_exports_*` tests in `multitask/command_builder_tests.rs`, and
+`test_execute_recipe_via_rust_propagates_agent_binary_env` in
+`recipe/run/tests_execute.rs`.
+
 ## Security contract
 
 These rows apply to the APIs above. For the properties of the layer as a whole,
@@ -840,3 +913,4 @@ These build argv from a prompt but have no caller that passes large text:
 - [Pass Large Recipe Context](../howto/pass-large-recipe-context.md) - Convert recipe steps
 - [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - `AMPLIHACK_PROMPT_DELIVERY` and doctor output
 - [Recipe Context Environment Export](./recipe-context-environment.md) - Context in step environments
+- [Reference: `amplihack profile`](./profile-command.md) - Profile variables, auto-switch and usage-limit reruns

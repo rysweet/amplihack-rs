@@ -1,7 +1,7 @@
 ---
 title: "Large Payload Delivery to Child Processes"
 description: "Why amplihack never places unbounded text in a single argv element or environment value, and how it delivers large prompts, recipe context and GitHub bodies instead."
-last_updated: 2026-10-16
+last_updated: 2026-10-17
 review_schedule: quarterly
 owner: rysweet
 doc_type: explanation
@@ -290,6 +290,10 @@ with the file path as its prompt. There is no fallback to argv.
   together exceed 128 KiB. Values that grow past that size inside a run, such
   as step outputs, reach bash steps intact.
 - Remote and admiral runs support auto mode only.
+- An auto-switch [usage-limit rerun](../reference/profile-command.md#usage-limit-reruns)
+  of `amplihack claude -p` whose prompt was piped on stdin by hand starts with
+  an empty stdin; see
+  [Supervised reruns and stdin](../reference/large-payload-delivery.md#supervised-reruns-and-stdin).
 - File-reference delivery depends on the agent reading the file. It is used
   only above 4096 bytes and only for tools with no stronger channel.
 - A temporary file is not removed if amplihack is killed with `SIGKILL`. It
@@ -303,3 +307,4 @@ with the file path as its prompt. There is no fallback to argv.
 - [Pass Large Recipe Context](../howto/pass-large-recipe-context.md) - Convert a recipe step that passes large text
 - [amplihack-rs Parity Reference](../amplihack-rs-parity.md) - Prompt delivery modes and `AMPLIHACK_PROMPT_DELIVERY`
 - [Recipe Context Environment Export](../reference/recipe-context-environment.md) - The aggregate environment budget
+- [Reference: `amplihack profile`](../reference/profile-command.md) - Claude profiles, auto-switch and usage-limit reruns
