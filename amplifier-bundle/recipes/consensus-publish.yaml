@@ -33,7 +33,7 @@ steps:
 
       # Stage all changes
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A
+      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
 
       # FIX (#469/#311): Use env vars — safe against injection and word-splitting.
       _TASK_DESC="$TASK_DESCRIPTION"

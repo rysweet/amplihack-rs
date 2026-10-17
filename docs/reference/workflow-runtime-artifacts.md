@@ -4,7 +4,7 @@ This reference defines the runtime-root, cleanup, and guard-point contracts used
 by `default-workflow`, recovery flows, launchers, provenance logging, publish
 helpers, and finalization helpers.
 
-Updated: 2026-06-25
+Updated: 2026-10-06
 
 ## Contents
 
@@ -86,7 +86,7 @@ artifacts:
 | Repo-relative path | Owner | Cleanup behavior |
 | --- | --- | --- |
 | `.claude/runtime` | legacy amplihack launcher and nested agent runtime state | Removed by workflow runtime preflight when present. |
-| `worktrees` | reserved root for amplihack workflow-created nested scratch worktrees under a managed task worktree | Nested git worktrees are deregistered (`git worktree remove --force` + `git worktree prune`) and the directory is removed by workflow runtime preflight when present and not tracked source. A bare `rm -rf` is never sufficient: it leaves dangling worktree registrations behind (issue #808 — a regression of the #780/#755 local-leak fixes). |
+| `worktrees` | reserved root for amplihack workflow-created nested scratch worktrees under a managed task worktree | Nested git worktrees are deregistered (`git worktree remove --force` + `git worktree prune`) and the directory is removed by workflow runtime preflight when present and not tracked source. A bare `rm -rf` is never sufficient: it leaves dangling worktree registrations behind (issue #808 — a regression of the #780/#755 local-leak fixes). While it holds a registered worktree, as a main checkout's does, it is kept; see [`cleanup_known_workflow_runtime_artifacts`](#cleanup_known_workflow_runtime_artifacts). |
 
 The cleanup contract does not include `.claude` itself, `.claude/settings.json`,
 source files, build output, dependency directories, logs outside the runtime
@@ -150,6 +150,30 @@ paths are a successful no-op. For each existing target, the helper:
    active worktree.
 6. Fails non-zero if validation or deletion fails.
 
+Before it removes `worktrees`, the helper runs `git worktree list --porcelain`
+in the target. It keeps the directory, prints a warning on stderr and moves on
+to the next path, without failing, when:
+
+| Condition | Warning |
+| --- | --- |
+| The target is a main checkout and a registered worktree lies under `<repo>/worktrees` | `WARNING: runtime cleanup kept <repo>/worktrees: it holds registered worktrees (#1528)` |
+| `git worktree list` fails, so the helper cannot prove the directory is safe to delete | `WARNING: runtime cleanup kept <repo>/worktrees: git worktree list failed (#1528)` |
+
+In a repository's main checkout, `worktrees` holds the live worktrees of every
+run launched from it, so it is never removed there, whether or not anything
+under it is registered (issue #1494). The helper also prints
+`INFO: leaving <repo>/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)`
+and adds `/worktrees/` to the repository's `info/exclude`, so the kept
+directory never shows as untracked. In a linked task worktree, `worktrees`
+holds this run's nested scratch worktrees, which are deregistered and removed
+as described above (issue #808). `.claude/runtime` is cleaned either way.
+
+Some steps run the preflight in `REPO_PATH`, which is the launch checkout:
+`step-22b-final-status` in `workflow-finalize.yaml` does, and so does the
+`workflow_final_status.sh` it calls. Without this rule, cleanup's
+`rm -rf -- "$repo/worktrees"` would delete every live run worktree under a main
+checkout.
+
 ### `preflight_known_workflow_runtime_artifacts`
 
 ```bash
@@ -157,7 +181,9 @@ preflight_known_workflow_runtime_artifacts "$worktree"
 ```
 
 Runs cleanup, then verifies that the known runtime artifact paths are absent.
-Use this function before guard-sensitive lifecycle operations.
+The one exception is a `worktrees` that cleanup kept on purpose: a main
+checkout's, or any whose worktree list failed. Use this function before
+guard-sensitive lifecycle operations.
 
 ### Deterministic finalization cleanup (issue #808)
 
@@ -254,6 +280,38 @@ Any new recipe step that invokes `git add -A`, performs publication staging, or
 requires a clean worktree must run the same preflight immediately before the
 operation.
 
+In `workflow-finalize.yaml`, `step-20a-artifact-guard` and
+`step-20b-push-cleanup` run only in the task worktree
+(`worktree_setup.worktree_path`). Before the preflight runs, each step checks
+that path and skips when either check fails. A skip prints one warning on
+stderr and exits `0`:
+
+| Condition | Reason in the warning |
+| --- | --- |
+| The path is empty, missing, or not a directory | `worktree path gone` |
+| The path is a directory but not the top of a linked worktree: a plain directory, the main checkout, or a subdirectory of a checkout | `worktree path is not a linked worktree` |
+
+The linked-worktree check compares `git rev-parse --absolute-git-dir` with
+`git rev-parse --path-format=absolute --git-common-dir`; they differ only in a
+linked worktree. The full warning lines are:
+
+```text
+WARNING: step-20a worktree path gone; skipping the artifact guard — never runs in REPO_PATH (#1528)
+WARNING: step-20a worktree path is not a linked worktree; skipping the artifact guard — never runs in REPO_PATH (#1528)
+WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
+WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
+```
+
+The step-20b lines are tested exactly
+(`tests/integration/artifact_guard_workflow_tests.rs`), and every skip must come
+before the preflight, the guard and `git add -A`. The step-20a lines are the
+intended text but no test checks them.
+
+Neither step falls back to `REPO_PATH` or the current directory. That fallback
+is the launch checkout, where the preflight would act on live run worktrees
+and step-20b would stage, commit and push (issue #1528). `step-21-pr-ready`
+keeps its fallback because it does not commit.
+
 ## Artifact Guard interaction
 
 Artifact Guard is still the authority for unexpected artifacts. It does not
@@ -269,7 +327,8 @@ stage, commit, publish, or finalize
 ```
 
 If `.claude/runtime` or `worktrees/` remains after preflight, the lifecycle step
-fails visibly. If any unrelated artifact remains, Artifact Guard fails visibly.
+fails visibly, except for a `worktrees/` that preflight keeps on purpose (a main checkout's, or one
+whose worktree list failed). If any unrelated artifact remains, Artifact Guard fails visibly.
 
 ## Regression contract
 
@@ -298,3 +357,9 @@ Regression coverage for workflow runtime isolation verifies:
    registrations, deletes the nested worktree's orphaned branch (remote + local),
    and always preserves the intended PR branch and protected base branches
    (issue #808). The cleanup is idempotent and never aborts the caller.
+10. Runtime cleanup pointed at a main checkout keeps a `worktrees/` directory
+    that holds a registered worktree, including that worktree's uncommitted
+    files and registration, and keeps it when `git worktree list` fails. Each
+    case prints its warning and the preflight still succeeds. Finalize steps 20a and 20b skip with a warning
+    instead of running in `REPO_PATH` when the task worktree is gone
+    (issue #1528).

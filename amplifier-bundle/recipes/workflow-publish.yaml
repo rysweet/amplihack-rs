@@ -160,7 +160,7 @@ steps:
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A
+      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
@@ -355,7 +355,7 @@ steps:
           ```bash
           GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"
           . "$GIT_IDENTITY_HELPER"
-          amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A
+          amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused; do not commit" >&2; exit 1; }
           amplihack_prepare_git_commit_identity
           git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push
