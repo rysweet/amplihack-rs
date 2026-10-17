@@ -355,8 +355,8 @@ jobs:
     # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
     # runs; a lint failure only costs redundant Test compute, not correctness.
     env:
-      # Drop debug info from the workspace's large test-binary surface (60+
-      # integration [[test]] targets plus per-crate unit tests): smaller links
+      # Drop debug info from the workspace's large test-binary surface (the
+      # `integration` binary, per-crate integration and unit tests): smaller links
       # and lower peak disk. The suite asserts behavior, not backtraces (#744).
       CARGO_PROFILE_TEST_DEBUG: "0"
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.

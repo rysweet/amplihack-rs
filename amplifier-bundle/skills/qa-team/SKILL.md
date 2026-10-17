@@ -158,8 +158,8 @@ For Rust CLI repos, extend native integration tests instead of reintroducing a
 scripted parity harness. A good baseline is:
 
 ```bash
-cargo test -p amplihack --test cli_launch --locked
-cargo test -p amplihack --test no_python_probe --locked
+cargo test -p amplihack --test integration cli_launch:: --locked
+cargo test -p amplihack --test integration no_python_probe:: --locked
 ```
 
 For repository no-Python validation:

@@ -92,6 +92,7 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         .arg("-c")
         .arg(command)
         .current_dir(repo)
+        .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env("WORKTREE_SETUP_WORKTREE_PATH", repo)
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",

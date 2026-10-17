@@ -213,13 +213,14 @@ These stub `gh` to emit rate-limit, auth, transient, and success stderr and
 assert the classifier, adaptive wait (mocked `sleep`), REST-fallback routing,
 `GH_RETRY_LAST_CLASS` values, and token redaction.
 
-Rust integration resilience tests. These are `[[test]]` targets of the
-`amplihack` package (defined in `bins/amplihack/Cargo.toml`, sources under
-`tests/integration/`), so scope them with `-p amplihack`:
+Rust integration resilience tests. These are modules of the single
+`integration` test target of the `amplihack` package (defined in
+`bins/amplihack/Cargo.toml`, crate root `tests/integration/main.rs`), so scope
+them with `-p amplihack --test integration` and filter by module name:
 
 ```bash
-cargo test -p amplihack --test workflow_publish_resilience
-cargo test -p amplihack --test workflow_finalize_resilience
+cargo test -p amplihack --test integration workflow_publish_resilience::
+cargo test -p amplihack --test integration workflow_finalize_resilience::
 ```
 
 ## Design notes
