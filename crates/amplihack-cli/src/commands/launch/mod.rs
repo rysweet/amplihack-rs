@@ -60,7 +60,7 @@ use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
-use context::render_launcher_command;
+use context::{persist_launcher_context_with, render_launcher_command};
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
@@ -443,7 +443,8 @@ fn run_launch_core(
             .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
             .with_session_tree_context() // preserve orchestration tree vars if present
             .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
-            .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+            // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
+            .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
@@ -486,6 +487,8 @@ fn run_launch_core(
             proxy_config.as_ref().zip(proxy_target),
             root_sandbox.as_ref(),
         )?;
+        // Issue #1569: only the supervising amplihack sees this marker.
+        cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
 
         // Spawn child in its own process group.
         //
@@ -494,10 +497,15 @@ fn run_launch_core(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
-        if let Some(dir) = claude_config_dir.as_deref() {
-            crate::commands::profile::verify_launch_profile_dir(dir)?;
-        }
-        let mut child = match ManagedChild::spawn(cmd) {
+        // Issue #1569: the hold keeps auto-switch swaps out of the profile
+        // until the child exists and liveness scans can see it.
+        let launch_hold = claude_config_dir
+            .as_deref()
+            .map(crate::commands::profile::verify_launch_profile_dir)
+            .transpose()?;
+        let spawned = ManagedChild::spawn(cmd);
+        drop(launch_hold);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 let raw_os_error = err
@@ -520,7 +528,13 @@ fn run_launch_core(
         };
 
         // Wait for child or signal
-        let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // Issue #1569: hand back logins the session borrowed, on success and
+        // on error, before this process exits.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::return_after_session(dir);
+        }
+        let exit_code = exit_code?;
         tracker.complete_session(&session_id)?;
         if exit_code != 0 {
             std::process::exit(exit_code);

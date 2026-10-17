@@ -44,6 +44,9 @@ const SKIP_ENV: &str = "AMPLIHACK_SKIP_AUTO_INSTALL";
 ///
 /// - `install`/`uninstall`/`update`: would recurse or undo the user's intent.
 /// - `completions`/`help`/`doctor`: read-only/diagnostic; should stay fast.
+/// - `agent-binary`: runs inside `$(...)` to hand the agent binary to a
+///   detached launch (issue #1525); an install there would be a side effect
+///   of reading a value, and its output would land on the caller's terminal.
 const SKIP_SUBCOMMANDS: &[&str] = &[
     "install",
     "uninstall",
@@ -51,6 +54,7 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "completions",
     "doctor",
     "help",
+    "agent-binary",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -371,6 +375,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     // stdout and corrupt the very pipe these helpers exist to make robust, so
     // none of them may trigger auto-install.
     if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
+        return true;
+    }
+    // `profile statusline` is the status-line wrapper Claude Code runs after
+    // every turn (issue #1569). Its stdout is the status line and it must stay
+    // fast and silent, so it never triggers auto-install.
+    if matches!(positionals.as_slice(), ["profile", "statusline", ..]) {
         return true;
     }
 
@@ -836,6 +846,26 @@ steps:
         assert_eq!(calls.get(), 0);
     }
 
+    /// Issue #1525: `amplihack agent-binary --shell` runs inside `$(...)` to
+    /// hand the agent binary to a detached launch. An install there would be
+    /// a side effect of reading a value, with its banner on the caller's
+    /// terminal.
+    #[test]
+    fn agent_binary_subcommand_skips() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "agent-binary", "--shell"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
     #[test]
     fn update_subcommand_skips() {
         let tmp = TempDir::new().unwrap();
@@ -932,6 +962,32 @@ steps:
                 "`orch helper {sub}` is a pipe primitive and must not self-heal (would pollute stdout)"
             );
         }
+    }
+
+    #[test]
+    fn profile_statusline_skips_startup_self_heal() {
+        // Issue #1569: Claude Code runs the wrapper after every turn and
+        // shows its stdout as the status line.
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&[
+                "amplihack",
+                "profile",
+                "statusline",
+                "--root",
+                "/r",
+                "--owner",
+                "work",
+            ]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
     }
 
     #[test]

@@ -167,7 +167,10 @@ exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
 }
 
 pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(env_var_os)?;
+    let profile_exports = profile_exports(
+        env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -210,7 +213,10 @@ pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
 }
 
 pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
-    let profile_exports = profile_exports(env_var_os)?;
+    let profile_exports = profile_exports(
+        env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
     Ok(format!(
         r#"#!/bin/bash
@@ -248,7 +254,14 @@ fn env_var_os(key: &str) -> Option<OsString> {
 /// A value that is set but not valid UTF-8 is an error, not a skipped line:
 /// dropping it would make the nested launch fall back to the default root and
 /// possibly to a different account. The error names the variable only.
-pub(super) fn profile_exports(get: impl Fn(&str) -> Option<OsString>) -> Result<String> {
+///
+/// Issue #1569: `substitute` may replace the inherited profile name with
+/// another profile chosen by auto-switch; it is only asked about a set,
+/// non-empty profile name.
+pub(super) fn profile_exports(
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
     use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
     let mut out = String::new();
     for key in [PROFILE_ENV, ROOT_ENV] {
@@ -262,7 +275,11 @@ pub(super) fn profile_exports(get: impl Fn(&str) -> Option<OsString>) -> Result<
                  Claude profile. Unset it or set it to a UTF-8 value"
             );
         };
-        out.push_str(&format!("export {key}={}\n", sh_single_quote(value)));
+        let value = match key {
+            PROFILE_ENV => substitute(value).unwrap_or_else(|| value.to_string()),
+            _ => value.to_string(),
+        };
+        out.push_str(&format!("export {key}={}\n", sh_single_quote(&value)));
     }
     Ok(out)
 }

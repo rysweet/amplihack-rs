@@ -21,6 +21,11 @@ fn getter(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<OsString> {
     move |k| map.get(k).cloned()
 }
 
+/// The auto-switch substitution seam with no substitution (switch off).
+fn keep(_inherited: &str) -> Option<String> {
+    None
+}
+
 fn workstream(dir: &Path) -> Workstream {
     Workstream::new(
         1567,
@@ -54,10 +59,10 @@ fn sh_single_quote_wraps_and_escapes_quotes() {
 
 #[test]
 fn profile_exports_writes_quoted_lines_when_set() {
-    let out = profile_exports(getter(&[
-        (PROFILE_VAR, "work"),
-        (ROOT_VAR, "/home/u/profiles"),
-    ]))
+    let out = profile_exports(
+        getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, "/home/u/profiles")]),
+        keep,
+    )
     .unwrap();
     assert!(
         out.contains("export AMPLIHACK_CLAUDE_PROFILE='work'\n"),
@@ -71,23 +76,26 @@ fn profile_exports_writes_quoted_lines_when_set() {
 
 #[test]
 fn profile_exports_skips_unset_or_empty_values() {
-    assert_eq!(profile_exports(getter(&[])).unwrap(), "");
+    assert_eq!(profile_exports(getter(&[]), keep).unwrap(), "");
     assert_eq!(
-        profile_exports(getter(&[(PROFILE_VAR, ""), (ROOT_VAR, "")])).unwrap(),
+        profile_exports(getter(&[(PROFILE_VAR, ""), (ROOT_VAR, "")]), keep).unwrap(),
         ""
     );
-    let only_name = profile_exports(getter(&[(PROFILE_VAR, "work")])).unwrap();
+    let only_name = profile_exports(getter(&[(PROFILE_VAR, "work")]), keep).unwrap();
     assert!(only_name.contains("AMPLIHACK_CLAUDE_PROFILE='work'"));
     assert!(!only_name.contains(ROOT_VAR), "{only_name}");
 }
 
 #[test]
 fn profile_exports_never_exports_claude_config_dir() {
-    let out = profile_exports(getter(&[
-        (PROFILE_VAR, "work"),
-        (ROOT_VAR, "/r"),
-        ("CLAUDE_CONFIG_DIR", "/r/work"),
-    ]))
+    let out = profile_exports(
+        getter(&[
+            (PROFILE_VAR, "work"),
+            (ROOT_VAR, "/r"),
+            ("CLAUDE_CONFIG_DIR", "/r/work"),
+        ]),
+        keep,
+    )
     .unwrap();
     assert!(!out.contains("CLAUDE_CONFIG_DIR"), "{out}");
 }
@@ -97,7 +105,8 @@ fn profile_exports_never_exports_claude_config_dir() {
 fn hostile_root_round_trips_through_bash_without_running_anything() {
     let tmp = tempfile::tempdir().unwrap();
     let root = "/tmp/it's $(touch pwned) `touch pwned2`\nnext";
-    let exports = profile_exports(getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, root)])).unwrap();
+    let exports =
+        profile_exports(getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, root)]), keep).unwrap();
     let script = format!("{exports}printf '%s' \"$AMPLIHACK_CLAUDE_PROFILE_ROOT\"");
     let out = Command::new("bash")
         .arg("-c")
@@ -182,7 +191,7 @@ fn profile_exports_refuses_non_utf8_values_without_printing_them() {
             PROFILE_VAR => Some(OsString::from("work")),
             _ => None,
         };
-        let err = profile_exports(get).expect_err("non-UTF-8 value must be refused");
+        let err = profile_exports(get, keep).expect_err("non-UTF-8 value must be refused");
         let msg = format!("{err:#}");
         assert!(msg.contains(bad_key), "{msg}");
         assert!(msg.contains("not valid UTF-8"), "{msg}");
@@ -217,6 +226,48 @@ fn run_scripts_refuse_a_non_utf8_profile_root() {
         let msg = format!("{:#}", result.expect_err("script must not be built"));
         assert!(msg.contains(ROOT_VAR), "{msg}");
     }
+}
+
+// Issue #1569: with auto-switch on, the exported profile is the candidate the
+// substitution seam picks; the root and everything else are unchanged.
+
+#[test]
+fn profile_exports_writes_the_substituted_profile() {
+    let out = profile_exports(
+        getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, "/r")]),
+        |inherited: &str| (inherited == "work").then(|| "spare".to_string()),
+    )
+    .unwrap();
+    assert!(
+        out.contains("export AMPLIHACK_CLAUDE_PROFILE='spare'\n"),
+        "{out}"
+    );
+    assert!(!out.contains("'work'"), "{out}");
+    assert!(
+        out.contains("export AMPLIHACK_CLAUDE_PROFILE_ROOT='/r'\n"),
+        "{out}"
+    );
+}
+
+#[test]
+fn profile_exports_does_not_consult_the_seam_without_an_inherited_profile() {
+    let out = profile_exports(getter(&[(ROOT_VAR, "/r")]), |_: &str| -> Option<String> {
+        panic!("substitution must only be asked about an inherited profile")
+    })
+    .unwrap();
+    assert!(!out.contains("export AMPLIHACK_CLAUDE_PROFILE="), "{out}");
+}
+
+#[test]
+fn profile_exports_quotes_the_substituted_name() {
+    let out = profile_exports(getter(&[(PROFILE_VAR, "work")]), |_: &str| {
+        Some("it's".to_string())
+    })
+    .unwrap();
+    assert!(
+        out.contains("export AMPLIHACK_CLAUDE_PROFILE='it'\\''s'\n"),
+        "{out}"
+    );
 }
 
 // -------------------------------------------------------------------------

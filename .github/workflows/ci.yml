@@ -116,6 +116,15 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Migrate skill — a default-guess agent binary is not an instruction (issue #1481)
+        shell: bash
+        run: bash tests/issue_1481_migrate_detect_cli_default_tag.sh
+      - name: Migrate skill — detect_cli agrees with the Rust resolver (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_migrate_detect_cli_parity.sh
+      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off, double-quoted (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_detached_launch_docs_carry_hand_off.sh
       - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
         shell: bash
         run: bash tests/issue_1423_bash4_constructs.sh
@@ -390,29 +399,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install pinned recipe runner
         shell: bash
-        run: |
-          set -euo pipefail
-          # Require one immutable revision, including exactly one line in the pin.
-          if [[ "$(wc -l < claude-plugin/recipe-runner.rev)" -ne 1 \
-             || "$(wc -c < claude-plugin/recipe-runner.rev)" -ne 41 ]]; then
-            echo "ERROR: recipe-runner.rev must contain exactly 40 hex bytes and a newline" >&2
-            exit 1
-          fi
-          rev="$(cat claude-plugin/recipe-runner.rev)"
-          if [[ ! "$rev" =~ ^[0-9a-fA-F]{40}$ ]]; then
-            echo "ERROR: recipe-runner.rev must contain one immutable 40-hex revision" >&2
-            exit 1
-          fi
-          install_root="$RUNNER_TEMP/recipe-runner"
-          CARGO_TARGET_DIR="$RUNNER_TEMP/recipe-runner-target" cargo install \
-            --git https://github.com/rysweet/amplihack-recipe-runner \
-            --rev "$rev" --locked --root "$install_root"
-          runner="$install_root/bin/recipe-runner-rs"
-          test -x "$runner"
-          "$runner" --version
-          "$runner" --capabilities
-          printf '%s\n' "$install_root/bin" >> "$GITHUB_PATH"
-          printf 'RECIPE_RUNNER_RS_PATH=%s\n' "$runner" >> "$GITHUB_ENV"
+        run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
@@ -498,6 +485,22 @@ jobs:
       - name: Outside-in — dotted Claude model ids (issue #1527)
         shell: bash
         run: AMPLIHACK_1527_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1527-model-scenario.sh
+      # Issues #1481 and #1525: the scenario below needs tmux for its detached
+      # launch cases and the pinned recipe runner for its recipe-run cases.
+      - name: Install tmux and the pinned recipe runner (issues #1481, #1525)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
+          tmux -V
+          bash scripts/install-pinned-recipe-runner.sh
+      # Outside-in check of `amplihack agent-binary`, its --shell hand-off, the
+      # agent binary a recipe step is handed, and a real detached tmux launch,
+      # against the binary installed above. REQUIRE_ALL turns any case that
+      # could not run into a failure, so a missing tool cannot pass as green.
+      - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
+        shell: bash
+        run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing
