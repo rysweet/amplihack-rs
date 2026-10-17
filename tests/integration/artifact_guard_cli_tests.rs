@@ -918,9 +918,12 @@ fn cli_shared_root_containment_respects_the_segment_boundary() {
 
     assert_eq!(output.status.code(), Some(1), "{combined}");
     assert!(
-        combined.contains("git rm -r --cached -- 'build'")
-            && combined.contains("rm -rf -- 'build'"),
+        combined.contains("rm -rf -- 'build'"),
         "the untracked build/ leftover keeps its root remedy; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("git rm -r --cached -- 'build'"),
+        "nothing under build/ is indexed, so git rm --cached would fail; got:\n{combined}"
     );
     for line in combined.lines().filter(|line| line.contains("rm ")) {
         assert!(
@@ -1116,4 +1119,83 @@ fn cli_never_suggests_an_allowlist_entry_the_parser_rejects() {
             "{rerun_combined}"
         );
     }
+}
+
+#[test]
+fn cli_never_suggests_removing_a_directory_that_holds_allowlisted_source() {
+    // Review repro on PR #1587: the allowlisted file is never a violation, so
+    // only the index can tell the guard that `docs/build` holds source.
+    let tmp = repo_on_task_branch();
+    commit_paths(
+        tmp.path(),
+        &[
+            ("docs/build/guide.md", "# guide\n"),
+            (".amplihack-artifact-allowlist", "docs/build/guide.md\n"),
+        ],
+        "docs",
+    );
+    write_file(&tmp.path().join("docs/build/scratch.log"), "x\n");
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("rm -rf -- 'docs/build/scratch.log'"),
+        "the remedy must name the leftover exactly; got:\n{combined}"
+    );
+    for line in combined.lines().filter(|line| line.contains("rm ")) {
+        assert!(
+            !line.contains("'docs/build'"),
+            "no removal command may sweep the allowlisted source: {line}"
+        );
+        assert!(
+            !line.contains("git rm"),
+            "an untracked leftover must not get a git rm that fails: {line}"
+        );
+    }
+}
+
+#[test]
+fn cli_never_prints_a_git_pathspec_magic_root() {
+    // `git rm -r --cached -- ':!src/node_modules'` would untrack every file in
+    // the repository: git reads `:!` as "everything except", even after `--`.
+    let tmp = repo_on_task_branch();
+    write_file(&tmp.path().join(":!src/node_modules/x/index.js"), "y\n");
+    run_git(tmp.path(), &["add", "-f", "--", ":(literal):!src"]);
+
+    let output = run_guard(tmp.path(), "pre-commit");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("index.js"),
+        "the path must still be reported; got:\n{combined}"
+    );
+    assert_no_removal_commands(&combined);
+}
+
+#[test]
+fn cli_suggests_plain_rm_for_an_untracked_path_in_a_shared_root() {
+    // `node_modules` holds pre-existing tracked entries, so the guard lists per
+    // path; the untracked one is not in the index and `git rm --cached` on it
+    // fails with "pathspec did not match any files".
+    let tmp = repo_with_preexisting_tracked_node_modules();
+    write_file(
+        &tmp.path().join("node_modules/newdep/index.js"),
+        "module.exports = 1;\n",
+    );
+
+    let output = run_guard(tmp.path(), "pre-publish");
+    let combined = combined(&output);
+
+    assert_eq!(output.status.code(), Some(1), "{combined}");
+    assert!(
+        combined.contains("rm -- 'node_modules/newdep/index.js'"),
+        "the untracked path must get a plain rm; got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("git rm --cached -- 'node_modules/newdep/index.js'"),
+        "an untracked path must never get git rm --cached; got:\n{combined}"
+    );
 }

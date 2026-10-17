@@ -2,8 +2,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 use amplihack_utils::artifact_guard::{
-    self, ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactViolation,
-    PreExistingPolicy, scan_artifacts,
+    self, ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactSource,
+    ArtifactViolation, GENERIC_OUTPUT_SEGMENTS, PreExistingPolicy, scan_artifacts,
 };
 use anyhow::Result;
 
@@ -161,29 +161,37 @@ fn print_violation_report(report: &ArtifactGuardReport) {
         if untouchable.iter().any(|path| is_within(path, &root)) {
             for violation in &group {
                 let path = &violation.path;
-                // The root is shell-safe, but the rest of the path is not
+                // The root is command-safe, but the rest of the path is not
                 // checked by `split_removable`.
-                if is_shell_safe(path) {
+                if !is_command_safe(path) {
+                    eprintln!(
+                        "  # {path:?} has a name that is unsafe in a shell command or git pathspec; handle it by hand after review"
+                    );
+                } else if is_indexed(violation) {
                     eprintln!(
                         "  git rm --cached -- '{path}'   # drop from the change, keep on disk"
                     );
                 } else {
-                    eprintln!(
-                        "  # {path:?} has a name that is unsafe in a shell command; untrack it by hand after review"
-                    );
+                    // Not in the index: `git rm --cached` would fail with
+                    // "pathspec did not match any files".
+                    eprintln!("  rm -- '{path}'   # delete the untracked leftover");
                 }
             }
             eprintln!(
                 "  # (listed per path: '{root}' also holds pre-existing entries this change must not touch)"
             );
         } else {
-            eprintln!("  git rm -r --cached -- '{root}'   # drop from the change, keep on disk");
+            if group.iter().any(|violation| is_indexed(violation)) {
+                eprintln!(
+                    "  git rm -r --cached -- '{root}'   # drop from the change, keep on disk"
+                );
+            }
             eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
         }
     }
     if !review.is_empty() {
         eprintln!(
-            "  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
+            "  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:"
         );
         for (root, group) in group_by_root(&review) {
             print_path_group(&root, &group);
@@ -254,7 +262,7 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
     }
     if !review.is_empty() {
         eprintln!(
-            "  - Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:"
+            "  - Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:"
         );
         print_review_remedy(&review);
     }
@@ -335,9 +343,9 @@ fn print_review_remedy(review: &[&ArtifactViolation]) {
     eprintln!("  Otherwise remove it in a dedicated, reviewed change.");
 }
 
-/// Split violations into those with a removal root safe to print inside a
-/// single-quoted shell word, grouped by that root, and those that must only
-/// ever be reviewed (no root, or a root holding `'` or a control character).
+/// Split violations into those with a removal root safe to print as a command
+/// argument ([`is_command_safe`]), grouped by that root, and those that must
+/// only ever be reviewed (no root, or a root that is not command-safe).
 fn split_removable<'a>(
     violations: &[&'a ArtifactViolation],
 ) -> (
@@ -348,7 +356,7 @@ fn split_removable<'a>(
     let mut review = Vec::new();
     for violation in violations {
         match violation.removal_root.as_deref() {
-            Some(root) if is_shell_safe(root) => {
+            Some(root) if is_command_safe(root) => {
                 removable
                     .entry(root.to_string())
                     .or_default()
@@ -360,10 +368,26 @@ fn split_removable<'a>(
     (removable, review)
 }
 
-/// Whether `text` can be printed inside a single-quoted shell word without
-/// ending the quoting or forging a report line.
-fn is_shell_safe(text: &str) -> bool {
-    !text.chars().any(|c| c == '\'' || c.is_control())
+/// Whether `path` can be printed inside a single-quoted shell word without
+/// ending the quoting or forging a report line, *and* reaches `git rm` as that
+/// one literal path. Git reads its arguments as pathspecs even after `--`: a
+/// leading `:` is pathspec magic (`':!src/node_modules'` means "everything
+/// except that", so `git rm -r --cached` would untrack the whole repository),
+/// and `*`, `?`, `[` and `\` are glob syntax.
+fn is_command_safe(path: &str) -> bool {
+    !path.starts_with(':')
+        && !path
+            .chars()
+            .any(|c| matches!(c, '\'' | '*' | '?' | '[' | '\\') || c.is_control())
+}
+
+/// Whether the violating path is in the index, so `git rm --cached` can
+/// untrack it. Untracked and ignored files can only be deleted.
+fn is_indexed(violation: &ArtifactViolation) -> bool {
+    matches!(
+        violation.source,
+        ArtifactSource::Staged | ArtifactSource::Tracked
+    )
 }
 
 /// Whether `path` is `root` or beneath it, at a `/` boundary (`build` does not
@@ -426,10 +450,6 @@ const ARTIFACT_ROOT_COMPONENTS: &[&str] = &[
     "session-state",
 ];
 
-/// Root names that may also be the name of a real project directory
-/// (`apps/coverage/` with its own manifest, issue #1536).
-const GENERIC_ROOT_COMPONENTS: &[&str] = &["dist", "build", "coverage", "out", "logs", "outputs"];
-
 /// The display root a violation is grouped under: the shortest prefix ending in
 /// an unambiguous root name (`node_modules`, `.cache`, ...). When the path holds
 /// only generic names, the deepest one is used, so `apps/coverage/dist/main.js`
@@ -441,7 +461,7 @@ fn artifact_root(path: &str) -> String {
     for component in path.split('/') {
         end += component.len();
         if ARTIFACT_ROOT_COMPONENTS.contains(&component) {
-            if !GENERIC_ROOT_COMPONENTS.contains(&component) {
+            if !GENERIC_OUTPUT_SEGMENTS.contains(&component) {
                 return path[..end].to_string();
             }
             generic = Some(end);

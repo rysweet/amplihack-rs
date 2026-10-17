@@ -1117,7 +1117,7 @@ fn an_unresolvable_explicit_baseline_fails_closed_as_configuration_error() {
 // - The default baseline prefers the base branch over `@{upstream}`.
 // ---------------------------------------------------------------------------
 
-use super::{BASELINE_CANDIDATES, manifest_dirs, rule_for_path};
+use super::{BASELINE_CANDIDATES, manifest_dirs, read_index, rule_for_path};
 use std::collections::BTreeSet;
 
 fn manifest_set(dirs: &[&str]) -> BTreeSet<String> {
@@ -1425,7 +1425,7 @@ fn manifest_dirs_lists_parents_of_indexed_manifests_only() {
     // Untracked: not in the index, so it must not count.
     write_file(&tmp.path().join("loose/package.json"), "{}\n");
 
-    let dirs = manifest_dirs(tmp.path()).expect("manifest dirs");
+    let dirs = manifest_dirs(&read_index(tmp.path()).expect("index"));
 
     assert_eq!(
         dirs,
@@ -1436,9 +1436,9 @@ fn manifest_dirs_lists_parents_of_indexed_manifests_only() {
 }
 
 #[test]
-fn manifest_dirs_fails_closed_outside_a_git_repository() {
+fn read_index_fails_closed_outside_a_git_repository() {
     let tmp = TempDir::new().expect("tempdir");
-    let error = manifest_dirs(tmp.path())
+    let error = read_index(tmp.path())
         .expect_err("a failed git ls-files must not read as an empty, exempt set");
     assert!(
         matches!(error, super::ArtifactGuardError::Git { .. }),
@@ -1524,11 +1524,13 @@ fn coverage_reports_and_dist_bundles_are_still_caught() {
             "build-artifact",
             None,
         ),
+        // `dist/` also holds `dist/app.js`, which may be source, so the bundle
+        // is narrowed to itself rather than taking `dist` along with it.
         (
             "dist/plugin.js",
             ArtifactSource::Tracked,
             "plugin-bundle",
-            Some("dist"),
+            Some("dist/plugin.js"),
         ),
     ] {
         let violation = violation_for(&report.violations, path, source);
@@ -1729,4 +1731,54 @@ fn is_valid_allowlist_entry_matches_the_parser_rules() {
             "{accepted:?} must be accepted, as the allowlist parser accepts it"
         );
     }
+}
+
+#[test]
+fn a_directory_holding_allowlisted_source_is_never_a_removal_root() {
+    // Allowlisted `docs/build/guide.md` never becomes a violation, so the guard
+    // must learn from the index that `docs/build` holds source; otherwise the
+    // untracked leftover beside it gets `rm -rf -- 'docs/build'` (issue #1536).
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/docs"]);
+    write_file(&tmp.path().join("docs/build/guide.md"), "# guide\n");
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "docs/build/guide.md\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "."]);
+    run_git(tmp.path(), &["commit", "-qm", "docs"]);
+    write_file(&tmp.path().join("docs/build/scratch.log"), "x\n");
+    write_file(&tmp.path().join("other/build/x.o"), "obj\n");
+
+    let config = ArtifactGuardConfig::new(tmp.path())
+        .with_mode(ArtifactGuardMode::PreCommit)
+        .with_allowlist(tmp.path().join(".amplihack-artifact-allowlist"));
+    let report = scan_artifacts(&config).expect("scan artifacts");
+
+    let root_of = |path: &str| {
+        report
+            .violations
+            .iter()
+            .find(|violation| violation.path == path)
+            .unwrap_or_else(|| panic!("{path} must be reported; got {:#?}", report.violations))
+            .removal_root
+            .clone()
+    };
+    assert_eq!(
+        root_of("docs/build/scratch.log"),
+        Some("docs/build/scratch.log".to_string()),
+        "a root holding allowlisted source must narrow to the exact path"
+    );
+    assert_eq!(
+        root_of("other/build/x.o"),
+        Some("other/build".to_string()),
+        "a root holding nothing indexed keeps its whole-directory remedy"
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|violation| violation.path != "docs/build/guide.md"),
+        "the allowlisted file must not be reported"
+    );
 }

@@ -447,7 +447,7 @@ When the removal root is *none*, neither report prints `git rm -r --cached`,
 The report says the path may be source and gives two ways forward:
 
 ```text
-  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:
+  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command or git pathspec); the guard will not suggest removing it:
   build/  — 1 path(s), rule build-artifact
       build/notes.md
   If a path is intentional source, add a reviewed entry to .amplihack-artifact-allowlist:
@@ -486,15 +486,28 @@ is listed once.
 A directory with more than a few possibly-source paths lists the first few,
 followed by `... and N more`.
 
-Two more rules make the printed commands safe to run:
+These rules make the printed commands safe to run:
 
+- **No root over protected source.** A directory removal root is narrowed to
+  the violating path itself when the index (`git ls-files`) holds anything
+  under that directory that is allowlisted, matches no rule, or may be source.
+  With an allowlisted, tracked `docs/build/guide.md`, an untracked
+  `docs/build/scratch.log` gets `rm -rf -- 'docs/build/scratch.log'`, never
+  `-- 'docs/build'`. Allowlisted paths never appear as violations, so only the
+  index can reveal them.
 - **Segment-boundary containment.** When a removal root also contains
   pre-existing paths or possibly-source paths, the guard lists the introduced
-  paths one by one with `git rm --cached`. It does not untrack the whole
-  directory. Containment is checked at a `/` boundary, so `build` does not
-  contain `buildtools/a.rs`.
-- **No shell-unsafe roots.** A removal root that contains `'` or a control
-  character is treated as *none*. A possibly-source path that is safe to print
+  paths one by one. It does not untrack the whole directory. Containment is
+  checked at a `/` boundary, so `build` does not contain `buildtools/a.rs`.
+- **Commands match the index.** `git rm --cached` is printed only for staged
+  or tracked paths. An untracked or ignored path gets a plain `rm`, because
+  `git rm --cached` on it fails with `pathspec did not match any files`.
+- **No unsafe roots.** A removal root that contains `'` or a control character
+  is treated as *none*, and so is one git would not read as a literal path:
+  a leading `:` (pathspec magic; `':!src/node_modules'` means "everything
+  except that path", so `git rm -r --cached` on it untracks the whole
+  repository) or any of `*`, `?`, `[` and `\`. The same check applies to each
+  path listed one by one. A possibly-source path that is safe to print
   is printed as plain text. Any other path is printed in escaped form (quoted,
   with `\"` and control characters escaped) and gets no allowlist suggestion,
   so a file name cannot inject shell syntax or fake a report line.

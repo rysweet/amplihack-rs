@@ -259,8 +259,11 @@ pub struct ArtifactViolation {
     /// The narrowest repo-relative path that is wholly generated: the path
     /// itself or a `/`-bounded prefix of it, never a parent of the matched
     /// segment. Exception: `plugin-bundle` uses the bundle's parent directory
-    /// (pre-existing behaviour; narrowing it is a follow-up). `None` means the path may be source, so callers must never
-    /// suggest removing or untracking it (issue #1536).
+    /// (pre-existing behaviour; narrowing it is a follow-up). A directory root
+    /// never holds an allowlisted or possibly-source indexed path; when it
+    /// would, the root is the path itself. `None` means the path may be
+    /// source, so callers must never suggest removing or untracking it
+    /// (issue #1536).
     pub removal_root: Option<String>,
 }
 
@@ -447,7 +450,8 @@ pub fn scan_artifacts(
 ) -> Result<ArtifactGuardReport, ArtifactGuardError> {
     let repo = resolve_repo_root(&config.repo)?;
     let allowlist = load_effective_allowlist(config, &repo)?;
-    let manifests = manifest_dirs(&repo)?;
+    let index = read_index(&repo)?;
+    let manifests = manifest_dirs(&index);
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     let mut baseline = None;
@@ -478,16 +482,17 @@ pub fn scan_artifacts(
         // live worktree state the change is carrying right now.
         baseline = resolve_baseline(&repo, config.baseline.as_deref())?;
         let introduced = introduced_paths(&repo, baseline.as_ref())?;
-        scan_git_paths(
-            &repo,
-            &["ls-files", "-z"],
-            ArtifactSource::Tracked,
-            &allowlist,
-            &manifests,
-            Some(&introduced),
-            &mut violations,
-            &mut seen,
-        )?;
+        for path in &index {
+            add_violation_if_prohibited(
+                path,
+                ArtifactSource::Tracked,
+                &allowlist,
+                &manifests,
+                Some(&introduced),
+                &mut violations,
+                &mut seen,
+            );
+        }
         scan_git_paths(
             &repo,
             &["ls-files", "--others", "--exclude-standard", "-z"],
@@ -502,6 +507,8 @@ pub fn scan_artifacts(
             scan_ignored_present(&repo, &allowlist, &manifests, &mut violations, &mut seen)?;
         }
     }
+
+    narrow_roots_holding_protected_paths(&mut violations, &index, &allowlist, &manifests);
 
     violations.sort_by(|left, right| {
         left.path
@@ -672,7 +679,8 @@ const SOURCE_MANIFESTS: &[&str] = &[
 
 /// Directory names that are common output locations but are also used to name
 /// real projects (`apps/coverage/`). See [`build_artifact_match`].
-const GENERIC_OUTPUT_SEGMENTS: &[&str] = &["dist", "build", "coverage", "out", "logs", "outputs"];
+pub const GENERIC_OUTPUT_SEGMENTS: &[&str] =
+    &["dist", "build", "coverage", "out", "logs", "outputs"];
 
 /// Coverage tool reports: generated wherever they sit inside a non-exempt
 /// output directory, so they keep an exact removal root even when tracked.
@@ -683,14 +691,14 @@ const COVERAGE_REPORT_FILES: &[&str] = &[
     "clover.xml",
 ];
 
-/// Repo-relative directories that directly contain an indexed
-/// [`SOURCE_MANIFESTS`] file. The index (`git ls-files`) covers tracked and
-/// staged files; an untracked manifest exempts nothing. The repository root is
-/// never included, so a root `package.json` never exempts a top-level `dist/`.
+/// Every indexed path (`git ls-files -z`: tracked and staged), normalized.
+/// Read once per scan; it feeds the tracked scan, [`manifest_dirs`] and
+/// [`narrow_roots_holding_protected_paths`].
 ///
-/// Fails closed: a git failure is an error, never an empty set, because an
-/// unreadable index must not silently change what the guard matches.
-fn manifest_dirs(repo: &Path) -> Result<BTreeSet<String>, ArtifactGuardError> {
+/// Fails closed: a git failure is an error, never an empty index, because an
+/// unreadable index must not silently change what the guard matches or which
+/// removal commands it prints.
+fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
     let args = ["ls-files", "-z"];
     let output = amplihack_git::command()
         .args(["-C"])
@@ -709,20 +717,64 @@ fn manifest_dirs(repo: &Path) -> Result<BTreeSet<String>, ArtifactGuardError> {
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    let mut dirs = BTreeSet::new();
-    for raw in output.stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|raw| !raw.is_empty())
+        .map(|raw| normalize_slashes(&String::from_utf8_lossy(raw)))
+        .collect())
+}
+
+/// Repo-relative directories that directly contain an indexed
+/// [`SOURCE_MANIFESTS`] file. An untracked manifest exempts nothing. The
+/// repository root is never included, so a root `package.json` never exempts a
+/// top-level `dist/`.
+fn manifest_dirs(index: &[String]) -> BTreeSet<String> {
+    index
+        .iter()
+        .filter_map(|path| path.rsplit_once('/'))
+        .filter(|(dir, name)| !dir.is_empty() && SOURCE_MANIFESTS.contains(name))
+        .map(|(dir, _)| dir.to_string())
+        .collect()
+}
+
+/// Narrow a directory removal root to the violating path itself whenever the
+/// index holds a *protected* path under that directory: one the allowlist
+/// admits, one no rule matches, or one that may be source (no removal root of
+/// its own). Protected paths never become violations, so without this an
+/// untracked `docs/build/scratch.log` would get `rm -rf -- 'docs/build'` and
+/// delete an allowlisted, tracked `docs/build/guide.md` (issue #1536).
+fn narrow_roots_holding_protected_paths(
+    violations: &mut [ArtifactViolation],
+    index: &[String],
+    allowlist: &ArtifactAllowlist,
+    manifests: &BTreeSet<String>,
+) {
+    let protected: BTreeSet<&str> = index
+        .iter()
+        .filter(|path| {
+            allowlist.is_allowed(path)
+                || rule_for_path(path, ArtifactSource::Tracked, manifests)
+                    .is_none_or(|(_, root)| root.is_none())
+        })
+        .map(String::as_str)
+        .collect();
+    for violation in violations {
+        let Some(root) = violation.removal_root.as_deref() else {
+            continue;
+        };
+        if root == violation.path {
             continue;
         }
-        let path = normalize_slashes(&String::from_utf8_lossy(raw));
-        if let Some((dir, name)) = path.rsplit_once('/')
-            && !dir.is_empty()
-            && SOURCE_MANIFESTS.contains(&name)
+        let dir = format!("{root}/");
+        if protected
+            .range(dir.as_str()..)
+            .next()
+            .is_some_and(|path| path.starts_with(&dir))
         {
-            dirs.insert(dir.to_string());
+            violation.removal_root = Some(violation.path.clone());
         }
     }
-    Ok(dirs)
 }
 
 fn load_effective_allowlist(
