@@ -75,15 +75,11 @@ if [ -n "$BEFORE_ROUND" ] && [ ! -f "$BEFORE_ROUND" ]; then
 fi
 
 # --- private state, whatever the caller's umask ----------------------------
-# The merge gate reads the records, copies and manifest written below only
-# when no one else could have written them (autodrive_state.sh, PRIVATE
-# STATE). Under umask 0002 a plain mkdir, `>` or cp would make every one of
-# them group-writable and the gate would refuse every merge, so the state dir
-# is made private here and this script writes under umask 077. The round
-# recipe and the evaluator run with the caller's umask, so the files agents
-# create in the repository are unaffected; the round steps that write into
-# the state dir set umask 077 themselves. The state helper is sourced from
-# beside this script only.
+# The merge gate trusts the records, copies and manifest below only if no
+# one else could have written them (autodrive_state.sh, PRIVATE STATE), so
+# the state dir is made private and this script writes under umask 077. The
+# round recipe and the evaluator keep the caller's umask (their round steps
+# set umask 077 themselves). The state helper comes from beside this script.
 LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
@@ -171,17 +167,12 @@ if ! "$AMPLIHACK_BIN" recipe show loop-health-evaluator >/dev/null 2>&1; then
 fi
 
 # --- round labels continue after this loop's earlier rounds ----------------
-# The state dir may already hold rounds of this loop: phase 2's crusty loop,
-# when autodrive_crusty_rereview.sh starts the crusty loop again before a
-# merge round, or the rounds of a run that died and is resumed. A loop that
-# labelled its rounds from round-1 again would rewrite <loop>-round-1.json,
-# its .findings and its logs, and the manifest row the earlier loop wrote
-# for that record would name a file that no longer holds it (PR #1520
-# review). So the first label is one past the highest N found in an entry
-# named <loop>-round-N... directly in the state dir, or in a round-N label
-# in <loop>-records.tsv, and every record and row the earlier rounds wrote
-# stays as it was. It runs after autodrive_private_dir, so entries that were
-# set aside as untrusted are not counted. This only picks the first label.
+# The state dir may already hold this loop's rounds (phase 2's crusty loop
+# before a re-review, or a resumed run). Relabelling from round-1 would
+# rewrite an earlier record that a manifest row still names (PR #1520
+# review), so the first label is one past the highest N in a
+# <loop>-round-N... entry or a round-N row of <loop>-records.tsv. It runs
+# after autodrive_private_dir, so untrusted entries are not counted.
 last_round_number() { # -> the highest N this loop has used in STATE_DIR, or 0
   local -x LC_ALL=C
   local top=0 f n label re='^[1-9][0-9]{0,8}$'
@@ -344,18 +335,37 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
 
-  # The evaluator's own enforcing step prints exactly one LOOP_HEALTH: marker
-  # and exits non-zero on STUCK. Anything we cannot read as CONTINUE or DONE
-  # is STUCK — a missing verdict never authorises another round.
+  # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and
+  # exits non-zero on STUCK. The runner's formatter (issue #1512) prints
+  #   `  ✓ step-04-enforce-loop-verdict[ (<name>)]: completed[ [<details>]]`
+  # then `    Output: LOOP_HEALTH: <verdict>`. Only the line straight after the
+  # LAST completed step-04 status line, with no status line after it, is
+  # trusted; its prefix is exactly `    Output: ` or none. Anything else is
+  # STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line).
+  # BSD awk and mawk safe. The format is owned by format_recipe_run_table in
+  # crates/amplihack-cli/src/commands/recipe/run/format.rs; the Rust test
+  # tests_autodrive_health_log.rs runs this awk over that function's output.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
-    if grep -qE '^LOOP_HEALTH: CONTINUE( |$)' "$HEALTH_LOG"; then
-      LOOP_VERDICT="CONTINUE"
-    elif grep -qE '^LOOP_HEALTH: DONE( |$)' "$HEALTH_LOG"; then
-      LOOP_VERDICT="DONE"
-    else
-      echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
-    fi
+    HEALTH_READ="$(LC_ALL=C awk '
+      function verdict(s, p) {
+        if (s == p "CONTINUE" || index(s, p "CONTINUE ") == 1) return "CONTINUE"
+        if (s == p "DONE" || index(s, p "DONE ") == 1) return "DONE"
+        return "STUCK"
+      }
+      pend { rec = $0; pend = 0 }
+      /^  [^ ]+ step-[^ :(]+( \([^)]*\))?: / {
+        rec = ""; pend = 0
+        if ($0 ~ /^  ✓ step-04-enforce-loop-verdict( \([^)]*\))?: completed( \[[^]]*\])?$/) pend = 1
+      }
+      END { v = verdict(rec, "    Output: LOOP_HEALTH: "); if (v == "STUCK") v = verdict(rec, "LOOP_HEALTH: "); print v }' "$HEALTH_LOG" || echo STUCK)"
+    case "$HEALTH_READ" in
+      CONTINUE) LOOP_VERDICT="CONTINUE" ;;
+      DONE) LOOP_VERDICT="DONE" ;;
+      *)
+        echo "WARNING: loop-health-evaluator exited 0 with no readable LOOP_HEALTH verdict; failing safe to STUCK." >&2
+        ;;
+    esac
   fi
 
   PREV_FINDINGS="$FINDINGS"; PREV_TEST="$TEST_SIGNAL"; PREV_CI="$CI_SIGNAL"

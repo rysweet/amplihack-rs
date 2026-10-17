@@ -34,6 +34,15 @@ pub(super) fn format_recipe_run_result(
     }
 }
 
+/// Renders the human-readable table.
+///
+/// The step status line (`  {symbol} {label}: {status}{detail_suffix}`) and
+/// the `    Output: ` line are a machine-read contract, not just cosmetics:
+/// `amplifier-bundle/tools/autodrive_loop.sh` parses them with awk to read the
+/// `LOOP_HEALTH:` verdict of `step-04-enforce-loop-verdict` (issue #1512). If
+/// either line's wording, indentation or details bracket changes, update that
+/// awk in the same change; `tests_autodrive_health_log.rs` runs the script's
+/// awk over this function's output and fails until they agree again.
 fn format_recipe_run_table(result: &RecipeRunResult, show_context: bool) -> String {
     let mut lines = vec![format!("Recipe: {}", result.recipe_name)];
     if let Some(run_id) = &result.run_id {

@@ -18,8 +18,12 @@
 //!   bound to one head SHA; an unreadable criterion is a failure.
 //! - Exit 79 is terminal and is never retried into.
 //! - No step declares a timeout at any scale.
+//! - Every step-output read reaches `RECIPE_VAR_<output>` (issue #1511): no
+//!   form that skips the fallback, no output templated into a `command:`, and
+//!   the read counts match the table in the reference.
 
 use serde_yaml::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -229,7 +233,10 @@ fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
         );
     }
     // The contract must be USED, never copied: the evaluator's own step ids
-    // must not appear anywhere in this workflow.
+    // must not appear anywhere in this workflow. The one exception is the
+    // #1512 log reader in autodrive_loop.sh, which must name step-04 to find
+    // the status line its verdict follows.
+    let reader = tool_path("autodrive_loop.sh");
     for path in control_path_files() {
         let text = read(&path);
         for copied in [
@@ -238,6 +245,9 @@ fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
             "step-03-resolve-loop-verdict",
             "step-04-enforce-loop-verdict",
         ] {
+            if path == reader && copied == "step-04-enforce-loop-verdict" {
+                continue;
+            }
             assert!(
                 !text.contains(copied),
                 "{} copies the loop-health contract (`{copied}`) instead of \
@@ -4163,7 +4173,456 @@ fn recipe_step_command_refuses_what_it_does_not_read() {
     assert_eq!(field(step(&parsed, "ok"), "command"), stdout);
 }
 
+/// Every state_dir guard names the recipe and step it runs in, using the
+/// recipe's full name: `[autodrive-merge-loop/step-03]`, as
+/// docs/reference/auto-drive-to-merge.md shows it. A short label such as
+/// `[merge-loop/step-03]` names no recipe a user can run or search for.
+///
+/// The case patterns are pinned with it, because the label is the only part
+/// of a guard that may change. autodrive-build's empty-is-INFO branch is the
+/// documented exception: a standalone build with no preflight has nothing to
+/// record.
+#[test]
+fn state_dir_guards_name_their_recipe_and_step() {
+    const GUARD: &str = "ERROR: no state_dir (empty or unsafe: refusing to touch it)";
+    for (recipe, want, pattern) in [
+        ("autodrive-crusty-loop", 2, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-merge-loop", 3, r#"''|/|-*|*$'\n'*)"#),
+        ("autodrive-build", 1, r#"/|-*|*$'\n'*)"#),
+    ] {
+        let mut found = 0;
+        for (id, body) in command_bodies(recipe) {
+            let step_no = id.split('-').take(2).collect::<Vec<_>>().join("-");
+            for line in body.lines().filter(|l| l.contains(GUARD)) {
+                found += 1;
+                let label = format!("{GUARD} [{recipe}/{step_no}]");
+                assert!(
+                    line.contains(&label),
+                    "{recipe}/{id}: the guard must read `{label}`, got: {}",
+                    line.trim()
+                );
+                assert!(
+                    line.trim_start().starts_with(pattern),
+                    "{recipe}/{id}: the guard's case pattern must stay `{pattern}`, got: {}",
+                    line.trim()
+                );
+            }
+        }
+        assert_eq!(
+            found, want,
+            "{recipe} must carry {want} state_dir guards, found {found}"
+        );
+    }
+    let build = recipe_yaml("autodrive-build");
+    let build_resolve = field(step(&build, "step-03-resolve-pr"), "command");
+    assert!(
+        build_resolve.contains(
+            r#"'') echo "INFO: no state_dir from the preflight; nothing to record." >&2 ;;"#
+        ),
+        "autodrive-build step-03 must keep treating an empty state_dir as nothing to record"
+    );
+}
+
 // ── The executable contract ──────────────────────────────────────────────────
+
+/// True when `s[end..]` cannot continue a name: it is empty or starts with a
+/// character other than an ASCII letter, digit or `_`. So `QA` never matches
+/// `QA_EVIDENCE`, and `qa` never matches `qa_evidence`.
+fn boundary_after(s: &str, end: usize) -> bool {
+    s[end..]
+        .chars()
+        .next()
+        .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+}
+
+/// The offset just past each occurrence of `pat` in `line` that ends at a
+/// name boundary.
+fn bounded_matches<'a>(line: &'a str, pat: &'a str) -> impl Iterator<Item = usize> + 'a {
+    line.match_indices(pat)
+        .map(move |(i, _)| i + pat.len())
+        .filter(move |&end| boundary_after(line, end))
+}
+
+/// Static check 2: `line` reads the step output `upper` in a form that never
+/// reaches its `RECIPE_VAR_` fallback — `${X` not followed by `:-`, `${#X`,
+/// `${!X` or `$X`.
+fn skips_the_fallback(line: &str, upper: &str) -> bool {
+    bounded_matches(line, &format!("${{{upper}")).any(|end| !line[end..].starts_with(":-"))
+        || [
+            format!("${{#{upper}"),
+            format!("${{!{upper}"),
+            format!("${upper}"),
+        ]
+        .iter()
+        .any(|pat| bounded_matches(line, pat).next().is_some())
+}
+
+/// Static check 3: `command` templates the step output `name` — `{{`, optional
+/// spaces, then the name at a boundary. `{{qa_evidence}}`,
+/// `{{ qa_evidence }}` and `{{platform_facts.pr}}` all count.
+fn templates_output(command: &str, name: &str) -> bool {
+    command.match_indices('{').any(|(i, _)| {
+        command[i + 1..].strip_prefix('{').is_some_and(|rest| {
+            let rest = rest.trim_start_matches([' ', '\t']);
+            rest.starts_with(name) && boundary_after(rest, name.len())
+        })
+    })
+}
+
+/// The read table under "Reading step outputs" in the reference: the count per
+/// recipe stem, and the total stated on the one line that contains both
+/// `There are ` and ` in all`. Any shape it does not recognise is an error,
+/// never an empty table, so check 4 cannot pass by reading nothing.
+fn parse_read_table(doc: &str) -> Result<(BTreeMap<String, usize>, usize), String> {
+    let lines: Vec<&str> = doc.lines().collect();
+    let total_lines: Vec<usize> = (0..lines.len())
+        .filter(|&i| lines[i].contains("There are ") && lines[i].contains(" in all"))
+        .collect();
+    let [at] = total_lines[..] else {
+        return Err(format!(
+            "expected exactly one line containing `There are ` and ` in all`, found {}",
+            total_lines.len()
+        ));
+    };
+    let stated = lines[at]
+        .split_once("There are ")
+        .and_then(|(_, rest)| rest.split_once(" in all"))
+        .map_or("", |(n, _)| n.trim());
+    let total: usize = stated.parse().map_err(|_| {
+        format!(
+            "line {}: the stated total `{stated}` is not a number",
+            at + 1
+        )
+    })?;
+    if total == 0 {
+        return Err(format!("line {}: the stated total is 0", at + 1));
+    }
+
+    // Skip the blank line, header and separator; the rows end at the first
+    // line that does not start with `|`.
+    let rows = lines[at + 1..]
+        .iter()
+        .skip_while(|l| l.trim().is_empty() || (l.starts_with('|') && !l.starts_with("| `")))
+        .take_while(|l| l.starts_with('|'));
+    let mut counts = BTreeMap::new();
+    for row in rows {
+        let cells: Vec<&str> = row.split('|').map(str::trim).collect();
+        let ["", name, count, ""] = cells[..] else {
+            return Err(format!(
+                "row `{row}` is not `| `<recipe>.yaml` | <count> |`"
+            ));
+        };
+        let name = name.trim_matches('`');
+        let stem = name.strip_suffix(".yaml").unwrap_or(name);
+        let n: usize = count
+            .parse()
+            .map_err(|_| format!("row `{row}`: the count `{count}` is not a number"))?;
+        if counts.insert(stem.to_string(), n).is_some() {
+            return Err(format!("`{stem}` appears in two rows"));
+        }
+    }
+    if counts.is_empty() {
+        return Err(format!("no table row follows line {}", at + 1));
+    }
+    let sum: usize = counts.values().sum();
+    if sum != total {
+        return Err(format!(
+            "the rows add up to {sum}, but line {} states {total}",
+            at + 1
+        ));
+    }
+    Ok((counts, total))
+}
+
+/// The documented step-output read counts. The reference is the only source of
+/// truth; this file holds no count of its own.
+fn documented_read_counts() -> (BTreeMap<String, usize>, usize) {
+    let path = workspace_root().join("docs/reference/auto-drive-to-merge.md");
+    parse_read_table(&read(&path))
+        .unwrap_or_else(|e| panic!("{}: cannot read the read table: {e}", path.display()))
+}
+
+/// The matchers behind static checks 2 and 3, against the forms the reference
+/// lists and the near misses the name boundary must reject.
+#[test]
+fn step_output_read_matchers_respect_the_name_boundary() {
+    for line in [
+        "${QA_EVIDENCE}",
+        "${QA_EVIDENCE-}",
+        "${QA_EVIDENCE:=}",
+        "${QA_EVIDENCE:+x}",
+        "${QA_EVIDENCE:?}",
+        "${QA_EVIDENCE#*}",
+        "${QA_EVIDENCE%x}",
+        "${QA_EVIDENCE/a/b}",
+        "${#QA_EVIDENCE}",
+        "${!QA_EVIDENCE}",
+        "$QA_EVIDENCE",
+        "printf '%s' \"$QA_EVIDENCE\" | amplihack orch helper extract-json",
+        // A good read does not excuse a bad one on the same line.
+        "A=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\" B=\"$QA_EVIDENCE\"",
+    ] {
+        assert!(
+            skips_the_fallback(line, "QA_EVIDENCE"),
+            "`{line}` skips the fallback and must be a violation"
+        );
+    }
+    for line in [
+        "QA=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\"",
+        "${QA_EVIDENCE_2}",
+        "$QA_EVIDENCE_X",
+        "${#QA_EVIDENCE_X}",
+        "${!QA_EVIDENCE_X}",
+        "${RECIPE_VAR_qa_evidence:-}",
+        "# QA_EVIDENCE is declared in autodrive-merge-evidence.yaml",
+    ] {
+        assert!(
+            !skips_the_fallback(line, "QA_EVIDENCE"),
+            "`{line}` must not be a violation"
+        );
+    }
+    assert!(
+        !skips_the_fallback("${QA_EVIDENCE} $QA_EVIDENCE", "QA"),
+        "`QA` must not match `QA_EVIDENCE`"
+    );
+
+    for (command, name) in [
+        ("echo {{qa_evidence}}", "qa_evidence"),
+        ("echo {{ qa_evidence }}", "qa_evidence"),
+        ("echo {{\tqa_evidence}}", "qa_evidence"),
+        ("gh pr view {{platform_facts.pr}}", "platform_facts"),
+        ("echo {{{qa_evidence}}}", "qa_evidence"),
+        ("echo — {{qa_evidence}}", "qa_evidence"),
+    ] {
+        assert!(
+            templates_output(command, name),
+            "`{command}` templates `{name}` and must be caught"
+        );
+    }
+    for (command, name) in [
+        ("echo {{qa_evidence_x}}", "qa_evidence"),
+        ("echo {{qa_evidence}}", "qa"),
+        ("{qa_evidence}", "qa_evidence"),
+        ("echo {{ repo_path }}", "qa_evidence"),
+        (
+            "QA=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\"",
+            "qa_evidence",
+        ),
+        ("echo qa_evidence }}", "qa_evidence"),
+    ] {
+        assert!(
+            !templates_output(command, name),
+            "`{command}` does not template `{name}`"
+        );
+    }
+}
+
+/// Static check 4 takes its numbers from the reference, so the table parse
+/// must fail closed on every shape it does not recognise.
+#[test]
+fn read_table_parse_fails_closed() {
+    const TABLE: &str = "\n| Recipe | Step-output reads |\n| --- | --- |\n\
+                         | `a.yaml` | 2 |\n| `b.yaml` | 1 |\n\n| `c.yaml` | 9 |\n";
+
+    let (counts, total) = parse_read_table(&format!("Reads. There are 3 in all:\n{TABLE}"))
+        .unwrap_or_else(|e| panic!("a well-formed table must parse: {e}"));
+    assert_eq!(total, 3);
+    assert_eq!(
+        counts,
+        BTreeMap::from([("a".to_string(), 2), ("b".to_string(), 1)]),
+        "the rows end at the first line that does not start with `|`"
+    );
+
+    for (case, doc, expected) in [
+        ("no total line", TABLE.to_string(), "found 0"),
+        (
+            "two total lines",
+            format!("There are 3 in all:\nThere are 3 in all:\n{TABLE}"),
+            "found 2",
+        ),
+        (
+            "total not a number",
+            format!("There are three in all:\n{TABLE}"),
+            "stated total `three` is not a number",
+        ),
+        (
+            "total is 0",
+            format!("There are 0 in all:\n{TABLE}"),
+            "stated total is 0",
+        ),
+        (
+            "no row after the total",
+            "There are 3 in all:\n\n| Recipe | Step-output reads |\n| --- | --- |\n\nProse.\n"
+                .to_string(),
+            "no table row follows",
+        ),
+        (
+            "row count not a number",
+            "There are 3 in all:\n\n| `a.yaml` | two |\n".to_string(),
+            "the count `two` is not a number",
+        ),
+        (
+            "row in the wrong shape",
+            "There are 3 in all:\n\n| `a.yaml` | 3\n".to_string(),
+            "is not `|",
+        ),
+        (
+            "recipe in two rows",
+            "There are 3 in all:\n\n| `a.yaml` | 2 |\n| `a.yaml` | 1 |\n".to_string(),
+            "`a` appears in two rows",
+        ),
+        (
+            "rows do not add up",
+            format!("There are 4 in all:\n{TABLE}"),
+            "add up to 3",
+        ),
+    ] {
+        match parse_read_table(&doc) {
+            Ok(parsed) => panic!("{case}: must fail closed, parsed {parsed:?}"),
+            Err(e) => assert!(
+                e.contains(expected),
+                "{case}: expected an error containing `{expected}`, got `{e}`"
+            ),
+        }
+    }
+}
+
+/// Issue #1511. recipe-runner-rs exports every step output as
+/// `RECIPE_VAR_<output>` and adds the bare upper-case alias only for SCALAR
+/// outputs. Every output these recipes pass between steps is a JSON object, so
+/// a bare `${CRUSTY_LOOP_PREFLIGHT:-}` read is always empty — every loop lost
+/// its state_dir and every run stopped as STUCK.
+///
+/// Output names are collected across ALL autodrive recipes into one set: a
+/// recipe reads outputs its sub-recipes declare (`autodrive-merge-round` reads
+/// `QA_EVIDENCE`, declared in `autodrive-merge-evidence`).
+///
+/// Enforces "The static check" in docs/reference/auto-drive-to-merge.md: two
+/// sanity checks, then checks 1–4 in the order the reference gives them.
+#[test]
+fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
+    let mut outputs: Vec<String> = AUTODRIVE_RECIPES
+        .iter()
+        .flat_map(|r| {
+            let recipe = recipe_yaml(r);
+            steps(&recipe)
+                .iter()
+                .filter_map(|s| s.get("output").and_then(Value::as_str).map(str::to_string))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    outputs.sort();
+    outputs.dedup();
+    assert!(
+        outputs.len() >= 20,
+        "only {} step outputs collected; the check would be vacuous: {outputs:?}",
+        outputs.len()
+    );
+
+    const READERS: [&str; 6] = [
+        "auto-drive-to-merge",
+        "autodrive-build",
+        "autodrive-crusty-loop",
+        "autodrive-crusty-round",
+        "autodrive-merge-loop",
+        "autodrive-merge-round",
+    ];
+    let mut missing = Vec::new();
+    let mut bare = Vec::new();
+    let mut per_file = BTreeMap::new();
+    for r in READERS {
+        let text = recipe_text(r);
+        let mut file_reads = 0usize;
+        for (idx, line) in text.lines().enumerate() {
+            for name in &outputs {
+                let upper = name.to_ascii_uppercase();
+                if skips_the_fallback(line, &upper) {
+                    bare.push(format!(
+                        "{r}.yaml:{}: reads `{upper}` in a form that never reaches RECIPE_VAR_{name}",
+                        idx + 1
+                    ));
+                }
+                let read = format!("${{{upper}:-");
+                let dual = format!("${{{upper}:-${{RECIPE_VAR_{name}:-");
+                let reads = line.matches(&read).count();
+                if reads == 0 {
+                    continue;
+                }
+                file_reads += reads;
+                if line.matches(&dual).count() < reads {
+                    missing.push(format!(
+                        "{r}.yaml:{}: reads `{read}` without the RECIPE_VAR_{name} fallback",
+                        idx + 1
+                    ));
+                }
+            }
+        }
+        assert!(
+            file_reads > 0,
+            "{r}.yaml: no step-output reads found; the check is not looking at the right names"
+        );
+        per_file.insert(r.to_string(), file_reads);
+    }
+    let total: usize = per_file.values().sum();
+
+    // Check 1: every read has the fallback.
+    assert!(
+        missing.is_empty(),
+        "{} of {total} step-output reads have no RECIPE_VAR_ fallback \
+         (use \"${{UPPER:-${{RECIPE_VAR_<output>:-<default>}}}}\"):\n{}",
+        missing.len(),
+        missing.join("\n")
+    );
+
+    // Check 2: no read skips the fallback.
+    assert!(
+        bare.is_empty(),
+        "{} step-output reads skip the RECIPE_VAR_ fallback; `${{UPPER` must be followed \
+         by `:-`, and `${{#UPPER`, `${{!UPPER` and `$UPPER` are never allowed:\n{}",
+        bare.len(),
+        bare.join("\n")
+    );
+
+    // Check 3: no step output is templated into a `command:`.
+    let mut templated = Vec::new();
+    for r in AUTODRIVE_RECIPES {
+        let recipe = recipe_yaml(r);
+        for s in steps(&recipe) {
+            let Some(command) = s.get("command").and_then(Value::as_str) else {
+                continue;
+            };
+            let id = s.get("id").and_then(Value::as_str).unwrap_or("<no id>");
+            for name in &outputs {
+                if templates_output(command, name) {
+                    templated.push(format!(
+                        "{r}.yaml: step `{id}` templates `{{{{{name}}}}}` into its command:"
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        templated.is_empty(),
+        "{} step outputs are pasted into bash before it parses them; read them from the \
+         environment as \"${{UPPER:-${{RECIPE_VAR_<output>:-}}}}\" instead:\n{}",
+        templated.len(),
+        templated.join("\n")
+    );
+
+    // Check 4: the counts match the reference.
+    let (documented, documented_total) = documented_read_counts();
+    assert_eq!(
+        per_file, documented,
+        "step-output reads per recipe: counted (left) vs the table in \
+         docs/reference/auto-drive-to-merge.md (right); counted total {total}, documented \
+         total {documented_total}. Update the table and its total in the same commit."
+    );
+    assert_eq!(
+        total, documented_total,
+        "counted {total} step-output reads; docs/reference/auto-drive-to-merge.md states \
+         {documented_total}"
+    );
+}
 
 /// Runs the executable contract test — the STUCK path, the malformed-verdict
 /// path, and the forbidden-flag guard, exercised against the real extracted
@@ -4199,4 +4658,135 @@ fn auto_drive_contract_shell_test_passes() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+// ── Which `amplihack` the shell test runs ────────────────────────────────────
+
+/// Writes a fake `amplihack` for the shell test's probe, which needs
+/// `orch helper extract-field` and `orch helper extract-json --require-field`.
+/// A fake without `--require-field` stands in for a build from before #1347.
+#[cfg(unix)]
+fn write_fake_amplihack(path: &Path, has_require_field: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let require_field_rc = if has_require_field { 0 } else { 1 };
+    fs::create_dir_all(path.parent().expect("fake parent dir")).expect("create fake dir");
+    fs::write(
+        path,
+        format!(
+            "#!/usr/bin/env bash\n\
+             [ \"${{1:-}} ${{2:-}}\" = \"orch helper\" ] || exit 1\n\
+             case \"${{3:-}}\" in extract-json|extract-field) cat >/dev/null ;; esac\n\
+             case \" $* \" in *\" --require-field \"*) exit {require_field_rc} ;; esac\n\
+             exit 0\n"
+        ),
+    )
+    .expect("write fake amplihack");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod fake amplihack");
+}
+
+/// Runs a copy of the shell test from a scratch tree whose recipes, tools and
+/// skill are empty files. The copy picks its binary exactly as the shipped
+/// test does; the scratch tree has no `target/`, so only the
+/// `CARGO_TARGET_DIR` and `PATH` candidates exist. It stops with a
+/// HARNESS-ERROR at the first step body it cannot extract.
+#[cfg(unix)]
+fn run_shell_test_copy(
+    scratch: &Path,
+    cargo_target_dir: Option<&str>,
+    path_dir: &Path,
+) -> (Option<i32>, String, String) {
+    let bundle = scratch.join("amplifier-bundle");
+    fs::create_dir_all(bundle.join("recipes/tests")).expect("create scratch recipes");
+    fs::create_dir_all(bundle.join("tools")).expect("create scratch tools");
+    fs::create_dir_all(bundle.join("skills/auto-drive-to-merge")).expect("create scratch skill");
+    for recipe in AUTODRIVE_RECIPES {
+        fs::write(bundle.join(format!("recipes/{recipe}.yaml")), "").expect("write empty recipe");
+    }
+    for tool in AUTODRIVE_TOOLS {
+        fs::write(bundle.join(format!("tools/{tool}")), "").expect("write empty tool");
+    }
+    fs::write(bundle.join("skills/auto-drive-to-merge/SKILL.md"), "").expect("write empty skill");
+    let script = bundle.join("recipes/tests/test-auto-drive-to-merge.sh");
+    fs::copy(
+        workspace_root().join("amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh"),
+        &script,
+    )
+    .expect("copy the shell test");
+
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{}:{p}", path_dir.display()),
+        Err(_) => path_dir.display().to_string(),
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script)
+        .current_dir(scratch)
+        .env("PATH", path)
+        .env("TMPDIR", scratch)
+        .stdin(std::process::Stdio::null());
+    match cargo_target_dir {
+        Some(dir) => cmd.env("CARGO_TARGET_DIR", dir),
+        None => cmd.env_remove("CARGO_TARGET_DIR"),
+    };
+    let out = cmd
+        .output()
+        .expect("run a copy of the auto-drive shell test");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// With `CARGO_TARGET_DIR` set, `cargo build` puts the branch build outside
+/// the checkout. The shell test must find it there ahead of `PATH`, skip a
+/// `release/` build that lacks `--require-field`, and print the binary it
+/// chose as its first line. The fakes do not implement
+/// `normalise-loop-verdict`, so this also pins that this test keeps its own
+/// probe rather than the loop-health one.
+#[cfg(unix)]
+#[test]
+fn shell_test_picks_and_prints_a_capable_build_under_cargo_target_dir() {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let target = scratch.path().join("cargo-target");
+    let on_path = scratch.path().join("on-path");
+    write_fake_amplihack(&target.join("release/amplihack"), false);
+    write_fake_amplihack(&target.join("debug/amplihack"), true);
+    write_fake_amplihack(&on_path.join("amplihack"), true);
+
+    let (code, stdout, stderr) = run_shell_test_copy(
+        scratch.path(),
+        Some(&target.display().to_string()),
+        &on_path,
+    );
+
+    let want = format!("amplihack binary: {}/debug/amplihack", target.display());
+    assert_eq!(
+        stdout.lines().next(),
+        Some(want.as_str()),
+        "the first stdout line must name the chosen binary (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// CI sets no `CARGO_TARGET_DIR`, and the shell test runs under `set -u`, so
+/// a bare `$CARGO_TARGET_DIR` would abort it before its first check. Unset and
+/// empty must both fall through to the binary on `PATH`.
+#[cfg(unix)]
+#[test]
+fn shell_test_without_cargo_target_dir_uses_the_binary_on_path() {
+    for cargo_target_dir in [None, Some("")] {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let on_path = scratch.path().join("on-path");
+        write_fake_amplihack(&on_path.join("amplihack"), true);
+
+        let (code, stdout, stderr) =
+            run_shell_test_copy(scratch.path(), cargo_target_dir, &on_path);
+
+        let want = format!("amplihack binary: {}/amplihack", on_path.display());
+        assert_eq!(
+            stdout.lines().next(),
+            Some(want.as_str()),
+            "CARGO_TARGET_DIR={cargo_target_dir:?}: the first stdout line must name the binary on \
+             PATH (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+    }
 }
