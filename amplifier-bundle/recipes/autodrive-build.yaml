@@ -70,8 +70,10 @@ steps:
       fi
       IDENT="${PR:-${BRANCH:-detached}}"
       DIR="${AUTODRIVE_STATE_DIR:-}"
-      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
-      mkdir -p "$DIR"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")" || exit 1
+      # Private whatever the caller's umask: the merge gate refuses state
+      # that anyone else could have written (autodrive_state.sh).
+      autodrive_private_dir "$DIR" || exit 1
 
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="no pull request exists yet for this work"

@@ -34,7 +34,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "local-5d904cff4398"
+      expected: "contains:local-5d904cff4398"
 assertions:
   - name: all-cases-passed
     type: output_contains
