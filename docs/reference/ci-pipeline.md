@@ -223,6 +223,7 @@ test:
       with:
         cache-targets: false
         save-if: ${{ github.ref == 'refs/heads/main' }}
+    # Install pinned recipe runner here (see the dependency contract below).
     - run: cargo nextest run --workspace --locked
     - run: cargo test --workspace --doc --locked
 ```
@@ -230,6 +231,14 @@ test:
 - **`CARGO_PROFILE_TEST_DEBUG: "0"`** drops debug info from the many test
   binaries, shrinking link time and on-disk size; the suite asserts behavior,
   not backtraces.
+- **Pinned recipe runner:** before nextest, the `Install pinned recipe runner`
+  step validates `claude-plugin/recipe-runner.rev` as exactly one immutable
+  40-hex revision and installs it with `cargo install --git ... --rev "$rev"
+  --locked`. Its install and build roots are `$RUNNER_TEMP/recipe-runner` and
+  `$RUNNER_TEMP/recipe-runner-target`. CI publishes the bin directory through
+  `GITHUB_PATH` and the absolute executable through `RECIPE_RUNNER_RS_PATH`.
+  Invalid pins or installation failures stop the job; terminal-state fixtures
+  require this real executable and retain their missing-runner failure.
 - **`cargo test --workspace --doc --locked`** runs after nextest because nextest
   does not execute doctests — the explicit step preserves that coverage.
 - **`cache-targets: false`** — the workspace links large native artifacts (Kuzu,
@@ -251,9 +260,25 @@ let bin = env!("CARGO_BIN_EXE_amplihack-hooks");  // hooks binary
 that produces the binary, points at the exact artifact for the active profile,
 and forces Cargo to build the binary **before** the test runs — eliminating the
 `amplihack binary not found at target/debug/amplihack` transient. Each such test
-is therefore registered as an explicit `[[test]]` in the owning package's
+is therefore compiled as part of a `[[test]]` target in the owning package's
 `Cargo.toml` (`bins/amplihack` for `amplihack`, `bins/amplihack-hooks` for
 `amplihack-hooks`).
+
+For `bins/amplihack`, every file in `tests/integration/` is a **module of one
+test binary**: the single `integration` target, whose crate root is
+`tests/integration/main.rs`. Do not add a new `[[test]]` entry per file. Add the
+file to `tests/integration/` and declare it in `main.rs` with
+`#[path = "<file>.rs"] mod <name>;`. Each separate test target is another
+binary that has to be linked, and sccache cannot cache test binaries, so the
+CI Test job pays for each one on every run. Merging the 74 former targets
+into one cut link work in the uncacheable tail roughly in half (measured
+locally: 235 -> 162 links, 872 s -> 324 s of link time). Run one former
+target's tests with:
+
+```bash
+cargo test -p amplihack --test integration ci_speedup_optimization::
+cargo nextest run -p amplihack -E 'binary(integration) and test(/^ci_speedup_optimization::/)'
+```
 
 ## Disk management
 

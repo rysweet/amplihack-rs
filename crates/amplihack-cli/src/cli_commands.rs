@@ -12,6 +12,11 @@ use super::{
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
+    #[command(hide = true)]
+    Internal {
+        #[command(subcommand)]
+        command: crate::InternalCommands,
+    },
     /// Install amplihack framework assets to ~/.amplihack/.claude and wire ~/.claude/settings.json
     Install {
         /// Install from a local directory instead of cloning from git
@@ -32,6 +37,9 @@ pub enum Commands {
     },
     /// Remove amplihack agents and tools
     Uninstall,
+    /// Manage Claude Code login profiles
+    #[command(subcommand)]
+    Profile(crate::commands::profile::ProfileCommands),
     /// Launch Claude Code
     Launch {
         /// Resume the previous session
@@ -73,6 +81,9 @@ pub enum Commands {
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Use a named Claude login profile (see `amplihack profile`).
+        #[arg(long = "profile", value_name = "NAME")]
+        profile: Option<String>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -80,19 +91,29 @@ pub enum Commands {
     /// Launch Claude Code (alias)
     #[command(long_about = "Launch Claude Code (alias).
 
-MODEL SELECTION (issue #1421)
-  amplihack does not choose a model. With no `--model` on the command line and
-  no AMPLIHACK_DEFAULT_MODEL in the environment, no `--model` is passed and
-  Claude Code applies its own default -- which is also what lets the \"model\"
-  in ~/.claude/settings.json take effect.
+MODEL SELECTION (issues #1421, #1527)
+  With no `--model` on the command line, amplihack passes
+  `--model claude-opus-5[1m]`, a concrete id rather than an alias, and names
+  the model and where it came from on stderr. That outranks the \"model\" in
+  ~/.claude/settings.json.
 
-  AMPLIHACK_DEFAULT_MODEL=<alias>   pin a model for every launch (e.g. `opus[1m]`).
-                                    Empty / whitespace-only is treated as unset.
-                                    When amplihack uses it, it says so on stderr,
-                                    so a later 404 names an id you can trace.
-  --model <alias>                   pin a model for this launch; takes priority
-                                    over AMPLIHACK_DEFAULT_MODEL and is forwarded
-                                    to Claude Code unchanged.")]
+  AMPLIHACK_DEFAULT_MODEL=<id>   pin a model for every launch
+                                 (e.g. `claude-sonnet-4-5`). A dotted Claude id
+                                 such as `claude-opus-5.5` is rewritten to
+                                 `claude-opus-5-5`. Empty or whitespace-only
+                                 passes no `--model`, so Claude Code and
+                                 ~/.claude/settings.json decide.
+  --model <id>                   pin a model for this launch; takes priority
+                                 over AMPLIHACK_DEFAULT_MODEL and is forwarded
+                                 to Claude Code unchanged. A dotted Claude id is
+                                 not rewritten, but amplihack prints a warning
+                                 naming the hyphenated spelling.
+
+  While AMPLIHACK_LITELLM_ENDPOINT, AMPLIHACK_LITELLM_API_KEY or
+  AMPLIHACK_LITELLM_MODEL is set (the LiteLLM gateway), the model is
+  AMPLIHACK_LITELLM_MODEL and AMPLIHACK_DEFAULT_MODEL is not read. Other
+  AMPLIHACK_LITELLM_* variables, such as AMPLIHACK_LITELLM_TELEMETRY_FILE, do
+  not affect the model.")]
     Claude {
         /// Disable post-session reflection analysis.
         #[arg(long = "no-reflection")]
@@ -118,6 +139,9 @@ MODEL SELECTION (issue #1421)
         /// Enable interactive UI mode for auto mode.
         #[arg(long = "ui")]
         ui: bool,
+        /// Use a named Claude login profile (see `amplihack profile`).
+        #[arg(long = "profile", value_name = "NAME")]
+        profile: Option<String>,
         /// Extra args passed to claude
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         claude_args: Vec<String>,
@@ -302,6 +326,30 @@ MODEL SELECTION (issue #1421)
     LockStatus,
     /// Show version information
     Version,
+    /// Print the agent CLI that agent steps would run under, and why.
+    ///
+    /// With --shell, print it as `env -u <each session marker>
+    /// AMPLIHACK_AGENT_BINARY=<cli> AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, a
+    /// prefix for a command started with `tmux new-session`. tmux gives a new
+    /// session the server's global environment, not this shell's, and that
+    /// holds the session markers of whatever started the server; the prefix
+    /// removes them, so only this shell's answer arrives. `setsid` and `nohup`
+    /// keep this shell's environment and need no prefix. A default guess stays
+    /// tagged as one. Keep the tmux command in double quotes: in single quotes
+    /// this runs in the new session and reads the server's markers.
+    /// Example:
+    /// tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run ..."
+    #[command(name = "agent-binary")]
+    AgentBinary {
+        /// Print an inline `env -u ... VAR=value` prefix for the command
+        /// that follows it.
+        #[arg(long)]
+        shell: bool,
+        /// Resolve as if from this directory, where the recipe will run
+        /// (default: the current directory).
+        #[arg(short = 'w', long = "working-dir")]
+        working_dir: Option<std::path::PathBuf>,
+    },
     /// Self-update the amplihack binary, then run `install` to refresh framework assets.
     ///
     /// Use --skip-install (alias --no-install) for a binary-only update (legacy behavior).

@@ -20,6 +20,8 @@ use std::time::Instant;
 
 /// Write recipe-mode launcher scripts for a workstream.
 pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<()> {
+    // Built first so a refused profile export leaves no partial scripts behind.
+    let run_content = command_builder::recipe_run_script(ws, delegate)?;
     let resume_context = command_builder::build_resume_context(ws);
     let safe_context = serde_json::to_string(&resume_context)?;
 
@@ -33,7 +35,6 @@ pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<(
     set_executable(&launcher_sh)?;
 
     let run_sh = ws.work_dir.join("run.sh");
-    let run_content = command_builder::recipe_run_script(ws, delegate);
     write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 
@@ -42,11 +43,11 @@ pub(super) fn write_recipe_launcher(ws: &Workstream, delegate: &str) -> Result<(
 
 /// Write classic-mode launcher scripts for a workstream.
 pub(super) fn write_classic_launcher(ws: &Workstream, delegate: &str) -> Result<()> {
+    let run_content = command_builder::classic_run_script(ws, delegate)?;
     let task_md = ws.work_dir.join("TASK.md");
     fs::write(&task_md, command_builder::classic_task_markdown(ws))?;
 
     let run_sh = ws.work_dir.join("run.sh");
-    let run_content = command_builder::classic_run_script(ws, delegate);
     write_executable_script(&run_sh, &run_content)?;
     set_executable(&run_sh)?;
 

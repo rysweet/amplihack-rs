@@ -6,12 +6,10 @@ obtains a Signal-capable `amplihack-hooks` binary automatically from
 install/bootstrap/deploy — with **no source rebuild and no `--features signal`
 opt-in** required on the target host.
 
-> **TL;DR.** Published Unix archives contain **two** Signal-enabled binaries:
-> `amplihack` and `amplihack-hooks`. The Windows release archive keeps the
-> `amplihack-hooks` Signal integration compiled out because that hook path uses
-> Unix process-management APIs at runtime. The `signal` Cargo feature is enabled
-> at the CI/release **build layer** for supported hook targets; library defaults
-> are unchanged.
+> **TL;DR.** Every published archive (all targets are Unix; no Windows build
+> is produced) contains **two** Signal-enabled binaries: `amplihack` and
+> `amplihack-hooks`. The `signal` Cargo feature is enabled at the CI/release
+> **build layer**; library defaults are unchanged.
 
 - [Background: why this exists](#background-why-this-exists)
 - [What ships](#what-ships)
@@ -62,13 +60,11 @@ Signal code.
 | Artifact set        | Archive                          | Binaries inside                          | Signal in `amplihack` | Signal in `amplihack-hooks` |
 | ------------------- | -------------------------------- | ---------------------------------------- | :-------------------: | :-------------------------: |
 | Stable release (Unix) | `amplihack-<target>.tar.gz` | `amplihack`, `amplihack-hooks` | ✅ | ✅ |
-| Stable release (Windows) | `amplihack-x86_64-pc-windows-msvc.tar.gz` | `amplihack.exe`, `amplihack-hooks.exe` | ✅ | ❌ (Unix-only hook integration) |
 | Snapshot (Unix targets) | `amplihack-<target>.tar.gz` (uploaded as artifact `snapshot-<target>`) | `amplihack`, `amplihack-hooks` | ✅ | ✅ |
 
 The archive layout, file names, and checksum sidecars
 (`amplihack-<target>.tar.gz.sha256`) are unchanged. Only the *contents* of the Unix `amplihack-hooks` binaries changed: they now
-link the Signal stack. The Windows hook binary remains Signal-less because the
-hook-side subscriber lifecycle uses Unix process groups and signals.
+link the Signal stack.
 
 ---
 
@@ -107,13 +103,9 @@ commands use `-p`:
 **Stable release** — `.github/workflows/release.yml`, `Build release` step:
 
 ```bash
-feature_args=()
-if [ "${{ matrix.target }}" != "x86_64-pc-windows-msvc" ]; then
-  feature_args=(--features amplihack-hooks-bin/signal)
-fi
 cargo build --release --locked --target ${{ matrix.target }} \
   -p amplihack -p amplihack-hooks-bin \
-  "${feature_args[@]}"
+  --features amplihack-hooks-bin/signal
 ```
 
 **Snapshot (native)** — `.github/workflows/publish-snapshot.yml`,
@@ -139,10 +131,9 @@ Notes:
 - **`-p amplihack -p amplihack-hooks-bin`** builds exactly the two packages
   whose binaries are packaged. The `amplihack` binary is already Signal-enabled
   via its own manifest; keeping it in the selection preserves the artifact.
-- **`--features amplihack-hooks-bin/signal`** is included via a static,
-  allow-listed shell argument for Unix hook builds. It is deliberately omitted
-  for `x86_64-pc-windows-msvc`, where the hook integration's subscriber process
-  management is not supported.
+- **`--features amplihack-hooks-bin/signal`** is a static argument on every
+  build. All release targets are Unix, which the hook integration's subscriber
+  process management requires.
 - **`--locked`** is retained on every command so the newly linked Signal stack
   (`amplihack-signal`, `tokio` net, `libc`) resolves to the pinned versions in
   `Cargo.lock`.
@@ -160,8 +151,8 @@ The CLI and hook binaries have different Signal portability characteristics:
   `amplihack-cli/signal` and is built for every release target.
 - `amplihack-hooks` links the hook-side Signal integration only for Unix
   targets. That integration spawns `signal-subscriber`, uses Unix process
-  groups, and terminates subscribers with Unix signals, so the Windows release
-  build intentionally omits `amplihack-hooks-bin/signal`.
+  groups, and terminates subscribers with Unix signals. No Windows target is
+  built.
 
 | Target                      | Built by         | Signal in `amplihack` | Signal in `amplihack-hooks` |
 | --------------------------- | ---------------- | :-------------------: | :-------------------------: |
@@ -169,12 +160,10 @@ The CLI and hook binaries have different Signal portability characteristics:
 | `aarch64-unknown-linux-gnu` | release/snapshot |          ✅           |             ✅              |
 | `x86_64-apple-darwin`       | release/snapshot |          ✅           |             ✅              |
 | `aarch64-apple-darwin`      | release/snapshot |          ✅           |             ✅              |
-| `x86_64-pc-windows-msvc`    | release          |          ✅           |             ❌              |
 
-PR CI validates the Unix hook builds. The release workflow keeps the Windows
-artifact buildable by excluding the Unix-only hook feature for
-`x86_64-pc-windows-msvc`, and the structural regression test locks that
-conditional so a future edit cannot make tag releases fail only at publish time.
+PR CI validates the Unix hook builds. The structural regression test
+(`tests/integration/signal_release_feature_build_test.rs`) asserts the release
+workflow has no Windows leg and enables the hook Signal feature exactly once.
 
 ---
 
@@ -196,9 +185,7 @@ strings ./amplihack-hooks | grep -i 'signal-cli\|amplihack-signal' | head
 
 For Unix hook binaries, the authoritative release-build check is the CI/release
 workflow command that compiles `amplihack-hooks-bin` with
-`--features amplihack-hooks-bin/signal`. The Windows release job intentionally
-proves the opposite: the archive remains buildable while omitting the Unix-only
-hook feature.
+`--features amplihack-hooks-bin/signal`.
 
 ---
 

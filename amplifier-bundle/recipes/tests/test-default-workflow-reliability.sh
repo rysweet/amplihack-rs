@@ -223,16 +223,22 @@ assert_runtime_artifact_helper_contracts() {
         || fail "workflow_runtime_artifacts.sh must define preflight_known_workflow_runtime_artifacts"
 
     local case_dir="${WORK}/runtime-artifacts"
-    local repo="${case_dir}/repo"
+    local main_repo="${case_dir}/main"
+    local repo="${case_dir}/task"
 
+    # The task worktree is a *linked* worktree of the main checkout, as
+    # workflow-worktree creates it. On the main checkout itself `worktrees/`
+    # holds other runs' task worktrees and is never removed (issue #1494; see
+    # test-issue-1494-1560-worktree-safety.sh).
     mkdir -p "${case_dir}"
-    git init -b main "${repo}" >/dev/null
-    configure_identity "${repo}"
-    printf 'base\n' > "${repo}/README.md"
-    mkdir -p "${repo}/.claude"
-    printf '{"user":"owned"}\n' > "${repo}/.claude/settings.json"
-    git -C "${repo}" add README.md .claude/settings.json
-    git -C "${repo}" commit -m "base" >/dev/null
+    git init -b main "${main_repo}" >/dev/null
+    configure_identity "${main_repo}"
+    printf 'base\n' > "${main_repo}/README.md"
+    mkdir -p "${main_repo}/.claude"
+    printf '{"user":"owned"}\n' > "${main_repo}/.claude/settings.json"
+    git -C "${main_repo}" add README.md .claude/settings.json
+    git -C "${main_repo}" commit -m "base" >/dev/null
+    git -C "${main_repo}" worktree add -b task "${repo}" >/dev/null 2>&1
 
     mkdir -p "${repo}/.claude/runtime/logs" "${repo}/worktrees/generated-agent"
     printf 'generated runtime\n' > "${repo}/.claude/runtime/logs/session.log"

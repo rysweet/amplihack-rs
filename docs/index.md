@@ -83,7 +83,7 @@ Centralized plugin system that works across all your projects:
 - [Migration Guide](plugin/MIGRATION.md) - Migrate from per-project to plugin mode
 - [CLI Reference](plugin/CLI_REFERENCE.md) - Complete command-line reference
 
-**Note**: Plugin architecture is **Claude Code only**. Microsoft Amplifier, GitHub Copilot CLI, and Codex use per-project `~/.amplihack/.claude/` staging instead.
+**Note**: The plugin guides above describe Claude Code. Codex uses its native local marketplace package and command hooks; Microsoft Amplifier and GitHub Copilot CLI use framework staging.
 
 ### Installation
 
@@ -93,6 +93,7 @@ Centralized plugin system that works across all your projects:
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
+- [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in isolated `CLAUDE_CONFIG_DIR` profiles ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 
 ### Configuration
 
@@ -102,6 +103,7 @@ Centralized plugin system that works across all your projects:
 
 - Requires: `$ANTHROPIC_API_KEY` environment variable for Anthropic models
 - Plugin mode: Install globally with [Plugin Installation Guide](plugin/INSTALLATION.md)
+- [Claude Code native plugin installation](howto/install-claude-code-plugin.md) - Marketplace setup and shared immutable runner delivery
 - Per-project mode: Copy `~/.amplihack/.claude/` directory to your project
 - Azure OpenAI: Configure via environment variables
 
@@ -131,9 +133,11 @@ amplihack copilot
 
 **Codex**
 
-- Limited support via per-project `~/.amplihack/.claude/` staging
-- Most features work but may require adaptation
-- Tested primarily with Claude models
+- [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
+- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
+- [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
+- [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
+- [Codex ownership ledger migration](CODEX_OWNERSHIP_MIGRATION.md) - Safe upgrade of legacy schema 1 ownership proofs
 
 #### General Configuration
 
@@ -151,6 +155,8 @@ amplihack copilot
 
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
+- [Claude Profiles How-To](howto/claude-profiles.md) - Isolated Claude logins per profile and what a new profile inherits
+- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, security rules, and errors
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
@@ -916,6 +922,8 @@ amplihack excels at:
 
 ## Need Help?
 
+- **Skill model selection**: [Configure and validate neutral skills](howto/skill-model-neutrality.md) and [model-neutrality reference](reference/skill-model-neutrality.md)
+- **Model-neutrality documentation evidence**: [Review scope and validation](audits/skill-model-neutrality-documentation.md)
 - **Start here**: [Prerequisites](PREREQUISITES.md) → [Interactive Installation](INTERACTIVE_INSTALLATION.md) → [Quick Start](../README.md)
 - **Common issues**: Check [Discoveries](discoveries.md) first
 - **Questions**: See [DDD FAQ](document_driven_development/reference/faq.md)

@@ -2,6 +2,17 @@
 
 This document tracks recent bug fixes and improvements to the Recipe Runner and Skills systems following the Diátaxis framework.
 
+> **Historical record.** The commands below are as they shipped in March 2026,
+> and some no longer apply. The default agent binary is now `copilot`, chosen
+> after session markers and the launcher context; see
+> [Active Agent Binary](../reference/active-agent-binary.md). A detached tmux
+> launch must hand over the agent binary with
+> `$(amplihack agent-binary --shell)` inside the double-quoted command; for the
+> current template, see the
+> dev-orchestrator skill's
+> [`reference.md`](../../amplifier-bundle/skills/dev-orchestrator/reference.md#durable-execution-tmux--optional)
+> (#1525).
+
 ## Late March 2026 — Worktree Execution, Hook Isolation & Workflow Resilience
 
 ### Agent Steps Now Run from Dedicated Worktree (PRs #3778, #3771, #3779, #3781)

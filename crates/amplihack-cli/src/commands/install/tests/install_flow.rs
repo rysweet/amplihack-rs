@@ -14,6 +14,7 @@ fn local_install_stages_amplifier_bundle_for_dev_orchestrator() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -90,6 +91,7 @@ fn uninstall_removes_staged_amplifier_bundle() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -121,6 +123,7 @@ fn local_install_writes_manifest() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -191,6 +194,7 @@ fn uninstall_removes_manifest_tracked_files() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
     fs::create_dir_all(temp.path().join(".amplihack/.claude/install")).unwrap();
@@ -291,6 +295,7 @@ fn create_runtime_dirs_applies_0o755_permissions() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -380,6 +385,7 @@ fn bundle_install_then_claude_sync_materializes_known_support_links() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -409,6 +415,7 @@ fn install_then_copilot_stage_preserves_real_bundle_readmes_deterministically() 
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -456,6 +463,7 @@ fn local_install_writes_manifest_with_all_four_fields() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -529,6 +537,7 @@ fn run_install_with_local_path_skips_git_clone() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -1020,6 +1029,7 @@ fn with_install_env<R>(f: impl FnOnce(&Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -1635,4 +1645,18 @@ fn run_install_force_refresh_true_skips_bundled_root() {
             }
         }
     });
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "AMPLIHACK_HOME",
+        "HOME",
+        "PATH",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

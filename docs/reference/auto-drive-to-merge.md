@@ -558,8 +558,8 @@ Every recipe file stays inside the 400-line brick budget.
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals, loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
 
 ```bash
-cargo test -p amplihack --test auto_drive_to_merge
-cargo test -p amplihack --test autodrive_pr_worktree
+cargo test -p amplihack --test integration auto_drive_to_merge::
+cargo test -p amplihack --test integration autodrive_pr_worktree::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 ```
 

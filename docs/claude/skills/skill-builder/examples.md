@@ -902,7 +902,7 @@ yaml.safe_load(frontmatter_text)  # Should not error
 ```rust
 import tiktoken
 
-encoding = tiktoken.encoding_for_model("claude-sonnet-4-5")
+encoding = tiktoken.get_encoding("cl100k_base")  # Approximation; use the runtime tokenizer for exact counts
 skill_content = Path(".claude/skills/my-skill/SKILL.md").read_text()
 tokens = len(encoding.encode(skill_content))
 print(f"Token count: {tokens}")

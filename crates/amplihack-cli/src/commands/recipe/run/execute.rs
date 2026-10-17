@@ -5,7 +5,7 @@ use super::failure_class::{
 };
 use super::retry::{AttemptOutcome, RetrySummary, TransientRetryLimits, run_with_transient_retry};
 use super::*;
-use crate::env_builder::{EnvBuilder, active_agent_binary};
+use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
@@ -287,6 +287,13 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
+/// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
+/// never mirrored into the env and never forwarded to the runner, so a recipe
+/// cannot choose, for example, the pinned Claude profile (issue #1567).
+fn is_reserved_context_key(key: &str) -> bool {
+    key.to_ascii_uppercase().starts_with("AMPLIHACK_")
+}
+
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
 /// independent of any budget accounting. Returns the uppercased env name on
 /// success, or a static, name-only skip `reason` on rejection. The filters run
@@ -296,7 +303,7 @@ fn validate_context_entry(key: &str, value: &str) -> Result<String, &'static str
     if !is_valid_env_identifier(&name) {
         return Err("invalid_identifier");
     }
-    if name.starts_with("AMPLIHACK_") || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
+    if is_reserved_context_key(key) || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
         return Err("reserved_name");
     }
     if value.contains('\0') {
@@ -471,6 +478,9 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+// The resolved agent binary is an extra argument on purpose: the caller
+// decided it once, for the pre-flight and the steps alike (issue #1481).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -479,6 +489,7 @@ pub(super) fn execute_recipe_via_rust(
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -489,6 +500,18 @@ pub(super) fn execute_recipe_via_rust(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+
+    // Issue #1481: the caller resolved the agent binary once, from
+    // `working_dir`, while this process could still see the session markers of
+    // the CLI that invoked it; the #1482 pre-flight checked that same answer.
+    // Every step below runs under recipe-runner-rs's curated environment, and a
+    // nested `amplihack` resolving on its own there has lost the evidence -- it
+    // fell through to the vendor default and ran every agent step under Copilot
+    // from inside a Claude Code session.
+    crate::agent_binary_notice::report_agent_binary(
+        crate::agent_binary_notice::Reporter::RecipeRun,
+        &agent_binary,
+    );
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")
@@ -513,6 +536,18 @@ pub(super) fn execute_recipe_via_rust(
     // dir is deliberately NOT rebuilt: a retry of a transient transport fault
     // should reuse the same artifact/tmp scratch space it was already given.
     let build_command = |run_id: &str| -> Result<(Command, Option<tempfile::NamedTempFile>)> {
+        // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
+        // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
+        // own `bounded_env` clears the environment for agent steps but always
+        // keeps AMPLIHACK_* variables, which is why only the profile name (not
+        // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
+        // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
+        // `AMPLIHACK_*` keys from `-c` and this run's context. The runner still
+        // exports top-level context keys under their uppercase names
+        // (`legacy_uppercase_alias`), so a recipe's own YAML `context:`
+        // defaults or a step `output:` named `amplihack_claude_profile` can
+        // still override the pinned value until the runner refuses that
+        // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
         command
             .arg(recipe_path)
@@ -552,7 +587,7 @@ pub(super) fn execute_recipe_via_rust(
         command.envs(context_env_pairs(context, resolve_context_env_budget()));
 
         let env_builder = EnvBuilder::new()
-            .with_agent_binary(active_agent_binary())
+            .with_resolved_agent_binary(agent_binary.binary.as_str(), agent_binary.source)
             .with_session_tree_context()
             .with_amplihack_home_from(working_dir)
             .with_asset_resolver()
@@ -1046,6 +1081,12 @@ pub(super) fn pass_context(
 ) -> Result<Option<tempfile::NamedTempFile>> {
     if context.is_empty() {
         return Ok(None);
+    }
+    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
+        anyhow::bail!(
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            crate::commands::profile::escape_for_error(key)
+        );
     }
 
     let total_bytes: usize = context

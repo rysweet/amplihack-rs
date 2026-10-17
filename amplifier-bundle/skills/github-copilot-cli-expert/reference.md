@@ -125,8 +125,7 @@ Options:
 ```json
 {
   "trusted_folders": ["/path/to/trusted/project1", "/path/to/trusted/project2"],
-  "theme": "auto",
-  "model": "claude-sonnet-4-5"
+  "theme": "auto"
 }
 ```
 
@@ -240,12 +239,7 @@ For automated workflows with `--allow-all-tools`:
 
 ### Available Models
 
-Use `/model` to see current options. Typical choices:
-
-- **Claude Sonnet 4.5** (1x) - Default
-- **Claude Sonnet 4** (1x)
-- **GPT-5** (varies)
-- Additional models based on subscription
+Use `/model` to see current options, the configured default, and request multipliers. Availability depends on the subscription and installation.
 
 ### Premium Request Multipliers
 

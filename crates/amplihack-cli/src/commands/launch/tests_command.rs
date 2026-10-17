@@ -1,6 +1,6 @@
 use super::*;
 use crate::binary_finder::BinaryInfo;
-use crate::test_support::{EnvGuard, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{EnvGuard, home_env_lock};
 use std::ffi::OsStr;
 use std::fs;
 use std::path::PathBuf;
@@ -20,7 +20,7 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let cwd = tempfile::tempdir().unwrap();
     fs::create_dir_all(cwd.path().join(".claude")).unwrap();
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_root = std::env::var_os("AMPLIHACK_ROOT");
     // Issue #1265: these tests assert exact argv positions and lengths, and
@@ -37,7 +37,7 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
 
     let result = f();
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     match previous_uv_python {
         Some(value) => unsafe { std::env::set_var("UV_PYTHON", value) },
         None => unsafe { std::env::remove_var("UV_PYTHON") },
@@ -59,13 +59,13 @@ fn with_uvx_detection_disabled<T>(f: impl FnOnce() -> T) -> T {
 /// `AMPLIHACK_DEFAULT_MODEL`, so every test that asserts on the *default* has
 /// to start from a host where the gateway is not configured -- otherwise the
 /// result depends on the developer's shell.
-const PROXY_ENV_VARS: [&str; 3] = [
+pub(super) const PROXY_ENV_VARS: [&str; 3] = [
     amplihack_utils::litellm_proxy::ENDPOINT_ENV,
     amplihack_utils::litellm_proxy::API_KEY_ENV,
     amplihack_utils::litellm_proxy::MODEL_ENV,
 ];
 
-fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
+pub(super) fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -99,7 +99,7 @@ fn with_default_model_env<T>(value: Option<&str>, f: impl FnOnce() -> T) -> T {
 
 /// The model on the command line when a launch is routed through the LiteLLM
 /// gateway, with `AMPLIHACK_LITELLM_MODEL` set to `model`.
-fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
+pub(super) fn model_arg_through_proxy(model: Option<&str>) -> Option<String> {
     with_default_model_env(Some("pinned-by-env"), || {
         // `with_default_model_env` has already cleared all three, so setting
         // the endpoint alone is what "gateway configured, no model named" is.
@@ -788,7 +788,7 @@ fn copilot_skips_allow_all_when_env_opt_out() {
 
 /// Copilot is NOT Claude-compatible, so even when skip_permissions=true the
 /// `--dangerously-skip-permissions` flag MUST NOT appear.  This locks the
-/// `is_claude_compatible` whitelist against accidental expansion.
+/// `is_claude_compatible_tool` whitelist against accidental expansion.
 #[test]
 fn copilot_does_not_get_skip_permissions_even_when_requested() {
     with_uvx_detection_disabled(|| {
@@ -1101,4 +1101,28 @@ fn copilot_skips_remote_when_user_passes_no_remote() {
             "must not inject --remote when user passed --no-remote; got {args:?}"
         );
     });
+}
+
+#[test]
+fn codex_resume_uses_subcommand_and_continue_selects_last_without_model_pin() {
+    let (resume, continuation) = with_uvx_detection_disabled(|| {
+        let binary = BinaryInfo {
+            name: "codex".into(),
+            path: PathBuf::from("/usr/bin/codex"),
+            version: None,
+        };
+        let args = |command: Command| {
+            command
+                .get_args()
+                .map(|arg| arg.to_str().unwrap().to_owned())
+                .collect::<Vec<_>>()
+        };
+        (
+            args(build_command(&binary, true, false, false, &[])),
+            args(build_command(&binary, false, true, false, &[])),
+        )
+    });
+    // Assert after the legacy fixture has restored cwd/env, even during red.
+    assert_eq!(resume, ["resume"]);
+    assert_eq!(continuation, ["resume", "--last"]);
 }

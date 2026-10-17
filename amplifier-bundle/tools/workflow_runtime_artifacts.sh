@@ -29,6 +29,29 @@ _amplihack_is_linked_worktree() {
   [ -f "$repo/.git" ]
 }
 
+# _amplihack_exclude_worktrees_dir <repo>
+# Add `/worktrees/` to the repository's info/exclude (shared by all its
+# worktrees; no tracked file changes). On the main checkout `worktrees/` holds
+# task worktrees that cleanup now keeps (#1494); untracked, they would fail every
+# clean-status gate there (e.g. the no-diff check in workflow_final_status.sh)
+# and invite `git add -A` to stage them. Idempotent; best-effort.
+_amplihack_exclude_worktrees_dir() {
+  local repo="${1:-.}" common exclude
+  common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  case "$common" in /*) ;; *) common="$repo/$common" ;; esac
+  exclude="$common/info/exclude"
+  if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
+    return 0
+  fi
+  mkdir -p "$common/info" 2>/dev/null || return 0
+  # End an unterminated last line first, or the user's last rule and ours merge.
+  if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
+    printf '\n' >> "$exclude" 2>/dev/null || true
+  fi
+  printf '/worktrees/\n' >> "$exclude" 2>/dev/null || true
+  return 0
+}
+
 cleanup_known_workflow_runtime_artifacts() {
   local repo="${1:-.}"
   if ! is_git_worktree "$repo"; then
@@ -43,17 +66,22 @@ cleanup_known_workflow_runtime_artifacts() {
         echo "ERROR: refusing to remove tracked path during runtime cleanup: $rel" >&2
         return 1
       fi
+      # On the main checkout, `worktrees/` holds other runs' task worktrees and
+      # their uncommitted work. Recipe steps do call this from the main checkout
+      # (finalize preflight when a run starts there), and a bare `rm -rf` then
+      # destroyed every concurrent run's worktree (issue #1494). Leave it alone.
+      if [ "$rel" = "worktrees" ] && ! _amplihack_is_linked_worktree "$repo"; then
+        echo "INFO: leaving $repo/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" >&2
+        _amplihack_exclude_worktrees_dir "$repo"
+        continue
+      fi
       # On a *dedicated* (linked) task worktree, the `worktrees/` children are
       # leaked nested scratch worktrees created by this run. Record their
       # branches (so finalization deletes them) and deregister the worktrees
       # gracefully — a bare `rm -rf worktrees/` would leave dangling
       # registrations behind in the parent repo's $GIT_DIR/worktrees/ (issue
-      # #808 — a regression of #780/#755). This graceful path is intentionally
-      # skipped on the main checkout, where `worktrees/` children are other
-      # runs' task worktrees: it must never deregister or record those. (The
-      # pre-existing `rm -rf` below is left unchanged; it is only ever pointed
-      # at a per-task worktree by the recipe steps that cd into the worktree.)
-      if [ "$rel" = "worktrees" ] && _amplihack_is_linked_worktree "$repo"; then
+      # #808 — a regression of #780/#755).
+      if [ "$rel" = "worktrees" ]; then
         _amplihack_record_nested_worktree_branches "$repo"
         cleanup_nested_worktrees "$repo"
       fi
@@ -148,6 +176,8 @@ RUNBRANCHES
 cleanup_nested_worktrees() {
   local repo="${1:-.}"
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # On the main checkout, worktrees/ holds other runs' task worktrees (#1494).
+  _amplihack_is_linked_worktree "$repo" || return 0
   local top
   top="$(git -C "$repo" rev-parse --show-toplevel 2>/dev/null || true)"
   [ -n "$top" ] || return 0
@@ -283,9 +313,13 @@ finalize_workflow_runtime_artifacts() {
   local intended="${2:-}"
   git -C "$repo" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   [ -n "$intended" ] || intended="$(git -C "$repo" branch --show-current 2>/dev/null || true)"
-  # Capture nested-worktree branches before their worktrees are removed.
-  local nested_branches
-  nested_branches="$(_amplihack_list_nested_worktree_branches "$repo")"
+  # Capture nested-worktree branches before their worktrees are removed. Only a
+  # linked task worktree has nested worktrees of its own: on the main checkout
+  # these would be every other run's task worktree and PR branch (#1494).
+  local nested_branches=""
+  if _amplihack_is_linked_worktree "$repo"; then
+    nested_branches="$(_amplihack_list_nested_worktree_branches "$repo")"
+  fi
   # 1. Remove nested worktrees + prune dangling registrations.
   cleanup_nested_worktrees "$repo" || true
   # 2. Delete the now-orphaned nested-worktree branches (remote + local).

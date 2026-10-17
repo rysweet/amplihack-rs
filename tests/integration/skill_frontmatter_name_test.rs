@@ -16,7 +16,7 @@
 //! # Running
 //!
 //! ```bash
-//! cargo test --test skill_frontmatter_name -- --nocapture
+//! cargo test -p amplihack --test integration skill_frontmatter_name:: -- --nocapture
 //! ```
 
 use std::collections::HashMap;

@@ -185,7 +185,6 @@ async function createGoalSeekingAgent() {
   const client = new CopilotClient();
 
   const session = await client.createSession({
-    model: "gpt-4.1",
     streaming: true,
     tools: [planExecution, executePhase, assessProgress],
     systemMessage: {

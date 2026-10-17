@@ -1,6 +1,6 @@
 use super::*;
 use crate::command_error;
-use crate::test_support::{ClearedGraphDbEnv, home_env_lock, restore_cwd, set_cwd};
+use crate::test_support::{ClearedGraphDbEnv, home_env_lock};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
@@ -42,7 +42,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     let prev_depth = env::var_os("AMPLIHACK_SESSION_DEPTH");
     let prev_max_depth = env::var_os("AMPLIHACK_MAX_DEPTH");
     let prev_max_sessions = env::var_os("AMPLIHACK_MAX_SESSIONS");
-    let previous_cwd = set_cwd(temp.path()).unwrap();
+    let previous_cwd = crate::test_support::CwdGuard::set(temp.path()).unwrap();
     unsafe {
         env::set_var("AMPLIHACK_HOME", &amplihack_home);
         env::set_var("AMPLIHACK_TREE_ID", "tree1234");
@@ -57,7 +57,7 @@ fn native_reasoner_backend_propagates_shared_env_context() {
     .complete("inspect")
     .unwrap();
 
-    restore_cwd(&previous_cwd).unwrap();
+    drop(previous_cwd);
     restore_var("AMPLIHACK_HOME", prev_home);
     restore_var("AMPLIHACK_TREE_ID", prev_tree);
     restore_var("AMPLIHACK_SESSION_DEPTH", prev_depth);
@@ -72,6 +72,61 @@ fn native_reasoner_backend_propagates_shared_env_context() {
             temp.path().join(".amplihack").join("graph_db").display()
         )
     );
+}
+
+/// Crusty review of #1490 at 960eaacb: the reasoner starts a Claude Code
+/// session, so its `claude` child is told so the way every launcher tells its
+/// child. Run from a Copilot session, it used to get an untagged
+/// `AMPLIHACK_AGENT_BINARY=claude` (an instruction, above every session
+/// marker) beside the inherited `COPILOT_CLI`, through the public
+/// `with_agent_binary` whose doc described a launch.
+#[test]
+fn native_reasoner_child_describes_a_claude_session_without_copilot_markers() {
+    use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+
+    let _home_guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _graph_guard = ClearedGraphDbEnv::new();
+    // The reasoner runs inside an `amplihack copilot` session: every Copilot
+    // marker is set, and so is that launcher's own description of it.
+    let _agent_env =
+        crate::test_support::AgentBinaryEnv::set(Some("copilot"), Some("session:copilot"));
+    let copilot_markers: Vec<&str> = SESSION_MARKERS
+        .iter()
+        .filter(|(_, binary)| *binary == "copilot")
+        .map(|(marker, _)| *marker)
+        .collect();
+    assert!(!copilot_markers.is_empty());
+    for marker in &copilot_markers {
+        // SAFETY: serialised by the env lock; `_agent_env` restores every
+        // session marker on drop.
+        unsafe { env::set_var(marker, "1") };
+    }
+
+    let temp = tempfile::tempdir().unwrap();
+    let reasoner = temp.path().join("claude");
+    write_executable(&reasoner, "#!/bin/sh\nenv\n");
+    let cwd_guard = crate::test_support::CwdGuard::set(temp.path()).unwrap();
+    let output = NativeReasonerBackend::Claude(reasoner, || {
+        amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
+    })
+    .complete("inspect");
+    drop(cwd_guard);
+
+    let output = output.unwrap();
+    let child: std::collections::HashMap<&str, &str> = output
+        .lines()
+        .filter_map(|line| line.split_once('='))
+        .collect();
+    assert_eq!(child.get(BINARY_ENV), Some(&"claude"), "{output}");
+    assert_eq!(child.get(SOURCE_ENV), Some(&"session:claude"), "{output}");
+    for marker in &copilot_markers {
+        assert!(
+            !child.contains_key(marker),
+            "the reasoner's claude must not inherit {marker}: {output}"
+        );
+    }
 }
 
 #[test]

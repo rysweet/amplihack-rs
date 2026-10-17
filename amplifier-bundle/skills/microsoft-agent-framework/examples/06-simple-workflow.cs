@@ -20,6 +20,20 @@ namespace AgentFrameworkExamples
 {
     class SimpleWorkflowExample
     {
+        // Use the model selected by the user for the configured provider.
+        private static string ConfiguredModel
+        {
+            get
+            {
+                var value = Environment.GetEnvironmentVariable("AGENT_MODEL");
+                if (string.IsNullOrWhiteSpace(value) || value.Contains("<") || value.Contains(">"))
+                {
+                    throw new InvalidOperationException("Set AGENT_MODEL to an available provider model; blank values and placeholders are invalid.");
+                }
+                return value.Trim();
+            }
+        }
+
         static async Task SequentialWorkflow()
         {
             Console.WriteLine("=== Sequential Workflow ===");
@@ -27,19 +41,19 @@ namespace AgentFrameworkExamples
             // Create specialized agents
             var researcher = new Agent(
                 name: "researcher",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Research topics and gather key facts. Be thorough."
             );
 
             var writer = new Agent(
                 name: "writer",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Write clear, concise content based on research."
             );
 
             var reviewer = new Agent(
                 name: "reviewer",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Review content for accuracy and clarity."
             );
 
@@ -72,25 +86,25 @@ namespace AgentFrameworkExamples
             // Create analyst agents
             var securityAnalyst = new Agent(
                 name: "security",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Analyze from security perspective."
             );
 
             var performanceAnalyst = new Agent(
                 name: "performance",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Analyze from performance perspective."
             );
 
             var uxAnalyst = new Agent(
                 name: "ux",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Analyze from user experience perspective."
             );
 
             var synthesizer = new Agent(
                 name: "synthesizer",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Synthesize all analyses into comprehensive report."
             );
 
@@ -127,19 +141,19 @@ namespace AgentFrameworkExamples
             // Create agents
             var classifier = new Agent(
                 name: "classifier",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Classify queries as 'simple' or 'complex'."
             );
 
             var simpleHandler = new Agent(
                 name: "simple_handler",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Handle simple queries quickly."
             );
 
             var complexHandler = new Agent(
                 name: "complex_handler",
-                model: new ModelClient(model: "gpt-4"),
+                model: new ModelClient(model: ConfiguredModel),
                 instructions: "Handle complex queries with detailed analysis."
             );
 

@@ -1,8 +1,9 @@
 # How to Use amplihack with a Non-Claude Agent
 
-amplihack is agent-agnostic. While it defaults to `claude` (Claude Code CLI),
-you can run any compatible agent binary by setting the `AMPLIHACK_AGENT_BINARY`
-environment variable.
+amplihack is agent-agnostic. It runs agent steps under one of four CLIs:
+`claude` (Claude Code), `copilot` (GitHub Copilot CLI), `codex` or
+`amplifier`. Inside one of those CLIs' sessions it uses that CLI. To choose
+one explicitly, set the `AMPLIHACK_AGENT_BINARY` environment variable.
 
 ## Prerequisites
 
@@ -12,8 +13,13 @@ environment variable.
 ## Set the agent binary
 
 ```bash
-export AMPLIHACK_AGENT_BINARY=your-agent-binary
+export AMPLIHACK_AGENT_BINARY=copilot
 ```
+
+The value must be one of `claude`, `copilot`, `codex` or `amplifier`. Anything
+else, including a path to a binary, is rejected and ignored, never coerced
+into a different name. The rules are under Allowlist & Validation in
+[Active Agent Binary](../reference/active-agent-binary.md).
 
 All subprocess orchestration — including nested agents spawned by the recipe
 runner, fleet, multi-task, and auto_mode — will use this binary.
@@ -21,7 +27,7 @@ runner, fleet, multi-task, and auto_mode — will use this binary.
 ### Examples
 
 ```bash
-# Use the default (Claude Code)
+# Use Claude Code
 export AMPLIHACK_AGENT_BINARY=claude
 
 # Use GitHub Copilot CLI (if installed)
@@ -30,11 +36,11 @@ export AMPLIHACK_AGENT_BINARY=copilot
 
 ## Verify propagation
 
-After setting the variable, confirm it is visible to subprocesses:
+After setting the variable, ask amplihack which CLI it will use and why:
 
 ```bash
-printenv AMPLIHACK_AGENT_BINARY
-# Should print: your-agent-binary
+amplihack agent-binary
+# copilot (env)
 ```
 
 When the recipe runner launches nested agent steps, it inherits this variable.
@@ -43,13 +49,14 @@ than a hardcoded `claude` invocation.
 
 ## Fallback behaviour
 
-If `AMPLIHACK_AGENT_BINARY` is not set, amplihack falls back to `claude` and
-emits a warning that the variable was not set and `claude` is being used as
-the fallback agent. The exact wording varies slightly between top-level
-launcher code paths and nested Rust-runner code paths.
-
-This preserves backward compatibility for environments that do not set the
-variable (direct Python imports, existing test suites, legacy configurations).
+If `AMPLIHACK_AGENT_BINARY` is not set, or is rejected, amplihack uses the
+session markers of the CLI it is running in (for example `CLAUDECODE` or
+`COPILOT_CLI`), then a fresh `.claude/runtime/launcher_context.json`, then the
+default, `copilot`. `amplihack recipe run` and `amplihack agent-binary` print a
+notice on stderr whenever the answer was inferred rather than chosen, and
+whenever the value you set was rejected, naming what answered instead. The full
+precedence is in
+[Active Agent Binary](../reference/active-agent-binary.md#resolution-precedence).
 
 ## Python API (knowledge builder)
 

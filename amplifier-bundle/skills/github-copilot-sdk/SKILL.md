@@ -23,6 +23,8 @@ token_budget: 2000
 
 # GitHub Copilot SDK - Comprehensive Skill
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Overview
 
 The **GitHub Copilot SDK** enables developers to embed Copilot's agentic workflows programmatically in their applications. It exposes the same engine behind Copilot CLI as a production-tested agent runtime you can invoke from code.
@@ -65,7 +67,7 @@ The **GitHub Copilot SDK** enables developers to embed Copilot's agentic workflo
 import { CopilotClient } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
-const session = await client.createSession({ model: "gpt-4.1" });
+const session = await client.createSession({ model: "<configured-model>" });
 
 const response = await session.sendAndWait({ prompt: "What is 2 + 2?" });
 console.log(response?.data.content);
@@ -82,7 +84,7 @@ from copilot import CopilotClient
 async def main():
     client = CopilotClient()
     await client.start()
-    session = await client.create_session({"model": "gpt-4.1"})
+    session = await client.create_session({"model": "<configured-model>"})
     response = await session.send_and_wait({"prompt": "What is 2 + 2?"})
     print(response.data.content)
     await client.stop()
@@ -94,7 +96,7 @@ asyncio.run(main())
 
 ```typescript
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   streaming: true,
 });
 
@@ -129,7 +131,7 @@ const getWeather = defineTool("get_weather", {
 });
 
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   tools: [getWeather],
 });
 ```
@@ -156,7 +158,7 @@ The SDK manages the CLI process lifecycle automatically or connects to an extern
 
 ```typescript
 const session = await client.createSession({
-  model: "gpt-4.1", // Model to use
+  model: "<configured-model>", // Model to use
   streaming: true, // Enable streaming
   tools: [myTool], // Custom tools
   mcpServers: {
@@ -250,7 +252,7 @@ async def create_code_review_agent():
     client = CopilotClient()
     await client.start()
     session = await client.create_session({
-        "model": "gpt-4.1",
+        "model": "<configured-model>",
         "streaming": True,
         "systemMessage": {
             "content": "You are an expert code reviewer."

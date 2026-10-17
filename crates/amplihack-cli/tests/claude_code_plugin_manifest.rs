@@ -543,6 +543,78 @@ mod shell {
         assert!(exported.contains("AMPLIHACK_AGENT_BINARY"));
     }
 
+    /// Crusty review of #1490 at baaafb18: the line used to be
+    /// `${AMPLIHACK_AGENT_BINARY:-claude}`, which kept the `copilot` that a
+    /// tmux server started from an `amplihack copilot` session hands to every
+    /// pane, and treated it as a choice. A value amplihack tagged as a guess
+    /// or as another session's description is replaced; a choice is kept.
+    #[test]
+    fn bootstrap_replaces_an_inherited_description_and_keeps_a_choice() {
+        let home = tempfile::tempdir().unwrap();
+        let stub = tempfile::tempdir().unwrap();
+        for tool in ["amplihack", "amplihack-hooks", "recipe-runner-rs"] {
+            write_exe(&stub.path().join(tool), "#!/bin/sh\n");
+        }
+        let bin = bootstrap_fixture();
+        let env_file = home.path().join("env.sh");
+        let env_file_str = env_file.to_str().unwrap();
+        let envs = [
+            ("CLAUDE_ENV_FILE", env_file_str),
+            ("CLAUDE_PLUGIN_ROOT", "/plugin/root"),
+        ];
+        let out = run(
+            &bin.path().join("bootstrap"),
+            home.path(),
+            stub.path(),
+            &[],
+            &envs,
+        );
+        assert!(out.status.success(), "{out:?}");
+
+        // What a Bash tool command sees after Claude Code sources the file.
+        let sourced = |inherited: &[(&str, &str)]| {
+            let mut command = Command::new("sh");
+            command
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", home.path())
+                .arg("-c")
+                .arg(
+                    ". \"$1\" && printf '%s|%s' \"$AMPLIHACK_AGENT_BINARY\" \
+                     \"${AMPLIHACK_AGENT_BINARY_SOURCE-<unset>}\"",
+                )
+                .arg("sh")
+                .arg(&env_file);
+            for (key, value) in inherited {
+                command.env(key, value);
+            }
+            let output = command.output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let binary = "AMPLIHACK_AGENT_BINARY";
+        let tag = "AMPLIHACK_AGENT_BINARY_SOURCE";
+        assert_eq!(sourced(&[]), "claude|session:claude");
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "session:copilot")]),
+            "claude|session:claude"
+        );
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "default:copilot")]),
+            "claude|session:claude"
+        );
+        // A choice: untagged, or set after a tag that names something else.
+        assert_eq!(sourced(&[(binary, "copilot")]), "copilot|<unset>");
+        assert_eq!(
+            sourced(&[(binary, "codex"), (tag, "session:copilot")]),
+            "codex|session:copilot"
+        );
+        assert_eq!(
+            sourced(&[(binary, "copilot"), (tag, "tmux_server:COPILOT_CLI")]),
+            "copilot|tmux_server:COPILOT_CLI"
+        );
+    }
+
     #[test]
     fn bootstrap_explains_how_to_install_when_auto_install_is_off() {
         let home = tempfile::tempdir().unwrap();
@@ -957,7 +1029,17 @@ mod shell {
         fs::create_dir_all(&dest).unwrap();
         let mut bins = vec![(
             "amplihack",
-            format!("#!/bin/sh\necho 'amplihack {installed}'\n"),
+            format!(
+                "#!/bin/sh\nif [ \"$1\" = internal ]; then exec '{}' \"$@\"; fi\necho 'amplihack {installed}'\n",
+                std::env::current_exe()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .parent()
+                    .unwrap()
+                    .join("amplihack")
+                    .display()
+            ),
         )];
         if with_hooks {
             bins.push(("amplihack-hooks", "#!/bin/sh\n".to_owned()));
@@ -985,7 +1067,16 @@ mod shell {
             "#!/bin/sh\necho 'node stub: no network' >&2\nexit 1\n",
         );
         let cargo = if cargo_ok {
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nmkdir -p \"$HOME/.cargo/bin\"\nprintf '#!/bin/sh\\n' > \"$HOME/.cargo/bin/recipe-runner-rs\"\nchmod +x \"$HOME/.cargo/bin/recipe-runner-rs\"\n"
+            r#"#!/bin/sh
+printf '%s\n' "$*" >> "$HOME/cargo-args"
+mkdir -p "$HOME/.cargo/bin"
+printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$HOME/.cargo/.crates2.json"
+cat > "$HOME/.cargo/bin/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+printf '%s\n' '{"capabilities":["codex_exec","future"],"schema_version":1,"version":"0.4.0"}'
+RUNNER
+chmod +x "$HOME/.cargo/bin/recipe-runner-rs"
+"#
         } else {
             "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$HOME/cargo-args\"\nexit 101\n"
         };
@@ -1009,12 +1100,197 @@ mod shell {
         InstallRun { out, home, data }
     }
 
+    #[test]
+    fn cargo_only_claude_install_needs_no_json_runtime() {
+        for (report, accepted) in [
+            (
+                r#"{"capabilities":[],"version":"0.4.0","schema_version":1}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":[1],"version":"0.4.0","schema_version":1}"#,
+                false,
+            ),
+        ] {
+            for old_runtime in [false, true] {
+                let home = tempfile::tempdir().unwrap();
+                let data = tempfile::tempdir().unwrap();
+                let tools = tempfile::tempdir().unwrap();
+                // A controlled PATH contains only POSIX utilities and Cargo. In particular
+                // neither Python nor Node can be discovered through a host PATH suffix.
+                for tool in [
+                    "sh",
+                    "dirname",
+                    "basename",
+                    "date",
+                    "mkdir",
+                    "cat",
+                    "rm",
+                    "sed",
+                    "grep",
+                    "sha256sum",
+                    "cut",
+                    "cp",
+                    "chmod",
+                    "mv",
+                ] {
+                    let lookup = Command::new("/bin/sh")
+                        .args(["-c", &format!("command -v {tool}")])
+                        .output()
+                        .unwrap();
+                    assert!(lookup.status.success());
+                    std::os::unix::fs::symlink(
+                        String::from_utf8(lookup.stdout).unwrap().trim(),
+                        tools.path().join(tool),
+                    )
+                    .unwrap();
+                }
+                write_exe(
+                    &tools.path().join("cargo"),
+                    r#"#!/bin/sh
+if [ "$1" = build ]; then
+  mkdir -p "$CARGO_TARGET_DIR/release"
+  # A fake build must deliver the actual validator, not a shell stub that
+  # returns success for arbitrary validation requests.
+  cp "$VALIDATION_TEST_CLI" "$CARGO_TARGET_DIR/release/amplihack"
+  printf '#!/bin/sh\nexit 0\n' > "$CARGO_TARGET_DIR/release/amplihack-hooks"
+else
+  runner_home=${CARGO_HOME:-$HOME/.cargo}
+  mkdir -p "$runner_home/bin"
+  printf '{"installs":{"recipe-runner-rs 0.4.0 (git+https://github.com/rysweet/amplihack-recipe-runner#%s)":{"bins":["recipe-runner-rs"]}}}' "$5" > "$runner_home/.crates2.json"
+  cat > "$runner_home/bin/recipe-runner-rs" <<'RUNNER'
+#!/bin/sh
+printf '%s\n' "$CAPABILITY_TEST_REPORT"
+RUNNER
+  chmod +x "$runner_home/bin/recipe-runner-rs"
+fi
+"#,
+                );
+                let owned_runtime = tools.path().join("amplihack");
+                if old_runtime {
+                    write_exe(
+                        &owned_runtime,
+                        "#!/bin/sh\nif [ \"$1\" = --version ]; then echo amplihack-old; else exit 2; fi\n",
+                    );
+                }
+                if old_runtime {
+                    write_exe(&tools.path().join("amplihack-hooks"), "#!/bin/sh\nexit 0\n");
+                }
+                let before = fs::read(&owned_runtime).ok();
+                let out = Command::new("/bin/sh")
+                    .arg(repo_root().join("claude-plugin/bin/install-runtime"))
+                    .env("HOME", home.path())
+                    .env("CAPABILITY_TEST_REPORT", report)
+                    .env("PATH", tools.path())
+                    .env(
+                        "VALIDATION_TEST_CLI",
+                        std::env::current_exe()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join("amplihack"),
+                    )
+                    .env("CLAUDE_PLUGIN_ROOT", repo_root())
+                    .env("CLAUDE_PLUGIN_DATA", data.path())
+                    .env("AMPLIHACK_NPM_VERSION", env!("CARGO_PKG_VERSION"))
+                    .env_remove("RECIPE_RUNNER_RS_PATH")
+                    .env("CARGO_HOME", home.path().join("custom-cargo"))
+                    .env_remove("AMPLIHACK_PLUGIN_INSTALL_LOCK")
+                    .output()
+                    .unwrap();
+                assert_eq!(
+                    out.status.success(),
+                    accepted,
+                    "report={report} stdout={} stderr={}",
+                    String::from_utf8_lossy(&out.stdout),
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                assert_eq!(data.path().join("runtime.stamp").is_file(), accepted);
+                assert_eq!(data.path().join("install.failed").exists(), !accepted);
+                if old_runtime {
+                    assert_eq!(fs::read(&owned_runtime).ok(), before);
+                    assert!(
+                        data.path()
+                            .join("validator-target/release/amplihack")
+                            .is_file()
+                    );
+                }
+            }
+        }
+    }
+
     fn plugin_id() -> String {
         repo_root()
             .file_name()
             .unwrap()
             .to_string_lossy()
             .into_owned()
+    }
+
+    #[test]
+    fn claude_capability_validation_uses_native_schema_without_json_runtimes() {
+        let tools = tempfile::tempdir().unwrap();
+        let cli = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("amplihack");
+        std::os::unix::fs::symlink(cli, tools.path().join("amplihack")).unwrap();
+        let runner = tools.path().join("runner");
+        for (report, accepted) in [
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":"custom","extra":true}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":["future","codex_exec"],"version":"v","schema_version":1}"#,
+                true,
+            ),
+            (
+                r#"{"capabilities":[1],"schema_version":1,"version":"v"}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":true,"version":"v"}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":" "}"#,
+                false,
+            ),
+            (
+                r#"{"capabilities":[],"schema_version":1,"version":"v"} {}"#,
+                false,
+            ),
+        ] {
+            write_exe(&runner, &format!("#!/bin/sh\nprintf '%s\\n' '{report}'\n"));
+            let output = Command::new("/bin/sh")
+                .arg(repo_root().join("claude-plugin/bin/check-runner-capabilities"))
+                .arg(&runner)
+                .env("PATH", tools.path())
+                .output()
+                .unwrap();
+            assert_eq!(output.status.success(), accepted, "{report}: {:?}", output);
+        }
+    }
+
+    #[test]
+    fn failed_runner_update_with_old_executable_cannot_stamp_success() {
+        let run = install_runtime_with(
+            "1.2.3",
+            true,
+            true,
+            false,
+            "1.2.3",
+            &[("recipe-runner-rs", "#!/bin/sh\nexit 0\n")],
+        );
+        assert!(!run.out.status.success(), "{}", run.log());
+        assert!(!run.data.path().join("runtime.stamp").exists());
+        assert!(run.data.path().join("install.failed").exists());
     }
 
     #[test]

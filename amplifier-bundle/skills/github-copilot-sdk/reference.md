@@ -1,5 +1,7 @@
 # GitHub Copilot SDK - Complete API Reference
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Architecture
 
 ### SDK Client Communication
@@ -126,7 +128,7 @@ await using var client = new CopilotClient(new CopilotClientOptions {
 ```typescript
 const session = await client.createSession({
   // Model selection
-  model: "gpt-4.1",
+  model: "<configured-model>",
 
   // Enable streaming responses
   streaming: true,
@@ -168,7 +170,7 @@ const session = await client.createSession({
 
 ```python
 session = await client.create_session({
-    "model": "gpt-4.1",
+    "model": "<configured-model>",
     "streaming": True,
     "tools": [weather_tool, calculator_tool],
     "mcpServers": {
@@ -193,7 +195,7 @@ session = await client.create_session({
 
 | Option          | Type      | Description                        |
 | --------------- | --------- | ---------------------------------- |
-| `model`         | `string`  | Model identifier (e.g., `gpt-4.1`) |
+| `model`         | `string`  | Model identifier (e.g., `<configured-model>`) |
 | `streaming`     | `boolean` | Enable streaming responses         |
 | `tools`         | `Tool[]`  | Custom tools for the session       |
 | `mcpServers`    | `object`  | MCP server configurations          |
@@ -466,7 +468,7 @@ The SDK supports all models available via Copilot CLI. Use the SDK's model disco
 
 ```typescript
 const session = await client.createSession({
-  model: "gpt-4.1", // Default recommended model
+  model: "<configured-model>", // Replace with the runtime-configured model ID
 });
 ```
 

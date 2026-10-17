@@ -80,13 +80,21 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
       EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
+      # json_text: make text safe to splice into a JSON string in the record
+      # below. Strip ANSI CSI sequences (ECMA-48: parameter bytes 0x30-0x3F,
+      # intermediates 0x20-0x2F, final 0x40-0x7E), turn tabs, CRs and newlines
+      # into spaces and backslashes into '/', then keep printable ASCII without
+      # quotes. A coloured runner log otherwise put raw ESC bytes into
+      # qa_summary, which made a passing QA run read as qa_status=MISSING
+      # (#1531); ASCII-only also keeps `cut` from splitting a multibyte character.
+      json_text() { LC_ALL=C sed "s|$(printf '\033')\[[0-?]*[ -/]*[@-~]||g" | LC_ALL=C tr '\t\r\n' '   ' | LC_ALL=C tr '\\' '/' | LC_ALL=C tr -cd ' -~' | LC_ALL=C tr -d '"'; }
       # Repo-type detection exactly as the qa-team skill specifies: a Rust CLI
       # repo runs `cargo test` over tests/parity/scenarios/*.yaml and does NOT
       # require the gadugi-agentic-test framework.
       TYPE="unknown"; CMD=""; SCEN=""
       if [ -f Cargo.toml ]; then
         TYPE="rust-cli"; CMD="cargo test --workspace --locked --no-fail-fast"
-        SCEN="$(ls tests/parity/scenarios/* 2>/dev/null | tr '\n' ' ')"
+        SCEN="$(ls tests/parity/scenarios/* 2>/dev/null | json_text)"
       elif [ -f package.json ]; then
         TYPE="node"; CMD="gadugi-test run"
       elif [ -f pyproject.toml ] || [ -f setup.py ]; then
@@ -112,7 +120,7 @@ steps:
         # shellcheck disable=SC2086
         $CMD >"$LOG" 2>&1
         RC=$?
-        SUMMARY="$(tail -n 5 "$LOG" | tr '\n' ' ' | tr -d '"' | cut -c1-300)"
+        SUMMARY="$(tail -n 5 "$LOG" | json_text | cut -c1-300)"
         if [ "$RC" -eq 0 ]; then STATUS="PASS"; else STATUS="FAIL"; fi
         echo "INFO: qa-team (${TYPE}) '${CMD}' exited ${RC}" >&2
         tail -n 60 "$LOG" >&2 || true

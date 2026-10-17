@@ -13,8 +13,12 @@
 #       no unmerged meaningful commits (rev-list --count BASE..HEAD == 0), it
 #       removes the worktree directory and its branch so a re-run converges.
 #       Stale-but-unmerged worktrees are archived (never destroyed); fresh
-#       worktrees are left untouched. Always exits 0 — a sweep failure must
-#       never abort setup.
+#       worktrees, and any worktree with uncommitted or untracked files
+#       (#1560), are left untouched. A branch whose changes are already in the
+#       base (squash or rebase merge) counts as merged. It also adds
+#       `/worktrees/` to the repository's info/exclude, so the task worktrees it
+#       keeps never show up as untracked files (#1494). Always exits 0 — a
+#       sweep failure must never abort setup.
 #
 #   cleanup_on_failure <repo_path> <branch>
 #       Tear down THIS run's worktree+branch after a failed/aborted run, but
@@ -114,6 +118,35 @@ commits_ahead() {
     git -C "$repo" rev-list --count "${base}..${tip}" 2>/dev/null || printf '1\n'
 }
 
+# content_merged <repo> <base> <branch> — true when <branch>'s changes are
+# already in <base> even though its commits are not, as after a squash or rebase
+# merge. Without this, a kept task worktree whose PR was squash-merged looks
+# unmerged forever. Two tests, either is enough:
+#   - merging <branch> into <base> would change nothing (`git merge-tree
+#     --write-tree`, git 2.38+);
+#   - a commit on <base> since the merge base carries <branch>'s whole diff
+#     (same `git patch-id --stable`), as a squash commit does. This still holds
+#     after later commits on <base> edit the same lines, when merge-tree reports
+#     a conflict. The search is bounded to the last 2000 commits.
+# On any error the branch counts as unmerged.
+content_merged() {
+    local repo="$1" base="$2" branch="$3" merged base_tree mb pid
+    if merged="$(git -C "$repo" merge-tree --write-tree "$base" "$branch" 2>/dev/null)"; then
+        merged="${merged%%$'\n'*}"
+        base_tree="$(git -C "$repo" rev-parse --verify --quiet "${base}^{tree}" 2>/dev/null || true)"
+        if [ -n "$merged" ] && [ "$merged" = "$base_tree" ]; then
+            return 0
+        fi
+    fi
+    mb="$(git -C "$repo" merge-base "$base" "$branch" 2>/dev/null)" || return 1
+    pid="$(git -C "$repo" diff "$mb" "$branch" 2>/dev/null | git -C "$repo" patch-id --stable 2>/dev/null)" || return 1
+    pid="${pid%% *}"
+    [ -n "$pid" ] || return 1
+    git -C "$repo" log -p --max-count=2000 --format='commit %H' "${mb}..${base}" 2>/dev/null \
+        | git -C "$repo" patch-id --stable 2>/dev/null \
+        | awk -v p="$pid" '$1 == p { found = 1 } END { exit !found }'
+}
+
 # archive_branch <repo> <branch> <sha> — record <sha> under the archive
 # namespace so unique work stays reachable after a prune. Best-effort remote
 # push (relies on configured auth; never echoes tokens).
@@ -126,8 +159,14 @@ archive_branch() {
         log_warn "Could not archive '${branch}' to ${ref} locally."
         return 1
     fi
-    git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1 \
-        || git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
+    # Update the remote branch only while the remote still has it: pushing
+    # refs/heads/<branch> after a merged PR's branch was deleted would bring it
+    # back. Otherwise push the archive ref, which no branch listing shows.
+    if git -C "$repo" ls-remote --exit-code --heads origin "refs/heads/${branch}" >/dev/null 2>&1 \
+        && git -C "$repo" push origin "${sha}:refs/heads/${branch}" >/dev/null 2>&1; then
+        return 0
+    fi
+    git -C "$repo" push origin "${ref}:${ref}" >/dev/null 2>&1 \
         || log_warn "Best-effort archive push for '${branch}' did not complete; local archive ref retained."
     return 0
 }
@@ -175,6 +214,7 @@ sweep() {
     fi
 
     git -C "$repo" worktree prune >/dev/null 2>&1 || true
+    exclude_worktrees_dir "$repo"
 
     local threshold base now
     threshold="$(stale_threshold)"
@@ -210,6 +250,47 @@ EOF
     return 0
 }
 
+# has_uncommitted_work <path> — true when the worktree has uncommitted or
+# untracked files. That work is in no commit, so the commits-ahead gate cannot
+# see it, and such a worktree is never removed (issue #1560). When in doubt,
+# keep: a status that cannot be read counts as dirty, and so does a directory
+# that is not a worktree root, because git would report the enclosing
+# repository's status for it instead. `--no-optional-locks` keeps the probe from
+# rewriting the index under index.lock, which would make a concurrent `git add`
+# in that (possibly live) worktree fail.
+has_uncommitted_work() {
+    local path="$1" real top out
+    real="$(cd "$path" 2>/dev/null && pwd -P)" || return 0
+    top="$(git -C "$path" rev-parse --show-toplevel 2>/dev/null)" || return 0
+    top="$(cd "$top" 2>/dev/null && pwd -P)" || return 0
+    [ "$top" = "$real" ] || return 0
+    out="$(git --no-optional-locks -C "$path" status --porcelain --untracked-files=normal 2>/dev/null)" || return 0
+    [ -n "$out" ]
+}
+
+# exclude_worktrees_dir <repo> — add `/worktrees/` to the repository's
+# info/exclude (shared by all its worktrees; no tracked file changes). Task
+# worktrees under <repo>/worktrees/ are kept rather than deleted (#1494, #1560),
+# and untracked they would fail every clean-status gate on the main checkout
+# and invite `git add -A` to stage them. Idempotent; best-effort.
+exclude_worktrees_dir() {
+    local repo="$1" common exclude
+    common="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || return 0
+    case "$common" in /*) ;; *) common="${repo}/${common}" ;; esac
+    exclude="${common}/info/exclude"
+    if [ -f "$exclude" ] && grep -qxF '/worktrees/' "$exclude" 2>/dev/null; then
+        return 0
+    fi
+    mkdir -p "${common}/info" 2>/dev/null || { log_warn "Could not create ${common}/info."; return 0; }
+    # End an unterminated last line first, or the user's last rule and ours merge.
+    if [ -s "$exclude" ] && [ -n "$(tail -c1 "$exclude" 2>/dev/null)" ]; then
+        printf '\n' >> "$exclude" 2>/dev/null || true
+    fi
+    printf '/worktrees/\n' >> "$exclude" 2>/dev/null \
+        || log_warn "Could not add /worktrees/ to ${exclude}."
+    return 0
+}
+
 # _sweep_consider <repo> <path> <branch> <threshold> <now> <base>
 # Evaluate one registered worktree and act on it. Best-effort throughout.
 _sweep_consider() {
@@ -227,6 +308,10 @@ _sweep_consider() {
         log_info "Keeping fresh worktree '${path}' (age ${age}s < ${threshold}s)."
         return 0
     fi
+    if has_uncommitted_work "$path"; then
+        log_warn "Keeping worktree '${path}': it has uncommitted or untracked changes (#1560)."
+        return 0
+    fi
 
     # Unmerged-diff safety gate. Without a resolvable base we cannot prove the
     # worktree is merged, so we preserve it.
@@ -241,6 +326,10 @@ _sweep_consider() {
 
     local ahead sha
     ahead="$(commits_ahead "$repo" "$base" "$branch")"
+    if [ "$ahead" -gt 0 ] && content_merged "$repo" "$base" "$branch"; then
+        log_info "Branch '${branch}' has ${ahead} commit(s) not in ${base}, but their changes are (squash or rebase merge)."
+        ahead=0
+    fi
     if [ "$ahead" -gt 0 ]; then
         sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/${branch}" 2>/dev/null || true)"
         if [ -n "$sha" ]; then
@@ -291,7 +380,7 @@ cleanup_on_failure() {
     sha="$(git -C "$repo" rev-parse --verify --quiet "refs/heads/${branch}" 2>/dev/null || true)"
     if [ -z "$sha" ]; then
         log_info "cleanup_on_failure: branch '${branch}' not present; pruning any stale worktree dir."
-        if [ -n "$path" ] && within_worktrees_dir "$repo" "$path"; then
+        if [ -n "$path" ] && within_worktrees_dir "$repo" "$path" && ! has_uncommitted_work "$path"; then
             git -C "$repo" worktree remove --force -- "$path" >/dev/null 2>&1 || rm -rf -- "$path" 2>/dev/null || true
             git -C "$repo" worktree prune >/dev/null 2>&1 || true
         fi
@@ -303,6 +392,10 @@ cleanup_on_failure() {
     ahead=1
     if [ -n "$base" ]; then
         ahead="$(commits_ahead "$repo" "$base" "$branch")"
+        if [ "$ahead" -gt 0 ] && content_merged "$repo" "$base" "$branch"; then
+            log_info "cleanup_on_failure: the changes on '${branch}' are already in ${base} (squash or rebase merge)."
+            ahead=0
+        fi
     fi
 
     if [ "$ahead" -gt 0 ]; then
@@ -317,6 +410,10 @@ cleanup_on_failure() {
     if [ -n "$path" ] && ! within_worktrees_dir "$repo" "$path"; then
         log_warn "cleanup_on_failure: worktree '${path}' is outside managed worktrees/; pruning branch only."
         path=""
+    fi
+    if [ -n "$path" ] && [ -d "$path" ] && has_uncommitted_work "$path"; then
+        log_warn "cleanup_on_failure: keeping '${path}' and branch '${branch}': the worktree has uncommitted or untracked changes (#1560)."
+        return 0
     fi
     remove_worktree_and_branch "$repo" "$path" "$branch"
     return 0

@@ -2090,6 +2090,32 @@ mod tests {
     }
 
     #[test]
+    fn real_corpus_publishes_all_130_skills_in_isolated_home() {
+        let (_lock, temp, _home) = isolated_home();
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/skills");
+        let mut sources = Vec::new();
+        find_skill_dirs(&root, &mut sources).unwrap();
+        assert_eq!(sources.len(), 130);
+        let expected: BTreeSet<_> = sources.iter().map(|(name, _)| name.clone()).collect();
+        assert_eq!(expected.len(), 130);
+        let staged = temp.path().join(".amplihack/.claude/skills");
+        copy_dir_recursive(&root, &staged).unwrap();
+        ensure_claude_plugin_installed().unwrap();
+        let published = temp.path().join(".claude/skills");
+        assert!(
+            discoverable_skill_names(&published)
+                .unwrap()
+                .is_superset(&expected)
+        );
+        for (name, source) in sources {
+            assert_eq!(
+                fs::read(source.join("SKILL.md")).unwrap(),
+                fs::read(published.join(name).join("SKILL.md")).unwrap()
+            );
+        }
+    }
+
+    #[test]
     fn issue_1277_adopts_real_windows_legacy_wrapper_after_link_skipping() {
         let (_lock, temp, _home) = isolated_home();
         let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR"))

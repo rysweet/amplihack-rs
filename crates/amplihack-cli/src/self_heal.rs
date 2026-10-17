@@ -44,6 +44,9 @@ const SKIP_ENV: &str = "AMPLIHACK_SKIP_AUTO_INSTALL";
 ///
 /// - `install`/`uninstall`/`update`: would recurse or undo the user's intent.
 /// - `completions`/`help`/`doctor`: read-only/diagnostic; should stay fast.
+/// - `agent-binary`: runs inside `$(...)` to hand the agent binary to a
+///   detached launch (issue #1525); an install there would be a side effect
+///   of reading a value, and its output would land on the caller's terminal.
 const SKIP_SUBCOMMANDS: &[&str] = &[
     "install",
     "uninstall",
@@ -51,6 +54,7 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "completions",
     "doctor",
     "help",
+    "agent-binary",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an
@@ -83,8 +87,44 @@ pub fn ensure_assets_match_binary_version(args: &[OsString]) -> Result<()> {
     }
 
     ensure_assets_match_binary_version_with(args, &mut std::io::stderr(), || {
-        crate::commands::install::run_install(None, false, false)
+        crate::commands::install::repair_framework_assets()
     })
+}
+
+/// Use parsed CLI provider intent for startup repair, ahead of inherited hints.
+/// The scoped selection restores the caller's provider after the check.
+pub fn ensure_assets_for_command(args: &[OsString], command: &crate::Commands) -> Result<()> {
+    let provider = match command {
+        crate::Commands::Launch { .. } | crate::Commands::Claude { .. } => "claude",
+        crate::Commands::Copilot { .. } => "copilot",
+        crate::Commands::Codex { .. } => "codex",
+        crate::Commands::Amplifier { .. } => "amplifier",
+        crate::Commands::RustyClawd { .. } => "rustyclawd",
+        // Generic commands repair generic assets; direct install retains its
+        // separate all-provider semantics and is in the startup skip list.
+        _ => "",
+    };
+    crate::freshness::with_provider(provider, || ensure_assets_match_binary_version(args))
+}
+
+/// Resolve ordinary Codex launches before asset repair registers native resources.
+/// Other providers retain their existing startup order.
+pub fn resolve_startup_client(command: &crate::Commands) -> Result<()> {
+    if matches!(
+        command,
+        crate::Commands::Codex {
+            docker: false,
+            append: None,
+            auto: false,
+            ..
+        }
+    ) {
+        crate::bootstrap::ensure_tool_available(
+            "codex",
+            amplihack_utils::launch_target::OverrideOrigin::User,
+        )?;
+    }
+    Ok(())
 }
 
 /// Resolve the path to the install advisory lock file. Mirrors
@@ -335,6 +375,12 @@ fn args_should_skip(args: &[OsString]) -> bool {
     // stdout and corrupt the very pipe these helpers exist to make robust, so
     // none of them may trigger auto-install.
     if matches!(positionals.as_slice(), ["orch", "helper", ..]) {
+        return true;
+    }
+    // `profile statusline` is the status-line wrapper Claude Code runs after
+    // every turn (issue #1569). Its stdout is the status line and it must stay
+    // fast and silent, so it never triggers auto-install.
+    if matches!(positionals.as_slice(), ["profile", "statusline", ..]) {
         return true;
     }
 
@@ -800,6 +846,26 @@ steps:
         assert_eq!(calls.get(), 0);
     }
 
+    /// Issue #1525: `amplihack agent-binary --shell` runs inside `$(...)` to
+    /// hand the agent binary to a detached launch. An install there would be
+    /// a side effect of reading a value, with its banner on the caller's
+    /// terminal.
+    #[test]
+    fn agent_binary_subcommand_skips() {
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&["amplihack", "agent-binary", "--shell"]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
+    }
+
     #[test]
     fn update_subcommand_skips() {
         let tmp = TempDir::new().unwrap();
@@ -896,6 +962,32 @@ steps:
                 "`orch helper {sub}` is a pipe primitive and must not self-heal (would pollute stdout)"
             );
         }
+    }
+
+    #[test]
+    fn profile_statusline_skips_startup_self_heal() {
+        // Issue #1569: Claude Code runs the wrapper after every turn and
+        // shows its stdout as the status line.
+        let tmp = TempDir::new().unwrap();
+        let _g = EnvGuard::new(tmp.path(), None);
+        let calls = Cell::new(0u32);
+        let mut buf = Vec::new();
+        ensure_assets_match_binary_version_with(
+            &args(&[
+                "amplihack",
+                "profile",
+                "statusline",
+                "--root",
+                "/r",
+                "--owner",
+                "work",
+            ]),
+            &mut buf,
+            counting_installer(&calls, crate::VERSION),
+        )
+        .expect("ok");
+        assert_eq!(calls.get(), 0);
+        assert!(buf.is_empty(), "{}", String::from_utf8_lossy(&buf));
     }
 
     #[test]
