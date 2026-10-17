@@ -200,8 +200,12 @@ fn an_unlistable_profile_root_marks_none_and_warns() {
     let root = e.store.root().to_path_buf();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o000)).unwrap();
     let got = e.live();
+    // Readable but not searchable: the profiles can be listed but not used.
+    fs::set_permissions(&root, fs::Permissions::from_mode(0o600)).unwrap();
+    let got_600 = e.live();
     fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(got, (None, Some(LIST_WARNING)));
+    assert_eq!(got_600, (None, Some(LIST_WARNING)), "mode 600");
     assert_eq!(e.live(), (Some("a".into()), None), "listable again");
 }
 

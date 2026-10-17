@@ -144,14 +144,14 @@ mod unix {
             return (None, None);
         }
         // Only a ledger that is not there falls back to the account match.
-        // One inside a `.rotator` that cannot be searched is unreadable, not
-        // missing. A root that cannot be searched is left to the account
-        // match, which reports it as unlistable.
-        // Anything at `.rotator` other than a real directory (a symlink,
-        // even a dangling one) is an untrusted ledger.
+        // A root that cannot be searched cannot be used at all. Anything at
+        // `.rotator` other than a real directory (a symlink, even a dangling
+        // one) is an untrusted ledger, and so is one inside a `.rotator`
+        // that cannot be searched.
         let dir = store.root().join(LEDGER_DIR);
         match fs::symlink_metadata(&dir) {
-            Err(_) => return from_account(store, home),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return from_account(store, home),
+            Err(_) => return (None, Some(LIST_WARNING)),
             Ok(m) if !m.is_dir() => return (None, Some(LEDGER_WARNING)),
             Ok(_) => {}
         }

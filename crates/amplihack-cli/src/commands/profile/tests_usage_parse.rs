@@ -497,6 +497,13 @@ fn time_only_reset_in_the_current_minute_is_today() {
         Some(noon + DAY),
         "more than ten minutes ago: tomorrow"
     );
+    // At 00:04, a reset printed as 11:59pm was five minutes ago.
+    let midnight = NOW + 12 * HOUR;
+    assert_eq!(
+        resolve_reset("11:59pm (UTC)", midnight + 4 * 60),
+        Some(midnight - 60),
+        "yesterday, not tonight"
+    );
 }
 
 #[test]

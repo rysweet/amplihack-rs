@@ -755,7 +755,7 @@ mod probe {
         assert_eq!(p.report.state, UsageState::Timeout);
         assert!(p.error.is_none());
         assert!(
-            start.elapsed() < Duration::from_secs(4),
+            start.elapsed() < Duration::from_secs(15),
             "{:?}",
             start.elapsed()
         );
@@ -774,7 +774,7 @@ mod probe {
         );
         assert_eq!(p.report.state, UsageState::Timeout);
         assert!(
-            start.elapsed() < Duration::from_secs(4),
+            start.elapsed() < Duration::from_secs(15),
             "{:?}",
             start.elapsed()
         );

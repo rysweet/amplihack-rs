@@ -148,7 +148,7 @@ also turns it into a time (`resets_at`, Unix epoch seconds) when it can:
 |------|---------|---------|
 | Month, day, time, zone | `Oct 22, 2am (America/Los_Angeles)` | The year that puts the time between one day before now and 366 days after now: this year, then next year, then last year. |
 | Month, day, year, time, zone | `Jan 2, 2027, 9:30pm (UTC)` | That date. |
-| Time, zone | `4:50pm (America/Los_Angeles)` | Today in that zone, or tomorrow if that time passed more than 10 minutes ago. Claude prints whole minutes, so a reset due within the current minute can print as a time a few seconds ago. |
+| Time, zone | `4:50pm (America/Los_Angeles)` | The first time of day at or after 10 minutes ago in that zone: usually today, or tomorrow if that time has passed. Claude prints whole minutes, so a reset due within the current minute can print as a time a few seconds ago, just before midnight included. |
 
 Minutes are optional, `am`/`pm` may be in any case, and spacing is tolerant.
 The zone must be an IANA name; the host's own time zone is never used. If

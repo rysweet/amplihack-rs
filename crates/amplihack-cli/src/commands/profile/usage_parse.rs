@@ -187,8 +187,9 @@ fn parse_line(line: &str, now: i64) -> Option<(bool, UsageWindow)> {
 /// invalid date or any other form. A repeated time resolves to the earlier.
 ///
 /// Without a year, the year chosen puts the time in `[now − 1 day, now + 366
-/// days)`, trying this year, then next, then last. A time alone is today in
-/// that zone, or tomorrow if it passed more than [`TIME_ONLY_SLACK`] ago.
+/// days)`, trying this year, then next, then last. A time alone is the first
+/// such time in that zone (yesterday, today or tomorrow) no more than
+/// [`TIME_ONLY_SLACK`] ago.
 pub fn resolve_reset(text: &str, now: i64) -> Option<i64> {
     let caps = RESET.captures(text)?;
     let tz: Tz = caps[7].parse().ok()?;
@@ -209,11 +210,13 @@ pub fn resolve_reset(text: &str, now: i64) -> Option<i64> {
         .date_naive();
 
     let Some(month) = caps.get(1) else {
-        let at = instant(tz, today.and_time(time))?;
-        if at >= now.saturating_sub(TIME_ONLY_SLACK) {
-            return Some(at);
-        }
-        return instant(tz, today.succ_opt()?.and_time(time));
+        // Yesterday too, for a reset just before midnight read just after.
+        let earliest = now.saturating_sub(TIME_ONLY_SLACK);
+        return [today.pred_opt(), Some(today), today.succ_opt()]
+            .into_iter()
+            .flatten()
+            .filter_map(|d| instant(tz, d.and_time(time)))
+            .find(|at| *at >= earliest);
     };
     let month = month_number(month.as_str())?;
     let day: u32 = caps[2].parse().ok()?;
