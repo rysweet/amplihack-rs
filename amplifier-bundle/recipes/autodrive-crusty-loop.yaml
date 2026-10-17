@@ -62,9 +62,12 @@ steps:
       [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $STATE_HELPER; cwd=$(pwd)" >&2; exit 1; }
       . "$STATE_HELPER"
 
-      PR="${PR_NUMBER:-}"
+      # #1543: the operator's own pr_number outranks a guess from the launch checkout.
+      PR="${PR_NUMBER:-${AUTODRIVE_PR_INPUT:-}}"
       [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      [ -z "${AUTODRIVE_PR_INPUT:-}" ] || [ -n "$PR" ] \
+        || { echo "ERROR: pr_number '${AUTODRIVE_PR_INPUT}' is not a pull request number; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
       BRANCH="detached"
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'detached')"
@@ -101,7 +104,7 @@ steps:
           echo "ERROR: PR #${PR} head branch '${EXISTING_BRANCH:-<headRefName>}' has no single worktree (searched REPO_PATH=${REPO_PATH:-.} and git worktree list); refusing to enter the crusty loop (#1543)" >&2
           exit 1
         elif [ "$PRC" -ne 0 ]; then
-          echo "ERROR: PR #${PR} head lookup failed (autodrive_pr_head exit ${PRC}); refusing to enter the crusty loop (#1543)" >&2
+          echo "ERROR: PR #${PR} head resolution refused (autodrive_pr_head exit ${PRC}; reason on the line above); refusing to enter the crusty loop (#1543)" >&2
           exit 1
         fi
         REPO="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree | amplihack orch helper extract-field --field worktree --default '')"

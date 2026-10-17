@@ -5,13 +5,14 @@
 #
 #   autodrive_pr_head.sh --pr N [--branch B] [--repo R]
 #
-# The head comes from the platform (gh pr view headRefOid/headRefName). The
-# worktree is searched in this order, for the candidate branches B (when
-# given) and then headRefName:
+# The head comes from the platform (gh pr view headRefOid/headRefName). B,
+# when given, must equal headRefName: a different B would measure (and the
+# round would push from) a tree on the wrong branch, so the tool refuses. The
+# worktree for headRefName is searched in this order:
 #
-#   1. R itself, when the branch checked out there is a candidate;
+#   1. R itself, when headRefName is the branch checked out there;
 #   2. the `git worktree list --porcelain` entries of R's repository whose
-#      branch is refs/heads/<candidate> — exactly one, or the run refuses.
+#      branch is refs/heads/<headRefName> — exactly one, or the run refuses.
 #
 # READ-ONLY. This tool never creates, fetches into, checks out in, commits in
 # or pushes from anything. It measures. A worktree whose HEAD differs from the
@@ -28,6 +29,7 @@
 #   Exit 2 — usage error.
 #   Exit 3 — no-pr-worktree or ambiguous-pr-worktree.
 #   Exit 4 — pr-lookup-failed: gh pr view failed or returned an unusable head.
+#   Exit 5 — branch-mismatch: --branch is not the PR's headRefName.
 
 set -uo pipefail
 unset GIT_DIR GIT_WORK_TREE
@@ -78,9 +80,9 @@ IFS=$'\t' read -r HEAD_SHA HEAD_REF _STATE <<<"$LINE"
   || die 4 pr-lookup-failed "PR #${PR} headRefOid is not a 40- or 64-hex commit id"
 [ -n "${HEAD_REF:-}" ] || die 4 pr-lookup-failed "PR #${PR} has no headRefName"
 
-CANDIDATES=()
-[ -n "$BRANCH" ] && CANDIDATES+=("$BRANCH")
-[ "$HEAD_REF" != "$BRANCH" ] && CANDIDATES+=("$HEAD_REF")
+if [ -n "$BRANCH" ] && [ "$BRANCH" != "$HEAD_REF" ]; then
+  die 5 branch-mismatch "--branch '${BRANCH}' is not PR #${PR}'s head branch '${HEAD_REF}'; pass existing_branch=${HEAD_REF} or leave it empty"
+fi
 
 # same_repo <dir>: the directory belongs to the repository R belongs to.
 same_repo() {
@@ -92,44 +94,38 @@ same_repo() {
 # --- 1. R itself --------------------------------------------------------------
 WT=""
 CURRENT="$(git -C "$ROOT" branch --show-current 2>/dev/null)"
-for b in "${CANDIDATES[@]}"; do
-  if [ -n "$CURRENT" ] && [ "$CURRENT" = "$b" ]; then WT="$ROOT"; break; fi
-done
+[ -n "$CURRENT" ] && [ "$CURRENT" = "$HEAD_REF" ] && WT="$ROOT"
 
 # --- 2. the repository's worktree list ---------------------------------------
 if [ -z "$WT" ]; then
   LIST="$(git -C "$ROOT" worktree list --porcelain 2>/dev/null)" \
     || die 3 no-pr-worktree "cannot list the worktrees of '${ROOT}'"
-  for b in "${CANDIDATES[@]}"; do
-    MATCHES=()
-    path=""; ref=""; skip="false"
-    while IFS= read -r line; do
-      case "$line" in
-        "worktree "*) path="${line#worktree }" ;;
-        "branch "*) ref="${line#branch }" ;;
-        bare|prunable|"prunable "*) skip="true" ;;
-        "")
-          if [ -n "$path" ] && [ "$skip" = "false" ] && [ "$ref" = "refs/heads/$b" ] \
-             && [ "${path:0:1}" = "/" ] && [ -d "$path" ] && same_repo "$path"; then
-            MATCHES+=("$(cd "$path" && pwd -P)")
-          fi
-          path=""; ref=""; skip="false"
-          ;;
-      esac
-    done <<<"$LIST"$'\n'
-    if [ "${#MATCHES[@]}" -gt 1 ]; then
-      printf 'autodrive_pr_head: ambiguous-pr-worktree: PR #%s branch %s is checked out in %s worktrees; check another branch out in all but one, or remove the extras\n' \
-        "$PR" "'${b}'" "${#MATCHES[@]}" >&2
-      printf '  %s\n' "${MATCHES[@]}" >&2
-      exit 3
-    fi
-    if [ "${#MATCHES[@]}" -eq 1 ]; then WT="${MATCHES[0]}"; break; fi
-  done
+  MATCHES=()
+  path=""; ref=""; skip="false"
+  while IFS= read -r line; do
+    case "$line" in
+      "worktree "*) path="${line#worktree }" ;;
+      "branch "*) ref="${line#branch }" ;;
+      bare|prunable|"prunable "*) skip="true" ;;
+      "")
+        if [ -n "$path" ] && [ "$skip" = "false" ] && [ "$ref" = "refs/heads/$HEAD_REF" ] \
+           && [ "${path:0:1}" = "/" ] && [ -d "$path" ] && same_repo "$path"; then
+          MATCHES+=("$(cd "$path" && pwd -P)")
+        fi
+        path=""; ref=""; skip="false"
+        ;;
+    esac
+  done <<<"$LIST"$'\n'
+  if [ "${#MATCHES[@]}" -gt 1 ]; then
+    printf 'autodrive_pr_head: ambiguous-pr-worktree: PR #%s branch %s is checked out in %s worktrees; check another branch out in all but one, or remove the extras\n' \
+      "$PR" "'${HEAD_REF}'" "${#MATCHES[@]}" >&2
+    printf '  %s\n' "${MATCHES[@]}" >&2
+    exit 3
+  fi
+  [ "${#MATCHES[@]}" -eq 1 ] && WT="${MATCHES[0]}"
 fi
 
-if [ -z "$WT" ]; then
-  die 3 no-pr-worktree "PR #${PR} head branch $(printf "'%s' " "${CANDIDATES[@]}")has no worktree (searched --repo '${ROOT}' and git worktree list)"
-fi
+[ -n "$WT" ] || die 3 no-pr-worktree "PR #${PR} head branch '${HEAD_REF}' has no worktree (searched --repo '${ROOT}' and git worktree list)"
 
 WT_HEAD="$(git -C "$WT" rev-parse HEAD 2>/dev/null)" \
   || die 3 no-pr-worktree "cannot read HEAD in worktree '${WT}'"

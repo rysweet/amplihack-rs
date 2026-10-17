@@ -318,11 +318,57 @@ for loop in merge crusty; do
   check_eq "T1b-$loop" "$loop preflight repo via headRefName" "$WT" "$(real "$(field "$OUT" repo)")"
 done
 
-echo "== T7: an option-looking existing_branch is matched literally =="
+echo "== T7: an option-looking existing_branch is compared literally and refused =="
 preflight merge EXISTING_BRANCH=--force
-check_eq T7-rc "an unknown --force branch falls through to headRefName" 0 "$RC"
-check_eq T7-repo "repo is still the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
+check_eq T7-rc "a --force branch that is not headRefName refuses" 1 "$RC"
+check_eq T7-out "nothing on stdout for step-02 to act on" "" "$OUT"
+case "$ERR" in
+  *"branch-mismatch: --branch '--force'"*) pass T7-msg "stderr names the literal branch" ;;
+  *) fail T7-msg "expected a branch-mismatch line naming '--force'; got: $ERR" ;;
+esac
 check_eq T7-ro "no worktree was created or changed" "$BEFORE" "$(snap)"
+
+echo "== T16: existing_branch differs from headRefName — refuse, never pick its worktree =="
+git -C "$MAIN" branch feat/x-2 "$SHA_A"
+git -C "$MAIN" worktree add -q "$WORK/t1/wt-x2" feat/x-2 || harness_error "worktree add feat/x-2 failed"
+(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x-2 --repo "$MAIN" >"$WORK/tool.out" 2>"$WORK/tool.err"); TRC=$?
+check_eq T16-rc "a branch other than headRefName exits 5" 5 "$TRC"
+check_eq T16-out "stdout is empty on refusal" "" "$(cat "$WORK/tool.out")"
+grep -q "branch-mismatch: --branch 'feat/x-2' is not PR #7's head branch 'feat/x'" "$WORK/tool.err" \
+  && pass T16-msg "stderr names both branches" \
+  || fail T16-msg "unexpected stderr: $(cat "$WORK/tool.err")"
+for loop in merge crusty; do
+  preflight "$loop" EXISTING_BRANCH=feat/x-2
+  check_eq "T16-$loop-rc" "$loop preflight refuses" 1 "$RC"
+  case "$OUT" in *wt-x2*) fail "T16-$loop-out" "the feat/x-2 worktree reached stdout: $OUT" ;;
+    *) pass "T16-$loop-out" "the wrong-branch worktree is never handed to the loop" ;; esac
+done
+git -C "$MAIN" worktree remove --force "$WORK/t1/wt-x2" && git -C "$MAIN" branch -D -q feat/x-2 \
+  || harness_error "cannot remove the feat/x-2 fixture"
+BEFORE="$(snap)"
+
+echo "== T17: PR_NUMBER empty — the operator's pr_number is used, not a guess =="
+: > "$GH_LOG.t17"; GH_LOG_SAVE="$GH_LOG"; export GH_LOG="$GH_LOG.t17"
+for loop in merge crusty; do
+  preflight "$loop" PR_NUMBER=
+  check_eq "T17-$loop-rc" "$loop preflight succeeds" 0 "$RC"
+  check_eq "T17-$loop-pr" "$loop preflight pr is AUTODRIVE_PR_INPUT" 7 "$(field "$OUT" pr)"
+  check_eq "T17-$loop-repo" "$loop preflight repo is the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
+done
+if grep -q -- '--json number' "$GH_LOG"; then
+  fail T17-gh "the launch checkout's PR was guessed although pr_number was supplied"
+else
+  pass T17-gh "no gh pr view guess from the launch checkout"
+fi
+cat "$GH_LOG" >> "$GH_LOG_SAVE"; export GH_LOG="$GH_LOG_SAVE"
+
+echo "== T18: a non-numeric pr_number with PR_NUMBER empty — refuse with the input named =="
+for loop in merge crusty; do
+  preflight "$loop" PR_NUMBER= AUTODRIVE_PR_INPUT=abc
+  check_eq "T18-$loop-rc" "$loop preflight refuses" 1 "$RC"
+  case "$ERR" in *"pr_number 'abc' is not a pull request number"*) pass "T18-$loop-msg" "stderr names the bad input" ;;
+    *) fail "T18-$loop-msg" "unexpected stderr: $ERR" ;; esac
+done
 
 echo "== T3: pr_number not supplied — unchanged behaviour, no head lookup =="
 : > "$GH_LOG.t3"; GH_LOG_SAVE="$GH_LOG"; export GH_LOG="$GH_LOG.t3"

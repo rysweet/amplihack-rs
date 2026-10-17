@@ -72,6 +72,15 @@ Resolution runs in step-01 (the preflight) of `autodrive-crusty-loop.yaml` and
   `autodrive_pr_input`, together with `existing_branch`;
 - the phase is going to run (`should_run` would be `true`).
 
+The PR number used is the build phase's `PR_NUMBER`, or `pr_number` itself
+when the build phase reported none. It is never guessed from the launch
+checkout while `pr_number` was supplied. A `pr_number` that is not a positive
+number, with no `PR_NUMBER` to override it, is refused before resolution:
+
+```
+ERROR: pr_number 'abc' is not a pull request number; refusing to enter the crusty loop (#1543)
+```
+
 When `pr_number` was not supplied, nothing changes. The loops use
 `${REPO_PATH:-.}`, call no `gh` head lookup, and never refuse on these grounds.
 
@@ -100,21 +109,24 @@ placeholders:
 | Argument | Required | Meaning |
 | --- | --- | --- |
 | `--pr N` | yes | PR number. Must match `^[1-9][0-9]*$`. |
-| `--branch B` | no | The run's `existing_branch`. Tried before the PR's `headRefName`. |
+| `--branch B` | no | The run's `existing_branch`. When given it must equal the PR's `headRefName`, or the tool refuses with exit `5`. |
 | `--repo R` | no | Repository to search. Defaults to `.`. |
 
 The tool reads `headRefOid`, `headRefName` and `state` with one
-`gh pr view N --json` call, then picks the worktree in this order:
+`gh pr view N --json` call, then checks and picks the worktree in this order:
 
-1. `R` itself, if `git branch --show-current` there equals `B` or
-   `headRefName`. This covers a main checkout that has the PR branch checked out.
-2. The `git -C R worktree list --porcelain` entry whose branch is
-   `refs/heads/B`, then `refs/heads/<headRefName>`. Prunable and bare entries
-   are skipped, and so is any entry whose git common dir is not `R`'s.
-3. Otherwise, refuse.
+1. If `B` is given and is not `headRefName`, refuse (`branch-mismatch`). A
+   worktree on another branch would be measured, and the round would push
+   from it.
+2. `R` itself, if `git branch --show-current` there equals `headRefName`.
+   This covers a main checkout that has the PR branch checked out.
+3. The `git -C R worktree list --porcelain` entry whose branch is
+   `refs/heads/<headRefName>`. Prunable and bare entries are skipped, and so
+   is any entry whose git common dir is not `R`'s.
+4. Otherwise, refuse.
 
 Branch names are compared as literal strings. A branch called `--force` is
-matched, not passed to `git` as an option.
+compared, not passed to `git` as an option.
 
 On success the tool prints exactly one JSON line on stdout and exits `0`.
 On failure, stdout is **empty**. The tool writes one line to stderr in the form
@@ -138,6 +150,7 @@ preflight to disagree about.
 | `3` | `no-pr-worktree` (on stderr) | No worktree has the PR branch checked out. |
 | `3` | `ambiguous-pr-worktree` (on stderr) | More than one worktree matches. Each matching path follows on its own stderr line. |
 | `4` | `pr-lookup-failed` (on stderr) | `gh pr view` failed, or returned an empty `headRefName` or a `headRefOid` that is not 40 or 64 hex characters. A `gh` failure is summarised as `gh pr view failed (rc=N)`. `gh`'s own output is never echoed, so auth errors and tokens do not reach the log. |
+| `5` | `branch-mismatch` (on stderr) | `--branch` is not the PR's `headRefName`. |
 
 ### Refusal
 
@@ -178,6 +191,17 @@ ERROR: PR #1543 head branch 'feat/x' has no single worktree (searched REPO_PATH=
 To recover, check another branch out in all but one of the listed worktrees,
 or remove the extras with `git worktree remove <path>`, then re-run.
 
+**Branch mismatch** (resolver exit `5`, `branch-mismatch`). `existing_branch`
+names a branch other than the PR's head branch:
+
+```
+autodrive_pr_head: branch-mismatch: --branch 'feat/x-2' is not PR #1543's head branch 'feat/x'; pass existing_branch=feat/x or leave it empty
+ERROR: PR #1543 head resolution refused (autodrive_pr_head exit 5; reason on the line above); refusing to enter the crusty loop (#1543)
+```
+
+To recover, re-run with `existing_branch` set to the PR's head branch, or
+without it.
+
 **Any other resolver failure** (fail closed, exits non-zero with the reason):
 
 - the resolver is missing from the tools directory the state helper was found in;
@@ -189,7 +213,7 @@ or remove the extras with `git worktree remove <path>`, then re-run.
 
 ```
 autodrive_pr_head: pr-lookup-failed: gh pr view failed (rc=1) for PR #1543
-ERROR: PR #1543 head lookup failed (autodrive_pr_head exit 4); refusing to enter the crusty loop (#1543)
+ERROR: PR #1543 head resolution refused (autodrive_pr_head exit 4; reason on the line above); refusing to enter the crusty loop (#1543)
 ```
 
 ### A worktree behind the PR head
