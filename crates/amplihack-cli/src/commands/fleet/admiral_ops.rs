@@ -1,5 +1,30 @@
 use super::*;
 
+/// Issue #1570: stage 1 of `start_agent`. The remote shell saves its stdin
+/// (the prompt) in a private temporary file and prints the file's path.
+/// `'%s\n'` must stay single-quoted, or the path is printed ending in `n`.
+const START_AGENT_STAGE1: &str = r#"umask 077; f=$(mktemp); cat > "$f"; printf '%s\n' "$f""#;
+
+/// The path printed by stage 1, if its last non-empty line is one absolute
+/// path made only of `[A-Za-z0-9._/-]` and free of `..`.
+fn validated_remote_prompt_path(printed: &str) -> Option<&str> {
+    // The remote shell may print banner text (a `.bashrc` echo, a message of
+    // the day) before the path, and stage 1 always prints the path last. The
+    // character check below, not the line count, is what keeps the path
+    // safe to place in the stage 2 command.
+    let path = printed
+        .lines()
+        .map(|line| line.trim_end_matches('\r'))
+        .rfind(|line| !line.is_empty())?;
+    let valid = path.len() > 1
+        && path.starts_with('/')
+        && !path.contains("..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'/' | b'-'));
+    valid.then_some(path)
+}
+
 impl FleetAdmiral {
     pub(super) fn execute_action(&mut self, action: &DirectorAction) -> Result<String> {
         match action.action_type {
@@ -34,36 +59,77 @@ impl FleetAdmiral {
                 task.agent_command
             ));
         }
-        if !matches!(task.agent_mode.as_str(), "auto" | "ultrathink") {
+        // Issue #1570: only `auto` has a prompt-file form.
+        if task.agent_mode != "auto" {
             return Ok(format!("ERROR: Invalid agent mode: {:?}", task.agent_mode));
         }
         if task.max_turns == 0 || task.max_turns > 1000 {
             return Ok(format!("ERROR: Invalid max_turns: {:?}", task.max_turns));
         }
 
-        let setup_cmd = format!(
-            "tmux new-session -d -s {} && tmux send-keys -t {} 'amplihack {} --{} --max-turns {} -- -p {}' C-m",
-            shell_single_quote(session_name),
-            shell_single_quote(session_name),
-            shell_single_quote(&task.agent_command),
-            shell_single_quote(&task.agent_mode),
-            shell_single_quote(&task.max_turns.to_string()),
-            shell_single_quote(&task.prompt),
-        );
+        // Stage 1: the prompt travels on stdin into a private remote file.
+        let mut cmd = Command::new(&self.azlin_path);
+        cmd.args(["connect", vm_name, "--no-tmux", "--", START_AGENT_STAGE1]);
+        let output = run_output_with_timeout_stdin(
+            cmd,
+            SUBPROCESS_TIMEOUT,
+            Some(task.prompt.as_bytes().to_vec()),
+        )?;
+        if !output.status.success() {
+            return Ok(format!(
+                "ERROR: Failed to send prompt to {vm_name}: {}",
+                sanitize_external_error_detail(String::from_utf8_lossy(&output.stderr).trim(), 200)
+            ));
+        }
+        let printed = String::from_utf8_lossy(&output.stdout);
+        let Some(remote_path) = validated_remote_prompt_path(&printed) else {
+            return Ok(format!(
+                "ERROR: Invalid remote prompt file path returned by {vm_name}"
+            ));
+        };
 
+        // Stage 2: only validated values reach the command; the prompt never does.
+        // Every value is free of quotes, `$`, backquotes and `\`, so the
+        // single quotes inside the double-quoted send-keys argument are safe.
+        let session = shell_single_quote(session_name);
+        let path = shell_single_quote(remote_path);
+        let setup_cmd = format!(
+            "tmux new-session -d -s {session} && tmux send-keys -t {session} \
+             \"amplihack {} --auto --max-turns {} --prompt-file {path}; rm -f -- {path}\" C-m",
+            shell_single_quote(&task.agent_command),
+            shell_single_quote(&task.max_turns.to_string()),
+        );
         let mut cmd = Command::new(&self.azlin_path);
         cmd.args(["connect", vm_name, "--no-tmux", "--", &setup_cmd]);
-        let output = run_output_with_timeout(cmd, SUBPROCESS_TIMEOUT)?;
-        if output.status.success() {
+        let stage2 = run_output_with_timeout_stdin(cmd, SUBPROCESS_TIMEOUT, None);
+        if let Ok(output) = &stage2
+            && output.status.success()
+        {
             self.task_queue
                 .mark_task_running(&task.id, vm_name, session_name)?;
             return Ok(format!("Agent started: {session_name} on {vm_name}"));
         }
 
-        Ok(format!(
-            "ERROR: Failed to start agent: {}",
-            sanitize_external_error_detail(String::from_utf8_lossy(&output.stderr).trim(), 200,)
-        ))
+        self.remove_remote_prompt_file(vm_name, remote_path);
+        match stage2 {
+            Ok(output) => Ok(format!(
+                "ERROR: Failed to start agent: {}",
+                sanitize_external_error_detail(String::from_utf8_lossy(&output.stderr).trim(), 200,)
+            )),
+            Err(error) => Err(error),
+        }
+    }
+
+    /// One clean-up call after a failed stage 2; a failure is only logged.
+    fn remove_remote_prompt_file(&self, vm_name: &str, remote_path: &str) {
+        let rm_cmd = format!("rm -f -- {}", shell_single_quote(remote_path));
+        let mut cmd = Command::new(&self.azlin_path);
+        cmd.args(["connect", vm_name, "--no-tmux", "--", &rm_cmd]);
+        let removed = run_output_with_timeout_stdin(cmd, SUBPROCESS_TIMEOUT, None)
+            .is_ok_and(|output| output.status.success());
+        if !removed {
+            warn!("Failed to remove remote prompt file {remote_path}");
+        }
     }
 
     pub(super) fn mark_complete(&mut self, action: &DirectorAction) -> Result<String> {

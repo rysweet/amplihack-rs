@@ -148,6 +148,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     claude_args,
                     checkout_repo,
                     working_dir,
+                    None,
                 );
             }
             launch::run_launch_profiled(
@@ -180,6 +181,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             max_turns,
             ui,
             profile,
+            prompt_file,
             claude_args,
         } => {
             if let Some(instruction) = append {
@@ -200,6 +202,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     claude_args,
                     checkout_repo,
                     working_dir,
+                    prompt_file,
                 );
             }
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
@@ -232,6 +235,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -247,6 +251,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             // Issue #621: resolve subprocess-safe context once at dispatch
@@ -306,6 +311,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -321,6 +327,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             launch::run_launch(
@@ -350,6 +357,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -365,6 +373,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             launch::run_launch(
@@ -473,6 +482,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     max_turns,
                     ui,
                     args,
+                    None,
                     None,
                     None,
                 );
@@ -650,6 +660,8 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
         RecipeCommands::Run {
             recipe_path,
             context,
+            context_file,
+            context_from_file,
             dry_run,
             verbose,
             progress,
@@ -662,6 +674,10 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                     "--progress is no longer supported; recipe progress is streamed to stderr by default"
                 );
             }
+            // Issue #1570: file sources are merged under `-c` here, so
+            // `run_recipe` keeps taking `KEY=VALUE` pairs.
+            let context =
+                recipe::resolve_context_args(context_file.as_deref(), &context_from_file, context)?;
             recipe::run_recipe(
                 &recipe_path,
                 &context,

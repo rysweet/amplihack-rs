@@ -26,7 +26,7 @@ fn keep(_inherited: &str) -> Option<String> {
     None
 }
 
-fn workstream(dir: &Path) -> Workstream {
+pub(super) fn workstream(dir: &Path) -> Workstream {
     Workstream::new(
         1567,
         "fix/1567".to_string(),
@@ -40,7 +40,11 @@ fn workstream(dir: &Path) -> Workstream {
 
 /// Runs `f` with both profile variables set to `values` (or removed),
 /// restoring the previous values afterwards.
-fn with_profile_env<T>(profile: Option<&str>, root: Option<&str>, f: impl FnOnce() -> T) -> T {
+pub(super) fn with_profile_env<T>(
+    profile: Option<&str>,
+    root: Option<&str>,
+    f: impl FnOnce() -> T,
+) -> T {
     crate::test_support::with_env(
         &[
             (PROFILE_VAR, profile.map(std::ffi::OsStr::new)),

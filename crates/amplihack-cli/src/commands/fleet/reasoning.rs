@@ -165,15 +165,15 @@ impl SessionContext {
         }
         if !self.transcript_summary.is_empty() {
             parts.push(format!(
-                "\nSession transcript (early + recent messages):\n{}",
-                self.transcript_summary
+                "\nSession transcript (most recent messages, bounded):\n{}",
+                bounded_transcript(&self.transcript_summary)
             ));
         }
-        parts.push("\nCurrent terminal output (full scrollback):".to_string());
+        parts.push("\nCurrent terminal output, recent scrollback (bounded):".to_string());
         parts.push(if self.tmux_capture.is_empty() {
             "(empty)".to_string()
         } else {
-            self.tmux_capture.clone()
+            bounded_scrollback(&self.tmux_capture)
         });
         if !self.health_summary.is_empty() {
             parts.push(format!("\nVM health: {}", self.health_summary));
@@ -258,7 +258,7 @@ impl NativeReasonerBackend {
                 bail!("no native reasoner backend available")
             }
             NativeReasonerBackend::Claude(path, decision) => {
-                let mut cmd = reasoner_command(path, prompt, &decision())?;
+                let mut cmd = reasoner_command(path, &decision())?;
                 // This starts a Claude Code session, so the child is told so
                 // the way every launcher tells its child: tagged
                 // `session:claude`, with every other CLI's markers removed. A
@@ -277,7 +277,12 @@ impl NativeReasonerBackend {
                     env_builder = env_builder.with_project_graph_db(&current_dir)?;
                 }
                 env_builder.apply_to_command(&mut cmd);
-                let output = run_output_with_timeout(cmd, SCOUT_REASONER_TIMEOUT)?;
+                // Issue #1570: the prompt goes to `claude -p` on stdin, never argv.
+                let output = run_output_with_timeout_stdin(
+                    cmd,
+                    SCOUT_REASONER_TIMEOUT,
+                    Some(prompt.as_bytes().to_vec()),
+                )?;
                 if !output.status.success() {
                     bail!(
                         "reasoner command failed: {}",
@@ -294,19 +299,14 @@ impl NativeReasonerBackend {
 /// (issue #1482): `IS_SANDBOX=1` on the child when amplihack enables it, or an
 /// error when Claude Code would refuse the flag. The notice is shown once by
 /// the caller through [`NativeReasonerBackend::root_sandbox_notice`], not per
-/// call.
+/// call. The prompt is not part of the argv: [`NativeReasonerBackend::complete`]
+/// writes it to the child's stdin (issue #1570).
 pub(super) fn reasoner_command(
     path: &Path,
-    prompt: &str,
     decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<Command> {
     let mut cmd = Command::new(path);
-    cmd.stdin(Stdio::null());
-    cmd.args([
-        amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG,
-        "-p",
-        prompt,
-    ]);
+    cmd.args([amplihack_utils::root_sandbox::SKIP_PERMISSIONS_FLAG, "-p"]);
     decision.apply_quietly(&mut cmd)?;
     Ok(cmd)
 }

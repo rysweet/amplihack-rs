@@ -113,11 +113,15 @@ pub fn sync_agents_md(project_path: &Path) -> Result<()> {
 }
 
 /// Build the command to launch Amplifier.
+///
+/// A prompt over 4096 bytes is passed as a file reference (issue #1570), so
+/// the returned [`DeliveredCommand`] owns the prompt file: keep it alive
+/// until the child has been waited on.
 pub fn build_amplifier_command(
     prompt: &str,
     project_path: &Path,
     extra_args: &[String],
-) -> Command {
+) -> DeliveredCommand {
     build_tool_command_with_prompt_delivery(
         AgentBinary::Amplifier,
         project_path,
@@ -126,7 +130,6 @@ pub fn build_amplifier_command(
         PromptDelivery::Auto,
     )
     .expect("auto amplifier prompt delivery should not fail")
-    .command
 }
 
 pub fn build_amplifier_command_with_prompt_delivery(
@@ -138,12 +141,15 @@ pub fn build_amplifier_command_with_prompt_delivery(
 }
 
 /// Full launch: ensure installed, register bundle, sync docs, build command.
+///
+/// The returned [`DeliveredCommand`] may own a prompt file; keep it alive
+/// until the child has been waited on.
 pub fn ensure_and_build(
     prompt: &str,
     project_path: &Path,
     extra_args: &[String],
     auto_install: bool,
-) -> Result<Command> {
+) -> Result<DeliveredCommand> {
     let info = check_amplifier();
     if !info.installed {
         if auto_install {
@@ -154,11 +160,8 @@ pub fn ensure_and_build(
     }
     ensure_bundle_registered(project_path)?;
     sync_agents_md(project_path)?;
-    Ok(
-        build_amplifier_command_with_prompt_delivery(prompt, project_path, extra_args)
-            .context("failed to build Amplifier command with prompt delivery")?
-            .command,
-    )
+    build_amplifier_command_with_prompt_delivery(prompt, project_path, extra_args)
+        .context("failed to build Amplifier command with prompt delivery")
 }
 
 fn which_binary(name: &str) -> Option<PathBuf> {
@@ -188,7 +191,7 @@ mod tests {
 
     #[test]
     fn build_amplifier_command_sets_env() {
-        let cmd = build_amplifier_command("test", Path::new("/tmp"), &[]);
+        let cmd = build_amplifier_command("test", Path::new("/tmp"), &[]).command;
         let envs: Vec<_> = cmd.get_envs().collect();
         assert!(envs.iter().any(|(k, v)| *k == "AMPLIHACK_AGENT_BINARY"
             && v == &Some(std::ffi::OsStr::new("amplifier"))));
@@ -196,7 +199,7 @@ mod tests {
 
     #[test]
     fn build_amplifier_command_includes_run_subcommand() {
-        let cmd = build_amplifier_command("hello", Path::new("/tmp"), &[]);
+        let cmd = build_amplifier_command("hello", Path::new("/tmp"), &[]).command;
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args[0], "run");
     }

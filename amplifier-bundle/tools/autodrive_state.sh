@@ -330,6 +330,38 @@ autodrive_resolved_concerns() {
   return 0
 }
 
+# --- task description (issue #1570) ----------------------------------------
+
+# autodrive_use_task_file <task-file-in> <copy>
+#
+# autodrive_loop.sh's task: the caller writes it to a file with
+# write_context_value and names it with --task-file. It is never read from the
+# environment, because the runner omits the uppercase TASK_DESCRIPTION alias
+# for exactly the large values this exists for. A missing or empty task is an
+# error (return 2), never an empty task. The task is copied to <copy> (0600,
+# temporary file then `mv`); every round names it with --context-from-file, so
+# the task never becomes an argv element. Runs in the loop's own shell: it sets
+# TASK_FILE, appends to ROUND_CTX and sets the EXIT trap that removes the copy.
+# Nothing resumes from the copy (a rerun gets --task-file again). <copy> is
+# named after the loop, because the merge-ready loop's before-round step runs a
+# crusty loop on the same state dir and each loop removes only its own copy.
+autodrive_use_task_file() {
+  local in="${1:-}" tmp
+  TASK_FILE="${2:-}"
+  if [ ! -f "$in" ] || [ ! -s "$in" ]; then
+    echo "ERROR: auto-drive loop: --task-file '${in}' is missing or empty; refusing to run without a task" >&2
+    return 2
+  fi
+  tmp="$(umask 077; mktemp "$(dirname -- "$TASK_FILE")/.$(basename -- "$TASK_FILE").XXXXXX")" || return 2
+  if ! { cat -- "$in" > "$tmp" && mv -f -- "$tmp" "$TASK_FILE"; }; then
+    rm -f -- "$tmp"
+    echo "ERROR: auto-drive loop: cannot write ${TASK_FILE}" >&2
+    return 2
+  fi
+  trap 'rm -f -- "$TASK_FILE"' EXIT
+  ROUND_CTX+=("--context-from-file" "task_description=${TASK_FILE}")
+}
+
 # --- platform truth --------------------------------------------------------
 
 # autodrive_pr_state <pr> -> MERGED | OPEN | CLOSED | UNKNOWN

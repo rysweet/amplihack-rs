@@ -9,10 +9,12 @@
 #
 # and autodrive_loop.sh calls it, before every merge round, as
 #
-#   bash autodrive_crusty_rereview.sh --repo <repo> --state-dir <dir> -c <key=value>...
+#   bash autodrive_crusty_rereview.sh --repo <repo> --state-dir <dir> \
+#     -c <key=value>... --context-from-file task_description=<file>
 #
-# with the context the merge round gets. Only pr_number, pr_url and
-# task_description are read from it.
+# with the context the merge round gets. Only pr_number and pr_url are read
+# from the -c values. The task arrives as a file (issue #1570) and is handed to
+# the crusty loop with --task-file, so it never becomes an argv element.
 #
 # WHY HERE, AND NOT INSIDE THE MERGE ROUND. Every `amplihack recipe run` starts
 # a runner one session level deeper, and every step of that runner, bash or
@@ -59,7 +61,7 @@
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
-REPO=""; DIR=""; PR=""; PR_URL_V=""; TASK=""
+REPO=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
@@ -68,7 +70,11 @@ while [ $# -gt 0 ]; do
       case "${2:-}" in
         pr_number=*) PR="${2#*=}" ;;
         pr_url=*) PR_URL_V="${2#*=}" ;;
-        task_description=*) TASK="${2#*=}" ;;
+      esac
+      shift 2 ;;
+    --context-from-file)
+      case "${2:-}" in
+        task_description=*) TASK_FILE="${2#*=}" ;;
       esac
       shift 2 ;;
     *) echo "ERROR: autodrive_crusty_rereview.sh: unknown argument '$1'" >&2; exit 2 ;;
@@ -106,6 +112,10 @@ case "$DECISION" in
 esac
 
 # 2. The crusty loop, in this shell, on the same state dir.
+if [ -z "$TASK_FILE" ] || [ ! -s "$TASK_FILE" ]; then
+  echo "ERROR: autodrive_crusty_rereview.sh: no task_description file (--context-from-file task_description=<file>); the crusty loop cannot run without a task" >&2
+  result crusty-rereview-unavailable "$RANGE" "" 1
+fi
 echo "INFO: commits after the clean crusty round need review; running the crusty loop at session depth ${AMPLIHACK_SESSION_DEPTH:-0}, the merge-ready loop's own." >&2
 OUT="$(bash "$HERE/autodrive_loop.sh" \
   --loop-name "crusty" \
@@ -114,10 +124,10 @@ OUT="$(bash "$HERE/autodrive_loop.sh" \
   --verdict-field "crusty_verdict" \
   --repo "$REPO" \
   --state-dir "$DIR" \
+  --task-file "$TASK_FILE" \
   --context "repo_path=${REPO}" \
   --context "pr_number=${PR}" \
-  --context "pr_url=${PR_URL_V}" \
-  --context "task_description=${TASK}")"
+  --context "pr_url=${PR_URL_V}")"
 RC=$?
 LOOP_RESULT="$(printf '%s' "$OUT" | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-json --require-field loop_result \
   | "${AMPLIHACK_BIN:-amplihack}" orch helper extract-field --field loop_result --default '' | LC_ALL=C tr -cd 'A-Z_')"

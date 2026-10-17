@@ -166,7 +166,7 @@ mirrors context only up to that budget. Essential keys
 (`task_description`, `repo_path`, `existing_branch`, `should_*`) are always
 exported; other keys are filled smallest-first and any that do not fit are
 dropped from the *environment mirror only* — they are still delivered to the
-runner via the context file for `{{placeholder}}` substitution. This keeps the
+runner as `--set` arguments for `{{placeholder}}` substitution. This keeps the
 inherited environment safely under `ARG_MAX`, so late steps no longer fail.
 
 **If a late step still fails with `os error 7`:**
