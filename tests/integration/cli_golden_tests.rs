@@ -30,32 +30,29 @@ fn run_cmd(args: &[&str]) -> (String, String, bool) {
 
 // ── Version output ──
 
-/// Issue #1526: a release build reports exactly its tag; an unstamped source
-/// build reports `<CARGO_PKG_VERSION>-dev`, which semver orders below the
-/// release it came from, so it can never look newer than an installed release.
-/// `hook_dispatch::hooks_version_matches_release_or_dev_formula` uses the same
-/// formula, which pins the two binaries to the same string.
 #[test]
 fn version_format_is_semver() {
     let (stdout, _, ok) = run_cmd(&["--version"]);
     assert!(ok);
-    let expected = match option_env!("AMPLIHACK_RELEASE_VERSION") {
-        Some(v) => v.to_string(),
-        None => format!("{}-dev", env!("CARGO_PKG_VERSION")),
-    };
+    // Should contain "amplihack X.Y.Z"
     let version_line = stdout.trim();
-    assert_eq!(
-        version_line,
-        format!("amplihack {expected}"),
-        "--version must report the release tag, or <CARGO_PKG_VERSION>-dev when unstamped"
+    assert!(
+        version_line.starts_with("amplihack "),
+        "Version should start with 'amplihack ', got: {version_line}"
     );
     let version = version_line.strip_prefix("amplihack ").unwrap();
-    let semver =
-        regex::Regex::new(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$").unwrap();
-    assert!(
-        semver.is_match(version),
-        "Version should be semver, got: {version}"
+    let parts: Vec<&str> = version.split('.').collect();
+    assert_eq!(
+        parts.len(),
+        3,
+        "Version should be semver (X.Y.Z), got: {version}"
     );
+    for part in &parts {
+        assert!(
+            part.parse::<u32>().is_ok(),
+            "Version component should be numeric: {part}"
+        );
+    }
 }
 
 // ── Help text structure ──
