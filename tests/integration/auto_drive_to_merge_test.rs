@@ -28,9 +28,13 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The one brick budget for a recipe or tool: at most this many lines.
-/// Other modules import it rather than restating the limit, so the
-/// definitions cannot drift apart (PR #1586 review, round 6).
+/// The brick budget for a recipe or tool: at most this many lines.
+/// The #1528 recipe-length test in `artifact_guard_workflow_tests.rs`
+/// imports this rather than restating it (PR #1586 review, round 6).
+/// Other brick checks still carry their own copies of the limit
+/// (`issue_1337_loop_health_evaluator_test.rs`,
+/// `issue_684_host_aware_workflow_test.rs` and the `*_decomposition_test.rs`
+/// files), so changing it here does not change them.
 pub(crate) const BRICK_LINE_BUDGET: usize = 400;
 
 const AUTODRIVE_RECIPES: [&str; 7] = [
