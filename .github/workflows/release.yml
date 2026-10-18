@@ -167,9 +167,13 @@ jobs:
       #
       # cache-targets stays false: restoring the whole target/ dir exhausted
       # runner disk, which is exactly why sccache was adopted in ci.yml.
-      SCCACHE_GHA_ENABLED: "true"
+      #
+      # sccache keeps a local disk cache that actions/cache restores and saves
+      # once per job, as in ci.yml. Its per-object Actions cache backend
+      # (SCCACHE_GHA_ENABLED) got HTTP 429 from the repository-wide cache rate
+      # limit on most writes, and this workflow runs beside CI on every merge.
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -184,6 +188,30 @@ jobs:
       # red on main and blocked every PR until #1341.
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - name: Point sccache at its disk cache
+        shell: bash
+        run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
+      - name: Restore sccache disk cache
+        id: sccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-
+      # A rate-limited restore reports "Cache not found"; the limit resets
+      # within a minute (see ci.yml).
+      - name: Wait out a cache rate limit
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        run: sleep 60
+      - name: Restore sccache disk cache (retry)
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -218,6 +246,17 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }} \
             -p amplihack -p amplihack-hooks-bin \
             --features amplihack-hooks-bin/signal
+
+      - name: Stop sccache server
+        if: always()
+        shell: bash
+        run: sccache --show-stats; sccache --stop-server > /dev/null || true
+      - name: Save sccache disk cache
+        if: always()
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-${{ github.run_id }}-${{ github.run_attempt }}
 
       - name: Package
         # Use bash on every runner so the .sha256 line format stays
