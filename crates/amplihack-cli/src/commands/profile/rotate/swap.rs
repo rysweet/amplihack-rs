@@ -208,13 +208,13 @@ pub fn swap(
         // `~/.claude` already holds the incoming login, as after a finished
         // swap, so Claude may refresh it again. The journal stays at S1 and
         // the next recovery retries the move.
-        release_locks(store, home, &j);
+        drop_locks(store, rs, home, &mut j)?;
         return Err(ProfileError::RotateInconsistent(format!(
             "the outgoing login could not be moved from {to} to {from}: {}",
             describe(e)
         )));
     }
-    release_locks(store, home, &j);
+    drop_locks(store, rs, home, &mut j)?;
     step(rs, &mut j, Phase::S2)?;
     finish(store, rs, home, &j)?;
     Ok(from)
@@ -276,6 +276,25 @@ fn adopt(store: &ProfileStore, home: &Path) -> Result<ProfileName, ProfileError>
         write_private_atomic(&dir, CLAUDE_JSON, &bytes)?;
     }
     Ok(name)
+}
+
+/// Clears the lock inodes from the journal, saves it, then releases the
+/// locks. A lock is released at most once, so a later recovery cannot remove
+/// a lock Claude made since, even if it was given the same inode.
+pub(super) fn drop_locks(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    j: &mut RotateJournal,
+) -> Result<(), ProfileError> {
+    let held = j.clone();
+    if held.home_lock_ino.is_none() && held.to_lock_ino.is_none() {
+        return Ok(());
+    }
+    (j.home_lock_ino, j.to_lock_ino) = (None, None);
+    rs.save_journal(j)?;
+    release_locks(store, home, &held);
+    Ok(())
 }
 
 pub(super) fn release_locks(store: &ProfileStore, home: &Path, j: &RotateJournal) {

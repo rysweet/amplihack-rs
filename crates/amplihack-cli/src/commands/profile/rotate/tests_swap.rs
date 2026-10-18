@@ -408,7 +408,13 @@ fn a_failed_move_to_the_source_releases_the_locks() {
         "target lock released"
     );
     assert_eq!(ino_at(&e.live()), Some(e.t), "the incoming login is live");
-    assert!(e.rs.journal.exists(), "recovery finishes the swap later");
+    let j = e.rs.load_journal().unwrap().unwrap();
+    assert_eq!(j.phase, Phase::S1, "recovery finishes the swap later");
+    assert_eq!(
+        (j.home_lock_ino, j.to_lock_ino),
+        (None, None),
+        "released locks are forgotten, so recovery never releases them again"
+    );
 }
 
 // --- Adoption --------------------------------------------------------------

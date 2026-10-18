@@ -412,7 +412,8 @@ again with `amplihack profile login <name>`.
   after the exchange is harmless to recovery, which never expects a
   particular file in `~/.claude`.
 - **Stale refresh lock.** If the rotator is killed in the instant between
-  making Claude's refresh lock and recording it, the lock stays behind and
+  making Claude's refresh lock and recording it, or between removing the
+  record and removing the lock, the lock stays behind and
   `claude` may wait on it. With no `claude` and no rotator running, remove it
   with `rmdir ~/.claude/.oauth_refresh.lock`.
 - **Pid reuse.** Before `stop` signals the process it checks the process's

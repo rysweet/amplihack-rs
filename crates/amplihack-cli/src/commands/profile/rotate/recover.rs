@@ -2,7 +2,7 @@
 //! inodes are. Only renames; never deletes or opens a login.
 
 use super::ledger::{Phase, RotateJournal, RotateState};
-use super::swap::{LOGINS_MISPLACED, finish, ino_at, release_locks, show};
+use super::swap::{LOGINS_MISPLACED, drop_locks, finish, ino_at, show};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, move_login};
 use crate::commands::profile::name::ProfileName;
@@ -36,7 +36,7 @@ pub fn recover(
     rs: &RotateState,
     home: &Path,
 ) -> Result<RecoverOutcome, ProfileError> {
-    let Some(j) = rs.load_journal()? else {
+    let Some(mut j) = rs.load_journal()? else {
         return Ok(RecoverOutcome::None);
     };
     if j.phase == Phase::Inconsistent {
@@ -62,7 +62,7 @@ pub fn recover(
     let (t, s) = (to_dir.join(CREDS), from_dir.join(CREDS));
     let (at_t, at_s) = (ino_at(&t), ino_at(&s));
     if at_t == Some(j.target_ino) && at_s.is_none() {
-        release_locks(store, home, &j);
+        drop_locks(store, rs, home, &mut j)?;
         rs.delete_journal()?;
         return Ok(RecoverOutcome::RolledBack { from, to });
     }
@@ -77,7 +77,7 @@ pub fn recover(
     } else if !(at_s == Some(j.live_ino) && at_t.is_none()) {
         return freeze(rs, j, LOGINS_MISPLACED);
     }
-    release_locks(store, home, &j);
+    drop_locks(store, rs, home, &mut j)?;
     finish(store, rs, home, &j)?;
     Ok(RecoverOutcome::RolledForward { from, to })
 }
