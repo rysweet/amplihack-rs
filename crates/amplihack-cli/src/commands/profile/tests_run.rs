@@ -243,3 +243,38 @@ fn default_dir_command_removes_config_dir_and_keeps_the_pin() {
     assert!(envs.contains(&(OsStr::new("CLAUDE_CONFIG_DIR"), None)));
     assert!(envs.contains(&(OsStr::new(super::PROFILE_ENV), Some(OsStr::new("work")))));
 }
+
+// Issue #1592: probing the login in `~/.claude` when it belongs to no profile.
+
+#[test]
+fn home_command_removes_config_dir_and_pins_nothing() {
+    use super::run::build_home_command;
+    let (_d, _s, _name, bin) = setup();
+    let cmd = build_home_command(&bin, &["-p".to_string(), "/usage".to_string()]);
+    assert_eq!(child_env(&cmd, "CLAUDE_CONFIG_DIR"), Some(None), "removed");
+    assert!(
+        !matches!(child_env(&cmd, PROFILE_VAR), Some(Some(_))),
+        "the pin is never set"
+    );
+    let args: Vec<_> = cmd.get_args().collect();
+    assert_eq!(args, [OsStr::new("-p"), OsStr::new("/usage")]);
+    assert_eq!(cmd.get_program(), bin.path.as_os_str());
+}
+
+#[test]
+fn home_command_child_sees_no_config_dir() {
+    use super::run::build_home_command;
+    let (d, _s, _n, _) = setup();
+    let p = d.path().join("claude-env");
+    fs::write(&p, "#!/bin/sh\necho \"DIR=${CLAUDE_CONFIG_DIR-<unset>}\"\n").unwrap();
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).unwrap();
+    let bin = BinaryInfo {
+        name: "claude".into(),
+        path: p,
+        version: None,
+    };
+    let mut cmd = build_home_command(&bin, &[]);
+    cmd.env("CLAUDE_CONFIG_DIR_UNRELATED", "x");
+    let out = cmd.output().unwrap();
+    assert_eq!(String::from_utf8_lossy(&out.stdout), "DIR=<unset>\n");
+}

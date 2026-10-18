@@ -1,0 +1,301 @@
+//! One rotate cycle: prototype check, lock and recover, identify, measure
+//! (unlocked), decide, revalidate under the lock and swap, record. See
+//! "Rotate cycle" in docs/reference/profile-command.md.
+
+use super::decide::Decision;
+use super::identify::{LiveId, Skip};
+use super::ledger::{LastCycle, RotateState, alert_key, clear_alert, should_alert};
+use super::log::{Sink, msg, open_or_warn};
+use super::observe::{
+    Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
+};
+use super::settings::Settings;
+use super::swap::{self, RecoverOutcome, Source};
+use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::{State, exists, now, recover_auto_switch};
+use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::run::resolve_claude_binary;
+use crate::commands::profile::store::ProfileStore;
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+const LOCK_WAIT: Duration = Duration::from_secs(2);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    OneShot,
+    DryRun,
+    Watch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CycleOutcome {
+    Swapped,
+    Stayed,
+    Alerted,
+    Skipped,
+    /// `watch` received a signal and abandoned the cycle.
+    Stopped,
+}
+
+impl CycleOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Swapped => "swapped",
+            Self::Stayed => "stayed",
+            Self::Alerted => "alerted",
+            Self::Skipped => "skipped",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
+/// What a cycle needs, and what `watch` remembers between cycles so a
+/// `skip:` line is written only when it changes.
+pub struct Ctx {
+    pub store: ProfileStore,
+    pub rs: RotateState,
+    pub home: PathBuf,
+    pub settings: Settings,
+    pub stop: Option<Arc<AtomicBool>>,
+    last_skips: Option<Vec<(ProfileName, Skip)>>,
+    last_proto: Option<&'static str>,
+}
+
+impl Ctx {
+    pub fn new(store: ProfileStore, home: PathBuf, settings: Settings) -> Self {
+        let rs = RotateState::new(store.root());
+        Self {
+            store,
+            rs,
+            home,
+            settings,
+            stop: None,
+            last_skips: None,
+            last_proto: None,
+        }
+    }
+
+    fn stopping(&self) -> bool {
+        self.stop
+            .as_ref()
+            .is_some_and(|s| s.load(Ordering::Relaxed))
+    }
+}
+
+/// Fails with `RotatePrototypeRunning` while the external rotator holds
+/// `<root>/.rotator/lock`. Opens it read-only without following a symlink,
+/// creating it or blocking on a FIFO, and releases the lock at once.
+pub fn prototype_guard(root: &Path) -> Result<(), ProfileError> {
+    use fs4::fs_std::FileExt;
+    let path = root.join(".rotator").join("lock");
+    let refuse = || ProfileError::RotateRefused(".rotator/lock is not a regular file".into());
+    let file = match std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(refuse()),
+    };
+    if !file.metadata().is_ok_and(|m| m.is_file()) {
+        return Err(refuse());
+    }
+    match FileExt::try_lock_exclusive(&file) {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(ProfileError::RotatePrototypeRunning),
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+            Err(ProfileError::RotatePrototypeRunning)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// Writes an ALERT once per key and records the cycle as alerted.
+fn alert(
+    ctx: &Ctx,
+    out: &mut Sink,
+    kind: &str,
+    live: Option<&ProfileName>,
+    line: &str,
+) -> Result<(), ProfileError> {
+    let t = now();
+    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    if should_alert(&mut l, &alert_key(kind, live)) {
+        out.emit(t, line);
+    }
+    record(ctx, &mut l, CycleOutcome::Alerted, t)
+}
+
+fn record(
+    ctx: &Ctx,
+    l: &mut super::ledger::RotateLedger,
+    o: CycleOutcome,
+    t: i64,
+) -> Result<(), ProfileError> {
+    l.last_cycle = Some(LastCycle {
+        at: t,
+        outcome: o.as_str().into(),
+    });
+    ctx.rs.save_ledger(l)
+}
+
+/// Logs the skipped profiles and the ignored prototype ledger when they
+/// differ from what this process last logged.
+fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
+    let t = now();
+    if snap.proto != ctx.last_proto {
+        if let Some(reason) = snap.proto {
+            out.emit(t, &format!("skip: prototype ledger ignored ({reason})"));
+        }
+        ctx.last_proto = snap.proto;
+    }
+    let skips: Vec<_> = snap
+        .skips
+        .iter()
+        .filter(|(_, s)| *s != Skip::Live)
+        .cloned()
+        .collect();
+    if ctx.last_skips.as_ref() != Some(&skips) {
+        if !snap.sees_sessions {
+            out.emit(t, msg::NO_LIVENESS);
+        }
+        for (n, s) in skips
+            .iter()
+            .filter(|(_, s)| snap.sees_sessions || *s != Skip::SessionRunning)
+        {
+            out.emit(t, &format!("skip: {n} ({})", s.as_str()));
+        }
+        ctx.last_skips = Some(skips);
+    }
+}
+
+pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
+    if mode == Mode::DryRun {
+        return dry_run(ctx);
+    }
+    prototype_guard(ctx.store.root())?;
+    ctx.rs.ensure()?;
+    let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
+    let mut out = Sink::new(log, mode == Mode::OneShot, true);
+    let binary = resolve_claude_binary()
+        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
+    let state = State::new(ctx.store.root())?;
+
+    // Step 3: recover and identify under the lock.
+    let Some(lock) = state.try_lock(LOCK_WAIT)? else {
+        out.emit(now(), msg::LOCK_BUSY);
+        return Ok(CycleOutcome::Skipped);
+    };
+    if let Err(e) = recover_auto_switch(&state) {
+        if !matches!(e, ProfileError::AutoSwitchInvariant(_)) {
+            return Err(e);
+        }
+        alert(
+            ctx,
+            &mut out,
+            "auto-switch",
+            None,
+            msg::AUTO_SWITCH_INCONSISTENT,
+        )?;
+        return Ok(CycleOutcome::Alerted);
+    }
+    let inconsistent = match swap::recover(&ctx.store, &ctx.rs, &ctx.home) {
+        Ok(RecoverOutcome::None) => None,
+        Ok(RecoverOutcome::RolledBack { from, to }) => {
+            out.emit(now(), &msg::recovered(false, &from, &to));
+            None
+        }
+        Ok(RecoverOutcome::RolledForward { from, to }) => {
+            out.emit(now(), &msg::recovered(true, &from, &to));
+            None
+        }
+        Ok(RecoverOutcome::Inconsistent(reason)) => Some(ProfileError::RotateInconsistent(reason)),
+        Err(e @ ProfileError::RotateInconsistent(_)) => Some(e),
+        Err(e) => return Err(e),
+    };
+    if let Some(e) = inconsistent {
+        let detail = e.to_string();
+        let reason = detail
+            .strip_prefix("rotate state is inconsistent: ")
+            .unwrap_or(&detail);
+        alert(
+            ctx,
+            &mut out,
+            "inconsistent",
+            None,
+            &msg::inconsistent(reason),
+        )?;
+        return match mode {
+            Mode::Watch => Ok(CycleOutcome::Alerted),
+            _ => Err(e),
+        };
+    }
+    let first = snapshot(ctx, &state)?;
+    log_skips(ctx, &mut out, &first);
+    if let Some((kind, line)) = live_alert(&first.live) {
+        alert(ctx, &mut out, kind, live_name(&first.live), &line)?;
+        return Ok(CycleOutcome::Alerted);
+    }
+    drop(lock);
+
+    // Steps 4 and 5: measure without the lock, then decide.
+    let (live, others, decision) = measure_and_decide(ctx, &binary, &first)?;
+    out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
+    if ctx.stopping() {
+        out.emit(now(), msg::STOPPED);
+        return Ok(CycleOutcome::Stopped);
+    }
+
+    // Step 6: revalidate and swap under the lock.
+    let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
+        out.emit(now(), msg::LOCK_BUSY);
+        return Ok(CycleOutcome::Skipped);
+    };
+    let t = now();
+    if exists(&ctx.rs.journal) || snapshot(ctx, &state).ok().as_ref() != Some(&first) {
+        out.emit(t, msg::CHANGED);
+        return Ok(CycleOutcome::Skipped);
+    }
+    let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    let outcome = match decision {
+        Decision::Swap { to, reason } => {
+            let source = match &first.live {
+                LiveId::Known(n) => Source::Profile(n.clone()),
+                _ => Source::Adopt,
+            };
+            let from = swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t)?;
+            let target = reading_of(&others, &to);
+            out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
+            l = ctx.rs.load_ledger()?.unwrap_or_default();
+            CycleOutcome::Swapped
+        }
+        Decision::Stay => {
+            if let (LiveId::Known(n), Some(key)) = (&first.live, &first.account) {
+                if l.live.as_deref() != Some(n.as_str()) {
+                    l.live = Some(n.to_string());
+                    l.since = Some(t);
+                }
+                l.account = Some(key.clone());
+            }
+            clear_alert(&mut l);
+            CycleOutcome::Stayed
+        }
+        Decision::Alert => {
+            let name = live_name(&first.live);
+            if should_alert(&mut l, &alert_key("no-capacity", name)) {
+                out.emit(
+                    t,
+                    &msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live),
+                );
+            }
+            CycleOutcome::Alerted
+        }
+    };
+    record(ctx, &mut l, outcome, now())?;
+    Ok(outcome)
+}

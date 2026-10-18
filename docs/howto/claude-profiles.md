@@ -18,7 +18,9 @@ feature. See [What a new profile inherits](#what-a-new-profile-inherits).
 To see which accounts have quota left, see
 [Check usage across profiles](#check-usage-across-profiles). To move work to
 another account automatically when one runs out of quota, see
-[Switch accounts automatically](#switch-accounts-automatically).
+[Switch accounts automatically](#switch-accounts-automatically). To keep the
+default `~/.claude` login on the account with the most capacity, see
+[Rotate Claude logins automatically](claude-profile-rotation.md).
 
 ## What a new profile inherits
 
@@ -280,7 +282,8 @@ states. Like `profile run`, it is refused under Docker.
 ### A profile shows `live in ~/.claude`
 
 If you use a login rotator that moves one account's login into the default
-`~/.claude` directory, that profile's own directory has no login while it is
+`~/.claude` directory, such as
+[`amplihack profile rotate`](claude-profile-rotation.md), that profile's own directory has no login while it is
 there. `profile usage` checks that account through `~/.claude` instead and
 marks the row:
 
@@ -301,11 +304,15 @@ amplihack profile usage --json | jq -r '.[] | select(.live_in != null) | .profil
 team
 ```
 
-amplihack finds the profile from the rotator's ledger,
-`<root>/.rotator/ledger.json`. Without a ledger it looks for the one profile
-with no login whose account matches the account in `~/.claude.json`; if you
-do not use a rotator, there is no ledger and nothing is printed. amplihack
-only reads the rotator's files and never changes them.
+amplihack finds the profile from a rotator's ledger:
+`<root>/.auto-switch.d/rotate/ledger.json` for `profile rotate`, or
+`<root>/.rotator/ledger.json` for an external rotator such as the tmux
+prototype. If both exist, the one updated more recently decides, so moving
+from one rotator to the other needs no clean-up. Without a ledger it looks
+for the one profile with no login whose account matches the account in
+`~/.claude.json`; if you do not use a rotator, there is no ledger and nothing
+is printed. `profile usage` only reads the rotators' files and never changes
+them.
 
 This needs Linux. On macOS Claude keeps the login in the Keychain rather
 than in `~/.claude/.credentials.json`, so no profile is ever shown as
@@ -343,7 +350,10 @@ for the exact rules and warnings.
 
 When one account is close to its five-hour or seven-day usage limit,
 auto-switch moves work onto another of your profiles that has quota left.
-It is **off by default**. With it off, and before it has ever been turned on,
+It is **off by default**. Auto-switch acts on sessions started under a
+profile; to keep the default `~/.claude` login used by plain `claude` on the
+account with the most capacity, use
+[`profile rotate`](claude-profile-rotation.md), which shares this toggle. With it off, and before it has ever been turned on,
 amplihack behaves exactly as described in the rest of this guide.
 
 Auto-switch does three things:

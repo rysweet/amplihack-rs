@@ -21,6 +21,9 @@ amplihack profile auto-switch threshold <1-100>
 amplihack profile auto-switch exclude [<name>...]
 amplihack profile auto-switch install
 amplihack profile auto-switch repair
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
+amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
+amplihack profile rotate stop|status
 amplihack launch|claude --profile <name> [...]
 ```
 
@@ -37,6 +40,7 @@ amplihack launch|claude --profile <name> [...]
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
+| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`. See [Rotate](#rotate). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases).
@@ -289,8 +293,9 @@ the marks it would give are left out; the probes still run.
 
 #### Logins in `~/.claude`
 
-A login rotator outside amplihack can move one account's login into the
-default directory `~/.claude`. While it is there, that profile's own
+A login rotator, either [`profile rotate`](#rotate) or an external one such
+as the tmux prototype, can move one account's login into the default
+directory `~/.claude`. While it is there, that profile's own
 directory has no `.credentials.json`. `profile usage` does not report that
 profile as `not_logged_in`: it probes it against `~/.claude` instead, marks
 the row `live in ~/.claude`, and sets `live_in` to `"~/.claude"` in the JSON.
@@ -304,8 +309,16 @@ The live profile is found once, before probing, and nothing is written:
 
 1. `~/.claude/.credentials.json` must be a regular file. If it is missing or
    is a symlink, no profile is live.
-2. **Rotator ledger.** If `<root>/.rotator/ledger.json` exists, it decides.
-   Its `live` field names the profile and `since` is used only for the
+2. **Rotator ledger.** There are two possible ledgers:
+   `<root>/.auto-switch.d/rotate/ledger.json`, written by
+   [`profile rotate`](#rotate-state-directory), and
+   `<root>/.rotator/ledger.json`, written by an external rotator. If only one
+   exists, it decides. If both exist and both are trusted, the one with the
+   later `since` decides; a ledger with no `since` counts as older than one
+   with it, and on a tie the `profile rotate` ledger decides. If one of them
+   cannot be trusted or read, its warning is printed and the other decides.
+   Both are only read. The deciding ledger's `live` field names the profile
+   and its `since` is used only for the
    [check after the probes](#swaps-during-the-probe); other fields are
    ignored. The checks run in this order, and the first that fails decides:
 
@@ -316,8 +329,8 @@ The live profile is found once, before probing, and nothing is written:
    | Names a profile that still has something at `<root>/<live>/.credentials.json` (a dangling symlink counts) | No profile is live. That profile is probed through its own directory as normal, because its own login is stronger evidence than a ledger that is probably out of date. | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` |
    | Names a profile with no `.credentials.json` | That profile is live. | nothing |
 
-   The account match below is never tried when a ledger file exists, or
-   when amplihack cannot tell whether it exists (for example, a
+   The account match below is never tried when either ledger file exists,
+   or when amplihack cannot tell whether one exists (for example, a
    `<root>/.rotator/` directory you cannot search). The second case is
    treated as an unreadable ledger.
 
@@ -327,13 +340,16 @@ The live profile is found once, before probing, and nothing is written:
    ran `/login` in `~/.claude`), that profile's row shows the numbers of the
    login that is actually in `~/.claude`.
 
-   The ledger is trusted only if the profile root and `<root>/.rotator` are
+   A ledger is trusted only if the profile root and the directories leading
+   to it (`<root>/.rotator`, or `<root>/.auto-switch.d` and its `rotate`) are
    real directories (not symlinks) owned by you that no other user can write
    to (group write is allowed only when the group is your own per-user
    group), and `ledger.json` is not a symlink, is owned by
-   you, is not writable by group or others, and is at most 64 KiB. If any of
-   these fails, or the file is not valid JSON, no profile is live and one
-   warning goes to stderr; the account match below is not tried:
+   you, is not writable by group or others, and is at most 64 KiB. The
+   `profile rotate` ledger must also be `"version": 1`. If any of
+   these fails, or the file is not valid JSON, that ledger is ignored and one
+   warning goes to stderr. If no other ledger decides, no profile is live and
+   the account match below is not tried:
 
    ```
    warning: could not read the login rotator's ledger; no profile is marked live in ~/.claude
@@ -341,7 +357,7 @@ The live profile is found once, before probing, and nothing is written:
 
    No warning text is ever built from the ledger's contents.
 3. **Account match**, only when there is no ledger file. A missing
-   `ledger.json`, with or without a `<root>/.rotator/` directory, is the
+   `ledger.json`, with or without its directory, is the
    normal case when no rotator is installed, and prints nothing. A profile counts as
    live if its directory passes the usual check, it has no
    `.credentials.json`, and the `oauthAccount` in its `.claude.json` matches
@@ -399,7 +415,8 @@ rotator's ledger, which amplihack does not take:
   has no `since` field, because the evidence before and after is the same.
 
 `profile usage` never writes, creates or locks anything under
-`<root>/.rotator/`; the rotator owns those files.
+`<root>/.rotator/` or `<root>/.auto-switch.d/rotate/`; the rotators own those
+files.
 
 ##### Warnings about `~/.claude`
 
@@ -1418,6 +1435,445 @@ An in-session swap only happens when `<live dir>/.credentials.json` exists.
 Moving a file is the only primitive that keeps one copy of a login, so there
 is no fallback for other storage.
 
+## Rotate
+
+`profile rotate` keeps the login in `~/.claude` on the account with the most
+capacity left by moving logins between `~/.claude` and the profiles. The
+[how-to](../howto/claude-profile-rotation.md) walks through using it; this
+section defines its behaviour. It is separate from [auto-switch](#auto-switch),
+which swaps logins inside profiled sessions, but shares its toggle, its
+exclusion list and its state lock.
+
+### Rotate commands
+
+```
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
+amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
+amplihack profile rotate stop
+amplihack profile rotate status
+```
+
+| Command | Behaviour |
+|---------|-----------|
+| `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. |
+| `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. Prints `rotate: started (pid <pid>), checking every <interval>s` and `log: <path>`, and returns at once. |
+| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
+| `rotate stop` | Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
+| `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
+
+`--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
+or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
+exits with status 2.
+
+On platforms without Unix file semantics, such as Windows, every form fails
+with `RotateUnsupported` before doing anything else. That is the only use of
+`RotateUnsupported`. On a Unix system or filesystem that cannot exchange two
+files atomically, the swap is refused with `RotateRefused`; see
+[Rotate swap](#rotate-swap).
+
+### Rotate settings
+
+| Flag | Variable | Default | Range |
+|------|----------|---------|-------|
+| `--session-at N` | `AMPLIHACK_ROTATE_SESSION_AT` | `85` | `1`-`100` (%) |
+| `--week-at N` | `AMPLIHACK_ROTATE_WEEK_AT` | `90` | `1`-`100` (%) |
+| `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | `0`-`100` (points) |
+| `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | `0`-`100` (points) |
+| `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | `0` or more (seconds); `0` disables the hold |
+| `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+
+A flag beats its variable, and the variable beats the default. An empty
+variable counts as unset. Values are unsigned decimal integers: a sign,
+whitespace, a fraction or an overflow is an error. The error names the flag or
+variable and shows the value escaped and cut to 32 characters:
+
+```
+error: invalid rotate setting --session-at "eighty": expected a whole number from 1 to 100
+hint: run `amplihack profile rotate --help` for the accepted values
+```
+
+`start` resolves every setting and passes them to the background process as
+explicit flags, so the variables are read once, when `start` runs. The
+background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
+the `claude` processes it starts.
+
+The thresholds and margins are independent of the auto-switch `threshold`.
+The auto-switch `exclude` list applies to rotation.
+
+### Rotate cycle
+
+Every non-dry-run cycle runs these steps in order:
+
+1. **Prototype check.** See [Prototype coexistence](#rotate-prototype-coexistence).
+2. **Toggle.** `watch` only: if auto-switch has been turned off, by
+   `auto-switch off` or `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`, or its settings
+   file is damaged (see [Toggle and precedence](#toggle-and-precedence)),
+   write `idle: auto-switch is off` once per change from on to off, and skip
+   the rest. With no setting at all (no `<root>/.auto-switch` and no
+   variable), rotation runs.
+3. **Lock and recover.** Take `<root>/.auto-switch.d/lock`, waiting up to
+   2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
+   Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
+   [rotate recovery](#rotate-recovery), then [identify](#rotate-live-profile)
+   the live profile and the [candidates](#rotate-candidates). Release the
+   lock.
+4. **Measure.** Probe the live login and every candidate in parallel, as
+   [`profile usage`](#how-a-profile-is-probed) does. The live login is probed
+   with `CLAUDE_CONFIG_DIR` removed from the environment, so `claude` uses
+   `~/.claude` and `~/.claude.json`. Candidates are probed with
+   `CLAUDE_CONFIG_DIR=<root>/<name>`. Claude's text is parsed and dropped;
+   only percentages, reset times and states are kept. No lock is held.
+5. **Decide.** See [Decision rule](#rotate-decision-rule).
+6. **Revalidate and swap.** `watch` first checks for a pending signal and,
+   if there is one, ends the cycle and exits without taking the lock (see
+   [Signals](#rotate-signals)). Take the lock again. If the live account, the
+   candidate list, the running sessions, the auto-switch ledger or the parked
+   logins changed since step 3, log `skip: state changed during measurement`
+   and end the cycle. Otherwise run the [swap](#rotate-swap).
+7. **Record.** Write the log lines and the ledger's `last_cycle`.
+
+### Rotate decision rule
+
+*Headroom* is `100 - max(session_used, week_used)`, rounded down to a whole
+point.
+
+| Probe result | Session used | Week used | Headroom |
+|--------------|--------------|-----------|----------|
+| `ok` with both windows | as reported | as reported | as computed |
+| `ok` with no session window | `0` | as reported | as computed |
+| `ok` with no week window | | | probe failed |
+| `session_exhausted` or `weekly_exhausted` | | | `0` |
+| any other [state](#states) | | | probe failed |
+
+A candidate whose probe failed is never chosen. The *best* candidate has the
+highest headroom; ties go to the name that sorts first by byte value.
+
+| Condition (all comparisons inclusive) | Outcome |
+|---------------------------------------|---------|
+| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`. |
+| As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
+| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` | Swap to best, `reason=upgrade`. |
+| Otherwise | Stay. |
+
+`swapped_at` and `previous` (the profile swapped out) come from the
+[ledger](#rotate-state-directory). During the hold no upgrade happens at
+all, so `previous` cannot come straight back by upgrade. Threshold swaps are
+never held.
+
+### Rotate live profile
+
+The live profile is the one whose login is in `~/.claude`. Accounts are
+compared by `oauthAccount.accountUuid`, or by `emailAddress` (case-insensitive)
+when either side has no uuid, read from `$HOME/.claude.json` and from each
+`<root>/<name>/.claude.json`. No credentials file is read. An account value
+over 320 bytes or containing control characters counts as missing. Account
+values are never logged or printed.
+
+| Evidence, checked in order | Result |
+|----------------------------|--------|
+| `~/.claude/.credentials.json` is missing or not a regular file | ALERT `no-login`. No swap. A login is never moved into an empty `~/.claude`. |
+| The rotate ledger exists and its `account` matches `~/.claude.json` | Its `live` profile. |
+| The rotate ledger exists and its `account` does not match | ALERT `hand-change`. No swap. |
+| No rotate ledger; the prototype ledger `<root>/.rotator/ledger.json` is trusted (the trust rules in [Logins in `~/.claude`](#logins-in-claude)), names a profile that has nothing at `<root>/<name>/.credentials.json`, and that profile's `.claude.json` either has no account or has the account in `~/.claude.json` | That profile. |
+| No rotate ledger; the prototype ledger exists but fails the row above | The prototype ledger is ignored and logged as `skip: prototype ledger ignored (<reason>)`; the next two rows decide. |
+| No usable ledger; exactly one profile with no login matches the account in `~/.claude.json` | That profile. |
+| No usable ledger; more than one profile with no login matches | ALERT `ambiguous`. No swap. |
+| None of the above | *Adopt*: the login has no profile. |
+
+The prototype ledger has no account field, so these checks are what stop an
+old prototype ledger from naming the wrong profile. That can happen when
+someone ran `/login` in `~/.claude` and then deleted the rotate ledger, as
+the [hand-change steps](../howto/claude-profile-rotation.md#swap-refused)
+direct: once the named profile has been logged in again, it has a login and
+the prototype ledger is ignored. The `<reason>` is `profile has a login`,
+`account does not match`, `untrusted` or `invalid name`.
+
+When the live login is to be adopted, the swap first creates a profile with
+`profile add` under the first free name of `default-original`,
+`default-original-2`, `default-original-3` and so on, and writes the
+`oauthAccount` block from `~/.claude.json` into its `.claude.json`. `add`
+copies no credentials file. Both steps run under the lock, after the
+pre-swap checks and before `j0`; the outgoing login is then moved into that
+profile by the swap. Adoption happens only as part of a swap, never on a
+cycle that stays.
+
+Adoption is not journalled. If the process stops after `add` but before the
+`oauthAccount` block is written, the new profile exists with no login and no
+account. Nothing has moved, so no recovery is needed, but the account match
+cannot find that profile, and the next swap adopts again under the next free
+name, such as `default-original-2`. Remove the empty profile with
+`amplihack profile remove default-original --yes`. If the process stops
+after the block is written, the profile has no login and the right account,
+so the account match finds it and the next swap uses it.
+
+### Rotate candidates
+
+A profile is a candidate unless any of these holds, checked in this order.
+Every reason but `live` is logged as a `skip:` line: by `watch` only when the
+set of skipped profiles changes, and by the one-shot command on every run.
+
+| Skip reason | Condition |
+|-------------|-----------|
+| `live` | It is the live profile. |
+| `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, or has more than one link. |
+| `excluded` | It is in the auto-switch `exclude` list. |
+| `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
+| `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
+| `hosting` | Its directory hosts another account's login in the auto-switch ledger. |
+| `parked` | `<root>/.auto-switch.d/parked/<name>` exists. |
+| `no account` | Its `.claude.json` has no usable `oauthAccount`, so `~/.claude.json` could not be updated after a swap. |
+
+### Rotate swap
+
+`L` is `~/.claude/.credentials.json`, `T` is `<root>/<to>/.credentials.json`
+and `S` is `<root>/<from>/.credentials.json`, where `<from>` is the live
+profile (or the adopted one).
+
+Before anything is written, every check below must pass; otherwise the swap
+fails with `RotateRefused` and nothing changes:
+
+- the profile root is private (as for auto-switch state writes); `$HOME` is
+  absolute, a directory rather than a symlink, and owned by you; `~/.claude` is owned by you and
+  not writable by group or others; both profile directories pass the usual
+  directory check;
+- `L` and `T` are regular files owned by you with exactly one link (checked
+  with `lstat`, never opened);
+- `S` does not exist;
+- `~/.claude` and the profile root are on the same device;
+- the platform has an atomic exchange. Only Linux
+  (`renameat2(RENAME_EXCHANGE)`) qualifies. macOS has `renamex_np`, but Claude
+  keeps macOS logins in the Keychain, so there is no `~/.claude/.credentials.json`
+  to exchange and a cycle stops earlier with the `no-login` ALERT. Other Unix
+  systems are refused with `atomic exchange is not supported here`.
+
+Then the steps run in order. The step names are the `phase` values in the
+journal.
+
+| Step | Action |
+|------|--------|
+| `j0` | Write `journal.json` with `from`, `to`, `adopt`, the inode numbers of `L` (`live_ino`) and `T` (`target_ino`), and `$HOME`. Then take Claude's refresh lock (`.oauth_refresh.lock`, a directory made with `mkdir`, as auto-switch does) in `~/.claude`, and in `<root>/<to>` when it is free, and rewrite the journal with each lock's inode (`home_lock_ino`, `to_lock_ino`) as soon as it is taken. A lock held by someone else is never broken. |
+| `s1` | Atomically exchange `T` and `L`. `~/.claude` now holds the incoming login; `<root>/<to>` holds the outgoing one. |
+| `s2` | Rename the outgoing login from `<root>/<to>` to `S`, refusing to replace an existing file. Release the refresh locks: each is removed with `rmdir` only if its inode is the one recorded. |
+| `s3` | Replace the `oauthAccount` block in `$HOME/.claude.json` with the one from `<root>/<to>/.claude.json`, keeping every other key and the file's mode. |
+| `s4` | Write the ledger: `live=<to>`, `previous=<from>`, `account`, `since` and `swapped_at`. Clear any ALERT key. |
+| | Delete `journal.json`. |
+
+Credentials files are touched only by `lstat`, the exchange and the rename,
+and each parent directory is synced after each rename. At every point each
+login is in exactly one place, and `~/.claude` always has a login.
+
+If the exchange fails with `EXDEV`, `EINVAL` or `ENOSYS`, the swap fails with
+`RotateRefused` (`atomic exchange is not supported here`), the refresh locks
+are released and the journal is removed; nothing was moved. Any other error
+from the exchange also fails with `RotateRefused`, after the same clean-up.
+The exchange never produces `RotateUnsupported`. There is no copy-and-delete
+fallback.
+
+### Rotate recovery
+
+Recovery runs under the lock at the start of every non-dry-run `rotate`,
+`start` and cycle, before anything else is decided. `--dry-run` never runs
+it. Recovery uses the journal and file metadata only, and only renames
+logins: it never deletes, overwrites or opens a credentials file.
+
+Recovery decides by where the recorded inodes are, found with `lstat`. The
+journal's `phase` is a hint for the log and for `status`; it never decides.
+This matters most for the commonest crash point, just after the exchange and
+before the journal is rewritten as `s1`, where the journal still says `j0`
+but the logins have already moved.
+
+`L` and `T` are not tested in `~/.claude`. Claude may refresh the token in
+`~/.claude` at any time, which replaces the file there with a new inode, so
+neither recorded inode can be expected in `~/.claude` after the exchange.
+`~/.claude/.credentials.json` need only be a regular file.
+
+| Where the logins are (any phase) | Action | Log line |
+|----------------------------------|--------|----------|
+| No journal | Nothing. | |
+| `target_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange did not happen. Roll back: release the recorded refresh locks, then delete the journal. | `recovery: rolled back an interrupted swap work->spare` |
+| `live_ino` is at `<root>/<to>/.credentials.json`, `S` does not exist, and `~/.claude/.credentials.json` is a regular file | The exchange happened; `s2` did not. Roll forward: run `s2`, `s3` and `s4`, then delete the journal. | `recovery: finished an interrupted swap work->spare` |
+| `live_ino` is at `S`, nothing is at `<root>/<to>/.credentials.json`, and `~/.claude/.credentials.json` is a regular file | `s2` happened. Roll forward: release the recorded refresh locks, run `s3` and `s4`, then delete the journal. `s3` and `s4` are safe to repeat. | `recovery: finished an interrupted swap work->spare` |
+| Anything else, a `home` that differs from `$HOME`, an invalid name, or an unknown version | Mark the journal `inconsistent`. The refresh locks are left in place. | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` |
+
+Releasing a refresh lock means removing `<dir>/.oauth_refresh.lock` with
+`rmdir` only when its inode equals the recorded `home_lock_ino` or
+`to_lock_ino`. A lock with another inode belongs to Claude and is left alone.
+If the process stopped after making a lock but before recording its inode,
+that lock is not released; see
+[Recovery](../howto/claude-profile-rotation.md#recovery) for the manual step.
+
+`inconsistent` is sticky. While the journal says so, no swap happens, the
+one-shot command exits with `RotateInconsistent`, and `watch` writes the ALERT
+(once) and keeps running. A person resolves it as described in
+[Recovery](../howto/claude-profile-rotation.md#recovery) and deletes the
+journal.
+
+If auto-switch recovery reports an inconsistent state, the cycle writes
+`ALERT: auto-switch recovery is inconsistent; no swap` and does not swap.
+
+The journal's `home` is only compared with `$HOME`, and its inode numbers are
+only compared with `lstat` results; neither is ever used as a path.
+
+### Rotate state directory
+
+Everything is under `<root>/.auto-switch.d/rotate/` (directory `0700`, files
+`0600`). Ledger and journal are written atomically, never through a symlink,
+and are capped at 64 KiB. Both have `"version": 1`, reject unknown fields, and
+omit optional fields that are unset. Every profile name read from them is
+checked with the [name rules](#name-rules) before it is used. A file that
+fails to parse is left unchanged and reported as `RotateInconsistent`.
+
+| Path | Contents |
+|------|----------|
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at` and `outcome`). |
+| `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
+| `rotate.pid` | The background process's pid, as ASCII decimal. |
+| `rotate.log` | The log. |
+| `rotate.log.1` | The previous log, after rotation. |
+| `rotate.err` | The background process's own stdout and stderr. Not rotated. |
+
+The auto-switch `ledger.json` and `journal.json` one level up are separate
+files and are not changed by rotation.
+
+Example ledger, with the account value replaced:
+
+```json
+{
+  "version": 1,
+  "live": "spare",
+  "account": "<accountUuid>",
+  "since": 1760791205,
+  "swapped_at": 1760791205,
+  "previous": "work",
+  "last_cycle": { "at": 1760791805, "outcome": "stayed" }
+}
+```
+
+### Rotate log
+
+Each line is `YYYY-MM-DDTHH:MM:SSZ <message>`, in UTC. The one-shot command
+writes to the log and stdout, `watch` to the log only, and `--dry-run` to
+stdout only, without the time.
+
+| Message | Meaning |
+|---------|---------|
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. |
+| `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
+| `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
+| `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | Hand change. |
+| `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
+| `ALERT: swap refused: <reason>` | `watch` only: a [pre-swap check](#rotate-swap) failed. The one-shot command exits with `RotateRefused` instead. |
+| `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
+| `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
+| `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
+| `skip: state lock busy` / `skip: state changed during measurement` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
+| `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
+| `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
+| `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
+| `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
+| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` | `--dry-run` only. |
+
+An ALERT is written only when its key (`no-capacity`, `no-login`,
+`hand-change`, `ambiguous`, `inconsistent` or `auto-switch`, plus the live
+profile) differs from the key
+stored in the ledger. The key is cleared when a cycle stays without alerting
+or a swap succeeds, so the same ALERT can be written again later.
+
+Before each write, a log over 1 MiB is renamed to `rotate.log.1`, replacing
+the old one. The log is opened with `O_APPEND`, `O_NOFOLLOW` and `O_CLOEXEC`,
+mode `0600`. A log that is not a regular file, is owned by another user, or is
+readable or writable by group or others is not written to; a warning goes to
+stderr and its mode is not changed.
+
+Log lines and stdout contain only profile names (with control characters
+removed), percentages, times, phases and fixed text. They never contain
+account IDs, e-mail addresses, tokens, environment values or Claude's output.
+
+### Rotate daemon
+
+`start` launches `amplihack profile rotate watch <resolved flags> --spawned`
+with the same `amplihack` binary, in a new session (`setsid`) with `SIGHUP`
+ignored, stdin from `/dev/null`, and stdout and stderr appended to
+`rotate.err` (`0600`) beside the log. The log itself is written only by the
+cycle, so it keeps its grammar; `rotate.err` holds only what the process
+prints outside a cycle, such as start-up notices or a crash.
+`--spawned` is hidden; it tells `watch` that `start` has already written the
+pid file. No shell is involved.
+
+A pid file is *valid* when it holds at most 32 bytes of ASCII digits for a pid
+greater than 1 that is not the caller's own. A process is a *verified
+rotator* when `/proc/<pid>` is owned by your effective uid, its command line
+contains `profile`, `rotate` and `watch`, and its `argv[0]` has the same file
+name as the running `amplihack`.
+
+| State | Condition | `stop` |
+|-------|-----------|--------|
+| `running` | Valid pid file naming a verified rotator. | Sends `SIGTERM` (through a pidfd on Linux), polls for 10 seconds, then removes the pid file. If it is still running, keeps the pid file and fails with `RotateDaemon`. |
+| `stopped` | No pid file. | Prints `rotate: not running` and exits 0. |
+| `stale` | The pid file is invalid, or names no process, or a process that is not a verified rotator. | Removes the pid file, signals nothing, prints `rotate: removed a stale pid file`. |
+| `unverifiable` | No `/proc` on this host. | Signals nothing and fails with `RotateDaemon`. |
+
+`watch` removes the pid file on exit only if it still holds its own pid.
+
+### Rotate signals
+
+`watch` acts on `SIGTERM` and `SIGINT` at these points:
+
+| When the signal arrives | What `watch` does |
+|-------------------------|-------------------|
+| Between cycles | Exits at once. |
+| During measurement | Stops its probes as it does at the probe deadline (`SIGKILL` to each probe's process group), writes `stop: signal received; cycle abandoned` and exits. Nothing is swapped. |
+| After measurement, before step 6 takes the lock | Writes the same line and exits without taking the lock. |
+| While it holds the lock (revalidation and swap) | Finishes the swap, writes the log lines, releases the lock, then exits. |
+
+The swap holds no probe and waits on nothing but local file operations, so
+`stop`'s 10-second wait covers it. A `stop` that times out therefore means
+the process is not responding, not that a cycle was slow.
+
+### Rotate status
+
+`status` takes no lock and changes nothing. It prints `key: value` lines:
+
+```
+rotate: running
+pid: 48213
+live: spare
+last cycle: 2026-10-18T12:50:05Z stayed
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+| Key | Value |
+|-----|-------|
+| `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
+| `pid` | The pid, or `-`. |
+| `live` | The ledger's `live` profile, or `-`. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. |
+| `log` | The log path. |
+
+A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
+or `journal: inconsistent`.
+
+### Rotate prototype coexistence
+
+Before a non-dry-run `rotate`, `start` or cycle, the rotator opens
+`<root>/.rotator/lock` read-only (`O_NOFOLLOW`, `O_NONBLOCK`, never
+`O_CREAT`), checks that it is a regular file, tries a non-blocking exclusive
+lock, and releases it at once. A missing file passes the check and is not
+created. If the lock is held, the command fails with
+`RotatePrototypeRunning`. `--dry-run` skips this check. The rotator never
+creates, writes or deletes anything under `<root>/.rotator/`.
+
+### Rotate exit status
+
+| Status | When |
+|--------|------|
+| `0` | No swap, a swap, a dry run, an ALERT, `status`, a `stop` of a stopped or stale rotator. |
+| `1` | `RotateConfig`, `RotatePrototypeRunning`, `RotateInconsistent`, `RotateRefused`, `RotateUnsupported`, `RotateDaemon`, or any other [error](#errors). |
+| `2` | A usage error from argument parsing, such as a tuning flag before `start`. |
+
 ## Errors
 
 Errors print one line to stderr as `error: <message>` plus `hint: <next step>`
@@ -1447,6 +1903,12 @@ failures use this format.
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
+| `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
+| `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
+| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+| `RotateInconsistent`: the rotate ledger or journal is damaged, or recovery cannot tell which way is safe | `see the Recovery section of docs/howto/claude-profile-rotation.md` |
+| `RotateUnsupported`: `profile rotate` on a platform without Unix file semantics | `rotate needs Linux or another Unix` |
+| `RotateDaemon`: `start` found a rotator running, `stop` timed out, or the process cannot be verified | `` run `amplihack profile rotate status` `` |
 
 Auto-switch errors name profiles in the message; hints are fixed text. For
 example:

@@ -10,6 +10,7 @@ mod auto_switch;
 mod default_live;
 mod name;
 mod pointer;
+mod rotate;
 mod run;
 mod store;
 mod usage_cmd;
@@ -106,6 +107,18 @@ pub enum ProfileError {
     AutoSwitchInstall(String),
     #[error("auto-switch is not available on this platform")]
     AutoSwitchUnsupported,
+    #[error("{0}")]
+    RotateConfig(String),
+    #[error("the external login rotator holds <root>/.rotator/lock")]
+    RotatePrototypeRunning,
+    #[error("swap refused: {0}")]
+    RotateRefused(String),
+    #[error("rotate state is inconsistent: {0}")]
+    RotateInconsistent(String),
+    #[error("profile rotate is not available on this platform")]
+    RotateUnsupported,
+    #[error("rotate: {0}")]
+    RotateDaemon(String),
     #[error(
         "inherited AMPLIHACK_CLAUDE_PROFILE {value}: {}",
         .source.inherited_reason()
@@ -156,6 +169,20 @@ impl ProfileError {
                 "fix or remove the reported file, then run `amplihack profile auto-switch repair`"
             }
             Self::AutoSwitchUnsupported => "auto-switch needs Linux or another Unix; leave it off",
+            Self::RotateConfig(_) => {
+                "run `amplihack profile rotate --help` for the accepted values"
+            }
+            Self::RotatePrototypeRunning => {
+                "stop the external rotator (tmux session claude-rotator) first"
+            }
+            Self::RotateRefused(_) => {
+                "nothing was moved; see \"Swap refused\" in docs/howto/claude-profile-rotation.md"
+            }
+            Self::RotateInconsistent(_) => {
+                "see the Recovery section of docs/howto/claude-profile-rotation.md"
+            }
+            Self::RotateUnsupported => "rotate needs Linux or another Unix",
+            Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
                 "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"
             }
@@ -258,6 +285,8 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: auto_switch::AutoSwitchCommand,
     },
+    /// Keep the login in ~/.claude on the profile with the most capacity left
+    Rotate(Box<rotate::RotateArgs>),
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
     Statusline {
@@ -330,6 +359,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             timeout_secs,
         } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
+        ProfileCommands::Rotate(args) => rotate::run(&store, *args)?,
         ProfileCommands::Statusline { .. } => unreachable!("handled above"),
     }
     Ok(())

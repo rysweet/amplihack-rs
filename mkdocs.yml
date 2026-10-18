@@ -64,6 +64,7 @@ nav:
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
+      - Claude Login Rotation: howto/claude-profile-rotation.md
       - Profile Command Reference: reference/profile-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:

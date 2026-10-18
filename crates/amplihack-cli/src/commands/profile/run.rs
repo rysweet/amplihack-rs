@@ -39,6 +39,17 @@ pub(super) fn build_default_dir_command(
     Ok(cmd)
 }
 
+/// For the login in `~/.claude` when no profile owns it (`profile rotate`,
+/// issue #1592): `CLAUDE_CONFIG_DIR` is removed, never set to `~/.claude`,
+/// and no profile is pinned for descendants.
+pub(super) fn build_home_command(binary: &BinaryInfo, args: &[String]) -> Command {
+    let mut cmd = Command::new(&binary.path);
+    cmd.args(args)
+        .env_remove("CLAUDE_CONFIG_DIR")
+        .env_remove(super::PROFILE_ENV);
+    cmd
+}
+
 fn pinned_command(
     binary: &BinaryInfo,
     store: &ProfileStore,

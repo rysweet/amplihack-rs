@@ -128,3 +128,132 @@ fn reference_quotes_the_env_credential_warning() {
         "reference must quote: {warning}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1592: `profile rotate` is documented, flag for flag.
+// ---------------------------------------------------------------------------
+
+const ROTATE_HOWTO: &str = include_str!("../../../../../docs/howto/claude-profile-rotation.md");
+const PROFILE_MANAGEMENT: &str = include_str!("../../../../../docs/PROFILE_MANAGEMENT.md");
+const MKDOCS: &str = include_str!("../../../../../mkdocs.yml");
+
+/// Every visible long flag of `rotate` and its subcommands.
+fn rotate_flags() -> Vec<String> {
+    use clap::Args;
+    let cmd = super::rotate::RotateArgs::augment_args(clap::Command::new("rotate"));
+    let mut flags = Vec::new();
+    for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
+        for a in c.get_arguments() {
+            if a.is_hide_set() {
+                continue;
+            }
+            if let Some(l) = a.get_long() {
+                flags.push(format!("--{l}"));
+            }
+        }
+    }
+    flags.sort();
+    flags.dedup();
+    flags
+}
+
+#[test]
+fn rotate_has_the_documented_flags_and_hides_spawned() {
+    let flags = rotate_flags();
+    for want in [
+        "--dry-run",
+        "--session-at",
+        "--week-at",
+        "--margin",
+        "--upgrade-margin",
+        "--hold",
+        "--interval",
+    ] {
+        assert!(flags.iter().any(|f| f == want), "missing {want}: {flags:?}");
+    }
+    assert!(
+        !flags.iter().any(|f| f == "--spawned"),
+        "--spawned is hidden"
+    );
+}
+
+#[test]
+fn reference_and_howto_document_profile_rotate() {
+    for (name, doc) in [("reference", REFERENCE), ("rotate howto", ROTATE_HOWTO)] {
+        assert!(doc.contains("amplihack profile rotate"), "{name}");
+        for sub in ["start", "stop", "status", "--dry-run"] {
+            assert!(doc.contains(sub), "{name} doc is missing {sub}");
+        }
+    }
+    for flag in rotate_flags() {
+        assert!(
+            REFERENCE.contains(&format!("`{flag}")),
+            "reference is missing {flag}"
+        );
+    }
+    for var in [
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
+        "AMPLIHACK_ROTATE_MARGIN",
+        "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
+        "AMPLIHACK_ROTATE_HOLD",
+        "AMPLIHACK_ROTATE_INTERVAL",
+    ] {
+        assert!(REFERENCE.contains(var), "reference is missing {var}");
+    }
+}
+
+#[test]
+fn reference_quotes_every_rotate_error_hint() {
+    use super::ProfileError as E;
+    for e in [
+        E::RotateConfig("x".into()),
+        E::RotatePrototypeRunning,
+        E::RotateRefused("x".into()),
+        E::RotateInconsistent("x".into()),
+        E::RotateUnsupported,
+        E::RotateDaemon("x".into()),
+    ] {
+        let hint = e.hint();
+        assert!(!hint.is_empty(), "{e:?}");
+        assert!(!e.to_string().contains('\n'), "{e:?}");
+        let quoted = hint.replace('`', "");
+        assert!(
+            REFERENCE.replace('`', "").contains(&quoted),
+            "reference is missing the hint for {e:?}: {hint}"
+        );
+    }
+}
+
+#[test]
+fn rotate_docs_are_linked_and_in_the_nav() {
+    let link = "claude-profile-rotation.md";
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("claude-profiles howto", HOWTO),
+        ("PROFILE_MANAGEMENT", PROFILE_MANAGEMENT),
+    ] {
+        assert!(doc.contains(link), "{name} does not link the rotate how-to");
+    }
+    assert!(
+        MKDOCS.contains("howto/claude-profile-rotation.md"),
+        "mkdocs nav"
+    );
+}
+
+#[test]
+fn rotate_log_grammar_is_documented() {
+    for line in [
+        "cycle live=",
+        "reason=threshold",
+        "ALERT: no profile has capacity",
+        "ALERT: no login in ~/.claude; no swap",
+        "idle: auto-switch is off",
+        "skip: state lock busy",
+        "stop: signal received; cycle abandoned",
+        "recovery: rolled back an interrupted swap",
+        "recovery: finished an interrupted swap",
+    ] {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+}
