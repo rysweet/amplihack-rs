@@ -13,7 +13,7 @@ A cap below the real total aborts the run with a step-limit error, which made
 ## Regression guard
 
 ```bash
-cargo test -p amplihack-cli --test issue_1553_max_total_steps_cap
+cargo test -p amplihack-cli --test cli_integration issue_1553_max_total_steps_cap::
 ```
 
 The test sums steps recursively (resolving sub-recipes only inside the recipes

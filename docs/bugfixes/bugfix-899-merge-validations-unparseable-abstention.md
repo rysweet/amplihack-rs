@@ -164,7 +164,7 @@ through the byte-exact harness `tests/gadugi/run-merge-validations.sh`:
 - **Run:**
 
   ```bash
-  cargo test -p amplihack-cli --test issue_899_merge_validations_abstention
+  cargo test -p amplihack-cli --test cli_integration issue_899_merge_validations_abstention::
   ```
 
 The test asserts, for **2 parsed + 1 unparseable at threshold 2**:

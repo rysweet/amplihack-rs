@@ -3,7 +3,6 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
     path::Path,
     process::{Command, Output},
 };
@@ -36,8 +35,15 @@ impl Fixture {
         };
         fs::create_dir(f.path().join("bin")).unwrap();
         fs::write(f.path().join("report"), report).unwrap();
-        fs::write(f.binary(), format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'/calls\n/bin/cat '{}'/report\nprintf 'secret-canary' >&2\nexit {status}\n", f.path().display(), f.path().display())).unwrap();
-        fs::set_permissions(f.binary(), fs::Permissions::from_mode(0o700)).unwrap();
+        crate::support::exec_stub::write_executable(
+            &f.binary(),
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'/calls\n/bin/cat '{}'/report\nprintf 'secret-canary' >&2\nexit {status}\n",
+                f.path().display(),
+                f.path().display()
+            ),
+            0o700,
+        );
         f
     }
     fn path(&self) -> &Path {
@@ -167,7 +173,7 @@ fn missing_receipt_and_shadowed_selection_fail_visibly() {
     failure(f.run("codex", true, &f.binary()), "RUNNER_RECEIPT_MISSING");
     f.valid_receipt();
     let shadow = f.path().join("shadow");
-    fs::copy(f.binary(), &shadow).unwrap();
+    crate::support::exec_stub::copy_executable(&f.binary(), &shadow);
     failure(f.run("codex", true, &shadow), "RUNNER_BINARY_SHADOWED");
 }
 #[test]

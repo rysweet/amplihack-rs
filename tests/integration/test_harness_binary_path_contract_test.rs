@@ -690,3 +690,103 @@ fn bracket_depth_ignores_strings_chars_and_comments() {
     assert_eq!(path_attr("#[path = 'x.rs']"), None);
     assert_eq!(path_attr("#[path=\"x.rs\"]"), Some("x.rs"));
 }
+
+// ---------------------------------------------------------------------------
+// Guard: amplihack-cli's `cli_integration` binary
+// ---------------------------------------------------------------------------
+//
+// These run here, in the `amplihack` package's `integration` binary, so that
+// nothing inside `cli_integration` can switch them off.
+
+/// Every `crates/amplihack-cli/tests/` file must be reached from the
+/// `cli_integration` root. With `autotests = false`, Cargo no longer builds
+/// these files on its own.
+#[test]
+fn every_cli_test_file_is_wired_into_cli_integration() {
+    assert_fully_wired("crates/amplihack-cli/tests", &[]);
+}
+
+/// `cli_integration` and `lbug_ffi` are amplihack-cli's only test targets, by
+/// Cargo's own count. `lbug_ffi` stays separate because it needs
+/// `required-features = ["test-support"]`.
+#[test]
+fn amplihack_cli_package_has_only_the_lbug_ffi_and_cli_integration_targets() {
+    assert_eq!(
+        test_target_names("amplihack-cli"),
+        ["cli_integration", "lbug_ffi"],
+        "FAIL: add new amplihack-cli test files as modules of tests/main.rs, not as\n\
+         new [[test]] entries, and keep `autotests = false`"
+    );
+}
+
+/// Line numbers (1-based) in `src` that call `set_var`, `remove_var` or
+/// `set_current_dir` by that bare name, outside a `//` comment. A call such as
+/// `child_set_var(` does not count, because the name must not follow an
+/// identifier character.
+fn process_state_calls(src: &str) -> Vec<usize> {
+    const CALLS: [&str; 3] = ["set_var(", "remove_var(", "set_current_dir("];
+    src.lines()
+        .enumerate()
+        .filter(|(_, line)| {
+            let code = line.split("//").next().unwrap_or("");
+            CALLS.iter().any(|call| {
+                code.match_indices(call).any(|(i, _)| {
+                    code[..i]
+                        .chars()
+                        .next_back()
+                        .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+                })
+            })
+        })
+        .map(|(n, _)| n + 1)
+        .collect()
+}
+
+/// Every module of `cli_integration` shares one process under `cargo test`,
+/// and `std::env::set_var` is unsound while another thread reads the
+/// environment, which any sibling test that spawns a child does. So only
+/// `support/quiet_process.rs` may change the environment or the working
+/// directory, through its `child_*` functions, which panic outside an
+/// `in_quiet_process` child.
+///
+/// Limits: this is a text scan. It does not see a call renamed by `use ... as`,
+/// produced by a macro, or made by library code that a test calls in-process;
+/// the `child_*` functions' runtime check covers only callers that use them.
+#[test]
+fn cli_integration_changes_process_state_only_in_quiet_children() {
+    let tests_dir = workspace_root().join("crates/amplihack-cli/tests");
+    let allowed = tests_dir.join("support/quiet_process.rs");
+    let mut files = Vec::new();
+    rs_files_under(&tests_dir, &mut files);
+    files.sort();
+    let mut offending = Vec::new();
+    for file in files.iter().filter(|f| **f != allowed) {
+        let src = std::fs::read_to_string(file)
+            .unwrap_or_else(|e| panic!("FAIL: cannot read {file:?}: {e}"));
+        for line in process_state_calls(&src) {
+            let rel = file.strip_prefix(workspace_root()).unwrap_or(file);
+            offending.push(format!("  {}:{line}", rel.display()));
+        }
+    }
+    assert!(
+        offending.is_empty(),
+        "FAIL: these lines change process-global state inside the shared\n\
+         cli_integration process. Run the test body with\n\
+         `support::quiet_process::in_quiet_process` and use `child_set_var`,\n\
+         `child_remove_var` or `child_set_current_dir` there:\n{}",
+        offending.join("\n")
+    );
+}
+
+#[test]
+fn process_state_calls_flags_bare_calls_only() {
+    let src = "\
+unsafe { std::env::set_var(\"A\", \"1\") };\n\
+env::remove_var(\"B\");\n\
+std::env::set_current_dir(dir).unwrap();\n\
+child_set_var(\"A\", \"1\");\n\
+// std::env::set_var(\"C\", \"1\") in a comment\n\
+let x = 1; // remove_var( after code\n\
+.env(\"HOME\", home)\n";
+    assert_eq!(process_state_calls(src), [1, 2, 3]);
+}
