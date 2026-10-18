@@ -177,7 +177,10 @@ A candidate is accepted only when every check passes:
 A timeout, a 404, an authentication or rate-limit failure, or output in an
 unexpected shape rejects the candidate. If every candidate is rejected, the
 function logs the numbers it checked on stderr, and step-03 falls through to
-the title search and then creates an issue.
+the title search and then creates an issue. When `gh api` itself exits
+non-zero (a timeout, 404, auth or rate-limit failure), stderr also gets
+`WARN: could not verify candidate #N (gh exit RC)`, with gh's own stderr still
+discarded; closed issues, PRs and bad URLs are rejected without a warning.
 
 ## Helper function contract
 

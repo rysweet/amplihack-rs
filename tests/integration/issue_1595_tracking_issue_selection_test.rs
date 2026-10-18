@@ -99,7 +99,8 @@ fn write_executable(path: &Path, content: &str) {
 /// - `api repos/{owner}/{repo}/issues/N`: answered from `GH_API_<N>`:
 ///   `open`, `closed`, `pr` (an open pull request), `transferred` (open, but
 ///   its URL points at another repository), `nohttps` (open, but its URL has
-///   no `https://` scheme) or `garbage`. Unset gives a 404.
+///   no `https://` scheme), `garbage` or `timeout` (prints a token-like error
+///   and exits 124, as `timeout 30` does). Unset gives a 404.
 /// - `issue view N`: succeeds, as the real `gh` does, for any N whose
 ///   `GH_API_<N>` is set, including closed issues and pull requests, or when N
 ///   equals `GH_VIEW_ISSUE`. `GH_VIEW_URL` overrides the URL printed.
@@ -127,6 +128,7 @@ case "$1:$2" in
       nohttps) printf 'open\tfalse\tgithub.com/example-org/example-repo/issues/%s\n' "$n"; exit 0 ;;
       transferred) printf 'open\tfalse\thttps://github.com/other-org/other-repo/issues/%s\n' "$((n + 1000))"; exit 0 ;;
       garbage) printf 'not-a-tsv-row\n'; exit 0 ;;
+      timeout) echo "gh: request timed out for token ghp_FAKEFAKEFAKEFAKE" >&2; exit 124 ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
     ;;
@@ -719,6 +721,27 @@ fn marked_pull_request_is_rejected_and_a_new_issue_is_created() {
     let run = run_github("", "Fixes #42", &[("GH_API_42", "pr")]);
     run.assert_created();
     assert!(!run.stdout().contains("/pull/42"), "{}", run.diag());
+}
+
+/// A task-text candidate whose `gh api` lookup fails (here a timeout, exit
+/// 124) is reported with gh's exit code, gh's stderr stays out of the log,
+/// and selection falls through to creating an issue.
+#[test]
+fn candidate_gh_failure_reports_the_exit_code() {
+    let run = run_github("", "Fixes #42", &[("GH_API_42", "timeout")]);
+    run.assert_created();
+    assert!(run.looked_up(42), "{}", run.diag());
+    let stderr = run.stderr();
+    assert!(
+        stderr.contains("WARN: could not verify candidate #42 (gh exit 124)"),
+        "{}",
+        run.diag()
+    );
+    assert!(
+        !stderr.contains("ghp_FAKE"),
+        "gh's stderr must stay discarded\n{}",
+        run.diag()
+    );
 }
 
 /// (e) An incidental mention of a merged PR.

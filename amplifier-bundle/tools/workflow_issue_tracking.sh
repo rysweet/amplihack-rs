@@ -78,14 +78,15 @@ _tracking_issue_masked_text() {
 }
 
 # `N kind` lines for references of one kind (`marked` or `bare`), in order of
-# appearance.
+# appearance. Only grep's no-match exit (1) is accepted; a grep error (2) or a
+# sed failure is the function's non-zero status.
 _tracking_issue_refs() {
   local masked
   masked="$(_tracking_issue_masked_text)"
   if [ "$1" = "marked" ]; then
-    printf '%s\n' "$masked" | grep -oE '(^|[^a-z0-9_])(issue|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' | sed -E 's/.*#([0-9]+)$/\1 marked/' || true
+    printf '%s\n' "$masked" | { grep -oE '(^|[^a-z0-9_])(issue|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' || [ $? -eq 1 ]; } | sed -E 's/.*#([0-9]+)$/\1 marked/'
   else
-    printf '%s\n' "$masked" | grep -oE '(^|[^a-z0-9_#])#[0-9]+' | sed -E 's/.*#([0-9]+)$/\1 bare/' || true
+    printf '%s\n' "$masked" | { grep -oE '(^|[^a-z0-9_#])#[0-9]+' || [ $? -eq 1 ]; } | sed -E 's/.*#([0-9]+)$/\1 bare/'
   fi
 }
 
@@ -95,7 +96,6 @@ _tracking_issue_refs() {
 _tracking_issue_candidates() {
   { _tracking_issue_refs marked; _tracking_issue_refs bare; } \
     | awk '$1 ~ /^[1-9][0-9]{0,8}$/ && !seen[$1]++ && c < 5 { print; c++ }'
-  return 0
 }
 
 # Return 0 only if $1 is a single-line https:// URL ending in /issues/$2.
@@ -104,10 +104,12 @@ _is_github_issue_url() { [[ "$1" =~ ^https://[^[:space:]]+/issues/${2}$ ]]; }
 # Print the URL of issue N and return 0 only if it is an open issue, not a
 # pull request, in this repository. Read-only; every other outcome returns 1.
 _github_open_issue_url() {
-  local n row state is_pr url
+  local n row rc state is_pr url
   n="${1:-}"
   [[ "$n" =~ ^[0-9]+$ ]] || return 1
-  row="$(timeout 30 gh api "repos/{owner}/{repo}/issues/$n" --jq '[.state, (.pull_request != null), .html_url] | @tsv' </dev/null 2>/dev/null)" || return 1
+  # gh's stderr stays discarded (it can hold tokens); its exit code is logged.
+  row="$(timeout 30 gh api "repos/{owner}/{repo}/issues/$n" --jq '[.state, (.pull_request != null), .html_url] | @tsv' </dev/null 2>/dev/null)" \
+    || { rc=$?; echo "WARN: could not verify candidate #${n} (gh exit ${rc})" >&2; return 1; }
   IFS=$'\t' read -r state is_pr url <<< "$row" || return 1
   [ "$state" = "open" ] && [ "$is_pr" = "false" ] && _is_github_issue_url "$url" "$n" || return 1
   printf '%s\n' "$url"
