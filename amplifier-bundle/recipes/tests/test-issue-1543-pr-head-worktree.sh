@@ -20,8 +20,20 @@
 #   * the qa-team step, run where the preflight says, records head_sha=B and
 #     runs the scenario runner inside the worktree;
 #   * nothing changes when pr_number was not supplied;
-#   * autodrive-report reports MERGED with the PR number after a run whose
-#     build and crusty phases were skipped as already done.
+#   * a relative repo_path is resolved once, from the directory the run
+#     started in, not twice (sub/sub);
+#   * through the REAL recipe-runner-rs and the REAL composed recipes
+#     (auto-drive-to-merge, autodrive-build, both loops), with only
+#     default-workflow, the loop driver and the merge gate stood in for:
+#       - a fresh build with no pr_number sends BOTH loops to the same tree,
+#         although the runner hands the crusty loop's pr_number back into
+#         the parent when that phase returns (T20);
+#       - a run whose build and crusty phases are skipped as already done
+#         and whose gate merges reports MERGED with the PR number (T21).
+#
+# The merge_result read in autodrive-report, which the #1543 incident showed
+# as NOT_MERGED after a real merge, was fixed by #1511 (PR #1563, cf1f3e71);
+# this change does not touch it. T21 checks it end to end.
 #
 # The stub gh refuses everything but `pr view`; every case asserts that no
 # merge was ever attempted. Tests never touch the real checkout.
@@ -102,6 +114,9 @@ export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null HOME="$WORK/home"
 export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
 unset GIT_DIR GIT_WORK_TREE AMPLIHACK_HOME MERGE_GATE_RESULT BUILD_RESULT CRUSTY_LOOP_RESULT
+# This test can itself run inside an auto-drive round, whose environment
+# carries that run's PR; none of it may reach the fixtures.
+unset PR_NUMBER RECIPE_VAR_pr_number AUTODRIVE_PR_INPUT RECIPE_VAR_autodrive_pr_input EXISTING_BRANCH AUTODRIVE_STATE_DIR
 
 # --- stubs -------------------------------------------------------------------
 # gh: answers only `pr view` from STUB_* env, honouring --json/--jq; logs every
@@ -109,18 +124,23 @@ unset GIT_DIR GIT_WORK_TREE AMPLIHACK_HOME MERGE_GATE_RESULT BUILD_RESULT CRUSTY
 cat > "$STUB_BIN/gh" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${GH_LOG:-/dev/null}"
-if [ "${1:-}" != "pr" ] || [ "${2:-}" != "view" ]; then
+if [ "${1:-}" != "pr" ] || { [ "${2:-}" != "view" ] && [ "${2:-}" != "list" ]; }; then
   echo "stub gh: refusing '$*'" >&2; exit 97
 fi
 [ "${STUB_GH_FAIL:-0}" = "1" ] && { echo "stub gh: lookup failed" >&2; exit 1; }
-shift 2
+SUB="$2"; shift 2
 JQ=""
 while [ $# -gt 0 ]; do
   case "$1" in --jq) JQ="${2:-}"; shift 2 ;; *) shift ;; esac
 done
 OBJ="$(jq -cn --arg oid "${STUB_HEAD_OID:-}" --arg ref "${STUB_HEAD_REF:-}" \
   --arg state "${STUB_STATE:-OPEN}" --arg num "${STUB_PR:-7}" \
-  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,baseRefName:"main"}')"
+  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,baseRefName:"main",url:("https://example.invalid/pull/"+$num)}')"
+# `pr list`: the PR exists only once STUB_PR_EXISTS names an existing file
+# (the stand-in default-workflow creates it), as after a fresh build.
+if [ "$SUB" = list ]; then
+  if [ -n "${STUB_PR_EXISTS:-}" ] && [ -e "${STUB_PR_EXISTS}" ]; then OBJ="[$OBJ]"; else OBJ="[]"; fi
+fi
 if [ -n "$JQ" ]; then printf '%s' "$OBJ" | jq -r "$JQ"; else printf '%s\n' "$OBJ"; fi
 STUB
 # cargo: the rust-cli qa-team runner; records where it ran.
@@ -561,6 +581,133 @@ case "$(field "$OUT" pr)" in *[!0-9]*) fail T9-pr "pr is not digits-only: $(fiel
 report MERGE_GATE_RESULT='{"merge_result":"MERGED\",\"pr\":\"1","pr":"27"}'
 if printf '%s' "$OUT" | unique_keys; then pass T9b-json "report is valid JSON with unique keys"; else fail T9b-json "invalid report JSON: $OUT"; fi
 check_eq T9b-outcome "a malformed merge_result is NOT_MERGED" NOT_MERGED "$(field "$OUT" outcome)"
+
+echo "== T22: a relative repo_path is resolved once, from the launch directory =="
+make_fixture t22
+for loop in merge crusty; do
+  if [[ "$loop" == merge ]]; then body="$MERGE_PREFLIGHT"; else body="$CRUSTY_PREFLIGHT"; fi
+  rm -rf "$WORK/state-t22"
+  OUT="$(cd "$WORK/t22" && env REPO_PATH=main PR_NUMBER=7 AUTODRIVE_PR_INPUT=7 EXISTING_BRANCH=feat/x \
+    AUTODRIVE_STATE_DIR="$WORK/state-t22" AMPLIHACK_HOME="$REPO_ROOT" AMPLIHACK_STATE_DIR="$WORK/amplihack-state" \
+    bash -c "$body" 2>"$WORK/stderr")"; RC=$?; ERR="$(cat "$WORK/stderr")"
+  check_eq "T22-$loop-rc" "$loop preflight with repo_path=main succeeds" 0 "$RC"
+  check_eq "T22-$loop-repo" "$loop preflight repo is the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
+  OUT="$(cd "$WORK/t22" && env REPO_PATH=missing PR_NUMBER=7 AUTODRIVE_PR_INPUT=7 EXISTING_BRANCH=feat/x \
+    AUTODRIVE_STATE_DIR="$WORK/state-t22" AMPLIHACK_HOME="$REPO_ROOT" AMPLIHACK_STATE_DIR="$WORK/amplihack-state" \
+    bash -c "$body" 2>"$WORK/stderr")"; RC=$?; ERR="$(cat "$WORK/stderr")"
+  if [[ "$RC" -ne 0 && "$ERR" == *"cannot cd to REPO_PATH='missing'"* && "$(field "$OUT" should_run)" != true ]]; then
+    pass "T22-$loop-missing" "$loop preflight refuses a repo_path it cannot enter"
+  else
+    fail "T22-$loop-missing" "$loop preflight with repo_path=missing: rc=$RC, out=$OUT, stderr: ${ERR:0:300}"
+  fi
+done
+
+# --- the composed recipe through the real runner -----------------------------
+# Everything above runs step bodies with the environment supplied by hand. The
+# defect crusty found on PR #1588 lives between the steps: the runner copies a
+# sub-recipe's whole context back into the parent when it returns, so the
+# parent's `pr_number` after the crusty loop is build_result.pr. Only a run of
+# the composed recipe through the runner exercises that handover.
+RUNNER="${RECIPE_RUNNER_RS_PATH:-$(command -v recipe-runner-rs 2>/dev/null || true)}"
+[[ -n "$RUNNER" && -x "$RUNNER" ]] \
+  || harness_error "recipe-runner-rs not found (set RECIPE_RUNNER_RS_PATH, or run scripts/install-pinned-recipe-runner.sh); T20/T21 cannot run without it"
+
+# e2e_setup <name> — a stand-in amplihack home: the real tools and the real
+# auto-drive recipes, with the loop driver, the crusty re-review, the merge
+# gate and default-workflow replaced by recorders. Sets E2E_HOME E2E_LOG.
+E2E_HOME="" E2E_LOG=""
+e2e_setup() {
+  E2E_HOME="$WORK/e2e-$1"; E2E_LOG="$E2E_HOME/log"
+  mkdir -p "$E2E_HOME/amplifier-bundle/tools" "$E2E_HOME/amplifier-bundle/recipes" "$E2E_LOG"
+  cp "$REPO_ROOT"/amplifier-bundle/tools/*.sh "$E2E_HOME/amplifier-bundle/tools/" || harness_error "copy tools"
+  for r in auto-drive-to-merge autodrive-build autodrive-crusty-loop autodrive-merge-loop; do
+    cp "$RECIPES/$r.yaml" "$E2E_HOME/amplifier-bundle/recipes/" || harness_error "copy $r"
+  done
+  cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_loop.sh" <<'STUB'
+#!/usr/bin/env bash
+name=""; prev=""
+for a in "$@"; do [ "$prev" = "--loop-name" ] && name="$a"; prev="$a"; done
+log="$(cd "$(dirname "$0")/../.." && pwd -P)/log"
+printf '%s\n' "$@" > "$log/loop-$name.argv"
+echo '{"loop_result":"DONE"}'
+STUB
+  cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" <<'STUB'
+#!/usr/bin/env bash
+echo '{"before_round_result":"NO_REREVIEW"}'
+STUB
+  cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh" <<'STUB'
+#!/usr/bin/env bash
+log="$(cd "$(dirname "$0")/../.." && pwd -P)/log"
+printf '%s\n' "$@" > "$log/gate.argv"
+pr=""; prev=""
+for a in "$@"; do [ "$prev" = "--pr" ] && pr="$a"; prev="$a"; done
+printf '{"merge_result":"MERGED","pr":"%s"}\n' "$pr"
+STUB
+  cat > "$E2E_HOME/amplifier-bundle/recipes/default-workflow.yaml" <<STUB
+name: "default-workflow"
+description: "stand-in for #1543 T20: publishes the PR by creating the marker the gh stub reads"
+version: "1.0.0"
+steps:
+  - id: "stub-build"
+    type: "bash"
+    command: |
+      : > "$E2E_LOG/built"
+      echo built
+STUB
+}
+# e2e_run [-c key=value]... — run the composed recipe from the main checkout.
+E2E_OUT="" E2E_RC=0
+e2e_run() {
+  E2E_OUT="$(cd "$MAIN" && env -u AMPLIHACK_CONTEXT_FILE AMPLIHACK_HOME="$E2E_HOME" \
+    STUB_PR_EXISTS="$E2E_LOG/built" "$RUNNER" "$E2E_HOME/amplifier-bundle/recipes/auto-drive-to-merge.yaml" \
+    -R "$E2E_HOME/amplifier-bundle/recipes" -C "$MAIN" --no-auto-stage --output-format json \
+    -c repo_path="$MAIN" -c task_description="drive PR 7" "$@" 2>&1)"; E2E_RC=$?
+}
+argv_after() { awk -v k="$2" 'p{print; exit} $0==k{p=1}' "$1" 2>/dev/null; }
+# summary <field> — the autodrive-report output the runner returned for the run.
+summary() {
+  printf '%s' "$E2E_OUT" | python3 -c '
+import json, sys
+d = json.loads(sys.stdin.read())
+out = [r["output"] for r in d.get("step_results", []) if r.get("step_id") == "autodrive-report"]
+print(json.loads(out[0]).get(sys.argv[1], "") if out else "<no autodrive-report>")' "$1" 2>/dev/null \
+    || printf '<runner output is not JSON>'
+}
+
+echo "== T20: fresh build, no pr_number — both loops measure the same tree =="
+make_fixture t20
+e2e_setup t20
+e2e_run -c autodrive_state_dir="$WORK/state-t20"
+check_eq T20-rc "the composed recipe runs to the end" 0 "$E2E_RC"
+[[ "$E2E_RC" -eq 0 ]] || echo "${E2E_OUT: -3000}" >&2
+if [[ -e "$E2E_LOG/built" ]]; then pass T20-built "phase 1 ran default-workflow (fresh build)"; else fail T20-built "default-workflow did not run"; fi
+CRUSTY_REPO="$(argv_after "$E2E_LOG/loop-crusty.argv" --repo)"
+MERGE_REPO="$(argv_after "$E2E_LOG/loop-merge-ready.argv" --repo)"
+check_eq T20-crusty "the crusty loop ran in REPO_PATH" "$(real "$MAIN")" "$(real "$CRUSTY_REPO")"
+check_eq T20-merge "the merge loop ran in REPO_PATH, not a resolved PR worktree" "$(real "$MAIN")" "$(real "$MERGE_REPO")"
+check_eq T20-same "both loops got the same repo" "$(real "$CRUSTY_REPO")" "$(real "$MERGE_REPO")"
+check_eq T20-pr "the merge loop drove the PR phase 1 built" 7 "$(grep -m1 '^pr_number=' "$E2E_LOG/loop-merge-ready.argv" 2>/dev/null | cut -d= -f2-)"
+check_eq T20-outcome "the run reports MERGED" MERGED "$(summary outcome)"
+check_eq T20-report-pr "the run reports PR #7" 7 "$(summary pr)"
+
+echo "== T21: build and crusty skipped as already done, the gate merges — the run reports MERGED =="
+make_fixture t21
+e2e_setup t21
+( . "$E2E_HOME/amplifier-bundle/tools/autodrive_state.sh" \
+  && autodrive_private_dir "$WORK/state-t21" && autodrive_mark_phase_done "$WORK/state-t21" crusty-loop ) \
+  || harness_error "cannot mark the crusty loop done in the T21 state directory"
+e2e_run -c pr_number=7 -c existing_branch=feat/x -c autodrive_state_dir="$WORK/state-t21"
+check_eq T21-rc "the composed recipe runs to the end" 0 "$E2E_RC"
+[[ "$E2E_RC" -eq 0 ]] || echo "${E2E_OUT: -3000}" >&2
+if [[ -e "$E2E_LOG/built" ]]; then fail T21-build "default-workflow ran although PR #7 is open"; else pass T21-build "phase 1 was skipped: PR #7 is already open"; fi
+if [[ -e "$E2E_LOG/loop-crusty.argv" ]]; then fail T21-crusty "the crusty loop ran although it was recorded done"; else pass T21-crusty "phase 2 was skipped as already done"; fi
+check_eq T21-merge-repo "the merge loop ran in the PR worktree" "$WT" "$(real "$(argv_after "$E2E_LOG/loop-merge-ready.argv" --repo)")"
+check_eq T21-gate-pr "the gate was asked about PR #7" 7 "$(argv_after "$E2E_LOG/gate.argv" --pr)"
+check_eq T21-outcome "autodrive-report outcome is MERGED" MERGED "$(summary outcome)"
+check_eq T21-merge-result "autodrive-report merge_result is MERGED" MERGED "$(summary merge_result)"
+check_eq T21-report-pr "autodrive-report pr is 7" 7 "$(summary pr)"
+( . "$E2E_HOME/amplifier-bundle/tools/autodrive_state.sh" && autodrive_phase_done "$WORK/state-t21" merged ) \
+  && pass T21-recorded "the merge loop recorded the merge" || fail T21-recorded "the merged phase was not recorded"
 
 echo "== no merge was ever attempted =="
 if grep -Eq '(^| )merge( |$)' "$GH_LOG" "$GH_LOG".* 2>/dev/null; then

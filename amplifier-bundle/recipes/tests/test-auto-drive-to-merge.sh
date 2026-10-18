@@ -4386,6 +4386,10 @@ UNSET_ALIASES=()
 for name in "${OUT_NAMES[@]}"; do
   UNSET_ALIASES+=(-u "$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')")
 done
+# The run's own context, too: this test runs inside an auto-drive round, whose
+# environment carries the PR under review (PR_NUMBER=<that PR>), and the
+# report and the preflights read it before any step output (#1543).
+UNSET_ALIASES+=(-u PR_NUMBER -u RECIPE_VAR_pr_number -u AUTODRIVE_PR_INPUT -u RECIPE_VAR_autodrive_pr_input -u EXISTING_BRANCH)
 
 body_of() { # body_of <recipe> <step-id>
   local b

@@ -52,7 +52,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      REPO_CD_OK=0; cd "${REPO_PATH:-.}" 2>/dev/null && REPO_CD_OK=1
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
@@ -63,12 +63,15 @@ steps:
       . "$STATE_HELPER"
 
       # #1543: the operator's own pr_number outranks a guess from the launch checkout.
+      # The composer produces autodrive_pr_input as a step output, so it is
+      # read through its RECIPE_VAR_ name as well.
+      PR_INPUT="${AUTODRIVE_PR_INPUT:-${RECIPE_VAR_autodrive_pr_input:-}}"
       PR="${PR_NUMBER:-}"
-      case "$PR" in ''|*[!0-9]*) PR="${AUTODRIVE_PR_INPUT:-}" ;; esac
+      case "$PR" in ''|*[!0-9]*) PR="$PR_INPUT" ;; esac
       [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
-      [ -z "${AUTODRIVE_PR_INPUT:-}" ] || [ -n "$PR" ] \
-        || { echo "ERROR: pr_number '${AUTODRIVE_PR_INPUT}' is not a pull request number; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
+      [ -z "$PR_INPUT" ] || [ -n "$PR" ] \
+        || { echo "ERROR: pr_number '${PR_INPUT}' is not a pull request number; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
       BRANCH="detached"
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'detached')"
@@ -96,10 +99,15 @@ steps:
       # worktree and hand it to the loop; refuse rather than measure cwd.
       json_esc() { case "$1" in *[[:cntrl:]]*) return 1 ;; esac; local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
       REPO="${REPO_PATH:-.}"; HEAD_SHA=""
-      if [ "$RUN" = "true" ] && [ -n "${AUTODRIVE_PR_INPUT:-}" ]; then
+      if [ "$RUN" = "true" ] && [ -n "$PR_INPUT" ]; then
         PR_HEAD="${STATE_HELPER%/autodrive_state.sh}/autodrive_pr_head.sh"
         [ -f "$PR_HEAD" ] || { echo "ERROR: crusty loop: autodrive_pr_head.sh not found next to $STATE_HELPER; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
-        RES="$(bash "$PR_HEAD" --pr "$PR" --branch "${EXISTING_BRANCH:-}" --repo "${REPO_PATH:-.}")"
+        # The preflight already changed into REPO_PATH, so the resolver gets
+        # $PWD: passing REPO_PATH again would look a relative path up twice
+        # (sub/sub). A REPO_PATH it could not enter is refused, never
+        # replaced by the launch directory.
+        [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
+        RES="$(bash "$PR_HEAD" --pr "$PR" --branch "${EXISTING_BRANCH:-}" --repo "$PWD")"
         PRC=$?
         if [ "$PRC" -eq 3 ]; then
           echo "ERROR: PR #${PR} head branch '${EXISTING_BRANCH:-<headRefName>}' has no single worktree (searched REPO_PATH=${REPO_PATH:-.} and git worktree list); refusing to enter the crusty loop (#1543)" >&2

@@ -4970,6 +4970,30 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
 #[test]
 fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
     let recipe = recipe_yaml("auto-drive-to-merge");
+    // crusty round-1 on PR #1588: the runner copies a sub-recipe's whole
+    // context back into the parent, and the crusty loop is given
+    // pr_number={{build_result.pr}}, so `{{pr_number}}` read after that phase
+    // is the build phase's PR. The operator's value is captured once, before
+    // the first sub-recipe, and forwarded under a name no sub-recipe changes.
+    let seed = step(&recipe, "autodrive-pr-input");
+    assert_eq!(seed.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(
+        seed.get("output").and_then(Value::as_str),
+        Some("autodrive_pr_input")
+    );
+    assert!(
+        field(seed, "command").contains("RECIPE_VAR_pr_number"),
+        "autodrive-pr-input must print the operator's pr_number"
+    );
+    let seed_at = step_index(&recipe, "autodrive-pr-input");
+    for (i, s) in steps(&recipe).iter().enumerate() {
+        if s.get("type").and_then(Value::as_str) == Some("recipe") {
+            assert!(
+                seed_at < i,
+                "autodrive-pr-input must run before every sub-recipe step"
+            );
+        }
+    }
     for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
         let ctx = step(&recipe, id)
             .get("context")
@@ -4978,8 +5002,10 @@ fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
         assert_eq!(
             ctx.get(Value::from("autodrive_pr_input"))
                 .and_then(Value::as_str),
-            Some("{{pr_number}}"),
-            "{id} must forward the user's pr_number as autodrive_pr_input"
+            Some("{{autodrive_pr_input}}"),
+            "{id} must forward the operator's pr_number captured by \
+             autodrive-pr-input, not `{{pr_number}}`, which the crusty loop \
+             overwrites with build_result.pr"
         );
         assert_eq!(
             ctx.get(Value::from("existing_branch"))

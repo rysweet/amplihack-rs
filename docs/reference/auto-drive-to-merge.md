@@ -68,8 +68,9 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=fe
 Resolution runs in step-01 (the preflight) of `autodrive-crusty-loop.yaml` and
 `autodrive-merge-loop.yaml` when both of these hold:
 
-- the user supplied `pr_number`. The composer passes it to both loops as
-  `autodrive_pr_input`, together with `existing_branch`;
+- the user supplied `pr_number`. The composer's first step,
+  `autodrive-pr-input`, records it as `autodrive_pr_input` before any phase
+  runs, and both loops receive that value together with `existing_branch`;
 - the phase is going to run (`should_run` would be `true`).
 
 The PR number used is the build phase's `PR_NUMBER`, or `pr_number` itself
@@ -81,14 +82,25 @@ number, with no `PR_NUMBER` to override it, is refused before resolution:
 ERROR: pr_number 'abc' is not a pull request number; refusing to enter the crusty loop (#1543)
 ```
 
-When `pr_number` was not supplied, nothing changes. The loops use
+When `pr_number` was not supplied, nothing changes. Both loops use
 `${REPO_PATH:-.}`, call no `gh` head lookup, and never refuse on these grounds.
+This holds for the merge loop as well as the crusty loop, although by the time
+the merge loop starts `pr_number` holds the build phase's PR: the recipe
+runner copies a sub-recipe's whole context back into the parent when it
+returns, and the crusty loop is given `pr_number={{build_result.pr}}`. That is
+why the loops are told about the operator's input through
+`autodrive_pr_input`, which no sub-recipe changes, and not through
+`pr_number`.
 
-When resolution does run, `REPO_PATH` must be an absolute path or `.`. The
-preflight changes into `REPO_PATH` and then passes it to the resolver again,
-so a relative path such as `sub` is looked up as `sub/sub`. The resolver
-refuses it with exit `3` and the loop does not start. It never falls back to
-the current directory.
+When resolution does run, `REPO_PATH` may be absolute or relative to the
+directory the run started in. The preflight changes into `REPO_PATH` and
+passes the resulting `$PWD` to the resolver. A `REPO_PATH` the preflight
+cannot enter is refused before resolution; the loop never falls back to the
+current directory:
+
+```
+ERROR: cannot cd to REPO_PATH='sub'; refusing to enter the crusty loop (#1543)
+```
 
 ### The resolver
 
@@ -993,22 +1005,24 @@ when all of this output matches and `extract-json` exits `0`.
 
 The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
 `AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
-before. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
+before. The exception is `AUTODRIVE_PR_INPUT`: the composer's
+`autodrive-pr-input` step produces it as a step output (#1543), so each loop
+preflight reads it once in the dual-name form. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
 no change: the first declares step outputs but reads none, and the second
 already used the dual-name form.
 
 A read is one `${<NAME>:-` occurrence, so a line that reads the same output
 twice counts twice. Reads made inside a bundled tool, such as the merge
 round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 30 in all:
+here; that file uses the same form. There are 32 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 3 |
 | `autodrive-build.yaml` | 1 |
-| `autodrive-crusty-loop.yaml` | 6 |
+| `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 7 |
-| `autodrive-merge-loop.yaml` | 5 |
+| `autodrive-merge-loop.yaml` | 6 |
 | `autodrive-merge-round.yaml` | 8 |
 
 ### A stale bare variable wins
@@ -1524,11 +1538,20 @@ AUTO_DRIVE_TO_MERGE: MERGED — PR #27 (crusty loop: unknown, merge gate: MERGED
 Each phase result is read from its environment variable, then from the
 `RECIPE_VAR_` form: `${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}`, and the
 same for `MERGE_GATE_RESULT` and `CRUSTY_LOOP_RESULT`. A skipped phase leaves
-its own result empty, so the report does not depend on it.
+its own result empty, so the report does not depend on it. These fallbacks,
+and with them the `merge_result` read that the #1543 incident showed as
+`NOT_MERGED` after a real merge, came from #1511 (PR #1563). #1543 changes
+only where `pr` comes from. Cases T20 and T21 of
+`test-issue-1543-pr-head-worktree.sh` run the composed recipe through
+`recipe-runner-rs` and check the report: T21 with the build phase skipped
+because the PR is open, the crusty loop skipped because it is recorded done,
+and a merge gate that merges.
 
 `pr` is the first non-empty value of:
 
-1. `PR_NUMBER`, then `RECIPE_VAR_pr_number`;
+1. `PR_NUMBER`, then `RECIPE_VAR_pr_number`. By this step these hold the
+   build phase's PR, because the loops hand back the `build_result.pr` they
+   were given; on a run given `pr_number` that is the same PR;
 2. the merge gate result's `pr`;
 3. the build result's `pr`.
 
@@ -1584,7 +1607,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | Test | Location |
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| PR head and worktree resolution, refusal, run report (#1543) | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
+| PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build where both loops must get the same tree; skipped build and crusty phases followed by a merge) (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
