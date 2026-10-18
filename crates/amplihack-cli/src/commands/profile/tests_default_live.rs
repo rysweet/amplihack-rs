@@ -370,3 +370,26 @@ fn a_new_rotate_since_counts_as_a_swap() {
     e.rotate_ledger(&rotate_ledger("b", Some(11)));
     assert!(!still_live(&e.store, Some(&e.home), &live));
 }
+
+#[test]
+fn a_prototype_iso_since_is_compared_as_a_time() {
+    let e = env();
+    // The prototype writes `datetime.now().isoformat()`, in local time.
+    e.ledger(r#"{"live":"a","since":"2999-01-01T00:00:00"}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(2_000_000_000)));
+    assert_eq!(e.live(), (Some("a".into()), None), "prototype is later");
+    e.ledger(r#"{"live":"a","since":"2000-01-01T00:00:00"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
+}
+
+#[test]
+fn a_rotate_ledger_for_another_account_is_ignored_after_a_hand_change() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"u-other","since":10}"#);
+    assert_eq!(
+        e.live(),
+        (Some("a".into()), None),
+        "the account match decides"
+    );
+}

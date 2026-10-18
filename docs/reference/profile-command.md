@@ -315,14 +315,19 @@ The live profile is found once, before probing, and nothing is written:
    `<root>/.rotator/ledger.json`, written by an external rotator. If only one
    exists, it decides. If both exist and both are trusted, the one with the
    later `since` decides; a ledger with no `since` counts as older than one
-   with it, and on a tie the `profile rotate` ledger decides. If one of them
+   with it, and on a tie the `profile rotate` ledger decides. `since` may be
+   epoch seconds (the `profile rotate` ledger) or an ISO-8601 time with an
+   offset or in local time (the external rotator writes
+   `datetime.now().isoformat()`). If one of them
    cannot be trusted or read, its warning is printed and the other decides.
    A `profile rotate` ledger with no `live` value (written by a cycle that
    only raised an ALERT or found the rotator idle) names nobody and counts as
-   absent. Both are only read. The deciding ledger's `live` field names the profile
+   absent, and so does one whose `account` is not the account in
+   `~/.claude.json` (someone ran `/login` in `~/.claude`; the rotator raises a
+   hand-change ALERT and does not update its ledger). Both are only read. The deciding ledger's `live` field names the profile
    and its `since` is used only for the
-   [check after the probes](#swaps-during-the-probe); other fields are
-   ignored. The checks run in this order, and the first that fails decides:
+   [check after the probes](#swaps-during-the-probe); other fields, apart from
+   the `profile rotate` ledger's `account`, are ignored. The checks run in this order, and the first that fails decides:
 
    | `live` in a trusted ledger | Result | stderr |
    |----------------------------|--------|--------|

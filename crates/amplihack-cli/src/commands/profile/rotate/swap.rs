@@ -206,10 +206,11 @@ pub fn swap(
     abort_point("rotate-J0");
 
     if let Err(e) = exchange_logins(&t, &l) {
-        // A failed sync after the exchange still exchanged the logins:
-        // go on as journalled, or the logins would be filed under the
-        // wrong profiles with no journal to say so.
-        if ino_at(&t) != Some(live_ino) {
+        // Only a target that still holds its own login was not exchanged.
+        // A failed sync after the exchange still exchanged the logins: go
+        // on as journalled, or they would be filed under the wrong profiles
+        // with no journal to say so.
+        if ino_at(&t) == Some(target_ino) {
             return Err(abandon(store, rs, home, &mut j, refused(describe(e))));
         }
         eprintln!("warning: {}; the swap goes on", describe(e));
@@ -254,8 +255,15 @@ fn abandon(
 ) -> ProfileError {
     // The journal forgets the locks before they are released, so a journal
     // left behind cannot later remove a lock Claude made with a reused inode.
-    if let Err(e) = drop_locks(store, rs, home, j).and_then(|()| rs.delete_journal()) {
-        eprintln!("warning: the abandoned swap was not cleaned up: {e}");
+    // If it cannot be saved (a full disk), the locks are released anyway:
+    // the journal may not record them, and nothing else would.
+    let held = j.clone();
+    if let Err(e) = drop_locks(store, rs, home, j) {
+        eprintln!("warning: the abandoned swap's journal was not updated: {e}");
+        release_locks(store, home, &held);
+    }
+    if let Err(e) = rs.delete_journal() {
+        eprintln!("warning: the abandoned swap's journal was not removed: {e}");
         return err;
     }
     remove_unused_adoption(store, j);

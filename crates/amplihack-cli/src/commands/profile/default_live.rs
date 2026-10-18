@@ -132,6 +132,10 @@ pub(super) fn prototype(root: &Path) -> Prototype {
 }
 
 #[cfg(unix)]
+#[path = "default_live_since.rs"]
+mod since;
+
+#[cfg(unix)]
 mod unix {
     use super::super::auto_switch::{
         CREDS, check_root_private, euid, exists, read_bounded_nofollow, read_claude_json,
@@ -157,6 +161,9 @@ mod unix {
     pub(super) struct RotatorLedger {
         pub(super) live: Option<serde_json::Value>,
         since: Option<serde_json::Value>,
+        /// The rotate ledger's account key (uuid, else e-mail) of `live`.
+        #[serde(default)]
+        account: Option<serde_json::Value>,
     }
 
     pub(super) enum Ledger {
@@ -177,10 +184,13 @@ mod unix {
         let proto = || from(store, home, prototype(store.root()), Evidence::Ledger);
         // A rotate ledger that names nobody (an alert, an idle cycle) says
         // nothing about who is live, so it counts as absent.
+        // So does one whose account is not the one in `~/.claude.json`: a
+        // hand change the rotator alerts on and does not record.
         let rotate = match rotate(store.root()) {
             Ledger::Valid(r) if r.live.as_ref().is_none_or(serde_json::Value::is_null) => {
                 Ledger::Absent
             }
+            Ledger::Valid(r) if !account_matches(&r, home) => Ledger::Absent,
             l => l,
         };
         match rotate {
@@ -204,8 +214,22 @@ mod unix {
         }
     }
 
+    /// Whether the ledger's account, if it records one, is the account in
+    /// `~/.claude.json`.
+    fn account_matches(l: &RotatorLedger, home: &Path) -> bool {
+        let Some(key) = l.account.as_ref().and_then(serde_json::Value::as_str) else {
+            return true;
+        };
+        account(home).is_some_and(|a| {
+            a.uuid.as_deref() == Some(key)
+                || a.email
+                    .as_deref()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(key))
+        })
+    }
+
     fn since(l: &RotatorLedger) -> Option<f64> {
-        l.since.as_ref().and_then(serde_json::Value::as_f64)
+        super::since::epoch_secs(l.since.as_ref()?)
     }
 
     /// The live profile a ledger gives; without one, the account match.
