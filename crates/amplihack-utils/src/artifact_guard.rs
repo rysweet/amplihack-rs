@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 
 use thiserror::Error;
 
+mod gitlink;
+
+pub use gitlink::{is_at_or_under, is_in_reserved_worktrees_dir};
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ArtifactGuardConfig {
     repo: PathBuf,
@@ -275,6 +279,10 @@ pub struct ArtifactGuardReport {
     /// The revision provenance was measured against, when one resolved.
     pub baseline: Option<ArtifactBaseline>,
     pub preexisting_policy: PreExistingPolicy,
+    /// Repo-relative paths of the worktrees registered inside the scanned top
+    /// level, prunable ones included (issue #1528). Sorted and deduplicated.
+    /// The CLI never prints a deleting command for a root holding one.
+    pub registered_worktrees: Vec<String>,
 }
 
 impl ArtifactGuardReport {
@@ -292,13 +300,15 @@ impl ArtifactGuardReport {
         self.mode.is_gate() && self.preexisting_policy == PreExistingPolicy::Report
     }
 
-    /// Violations that must fail the scan.
+    /// Violations that must fail the scan. A run-worktree gitlink always
+    /// blocks, whatever the pre-existing policy (issue #1528).
     pub fn blocking_violations(&self) -> Vec<&ArtifactViolation> {
         let advisory = self.preexisting_is_advisory();
         self.violations
             .iter()
             .filter(|violation| {
-                !(advisory && violation.provenance == ArtifactProvenance::PreExisting)
+                violation.rule_id == RUN_WORKTREE_GITLINK
+                    || !(advisory && violation.provenance == ArtifactProvenance::PreExisting)
             })
             .collect()
     }
@@ -311,7 +321,10 @@ impl ArtifactGuardReport {
         }
         self.violations
             .iter()
-            .filter(|violation| violation.provenance == ArtifactProvenance::PreExisting)
+            .filter(|violation| {
+                violation.rule_id != RUN_WORKTREE_GITLINK
+                    && violation.provenance == ArtifactProvenance::PreExisting
+            })
             .collect()
     }
 
@@ -341,6 +354,10 @@ pub enum ArtifactGuardError {
     Baseline { rev: String, reason: String },
     #[error("artifact guard allowlist error: {0}")]
     Allowlist(String),
+    /// `git worktree list` succeeded but its output cannot be trusted. The
+    /// payload is one of three fixed strings, never Git's output.
+    #[error("artifact guard could not list worktrees: {0}")]
+    WorktreeList(String),
     #[error("artifact guard path escaped repository root: {0}")]
     PathEscape(String),
     #[error("artifact guard I/O error: {0}")]
@@ -407,7 +424,17 @@ impl AllowlistEntry {
 
 const REMEDIATION: &str = "remove the artifact from the parent worktree, or move generated/runtime output into an ignored isolated directory outside the parent worktree; if intentional, add a narrow reviewed .amplihack-artifact-allowlist entry";
 
+/// Rule id for a run worktree recorded as a gitlink in the index (issue
+/// #1528). It matches index entries, not path patterns, and cannot be
+/// allowlisted.
+pub const RUN_WORKTREE_GITLINK: &str = "run-worktree-gitlink";
+
 const DEFAULT_RULES: &[ArtifactRule] = &[
+    ArtifactRule {
+        id: RUN_WORKTREE_GITLINK,
+        description: "Run worktree recorded as a gitlink",
+        remediation: "run worktree recorded as a gitlink; drop the entry from the index only (git rm --cached -f keeps the worktree and its files) and commit from inside the PR worktree; cannot be allowlisted",
+    },
     ArtifactRule {
         id: "node-modules",
         description: "Node dependency tree",
@@ -449,6 +476,10 @@ pub fn scan_artifacts(
     config: &ArtifactGuardConfig,
 ) -> Result<ArtifactGuardReport, ArtifactGuardError> {
     let repo = resolve_repo_root(&config.repo)?;
+    // Read fail-loud, in every mode (issue #1528): the gitlink rule and the
+    // removal roots below both depend on it, so a failed or untrustworthy
+    // `git worktree list` is an error, never an empty or unknown list.
+    let registered_worktrees = gitlink::registered_worktrees(&repo)?;
     let allowlist = load_effective_allowlist(config, &repo)?;
     // `staged` mode only needs the indexed manifests for the generic-segment
     // exemption, not the whole index; the full index and the worktree list
@@ -464,18 +495,16 @@ pub fn scan_artifacts(
         Some(index) => manifest_dirs(index),
         None => manifest_dirs(&read_manifest_paths(&repo)?),
     };
-    // Files inside legitimately-registered sibling task worktrees (concurrent
-    // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution:
-    // they are never flagged (issue #857) and never swept into a removal root.
-    // Only the worktree scans can list such files, so `staged` mode does not
-    // ask. `None` means `git worktree list` failed; see [`scan_artifacts`]'s
-    // handling of directory roots below.
-    let mut registered = if config.mode.scans_worktree() {
-        registered_nested_worktree_prefixes(&repo)
+    // Ignored files inside legitimately-registered sibling task worktrees
+    // (concurrent recipe runs nested under `<repo>/worktrees/`) are NOT leaked
+    // pollution: they are never flagged (issue #857), and no registered
+    // worktree is ever swept into a removal root (below). Only the worktree
+    // scans can list such files, so `staged` mode skips nothing.
+    let skip_prefixes = if config.mode.scans_worktree() {
+        registered_nested_worktree_prefixes(&registered_worktrees)
     } else {
-        Some(Vec::new())
+        Vec::new()
     };
-    let skip_prefixes = registered.clone().unwrap_or_default();
     // Paths outside the index that the allowlist marks as source.
     let mut allowed_outside_index = BTreeSet::new();
     let mut violations = Vec::new();
@@ -484,7 +513,11 @@ pub fn scan_artifacts(
     let mut add =
         |paths: &[String], source: ArtifactSource, introduced: Option<&BTreeSet<String>>| {
             for path in paths {
-                if source != ArtifactSource::Tracked
+                // The #857 exemption covers the ignored-present scan only: a
+                // registered worktree under a `worktrees/` that is NOT ignored
+                // is an untracked directory a broad add would sweep in, and it
+                // stays a violation (issue #1528, R6).
+                if source == ArtifactSource::IgnoredPresent
                     && is_inside_registered_nested_worktree(path, &skip_prefixes)
                 {
                     continue;
@@ -555,47 +588,40 @@ pub fn scan_artifacts(
         })
         .collect();
     if !dir_roots.is_empty() {
-        if registered.is_none() {
-            // `git worktree list` failed, so a registered sibling worktree
-            // could sit under any directory root. Rather than end the run (a
-            // new way for every hook to fail) or risk `rm -rf -- 'worktrees'`,
-            // offer only exact-path remedies this time.
-            narrow_every_root_to_its_path(&mut violations);
-        } else {
-            let index = match index.take() {
-                Some(index) => index,
-                None => read_index(&repo)?,
-            };
-            let mut protected = protected_index_paths(&index, &allowlist, &manifests);
-            protected.append(&mut allowed_outside_index);
-            protected.extend(
-                registered
-                    .take()
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|prefix| prefix.trim_end_matches('/').to_string()),
-            );
-            // A mode may skip untracked or ignored files (`staged`, and the
-            // gates per issue #928), yet a directory root still covers them on
-            // disk. List every file outside the index under each candidate
-            // root, ignored included, so an allowlisted one is protected
-            // whatever the mode.
-            let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
-            args.extend(dir_roots.iter().map(String::as_str));
-            for path in git_paths(&repo, &args)? {
-                // A nested repository is listed as one directory entry and
-                // never looked into, so whatever it holds is protected whole.
-                if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
-                    protected.insert(path);
-                }
+        let index = match index.take() {
+            Some(index) => index,
+            None => read_index(&repo)?,
+        };
+        let mut protected = protected_index_paths(&index, &allowlist, &manifests);
+        protected.append(&mut allowed_outside_index);
+        // Every registered worktree inside the top level, not only those under
+        // `worktrees/` (issue #1528): no removal root may cover one.
+        protected.extend(registered_worktrees.iter().cloned());
+        // A mode may skip untracked or ignored files (`staged`, and the
+        // gates per issue #928), yet a directory root still covers them on
+        // disk. List every file outside the index under each candidate
+        // root, ignored included, so an allowlisted one is protected
+        // whatever the mode.
+        let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
+        args.extend(dir_roots.iter().map(String::as_str));
+        for path in git_paths(&repo, &args)? {
+            // A nested repository is listed as one directory entry and
+            // never looked into, so whatever it holds is protected whole.
+            if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
+                protected.insert(path);
             }
-            narrow_roots_holding_protected_paths(&mut violations, &protected);
         }
+        narrow_roots_holding_protected_paths(&mut violations, &protected);
     }
 
+    add_run_worktree_gitlinks(&repo, &registered_worktrees, &mut violations)?;
+
+    // Gitlinks lead, so the CLI's table, its commands and its first detail
+    // all start with the violation that cannot be allowlisted.
     violations.sort_by(|left, right| {
-        left.path
-            .cmp(&right.path)
+        (left.rule_id != RUN_WORKTREE_GITLINK)
+            .cmp(&(right.rule_id != RUN_WORKTREE_GITLINK))
+            .then(left.path.cmp(&right.path))
             .then(left.source.cmp(&right.source))
             .then(left.rule_id.cmp(&right.rule_id))
     });
@@ -606,7 +632,60 @@ pub fn scan_artifacts(
         violations,
         baseline,
         preexisting_policy: config.preexisting_policy,
+        registered_worktrees,
     })
+}
+
+/// Report every run-worktree gitlink in the index, in every mode (issue
+/// #1528). Each one claims its path and everything under it from the path
+/// rules, so it is reported once, with the one remedy that works on a
+/// gitlink. It bypasses the allowlist and is always introduced: the whole
+/// index is read, so a gitlink already committed is caught too. It has no
+/// removal root: nothing under a gitlink is ever deleted, only the index
+/// entry dropped.
+fn add_run_worktree_gitlinks(
+    repo: &Path,
+    registered_worktrees: &[String],
+    violations: &mut Vec<ArtifactViolation>,
+) -> Result<(), ArtifactGuardError> {
+    let gitlinks: Vec<String> = gitlink::index_gitlinks(repo)?
+        .into_iter()
+        .filter(|path| gitlink::is_run_worktree_gitlink(path, registered_worktrees))
+        .collect();
+    if gitlinks.is_empty() {
+        return Ok(());
+    }
+    violations.retain(|violation| {
+        !gitlinks
+            .iter()
+            .any(|gitlink| gitlink::is_at_or_under(&violation.path, gitlink))
+    });
+
+    let mut staged = BTreeSet::new();
+    collect_diff_paths(
+        repo,
+        &["diff", "--cached", "--name-only", "-z"],
+        &mut staged,
+    )?;
+    let remediation = rule(RUN_WORKTREE_GITLINK)
+        .expect("RUN_WORKTREE_GITLINK is in DEFAULT_RULES")
+        .remediation;
+    for path in gitlinks {
+        let source = if staged.contains(&path) {
+            ArtifactSource::Staged
+        } else {
+            ArtifactSource::Tracked
+        };
+        violations.push(ArtifactViolation {
+            path,
+            source,
+            rule_id: RUN_WORKTREE_GITLINK.to_string(),
+            remediation: remediation.to_string(),
+            provenance: ArtifactProvenance::Introduced,
+            removal_root: None,
+        });
+    }
+    Ok(())
 }
 
 /// Resolve the revision the change under review is measured against.
@@ -701,11 +780,9 @@ fn introduced_paths(
     Ok(paths)
 }
 
-fn collect_diff_paths(
-    repo: &Path,
-    args: &[&str],
-    paths: &mut BTreeSet<String>,
-) -> Result<(), ArtifactGuardError> {
+/// Run `git -C <repo> <args>` (through [`guard_git`]) and return its stdout;
+/// a spawn failure or a non-zero exit is an [`ArtifactGuardError::Git`].
+fn git_stdout(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ArtifactGuardError> {
     let output = guard_git()
         .args(["-C"])
         .arg(repo)
@@ -723,7 +800,15 @@ fn collect_diff_paths(
             stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
         });
     }
-    for raw in output.stdout.split(|byte| *byte == 0) {
+    Ok(output.stdout)
+}
+
+fn collect_diff_paths(
+    repo: &Path,
+    args: &[&str],
+    paths: &mut BTreeSet<String>,
+) -> Result<(), ArtifactGuardError> {
+    for raw in git_stdout(repo, args)?.split(|byte| *byte == 0) {
         if raw.is_empty() {
             continue;
         }
@@ -835,25 +920,7 @@ fn guard_git() -> std::process::Command {
 /// unreadable index must not silently change what the guard matches or which
 /// removal commands it prints.
 fn git_paths(repo: &Path, args: &[&str]) -> Result<Vec<String>, ArtifactGuardError> {
-    let output = guard_git()
-        .args(["-C"])
-        .arg(repo)
-        .args(args)
-        .output()
-        .map_err(|error| ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: None,
-            stderr: error.to_string(),
-        })?;
-    if !output.status.success() {
-        return Err(ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
-    }
-    Ok(output
-        .stdout
+    Ok(git_stdout(repo, args)?
         .split(|byte| *byte == 0)
         .map(|raw| normalize_slashes(String::from_utf8_lossy(raw).trim_end_matches('/')))
         .filter(|path| !path.is_empty())
@@ -919,16 +986,6 @@ fn narrow_roots_holding_protected_paths(
     }
 }
 
-/// Replace every directory removal root with the violating path itself. Used
-/// when the guard cannot tell what a directory root would cover.
-fn narrow_every_root_to_its_path(violations: &mut [ArtifactViolation]) {
-    for violation in violations {
-        if violation.removal_root.is_some() {
-            violation.removal_root = Some(violation.path.clone());
-        }
-    }
-}
-
 fn load_effective_allowlist(
     config: &ArtifactGuardConfig,
     repo: &Path,
@@ -967,45 +1024,18 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
 }
 
 /// Repo-relative path prefixes (each ending in `/`) of git worktrees that are
-/// registered under `<repo>/worktrees/`. These are legitimate concurrent task
-/// worktrees created by other recipe runs — not leaked scratch — so the artifact
-/// guard must never flag their contents (issue #857), and no removal root may
-/// cover them (issue #1536).
-///
-/// Best effort, as before issue #1536: `None` when `git worktree list` cannot
-/// run or fails. The caller then flags nothing as nested-worktree content and
-/// offers no directory-wide removal command, because an empty list would let
-/// `rm -rf -- 'worktrees'` sweep every sibling worktree. A failure never ends
-/// the run.
-fn registered_nested_worktree_prefixes(repo: &Path) -> Option<Vec<String>> {
-    let output = guard_git()
-        .args(["-C"])
-        .arg(repo)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
-    let mut prefixes = Vec::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let Some(raw) = line.strip_prefix("worktree ") else {
-            continue;
-        };
-        let wt = Path::new(raw);
-        let wt_canon = wt.canonicalize().unwrap_or_else(|_| wt.to_path_buf());
-        let Ok(rel) = wt_canon.strip_prefix(&repo_canon) else {
-            continue;
-        };
-        let rel = normalize_slashes(rel.to_string_lossy().trim_end_matches('/'));
-        // Only worktrees nested under `<repo>/worktrees/` — never the repo root
-        // itself (rel == "") nor unrelated paths.
-        if rel.starts_with("worktrees/") {
-            prefixes.push(format!("{rel}/"));
-        }
-    }
-    Some(prefixes)
+/// registered under `<repo>/worktrees/`, prunable ones included. These are
+/// legitimate concurrent task worktrees created by other recipe runs — not
+/// leaked scratch — so the artifact guard must never flag their contents
+/// (issue #857). Built on [`ArtifactGuardReport::registered_worktrees`], so
+/// one strict parser reads `git worktree list` (issue #1528); a failure to
+/// read it ends the scan with an error instead of an unknown list.
+fn registered_nested_worktree_prefixes(registered_worktrees: &[String]) -> Vec<String> {
+    registered_worktrees
+        .iter()
+        .filter(|rel| rel.starts_with("worktrees/"))
+        .map(|rel| format!("{rel}/"))
+        .collect()
 }
 
 /// Whether `raw_path` (a repo-relative scan path) lies inside one of the

@@ -78,11 +78,11 @@ steps:
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
-        cd "$WORKTREE_SETUP_WORKTREE_PATH"
-      elif [ -d "${REPO_PATH:-}" ]; then
-        cd "$REPO_PATH"
-      fi
+      # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
+      skip() { echo "WARNING: step-20a $1; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
+      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
+      { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
@@ -93,18 +93,11 @@ steps:
     command: |
       set -euo pipefail
       : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
-        cd "$WORKTREE_SETUP_WORKTREE_PATH"
-      elif [ -d "${REPO_PATH:-}" ]; then
-        echo "WARNING: step-20b worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2
-        cd "$REPO_PATH"
-      else
-        echo "WARNING: step-20b worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2
-      fi
-      if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        echo "ERROR: step-20b-push-cleanup requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
-        exit 1
-      fi
+      # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
+      skip() { echo "WARNING: step-20b $1; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
+      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
+      { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
@@ -120,7 +113,7 @@ steps:
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A
+      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"

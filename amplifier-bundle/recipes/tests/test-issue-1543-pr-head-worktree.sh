@@ -150,7 +150,7 @@ while [ $# -gt 0 ]; do
 done
 OBJ="$(jq -cn --arg oid "${STUB_HEAD_OID:-}" --arg ref "${STUB_HEAD_REF:-}" \
   --arg state "${STUB_STATE:-OPEN}" --arg num "${STUB_PR:-7}" \
-  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,baseRefName:"main",url:("https://example.invalid/pull/"+$num)}')"
+  '{number:($num|tonumber),state:$state,mergedAt:null,headRefOid:$oid,headRefName:$ref,isCrossRepository:false,baseRefName:"main",url:("https://example.invalid/pull/"+$num)}')"
 # `pr list`: the PR exists only once STUB_PR_EXISTS names an existing file
 # (the stand-in default-workflow creates it), as after a fresh build.
 if [ "$SUB" = list ]; then
@@ -190,6 +190,13 @@ STUB
 # recipe_context_value.sh, found on the same tool ladder as the loop helper.
 cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/amplifier-bundle/tools/" \
   || harness_error "recipe_context_value.sh missing from the bundle"
+# #1528: step-02 of both loops takes the review dir from the guard and the
+# rounds' worktree from the PR-worktree resolver, both beside the loop helper.
+# They are the real tools: they decide where the loop runs.
+for t in autodrive_worktree_guard.sh autodrive_pr_worktree.sh workflow_worktree_root.sh; do
+  cp "$REPO_ROOT/amplifier-bundle/tools/$t" "$FAKE_HOME/amplifier-bundle/tools/" \
+    || harness_error "$t missing from the bundle"
+done
 # PR #1588 review: step-02 passes the round recipe by absolute path from the
 # tree it took the loop helper from, and refuses when it is missing there.
 mkdir -p "$FAKE_HOME/amplifier-bundle/recipes"
@@ -204,7 +211,10 @@ install_fake_tools() {
   mkdir -p "$1" "$1/../recipes"
   cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" \
-     "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" "$1/"
+     "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_worktree_guard.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_pr_worktree.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/workflow_worktree_root.sh" "$1/"
   cp "$FAKE_HOME"/amplifier-bundle/recipes/*.yaml "$1/../recipes/"
 }
 round_of() { [[ "$1" == merge ]] && echo autodrive-merge-round || echo autodrive-crusty-round; }
@@ -227,6 +237,11 @@ make_fixture() {
   git -C "$WT" commit -q -am B || harness_error "commit B failed"
   SHA_B="$(git -C "$WT" rev-parse HEAD)"
   [ "$SHA_A" != "$SHA_B" ] || harness_error "fixture main and PR heads must differ"
+  # #1528: step-02's PR-worktree resolver asks origin whether the local tip
+  # is current, and refuses when origin cannot be asked; give it one.
+  git init -q --bare "$base/origin.git" || harness_error "git init --bare failed"
+  git -C "$MAIN" remote add origin "$base/origin.git" \
+    && git -C "$MAIN" push -q origin main feat/x || harness_error "push to fixture origin failed"
   WT="$(cd "$WT" && pwd -P)"
   export STUB_HEAD_OID="$SHA_B" STUB_HEAD_REF="feat/x" STUB_STATE=OPEN STUB_PR=7 STUB_GH_FAIL=0
 }

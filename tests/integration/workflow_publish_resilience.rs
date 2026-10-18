@@ -356,13 +356,21 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
     run_cmd(&repo, "git", &["add", "feature.txt"]);
     run_cmd(&repo, "git", &["commit", "-m", "feature"]);
     run_cmd(&repo, "git", &["push", "-u", "origin", "feature"]);
+    // Step 15 commits only at the top of a linked task worktree (#1528).
+    run_cmd(&repo, "git", &["switch", "main"]);
+    let worktree = tmp.path().join("worktree");
+    run_cmd(
+        &repo,
+        "git",
+        &["worktree", "add", worktree.to_str().unwrap(), "feature"],
+    );
 
     let output = Command::new("bash")
         .arg("-c")
         .arg(command)
-        .current_dir(&repo)
+        .current_dir(&worktree)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
-        .env("WORKTREE_SETUP_WORKTREE_PATH", &repo)
+        .env("WORKTREE_SETUP_WORKTREE_PATH", &worktree)
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
             workspace_helper_path("workflow_runtime_artifacts.sh"),

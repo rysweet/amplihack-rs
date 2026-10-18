@@ -291,7 +291,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, and the evidence-gated merge
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
-- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, and the evidence-gated merge
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, the evidence-gated merge, and why rounds commit only in the pull request's worktree
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
 - [Pass Large Recipe Context and Agent Text](howto/pass-large-recipe-context.md) - `--context-file`, `--context-from-file`, `--body-file` and `git commit -F` for values that would exceed the argument limit
@@ -775,6 +775,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [CS Validator](cs-validator/README.md) - Code style validation
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
+- [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 
 ### Code Review
 
