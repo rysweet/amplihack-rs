@@ -29,8 +29,7 @@
 #             and NEVER retried into.
 #
 # --before-round <script> (optional) runs `bash <script> --repo <repo> --review-dir
-# <dir> --state-dir <dir> -c <key=value>... --context-from-file
-# task_description=<file>`, with the context the round gets,
+# <dir> --state-dir <dir>` plus the round's -c and --context-from-file context
 # before EVERY round, round 1 included. It runs in this shell's process tree,
 # so a loop it starts runs at the depth of THIS loop, never one recipe runner
 # deeper. The merge-ready loop uses it for autodrive_crusty_rereview.sh, which
@@ -42,9 +41,8 @@
 # BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
 # which joins the round's line in the history the evaluator reads.
 #
-# Policy: this workflow NEVER passes a hook-skipping commit flag or any
-# branch-protection bypass. See
-# docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
+# Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-
+# protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
 set -uo pipefail
 
@@ -157,11 +155,10 @@ escalate() { # escalate <verdict> <why>
 PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$ROUND_RECIPE" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; } # #1528: see that file
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
 # --- preflight: the terminator must resolve BEFORE round 1 ------------------
-# Both loops delegate termination to `loop-health-evaluator`, run by its path
-# in the launch-side bundle. Unresolved, the first round still runs in full — a
-# crusty review, a builder fix pass, commits pushed — and only then dies with
-# "returned STUCK (or an unreadable verdict)", blaming the loop for a missing
-# dependency. Resolve it first and refuse by name, before any round is spent.
+# Both loops delegate termination to `loop-health-evaluator`, run by its path in
+# the launch-side bundle. Unresolved, a full round (review, fix pass, commits
+# pushed) still runs and then dies as "returned STUCK (or an unreadable
+# verdict)", blaming the loop. Resolve it first and refuse by name.
 if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE_PATH" >/dev/null 2>&1; then
   echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve." >&2
   echo "  It is this loop's ONLY terminator (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
