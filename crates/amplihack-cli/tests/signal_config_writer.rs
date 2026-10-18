@@ -1,6 +1,6 @@
 //! TDD contract — `amplihack signal setup` config generation (#921).
 //!
-//! Run with: `cargo test -p amplihack-cli --features signal --test signal_config_writer`
+//! Run with: `cargo test -p amplihack-cli --features signal --test cli_integration signal_config_writer::`
 //!
 //! `commands::signal::config_writer::to_toml` produces the `signal-config.toml`
 //! that onboarding writes to `~/.amplihack/signal-config.toml`. The critical

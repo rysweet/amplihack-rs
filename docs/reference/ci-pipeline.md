@@ -266,6 +266,27 @@ test:
   cxx); restoring `target/` can exhaust runner disk before tests start, so
   target output is never cached (issue #744). nextest lowers peak disk; caching
   `target/` here would fight that.
+- **One process locally, one per test in CI.** Every file in
+  `crates/amplihack-cli/tests/` is a module of one test binary,
+  `cli_integration` (crate root `crates/amplihack-cli/tests/main.rs`; the
+  package sets `autotests = false`). A former target is selected with a module
+  filter, for example
+  `cargo test -p amplihack-cli --test cli_integration cargo_cxx_pin::`.
+  nextest runs each test in its own process, but a local `cargo test` runs all
+  of them as threads of one process. A test that changes `HOME`, `PATH` or the
+  working directory in-process therefore runs its body in a child process of
+  the binary (`support::quiet_process::in_quiet_process`) and makes the change
+  there with `child_set_var`, `child_remove_var` or `child_set_current_dir`,
+  which panic anywhere else. Stubs that tests exec are written with
+  `support::exec_stub`, so this process never holds a write descriptor on them
+  (ETXTBSY). Guards in
+  `tests/integration/test_harness_binary_path_contract_test.rs` fail on a `.rs`
+  file at any depth that no module declaration reachable from `main.rs` loads,
+  on a `#[cfg]` on a `mod` line in `main.rs`, on a test target other than
+  `cli_integration` and `lbug_ffi` (from `cargo metadata`), and on a
+  `set_var`, `remove_var` or `set_current_dir` call outside
+  `support/quiet_process.rs`. Feature-gated modules such as `signal_*` build
+  only with their feature, so pass `--features signal` to run them locally.
 
 ## Integration test binary convention
 

@@ -20,7 +20,6 @@
 //! 200 KiB, above the 131,072-byte limit on a single argv or environment
 //! string.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -169,8 +168,7 @@ fn drive(task: Option<&str>) -> Run {
     // checkout and `repo` its linked worktree, as in a real run.
     main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
-    std::fs::write(&stub, STUB).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
 
     let script = repo_root().join("amplifier-bundle/tools/autodrive_loop.sh");
     let path = format!(
