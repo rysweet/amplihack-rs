@@ -193,7 +193,7 @@ cmd_loop_preflight() {
   rd="$(real "$dir")"
   [ -n "$rd" ] || refuse UNTRUSTED_REVIEW_DIR "review dir '${dir}' is not a directory"
   inside "$rd" "$repo_real" \
-    && refuse UNTRUSTED_REVIEW_DIR "review dir ${rd} is the tree under review (${repo_real}) or inside it; pass --review-dir the main checkout (the loop recipes derive it from repo_path with review-dir), and keep the pull request in a linked worktree, never the main checkout"
+    && refuse UNTRUSTED_REVIEW_DIR "review dir ${rd} is the tree under review (${repo_real}) or inside it; pass --review-dir the main checkout (the loop recipes derive it from the preflight repo with review-dir), and keep the pull request in a linked worktree, never the main checkout"
   why="$(not_main_checkout "$rd" "$repo")"
   [ -z "$why" ] || refuse UNTRUSTED_REVIEW_DIR "${why}; pass --review-dir the main checkout of the pull request's repository"
   round_path="$(launch_recipe "$round" "$repo_real")" \
