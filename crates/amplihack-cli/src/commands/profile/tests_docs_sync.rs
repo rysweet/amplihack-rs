@@ -257,3 +257,27 @@ fn rotate_log_grammar_is_documented() {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }
 }
+
+/// The how-to quotes each refusal and recovery reason as the code prints it,
+/// and its examples are the code's `Display` output.
+#[cfg(unix)]
+#[test]
+fn rotate_howto_quotes_the_refusal_reasons_word_for_word() {
+    use super::ProfileError as E;
+    for reason in super::rotate::DOCUMENTED_REFUSALS {
+        assert!(
+            ROTATE_HOWTO.contains(reason),
+            "rotate how-to is missing `{reason}`"
+        );
+    }
+    for e in [
+        E::RotateRefused("profile work already has a login".into()),
+        E::RotateInconsistent("the login files are not where the journal expects".into()),
+    ] {
+        let line = format!("error: {e}\nhint: {}", e.hint());
+        assert!(
+            ROTATE_HOWTO.contains(&line),
+            "rotate how-to is missing:\n{line}"
+        );
+    }
+}

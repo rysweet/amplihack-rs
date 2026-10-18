@@ -175,7 +175,15 @@ mod unix {
             return (None, None);
         }
         let proto = || from(store, home, prototype(store.root()), Evidence::Ledger);
-        match rotate(store.root()) {
+        // A rotate ledger that names nobody (an alert, an idle cycle) says
+        // nothing about who is live, so it counts as absent.
+        let rotate = match rotate(store.root()) {
+            Ledger::Valid(r) if r.live.as_ref().is_none_or(serde_json::Value::is_null) => {
+                Ledger::Absent
+            }
+            l => l,
+        };
+        match rotate {
             Ledger::Absent => proto(),
             // A damaged rotate ledger is reported; the prototype's decides.
             Ledger::Bad(w) => match prototype(store.root()) {

@@ -20,6 +20,27 @@ use std::path::{Path, PathBuf};
 
 const ADOPT_NAME: &str = "default-original";
 
+// The reasons the how-to quotes word for word; `tests_docs_sync` holds the
+// docs to them.
+const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
+const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
+const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with one link";
+const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
+const NO_EXCHANGE: &str = "atomic exchange is not supported here";
+const ALREADY_LOGGED_IN: &str = "already has a login";
+const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
+
+#[cfg(test)]
+pub const DOCUMENTED: [&str; 7] = [
+    HOME_NOT_OWNED,
+    DOT_CLAUDE_NOT_PRIVATE,
+    LOGIN_NOT_MOVABLE,
+    DIFFERENT_DEVICES,
+    NO_EXCHANGE,
+    ALREADY_LOGGED_IN,
+    LOGINS_MISPLACED,
+];
+
 /// Where the outgoing login goes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Source {
@@ -38,6 +59,14 @@ pub enum RecoverOutcome {
 
 fn refused(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateRefused(msg.into())
+}
+
+fn describe(e: MoveError) -> String {
+    match e {
+        MoveError::Unsupported => NO_EXCHANGE.to_string(),
+        MoveError::Exists => "the exchange found an unexpected file".to_string(),
+        MoveError::Other(m) => m,
+    }
 }
 
 fn ino_at(path: &Path) -> Option<u64> {
@@ -71,12 +100,12 @@ fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
     }
     let m = fs::symlink_metadata(home).map_err(|_| refused("HOME cannot be read"))?;
     if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid() {
-        return Err(refused("HOME is not a directory owned by you"));
+        return Err(refused(HOME_NOT_OWNED));
     }
     let dot = home.join(".claude");
     let m = fs::symlink_metadata(&dot).map_err(|_| refused("~/.claude cannot be read"))?;
     if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid() || writable_by_others(&m) {
-        return Err(refused("~/.claude is not a private directory owned by you"));
+        return Err(refused(DOT_CLAUDE_NOT_PRIVATE));
     }
     Ok(dot)
 }
@@ -111,9 +140,7 @@ pub fn swap(
         .map_err(|_| refused(format!("profile {to} failed the directory check")))?;
     let (l, t) = (dot.join(CREDS), to_dir.join(CREDS));
     if !movable_login(&l) || !movable_login(&t) {
-        return Err(refused(
-            "a login file is not a private regular file with one link",
-        ));
+        return Err(refused(LOGIN_NOT_MOVABLE));
     }
     if account_block(&to_dir).is_none() {
         return Err(refused(format!(
@@ -122,19 +149,17 @@ pub fn swap(
     }
     let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
     if dev(&dot).is_none() || dev(&dot) != dev(&to_dir) {
-        return Err(refused(
-            "~/.claude and the profile root are on different devices",
-        ));
+        return Err(refused(DIFFERENT_DEVICES));
     }
     if !cfg!(target_os = "linux") {
-        return Err(refused("atomic exchange is not supported here"));
+        return Err(refused(NO_EXCHANGE));
     }
     if let Source::Profile(name) = &from {
         let dir = store
             .verify_profile_dir(name)
             .map_err(|_| refused(format!("profile {name} failed the directory check")))?;
         if name == to || exists(&dir.join(CREDS)) {
-            return Err(refused(format!("profile {name} already has a login")));
+            return Err(refused(format!("profile {name} {ALREADY_LOGGED_IN}")));
         }
     }
     let home_str = home.to_str().ok_or_else(|| refused("HOME is not UTF-8"))?;
@@ -171,17 +196,14 @@ pub fn swap(
     if let Err(e) = exchange_logins(&t, &l) {
         release_locks(store, home, &j);
         rs.delete_journal()?;
-        return Err(refused(match e {
-            MoveError::Unsupported => "atomic exchange is not supported here".to_string(),
-            MoveError::Exists => "the exchange found an unexpected file".to_string(),
-            MoveError::Other(m) => m,
-        }));
+        return Err(refused(describe(e)));
     }
     step(rs, &mut j, Phase::S1)?;
     let s = store.root().join(from.as_str()).join(CREDS);
-    move_login(&t, &s, &show).map_err(|_| {
+    move_login(&t, &s, &show).map_err(|e| {
         ProfileError::RotateInconsistent(format!(
-            "the outgoing login could not be moved from {to} to {from}"
+            "the outgoing login could not be moved from {to} to {from}: {}",
+            describe(e)
         ))
     })?;
     release_locks(store, home, &j);
@@ -204,7 +226,7 @@ fn adopt(store: &ProfileStore, home: &Path) -> Result<ProfileName, ProfileError>
     let name = adoption_name(store)?;
     let dir = store.add(&name)?;
     if exists(&dir.join(CREDS)) {
-        return Err(refused(format!("new profile {name} already has a login")));
+        return Err(refused(format!("new profile {name} {ALREADY_LOGGED_IN}")));
     }
     if let Some(block) = account_block(home) {
         let body = serde_json::json!({ "oauthAccount": block });
@@ -329,7 +351,7 @@ pub fn recover(
             );
         }
     } else if !(at_s == Some(j.live_ino) && at_t.is_none()) {
-        return freeze(rs, j, "the login files are not where the journal expects");
+        return freeze(rs, j, LOGINS_MISPLACED);
     }
     release_locks(store, home, &j);
     finish(store, rs, home, &j)?;

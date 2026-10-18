@@ -29,6 +29,8 @@ mod observe;
 mod settings;
 #[cfg(unix)]
 mod swap;
+#[cfg(all(test, unix))]
+pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 #[cfg(all(test, unix))]
 mod tests_daemon;
@@ -38,6 +40,8 @@ mod tests_decide;
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_ledger;
+#[cfg(all(test, unix))]
+mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]

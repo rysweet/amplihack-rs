@@ -3,7 +3,7 @@
 //! and process checks used by `status` and `stop` (in `control.rs`) live
 //! here.
 
-use super::cycle::{self, Ctx, CycleOutcome, Mode, prototype_guard};
+use super::cycle::{self, Ctx, CycleOutcome, LOCK_WAIT, Mode, prototype_guard};
 use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::settings::Settings;
@@ -105,23 +105,17 @@ pub(super) fn current_state(rs: &RotateState) -> DaemonState {
     }
 }
 
-fn home_or_refuse(home: &Path) -> Result<(), ProfileError> {
-    if home.as_os_str().is_empty() {
-        return Err(ProfileError::RotateRefused("HOME is not set".into()));
-    }
-    Ok(())
-}
-
 /// `start`: prototype check, recovery under the lock, then `watch` as a
 /// detached process. Returns at once.
 pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), ProfileError> {
-    home_or_refuse(home)?;
     let rs = RotateState::new(store.root());
     prototype_guard(store.root())?;
     rs.ensure()?;
     let state = State::new(store.root())?;
     {
-        let _lock = state.lock()?;
+        let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
+            return Err(daemon_err("lock busy"));
+        };
         recover_auto_switch(&state)?;
         match swap::recover(store, &rs, home)? {
             RecoverOutcome::Inconsistent(r) => return Err(ProfileError::RotateInconsistent(r)),
@@ -202,7 +196,6 @@ pub fn watch(
     s: Settings,
     spawned: bool,
 ) -> Result<(), ProfileError> {
-    home_or_refuse(&home)?;
     let rs = RotateState::new(store.root());
     let stop = PROBE_CANCEL.clone();
     for sig in [signal_hook::consts::SIGTERM, signal_hook::consts::SIGINT] {
@@ -274,7 +267,7 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
     let Ok(state) = State::new(store.root()) else {
         return;
     };
-    if let Ok(Some(_lock)) = state.try_lock(Duration::from_secs(2))
+    if let Ok(Some(_lock)) = state.try_lock(LOCK_WAIT)
         && let Ok(l) = rs.load_ledger()
     {
         let mut l = l.unwrap_or_default();

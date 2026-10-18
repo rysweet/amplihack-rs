@@ -166,3 +166,30 @@ fn a_damaged_journal_is_reported_and_left_unchanged() {
     assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"version":2}"#);
     assert_eq!(f.logins(), before);
 }
+
+#[test]
+fn recovery_settles_the_journal_without_claude_on_path() {
+    let f = Fixture::new();
+    abort_at(&f, "J0");
+    let empty = f.tmp.path().join("empty-bin");
+    fs::create_dir(&empty).unwrap();
+    let out = f
+        .cmd(&["profile", "rotate"])
+        .env_remove("AMPLIHACK_CLAUDE_BINARY_PATH")
+        .env("PATH", &empty)
+        .output()
+        .unwrap();
+    assert_no_secrets(&out);
+    assert!(
+        text(&out.stdout).contains("recovery: rolled back an interrupted swap work->spare"),
+        "{}\n{}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    assert_ne!(out.status.code(), Some(0), "no claude to measure with");
+    assert!(!f.rotate_dir().join("journal.json").exists());
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino));
+    assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
+    assert_no_amplihack_locks(&f);
+    f.assert_each_login_once();
+}

@@ -4,7 +4,7 @@
 
 use super::decide::Decision;
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateState, alert_key, clear_alert, should_alert};
+use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
     Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
-const LOCK_WAIT: Duration = Duration::from_secs(2);
+pub(super) const LOCK_WAIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -174,6 +174,18 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
     }
 }
 
+/// Records a known live profile and its account, so `profile usage` and the
+/// next cycle read it from the ledger.
+fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
+    if let (LiveId::Known(n), Some(key)) = (&snap.live, &snap.account) {
+        if l.live.as_deref() != Some(n.as_str()) {
+            l.live = Some(n.to_string());
+            l.since = Some(t);
+        }
+        l.account = Some(key.clone());
+    }
+}
+
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
     if mode == Mode::DryRun {
         return dry_run(ctx);
@@ -182,8 +194,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     ctx.rs.ensure()?;
     let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
     let mut out = Sink::new(log, mode == Mode::OneShot, true);
-    let binary = resolve_claude_binary()
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let state = State::new(ctx.store.root())?;
 
     // Step 3: recover and identify under the lock.
@@ -214,25 +224,21 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             out.emit(now(), &msg::recovered(true, &from, &to));
             None
         }
-        Ok(RecoverOutcome::Inconsistent(reason)) => Some(ProfileError::RotateInconsistent(reason)),
-        Err(e @ ProfileError::RotateInconsistent(_)) => Some(e),
+        Ok(RecoverOutcome::Inconsistent(reason))
+        | Err(ProfileError::RotateInconsistent(reason)) => Some(reason),
         Err(e) => return Err(e),
     };
-    if let Some(e) = inconsistent {
-        let detail = e.to_string();
-        let reason = detail
-            .strip_prefix("rotate state is inconsistent: ")
-            .unwrap_or(&detail);
+    if let Some(reason) = inconsistent {
         alert(
             ctx,
             &mut out,
             "inconsistent",
             None,
-            &msg::inconsistent(reason),
+            &msg::inconsistent(&reason),
         )?;
         return match mode {
             Mode::Watch => Ok(CycleOutcome::Alerted),
-            _ => Err(e),
+            _ => Err(ProfileError::RotateInconsistent(reason)),
         };
     }
     let first = snapshot(ctx, &state)?;
@@ -243,7 +249,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     drop(lock);
 
-    // Steps 4 and 5: measure without the lock, then decide.
+    // Steps 4 and 5: measure without the lock, then decide. Recovery does
+    // not need `claude`, so it is looked for only now.
+    let binary = resolve_claude_binary()
+        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let (live, others, decision) = measure_and_decide(ctx, &binary, &first)?;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
     if ctx.stopping() {
@@ -275,17 +284,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             CycleOutcome::Swapped
         }
         Decision::Stay => {
-            if let (LiveId::Known(n), Some(key)) = (&first.live, &first.account) {
-                if l.live.as_deref() != Some(n.as_str()) {
-                    l.live = Some(n.to_string());
-                    l.since = Some(t);
-                }
-                l.account = Some(key.clone());
-            }
+            note_live(&mut l, &first, t);
             clear_alert(&mut l);
             CycleOutcome::Stayed
         }
         Decision::Alert => {
+            note_live(&mut l, &first, t);
             let name = live_name(&first.live);
             if should_alert(&mut l, &alert_key("no-capacity", name)) {
                 out.emit(

@@ -331,11 +331,24 @@ fn an_untrusted_rotate_ledger_warns_and_the_prototype_decides() {
 }
 
 #[test]
-fn a_rotate_ledger_stops_the_account_match() {
+fn a_rotate_ledger_that_names_nobody_leaves_the_account_match() {
     let e = env();
     e.claude_json("a", &account("u1", "me@example.com"));
-    e.rotate_ledger(r#"{"version":1}"#);
-    assert_eq!(e.live(), (None, None), "an idle rotate ledger names nobody");
+    for body in [
+        r#"{"version":1,"last_cycle":{"at":1,"outcome":"alerted"},"alert":"no-capacity:-"}"#,
+        r#"{"version":1,"live":null}"#,
+    ] {
+        e.rotate_ledger(body);
+        assert_eq!(e.live(), (Some("a".into()), None), "{body}");
+    }
+}
+
+#[test]
+fn a_rotate_ledger_that_names_nobody_does_not_override_the_prototype() {
+    let e = env();
+    e.ledger(r#"{"live":"b"}"#);
+    e.rotate_ledger(r#"{"version":1,"alert":"no-capacity:-"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None));
 }
 
 #[test]

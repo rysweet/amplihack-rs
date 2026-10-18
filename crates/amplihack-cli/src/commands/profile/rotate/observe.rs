@@ -42,7 +42,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         liveness,
         auto_switch: state.load_ledger()?,
     };
-    let (candidates, skips) = identify::candidates(&ctx.store, &input);
+    let (candidates, skips) = identify::candidates(&ctx.store, &input)?;
     Ok(Snap {
         account: Account::of_dir(&ctx.home).map(|a| a.key().to_string()),
         live,
@@ -137,7 +137,10 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             let line = msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live);
             out.emit(
                 0,
-                &format!("would alert: {}", line.trim_start_matches("ALERT: ")),
+                &format!(
+                    "would alert: {}",
+                    line.strip_prefix("ALERT: ").unwrap_or(&line)
+                ),
             );
         }
         Decision::Swap { to, reason } => {

@@ -317,7 +317,9 @@ The live profile is found once, before probing, and nothing is written:
    later `since` decides; a ledger with no `since` counts as older than one
    with it, and on a tie the `profile rotate` ledger decides. If one of them
    cannot be trusted or read, its warning is printed and the other decides.
-   Both are only read. The deciding ledger's `live` field names the profile
+   A `profile rotate` ledger with no `live` value (written by a cycle that
+   only raised an ALERT or found the rotator idle) names nobody and counts as
+   absent. Both are only read. The deciding ledger's `live` field names the profile
    and its `since` is used only for the
    [check after the probes](#swaps-during-the-probe); other fields are
    ignored. The checks run in this order, and the first that fails decides:
@@ -1532,7 +1534,9 @@ Every non-dry-run cycle runs these steps in order:
    candidate list, the running sessions, the auto-switch ledger or the parked
    logins changed since step 3, log `skip: state changed during measurement`
    and end the cycle. Otherwise run the [swap](#rotate-swap).
-7. **Record.** Write the log lines and the ledger's `last_cycle`.
+7. **Record.** Write the log lines and the ledger's `last_cycle`. When the
+   cycle stays or raises the no-capacity ALERT and the live profile is known,
+   also record it as `live`, with its `account`.
 
 ### Rotate decision rule
 

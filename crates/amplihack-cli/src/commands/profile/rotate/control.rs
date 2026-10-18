@@ -6,6 +6,7 @@ use super::ledger::{LastCycle, Phase, RotateState};
 use super::log::timestamp;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::usage_cmd::sanitize_display;
 use std::time::{Duration, Instant};
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
@@ -29,7 +30,9 @@ pub fn status(store: &ProfileStore) {
         Err(_) => "- (ledger unreadable)".into(),
     };
     let last = match ledger.ok().flatten().and_then(|l| l.last_cycle) {
-        Some(LastCycle { at, outcome }) => format!("{} {outcome}", timestamp(at)),
+        Some(LastCycle { at, outcome }) => {
+            format!("{} {}", timestamp(at), sanitize_display(&outcome, false))
+        }
         None => "-".into(),
     };
     println!("rotate: {word}\npid: {pid}\nlive: {live}\nlast cycle: {last}");

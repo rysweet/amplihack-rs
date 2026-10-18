@@ -213,15 +213,19 @@ pub struct CandidateInput<'a> {
     pub auto_switch: Ledger,
 }
 
+/// The candidates, then every skipped profile with its reason.
+pub type Candidates = (Vec<ProfileName>, Vec<(ProfileName, Skip)>);
+
 /// The profiles that may receive the login in `~/.claude`, sorted by name,
-/// and every other profile with the first reason it is skipped.
+/// and every other profile with the first reason it is skipped. A profile
+/// root that cannot be listed is an error, not an empty list.
 pub fn candidates(
     store: &ProfileStore,
     input: &CandidateInput<'_>,
-) -> (Vec<ProfileName>, Vec<(ProfileName, Skip)>) {
+) -> Result<Candidates, ProfileError> {
     let (mut ok, mut skips) = (Vec::new(), Vec::new());
     let parked = store.root().join(".auto-switch.d").join("parked");
-    let names = store.list().unwrap_or_default();
+    let names = store.list()?;
     for name in names.iter().filter_map(|n| ProfileName::parse(n).ok()) {
         let n = name.as_str();
         let dir = store.verify_profile_dir(&name).ok();
@@ -249,5 +253,5 @@ pub fn candidates(
             None => ok.push(name),
         }
     }
-    (ok, skips)
+    Ok((ok, skips))
 }

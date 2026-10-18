@@ -11,8 +11,9 @@
 //!   prototype ledger was ignored (`profile has a login`, `account does not
 //!   match`, `untrusted`, `invalid name`).
 //! - `LiveId::{Known(ProfileName), Adopt, HandChanged(ProfileName), NoLogin}`.
-//! - `candidates(&ProfileStore, &CandidateInput) -> (Vec<ProfileName>,
-//!   Vec<(ProfileName, Skip)>)`; `Skip::as_str()` gives the documented reason.
+//! - `candidates(&ProfileStore, &CandidateInput) -> Result<(Vec<ProfileName>,
+//!   Vec<(ProfileName, Skip)>), ProfileError>`; a root that cannot be listed
+//!   is an error. `Skip::as_str()` gives the documented reason.
 
 use super::identify::{Account, CandidateInput, LiveId, Skip, candidates, live};
 use super::ledger::{RotateLedger, RotateState};
@@ -294,7 +295,7 @@ fn skipped(skips: &[(ProfileName, Skip)], name: &str) -> Option<&'static str> {
 fn logged_in_profiles_other_than_live_are_candidates() {
     let e = env();
     let work = n("work");
-    let (c, skips) = candidates(&e.store, &e.input(Some(&work)));
+    let (c, skips) = candidates(&e.store, &e.input(Some(&work))).unwrap();
     assert_eq!(c, vec![n("extra"), n("spare")], "sorted by name");
     assert_eq!(skipped(&skips, "work"), Some("live"));
 }
@@ -324,7 +325,7 @@ fn every_documented_exclusion_applies() {
         "hosts": {"d-host": {"live": "c-leased", "swapped_at": 1, "pre_swap_fingerprint": null}}
     }))
     .unwrap();
-    let (c, skips) = candidates(&e.store, &input);
+    let (c, skips) = candidates(&e.store, &input).unwrap();
     assert_eq!(c, vec![n("extra"), n("spare")]);
     for (name, why) in [
         ("a-excl", "excluded"),
@@ -345,8 +346,17 @@ fn unknown_liveness_leaves_no_candidates() {
     for l in [Liveness::Everything, Liveness::Unsupported] {
         let mut input = e.input(None);
         input.liveness = l;
-        let (c, skips) = candidates(&e.store, &input);
+        let (c, skips) = candidates(&e.store, &input).unwrap();
         assert!(c.is_empty());
         assert_eq!(skipped(&skips, "spare"), Some("session running"));
     }
+}
+
+#[test]
+fn a_root_that_cannot_be_listed_is_an_error_not_an_empty_list() {
+    let e = env();
+    let file = e._tmp.path().join("root-is-a-file");
+    fs::write(&file, "").unwrap();
+    let store = ProfileStore::new(file);
+    assert!(candidates(&store, &e.input(None)).is_err());
 }
