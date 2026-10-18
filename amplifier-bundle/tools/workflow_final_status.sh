@@ -325,7 +325,7 @@ branch_pr_lookup_warn() {
 }
 
 resolve_open_pr_for_current_branch() {
-  local branch base repo json pick cand_url cand_number url_repo url_number previous
+  local branch base repo json pick cand_url cand_number url_number previous
   [ "$HOST_TYPE" = "github" ] || return 0
   [ -z "$PR_URL" ] || return 0
   [ "$publish_state_reached" != "true" ] || return 0
@@ -335,6 +335,11 @@ resolve_open_pr_for_current_branch() {
   [ -z "$invalid_evidence" ] || return 0
   [ "$terminal_failure" != "true" ] || return 0
   [ "$terminal_no_op" != "true" ] || return 0
+  # Implementation+verification evidence already closes the run; the lookup
+  # only exists for the missing-evidence branch.
+  if [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
+    return 0
+  fi
   command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
@@ -357,14 +362,12 @@ resolve_open_pr_for_current_branch() {
     branch_pr_lookup_warn "gh failed"
     return 0
   fi
-  if ! printf '%s' "$json" | jq -e 'type == "array"' >/dev/null 2>&1; then
-    branch_pr_lookup_warn "malformed JSON"
-    return 0
-  fi
   # First same-repository entry with a non-empty url; fork PRs never count.
-  if ! pick="$(printf '%s' "$json" | jq -c '[.[] | objects
+  # Anything other than a JSON array is malformed.
+  if ! pick="$(printf '%s' "$json" | jq -c 'if type != "array" then error("not an array") else
+      [.[] | objects
       | select((.isCrossRepository // false) == false)
-      | select((.url // "") != "")][0] // empty' 2>/dev/null)"; then
+      | select((.url // "") != "")][0] // empty end' 2>/dev/null)"; then
     branch_pr_lookup_warn "malformed JSON"
     return 0
   fi
@@ -376,16 +379,12 @@ resolve_open_pr_for_current_branch() {
   cand_url="${cand_url%.}"
   cand_number="$(printf '%s' "$pick" | jq -r '(.number // "") | tostring' 2>/dev/null || true)"
 
-  if [[ ! "$cand_url" =~ ^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]]; then
+  if [[ ! "$cand_url" =~ ^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]] \
+      || [ "$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ]; then
     branch_pr_lookup_warn "URL failed validation"
     return 0
   fi
-  url_repo="${BASH_REMATCH[1]}"
   url_number="${BASH_REMATCH[2]}"
-  if [ "$(printf '%s' "$url_repo" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ]; then
-    branch_pr_lookup_warn "URL failed validation"
-    return 0
-  fi
   if [[ ! "$cand_number" =~ ^[1-9][0-9]*$ ]] || [ "$cand_number" != "$url_number" ]; then
     branch_pr_lookup_warn "PR number mismatch"
     return 0

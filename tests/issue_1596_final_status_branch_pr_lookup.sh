@@ -20,6 +20,7 @@
 #      gains an injected line.
 #   4. The lookup does not run when it must not: non-GitHub host, PR_URL
 #      already known, a success publish state, explicit terminal failure,
+#      implementation+verification evidence,
 #      detached HEAD, or the base branch.
 #   5. A PR found this way is evidence, not proof: validate_final_pr_scope still
 #      runs with that PR, and a scope miss still goes through #1268
@@ -455,6 +456,16 @@ if [ "$RC" -eq 2 ] && grep -qx "terminal_state=FAILED_INVALID_EVIDENCE" "$OUT" &
     record_pass "11b: invalid evidence -> exit 2, no lookup"
 else
     record_fail "11b: invalid evidence -> exit 2, no lookup"; dump
+fi
+
+# --- 11c. implementation+verification evidence already closes the run ------
+repo="$(make_repo c11c)"
+run_final_status "$repo" FAKE_GH_MODE=open IMPLEMENTATION_COMPLETED=true VERIFICATION_COMPLETED=true
+if [ "$RC" -eq 0 ] && grep -qx "terminal_state=IMPLEMENTED_VERIFIED" "$OUT" \
+    && [ "$(lookup_calls)" = "0" ] && [ ! -s "$SCOPE_LOG" ]; then
+    record_pass "11c: implementation+verification evidence + open PR -> IMPLEMENTED_VERIFIED, exit 0, no lookup"
+else
+    record_fail "11c: implementation+verification evidence + open PR -> IMPLEMENTED_VERIFIED, exit 0, no lookup"; dump
 fi
 
 # --- 12. hostile / invalid candidates -> fail closed, no stdout injection ---

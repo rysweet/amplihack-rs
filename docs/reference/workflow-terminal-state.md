@@ -376,6 +376,7 @@ publish state. The lookup runs only when every condition holds:
 | `publish_state_reached` is not `true` | An explicit `false` or an empty value both allow the lookup. |
 | The publish state is not `FOLLOWUP_CREATED`, `EXISTING_OPEN_PR`, `MERGED`, `CLOSED_OBSOLETE`, or `NO_DIFF_SUCCESS` | Success states are never re-examined. |
 | No invalid boolean marker, and `terminal_failure` and `terminal_no_op` are not `true` | Failure and no-op evidence keep precedence. |
+| `implementation_completed` and `verification_completed` are not both `true` | That evidence already closes the run as `IMPLEMENTED_VERIFIED`; the lookup only rescues runs that would otherwise fail for missing evidence. |
 | `gh` and `jq` are on `PATH` | Without them there is nothing to ask. |
 | The current directory is inside a Git work tree, and `git branch --show-current` names a branch | A detached `HEAD` has no branch to look up. |
 | The branch is a valid ref name, does not start with `-`, and is not `main`, `master`, or the `origin/HEAD` target | A base branch never stands in for the run's own work. |
@@ -471,7 +472,7 @@ must use the exit status and `terminal_verdict`, not `terminal_success` alone.
 | Empty `PR_URL`, no other evidence | yes | † `terminal_status=EXISTING_OPEN_PR`; exit depends on the scope check |
 | Empty `PR_URL`, no other evidence | no | `terminal_state=FAILED_MISSING_TERMINAL_EVIDENCE`, exit `1` (unchanged) |
 | `PR_PUBLISH_RESULT_STATE=unknown` | yes | † exit depends on the scope check |
-| Implementation and verification evidence | yes | † `EXISTING_OPEN_PR` instead of `IMPLEMENTED_VERIFIED`. This is a behaviour change: the `IMPLEMENTED_VERIFIED` path never ran the scope check and always exited `0`; with a PR found, a scope miss can now end in exit `1` or `UNCERTAIN`. |
+| Implementation and verification evidence | n/a | No lookup. `IMPLEMENTED_VERIFIED`, exit `0` (unchanged). That evidence already closes the run, so the lookup is confined to the missing-evidence path. |
 | `TERMINAL_STATE` (or `TERMINAL_STATE_TERMINAL_STATE`, `RECIPE_VAR_terminal_state__terminal_state`) set | yes | The override is still the reported state. The lookup changes only `PR_URL`, `PR_NUMBER`, and the publish state. |
 | `TERMINAL_FAILURE=true` | yes | No lookup. Explicit failure, exit `1`. |
 | `PR_URL` already set, or `PR_PUBLISH_RESULT_STATE=FOLLOWUP_CREATED` | n/a | No lookup call. |
