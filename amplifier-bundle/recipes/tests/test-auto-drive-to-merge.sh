@@ -53,6 +53,17 @@
 
 set -uo pipefail
 
+# This test runs inside auto-drive's own qa-team step, whose recipe runner
+# exports every step output as AUTODRIVE_*/upper-case and RECIPE_VAR_* names.
+# The step bodies read `${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir}}`,
+# so an inherited AUTODRIVE_TOOLS_DIR overrode the per-case tools dir and
+# MERGEREADY-no-round-tool found the real tool (PR #1588 round-1 QA). Start
+# from none of the caller's run context; every case sets what it needs.
+while IFS= read -r _inherited; do
+  case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
+done < <(compgen -e)
+unset _inherited
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"

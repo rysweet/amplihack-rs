@@ -125,6 +125,13 @@ unset GIT_DIR GIT_WORK_TREE AMPLIHACK_HOME MERGE_GATE_RESULT BUILD_RESULT CRUSTY
 # This test can itself run inside an auto-drive round, whose environment
 # carries that run's PR; none of it may reach the fixtures.
 unset PR_NUMBER RECIPE_VAR_pr_number AUTODRIVE_PR_INPUT RECIPE_VAR_autodrive_pr_input EXISTING_BRANCH AUTODRIVE_STATE_DIR
+# The same runner exports every step output as AUTODRIVE_* and RECIPE_VAR_*
+# (AUTODRIVE_TOOLS_DIR among them, which the step bodies prefer over the
+# fixture's RECIPE_VAR_). Drop all of them, not only the names listed above.
+while IFS= read -r _inherited; do
+  case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
+done < <(compgen -e)
+unset _inherited
 
 # --- stubs -------------------------------------------------------------------
 # gh: answers only `pr view` from STUB_* env, honouring --json/--jq; logs every

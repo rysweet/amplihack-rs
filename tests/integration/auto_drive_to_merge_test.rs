@@ -4627,6 +4627,20 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
     );
 }
 
+/// What auto-drive's own qa-team step hands this suite: the recipe runner
+/// exports step outputs as AUTODRIVE_* and RECIPE_VAR_* names. PR #1588's
+/// round-1 QA failed MERGEREADY-no-round-tool because an inherited
+/// AUTODRIVE_TOOLS_DIR outranked the case's own tools dir. Injecting it on
+/// every run proves the shell tests start from none of the caller's context.
+fn inherited_autodrive_context(root: &Path) -> Vec<(String, String)> {
+    let tools = root.join("amplifier-bundle/tools").display().to_string();
+    vec![
+        ("AUTODRIVE_TOOLS_DIR".to_string(), tools.clone()),
+        ("RECIPE_VAR_autodrive_tools_dir".to_string(), tools),
+        ("AUTODRIVE_ROUND_LABEL".to_string(), "round-1".to_string()),
+    ]
+}
+
 /// Runs the executable contract test — the STUCK path, the malformed-verdict
 /// path, and the forbidden-flag guard, exercised against the real extracted
 /// step bodies and the real tools.
@@ -4651,6 +4665,7 @@ fn auto_drive_contract_shell_test_passes() {
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
+        .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the auto-drive contract shell test");
 
@@ -4818,6 +4833,7 @@ fn issue_1543_pr_head_worktree_shell_test_passes() {
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
+        .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the #1543 shell test");
 
