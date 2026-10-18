@@ -442,7 +442,9 @@ fn pid_running(pid: u32) -> bool {
 
 /// Takes Claude's refresh lock in profile `dir`; `None` when it is held.
 fn take_refresh_lock(state: &State, dir: &str) -> Option<u64> {
-    mv::take_refresh_lock_at(&state.profile_dir(dir))
+    // Auto-switch does not swap without the lock; why it was not taken
+    // does not change that.
+    mv::take_refresh_lock_at(&state.profile_dir(dir)).ok()
 }
 
 /// Removes the refresh lock only if it is still the one amplihack created.

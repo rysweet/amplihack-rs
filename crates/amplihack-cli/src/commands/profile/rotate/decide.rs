@@ -126,10 +126,12 @@ pub fn decide(
         && swapped_at
             .is_some_and(|t| now.saturating_sub(t) < i64::try_from(s.hold).unwrap_or(i64::MAX));
     match (best, gain) {
-        (Some((to, _)), Some(g)) if !held && g >= i32::from(s.upgrade_margin) => Decision::Swap {
-            to: to.clone(),
-            reason: Reason::Upgrade,
-        },
+        (Some((to, _)), Some(g)) if !held && g > 0 && g >= i32::from(s.upgrade_margin) => {
+            Decision::Swap {
+                to: to.clone(),
+                reason: Reason::Upgrade,
+            }
+        }
         _ => Decision::Stay,
     }
 }

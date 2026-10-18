@@ -9,7 +9,7 @@
 //!   `MoveError::Unsupported`; no copy fallback.
 //! - `mv::move_login(src, dst, show: &dyn Fn(&Path) -> String)`: no-replace
 //!   rename; `EEXIST` maps to `MoveError::Exists`.
-//! - `mv::take_refresh_lock_at(dir) -> Option<u64>` and
+//! - `mv::take_refresh_lock_at(dir) -> io::Result<u64>` and
 //!   `mv::release_refresh_lock_at(dir, ino) -> bool`.
 //! - `mv::abort_point(step)`: a no-op in release builds.
 
@@ -150,7 +150,7 @@ fn refresh_lock_is_taken_and_released_by_inode() {
     let d = dirs();
     let ino_taken = take_refresh_lock_at(&d.a).expect("free lock is taken");
     assert_eq!(ino(&d.a.join(LOCK)), ino_taken);
-    assert!(take_refresh_lock_at(&d.a).is_none(), "already held");
+    assert!(take_refresh_lock_at(&d.a).is_err(), "already held");
     assert!(release_refresh_lock_at(&d.a, ino_taken));
     assert!(!fsx::exists(&d.a.join(LOCK)));
 }
@@ -160,7 +160,7 @@ fn a_foreign_refresh_lock_is_never_broken() {
     let d = dirs();
     fs::create_dir(d.a.join(LOCK)).unwrap();
     let foreign = ino(&d.a.join(LOCK));
-    assert!(take_refresh_lock_at(&d.a).is_none());
+    assert!(take_refresh_lock_at(&d.a).is_err());
     assert!(!release_refresh_lock_at(&d.a, foreign + 1));
     assert_eq!(ino(&d.a.join(LOCK)), foreign, "left in place");
 }

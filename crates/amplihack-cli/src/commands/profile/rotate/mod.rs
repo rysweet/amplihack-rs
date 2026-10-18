@@ -26,6 +26,8 @@ mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod recover;
+#[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod swap;

@@ -8,15 +8,17 @@ use super::identify::Account;
 use super::ledger::{Phase, RotateJournal, RotateState};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, CREDS, MoveError, abort_point, check_root_private, euid, exchange_logins, exists,
-    movable_login, move_login, read_claude_json, release_refresh_lock_at, take_refresh_lock_at,
-    writable_by_others, write_atomic_keep_mode, write_private_atomic,
+    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, euid,
+    exchange_logins, exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
+    take_refresh_lock_at, writable_by_others, write_atomic_keep_mode, write_private_atomic,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+
+pub use super::recover::{RecoverOutcome, recover};
 
 const ADOPT_NAME: &str = "default-original";
 
@@ -28,10 +30,11 @@ const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with
 const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
 const NO_EXCHANGE: &str = "atomic exchange is not supported here";
 const ALREADY_LOGGED_IN: &str = "already has a login";
-const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
+pub(super) const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
+const REFRESHING: &str = "Claude holds its refresh lock; the swap waits for the next cycle";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 7] = [
+pub const DOCUMENTED: [&str; 8] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -39,6 +42,7 @@ pub const DOCUMENTED: [&str; 7] = [
     NO_EXCHANGE,
     ALREADY_LOGGED_IN,
     LOGINS_MISPLACED,
+    REFRESHING,
 ];
 
 /// Where the outgoing login goes.
@@ -47,14 +51,6 @@ pub enum Source {
     Profile(ProfileName),
     /// A new `default-original[-N]` profile (D12).
     Adopt,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RecoverOutcome {
-    None,
-    RolledBack { from: ProfileName, to: ProfileName },
-    RolledForward { from: ProfileName, to: ProfileName },
-    Inconsistent(String),
 }
 
 fn refused(msg: impl Into<String>) -> ProfileError {
@@ -69,11 +65,11 @@ fn describe(e: MoveError) -> String {
     }
 }
 
-fn ino_at(path: &Path) -> Option<u64> {
+pub(super) fn ino_at(path: &Path) -> Option<u64> {
     fs::symlink_metadata(path).ok().map(|m| m.ino())
 }
 
-fn show(p: &Path) -> String {
+pub(super) fn show(p: &Path) -> String {
     let parent = p.parent().and_then(Path::file_name).unwrap_or_default();
     format!("{}/{}", parent.to_string_lossy(), CREDS)
 }
@@ -154,6 +150,10 @@ pub fn swap(
     if !cfg!(target_os = "linux") {
         return Err(refused(NO_EXCHANGE));
     }
+    // Refuses before anything is written; the locks are taken below.
+    if exists(&dot.join(REFRESH_LOCK)) || exists(&to_dir.join(REFRESH_LOCK)) {
+        return Err(refused(REFRESHING));
+    }
     if let Source::Profile(name) = &from {
         let dir = store
             .verify_profile_dir(name)
@@ -163,6 +163,9 @@ pub fn swap(
         }
     }
     let home_str = home.to_str().ok_or_else(|| refused("HOME is not UTF-8"))?;
+    let (Some(live_ino), Some(target_ino)) = (ino_at(&l), ino_at(&t)) else {
+        return Err(refused(LOGIN_NOT_MOVABLE));
+    };
     let (from, adopt) = match from {
         Source::Profile(name) => (name, false),
         Source::Adopt => (adopt(store, home)?, true),
@@ -174,42 +177,81 @@ pub fn swap(
         adopt,
         phase: Phase::J0,
         home: home_str.to_string(),
-        live_ino: ino_at(&l).unwrap_or_default(),
-        target_ino: ino_at(&t).unwrap_or_default(),
+        live_ino,
+        target_ino,
         home_lock_ino: None,
         to_lock_ino: None,
         started_at: now,
         pid: std::process::id(),
     };
-    rs.save_journal(&j)?;
     // Each lock's inode is recorded as soon as it is taken.
-    if let Some(ino) = take_refresh_lock_at(&dot) {
-        j.home_lock_ino = Some(ino);
-        rs.save_journal(&j)?;
-    }
-    if let Some(ino) = take_refresh_lock_at(&to_dir) {
-        j.to_lock_ino = Some(ino);
-        rs.save_journal(&j)?;
+    let locked = rs
+        .save_journal(&j)
+        .and_then(|()| take_lock(&dot))
+        .and_then(|ino| {
+            j.home_lock_ino = Some(ino);
+            rs.save_journal(&j)?;
+            j.to_lock_ino = Some(take_lock(&to_dir)?);
+            rs.save_journal(&j)
+        });
+    if let Err(e) = locked {
+        return Err(abandon(store, rs, home, &j, e));
     }
     abort_point("rotate-J0");
 
     if let Err(e) = exchange_logins(&t, &l) {
-        release_locks(store, home, &j);
-        rs.delete_journal()?;
-        return Err(refused(describe(e)));
+        return Err(abandon(store, rs, home, &j, refused(describe(e))));
     }
     step(rs, &mut j, Phase::S1)?;
     let s = store.root().join(from.as_str()).join(CREDS);
-    move_login(&t, &s, &show).map_err(|e| {
-        ProfileError::RotateInconsistent(format!(
+    if let Err(e) = move_login(&t, &s, &show) {
+        // `~/.claude` already holds the incoming login, as after a finished
+        // swap, so Claude may refresh it again. The journal stays at S1 and
+        // the next recovery retries the move.
+        release_locks(store, home, &j);
+        return Err(ProfileError::RotateInconsistent(format!(
             "the outgoing login could not be moved from {to} to {from}: {}",
             describe(e)
-        ))
-    })?;
+        )));
+    }
     release_locks(store, home, &j);
     step(rs, &mut j, Phase::S2)?;
     finish(store, rs, home, &j)?;
     Ok(from)
+}
+
+/// Takes Claude's refresh lock in `dir`. A lock already there is never
+/// broken: the swap is refused, because a refresh during the exchange would
+/// write the outgoing token over the incoming login.
+fn take_lock(dir: &Path) -> Result<u64, ProfileError> {
+    take_refresh_lock_at(dir).map_err(|e| match e.kind() {
+        std::io::ErrorKind::AlreadyExists => refused(REFRESHING),
+        _ => refused(format!("Claude's refresh lock could not be taken: {e}")),
+    })
+}
+
+/// Undoes a swap that stopped before any login moved: releases the locks
+/// it took, deletes the journal and removes a profile it adopted, which
+/// still holds no login. Returns `err`, or the error that stopped the undo.
+fn abandon(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    j: &RotateJournal,
+    err: ProfileError,
+) -> ProfileError {
+    release_locks(store, home, j);
+    if let Err(e) = rs.delete_journal() {
+        return e;
+    }
+    let dir = store.root().join(&j.from);
+    if j.adopt
+        && !exists(&dir.join(CREDS))
+        && let Err(e) = fs::remove_dir_all(&dir)
+    {
+        eprintln!("warning: unused profile {} was not removed: {e}", j.from);
+    }
+    err
 }
 
 /// Rewrites the journal at `phase`, then stops there in a test run.
@@ -236,7 +278,7 @@ fn adopt(store: &ProfileStore, home: &Path) -> Result<ProfileName, ProfileError>
     Ok(name)
 }
 
-fn release_locks(store: &ProfileStore, home: &Path, j: &RotateJournal) {
+pub(super) fn release_locks(store: &ProfileStore, home: &Path, j: &RotateJournal) {
     if let Some(ino) = j.home_lock_ino {
         release_refresh_lock_at(&home.join(".claude"), ino);
     }
@@ -246,7 +288,7 @@ fn release_locks(store: &ProfileStore, home: &Path, j: &RotateJournal) {
 }
 
 /// `s3` and `s4`, then the journal is deleted. Safe to repeat.
-fn finish(
+pub(super) fn finish(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
@@ -292,68 +334,4 @@ fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<
     v["oauthAccount"] = block.clone();
     let bytes = serde_json::to_vec_pretty(&v).map_err(|e| refused(e.to_string()))?;
     write_atomic_keep_mode(home, CLAUDE_JSON, &bytes).map_err(ProfileError::Io)
-}
-
-/// Marks the journal `inconsistent`: no swap until a person resolves it.
-fn freeze(
-    rs: &RotateState,
-    mut j: RotateJournal,
-    reason: &str,
-) -> Result<RecoverOutcome, ProfileError> {
-    j.phase = Phase::Inconsistent;
-    rs.save_journal(&j)?;
-    Ok(RecoverOutcome::Inconsistent(reason.to_string()))
-}
-
-/// Settles an interrupted swap by where the recorded inodes are; the
-/// phase never decides. Only renames; never deletes or opens a login.
-pub fn recover(
-    store: &ProfileStore,
-    rs: &RotateState,
-    home: &Path,
-) -> Result<RecoverOutcome, ProfileError> {
-    let Some(j) = rs.load_journal()? else {
-        return Ok(RecoverOutcome::None);
-    };
-    if j.phase == Phase::Inconsistent {
-        return Ok(RecoverOutcome::Inconsistent(
-            "an earlier swap stopped half way".into(),
-        ));
-    }
-    if home.to_str() != Some(j.home.as_str()) {
-        return freeze(rs, j, "the journal is for another home directory");
-    }
-    // Names were checked when the journal was loaded.
-    let (from, to) = (ProfileName::parse(&j.from)?, ProfileName::parse(&j.to)?);
-    let (Ok(from_dir), Ok(to_dir)) = (
-        store.verify_profile_dir(&from),
-        store.verify_profile_dir(&to),
-    ) else {
-        return freeze(rs, j, "a profile directory failed the directory check");
-    };
-    let l = home.join(".claude").join(CREDS);
-    if !fs::symlink_metadata(&l).is_ok_and(|m| m.is_file()) {
-        return freeze(rs, j, "no login in ~/.claude");
-    }
-    let (t, s) = (to_dir.join(CREDS), from_dir.join(CREDS));
-    let (at_t, at_s) = (ino_at(&t), ino_at(&s));
-    if at_t == Some(j.target_ino) && at_s.is_none() {
-        release_locks(store, home, &j);
-        rs.delete_journal()?;
-        return Ok(RecoverOutcome::RolledBack { from, to });
-    }
-    if at_t == Some(j.live_ino) && at_s.is_none() {
-        if move_login(&t, &s, &show).is_err() {
-            return freeze(
-                rs,
-                j,
-                "the outgoing login could not be moved to its profile",
-            );
-        }
-    } else if !(at_s == Some(j.live_ino) && at_t.is_none()) {
-        return freeze(rs, j, LOGINS_MISPLACED);
-    }
-    release_locks(store, home, &j);
-    finish(store, rs, home, &j)?;
-    Ok(RecoverOutcome::RolledForward { from, to })
 }

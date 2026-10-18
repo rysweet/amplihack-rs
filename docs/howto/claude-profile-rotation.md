@@ -324,6 +324,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `HOME is not a directory owned by you`, `~/.claude is not a private directory owned by you` | Fix the ownership or mode (`chmod go-w`). |
 | `profile root is owned by another user`, `profile root is writable by other users` | Fix the ownership or mode of the profile root (`chmod 700`). |
 | `atomic exchange is not supported here` | The system or filesystem cannot swap two files in one step. Only Linux can. Nothing was moved. |
+| `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
 
 Two situations write an ALERT instead of refusing:
 
@@ -402,8 +403,11 @@ again with `amplihack profile login <name>`.
   refused.
 - **Token refresh race.** A `claude` process that refreshes its token during
   the two renames of a swap can write the old account's token into
-  `~/.claude`. The rotator holds Claude's refresh lock while it swaps and keeps
-  the window to two system calls, but cannot close it. If a session suddenly
+  `~/.claude`. The rotator swaps only after taking Claude's refresh lock in
+  `~/.claude` and in the target profile; if either is already held, it skips
+  the swap until the next cycle. This stops a refresh that Claude starts
+  during the swap. A `claude` that refreshes without taking the lock can
+  still race the swap, which takes two system calls. If a session suddenly
   needs `/login` after a swap, log the affected profile in again. A refresh
   after the exchange is harmless to recovery, which never expects a
   particular file in `~/.claude`.

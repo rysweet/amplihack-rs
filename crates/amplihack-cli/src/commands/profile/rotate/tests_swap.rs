@@ -338,12 +338,77 @@ fn a_swap_is_refused_while_a_journal_is_pending() {
 }
 
 #[test]
-fn a_foreign_refresh_lock_is_left_in_place() {
+fn a_refresh_lock_held_in_the_target_refuses_the_swap_and_is_left_in_place() {
     let e = env();
     fs::create_dir(e.root.join("spare").join(LOCK)).unwrap();
     let foreign = ino(&e.root.join("spare").join(LOCK));
-    let _ = e.swap();
+    refused(e.swap());
+    e.assert_unchanged();
     assert_eq!(ino_at(&e.root.join("spare").join(LOCK)), Some(foreign));
+    assert!(!e.home.join(".claude").join(LOCK).exists(), "no lock taken");
+}
+
+#[test]
+fn a_refresh_lock_held_by_the_live_session_refuses_the_swap() {
+    // A refresh during the exchange would write the outgoing token over
+    // the incoming login, so the swap waits for the next cycle.
+    let e = env();
+    let lock = e.home.join(".claude").join(LOCK);
+    fs::create_dir(&lock).unwrap();
+    let foreign = ino(&lock);
+    refused(e.swap());
+    e.assert_unchanged();
+    assert_eq!(
+        ino_at(&lock),
+        Some(foreign),
+        "Claude's lock is never broken"
+    );
+    assert!(!e.root.join("spare").join(LOCK).exists(), "no lock taken");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_adopting_swap_leaves_no_empty_profile() {
+    let e = env();
+    fs::create_dir(e.home.join(".claude").join(LOCK)).unwrap();
+    refused(swap(
+        &e.store,
+        &e.rs,
+        &e.home,
+        Source::Adopt,
+        &n("spare"),
+        NOW,
+    ));
+    e.assert_unchanged();
+    assert!(!e.root.join("default-original").exists());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_failed_move_to_the_source_releases_the_locks() {
+    let e = env();
+    // The source profile cannot be written, so the second rename fails
+    // after the exchange.
+    fs::set_permissions(e.root.join("work"), fs::Permissions::from_mode(0o500)).unwrap();
+    let r = e.swap();
+    fs::set_permissions(e.root.join("work"), fs::Permissions::from_mode(0o700)).unwrap();
+    if euid() == 0 {
+        return; // root ignores the directory's mode, so the move succeeds.
+    }
+    assert!(
+        matches!(r, Err(ProfileError::RotateInconsistent(_))),
+        "{r:?}"
+    );
+    assert!(
+        !e.home.join(".claude").join(LOCK).exists(),
+        "home lock released"
+    );
+    assert!(
+        !e.root.join("spare").join(LOCK).exists(),
+        "target lock released"
+    );
+    assert_eq!(ino_at(&e.live()), Some(e.t), "the incoming login is live");
+    assert!(e.rs.journal.exists(), "recovery finishes the swap later");
 }
 
 // --- Adoption --------------------------------------------------------------

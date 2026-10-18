@@ -9,7 +9,7 @@ pub use super::fsx::{
 };
 pub use super::liveness::{Liveness, scan_system};
 pub use super::mv::{
-    MoveError, abort_point, exchange_logins, move_login, release_refresh_lock_at,
+    MoveError, REFRESH_LOCK, abort_point, exchange_logins, move_login, release_refresh_lock_at,
     take_refresh_lock_at,
 };
 pub use super::state::{CLAUDE_JSON, CREDS, Ledger, State};

@@ -251,6 +251,25 @@ fn upgrade_margin_of_thirty_is_inclusive_and_twenty_five_is_not_enough() {
 }
 
 #[test]
+fn an_upgrade_margin_of_zero_never_swaps_to_equal_headroom() {
+    // With `--hold 0`, an equal-headroom upgrade would swap back every cycle.
+    let s = Settings {
+        upgrade_margin: 0,
+        hold: 0,
+        ..settings()
+    };
+    let live = r(50.0, 0.0);
+    assert_eq!(
+        decide(&s, &live, &[c("spare", r(50.0, 0.0))], None, NOW),
+        Decision::Stay
+    );
+    assert_eq!(
+        decide(&s, &live, &[c("spare", r(49.0, 0.0))], None, NOW),
+        swap("spare", Reason::Upgrade)
+    );
+}
+
+#[test]
 fn no_upgrade_during_the_hold() {
     let cands = [c("spare", r(0.0, 0.0))];
     let live = r(50.0, 0.0);

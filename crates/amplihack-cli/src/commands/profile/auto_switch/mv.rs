@@ -9,7 +9,7 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
-const REFRESH_LOCK: &str = ".oauth_refresh.lock";
+pub const REFRESH_LOCK: &str = ".oauth_refresh.lock";
 
 #[cfg(debug_assertions)]
 const TEST_ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
@@ -120,14 +120,22 @@ fn exchange(_a: &Path, _b: &Path) -> std::io::Result<()> {
 }
 
 /// Takes `<dir>/.oauth_refresh.lock` with a non-blocking `mkdir`, as Claude
-/// does, and returns its inode. `None` when it is held: the lock is never
-/// broken.
-pub fn take_refresh_lock_at(dir: &Path) -> Option<u64> {
+/// does, and returns its inode. An `AlreadyExists` error means Claude (or
+/// another swap) holds it: the lock is never broken.
+pub fn take_refresh_lock_at(dir: &Path) -> std::io::Result<u64> {
     let path = dir.join(REFRESH_LOCK);
     let mut b = fs::DirBuilder::new();
     std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(&path).ok()?;
-    fs::symlink_metadata(&path).ok().map(|m| m.ino())
+    b.create(&path)?;
+    match fs::symlink_metadata(&path) {
+        Ok(m) => Ok(m.ino()),
+        Err(e) => {
+            // Ours, but its inode is unknown: remove it rather than leave
+            // a lock nothing will release.
+            let _ = fs::remove_dir(&path);
+            Err(e)
+        }
+    }
 }
 
 /// Removes the refresh lock only if it is a directory with inode `ino`, the
