@@ -473,6 +473,14 @@ fn ignored_present_inside_registered_sibling_worktree_is_not_flagged() {
         "leaked unregistered worktree must still be flagged: {:?}",
         report.violations
     );
+    // `rm -rf -- 'worktrees'` would delete the registered sibling too.
+    for violation in &report.violations {
+        assert_ne!(
+            violation.removal_root.as_deref(),
+            Some("worktrees"),
+            "a root holding a registered worktree must be narrowed: {violation:?}"
+        );
+    }
 }
 
 #[test]
@@ -1099,4 +1107,912 @@ fn an_unresolvable_explicit_baseline_fails_closed_as_configuration_error() {
         matches!(error, super::ArtifactGuardError::Baseline { .. }),
         "expected a baseline error; got {error:?}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1536: the generic output-segment rule (`dist`, `build`, `coverage`,
+// `out`, `logs`, `outputs`) flagged real source -- a tracked
+// `apps/coverage/tsconfig.json` -- as a build artifact, the report then told
+// the operator to untrack it, and "introduced" was measured against
+// `@{upstream}`, so a base-branch merge was charged to the PR.
+//
+// Contracts:
+// - A segment directory `D` is exempt when the index holds `D/<manifest>` as a
+//   direct child. Root, sibling and parent manifests never exempt; each
+//   matching segment is judged on its own.
+// - Every violation carries `removal_root`: the narrowest path that is wholly
+//   generated, or `None` when the guard must never suggest removing it.
+// - The default baseline prefers the base branch over `@{upstream}`.
+// ---------------------------------------------------------------------------
+
+use super::{BASELINE_CANDIDATES, manifest_dirs, read_index, rule_for_path};
+use std::collections::BTreeSet;
+
+fn manifest_set(dirs: &[&str]) -> BTreeSet<String> {
+    dirs.iter().map(|dir| (*dir).to_string()).collect()
+}
+
+/// A `Some` removal root must never reach outside the matched path: non-empty,
+/// repo-relative, and equal to the path or a `/`-bounded prefix of it.
+fn assert_removal_root_invariants(path: &str, root: &str) {
+    assert!(!root.is_empty(), "{path}: removal root must not be empty");
+    assert!(
+        !root.starts_with('/'),
+        "{path}: removal root {root:?} must be repo-relative"
+    );
+    assert!(
+        !root.split('/').any(|part| part == ".." || part.is_empty()),
+        "{path}: removal root {root:?} must not traverse or hold empty segments"
+    );
+    assert!(
+        path == root || path.starts_with(&format!("{root}/")),
+        "{path}: removal root {root:?} must be the path or a /-bounded prefix of it"
+    );
+}
+
+/// (path, source, indexed manifest dirs, expected (rule id, removal root)).
+type RuleCase = (
+    &'static str,
+    ArtifactSource,
+    &'static [&'static str],
+    Option<(&'static str, Option<&'static str>)>,
+);
+
+#[test]
+fn rule_table_with_a_manifest_set() {
+    use ArtifactSource::{IgnoredPresent, Staged, Tracked, Untracked};
+
+    // (path, source, indexed manifest dirs, expected (rule, removal_root)).
+    let cases: &[RuleCase] = &[
+        // Bug 1: a directory holding its own manifest is source, not output.
+        (
+            "apps/coverage/tsconfig.json",
+            Tracked,
+            &["apps/coverage"],
+            None,
+        ),
+        (
+            "apps/coverage/package.json",
+            Staged,
+            &["apps/coverage"],
+            None,
+        ),
+        (
+            "apps/coverage/src/index.ts",
+            Tracked,
+            &["apps/coverage"],
+            None,
+        ),
+        (
+            "apps/coverage/src/index.ts",
+            Untracked,
+            &["apps/coverage"],
+            None,
+        ),
+        ("tools/build/Cargo.toml", Tracked, &["tools/build"], None),
+        ("svc/out/go.mod", Tracked, &["svc/out"], None),
+        ("py/logs/pyproject.toml", Tracked, &["py/logs"], None),
+        // Coverage reports are only matched inside a non-exempt segment.
+        ("apps/coverage/lcov.info", Tracked, &["apps/coverage"], None),
+        ("lcov.info", Tracked, &[], None),
+        // Documented trade-off: a tracked manifest inside `dist/` exempts it.
+        (
+            "packages/x/dist/index.js",
+            Tracked,
+            &["packages/x/dist"],
+            None,
+        ),
+        // Each matching segment is checked on its own.
+        (
+            "apps/coverage/dist/x.js",
+            Untracked,
+            &["apps/coverage"],
+            Some(("build-artifact", Some("apps/coverage/dist"))),
+        ),
+        (
+            "apps/coverage/dist/x.js",
+            Tracked,
+            &["apps/coverage"],
+            Some(("build-artifact", None)),
+        ),
+        (
+            "out/coverage/x.txt",
+            Untracked,
+            &["out/coverage"],
+            Some(("build-artifact", Some("out"))),
+        ),
+        // Sibling / parent manifests never exempt the output directory.
+        (
+            "pkg/dist/index.js",
+            Untracked,
+            &["pkg"],
+            Some(("build-artifact", Some("pkg/dist"))),
+        ),
+        ("dist/app.js", Tracked, &[], Some(("build-artifact", None))),
+        // Unambiguously generated coverage reports keep an exact removal root.
+        (
+            "coverage/lcov.info",
+            Tracked,
+            &[],
+            Some(("build-artifact", Some("coverage/lcov.info"))),
+        ),
+        (
+            "coverage/lcov.info",
+            Staged,
+            &[],
+            Some(("build-artifact", Some("coverage/lcov.info"))),
+        ),
+        (
+            "web/coverage/coverage-final.json",
+            Tracked,
+            &["web"],
+            Some(("build-artifact", Some("web/coverage/coverage-final.json"))),
+        ),
+        (
+            "coverage/clover.xml",
+            Staged,
+            &[],
+            Some(("build-artifact", Some("coverage/clover.xml"))),
+        ),
+        // A tracked or staged report outside a project's `coverage/` directory
+        // may be a parser fixture: possibly source, no removal root.
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Tracked,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Staged,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        (
+            "coverage/fixtures/lcov.info",
+            Tracked,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        // The same file untracked or ignored is a run's output.
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some("tests/fixtures/coverage/lcov.info"))),
+        ),
+        (
+            "tests/fixtures/coverage/lcov.info",
+            IgnoredPresent,
+            &[],
+            Some(("build-artifact", Some("tests/fixtures/coverage/lcov.info"))),
+        ),
+        // Bug 2: tracked/staged generic-segment matches may be source, so they
+        // get no removal root; untracked output may still be removed.
+        (
+            "build/notes.md",
+            Tracked,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        ("logs/keep.md", Staged, &[], Some(("build-artifact", None))),
+        (
+            "build/out.o",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some("build"))),
+        ),
+        (
+            "outputs/run/1.json",
+            IgnoredPresent,
+            &[],
+            Some(("build-artifact", Some("outputs"))),
+        ),
+        // `target`, `.next` and `index.scip` are unambiguous and ignore manifests.
+        (
+            "target/debug/app",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some("target"))),
+        ),
+        (
+            "target/debug/app",
+            Tracked,
+            &[],
+            Some(("build-artifact", Some("target"))),
+        ),
+        ("target/debug/app", IgnoredPresent, &[], None),
+        (
+            "crates/foo/target/debug/app",
+            Untracked,
+            &["crates/foo"],
+            Some(("build-artifact", Some("crates/foo/target"))),
+        ),
+        (
+            "apps/coverage/target/x",
+            Untracked,
+            &["apps/coverage"],
+            Some(("build-artifact", Some("apps/coverage/target"))),
+        ),
+        (
+            "index.scip",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some("index.scip"))),
+        ),
+        (
+            ".next/server/page.js",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some(".next"))),
+        ),
+        (
+            "apps/web/.next/server/page.js",
+            Tracked,
+            &["apps/web"],
+            Some(("build-artifact", Some("apps/web/.next"))),
+        ),
+        // Other rules: matching unchanged; root comes from the matched segment,
+        // never from a shallower artifact-shaped ancestor.
+        (
+            "dist/plugin.js",
+            Tracked,
+            &[],
+            Some(("plugin-bundle", Some("dist"))),
+        ),
+        (
+            "node_modules/a/index.js",
+            Tracked,
+            &[],
+            Some(("node-modules", Some("node_modules"))),
+        ),
+        (
+            "apps/coverage/node_modules/a/index.js",
+            Staged,
+            &["apps/coverage"],
+            Some(("node-modules", Some("apps/coverage/node_modules"))),
+        ),
+        (
+            ".claude/runtime/x.json",
+            Tracked,
+            &[],
+            Some(("claude-runtime", Some(".claude/runtime"))),
+        ),
+        (
+            "worktrees/a/b.txt",
+            Untracked,
+            &[],
+            Some(("nested-worktree", Some("worktrees"))),
+        ),
+        (
+            "recipe-runner.log",
+            Untracked,
+            &[],
+            Some(("workflow-session-artifact", Some("recipe-runner.log"))),
+        ),
+        (
+            ".copilot/session-state/a.json",
+            Untracked,
+            &[],
+            Some(("workflow-session-artifact", Some(".copilot/session-state"))),
+        ),
+        (
+            "pkg/.pytest_cache/v/lastfailed",
+            Untracked,
+            &["pkg"],
+            Some(("cache-artifact", Some("pkg/.pytest_cache"))),
+        ),
+        (
+            ".yarn/cache/x.zip",
+            Untracked,
+            &[],
+            Some(("cache-artifact", Some(".yarn/cache/x.zip"))),
+        ),
+        // Zero-install repos commit `.yarn/cache`; a root over it would sweep
+        // archives the run never listed.
+        (
+            "pkg/.yarn/cache/new.zip",
+            Staged,
+            &[],
+            Some(("cache-artifact", Some("pkg/.yarn/cache/new.zip"))),
+        ),
+        (
+            "apps/web/.next/cache/webpack/x.pack",
+            IgnoredPresent,
+            &["apps/web"],
+            Some(("cache-artifact", Some("apps/web/.next/cache"))),
+        ),
+        // Name look-alikes are not segments.
+        ("dist2/app.js", Untracked, &[], None),
+        ("buildtools/a.rs", Tracked, &[], None),
+        ("README.md", Tracked, &[], None),
+    ];
+
+    for (path, source, dirs, expected) in cases {
+        let manifests = manifest_set(dirs);
+        let actual =
+            rule_for_path(path, *source, &manifests).map(|(rule, root)| (rule.id, root.clone()));
+        let expected = expected.map(|(id, root)| (id, root.map(str::to_string)));
+        assert_eq!(
+            actual, expected,
+            "rule_for_path({path:?}, {source:?}, {dirs:?})"
+        );
+        if let Some((_, Some(root))) = &actual {
+            assert_removal_root_invariants(path, root);
+        }
+    }
+}
+
+#[test]
+fn a_repo_root_manifest_never_exempts_an_output_directory() {
+    // The repo root is never a manifest dir, and even a literal "" entry must
+    // not exempt top-level output.
+    let manifests = manifest_set(&[""]);
+    let matched = rule_for_path("dist/app.js", ArtifactSource::Untracked, &manifests)
+        .map(|(rule, root)| (rule.id, root.clone()));
+    assert_eq!(matched, Some(("build-artifact", Some("dist".to_string()))));
+}
+
+#[test]
+fn manifest_dirs_lists_parents_of_indexed_manifests_only() {
+    let tmp = repo();
+    for path in [
+        "package.json",
+        "apps/coverage/package.json",
+        "apps/coverage/tsconfig.json",
+        "nested/deep/Cargo.toml",
+        "py/pyproject.toml",
+        "notmanifest/package.json.bak",
+    ] {
+        write_file(&tmp.path().join(path), "{}\n");
+    }
+    run_git(tmp.path(), &["add", "."]);
+    run_git(tmp.path(), &["commit", "-qm", "manifests"]);
+    // Staged but uncommitted: the index already holds it.
+    write_file(&tmp.path().join("svc/go.mod"), "module svc\n");
+    run_git(tmp.path(), &["add", "svc/go.mod"]);
+    // Untracked: not in the index, so it must not count.
+    write_file(&tmp.path().join("loose/package.json"), "{}\n");
+
+    let dirs = manifest_dirs(&read_index(tmp.path()).expect("index"));
+
+    assert_eq!(
+        dirs,
+        manifest_set(&["apps/coverage", "nested/deep", "py", "svc"]),
+        "only indexed manifests count, by their parent directory, never the root"
+    );
+    assert!(!dirs.contains(""), "the repo root is never a manifest dir");
+}
+
+#[test]
+fn read_index_fails_closed_outside_a_git_repository() {
+    let tmp = TempDir::new().expect("tempdir");
+    let error = read_index(tmp.path())
+        .expect_err("a failed git ls-files must not read as an empty, exempt set");
+    assert!(
+        matches!(error, super::ArtifactGuardError::Git { .. }),
+        "expected a git error; got {error:?}"
+    );
+}
+
+#[test]
+fn tracked_app_named_coverage_is_source_not_a_build_artifact() {
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/app"]);
+    write_file(
+        &tmp.path().join("apps/coverage/package.json"),
+        "{\"name\":\"coverage\"}\n",
+    );
+    write_file(&tmp.path().join("apps/coverage/tsconfig.json"), "{}\n");
+    write_file(
+        &tmp.path().join("apps/coverage/src/index.ts"),
+        "export const x = 1;\n",
+    );
+    run_git(tmp.path(), &["add", "apps"]);
+
+    // Staged first (pre-commit sees the staged scan), then committed.
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::PrePublish] {
+        let report = scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(mode))
+            .expect("scan artifacts");
+        assert!(
+            report.is_clean(),
+            "staged apps/coverage source must not be flagged in {mode}; got {:#?}",
+            report.violations
+        );
+    }
+    run_git(tmp.path(), &["commit", "-qm", "add the coverage app"]);
+    for mode in [
+        ArtifactGuardMode::PreCommit,
+        ArtifactGuardMode::PrePublish,
+        ArtifactGuardMode::All,
+    ] {
+        let report = scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(mode))
+            .expect("scan artifacts");
+        assert!(
+            report.is_clean(),
+            "tracked apps/coverage source must not be flagged in {mode}; got {:#?}",
+            report.violations
+        );
+    }
+}
+
+#[test]
+fn coverage_reports_and_dist_bundles_are_still_caught() {
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/leak"]);
+    write_file(&tmp.path().join("package.json"), "{\"name\":\"root\"}\n");
+    write_file(&tmp.path().join("coverage/lcov.info"), "TN:\n");
+    write_file(&tmp.path().join("dist/app.js"), "bundle\n");
+    write_file(&tmp.path().join("dist/plugin.js"), "bundle\n");
+    run_git(tmp.path(), &["add", "-f", "."]);
+    run_git(tmp.path(), &["commit", "-qm", "oops: commit outputs"]);
+    write_file(&tmp.path().join("coverage/lcov.info"), "TN:\nSF:a\n");
+    run_git(tmp.path(), &["add", "-f", "coverage/lcov.info"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    for (path, source, rule_id, root) in [
+        (
+            "coverage/lcov.info",
+            ArtifactSource::Staged,
+            "build-artifact",
+            Some("coverage/lcov.info"),
+        ),
+        (
+            "coverage/lcov.info",
+            ArtifactSource::Tracked,
+            "build-artifact",
+            Some("coverage/lcov.info"),
+        ),
+        (
+            "dist/app.js",
+            ArtifactSource::Tracked,
+            "build-artifact",
+            None,
+        ),
+        // `dist/` also holds `dist/app.js`, which may be source, so the bundle
+        // is narrowed to itself rather than taking `dist` along with it.
+        (
+            "dist/plugin.js",
+            ArtifactSource::Tracked,
+            "plugin-bundle",
+            Some("dist/plugin.js"),
+        ),
+    ] {
+        let violation = violation_for(&report.violations, path, source);
+        assert_eq!(violation.rule_id, rule_id, "{path} ({source})");
+        assert_eq!(
+            violation.removal_root.as_deref(),
+            root,
+            "{path} ({source}) removal root"
+        );
+        assert_eq!(violation.provenance, ArtifactProvenance::Introduced);
+    }
+    assert!(report.blocks(), "introduced outputs must still fail closed");
+}
+
+#[test]
+fn untracked_files_in_a_source_directory_are_not_flagged_but_output_beneath_it_is() {
+    let tmp = repo();
+    write_file(&tmp.path().join("apps/coverage/package.json"), "{}\n");
+    run_git(tmp.path(), &["add", "apps/coverage/package.json"]);
+    run_git(tmp.path(), &["commit", "-qm", "coverage app"]);
+    write_file(&tmp.path().join("apps/coverage/src/new.ts"), "export {};\n");
+    write_file(&tmp.path().join("apps/coverage/dist/x.js"), "bundle\n");
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.path == "apps/coverage/src/new.ts"),
+        "new source in an evidently-source directory must pass; got {:#?}",
+        report.violations
+    );
+    let violation = violation_for(
+        &report.violations,
+        "apps/coverage/dist/x.js",
+        ArtifactSource::Untracked,
+    );
+    assert_eq!(violation.rule_id, "build-artifact");
+    assert_eq!(
+        violation.removal_root.as_deref(),
+        Some("apps/coverage/dist")
+    );
+}
+
+#[test]
+fn an_untracked_manifest_does_not_exempt_its_directory() {
+    let tmp = repo();
+    write_file(&tmp.path().join("build/package.json"), "{}\n");
+    write_file(&tmp.path().join("build/bundle.js"), "bundle\n");
+
+    let report = scan_artifacts(&default_config(tmp.path())).expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "build/bundle.js",
+        ArtifactSource::Untracked,
+    );
+    assert_eq!(violation.rule_id, "build-artifact");
+}
+
+#[test]
+fn a_tracked_ambiguous_output_path_is_reported_without_a_removal_root() {
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/notes"]);
+    write_file(&tmp.path().join("build/notes.md"), "# notes\n");
+    run_git(tmp.path(), &["add", "-f", "build/notes.md"]);
+    run_git(tmp.path(), &["commit", "-qm", "notes"]);
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::PrePublish),
+    )
+    .expect("scan artifacts");
+
+    let violation = violation_for(
+        &report.violations,
+        "build/notes.md",
+        ArtifactSource::Tracked,
+    );
+    assert_eq!(violation.rule_id, "build-artifact");
+    assert_eq!(
+        violation.removal_root, None,
+        "a tracked generic-segment match may be source: never suggest removing it"
+    );
+    assert!(report.blocks());
+}
+
+#[test]
+fn default_baseline_prefers_the_base_branch_over_upstream() {
+    assert_eq!(
+        BASELINE_CANDIDATES,
+        &[
+            "origin/HEAD",
+            "origin/main",
+            "origin/master",
+            "main",
+            "master",
+            "@{upstream}",
+        ],
+        "@{{upstream}} is the PR branch's own remote copy: measuring against it \
+         charges every base-branch merge to the PR (#1536), so it is the last resort"
+    );
+}
+
+fn git_stdout(repo: &Path, args: &[&str]) -> String {
+    let output = amplihack_git::command()
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?}: {e}"));
+    assert!(output.status.success(), "git {args:?} failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+#[test]
+fn a_base_branch_merge_is_not_attributed_to_the_pr() {
+    let root = TempDir::new().expect("tempdir");
+    let origin = root.path().join("origin.git");
+    let work = root.path().join("work");
+    run_git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+    run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(root.path(), &["clone", "-q", "origin.git", "work"]);
+    run_git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        &work,
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(&work, &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&work.join("README.md"), "# fixture\n");
+    run_git(&work, &["add", "README.md"]);
+    run_git(&work, &["commit", "-qm", "initial"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "main"]);
+
+    // The PR branch, pushed so `@{upstream}` exists.
+    run_git(&work, &["checkout", "-q", "-b", "feature"]);
+    write_file(&work.join("src/lib.rs"), "pub fn f() {}\n");
+    run_git(&work, &["add", "src/lib.rs"]);
+    run_git(&work, &["commit", "-qm", "feature work"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "feature"]);
+    let pre_merge_head = git_stdout(&work, &["rev-parse", "HEAD"]);
+
+    // Someone lands an artifact-shaped path on main.
+    run_git(&work, &["checkout", "-q", "main"]);
+    write_file(&work.join("build/out.log"), "log\n");
+    run_git(&work, &["add", "-f", "build/out.log"]);
+    run_git(&work, &["commit", "-qm", "main: track a build log"]);
+    run_git(&work, &["push", "-q", "origin", "main"]);
+
+    // The PR merges its base branch to stay current; not pushed yet.
+    run_git(&work, &["checkout", "-q", "feature"]);
+    run_git(&work, &["fetch", "-q", "origin"]);
+    run_git(
+        &work,
+        &["merge", "-q", "--no-ff", "-m", "merge main", "origin/main"],
+    );
+    run_git(&work, &["remote", "set-head", "origin", "main"]);
+    assert_eq!(
+        git_stdout(&work, &["rev-parse", "@{upstream}"]),
+        pre_merge_head,
+        "fixture: @{{upstream}} still points at the pre-merge head"
+    );
+
+    let report =
+        scan_artifacts(&ArtifactGuardConfig::new(&work).with_mode(ArtifactGuardMode::PrePublish))
+            .expect("scan artifacts");
+
+    let baseline = report.baseline.as_ref().expect("a baseline must resolve");
+    assert_eq!(baseline.rev, "origin/HEAD");
+    assert_eq!(
+        baseline.commit,
+        git_stdout(&work, &["rev-parse", "origin/main"]),
+        "the merge base with the base branch is its tip after the merge"
+    );
+    let violation = violation_for(&report.violations, "build/out.log", ArtifactSource::Tracked);
+    assert_eq!(
+        violation.provenance,
+        ArtifactProvenance::PreExisting,
+        "a path the base branch brought in through a merge is not the PR's change"
+    );
+    assert!(
+        !report.blocks(),
+        "the base-branch merge must not fail the PR's publish gate; blocking: {:#?}",
+        report.blocking_violations()
+    );
+}
+
+#[test]
+fn is_valid_allowlist_entry_matches_the_parser_rules() {
+    for refused in ["build", "node_modules", "logs", "/abs", "*"] {
+        assert!(
+            !super::is_valid_allowlist_entry(refused),
+            "{refused:?} must be refused, as the allowlist parser refuses it"
+        );
+    }
+    for accepted in ["docs/build", "src/logs.rs", "pkg/node_modules/x.js"] {
+        assert!(
+            super::is_valid_allowlist_entry(accepted),
+            "{accepted:?} must be accepted, as the allowlist parser accepts it"
+        );
+    }
+}
+
+#[test]
+fn a_directory_holding_allowlisted_source_is_never_a_removal_root() {
+    // Allowlisted `docs/build/guide.md` never becomes a violation, so the guard
+    // must learn from the index that `docs/build` holds source; otherwise the
+    // untracked leftover beside it gets `rm -rf -- 'docs/build'` (issue #1536).
+    let tmp = repo_on_main();
+    run_git(tmp.path(), &["checkout", "-q", "-b", "task/docs"]);
+    write_file(&tmp.path().join("docs/build/guide.md"), "# guide\n");
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "docs/build/guide.md\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "."]);
+    run_git(tmp.path(), &["commit", "-qm", "docs"]);
+    write_file(&tmp.path().join("docs/build/scratch.log"), "x\n");
+    write_file(&tmp.path().join("other/build/x.o"), "obj\n");
+
+    let config = ArtifactGuardConfig::new(tmp.path())
+        .with_mode(ArtifactGuardMode::PreCommit)
+        .with_allowlist(tmp.path().join(".amplihack-artifact-allowlist"));
+    let report = scan_artifacts(&config).expect("scan artifacts");
+
+    let root_of = |path: &str| {
+        report
+            .violations
+            .iter()
+            .find(|violation| violation.path == path)
+            .unwrap_or_else(|| panic!("{path} must be reported; got {:#?}", report.violations))
+            .removal_root
+            .clone()
+    };
+    assert_eq!(
+        root_of("docs/build/scratch.log"),
+        Some("docs/build/scratch.log".to_string()),
+        "a root holding allowlisted source must narrow to the exact path"
+    );
+    assert_eq!(
+        root_of("other/build/x.o"),
+        Some("other/build".to_string()),
+        "a root holding nothing indexed keeps its whole-directory remedy"
+    );
+    assert!(
+        report
+            .violations
+            .iter()
+            .all(|violation| violation.path != "docs/build/guide.md"),
+        "the allowlisted file must not be reported"
+    );
+}
+
+#[test]
+fn an_untracked_allowlisted_file_is_never_swept_into_a_removal_root() {
+    // The allowlisted file is in neither the index nor the violations, so only
+    // the untracked scan itself can protect it.
+    let tmp = repo_on_main();
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "docs/build/guide.md\n",
+    );
+    write_file(&tmp.path().join("docs/build/guide.md"), "# guide\n");
+    write_file(&tmp.path().join("docs/build/scratch.log"), "x\n");
+
+    let config = ArtifactGuardConfig::new(tmp.path())
+        .with_mode(ArtifactGuardMode::Worktree)
+        .with_allowlist(tmp.path().join(".amplihack-artifact-allowlist"));
+    let report = scan_artifacts(&config).expect("scan artifacts");
+
+    let scratch = violation_for(
+        &report.violations,
+        "docs/build/scratch.log",
+        ArtifactSource::Untracked,
+    );
+    assert_eq!(
+        scratch.removal_root.as_deref(),
+        Some("docs/build/scratch.log"),
+        "the root must not take the allowlisted file with it"
+    );
+}
+
+#[test]
+fn removal_root_check_rejects_anything_but_the_path_or_a_bounded_prefix() {
+    // Enforced in release builds: a root failing it becomes None (manual
+    // review), never a removal command.
+    use super::is_removal_root_of;
+    assert!(is_removal_root_of("node_modules", "node_modules/a/b.js"));
+    assert!(is_removal_root_of(
+        "coverage/lcov.info",
+        "coverage/lcov.info"
+    ));
+    for (root, path) in [
+        ("", "a/b"),
+        ("/node_modules", "/node_modules/a"),
+        ("a/../b", "a/../b/c"),
+        ("a//b", "a//b/c"),
+        ("build", "buildtools/a.rs"),
+        ("other", "node_modules/a.js"),
+    ] {
+        assert!(!is_removal_root_of(root, path), "{root:?} for {path:?}");
+    }
+}
+
+/// A stacked PR (cut from another feature branch) measured against the default
+/// branch has its parent's paths attributed to it. That is the documented
+/// limitation of the default baseline; `--baseline origin/<base>` is the remedy
+/// (`docs/artifact-guard.md`, "Stacked PRs").
+#[test]
+fn a_stacked_pr_needs_its_base_branch_as_an_explicit_baseline() {
+    let root = TempDir::new().expect("tempdir");
+    let origin = root.path().join("origin.git");
+    let work = root.path().join("work");
+    run_git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+    run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(root.path(), &["clone", "-q", "origin.git", "work"]);
+    run_git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        &work,
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(&work, &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&work.join("README.md"), "# fixture\n");
+    run_git(&work, &["add", "README.md"]);
+    run_git(&work, &["commit", "-qm", "initial"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "main"]);
+    run_git(&work, &["remote", "set-head", "origin", "main"]);
+
+    // The parent PR tracks an artifact-shaped path.
+    run_git(&work, &["checkout", "-q", "-b", "parent"]);
+    write_file(&work.join("build/out.log"), "log\n");
+    run_git(&work, &["add", "-f", "build/out.log"]);
+    run_git(&work, &["commit", "-qm", "parent: track a build log"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "parent"]);
+
+    // The child PR is cut from the parent and touches only source.
+    run_git(&work, &["checkout", "-q", "-b", "child"]);
+    write_file(&work.join("src/lib.rs"), "pub fn f() {}\n");
+    run_git(&work, &["add", "src/lib.rs"]);
+    run_git(&work, &["commit", "-qm", "child work"]);
+
+    let config = ArtifactGuardConfig::new(&work).with_mode(ArtifactGuardMode::PrePublish);
+    let default = scan_artifacts(&config).expect("scan artifacts");
+    assert_eq!(
+        default.baseline.as_ref().map(|b| b.rev.as_str()),
+        Some("origin/HEAD")
+    );
+    assert_eq!(
+        violation_for(
+            &default.violations,
+            "build/out.log",
+            ArtifactSource::Tracked
+        )
+        .provenance,
+        ArtifactProvenance::Introduced,
+        "the default baseline is the repository's default branch, so the parent's \
+         path counts as introduced by the child"
+    );
+    assert!(
+        default.blocks(),
+        "the limitation blocks; it never lets a path through"
+    );
+
+    let explicit = scan_artifacts(&config.with_baseline("origin/parent")).expect("scan artifacts");
+    assert_eq!(
+        violation_for(
+            &explicit.violations,
+            "build/out.log",
+            ArtifactSource::Tracked
+        )
+        .provenance,
+        ArtifactProvenance::PreExisting,
+        "measured against its own base branch, the child introduced nothing"
+    );
+    assert!(!explicit.blocks(), "{:#?}", explicit.blocking_violations());
+}
+
+/// `staged` mode reads only the indexed manifests, not the whole index, yet
+/// the manifest exemption must still hold there.
+#[test]
+fn staged_mode_still_honours_an_indexed_manifest_exemption() {
+    let tmp = repo();
+    write_file(&tmp.path().join("apps/coverage/package.json"), "{}\n");
+    run_git(tmp.path(), &["add", "apps/coverage/package.json"]);
+    run_git(tmp.path(), &["commit", "-qm", "app"]);
+    write_file(
+        &tmp.path().join("apps/coverage/src/index.ts"),
+        "export {}\n",
+    );
+    write_file(&tmp.path().join("dist/bundle.js"), "x\n");
+    run_git(
+        tmp.path(),
+        &["add", "-f", "apps/coverage/src/index.ts", "dist/bundle.js"],
+    );
+
+    let report =
+        scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::Staged))
+            .expect("scan artifacts");
+    let paths: Vec<&str> = report.violations.iter().map(|v| v.path.as_str()).collect();
+    assert_eq!(paths, ["dist/bundle.js"], "{:#?}", report.violations);
+}
+
+/// A failing `git worktree list` no longer ends the run (it was best effort
+/// before issue #1536). `scan_artifacts` then narrows every directory removal
+/// root to its exact path, so no `rm -rf -- 'worktrees'` can sweep a sibling
+/// worktree the guard could not see. Git offers no portable way to make that
+/// one command fail, so the fallback is driven directly.
+#[test]
+fn an_unknown_worktree_list_narrows_directory_roots_to_exact_paths() {
+    let tmp = repo();
+    write_file(&tmp.path().join("node_modules/leak/index.js"), "x\n");
+    write_file(&tmp.path().join("coverage/lcov.info"), "x\n");
+    let mut violations = scan_artifacts(&default_config(tmp.path()))
+        .expect("scan artifacts")
+        .violations;
+    assert_eq!(
+        violation_for(
+            &violations,
+            "node_modules/leak/index.js",
+            ArtifactSource::Untracked
+        )
+        .removal_root
+        .as_deref(),
+        Some("node_modules"),
+        "fixture: with the worktree list known, the directory root stands"
+    );
+
+    super::narrow_every_root_to_its_path(&mut violations);
+
+    for violation in &violations {
+        assert_eq!(
+            violation.removal_root.as_deref(),
+            Some(violation.path.as_str()),
+            "{violation:#?}"
+        );
+    }
 }

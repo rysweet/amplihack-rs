@@ -20,7 +20,6 @@
 //! 200 KiB, above the 131,072-byte limit on a single argv or environment
 //! string.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -45,6 +44,9 @@ n=$((n + 1))
 printf '%s' "$n" > "$STUB_STATE/calls"
 flock -u 9
 exec 9>&-
+# The loop names its recipes by absolute launch-side path (#1543); this test
+# keys on the recipe name.
+[ "${1:-}" = recipe ] && [ $# -ge 3 ] && set -- "$1" "$2" "$(basename -- "$3" .yaml)" "${@:4}"
 printf '%s\0' "$@" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;
@@ -125,8 +127,7 @@ fn drive(task: Option<&str>) -> Run {
         std::fs::create_dir_all(d).unwrap();
     }
     let stub = bin.join("amplihack");
-    std::fs::write(&stub, STUB).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
 
     let script = repo_root().join("amplifier-bundle/tools/autodrive_loop.sh");
     let path = format!(

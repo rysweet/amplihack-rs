@@ -1,7 +1,7 @@
 //! TDD contract — validator parity & boundary defense (SR4/#921/#923).
 //!
 //! Run with:
-//! `cargo test -p amplihack-cli --features signal --test signal_validator_parity`
+//! `cargo test -p amplihack-cli --features signal --test cli_integration signal_validator_parity::`
 //!
 //! The Signal fleet path fans commands out over
 //! `azlin connect <vm> --resource-group <rg> ... -- '<cmd>'`. VM names are an

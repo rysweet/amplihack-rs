@@ -1,6 +1,6 @@
 //! TDD contract — `signal setup` idempotency & rollout planning (#921/#923).
 //!
-//! Run with: `cargo test -p amplihack-cli --features signal --test signal_setup_idempotency`
+//! Run with: `cargo test -p amplihack-cli --features signal --test cli_integration signal_setup_idempotency::`
 //!
 //! Two pure decision functions drive onboarding, both injectable/testable with
 //! no real signal-cli, clock, or Azure calls:

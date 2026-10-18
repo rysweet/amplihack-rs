@@ -85,6 +85,16 @@ context:
   # Phase 1 never merges; auto-drive owns the merge decision.
   no_merge: "true"
 
+  # #1543: the operator's own pr_number, captured by the autodrive-pr-input
+  # step before any phase runs. It is not an input: the step overwrites it.
+  # Both loops receive it under this name. `pr_number` itself cannot carry it,
+  # because the runner copies a sub-recipe's whole context back into this one
+  # when the sub-recipe returns, and the crusty loop is given
+  # pr_number={{build_result.pr}}; after that phase `pr_number` holds the build
+  # phase's PR, not what the operator typed. Every sub-recipe hands
+  # autodrive_pr_input back unchanged, so it keeps the operator's value.
+  autodrive_pr_input: ""
+
   # Populated as the phases run.
   build_result: ""
   crusty_loop_result: ""
@@ -133,6 +143,22 @@ steps:
       printf '{"gadugi_test":"found"}\n'
     output: "autodrive_prerequisites"
 
+  # #1543: record the operator's pr_number once, before any sub-recipe can
+  # overwrite `pr_number` (see autodrive_pr_input in the context above). The
+  # prerequisites step before it runs no sub-recipe. The value is empty when
+  # the operator gave none. That no longer turns PR worktree resolution off:
+  # both loops also resolve on the build phase's PR (pr_number below), so a
+  # fresh build whose default-workflow built in its own worktree is measured
+  # there, not in the launch checkout. It is passed through verbatim; the
+  # loop preflights refuse one that is not a pull request number.
+  - id: "autodrive-pr-input"
+    type: "bash"
+    command: |
+      # RECIPE_VAR_pr_number only: the runner sets it for every context value,
+      # and a bare PR_NUMBER could be inherited from an enclosing run.
+      printf '%s' "${RECIPE_VAR_pr_number:-}"
+    output: "autodrive_pr_input"
+
   - id: "autodrive-build"
     type: "recipe"
     recipe: "autodrive-build"
@@ -152,6 +178,8 @@ steps:
     context:
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{autodrive_pr_input}}"
+      existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
@@ -162,6 +190,8 @@ steps:
     context:
       repo_path: "{{repo_path}}"
       pr_number: "{{build_result.pr}}"
+      autodrive_pr_input: "{{autodrive_pr_input}}"
+      existing_branch: "{{existing_branch}}"
       pr_url: "{{build_result.pr_url}}"
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
@@ -174,9 +204,28 @@ steps:
       set -uo pipefail
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      PR="$(g "${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}" pr '')"
-      MERGE="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result NOT_MERGED)"
-      CRUSTY="$(g "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" loop_result unknown)"
+      # The RECIPE_VAR_ fallbacks for the three phase outputs, and with them
+      # the merge_result read that #1543's incident showed as NOT_MERGED after
+      # a real merge, came from #1511 (PR #1563, cf1f3e71). #1543 changes only
+      # where the PR number comes from: by this step `pr_number` holds the
+      # build phase's PR (the loops hand back the build_result.pr they got),
+      # which is the PR this run drove, and the gate's and build's reported
+      # pr follow it. The composed-recipe run in
+      # tests/test-issue-1543-pr-head-worktree.sh (T20, T21) checks the report
+      # through the real runner.
+      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
+      MG="${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}"
+      CR="${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}"
+      PR=""
+      for C in "${PR_NUMBER:-}" "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
+        case "$C" in ''|*[!0-9]*) continue ;; esac
+        PR="$C"; break
+      done
+      MERGE="$(g "$MG" merge_result NOT_MERGED)"
+      CRUSTY="$(g "$CR" loop_result unknown)"
+      # Only plain tokens reach the report; anything else cannot forge a key.
+      [[ "$MERGE" =~ ^[A-Za-z0-9_-]*$ ]] || MERGE="NOT_MERGED"
+      [[ "$CRUSTY" =~ ^[A-Za-z0-9_-]*$ ]] || CRUSTY="unknown"
       case "$MERGE" in
         MERGED|ALREADY_MERGED) OUTCOME="MERGED" ;;
         DRY_RUN) OUTCOME="DRY_RUN" ;;

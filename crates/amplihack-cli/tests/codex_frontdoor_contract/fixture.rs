@@ -119,6 +119,9 @@ esac
                 .env_remove("CODEX_BINARY_PATH")
                 .env_remove("CODEX_HOME")
                 .env("RECIPE_RUNNER_RS_PATH", tools.join("recipe-runner-rs"))
+                // `install` resolves hook scope from its cwd; keep it off the
+                // process cwd, which this binary shares with every other test module.
+                .current_dir(home.path())
                 .output()
                 .unwrap();
             assert!(
