@@ -18,6 +18,7 @@ code-change completion.
 - [Evidence Marker API](#evidence-marker-api)
 - [Recipe Output Contract](#recipe-output-contract)
 - [Shell Helper API](#shell-helper-api)
+- [Branch PR Lookup](#branch-pr-lookup)
 - [Configuration](#configuration)
 - [Failure Semantics](#failure-semantics)
 - [Examples](#examples)
@@ -106,7 +107,7 @@ across helper, recipe, and CLI layers.
 | --- | --- | --- |
 | 1 | `terminal_failure=true`, or a known failing `terminal_state` | Fail nonzero. Failure evidence overrides all success-looking markers. |
 | 2 | Malformed, unknown, empty, or contradictory evidence | Fail nonzero with `FAILED_INVALID_EVIDENCE`. |
-| 3 | Valid publish/PR/merge/no-diff state with required details | Succeed, because publish/finalize proves the workflow reached terminal semantics. |
+| 3 | Valid publish/PR/merge/no-diff state with required details, including an open PR for the current branch found by the [branch PR lookup](#branch-pr-lookup) | Succeed, because publish/finalize proves the workflow reached terminal semantics. |
 | 4 | `terminal_no_op=true` with known no-op state and non-empty reason | Succeed only for eligible no-op paths. |
 | 5 | `implementation_completed=true` and `verification_completed=true` | Succeed only when the selected workflow path does not require publish/finalize evidence. |
 | 6 | Anything else | Fail nonzero with `FAILED_MISSING_TERMINAL_EVIDENCE`. |
@@ -313,6 +314,8 @@ the same names through `RECIPE_VAR_*` variables when invoked by the runner.
 | `BASE_REF` | git ref name | Intended comparison base. |
 | `PR_URL` | URL string | Pull request URL, when publication happened or recovery is in progress. |
 | `PR_NUMBER` | positive integer string | Pull request number, when available. |
+| `REMOTE_HOST_TYPE` | `github`, `azdo`, or `other` | Remote provider. Defaults to `other`. The [branch PR lookup](#branch-pr-lookup) runs only for `github`. |
+| `PR_PUBLISH_RESULT_STATE` | enum string | State reported by the publish step, such as `FOLLOWUP_CREATED`, `EXISTING_OPEN_PR`, or `unknown`. |
 | `ALLOW_NO_OP` | boolean string | Explicit opt-out for eligible no-op paths. Defaults to `false`. |
 | `IMPLEMENTATION_COMPLETED` | boolean string | Direct implementation evidence. |
 | `VERIFICATION_COMPLETED` | boolean string | Direct verification evidence. |
@@ -348,6 +351,170 @@ These are direct helper exit codes. Through `amplihack recipe run`, any nonzero
 helper result is surfaced as recipe failure and the CLI exits nonzero; current
 CLI behavior reports recipe failures as exit `1` rather than preserving the
 helper's numeric code.
+
+---
+
+## Branch PR Lookup
+
+Issue #1596. A development run can open its PR from an agent step instead of
+from the publish step. The publish step then reports an empty
+`pr_publish_result.pr_url`, so the run would close with
+`FAILED_MISSING_TERMINAL_EVIDENCE` even though the PR exists. Before the helper
+decides that publish evidence is missing, it asks GitHub whether the current
+branch already has an open PR.
+
+### When the lookup runs
+
+`workflow_final_status.sh` calls `resolve_open_pr_for_current_branch` once,
+after it has normalized the evidence markers and before it evaluates the
+publish state. The lookup runs only when every condition holds:
+
+| Condition | Why |
+| --- | --- |
+| `REMOTE_HOST_TYPE=github` | Azure DevOps and other remotes are unchanged. |
+| `PR_URL` is empty after all fallbacks (`PR_URL`, `PR_PUBLISH_RESULT_PR_URL`, `RECIPE_VAR_pr_publish_result__pr_url`) | A known PR URL is already publish evidence. |
+| `publish_state_reached` is not `true` | An explicit `false` or an empty value both allow the lookup. |
+| The publish state is not `FOLLOWUP_CREATED`, `EXISTING_OPEN_PR`, `MERGED`, `CLOSED_OBSOLETE`, or `NO_DIFF_SUCCESS` | Success states are never re-examined. |
+| No invalid boolean marker, and `terminal_failure` and `terminal_no_op` are not `true` | Failure and no-op evidence keep precedence. |
+| `gh` and `jq` are on `PATH` | Without them there is nothing to ask. |
+| The current directory is inside a Git work tree, and `git branch --show-current` names a branch | A detached `HEAD` has no branch to look up. |
+| The branch is a valid ref name, does not start with `-`, and is not `main`, `master`, or the `origin/HEAD` target | A base branch never stands in for the run's own work. |
+| `remote.origin.url` parses to an `owner/repo` matching `^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$` | The query needs a validated repository. |
+
+The helper reads Git state from the current directory. `workflow-finalize`
+step `step-22b-final-status` already runs `cd "$REPO_PATH"` first, so no recipe
+change is needed.
+
+### The query
+
+The helper makes one read-only call through the shared retry wrapper, with
+rate-limit waits turned off so a throttled API cannot stall finalization:
+
+```bash
+GH_RETRY_MAX_RL_WINDOWS=0 _gh_retry_core "final status branch PR lookup" \
+  pr list --repo "$repo" --head "$branch" --state open \
+  --json url,number,isCrossRepository
+```
+
+From the result it takes the first matching entry `gh` returns: one that is
+not cross-repository and has a non-empty `url`. `gh pr list` does not promise
+any particular order, so when a branch has more than one open PR in the origin
+repository, which one is used is undefined. PRs from forks never count.
+
+### Validation before use
+
+A candidate is accepted only when both checks pass:
+
+- `url` matches `^https://github\.com/<owner>/<repo>/pull/<n>$`, where
+  `<owner>/<repo>` is the validated origin repository (compared
+  case-insensitively).
+- `number` is a positive integer equal to `<n>` from the URL.
+
+Only then does the helper set `PR_URL`, `PR_NUMBER`, and
+`PUBLISH_STATE=EXISTING_OPEN_PR`, all together. The previous publish state is
+replaced whatever it was (empty, `unknown`, `create-new-pr`, and so on),
+because the lookup never runs over a success state. The usual logic then sets
+`publish_state_reached=true`, reports `terminal_state=EXISTING_OPEN_PR`, and
+runs the PR status block, including `validate_final_pr_scope` and the
+[#1268 adjudication](#scoped-pr-signal-and-agentic-adjudication), unchanged.
+A PR found this way is evidence, not proof. The scope check still applies, and
+it can still fail the run. See [Effect on reported states](#effect-on-reported-states).
+
+### Output
+
+The lookup adds nothing to `stdout`. When it finds a PR it writes one line to
+`stderr`:
+
+```text
+INFO: resolved open PR https://github.com/rysweet/amplihack-rs/pull/<n> for branch feat/issue-1596-fix-issue-1596-read-it (previous publish state: 'unknown'); treating as EXISTING_OPEN_PR (#1596)
+```
+
+`<n>` is the PR number. The URL and branch in that line have already passed
+validation, and the previous state is reduced to `[A-Za-z0-9_-]` characters.
+
+When nothing is found, every input stays as it was and the helper behaves
+exactly as before:
+
+| Lookup result | `stderr` | Outcome |
+| --- | --- | --- |
+| `[]`, or only fork PRs | nothing extra | Existing path, e.g. `FAILED_MISSING_TERMINAL_EVIDENCE`, exit `1`. |
+| `gh` fails (auth error, rate limit, network) | `WARNING: branch PR lookup failed (#1596): gh failed` | Existing path. |
+| Malformed JSON or a non-array result | `WARNING: branch PR lookup failed (#1596): malformed JSON` | Existing path. |
+| A URL that fails validation | `WARNING: branch PR lookup failed (#1596): URL failed validation` | Existing path. |
+| A `number` that is not a positive integer or differs from the URL | `WARNING: branch PR lookup failed (#1596): PR number mismatch` | Existing path. |
+
+The reason after the colon is always one of those four fixed phrases. It never
+contains raw `gh` error output or any part of the candidate URL or number, so
+a hostile PR title, URL, or error message cannot inject extra lines into
+`stderr` any more than into `stdout`.
+
+### Effect on reported states
+
+Rows marked † report `terminal_success=true` and `terminal_state=EXISTING_OPEN_PR`,
+but the final exit status still depends on the PR status block that runs
+because `PR_URL` is now set:
+
+- `validate_final_pr_scope` passes: exit `0` and the success line
+  `All 23 workflow steps completed successfully.`
+- The scope check misses and the [#1268 adjudication](#scoped-pr-signal-and-agentic-adjudication)
+  returns `SUCCESS`: exit `0`, with an INFO line on `stderr`.
+- The adjudication returns a failing verdict: exit `1`, with
+  `Workflow final status failed; terminal success was not proven.` on `stderr`.
+- The adjudication returns `UNCERTAIN`: exit `0`, `terminal_verdict=UNCERTAIN`
+  on `stdout`, and no success line.
+
+In the last two cases `terminal_success=true` has already been printed. Callers
+must use the exit status and `terminal_verdict`, not `terminal_success` alone.
+
+| Before the lookup | Open PR on branch | Result |
+| --- | --- | --- |
+| Empty `PR_URL`, no other evidence | yes | † `terminal_status=EXISTING_OPEN_PR`; exit depends on the scope check |
+| Empty `PR_URL`, no other evidence | no | `terminal_state=FAILED_MISSING_TERMINAL_EVIDENCE`, exit `1` (unchanged) |
+| `PR_PUBLISH_RESULT_STATE=unknown` | yes | † exit depends on the scope check |
+| Implementation and verification evidence | yes | † `EXISTING_OPEN_PR` instead of `IMPLEMENTED_VERIFIED`. This is a behaviour change: the `IMPLEMENTED_VERIFIED` path never ran the scope check and always exited `0`; with a PR found, a scope miss can now end in exit `1` or `UNCERTAIN`. |
+| `TERMINAL_STATE` (or `TERMINAL_STATE_TERMINAL_STATE`, `RECIPE_VAR_terminal_state__terminal_state`) set | yes | The override is still the reported state. The lookup changes only `PR_URL`, `PR_NUMBER`, and the publish state. |
+| `TERMINAL_FAILURE=true` | yes | No lookup. Explicit failure, exit `1`. |
+| `PR_URL` already set, or `PR_PUBLISH_RESULT_STATE=FOLLOWUP_CREATED` | n/a | No lookup call. |
+
+### Example
+
+An agent step pushed `feat/issue-1596-fix-issue-1596-read-it` and opened a PR,
+and the publish step reported nothing. Run the helper from the checkout:
+
+```bash
+REMOTE_HOST_TYPE=github \
+ISSUE_NUMBER=1596 \
+TASK_DESCRIPTION="Resolve agent-opened branch PR in final status" \
+amplifier-bundle/tools/workflow_final_status.sh
+```
+
+This uses your real `gh` auth and the real scope helper, so it queries GitHub
+and checks the found PR against issue #1596. `stdout` includes these lines,
+along with a `PR Status:` block from `gh pr view`:
+
+```text
+publish_state_reached=true
+terminal_success=true
+terminal_state=EXISTING_OPEN_PR
+terminal_status=EXISTING_OPEN_PR
+PR Status:
+=== Task: Resolve agent-opened branch PR in final status ===
+=== Issue: #1596 ===
+=== PR: https://github.com/rysweet/amplihack-rs/pull/<n> ===
+All 23 workflow steps completed successfully.
+```
+
+`<n>` is the number of the open PR on the branch. If the PR does not match
+the issue's scope, the result follows the scope-check rules in
+[Effect on reported states](#effect-on-reported-states) instead.
+
+Run the same command on a branch with no open PR and the result is unchanged:
+`terminal_state=FAILED_MISSING_TERMINAL_EVIDENCE` and exit `1`.
+
+The regression test `tests/issue_1596_final_status_branch_pr_lookup.sh` covers
+these cases with a fake `gh` and a temporary repository. It needs no
+credentials, and CI runs it in the step "Final status — resolves agent-opened
+branch PR (issue #1596)".
 
 ---
 
@@ -624,6 +791,10 @@ orphan a live artifact.
 - Git and PR evidence is read only from the workflow checkout or configured
   repository path.
 - Branch names, PR numbers, and PR URLs are validated before use.
+- The branch PR lookup (issue #1596) uses ambient `gh` auth and the read-only
+  `pr list` call only. It ignores fork PRs, accepts only a URL on the validated
+  origin repository, never logs the raw `remote.origin.url`, and fails closed
+  on any `gh`, JSON, or validation error.
 - Diagnostics do not print full environments, tokens, credentials, or auth
   headers.
 - Nonzero exit codes are preserved through nested recipe routing.
