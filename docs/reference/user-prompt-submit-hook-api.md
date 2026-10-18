@@ -38,6 +38,27 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
   The prompt is not language-checked: terse English prompts (`/fix flaky sqlite test timeout on linux ci`, `/fix clippy needless_borrow parser`) have no function words to judge by, and a check would drop them. A prompt in another language matches an English memory only on the words the two share: the 15 foreign function words above are stop words, and foreign text pasted into a *memory's* code (a fenced log or a backtick span) contributes only its code-looking tokens, not its words, when it shows positive evidence of another language: at least two hits among its words, counted per code part, where a hit is one of 35 function words of the same six languages that are not English words, shell words, acronyms or names (`der`, `nicht`, `und`, `le`, `het`, `por`, …; see `FOREIGN_EVIDENCE`) or a word with a non-ASCII letter, and at least one hit is a listed word. A command line in a fence or in backticks has none (`ps aux | grep ingest worker` keeps its words), an accented name in an English fence (`Jürgen Müller`) costs nothing, and on the prompt side no such rule runs at all (`` /fix `cargo test sqlite timeout` on ci ``). Its other words are topic words like any other, so a foreign prompt that shares two real words with an English memory, such as a product name and a path, still matches it; and any paste with fewer than two hits, or with no listed word, lends its words: an ASCII paste in one of the six languages that happens to use at most one evidence word, a paste in a language outside the six whether it is written in ASCII (Indonesian, Swahili) or with diacritics (Polish, Czech, Turkish), and two one-hit fences in one turn.
 
+#### Injected memory format
+
+Relevant memories are added under one heading that names the agents the prompt invoked (or just `## Relevant Memory` if it names none). Each memory is collapsed to one line, cut to 400 characters, and followed by its score:
+
+```text
+## Relevant Memory (agents: analyzer)
+- <memory text, one line, at most 400 characters> (relevance: N.NN)
+```
+
+A memory's stored code context, if it has any, is printed on the lines after it as stored. The 400-character cut and the line collapse do not apply to it.
+
+#### Checking the memory rules
+
+The unit tests are in `mod tests` of `memory.rs` and in `user_prompt/tests.rs`. `tests/issue_1483_memory_injection_outside_in.sh` runs the real binary: it stores learnings through `session-stop` under a temporary `HOME`, sends prompts to `user-prompt-submit`, and checks the JSON output. CI runs it against the release binary in the `cross-compile` job.
+
+```bash
+cargo build --release --locked -p amplihack-hooks-bin
+bash tests/issue_1483_memory_injection_outside_in.sh target/release/amplihack-hooks
+# last line: passed: 26, failed: 0
+```
+
 ## Hook Signature
 
 **File**: `~/.amplihack/.claude/tools/amplihack/hooks/user_prompt_submit.py`
