@@ -193,3 +193,26 @@ fn recovery_settles_the_journal_without_claude_on_path() {
     assert_no_amplihack_locks(&f);
     f.assert_each_login_once();
 }
+
+#[test]
+fn a_refused_swap_alerts_once_across_runs_and_records_the_cycle() {
+    let f = Fixture::new();
+    // Claude is refreshing in the target, so the threshold swap is refused.
+    fs::create_dir(f.root.join("spare").join(LOCK)).unwrap();
+    for _ in 0..2 {
+        let out = f.run(&["profile", "rotate"]);
+        assert_no_secrets(&out);
+        assert!(!out.status.success(), "a refused swap exits non-zero");
+        assert!(text(&out.stderr).contains("swap refused"));
+    }
+    let alerts = f
+        .log()
+        .lines()
+        .filter(|l| l.contains("ALERT: swap refused: Claude holds its refresh lock"))
+        .count();
+    assert_eq!(alerts, 1, "{}", f.log());
+    let ledger = f.ledger().expect("ledger written");
+    assert_eq!(ledger["last_cycle"]["outcome"], "alerted");
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino));
+    f.assert_each_login_once();
+}

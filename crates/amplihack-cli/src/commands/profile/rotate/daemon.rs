@@ -112,21 +112,21 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
     prototype_guard(store.root())?;
     rs.ensure()?;
     let state = State::new(store.root())?;
-    {
-        let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
-            return Err(daemon_err("lock busy"));
-        };
-        recover_auto_switch(&state)?;
-        match swap::recover(store, &rs, home)? {
-            RecoverOutcome::Inconsistent(r) => return Err(ProfileError::RotateInconsistent(r)),
-            RecoverOutcome::RolledBack { from, to } => {
-                println!("{}", msg::recovered(false, &from, &to))
-            }
-            RecoverOutcome::RolledForward { from, to } => {
-                println!("{}", msg::recovered(true, &from, &to))
-            }
-            RecoverOutcome::None => {}
+    // The lock is held until the pid file is written, so two `start`s
+    // cannot both find no rotator and spawn one each.
+    let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
+        return Err(daemon_err("lock busy"));
+    };
+    recover_auto_switch(&state)?;
+    match swap::recover(store, &rs, home)? {
+        RecoverOutcome::Inconsistent(r) => return Err(ProfileError::RotateInconsistent(r)),
+        RecoverOutcome::RolledBack { from, to } => {
+            println!("{}", msg::recovered(false, &from, &to))
         }
+        RecoverOutcome::RolledForward { from, to } => {
+            println!("{}", msg::recovered(true, &from, &to))
+        }
+        RecoverOutcome::None => {}
     }
     if paused(store.root()) {
         eprintln!(
@@ -210,12 +210,17 @@ pub fn watch(
         signal_hook::flag::register(sig, stop.clone())?;
     }
     if !spawned {
+        rs.ensure()?;
+        // As in `start`: checked and written under the lock.
+        let state = State::new(store.root())?;
+        let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
+            return Err(daemon_err("lock busy"));
+        };
         if let DaemonState::Running(pid) = current_state(&rs) {
             return Err(daemon_err(format!(
                 "a rotator is already running (pid {pid})"
             )));
         }
-        rs.ensure()?;
         write_private_atomic(
             &rs.dir,
             "rotate.pid",

@@ -126,8 +126,13 @@ fn an_unrecognised_layout_is_inconsistent_sticky_and_moves_nothing() {
         Phase::Inconsistent
     );
     assert!(
-        e.home.join(".claude").join(LOCK).exists(),
-        "locks left in place"
+        !e.home.join(".claude").join(LOCK).exists(),
+        "our lock is released, so Claude can still refresh"
+    );
+    let j = e.rs.load_journal().unwrap().unwrap();
+    assert_eq!(
+        j.home_lock_ino, None,
+        "the journal forgets the released lock"
     );
 
     fs::remove_file(e.slot("work")).unwrap();
@@ -162,6 +167,30 @@ fn a_journal_for_another_home_is_inconsistent() {
         e.recover().unwrap(),
         RecoverOutcome::Inconsistent(_)
     ));
+    assert_eq!(ino_at(&e.live()), Some(e.l));
+    assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
+    assert_eq!(
+        e.rs.load_journal().unwrap().unwrap().phase,
+        Phase::J0,
+        "left for the run with the journal's HOME"
+    );
+}
+
+#[test]
+fn rolling_back_an_adopting_swap_removes_the_login_less_profile() {
+    let e = env();
+    e.store.add(&n("default-original")).unwrap();
+    e.rs.save_journal(&RotateJournal {
+        from: "default-original".into(),
+        adopt: true,
+        ..e.journal(Phase::J0)
+    })
+    .unwrap();
+    assert!(matches!(
+        e.recover().unwrap(),
+        RecoverOutcome::RolledBack { .. }
+    ));
+    assert!(!e.root.join("default-original").exists());
     assert_eq!(ino_at(&e.live()), Some(e.l));
     assert_eq!(ino_at(&e.slot("spare")), Some(e.t));
 }

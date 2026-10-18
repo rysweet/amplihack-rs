@@ -57,8 +57,8 @@ personal                     ok     20%      Oct 18, 3pm (Europe/London)        
 work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
 ```
 
-A profile in any state other than `ok`, `session_exhausted` or
-`weekly_exhausted` is never chosen.
+Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
+probe failed, never is.
 
 ## Preview a rotation
 
@@ -256,8 +256,9 @@ To see only swaps and alerts:
 grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
-The same ALERT is written once. It is written again only after something
-changes: a swap succeeds, a cycle needs no swap, or the reason changes. The log
+The same ALERT is written to the log once. It is written again only after
+something changes: a swap succeeds, a cycle needs no swap, or the reason
+changes. The one-shot `rotate` still prints it on every run. The log
 holds profile names, percentages and fixed text; it never holds account IDs,
 e-mail addresses, tokens or Claude's output.
 
@@ -352,7 +353,9 @@ journal before the first rename. If the rotator is killed part-way, the next
 anything else. It decides by where the outgoing and incoming logins actually
 are, found by inode number, not by the step the journal last recorded. It
 only renames logins; it never deletes or overwrites one. It also removes the
-refresh locks it took, and only those.
+refresh locks it took, and only those, even when it then marks the journal
+`inconsistent`. A run with a different `HOME` (under `sudo` or `cron`) leaves
+the journal alone for the run with the right `HOME`.
 
 When it cannot tell which way is safe, it marks the journal `inconsistent`,
 writes an ALERT, and stops swapping until you resolve it:
@@ -361,6 +364,9 @@ writes an ALERT, and stops swapping until you resolve it:
 error: rotate state is inconsistent: the login files are not where the journal expects
 hint: see the Recovery section of docs/howto/claude-profile-rotation.md
 ```
+
+Later runs report `an earlier swap stopped half way` in place of the first
+reason.
 
 To resolve it by hand, without opening any credentials file:
 
@@ -390,6 +396,11 @@ To resolve it by hand, without opening any credentials file:
    and can also be removed.
 6. Delete `journal.json`, then run `amplihack profile rotate --dry-run` and
    check that it reports no pending journal.
+7. Start the background process again: `amplihack profile rotate start`.
+
+A `ledger.json` that cannot be read gives the same error. Delete
+`~/.claude-profiles/.auto-switch.d/rotate/ledger.json`; the next cycle works
+out the live profile again from the accounts.
 
 If you cannot tell which login belongs where, log each affected profile in
 again with `amplihack profile login <name>`.
@@ -398,7 +409,8 @@ again with `amplihack profile login <name>`.
 
 - **Linux only in practice.** On macOS Claude keeps logins in the Keychain, so
   there is no `.credentials.json` to move and the rotator writes the
-  no-login ALERT. Hosts without `/proc` cannot tell which profiles have running
+  no-login ALERT; on any system other than Linux a swap is refused with
+  `atomic exchange is not supported here`. Hosts without `/proc` cannot tell which profiles have running
   sessions, so every profile counts as in use and none is a candidate;
   `status` reports `unverifiable`. On Windows every `rotate` command is
   refused.

@@ -5,6 +5,7 @@
 use super::cycle::{Ctx, CycleOutcome};
 use super::decide::{Decision, Measured, Reading, decide};
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
+use super::ledger::Phase;
 use super::log::{Sink, msg};
 use super::measure::{self, Live};
 use super::swap;
@@ -120,6 +121,11 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
         match ctx.rs.load_journal() {
+            // A real run refuses to go on from an inconsistent journal.
+            Ok(Some(j)) if j.phase == Phase::Inconsistent => {
+                out.emit(0, "would alert: rotate recovery is inconsistent");
+                return Ok(CycleOutcome::Alerted);
+            }
             Ok(Some(j)) => out.emit(
                 0,
                 &format!(

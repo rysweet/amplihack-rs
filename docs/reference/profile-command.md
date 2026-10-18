@@ -1459,8 +1459,8 @@ amplihack profile rotate status
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. |
-| `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. Prints `rotate: started (pid <pid>), checking every <interval>s` and `log: <path>`, and returns at once. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Prints `rotate: started (pid <pid>), checking every <interval>s` and `log: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
 | `rotate stop` | Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
@@ -1551,14 +1551,14 @@ point.
 | `session_exhausted` or `weekly_exhausted` | | | `0` |
 | any other [state](#states) | | | probe failed |
 
-A candidate whose probe failed is never chosen. The *best* candidate has the
+A candidate whose probe failed, or that is exhausted, is never chosen. The *best* candidate has the
 highest headroom; ties go to the name that sorts first by byte value.
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
 | Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`. |
 | As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
-| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` | Swap to best, `reason=upgrade`. |
+| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
 | Otherwise | Stay. |
 
 `swapped_at` and `previous` (the profile swapped out) come from the
@@ -1603,7 +1603,7 @@ pre-swap checks and before `j0`; the outgoing login is then moved into that
 profile by the swap. Adoption happens only as part of a swap, never on a
 cycle that stays.
 
-Adoption is not journalled. If the process stops after `add` but before the
+The profile is created before `j0`, so creating it is not journalled; a journal that recovery rolls back removes an adopted profile that still holds no login. If the process stops after `add` but before the
 `oauthAccount` block is written, the new profile exists with no login and no
 account. Nothing has moved, so no recovery is needed, but the account match
 cannot find that profile, and the next swap adopts again under the next free
@@ -1650,8 +1650,9 @@ fails with `RotateRefused` and nothing changes:
 - the platform has an atomic exchange. Only Linux
   (`renameat2(RENAME_EXCHANGE)`) qualifies. macOS has `renamex_np`, but Claude
   keeps macOS logins in the Keychain, so there is no `~/.claude/.credentials.json`
-  to exchange and a cycle stops earlier with the `no-login` ALERT. Other Unix
-  systems are refused with `atomic exchange is not supported here`.
+  to exchange and a cycle stops earlier with the `no-login` ALERT. Any system
+  other than Linux, macOS included if a credentials file is there, is refused
+  with `atomic exchange is not supported here`.
 
 Then the steps run in order. The step names are the `phase` values in the
 journal.
@@ -1770,7 +1771,7 @@ stdout only, without the time.
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | Hand change. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
-| `ALERT: swap refused: <reason>` | `watch` only: a [pre-swap check](#rotate-swap) failed. The one-shot command exits with `RotateRefused` instead. |
+| `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed; written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |
 | `ALERT: auto-switch recovery is inconsistent; no swap` | Auto-switch state needs `auto-switch repair`. |
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
@@ -1779,13 +1780,16 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
-| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` | `--dry-run` only. |
+| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
-`hand-change`, `ambiguous`, `inconsistent` or `auto-switch`, plus the live
+`hand-change`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
+for a swap refused under [Swap](#rotate-swap), plus the live
 profile) differs from the key
 stored in the ledger. The key is cleared when a cycle stays without alerting
-or a swap succeeds, so the same ALERT can be written again later.
+or a swap succeeds, so the same ALERT can be written again later. The
+one-shot `rotate` still prints a repeated ALERT to stdout on every run; only
+the log line is written once.
 
 Before each write, a log over 1 MiB is renamed to `rotate.log.1`, replacing
 the old one. The log is opened with `O_APPEND`, `O_NOFOLLOW` and `O_CLOEXEC`,
@@ -1855,11 +1859,12 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
-| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
 | `log` | The log path. |
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
-or `journal: inconsistent`.
+or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
+ledger that cannot be read shows `live: - (ledger unreadable)`.
 
 ### Rotate prototype coexistence
 

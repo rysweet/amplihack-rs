@@ -45,6 +45,11 @@ pub fn measure(
     now: i64,
 ) -> (Reading, Vec<(ProfileName, Reading)>) {
     let timeout = timeout();
+    // As `profile usage` warns: with one of these set, every probe may
+    // report that credential, so the readings say nothing about the logins.
+    if let Some(var) = usage_cmd::env_credential_var(|k| std::env::var_os(k)) {
+        eprintln!("{}", usage_cmd::env_credential_warning(var));
+    }
     let args = ["-p".to_string(), "/usage".to_string()];
     std::thread::scope(|s| {
         let live = s.spawn(|| {

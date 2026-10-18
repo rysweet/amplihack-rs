@@ -125,10 +125,18 @@ fn alert(
 ) -> Result<(), ProfileError> {
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-    if should_alert(&mut l, &alert_key(kind, live)) {
-        out.emit(t, line);
-    }
+    alert_once(out, &mut l, &alert_key(kind, live), t, line);
     record(ctx, &mut l, CycleOutcome::Alerted, t)
+}
+
+/// Logs the ALERT only when its key changed; the one-shot command still
+/// prints it every time, so a repeated run does not look like success.
+fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &str) {
+    if should_alert(l, key) {
+        out.emit(t, line);
+    } else {
+        out.print(t, line);
+    }
 }
 
 fn record(
@@ -172,6 +180,21 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
         }
         ctx.last_skips = Some(skips);
     }
+}
+
+/// The ALERT key kind for a refused swap: its reason, without control
+/// characters and short enough that the key passes the ledger's 320-byte
+/// check with any profile name.
+fn refusal_kind(e: &ProfileError) -> String {
+    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
+    let mut kind = String::from("refused ");
+    for c in reason.chars() {
+        if kind.len() + c.len_utf8() > 200 {
+            break;
+        }
+        kind.push(c);
+    }
+    kind
 }
 
 /// Records a known live profile and its account, so `profile usage` and the
@@ -265,9 +288,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         out.emit(now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
     };
+    // The external rotator may have started while this one measured.
+    prototype_guard(ctx.store.root())?;
     let t = now();
-    if exists(&ctx.rs.journal) || snapshot(ctx, &state).ok().as_ref() != Some(&first) {
+    if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
+        let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+        record(ctx, &mut l, CycleOutcome::Skipped, t)?;
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -277,7 +304,26 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 LiveId::Known(n) => Source::Profile(n.clone()),
                 _ => Source::Adopt,
             };
-            let from = swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t)?;
+            let from = match swap::swap(&ctx.store, &ctx.rs, &ctx.home, source, &to, t) {
+                Ok(from) => from,
+                // A refusal repeats every cycle until a person acts: one
+                // ALERT per reason, and the cycle is recorded.
+                Err(e @ ProfileError::RotateRefused(_)) => {
+                    let live = live_name(&first.live);
+                    alert(
+                        ctx,
+                        &mut out,
+                        &refusal_kind(&e),
+                        live,
+                        &format!("ALERT: {e}"),
+                    )?;
+                    return match mode {
+                        Mode::Watch => Ok(CycleOutcome::Alerted),
+                        _ => Err(e),
+                    };
+                }
+                Err(e) => return Err(e),
+            };
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
             l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -291,12 +337,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Decision::Alert => {
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
-            if should_alert(&mut l, &alert_key("no-capacity", name)) {
-                out.emit(
-                    t,
-                    &msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live),
-                );
-            }
+            let line = msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live);
+            alert_once(&mut out, &mut l, &alert_key("no-capacity", name), t, &line);
             CycleOutcome::Alerted
         }
     };

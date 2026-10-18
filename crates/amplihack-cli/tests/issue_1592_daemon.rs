@@ -34,6 +34,19 @@ impl Drop for Reaper {
 
 struct Foreign(Child);
 
+/// A rotator started by `start` in this test, killed on drop if still one.
+struct KillPid(i32);
+
+impl Drop for KillPid {
+    fn drop(&mut self) {
+        let cmdline = fs::read(format!("/proc/{}/cmdline", self.0)).unwrap_or_default();
+        if String::from_utf8_lossy(&cmdline).contains("rotate") {
+            // SAFETY: plain kill(2) of a process this test started.
+            unsafe { libc::kill(self.0, libc::SIGKILL) };
+        }
+    }
+}
+
 impl Drop for Foreign {
     fn drop(&mut self) {
         let _ = self.0.kill();
@@ -271,4 +284,49 @@ fn stop_and_status_without_a_state_directory() {
     let out = f.ok(&["profile", "rotate", "stop"]);
     assert!(text(&out.stdout).contains("rotate: not running"));
     assert!(!f.rotate_dir().join("rotate.pid").exists());
+}
+
+#[test]
+fn two_starts_at_once_leave_one_rotator() {
+    let f = Fixture::new();
+    f.usage("work", 10, 10);
+    let _reaper = Reaper(pid_file(&f));
+    let args = [
+        "profile",
+        "rotate",
+        "start",
+        "--interval",
+        "1",
+        "--hold",
+        "0",
+    ];
+    let (a, b) = std::thread::scope(|s| {
+        let a = s.spawn(|| f.run(&args));
+        let b = s.spawn(|| f.run(&args));
+        (a.join().unwrap(), b.join().unwrap())
+    });
+    // Every rotator either `start` reports, killed when the test ends so a
+    // failure leaves no orphan behind.
+    let started: Vec<KillPid> = [&a, &b]
+        .iter()
+        .filter_map(|o| {
+            let out = text(&o.stdout);
+            let pid = out
+                .split("rotate: started (pid ")
+                .nth(1)?
+                .split(')')
+                .next()?;
+            Some(KillPid(pid.parse().ok()?))
+        })
+        .collect();
+    assert_eq!(started.len(), 1, "{}\n{}", text(&a.stderr), text(&b.stderr));
+    let pid: i32 = fs::read_to_string(pid_file(&f))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    f.ok(&["profile", "rotate", "stop"]);
+    wait_for("the rotator to exit", Duration::from_secs(5), || {
+        !alive(pid)
+    });
 }

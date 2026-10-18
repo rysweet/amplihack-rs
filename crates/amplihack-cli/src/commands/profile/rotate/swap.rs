@@ -201,12 +201,18 @@ pub fn swap(
             rs.save_journal(&j)
         });
     if let Err(e) = locked {
-        return Err(abandon(store, rs, home, &j, e));
+        return Err(abandon(store, rs, home, &mut j, e));
     }
     abort_point("rotate-J0");
 
     if let Err(e) = exchange_logins(&t, &l) {
-        return Err(abandon(store, rs, home, &j, refused(describe(e))));
+        // A failed sync after the exchange still exchanged the logins:
+        // go on as journalled, or the logins would be filed under the
+        // wrong profiles with no journal to say so.
+        if ino_at(&t) != Some(live_ino) {
+            return Err(abandon(store, rs, home, &mut j, refused(describe(e))));
+        }
+        eprintln!("warning: {}; the swap goes on", describe(e));
     }
     step(rs, &mut j, Phase::S1)?;
     let s = store.root().join(from.as_str()).join(CREDS);
@@ -243,13 +249,22 @@ fn abandon(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
-    j: &RotateJournal,
+    j: &mut RotateJournal,
     err: ProfileError,
 ) -> ProfileError {
-    release_locks(store, home, j);
-    if let Err(e) = rs.delete_journal() {
-        return e;
+    // The journal forgets the locks before they are released, so a journal
+    // left behind cannot later remove a lock Claude made with a reused inode.
+    if let Err(e) = drop_locks(store, rs, home, j).and_then(|()| rs.delete_journal()) {
+        eprintln!("warning: the abandoned swap was not cleaned up: {e}");
+        return err;
     }
+    remove_unused_adoption(store, j);
+    err
+}
+
+/// Removes a profile the swap adopted that still holds no login: nothing
+/// but the copied `oauthAccount` block is in it.
+pub(super) fn remove_unused_adoption(store: &ProfileStore, j: &RotateJournal) {
     let dir = store.root().join(&j.from);
     if j.adopt
         && !exists(&dir.join(CREDS))
@@ -257,7 +272,6 @@ fn abandon(
     {
         eprintln!("warning: unused profile {} was not removed: {e}", j.from);
     }
-    err
 }
 
 /// Rewrites the journal at `phase`, then stops there in a test run.

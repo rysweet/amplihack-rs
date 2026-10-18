@@ -138,6 +138,11 @@ impl Sink {
             self.warned = true;
             eprintln!("warning: could not write the rotate log: {e}");
         }
+        self.print(now, msg);
+    }
+
+    /// Prints to stdout only, when this sink prints at all.
+    pub fn print(&self, now: i64, msg: &str) {
         if self.stdout {
             if self.timed {
                 println!("{}", line(now, msg));
