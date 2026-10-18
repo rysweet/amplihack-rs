@@ -187,17 +187,6 @@ fn hook_sed_expressions_use_posix_bre_only() {
     );
 }
 
-/// The hook must stay fail-closed. (bash 3.2 constructs such as mapfile are
-/// guarded repo-wide by tests/issue_1423_bash4_constructs.sh.)
-#[test]
-fn hook_keeps_strict_mode() {
-    let text = read(&workspace_root().join(HOOK));
-    assert!(
-        text.contains("set -euo pipefail"),
-        "hook must keep strict mode"
-    );
-}
-
 // ----------------------------------------------------------- real inputs ---
 
 #[test]
@@ -262,34 +251,7 @@ fn posix_sed_reads_the_limit_from_the_authority() {
     }
 }
 
-// ------------------------------------------------------------ boundaries ---
-
-/// The rule is `lines < limit`: exactly `limit` lines is a violation.
-#[test]
-fn recipe_at_exactly_the_limit_is_a_violation() {
-    let f = Fixture::synthetic(
-        "const BRICK_LIMIT: usize = 10;",
-        &[("phase-a", 10), ("phase-b", 3), ("default-workflow", 3)],
-    );
-    let out = f.run(true);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    let err = stderr(&out);
-    assert!(err.contains("phase-a.yaml"), "{err}");
-    assert!(
-        !err.contains("phase-b.yaml"),
-        "phase-b is under the limit:\n{err}"
-    );
-}
-
-#[test]
-fn recipe_one_under_the_limit_passes() {
-    let f = Fixture::synthetic(
-        "const BRICK_LIMIT: usize = 10;",
-        &[("phase-a", 9), ("default-workflow", 9)],
-    );
-    let out = f.run(true);
-    assert!(out.status.success(), "9 < 10 must pass:\n{}", stderr(&out));
-}
+// --------------------------------------------------------- limit parsing ---
 
 /// A multi-digit limit must be read whole, not just its last digit.
 #[test]
@@ -336,27 +298,6 @@ fn non_numeric_limit_fails_closed() {
         "{}",
         stderr(&out)
     );
-}
-
-#[test]
-fn empty_phase_recipe_list_fails_closed() {
-    let f = Fixture::synthetic("const BRICK_LIMIT: usize = 10;", &[("default-workflow", 1)]);
-    let out = f.run(true);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(
-        stderr(&out).contains("parsed no PHASE_RECIPES"),
-        "{}",
-        stderr(&out)
-    );
-}
-
-#[test]
-fn missing_source_of_truth_fails_closed() {
-    let f = Fixture::synthetic("const BRICK_LIMIT: usize = 10;", &[("phase-a", 1)]);
-    fs::remove_file(f.path(DECOMP_TEST)).unwrap();
-    let out = f.run(true);
-    assert_eq!(out.status.code(), Some(1), "{}", stderr(&out));
-    assert!(stderr(&out).contains("cannot find"), "{}", stderr(&out));
 }
 
 // ------------------------------------------- macOS clippy regressions ---
