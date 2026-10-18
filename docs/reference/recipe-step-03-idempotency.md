@@ -96,6 +96,7 @@ Tests verify:
 
 ## Related documentation
 
+- [Tracking Issue Selection Reference](workflow-tracking-issue-selection.md) - how the current step-03 recipe chooses a GitHub tracking issue
 - [Provider-Neutral Workflow API](workflow-provider-contract.md)
 - [Multi-Provider Workflow Reference](multi-provider-workflow.md)
 - [Configure Provider-Neutral Workflows](../howto/configure-provider-neutral-workflows.md)

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
-# workflow_local_tracking.sh — local (provider-free) issue tracking metadata.
+# workflow_issue_tracking.sh — tracking-issue selection and local (provider-free)
+# issue tracking metadata.
 #
-# Extracted verbatim from `step-03-create-issue` in
-# amplifier-bundle/recipes/workflow-prep.yaml. That brick is at its 400-line
-# budget (scripts/check-brick-budget.sh), and the rule's remedy for a full brick
-# is extraction, never compression — so the room for the issue claim check
-# (#1361) was bought by moving this self-contained block out, the same way the
-# 23-step plan banner moved to workflow_plan_banner.sh.
+# The local-tracking functions were extracted from `step-03-create-issue` in
+# amplifier-bundle/recipes/workflow-prep.yaml; the GitHub selection functions
+# (#1595) were written here. That brick is at its 400-line budget
+# (scripts/check-brick-budget.sh), and the remedy for a full brick is extraction,
+# never compression; the room for the issue claim check (#1361) was bought the
+# same way the 23-step plan banner moved to workflow_plan_banner.sh.
 #
 # These functions are meant to be SOURCED by the step, and they read the step's
 # own variables (`EXISTING_ISSUE_NUMBER`, `TASK_DESC`) from the caller's scope.
@@ -16,13 +17,19 @@
 #                               no reachable issue provider
 #   emit_local_metadata       — the tracking_* key/value block step-03b parses
 #   sanitize_cli_output       — redact provider CLI output before it is logged
+#   select_github_tracking_issue — GitHub tracking-issue choice (#1595): an
+#                               explicit issue_number wins; otherwise the first
+#                               task-text reference that is an open issue (not a
+#                               PR) in this repository, marked ones first
+#   _tracking_issue_candidates — task-text candidate numbers, no network
+#   _github_open_issue_url    — read-only check of one candidate via `gh api`
 
 derive_local_tracking_id() {
   if [[ "$EXISTING_ISSUE_NUMBER" =~ ^#?([0-9]+)$ ]]; then
     printf 'local-issue-%s' "${BASH_REMATCH[1]}"
   elif [[ "$EXISTING_ISSUE_NUMBER" =~ AB#([0-9]+)|_workitems/edit/([0-9]+) ]]; then
     printf 'local-ab-%s' "${BASH_REMATCH[1]:-${BASH_REMATCH[2]}}"
-  elif [[ "$EXISTING_ISSUE_NUMBER" =~ local-(issue|ab)-([0-9]+)$ ]]; then
+  elif [[ "$EXISTING_ISSUE_NUMBER" =~ ^local-(issue|ab)-([0-9]+)$ ]]; then
     printf '%s' "$EXISTING_ISSUE_NUMBER"
   elif [[ "$TASK_DESC" =~ ([Ii]ssue[[:space:]#]*|#)([0-9]+) ]]; then
     printf 'local-issue-%s' "${BASH_REMATCH[2]}"
@@ -56,4 +63,72 @@ _pct_decode() {
     d+="$ch"; i=$((i+1))
   done
   printf '%s' "$d"
+}
+
+# Masked, lower-cased task text: PR references, owner/repo#N, AB#N and #N
+# followed by a word character (hex colours) are removed so they are never
+# looked up. Only the first 64 KiB is read (bash substring: no SIGPIPE).
+_tracking_issue_masked_text() {
+  printf '%s\n' "${TASK_DESC:0:65536}" | tr '[:upper:]' '[:lower:]' \
+    | sed -E 's/(^|[^a-z0-9_])(pr|pull request|pull)[[:space:]]*#[0-9]+/\1 /g; s/[a-z0-9_.-]+\/[a-z0-9_.-]+#[0-9]+/ /g; s/ab#[0-9]+/ /g; s/#[0-9]+[a-z_][a-z0-9_]*/ /g'
+}
+
+# Reference numbers of one kind (`marked` or `bare`) in order of appearance.
+_tracking_issue_refs() {
+  local masked
+  masked="$(_tracking_issue_masked_text)"
+  if [ "$1" = "marked" ]; then
+    printf '%s\n' "$masked" | grep -oE '(^|[^a-z0-9_])(issue|fix(es|ed)?|close[sd]?|resolve[sd]?)[[:space:]]*:?[[:space:]]*#[0-9]+' | sed -E 's/.*#//' || true
+  else
+    printf '%s\n' "$masked" | grep -oE '(^|[^a-z0-9_#])#[0-9]+' | sed -E 's/.*#//' || true
+  fi
+}
+
+# Up to 5 candidate numbers, marked references first, duplicates removed.
+# awk reads all of its input (no early exit), so pipefail never sees a SIGPIPE.
+_tracking_issue_candidates() {
+  { _tracking_issue_refs marked; _tracking_issue_refs bare; } \
+    | awk '/^[1-9][0-9]{0,8}$/ && !seen[$0]++ && c < 5 { print; c++ }'
+  return 0
+}
+
+# Print the URL of issue N and return 0 only if it is an open issue, not a
+# pull request, in this repository. Read-only; every other outcome returns 1.
+_github_open_issue_url() {
+  local n row state is_pr url
+  n="${1:-}"
+  [[ "$n" =~ ^[0-9]+$ ]] || return 1
+  row="$(timeout 30 gh api "repos/{owner}/{repo}/issues/$n" --jq '[.state, (.pull_request != null), .html_url] | @tsv' </dev/null 2>/dev/null)" || return 1
+  IFS=$'\t' read -r state is_pr url <<< "$row" || return 1
+  [ "$state" = "open" ] && [ "$is_pr" = "false" ] && [[ "$url" =~ /issues/${n}$ ]] || return 1
+  printf '%s\n' "$url"
+}
+
+# GitHub tracking issue for step-03. Returns 0 with a URL (or, for an explicit
+# number gh cannot resolve as an issue, local metadata) on stdout; returns 1
+# with empty stdout when nothing is selected. Diagnostics go to stderr only.
+select_github_tracking_issue() {
+  local explicit n url marked source checked=""
+  explicit="${EXISTING_ISSUE_NUMBER:-}"; explicit="${explicit#\#}"
+  if [[ "$explicit" =~ ^[0-9]{1,9}$ ]]; then
+    url="$(timeout 60 gh issue view "$explicit" --json url --jq '.url // ""' </dev/null 2>/dev/null || true)"
+    if [[ "$url" =~ ^https://[^[:space:]]+/issues/${explicit}$ ]]; then
+      echo "INFO: tracking issue #${explicit} selected (explicit)" >&2
+      printf '%s\n' "$url"; return 0
+    fi
+    echo "WARN: explicit issue_number #${explicit} could not be resolved as an issue in this repository — using local tracking" >&2
+    emit_local_metadata; return 0
+  elif [ -n "$explicit" ]; then
+    echo "WARN: issue_number is not a valid issue number — ignoring it for tracking-issue selection" >&2
+  fi
+  marked="$(_tracking_issue_refs marked)"
+  while IFS= read -r n; do
+    checked+=" $n"
+    url="$(_github_open_issue_url "$n")" || continue
+    source="bare"; printf '%s\n' "$marked" | grep -qx "$n" && source="marked"
+    echo "INFO: tracking issue #${n} selected (${source})" >&2
+    printf '%s\n' "$url"; return 0
+  done < <(_tracking_issue_candidates)
+  [ -z "$checked" ] || echo "INFO: no task-text candidate accepted as an open issue (checked:${checked}); falling back to title search" >&2
+  return 1
 }

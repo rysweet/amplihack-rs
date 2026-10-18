@@ -77,6 +77,7 @@ Complete documentation for using the Recipe Runner:
 - **[Workflow Provider Abstraction](../features/workflow-provider-abstraction.md)** - Provider-neutral tracking, change requests, terminal state, and stale cleanup through typed helpers
 - **[Recipe Simulation Reference](../reference/workflow-simulation.md)** - Deterministic fake-provider, fake-tool, and fake-agent simulation for recipe regression coverage
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
+- **[Tracking Issue Selection (#1595)](../reference/workflow-tracking-issue-selection.md)** - Explicit `issue_number`, marked and bare task-text references, and open-issue validation on GitHub
 - **[Default Workflow Step 13 Validation](../reference/default-workflow-step-13-validation.md)** - Toolchain-aware outside-in local validation contract for the pre-commit gate
 - **[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)** - Target contract for development workflow completion evidence, no-op states, routed failure propagation, and `workflow_final_status.sh` API
 - **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution

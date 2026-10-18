@@ -248,15 +248,15 @@ steps:
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
-      # step-03's provider-metadata helpers (derive_local_tracking_id, emit_local_metadata,
-      # sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
+      # step-03's provider-metadata helpers (select_github_tracking_issue, derive_local_tracking_id,
+      # emit_local_metadata, sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
       # They were extracted, not trimmed: this brick is at its 400-line budget and the rule's
       # remedy for a full brick is extraction (scripts/check-brick-budget.sh), which is how the
       # room for the #1361 claim check below was bought.
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
       [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
       . "$T"; . "$(dirname "$T")/workflow_body_file.sh"  # write_body_file: body to a file for --body-file (#1570)
-      REF_ISSUE_NUM=""
+      REF_ISSUE_NUM=""  # AzDO only; GitHub: select_github_tracking_issue (#1595)
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
@@ -268,7 +268,7 @@ steps:
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo — using local tracking" >&2; emit_local_metadata; exit 0; fi
       case "$HOST_TYPE" in
       github)
-        if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
+        GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; exit 0; }
         SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
         ISSUE_BODY_FILE=$(umask 077; mktemp); trap 'rm -f -- "$ISSUE_BODY_FILE"' EXIT
         printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" | write_body_file "$ISSUE_BODY_FILE"
