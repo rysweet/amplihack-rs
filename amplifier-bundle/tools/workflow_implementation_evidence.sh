@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+. "$(dirname "${BASH_SOURCE[0]}")/workflow_context.sh"
+WORKFLOW_CONTEXT_COHORT=implementation
+
 normalize_bool() {
   case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
     "true"|"1"|"yes"|"y") printf 'true\n' ;;
@@ -17,9 +20,10 @@ emit_evidence() {
     '{implementation_completed:$implementation_completed,terminal_no_op:$terminal_no_op,terminal_state:$terminal_state,terminal_reason:$terminal_reason}'
 }
 
-allow_no_op="$(normalize_bool "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}")"
-impl="${IMPLEMENTATION:-}"
-verdict_raw="${VERDICT_JSON:-}"
+workflow_context_capture allow_no_op allow_no_op
+allow_no_op="$(normalize_bool "$allow_no_op")"
+impl="$(workflow_context_read implementation || :)"
+verdict_raw="$(workflow_context_read verdict_json || :)"
 orchestration_sentinel='No files modified — orchestration task'
 
 if [ "$allow_no_op" = "true" ]; then
@@ -33,7 +37,7 @@ fi
 
 verdict_line="$(printf '%s\n' "$verdict_raw" | grep -E '^[[:space:]]*\{.*"verdict"' | tail -1 || true)"
 if [ -n "$verdict_line" ]; then
-  verdict="$(printf '%s' "$verdict_line" | jq -r '.verdict // ""' 2>/dev/null || true)"
+  verdict="$(printf '%s' "$verdict_line" | jq -r '.verdict | if type == "string" and index("\u0000") == null then . else "" end' 2>/dev/null || true)"
 else
   verdict=""
 fi

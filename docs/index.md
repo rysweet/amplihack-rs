@@ -83,7 +83,7 @@ Centralized plugin system that works across all your projects:
 - [Migration Guide](plugin/MIGRATION.md) - Migrate from per-project to plugin mode
 - [CLI Reference](plugin/CLI_REFERENCE.md) - Complete command-line reference
 
-**Note**: Plugin architecture is **Claude Code only**. Microsoft Amplifier, GitHub Copilot CLI, and Codex use per-project `~/.amplihack/.claude/` staging instead.
+**Note**: The plugin guides above describe Claude Code. Codex uses its native local marketplace package and command hooks; Microsoft Amplifier and GitHub Copilot CLI use framework staging.
 
 ### Installation
 
@@ -93,6 +93,7 @@ Centralized plugin system that works across all your projects:
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
+- [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in isolated `CLAUDE_CONFIG_DIR` profiles ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 
 ### Configuration
 
@@ -102,6 +103,7 @@ Centralized plugin system that works across all your projects:
 
 - Requires: `$ANTHROPIC_API_KEY` environment variable for Anthropic models
 - Plugin mode: Install globally with [Plugin Installation Guide](plugin/INSTALLATION.md)
+- [Claude Code native plugin installation](howto/install-claude-code-plugin.md) - Marketplace setup and shared immutable runner delivery
 - Per-project mode: Copy `~/.amplihack/.claude/` directory to your project
 - Azure OpenAI: Configure via environment variables
 
@@ -131,9 +133,11 @@ amplihack copilot
 
 **Codex**
 
-- Limited support via per-project `~/.amplihack/.claude/` staging
-- Most features work but may require adaptation
-- Tested primarily with Claude models
+- [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
+- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
+- [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
+- [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
+- [Codex ownership ledger migration](CODEX_OWNERSHIP_MIGRATION.md) - Safe upgrade of legacy schema 1 ownership proofs
 
 #### General Configuration
 
@@ -151,6 +155,8 @@ amplihack copilot
 
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
+- [Claude Profiles How-To](howto/claude-profiles.md) - Isolated Claude logins per profile and what a new profile inherits
+- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, security rules, and errors
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
@@ -192,6 +198,8 @@ Understand the philosophy and architecture behind amplihack.
 - [Blarify Architecture](blarify_architecture.md) - Understanding the Blarify integration
 - [Documentation Knowledge Graph](documentation_knowledge_graph.md) - How docs connect
 - [amplihack-rs Parity Reference](amplihack-rs-parity.md) - Subprocess prompt delivery capabilities, configuration, diagnostics, and Rust API
+- [Large Payload Delivery to Child Processes](concepts/large-payload-delivery.md) - Why large prompts, recipe context and GitHub bodies stay out of argv and environment values (`E2BIG`, `MAX_ARG_STRLEN`)
+- [Large Payload Delivery Reference](reference/large-payload-delivery.md) - `file-reference` mode, sync and async stdin writers, runner value spill, UTF-8 truncation, reasoner bounds, `--prompt-file`, and `workflow_body_file.sh`
 - [`amplihack-turn` Turn Driver Reference](reference/amplihack-turn-api.md) - Agent-generic turn model: `AgentSession` / `Channel` / `NextPrompt`, the `run_session_loop` driver (run-to-completion, no wall-clock cap), and the relocated `SerialTurnDriver` / `CopilotTurnRunner` / `build_turn_argv` / `ToolAllowlist` primitives
 - [`amplihack-supply-chain-audit` Supply Chain Audit Reference](reference/supply-chain-audit-api.md) - Native Rust `supply-chain-audit` skill: the `amplihack-supply-chain-audit` CLI, 12 audit dimensions, finding/report schemas, `run_audit` / `AuditConfig` / `Finding` / `Severity` library API, accepted-risks configuration, and the seven enforced security invariants
 - [Idle Watchdog Concept](concepts/idle-watchdog.md) - Why agentic child processes use idle detection instead of wall-clock timeouts
@@ -281,9 +289,12 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, and the evidence-gated merge
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
+- [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the three phases, how the merge round applies the merge-ready criteria (gadugi scenarios run one per process, the crusty loop as criterion 3), the `AUTODRIVE_QA_*` variables, and the evidence-gated merge
 - [Session-Tree Recursion Control](reference/session-tree-recursion-control.md) - where tree state lives, how the depth ceiling is sealed, the `BLOCKED_TERMINAL` exit-79 contract, `session-tree gc` retention, and mixed-version fleets
 - [Read Agent Verdicts with orch helper](howto/parse-agent-verdicts-with-orch-helper.md) - Migrate grep/awk/jq gates to `orch helper extract-json | extract-field | normalise-verdict` and structured `parse_json` conditions
+- [Pass Large Recipe Context and Agent Text](howto/pass-large-recipe-context.md) - `--context-file`, `--context-from-file`, `--body-file` and `git commit -F` for values that would exceed the argument limit
 - [Recipe Context Environment Export](reference/recipe-context-environment.md) - Export recipe context variables to bash steps (`$TASK_DESCRIPTION`, `$REPO_PATH`), uppercasing, reserved-name denylist, and precedence
 - [Tutorial: Propagate Recipe Context to Bash Steps](tutorials/recipe-context-env-propagation.md) - Read context from the environment under `set -u`, including nested sub-recipes and skipped keys
 - [Workflow Provider Abstraction](features/workflow-provider-abstraction.md) - Provider-neutral tracking, change-request publication, terminal state, and stale cleanup through typed helpers and adapters

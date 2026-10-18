@@ -1,5 +1,7 @@
 //! Delivery-aware command builders for launcher subprocesses.
 
+mod codex_args;
+
 use std::ffi::OsStr;
 use std::io::{self, ErrorKind};
 use std::path::Path;
@@ -14,6 +16,25 @@ use amplihack_utils::root_sandbox;
 use crate::flag_matrix::{
     AgentBinary, delivery_mode_name, prompt_delivery_caps_for, prompt_delivery_name,
 };
+
+/// Name `tool` as the CLI this command starts, the way amplihack-cli's
+/// `EnvBuilder::with_launched_agent_binary` does for `amplihack <cli>`.
+///
+/// `AMPLIHACK_AGENT_BINARY` is tagged `session:<tool>`: it says which session
+/// this launch starts, so it ranks with the session markers rather than above
+/// them, and a tmux server started from inside that session does not hand it
+/// to every later session on it as an instruction. Every other CLI's session
+/// markers are removed, so none inherited from the caller outranks it (crusty
+/// review of #1490 at baaafb18).
+fn describe_launched_session(command: &mut Command, tool: &str) {
+    use amplihack_utils::agent_binary::{BINARY_ENV, SOURCE_ENV, other_clis_markers, session_tag};
+    for marker in other_clis_markers(tool) {
+        command.env_remove(marker);
+    }
+    command
+        .env(BINARY_ENV, tool)
+        .env(SOURCE_ENV, session_tag(tool));
+}
 
 #[derive(Debug)]
 pub struct DeliveredCommand {
@@ -111,8 +132,11 @@ fn build_tool_command_with_root_sandbox(
 
     let mut command = Command::new(binary.env_value());
     command.current_dir(project_path);
-    command.env("AMPLIHACK_AGENT_BINARY", binary.env_value());
+    describe_launched_session(&mut command, binary.env_value());
 
+    if binary == AgentBinary::Codex {
+        return finish_codex_delivery(command, extra_args, prompt, requested);
+    }
     add_prompt_prefix_args(&mut command, binary, extra_args);
     if binary == AgentBinary::Claude {
         // Issue #1482: `--dangerously-skip-permissions` as root needs
@@ -130,6 +154,89 @@ pub fn build_tool_command_from_env(
     prompt: &str,
 ) -> io::Result<DeliveredCommand> {
     build_tool_command_with_prompt_delivery(binary, project_path, extra_args, prompt, from_env())
+}
+
+/// Codex has separate interactive and unattended prompt contracts. Never pipe
+/// interactive stdin: it belongs to the terminal, including during resume.
+/// Root option values are consumed before classifying the native command.
+fn finish_codex_delivery(
+    mut command: Command,
+    args: &[String],
+    prompt: &str,
+    requested: PromptDelivery,
+) -> io::Result<DeliveredCommand> {
+    let invalid = |message| io::Error::new(ErrorKind::InvalidInput, message);
+    if prompt.is_empty() || prompt.contains('\0') || args.iter().any(|a| a.contains('\0')) {
+        return Err(invalid(
+            "Codex requires a nonempty prompt and NUL-free arguments",
+        ));
+    }
+    let mode = codex_args::classify(args)?;
+    let exec = mode.exec;
+    if mode.prompt_option {
+        return Err(invalid(
+            "Codex uses a positional prompt; --prompt is unsupported",
+        ));
+    }
+    if exec && mode.resume && mode.add_dir {
+        return Err(invalid("Codex exec resume does not support --add-dir"));
+    }
+    if mode.resume && mode.last && mode.session {
+        return Err(invalid(
+            "Codex resume accepts either --last or a session ID",
+        ));
+    }
+    command.args(args);
+    if exec {
+        if !mode.stdin_marker {
+            if mode.trailing_images && !mode.delimiter {
+                command.arg("--");
+            }
+            command.arg("-");
+        }
+        // The full effective envelope is stdin for every size, with EOF sent
+        // by the subprocess owner. Delivery preference cannot change modes.
+        finish_prompt_delivery(
+            command,
+            prompt,
+            PromptDelivery::Stdin,
+            DeliveryCaps {
+                supports_argv: false,
+                supports_tempfile: false,
+                supports_stdin: true,
+                supports_file_reference: false,
+                tempfile_flag: None,
+            },
+        )
+        .map(|mut d| {
+            d.requested_mode = requested;
+            d
+        })
+    } else {
+        if prompt.len() > 96 * 1024 {
+            return Err(invalid(
+                "Codex interactive prompt exceeds safe argv size; use exec for full stdin delivery",
+            ));
+        }
+        if matches!(requested, PromptDelivery::Stdin | PromptDelivery::Tempfile) {
+            return Err(invalid(
+                "Codex interactive mode requires terminal stdin and positional prompt delivery; use exec",
+            ));
+        }
+        if !mode.delimiter {
+            command.arg("--");
+        }
+        finish_prompt_delivery(
+            command,
+            prompt,
+            PromptDelivery::Argv,
+            DeliveryCaps::argv_only(),
+        )
+        .map(|mut d| {
+            d.requested_mode = requested;
+            d
+        })
+    }
 }
 
 fn finish_prompt_delivery(
@@ -191,7 +298,6 @@ fn add_prompt_prefix_args(command: &mut Command, binary: AgentBinary, extra_args
         }
         AgentBinary::Codex => {
             command.args(extra_args);
-            command.arg("--prompt");
         }
         AgentBinary::Amplifier => {
             command.arg("run");
@@ -278,6 +384,50 @@ mod root_sandbox_tests {
             )
             .unwrap();
             assert_eq!(is_sandbox(&delivered), None);
+        }
+    }
+}
+
+#[cfg(test)]
+mod launched_session_tests {
+    //! Crusty review of #1490 at baaafb18: a launch names the CLI it starts as
+    //! a session description, not as an instruction, and removes every other
+    //! CLI's session markers.
+
+    use super::*;
+    use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+    use std::ffi::OsStr;
+
+    #[test]
+    fn a_launch_describes_its_session_and_strips_other_clis_markers() {
+        for (binary, tool) in [
+            (AgentBinary::Claude, "claude"),
+            (AgentBinary::Copilot, "copilot"),
+            (AgentBinary::Codex, "codex"),
+        ] {
+            let delivered = build_tool_command_with_root_sandbox(
+                binary,
+                Path::new("."),
+                &[],
+                "hello",
+                PromptDelivery::Argv,
+                || root_sandbox::SkipPermissionsEnv::NotRoot,
+            )
+            .unwrap();
+            let env = |key: &str| {
+                delivered
+                    .command
+                    .get_envs()
+                    .filter(|(name, _)| *name == OsStr::new(key))
+                    .map(|(_, value)| value.map(|v| v.to_string_lossy().into_owned()))
+                    .last()
+            };
+            assert_eq!(env(BINARY_ENV), Some(Some(tool.to_string())));
+            assert_eq!(env(SOURCE_ENV), Some(Some(format!("session:{tool}"))));
+            for &(marker, implies) in SESSION_MARKERS {
+                let removed = env(marker) == Some(None);
+                assert_eq!(removed, implies != tool, "{tool}: {marker}");
+            }
         }
     }
 }

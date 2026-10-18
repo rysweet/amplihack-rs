@@ -26,16 +26,23 @@ following are true:
 | Signal | Detection |
 | --- | --- |
 | Explicit user opt-in | `--subprocess-safe` flag passed |
-| Delegated agent | `AMPLIHACK_AGENT_BINARY` env var is set to a non-empty value |
 | Non-interactive marker | `AMPLIHACK_NONINTERACTIVE=1` is set |
 | Headless I/O | Any of `stdin` / `stdout` / `stderr` is **not** a TTY |
+
+`AMPLIHACK_AGENT_BINARY` is **not** a signal ([#1525](https://github.com/rysweet/amplihack-rs/issues/1525)).
+It names which agent CLI to run and says nothing about whether anyone is at the
+terminal. Until #1525, any non-empty value also turned subprocess-safe on. A user
+who exported it to choose a CLI then had every interactive `amplihack copilot`
+launched without reflection, launcher staging or the power-steering prompt.
+Delegated runs still get subprocess-safe: `amplihack recipe run` sets
+`AMPLIHACK_NONINTERACTIVE=1` for the runner, and every step runs with piped stdio.
 
 Detection happens once at dispatch time. The resolved value is propagated to
 all downstream code (including the docker launcher) so behavior is consistent
 end-to-end.
 
 > **Distinct from `is_noninteractive()`:** Subprocess-safe detection examines
-> all three standard streams plus `AMPLIHACK_AGENT_BINARY`, while the older
+> all three standard streams (plus the explicit flag), while the older
 > `is_noninteractive()` helper only examined `stdin`. Callers of
 > `is_noninteractive()` keep their existing semantics; subprocess-safe is a
 > separate, stricter signal scoped to the Copilot subcommand.
@@ -51,7 +58,7 @@ When subprocess-safe context is active, `amplihack copilot` automatically:
    own work).
 
 When subprocess-safe context is **not** active (interactive TTY, no flag,
-no agent-binary env), none of these granular flags are injected. The
+no `AMPLIHACK_NONINTERACTIVE=1`), none of these granular flags are injected. The
 preexisting default `--allow-all` injection (issue #303) is unaffected — see
 [Layering with `--allow-all`](#layering-with---allow-all) below.
 
@@ -97,12 +104,13 @@ No flags required. The `copilot` CLI receives `--allow-all-tools` and
 ### Delegated agent invocation (env-detected)
 
 ```bash
-# Caller sets AMPLIHACK_AGENT_BINARY to indicate this is a delegated subprocess
-AMPLIHACK_AGENT_BINARY=copilot amplihack copilot -p "Implement the design spec at docs/SPEC.md"
+# Caller marks this as a delegated, non-interactive subprocess
+AMPLIHACK_NONINTERACTIVE=1 amplihack copilot -p "Implement the design spec at docs/SPEC.md"
 ```
 
-Subprocess-safe defaults activate even on a TTY, because the env var indicates
-this process is acting on behalf of a parent agent.
+Subprocess-safe defaults activate even on a TTY (for example inside a detached
+tmux session), because `AMPLIHACK_NONINTERACTIVE=1` says no one is there to
+answer a prompt. Setting `AMPLIHACK_AGENT_BINARY` alone does not do this (#1525).
 
 ### Explicit opt-in (interactive shell)
 
@@ -152,8 +160,8 @@ injected. Reflection is ON (preexisting default).
 
 | Variable | Effect |
 | --- | --- |
-| `AMPLIHACK_AGENT_BINARY` | If set non-empty → triggers subprocess-safe context. (Set by parent agent runtimes — Claude Code, recipe-runner, Copilot CLI agent dispatch — to identify the active binary.) |
-| `AMPLIHACK_NONINTERACTIVE` | If `=1` → triggers subprocess-safe context. |
+| `AMPLIHACK_NONINTERACTIVE` | If `=1` → triggers subprocess-safe context. `amplihack recipe run` sets it for every step. |
+| `AMPLIHACK_AGENT_BINARY` | **No effect** on subprocess-safe (#1525). It selects the agent CLI only; see [Active Agent Binary](./reference/active-agent-binary.md). |
 | `AMPLIHACK_COPILOT_NO_ALLOW_ALL` | If `=1` → suppresses the preexisting `--allow-all` blanket injection (#303). **Not weakened** by subprocess-safe. (See [layering](#layering-with---allow-all) below.) |
 | `RUST_LOG=debug` | Emits a `tracing::debug!` line documenting the resolved subprocess-safe + reflection decision and which signals fired. |
 
@@ -162,18 +170,16 @@ injected. Reflection is ON (preexisting default).
 Run with `RUST_LOG=debug` to see the audit log:
 
 ```bash
-RUST_LOG=debug amplihack copilot --subprocess-safe -p "test" 2>&1 | grep amplihack_cli
-# DEBUG amplihack_cli::commands: copilot dispatch subprocess_safe_resolved=true
-#   explicit_flag=true agent_binary_set=false amplihack_noninteractive=false
-#   any_stream_non_tty=false no_reflection_effective=true
+RUST_LOG=amplihack_cli::commands::copilot=debug amplihack copilot --subprocess-safe -p "test"
+# DEBUG copilot dispatch decision explicit_subprocess_safe=true
+#   env_amplihack_noninteractive=false any_stream_non_tty=false
+#   subprocess_safe_resolved=true explicit_reflection=false
+#   explicit_no_reflection=false no_reflection_effective=true
 ```
 
-> **Note:** The exact `tracing::debug!` line format above reflects the
-> implemented field names (`subprocess_safe_resolved`, `explicit_flag`,
-> `agent_binary_set`, `amplihack_noninteractive`, `any_stream_non_tty`,
-> `no_reflection_effective`). The contract is that the resolved decision and
-> all four input signals are observable at `debug` level — string layout may
-> evolve.
+> **Note:** The field names above are the ones the dispatcher logs. The
+> contract is that the resolved decision and all three input signals are
+> observable at `debug` level — string layout may evolve.
 
 ## Layering with `--allow-all`
 
@@ -205,7 +211,7 @@ image.
 
 ```bash
 # Auto-detection fires on the host; flag is propagated into the container
-AMPLIHACK_AGENT_BINARY=copilot amplihack copilot --docker -p "Run the tests"
+AMPLIHACK_NONINTERACTIVE=1 amplihack copilot --docker -p "Run the tests"
 ```
 
 ## Examples
@@ -216,7 +222,7 @@ AMPLIHACK_AGENT_BINARY=copilot amplihack copilot --docker -p "Run the tests"
 # .github/workflows/agent.yml
 - name: Run amplihack copilot agent
   env:
-    AMPLIHACK_AGENT_BINARY: copilot   # Mark as delegated
+    AMPLIHACK_NONINTERACTIVE: "1"   # Mark as delegated (a runner's stdio is not a TTY either)
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
   run: |
     amplihack copilot -p "Fix the issue described in $ISSUE_BODY"
@@ -243,30 +249,27 @@ After:
 
 ```rust
 // Simard engineer/launcher.rs (cleanup)
-std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
-let argv = vec!["amplihack", "copilot", "-p", &task];
+let status = std::process::Command::new("amplihack")
+    .args(["copilot", "-p", &task])
+    .env("AMPLIHACK_NONINTERACTIVE", "1") // mark as delegated
+    .status()?;
 // All three flags now auto-applied by amplihack-rs.
 ```
 
 > **Note:** The Simard workaround removal is a separate follow-up PR in that
 > repository. The change in amplihack-rs is backward-compatible — existing
 > callers that pass the granular flags explicitly continue to work (duplicate
-> suppression handles them).
->
-> **Edition footnote:** `std::env::set_var` is `unsafe` under the Rust 2024
-> edition. The wrapping required at the call site (`unsafe { ... }` block,
-> or a safer alternative such as setting the env var in the parent process
-> before spawn) is determined by the consuming crate's edition — Simard's
-> own toolchain dictates the exact form. amplihack-rs only reads the env
-> var; it does not constrain how callers write it.
+> suppression handles them). An earlier version of this example set
+> `AMPLIHACK_AGENT_BINARY=copilot` instead; that no longer marks a delegate
+> (#1525).
 
 ### Recipe-runner subprocess agent
 
 ```bash
-# Inside a recipe step
-amplihack recipe run my-workflow -c agent_binary=copilot
-# Internally launches `amplihack copilot ...` with AMPLIHACK_AGENT_BINARY=copilot;
-# subprocess-safe defaults activate automatically.
+AMPLIHACK_AGENT_BINARY=copilot amplihack recipe run my-workflow
+# Every agent step launches `amplihack copilot ...`. recipe run sets
+# AMPLIHACK_NONINTERACTIVE=1 for the runner and the steps' stdio is piped,
+# so subprocess-safe defaults activate automatically.
 ```
 
 ## Migration Guide
@@ -276,8 +279,9 @@ amplihack recipe run my-workflow -c agent_binary=copilot
 If your code currently appends `--allow-all-tools`, `--allow-all-paths`, or
 `--no-reflection` to `amplihack copilot` invocations as a workaround:
 
-1. **Set `AMPLIHACK_AGENT_BINARY=copilot`** before invoking, OR pass
-   `--subprocess-safe` explicitly.
+1. **Set `AMPLIHACK_NONINTERACTIVE=1`** before invoking, OR pass
+   `--subprocess-safe` explicitly. (`AMPLIHACK_AGENT_BINARY` does not count;
+   see below.)
 2. **Remove the workaround flags** from your argv (they are now redundant —
    though keeping them is harmless thanks to duplicate suppression).
 3. **Verify** with `RUST_LOG=debug` that `subprocess_safe_resolved=true` and
@@ -287,6 +291,16 @@ If your code currently appends `--allow-all-tools`, `--allow-all-paths`, or
 
 **No action required.** Interactive TTY behavior is unchanged. The new
 defaults only fire when at least one subprocess-safe signal is present.
+Since #1525, exporting `AMPLIHACK_AGENT_BINARY` to choose an agent CLI no
+longer counts as one.
+
+### For callers that relied on `AMPLIHACK_AGENT_BINARY` alone (#1525)
+
+A delegate that is started at a terminal (for example in a detached tmux
+session) with only `AMPLIHACK_AGENT_BINARY` set now runs interactive defaults:
+reflection on, launcher staging, and the power-steering prompt. Add
+`AMPLIHACK_NONINTERACTIVE=1` or pass `--subprocess-safe`. Callers with piped
+stdio, and every `amplihack recipe run` step, are unaffected.
 
 ### For users who want the new flags in interactive shells
 
@@ -321,7 +335,7 @@ This feature does **not**:
   operator who has explicitly disabled amplihack auto-permissioning of
   copilot keeps that posture even when subprocess-safe auto-detects.
   (See [layering](#layering-with---allow-all) above.)
-- **Trust model unchanged.** Anyone who can set `AMPLIHACK_AGENT_BINARY` or
+- **Trust model unchanged.** Anyone who can set `AMPLIHACK_NONINTERACTIVE` or
   redirect stdio already controls process startup; subprocess-safe inherits
   that trust posture, never escalates it.
 - **Reflection auto-disable is a safety improvement.** Prevents nested

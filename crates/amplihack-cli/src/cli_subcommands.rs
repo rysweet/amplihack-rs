@@ -511,6 +511,14 @@ pub enum RecipeCommands {
         /// Set context variable (key=value)
         #[arg(short = 'c', long = "context")]
         context: Vec<String>,
+        /// Read context from a file holding one JSON object; non-string
+        /// values become text. Overridden by --context-from-file and -c.
+        #[arg(long = "context-file", value_name = "PATH")]
+        context_file: Option<String>,
+        /// Set KEY to the raw UTF-8 contents of PATH (repeatable).
+        /// Overrides --context-file; overridden by -c.
+        #[arg(long = "context-from-file", value_name = "KEY=PATH")]
+        context_from_file: Vec<String>,
         /// Show what would be executed
         #[arg(long)]
         dry_run: bool,

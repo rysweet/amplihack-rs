@@ -51,20 +51,27 @@ fn run(mut cmd: Command, prompt: &str, mode: DeliveryMode) -> String {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut child = cmd.spawn().expect("harness should spawn");
-    // For stdin mode the helper would normally take the child's stdin and
-    // write to it before wait(). Until that is implemented this branch
-    // emulates the eventual behaviour so the assertion still measures
-    // round-trip integrity end-to-end.
-    if mode == DeliveryMode::Stdin {
+    // Write stdin concurrently with wait_with_output, which drains stdout.
+    // Writing synchronously first can deadlock when the child fills its
+    // stdout pipe before it has consumed the complete payload.
+    let writer = if mode == DeliveryMode::Stdin {
         use std::io::Write;
-        if let Some(mut sin) = child.stdin.take() {
-            sin.write_all(prompt.as_bytes())
-                .expect("write to child stdin should succeed");
-        }
-    }
+        child.stdin.take().map(|mut sin| {
+            let payload = prompt.as_bytes().to_vec();
+            std::thread::spawn(move || sin.write_all(&payload))
+        })
+    } else {
+        None
+    };
     let out = child
         .wait_with_output()
         .expect("harness should run to completion");
+    if let Some(writer) = writer {
+        writer
+            .join()
+            .expect("stdin writer should not panic")
+            .expect("write to child stdin should succeed");
+    }
     assert!(
         out.status.success(),
         "harness exited non-zero: {:?}",

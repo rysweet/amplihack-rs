@@ -120,8 +120,8 @@ pair `(NAME, value)`:
 5. **Reject oversized values.** A single environment string longer than the
    kernel's `MAX_ARG_STRLEN` (≈128 KB on Linux) makes the spawn fail with
    `E2BIG`. Values above a conservative per-variable byte cap are therefore not
-   mirrored into the environment; they are still delivered to the runner via the
-   recipe context file for `{{placeholder}}` substitution.
+   mirrored into the environment; they are still delivered to the runner as a
+   `--set` argument for `{{placeholder}}` substitution.
 6. **Fit within the aggregate budget.** After all per-key checks pass, the
    surviving pairs are admitted against a single, runtime-derived
    [aggregate environment budget](#aggregate-environment-budget) so the *total*
@@ -130,12 +130,23 @@ pair `(NAME, value)`:
    [essential keys](#essential-keys-always-exported) is always admitted; the
    remaining keys are filled **smallest-first** until the budget is exhausted,
    and any key that does not fit is skipped from the *environment mirror only*.
-   Skipped values are still delivered via the recipe context file, exactly like
-   an oversized value in rule 5.
+   Skipped values are still delivered as `--set` arguments, exactly like an
+   oversized value in rule 5.
 
 A candidate that passes all checks is exported. A candidate that fails any
 check is **skipped** (never exported, never fatal) and a name-only warning is
 emitted (see [Skip logging](#skip-logging)).
+
+> **Reading a value that may be skipped.** Rules 5 and 6 mean an uppercase
+> alias such as `$TASK_DESCRIPTION` that amplihack exports is unset exactly
+> when its value is large. The pinned recipe runner then sets its own
+> `RECIPE_VAR_*` variables and aliases for each bash step at any size, keeping
+> large ones as shell-local variables that child processes do not inherit. A
+> bash step that must see a value of any size reads it with
+> `write_context_value` from a sourced
+> `amplifier-bundle/tools/recipe_context_value.sh`, which also falls back to
+> `AMPLIHACK_CONTEXT_FILE` for runners older than the pin; see
+> [Reading a context value in a bash step](./large-payload-delivery.md#reading-a-context-value-in-a-bash-step).
 
 ### Common mappings
 
@@ -163,7 +174,9 @@ a single line of the step runs. Exporting attacker- or author-controlled values
 into those names would be a code-execution vector. The exporter therefore
 **never** sets any name in the reserved denylist, regardless of context, and
 never sets any name beginning with `AMPLIHACK_` (those are owned by the
-subprocess environment builder).
+subprocess environment builder). A context key in the `AMPLIHACK_` namespace
+passed to `amplihack recipe run` (`-c`/`--set` or `--context-file`) is not
+skipped: the run stops before the runner starts (issue #1567).
 
 | Category | Reserved names |
 |----------|----------------|
@@ -280,7 +293,7 @@ does not fit is dropped from the mirror with a name-only `WARN` whose reason is
 `aggregate_env_budget`.
 
 Every dropped value — essential-exceeds notwithstanding — remains available to
-the recipe via the unchanged `--set` / `--context-file` delivery path, so
+the recipe via the unchanged `--set` delivery path, so
 `{{placeholder}}` substitution is unaffected. **Only the environment mirror is
 trimmed**, never the runner's view of the context. This is the same contract as
 the per-value cap in [rule 5](#key-transformation-rules) (issue #784).
@@ -298,7 +311,7 @@ Given a budget of 4096 bytes and this context (post-filter, post-uppercase):
 | `HUGE_BLOB` | 80 KB | non-essential | ❌ `aggregate_env_budget` |
 
 `HUGE_BLOB` is dropped from the environment but still substitutes into
-`{{huge_blob}}` and is delivered to the runner via the context file.
+`{{huge_blob}}` and is delivered to the runner as a `--set` argument.
 
 ---
 
@@ -309,6 +322,7 @@ spawn seam writes them first, then layers the subprocess environment builder and
 the correlation variable on top:
 
 ```
+0. command.env_remove(name) for inherited names        // see "Inherited context is not re-exported"
 1. command.envs(context_env_pairs(context, budget))   // context, lowest priority
 2. env_builder.apply_to_command(&mut command)         // AMPLIHACK_*, pager-safe, PATH/HOME fallbacks
 3. command.env("AMPLIHACK_RECIPE_RUN_ID", …)          // correlation id, highest priority
@@ -325,8 +339,8 @@ Guarantees that follow from this ordering:
   the `AMPLIHACK_` prefix rule).
 - **`PATH`/`HOME` are never clobbered.** These are on the denylist, so a context
   key such as `path=/evil` is dropped rather than replacing the process `PATH`.
-- **`--set` / `--context-file` placeholder delivery is unchanged.** The
-  existing argv- and temp-file-based delivery used for `{{placeholder}}`
+- **`--set` placeholder delivery is unchanged.** The
+  existing argv-based delivery used for `{{placeholder}}`
   substitution is untouched; environment export is additive.
 
 ---
@@ -365,6 +379,34 @@ multi-workstream campaigns require. Per-sub-recipe context *overrides* (the
 step-level `context:` dict on a `type: recipe` step) are resolved inside the
 recipe runner's `{{placeholder}}` layer and are out of scope for the CLI-level
 environment export.
+
+### Inherited context is not re-exported
+
+The guarantee above covers steps *inside* one recipe run, including
+`type: recipe` sub-steps. A bash step that runs `amplihack recipe run` itself
+starts a new top-level run, and that run does **not** carry the parent's
+context forward. Before applying its own context, the CLI removes from the
+child environment:
+
+- every inherited `RECIPE_VAR_<key>`;
+- the uppercase alias of each such `<key>` that contains no `__` (for
+  `RECIPE_VAR_task_description`, also `TASK_DESCRIPTION`);
+- `AMPLIHACK_CONTEXT_FILE`, the file-first context that runners older than
+  the pin set for the parent step, which would otherwise supply the parent's
+  values to a nested step.
+
+Names on the [reserved-name denylist](#reserved-name-denylist), all other
+`AMPLIHACK_*` names and names that are not valid environment identifiers are
+never removed,
+so `RECIPE_VAR_path` in the parent never removes `PATH`. Removed variables are
+also excluded from `inherited_env_bytes()`, so a large parent value no longer
+shrinks the nested run's [aggregate budget](#aggregate-environment-budget).
+
+Without this rule, each nesting level carried every ancestor's context twice
+and added its own, and a large value such as `cycle_history` pushed the nested
+spawn past `ARG_MAX`. A nested recipe now receives only what its step passes
+with `-c`, `--context-from-file` or `--context-file`; see
+[Give a nested recipe the context it needs](../howto/pass-large-recipe-context.md#give-a-nested-recipe-the-context-it-needs).
 
 ---
 
@@ -408,8 +450,8 @@ Skip reasons:
 | `invalid_identifier` | Uppercased name is empty, starts with a digit, or contains characters outside `[A-Z0-9_]` |
 | `reserved_name` | Name is on the denylist or begins with `AMPLIHACK_` |
 | `value_contains_nul` | Value contains a NUL byte and cannot be represented in the environment |
-| `value_too_large` | Value exceeds the per-variable byte cap (kept below the kernel's `MAX_ARG_STRLEN` to avoid `E2BIG`); the value is still delivered via the recipe context file for `{{placeholder}}` substitution |
-| `aggregate_env_budget` | A non-essential key did not fit within the [aggregate environment budget](#aggregate-environment-budget); the value is still delivered via the recipe context file |
+| `value_too_large` | Value exceeds the per-variable byte cap (kept below the kernel's `MAX_ARG_STRLEN` to avoid `E2BIG`); the value is still delivered as a `--set` argument for `{{placeholder}}` substitution |
+| `aggregate_env_budget` | A non-essential key did not fit within the [aggregate environment budget](#aggregate-environment-budget); the value is still delivered as a `--set` argument |
 | `essential_env_exceeds_budget` | The [essential keys](#essential-keys-always-exported) alone exceed the budget; they are exported anyway (loud warning) and no non-essential keys are mirrored |
 | `invalid_env_budget_override` | `AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` was set to a non-numeric/negative/overflowing value; it is ignored and the derived budget is used |
 
@@ -442,7 +484,7 @@ the host's real `ARG_MAX`.
 /// essential keys are always exported; the remaining keys are filled
 /// smallest-first until the budget is exhausted. Keys that do not fit are
 /// dropped from the env mirror (name-only WARN, reason `aggregate_env_budget`)
-/// but remain available via the recipe context file.
+/// but remain available to the runner as `--set` arguments.
 ///
 /// Total: invalid/over-budget entries are skipped, never fatal. Deterministic:
 /// input is a sorted `BTreeMap` and fill order is smallest-first with a stable
@@ -519,8 +561,9 @@ The spawn seam consumes the helper at the lowest precedence. In
 layer on top:
 
 ```rust
-// after: let _context_file = pass_context(&mut command, context)?;
-let budget = resolve_context_env_budget();               // adaptive or override
+// after: let context_argv_bytes = pass_context(&mut command, context)?;
+let budget = resolve_context_env_budget()                // adaptive or override
+    .saturating_sub(context_argv_bytes);                 // argv shares ARG_MAX
 command.envs(context_env_pairs(context, budget));        // context, lowest priority
 // … then env_builder.apply_to_command(&mut command);   // AMPLIHACK_*, pager-safe, PATH/HOME
 // … then command.env("AMPLIHACK_RECIPE_RUN_ID", correlation.run_id());
@@ -654,8 +697,8 @@ amplihack recipe run env-aware-recipe \
 WARN recipe context key skipped for env export name=HUGE_BLOB reason=aggregate_env_budget
 ```
 
-`{{huge_blob}}` still substitutes correctly because the value is delivered via
-the context file. To mirror everything regardless of the derived budget, raise
+`{{huge_blob}}` still substitutes correctly because the value is delivered as
+a `--set` argument. To mirror everything regardless of the derived budget, raise
 the override (or unset it to use the adaptive default).
 
 ---
@@ -683,9 +726,9 @@ Additional notes:
   are not user-configurable, by design, because they are safety/security
   controls.
 
-Large context maps continue to use the existing `--context-file` spill path for
-`{{placeholder}}` delivery (argv size protection); every value the mirror drops
-is still delivered there. The aggregate budget guarantees the mirror never pushes
+Every context pair is delivered as a `--set` argument for `{{placeholder}}`
+substitution, including every value the mirror drops; a pair longer than one
+argument (131072 bytes) is refused before the runner starts (issue #1570). The aggregate budget guarantees the mirror never pushes
 the inherited environment past `ARG_MAX`, so late shell steps no longer fail with
 `Argument list too long (os error 7)`.
 

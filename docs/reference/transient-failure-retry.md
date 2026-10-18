@@ -34,6 +34,7 @@ unit-tested in isolation
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
+| `usage_limit`         | `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
 | `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
 | `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL` policy refusal | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
@@ -51,6 +52,39 @@ Evidence is drawn from the tail of the **failed** steps — their `error`, their
 captured stdout/stderr — plus the runner's own stderr tail. In the reported
 incident the step's `error` said only `agent step failed: amplihack claude
 failed (exit 1)`; the 529 was in the captured stdout, which is why both are read.
+
+### Usage-limit markers
+
+The markers are `session limit`, `usage limit`, `usage_limit_reached`,
+`quota exceeded`, `monthly limit`, `weekly limit`, `spend limit` and
+`credit balance is too low`.
+
+- **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
+  Code's `monthly spend limit` message, so both are markers (#1546).
+- **Reset hint.** The reset time the message states is quoted in the verdict:
+  `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)`
+  gives `it resets Oct 8, 12am (America/Los_Angeles)`.
+- **Two markers in one message.** The `signal` is the marker that appears
+  earliest in the text, not the one listed first. This message:
+
+  ```text
+  You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 10, ...
+  ```
+
+  reports `spend limit`, and its reset hint is `Oct 10, ...`, the text after the
+  first `resets `.
+- **Checked after work and environmental, before transient.** The order is
+  `work` → `environmental` → `usage_limit` → `transient_transport`, and the
+  first class with a match wins. A usage-limit marker inside a 429 envelope is
+  still `usage_limit`, and `weekly limit` text cannot hide a real test failure.
+- **`daily limit` is not a marker.** Provider and GitHub API daily request
+  quotas use the same phrase. Filing those as `usage_limit` would stop retrying
+  failures that clear on their own.
+- **A bare `rate limit` is not a marker**, so a provider rate limit is never
+  filed as `usage_limit`. `rate limit exceeded`, `rate_limit_error`, a plain
+  `API Error: 429` and `429 Too Many Requests` stay `transient_transport`.
+- **`credit balance is too low`** is also on the marker list, but the
+  environmental check runs first, so that message classifies `environmental`.
 
 ## Retry bounds
 

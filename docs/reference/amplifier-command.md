@@ -1,7 +1,7 @@
 ---
 title: "Amplifier Command Reference"
-description: "Reference for launching Microsoft Amplifier through amplihack, including the argv-only prompt delivery contract."
-last_updated: 2026-06-05
+description: "Reference for launching Microsoft Amplifier through amplihack, including the argv and file-reference prompt delivery contract."
+last_updated: 2026-10-16
 review_schedule: quarterly
 owner: rysweet
 doc_type: reference
@@ -97,8 +97,8 @@ Common Amplifier `run` options:
 
 ## Prompt delivery
 
-Amplifier task prompts are delivered through structured argv. The stable
-upstream contract is the positional `PROMPT` argument on `amplifier run`:
+Amplifier task prompts are delivered through the positional `PROMPT` argument
+on `amplifier run`, which is the stable upstream contract:
 
 ```text
 amplifier run [OPTIONS] [PROMPT]
@@ -109,11 +109,15 @@ is passed as a `std::process::Command` argument, so apostrophes, quotes,
 semicolons, dollar signs, and newlines are not interpreted by a shell.
 
 Amplifier does not currently have a documented task-prompt file or stdin
-contract:
+contract. Prompts above 4096 bytes are therefore delivered by file reference:
+the prompt is written to a 0600 temporary file, and `PROMPT` is a short fixed
+sentence naming that file. This keeps a large prompt within Linux's
+131,072-byte limit on a single argument.
 
 | Delivery mode | Amplifier support | Behavior |
 | --- | --- | --- |
-| `argv` | Supported | The prompt is passed as one structured argv value. |
+| `argv` | Supported | The prompt is passed as one structured argv value. Used for prompts of 4096 bytes or fewer. |
+| `file-reference` | Supported | Used automatically for prompts above 4096 bytes. `PROMPT` reads `Read and follow the complete instructions in the file <path>. Its contents are the task prompt.` The file is deleted when Amplifier exits. |
 | `tempfile` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt tempfile is created. |
 | `stdin` | Unsupported | Explicit requests fail before spawning `amplifier`. No prompt bytes are written to stdin. |
 
@@ -125,15 +129,15 @@ narrow:
 
 | Setting | Amplifier result |
 | --- | --- |
-| unset, empty, or `auto` | Use structured argv delivery. |
-| `argv` | Use structured argv delivery. |
+| unset, empty, or `auto` | Structured argv up to 4096 bytes; file reference above. |
+| `argv` | Structured argv up to 4096 bytes; file reference above. |
 | `tempfile` | Fail before launching Amplifier. |
 | `stdin` | Fail before launching Amplifier. |
 
 Examples:
 
 ```bash
-# Default: Amplifier receives the prompt as one positional argv value.
+# Default: a short prompt is one positional argv value.
 amplihack amplifier -- run "Summarize this repository"
 
 # Explicit compatibility mode: same argv delivery, useful in diagnostics.
@@ -153,8 +157,9 @@ AMPLIHACK_PROMPT_DELIVERY=tempfile \
 ```
 
 This command fails before launching Amplifier. The same hard rejection applies
-to `AMPLIHACK_PROMPT_DELIVERY=stdin`. Amplifier remains `argv`-only until
-upstream documents a stable `run` prompt-file or stdin task-prompt contract.
+to `AMPLIHACK_PROMPT_DELIVERY=stdin`. File reference is not a substitute for a
+prompt-file contract; `tempfile` and `stdin` stay unsupported until upstream
+documents a stable `run` prompt-file or stdin task-prompt contract.
 Use `amplihack doctor` to inspect the capability report.
 
 The Amplifier launch path must build the upstream command as
@@ -234,18 +239,25 @@ amplihack amplifier --auto --max-turns 25 "Refactor the entire API layer"
 
 ### Long Prompts
 
-Amplifier has no supported long-form file or stdin task-prompt channel. Long
-prompts therefore remain argv delivery when the requested mode is unset, `auto`,
-or `argv`.
+Amplifier has no supported long-form file or stdin task-prompt channel, so each
+auto-mode turn prompt above 4096 bytes is delivered by file reference.
 
-Do not document or rely on local shell substitutions such as
-`"$(cat docs/feature-request.md)"` as an Amplifier long-prompt workaround. That
-form expands in the parent shell before `amplihack` starts and still delivers
-the resulting prompt to Amplifier through argv.
+To start auto mode from a long prompt without placing it in `amplihack`'s own
+argv, use `--prompt-file`, which goes before any `--` and requires `--auto`:
+
+```bash
+amplihack amplifier --auto --max-turns 25 --prompt-file docs/feature-request.md
+```
+
+Do not use `"$(cat docs/feature-request.md)"` for long prompts. That form
+expands in the parent shell and places the whole prompt in one argument of
+`amplihack` itself, which fails with `Argument list too long` above 128 KiB.
 
 For Amplifier, `AMPLIHACK_PROMPT_DELIVERY=tempfile` and
-`AMPLIHACK_PROMPT_DELIVERY=stdin` must fail before launch rather than silently
-moving the prompt back to argv.
+`AMPLIHACK_PROMPT_DELIVERY=stdin` fail before launch.
+
+See [Large Payload Delivery Reference](./large-payload-delivery.md) for the
+file-reference template and lifetime rules.
 
 ## Bundle Discovery
 

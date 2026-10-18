@@ -24,6 +24,9 @@ fn child_is_sandbox(command: &std::process::Command) -> Option<String> {
 
 #[test]
 fn root_in_a_sandbox_sets_is_sandbox_on_the_launched_claude_only() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let decision =
         root_sandbox_for_launch("claude", true, &[], || SkipPermissionsEnv::SetSandbox {
             signal: "/.dockerenv",

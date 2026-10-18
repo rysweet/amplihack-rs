@@ -38,7 +38,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.0.0"
+version = "1.2.0"
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/rysweet/amplihack-rs"
@@ -104,6 +104,16 @@ debug = "line-tables-only"
 
 [profile.test]
 debug = "line-tables-only"
+
+# lbug (LadybugDB) builds its C++ with cmake, and the cmake crate maps opt-level 0 to a
+# CMake Debug build (-O0 -g): about 1,040 objects into a 2.65 GB rlib that every test
+# binary depending on it links. At opt-level 1 with no debug information the build is
+# CMake Release (-O3 -DNDEBUG) and the rlib is 131 MB; with debug information it would
+# be RelWithDebInfo and the size would come back. NDEBUG turns off lbug's own DASSERT
+# and runtime checks in these builds, as in release binaries.
+[profile.dev.package.lbug]
+opt-level = 1
+debug = false
 
 [profile.release]
 lto = true

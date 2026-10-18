@@ -103,3 +103,9 @@ Both installers write the same logical hooks. The difference is that the Rust in
 - [Node.js Runtime Auto-Install](./node-runtime-auto-install.md) — automatic Node.js provisioning for npm-backed CLIs
 - [Hook Specifications](../reference/hook-specifications.md) — the canonical 7-hook table
 - [Install from a Local Repository](../howto/local-install.md) — offline install workflow
+
+## Codex bootstrap and native registration
+
+Codex uses preserved TOML configuration and native marketplace/plugin registration. Install stages complete provider-neutral skills and command hooks before registration, records ownership, and leaves hook trust to the user. Historical bootstrap fills absent approval_policy with never; existing approval and sandbox preferences remain intact. Managed recipe runners use the single immutable revision in claude-plugin/recipe-runner.rev and require the schema-1 codex_exec capability, rather than a presence-only check.
+
+See [Use Amplihack with Codex](../howto/install-codex-plugin.md) for the complete procedure and limitations.
