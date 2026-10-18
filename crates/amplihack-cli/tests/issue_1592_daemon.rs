@@ -4,14 +4,11 @@
 
 #![cfg(target_os = "linux")]
 
-#[path = "issue_1592_support/mod.rs"]
-mod support;
-
+use crate::support::profile_rotate::*;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
-use support::*;
 
 /// Kills whatever pid the fixture's pid file names when a test fails, so no
 /// rotator outlives its temporary HOME.

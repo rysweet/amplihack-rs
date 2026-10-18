@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
+use crate::support::amplihack_bin::amplihack_bin;
+
 use serde_yaml::Value;
 
 const SKILL_NAME: &str = "claude-profile-rotation";
@@ -39,26 +41,6 @@ fn frontmatter(content: &str) -> serde_yaml::Mapping {
         Ok(Value::Mapping(m)) => m,
         other => panic!("frontmatter must be a YAML mapping: {other:?}"),
     }
-}
-
-/// See `issue_1569_auto_switch.rs`: the binary lives in `bins/amplihack`.
-fn amplihack_bin() -> PathBuf {
-    if let Some(p) = std::env::var_os("AMPLIHACK_TEST_BINARY") {
-        return PathBuf::from(p);
-    }
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-    let status = Command::new(cargo)
-        .args(["build", "--quiet", "-p", "amplihack", "--bin", "amplihack"])
-        .current_dir(env!("CARGO_MANIFEST_DIR"))
-        .status()
-        .expect("cargo build");
-    assert!(status.success());
-    std::env::current_exe()
-        .unwrap()
-        .parent()
-        .and_then(Path::parent)
-        .unwrap()
-        .join("amplihack")
 }
 
 fn help(args: &[&str]) -> String {

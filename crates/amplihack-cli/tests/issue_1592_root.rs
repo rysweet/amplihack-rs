@@ -5,19 +5,16 @@
 //! the root it started with.
 //!
 //! Every command runs with `env_clear()` and a temporary HOME (see
-//! `issue_1592_support`), so nothing touches the real `~/.claude`,
+//! `support/profile_rotate.rs`), so nothing touches the real `~/.claude`,
 //! `~/.claude-profiles` or `~/.amplihack`.
 
 #![cfg(unix)]
 
-#[path = "issue_1592_support/mod.rs"]
-mod support;
-
+use crate::support::profile_rotate::*;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Output;
-use support::*;
 
 const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 const SAVED_HINT: &str =
@@ -308,13 +305,12 @@ fn a_launch_pins_the_root_only_when_it_came_from_the_variable() {
     let f = Fixture::new();
     private_file(&saved_file(&f), &format!("{}\n", f.root.display()));
     let claude = f.tools.join("claude");
-    fs::write(
+    crate::support::exec_stub::write_executable(
         &claude,
         "#!/bin/sh\n[ \"$1\" = --version ] && { echo '2.1.301 (Claude Code)'; exit 0; }\n\
          printf '%s\\n' \"${AMPLIHACK_CLAUDE_PROFILE_ROOT-<unset>}\" > \"$RECORD_DIR/root.env\"\n",
-    )
-    .unwrap();
-    fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        0o755,
+    );
     let record = f.records.join("root.env");
     let args = ["profile", "run", "spare", "--", "-p", "hi"];
     let mut cases = vec![

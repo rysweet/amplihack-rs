@@ -5,15 +5,12 @@
 
 #![cfg(target_os = "linux")]
 
-#[path = "issue_1592_support/mod.rs"]
-mod support;
-
+use crate::support::profile_rotate::*;
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::io::AsRawFd;
 use std::path::Path;
-use support::*;
 
 fn lines(out: &std::process::Output) -> Vec<String> {
     text(&out.stdout).lines().map(str::to_string).collect()

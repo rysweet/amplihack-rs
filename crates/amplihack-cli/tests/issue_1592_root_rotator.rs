@@ -5,14 +5,11 @@
 
 #![cfg(target_os = "linux")]
 
-#[path = "issue_1592_support/mod.rs"]
-mod support;
-
+use crate::support::profile_rotate::*;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Output;
 use std::time::{Duration, Instant};
-use support::*;
 
 const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
 

@@ -1,5 +1,5 @@
-//! Shared fixture for the issue #1592 (`profile rotate`) integration tests.
-//! Included with `#[path = "issue_1592_support/mod.rs"] mod support;`.
+//! Shared fixture for the issue #1592 (`profile rotate`) integration tests,
+//! used as `crate::support::profile_rotate` by the `issue_1592_*` modules.
 //!
 //! Every run uses a temporary `HOME` and profile root, asserted before each
 //! command, so nothing touches the real `~/.claude`, `~/.claude-profiles` or
@@ -9,6 +9,7 @@
 //! `/usage` output for that e-mail. Login fixtures are mode 0000 (0600 under
 //! root), so any attempt by amplihack to read one fails.
 
+#![cfg(unix)]
 #![allow(dead_code)]
 
 use std::fs;
@@ -16,37 +17,13 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
+pub use super::amplihack_bin::amplihack_bin;
+use super::exec_stub::write_executable;
+
 pub const CREDS: &str = ".credentials.json";
 pub const ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
 pub const PROFILES: [&str; 3] = ["work", "spare", "extra"];
 const BANNER: &str = "You are currently using your subscription to power your Claude Code usage";
-
-/// See `issue_1569_auto_switch.rs`: build the binary once, use the debug one
-/// next to this test's `deps` (abort points exist only in debug builds).
-pub fn amplihack_bin() -> PathBuf {
-    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(p) = std::env::var_os("AMPLIHACK_TEST_BINARY") {
-            return PathBuf::from(p);
-        }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .args(["build", "--quiet", "-p", "amplihack", "--bin", "amplihack"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("failed to run cargo build for the amplihack binary");
-        assert!(status.success(), "cargo build -p amplihack failed");
-        let bin = std::env::current_exe()
-            .unwrap()
-            .parent()
-            .and_then(Path::parent)
-            .unwrap()
-            .join("amplihack");
-        assert!(bin.is_file(), "no amplihack binary at {}", bin.display());
-        bin
-    })
-    .clone()
-}
 
 const FAKE_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
@@ -129,9 +106,7 @@ impl Fixture {
             fs::create_dir_all(d).unwrap();
         }
         fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
-        let claude = tools.join("claude");
-        fs::write(&claude, FAKE_CLAUDE).unwrap();
-        fs::set_permissions(&claude, fs::Permissions::from_mode(0o755)).unwrap();
+        write_executable(&tools.join("claude"), FAKE_CLAUDE, 0o755);
         let mut f = Self {
             root: home.join("profiles"),
             tmp,
