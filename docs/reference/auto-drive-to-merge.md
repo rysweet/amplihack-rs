@@ -1459,11 +1459,27 @@ the repository that `repo_path` belongs to.
   keeps as `review_index`. `step-02b-review-dir-unchanged`, the step straight
   after each judging step, runs `index-check` and fails the round with a
   `STOP:` line naming the judging step when the stamp has changed.
-  `autodrive_loop.sh` does the same around `loop-health-evaluator` and stops
-  with `"loop_result":"REVIEW_DIR_CHANGED"`. The change is caught by the round
-  that made it, before `step-04` commits anything, not by the next human
-  commit in the main checkout. A person committing in the main checkout while
-  a judging step runs trips the check as well; the `STOP:` line says so.
+- `step-04`, the agent that stages and commits, runs in the pull request's
+  linked worktree, and its commit block refuses to run anywhere else. Both are
+  instructions to a full-tool agent: one that improvises
+  `git -C <main checkout> add -f ...` never reaches that block, and the
+  artifact guard in it sees only `--repo .`, the worktree. The #1528 agent was
+  this step. `step-04b-review-dir-unchanged`, straight after `step-04` and
+  under the same condition, therefore compares the same `step-00` stamp again
+  and fails the round naming `step-04`.
+- `autodrive_loop.sh` does the same around `loop-health-evaluator` and stops
+  with `"loop_result":"REVIEW_DIR_CHANGED"`. When the stamp cannot be taken
+  before the evaluator (an index lock, a corrupt index, another git error) the
+  loop stops with `"loop_result":"REVIEW_DIR_UNSTAMPED"` without running the
+  evaluator, and claims no change. In a round, a stamp that cannot be taken
+  again makes `index-check` stop with "could not be stamped again ... no
+  change is claimed", never with "changed the index".
+- A change is therefore caught by the round that made it, not by the next
+  human commit in the main checkout. The check cannot tell who made the
+  change: a person committing, staging or switching branch in the main
+  checkout while `step-02`, `step-04` or the evaluator runs fails the round
+  too, and the `STOP:` line says so. Run the round again; do not work in the
+  main checkout while auto-drive runs.
 - The judging prompts tell the agent where it is and to read the pull request
   as data — `gh pr diff`, `gh pr view`, `git -C <worktree> show HEAD:<path>` —
   never by `cd`-ing into the worktree or opening its files with file tools,

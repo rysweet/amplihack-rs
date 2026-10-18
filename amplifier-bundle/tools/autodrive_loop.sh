@@ -311,7 +311,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
-  HEALTH_INDEX="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-stamp "$REVIEW_REAL")" || HEALTH_INDEX="" # #1528: the evaluator starts there too
+  HEALTH_INDEX="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-stamp "$REVIEW_REAL")" && [ -n "$HEALTH_INDEX" ] || { escalate "REVIEW_DIR_UNSTAMPED" "could not stamp the index of the review dir ${REVIEW_REAL} (a lock or git error), so loop-health-evaluator, which starts there, was not run; nothing was changed (#1528)"; exit 1; }
   ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \

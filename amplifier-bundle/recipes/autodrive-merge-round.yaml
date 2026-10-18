@@ -67,7 +67,7 @@ steps:
       exit 1
     output: "autodrive_tools_dir"
   # Judging agents start outside the tree under review (#1528); it stamps the review
-  # dir's index for step-02b (autodrive_worktree_guard.sh).
+  # dir's index for step-02b and step-04b (autodrive_worktree_guard.sh).
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
@@ -381,6 +381,14 @@ steps:
       that skips hooks, nor for a branch-protection bypass at merge time. Both
       are prohibited here without exception.
     output: "merge_ready_fixes"
+  # step-04 stages and commits; #1528 was such an agent forcing an add in the
+  # main checkout. Its prompt is not a check and its commit block's guard sees
+  # only `--repo .`, so step-00's stamp is compared again here.
+  - id: "step-04b-review-dir-unchanged"
+    condition: "merge_ready_verdict.merge_ready_verdict == 'NOT_MERGE_READY'"
+    type: "bash"
+    command: |
+      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${REVIEW_INDEX:-${RECIPE_VAR_review_index:-}}" step-04-address-blockers || exit 1
   # The round record (verdict, head_sha, qa and CI signals, step-00d's qa_evidence_sha;
   # #1517 D5), written private by `autodrive_round_evidence.sh round-record`.
   - id: "step-05-write-round-record"

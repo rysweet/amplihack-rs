@@ -1710,19 +1710,31 @@ CRUSTY_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "st
 [[ -n "${CRUSTY_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the crusty verdict step body" >&2; exit 2; }
 
 # ---------------------------------------------------------------------------
-# 5z. A judging agent that stages something in the review dir fails its round
-#     (#1528; crusty round 3 on PR #1586).
+# 5z. An agent step that stages something in the review dir fails its round
+#     (#1528; crusty rounds 3 and 4 on PR #1586).
 # ---------------------------------------------------------------------------
-# The judging agents start in the main checkout and are read-only only by
-# their prompts. Each round's step-00 stamps the review dir's index and HEAD,
-# and step-02b, the step straight after the judging step, compares. Both real
-# step bodies run here, around a judging step that does what #1528's agent did.
-IX_FILE="${LAUNCH}/staged-by-the-reviewer.txt"
-for spec in autodrive-crusty-round:step-02-crusty-review autodrive-merge-round:step-02-merge-ready-assessment; do
-  r="${spec%%:*}"; judge="${spec#*:}"
+# The agents start in the main checkout (judging) or are told to stay in the
+# linked worktree (step-04, which stages and commits), and both hold only by
+# their prompts. Each round's step-00 stamps the review dir's index and HEAD;
+# step-02b, straight after the judging step, and step-04b, straight after
+# step-04, compare. The real step bodies run here, around an agent step that
+# does what #1528's agent did: `git -C <main checkout> add -f`. Each check
+# step must carry its agent step's condition, or it would run (and pass)
+# when the agent did not, and be skipped when it did.
+IX_FILE="${LAUNCH}/staged-by-the-agent.txt"
+step_condition() { # step_condition <recipe> <step>: its condition line, or nothing
+  awk -v step="$2" 'index($0, "id: \"" step "\"") { s=1; next } s && /^  - id:/ { exit } s && /^    condition:/ { print; exit }' "$1"
+}
+for spec in autodrive-crusty-round:step-02-crusty-review:step-02b-review-dir-unchanged \
+            autodrive-crusty-round:step-04-address-concerns:step-04b-review-dir-unchanged \
+            autodrive-merge-round:step-02-merge-ready-assessment:step-02b-review-dir-unchanged \
+            autodrive-merge-round:step-04-address-blockers:step-04b-review-dir-unchanged; do
+  r="${spec%%:*}"; rest="${spec#*:}"; agent="${rest%%:*}"; check="${rest#*:}"
   G0="$(extract_step_command "${RECIPES}/${r}.yaml" step-00-review-dir-guard)"
-  G2="$(extract_step_command "${RECIPES}/${r}.yaml" step-02b-review-dir-unchanged)"
-  AFTER="$(awk '/^  - id: "/ { if (prev == "'"${judge}"'") { print; exit } prev = $3; gsub(/"/, "", prev) }' "${RECIPES}/${r}.yaml")"
+  G2="$(extract_step_command "${RECIPES}/${r}.yaml" "${check}")"
+  AFTER="$(awk '/^  - id: "/ { if (prev == "'"${agent}"'") { print; exit } prev = $3; gsub(/"/, "", prev) }' "${RECIPES}/${r}.yaml")"
+  COND_AGENT="$(step_condition "${RECIPES}/${r}.yaml" "${agent}")"
+  COND_CHECK="$(step_condition "${RECIPES}/${r}.yaml" "${check}")"
   IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
   STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"; rc0=$?
   env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
@@ -1730,14 +1742,31 @@ for spec in autodrive-crusty-round:step-02-crusty-review autodrive-merge-round:s
   IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
   git -C "${LAUNCH}" rm -q --cached -- "${IX_FILE}" >/dev/null 2>&1; rm -f -- "${IX_FILE}"
   env -u REVIEW_INDEX "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
-  if [ "$rc0" -eq 0 ] && [ -n "${STAMP}" ] && [ "$rc_same" -eq 0 ] && [ "$rc_staged" -ne 0 ] && [ "$rc_nostamp" -ne 0 ] \
-     && printf '%s' "${IX_ERR}" | grep -qF "STOP: ${judge} changed the index or HEAD of the review dir" \
-     && printf '%s' "${AFTER}" | grep -qF 'id: "step-02b-review-dir-unchanged"'; then
-    pass "1528-${r}-review-dir-index" "a ${judge} that stages a file in the review dir fails the round at step-02b, which follows it directly"
+  if [ -n "${G2}" ] && [ "$rc0" -eq 0 ] && [ -n "${STAMP}" ] && [ "$rc_same" -eq 0 ] && [ "$rc_staged" -ne 0 ] && [ "$rc_nostamp" -ne 0 ] \
+     && printf '%s' "${IX_ERR}" | grep -qF "STOP: ${agent} changed the index or HEAD of the review dir" \
+     && printf '%s' "${AFTER}" | grep -qF "id: \"${check}\"" \
+     && [ "${COND_AGENT}" = "${COND_CHECK}" ]; then
+    pass "1528-${r}-${check}" "a ${agent} that stages a file in the review dir fails the round at ${check}, which follows it directly under the same condition"
   else
-    fail "1528-${r}-review-dir-index" "step-00 rc=${rc0} stamp='${STAMP}' unchanged rc=${rc_same} staged rc=${rc_staged} no-stamp rc=${rc_nostamp} next step: ${AFTER} err: ${IX_ERR}"
+    fail "1528-${r}-${check}" "step-00 rc=${rc0} stamp='${STAMP}' unchanged rc=${rc_same} staged rc=${rc_staged} no-stamp rc=${rc_nostamp} next step: ${AFTER} conditions: '${COND_AGENT}' vs '${COND_CHECK}' err: ${IX_ERR}"
   fi
 done
+# An index that cannot be read is not a change: index-check says the stamp
+# could not be taken again, never that the step changed the review dir.
+IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
+G0="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-00-review-dir-guard)"
+G2="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-04b-review-dir-unchanged)"
+STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"
+IX_GD="$(git -C "${LAUNCH}" rev-parse --absolute-git-dir)"
+cp -p -- "${IX_GD}/index" "${WORK}/launch-index.bak" && printf 'not an index' > "${IX_GD}/index"
+IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc=$?
+cp -p -- "${WORK}/launch-index.bak" "${IX_GD}/index"
+if [ "$rc" -ne 0 ] && printf '%s' "${IX_ERR}" | grep -qF "could not be stamped again, so its index was not compared and no change is claimed" \
+   && ! printf '%s' "${IX_ERR}" | grep -qF "changed the index or HEAD"; then
+  pass "1528-index-check-unreadable" "an unreadable review-dir index stops the round as unstamped, not as a change"
+else
+  fail "1528-index-check-unreadable" "rc=${rc} err: ${IX_ERR}"
+fi
 # The loop-health evaluator starts in the review dir too: the loop stamps it
 # before the evaluator and stops with REVIEW_DIR_CHANGED when it moved.
 set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
@@ -1750,6 +1779,21 @@ if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIE
   pass "1528-loop-evaluator-review-dir-index" "an evaluator that stages a file in the review dir stops the loop instead of reading as DONE"
 else
   fail "1528-loop-evaluator-review-dir-index" "rc=${rc} out=${LOOP_OUT} err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
+# A stamp that cannot be taken before the evaluator is its own stop: the
+# evaluator never runs, and nothing claims the review dir changed.
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
+cp -p -- "${LOOP_MAIN}/.git/index" "${WORK}/loop-main-index.bak"
+export STUB_ROUND_BODY="printf 'not an index' > '${LOOP_MAIN}/.git/index' && printf '%s' '{\"crusty_verdict\":\"CLEAN\"}' > \"\$AUTODRIVE_ROUND_RECORD\""
+run_loop evaluator-unstamped; rc=$?
+unset STUB_ROUND_BODY
+cp -p -- "${WORK}/loop-main-index.bak" "${LOOP_MAIN}/.git/index"
+if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIEW_DIR_UNSTAMPED"' \
+   && ! printf '%s' "${LOOP_OUT}" | grep -qF 'REVIEW_DIR_CHANGED' \
+   && ! grep -qx 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "1528-loop-evaluator-unstamped" "a failed stamp stops the loop before the evaluator with REVIEW_DIR_UNSTAMPED, not REVIEW_DIR_CHANGED"
+else
+  fail "1528-loop-evaluator-unstamped" "rc=${rc} out=${LOOP_OUT} calls=$(tr '\n' ' ' < "${LOOP_LOGS}/calls" 2>/dev/null) err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
 fi
 
 crusty_verdict() {

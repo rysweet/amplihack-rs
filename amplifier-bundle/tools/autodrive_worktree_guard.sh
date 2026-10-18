@@ -60,13 +60,15 @@
 #       Print one hash of <dir>'s HEAD, current branch and staged entries
 #       (`git ls-files --stage`). It reads; it writes no object.
 #   autodrive_worktree_guard.sh index-check <dir> <stamp> <step>
-#       After a judging agent ran in <dir>: exit 1 with a STOP line naming
-#       <step> unless index-stamp <dir> still prints <stamp>. The judging
-#       agents are full-tool agents, read-only by their prompts alone, and
-#       #1528 was an agent staging a forced gitlink in the main checkout. A
-#       change is caught by the round that made it, not by the next human
-#       commit there. A person committing in the main checkout while a judging
-#       step runs trips it too; the STOP line says so.
+#       After an agent step: exit 1 with a STOP line naming <step> unless
+#       index-stamp <dir> still prints <stamp>. The rounds run it after the
+#       judging step (step-02b) and after step-04, the agent that stages and
+#       commits (step-04b); the loop runs it after loop-health-evaluator. All
+#       are full-tool agents kept out of the main checkout by their prompts
+#       alone, and #1528 was an agent staging a forced gitlink there. A change
+#       is caught by the round that made it, not by the next human commit
+#       there. A person committing in the main checkout while one of those
+#       steps runs trips it too; the STOP line says so.
 #   autodrive_worktree_guard.sh commit-dir <pr>
 #       The round commit block's check, run in the block's shell after it
 #       enters repo_path: exit 1 with a STOP line unless the current directory
@@ -116,8 +118,11 @@ not_main_checkout() {
 cmd_index_stamp() {
   local dir="${1:-}"
   [ -n "$dir" ] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || stop "index-stamp: '${dir}' is not a git work tree"
+  # HEAD and its branch may legitimately be absent (unborn, detached); the
+  # staged entries may not, so an unreadable index (pipefail) fails the stamp
+  # rather than hashing to a value that would later read as a change.
   { git -C "$dir" rev-parse -q --verify HEAD; git -C "$dir" symbolic-ref -q HEAD; git -C "$dir" ls-files --stage -z; } 2>/dev/null \
-    | git hash-object --stdin
+    | git hash-object --stdin || stop "index-stamp: git could not read the index of '${dir}' (a lock, a corrupt index or another git error)"
 }
 
 # inside <path> <tree>: <path> is <tree> or lies under it (both real paths).
@@ -195,8 +200,8 @@ cmd_round_guard() {
 cmd_index_check() {
   local dir="${1:-}" want="${2:-}" step="${3:-the judging step}" now
   [ -n "$want" ] || stop "${step}: no index stamp of the review dir was taken before it ran; nothing shows its index is unchanged"
-  now="$(cmd_index_stamp "$dir")" || exit 1
-  [ "$now" = "$want" ] || stop "${step} changed the index or HEAD of the review dir ${dir} (git -C '${dir}' status; git -C '${dir}' reflog -n 5). Judging agents only read; undo the change there before another round. If a person committed there meanwhile, run the round again"
+  now="$(cmd_index_stamp "$dir")" || stop "${step}: the review dir ${dir} could not be stamped again, so its index was not compared and no change is claimed; fix the git error above and run the round again"
+  [ "$now" = "$want" ] || stop "${step} changed the index or HEAD of the review dir ${dir} (git -C '${dir}' status; git -C '${dir}' reflog -n 5). Auto-drive agents never stage or commit there; undo the change there before another round. If a person committed there meanwhile, run the round again"
 }
 
 cmd_commit_dir() {
