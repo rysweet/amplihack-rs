@@ -121,6 +121,7 @@ nav:
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
+      - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
   - Agents:
       - Overview: claude/agents/README.md
       - Core Agents:
