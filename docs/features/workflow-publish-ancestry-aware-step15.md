@@ -184,6 +184,7 @@ limit.
 
 ## Related Docs
 
+- [Publish and Finalize Task Attribution](workflow-publish-task-attribution.md): the pre-probe push that reuses this ancestry check, and the step-15 staging filter.
 - [Publish Workflow: Classification-Driven Commit Prefix & Version Bump](../WORKFLOW_PUBLISH_VERSIONING.md) — how the publish phase derives commit prefix and version bump.
 - [Workflow Execution Guardrails](workflow-execution-guardrails.md) — canonical execution roots and GitHub identity checks for recipe-driven runs.
 - [Workflow-Owned PR Recovery Readiness](pr-recovery-readiness.md) — recovering and finalizing existing PRs through `default-workflow`.

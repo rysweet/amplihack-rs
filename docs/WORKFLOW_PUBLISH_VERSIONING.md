@@ -121,6 +121,18 @@ For a `PATCH` classification the agent performs **no edit** to the
 `version = "X.Y.Z"` line, and sets `new_version == current_version`. For
 `MINOR`/`MAJOR` it bumps the version as before.
 
+## Step-15 exclusion of version-only changes
+
+Since issue [#1575](https://github.com/rysweet/amplihack-rs/issues/1575),
+step 14's version edit only reaches the commit when the `allow_version_bump`
+context variable is `true`, `1` or `yes`. With the default (`"false"`),
+`step-15-commit-push` removes version-only hunks from `Cargo.toml`,
+`Cargo.lock`, `package.json`, `package-lock.json` and `pyproject.toml`, saves
+them to `$(git rev-parse --git-dir)/amplihack-excluded-version-bump.patch`, and
+prints a `WARNING` naming that file. The commit prefix still follows the
+classification below. See
+[Publish and Finalize Task Attribution](features/workflow-publish-task-attribution.md#step-15-staging-filter).
+
 ## Lockfile & package.json consistency
 
 `step-14b-sync-lockfile` (`cargo update --workspace --offline`) and
