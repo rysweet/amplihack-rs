@@ -208,8 +208,26 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     eprintln!();
     eprintln!("First violation detail:");
     if let Some(first) = blocking.first() {
-        eprintln!("  {}: {}", display_path(&first.path), first.remediation);
+        // The rule's generic remediation opens with "remove the artifact".
+        // For a path the guard has just called possibly source, the last line
+        // an agent reads must not tell it to delete that path (issue #1536).
+        let detail = if is_removable(first) {
+            first.remediation.as_str()
+        } else {
+            REVIEW_DETAIL
+        };
+        eprintln!("  {}: {}", display_path(&first.path), detail);
     }
+}
+
+/// The first-violation detail for a path with no safe removal root: it may be
+/// source, so it is pointed at review and the allowlist, never at deletion.
+const REVIEW_DETAIL: &str = "possibly source, so the guard does not suggest removing it; review the path, and if it is intentional add a narrow reviewed .amplihack-artifact-allowlist entry, otherwise rename it";
+
+/// Whether the guard may print a removal command for `violation`: it has a
+/// removal root and that root is safe to quote in a shell command.
+fn is_removable(violation: &ArtifactViolation) -> bool {
+    matches!(violation.removal_root.as_deref(), Some(root) if is_command_safe(root))
 }
 
 /// Report the pre-existing condition without failing the gate.
@@ -369,7 +387,7 @@ fn split_removable<'a>(
     let mut review = Vec::new();
     for violation in violations {
         match violation.removal_root.as_deref() {
-            Some(root) if is_command_safe(root) => {
+            Some(root) if is_removable(violation) => {
                 removable
                     .entry(root.to_string())
                     .or_default()

@@ -803,6 +803,19 @@ fn cli_points_a_tracked_ambiguous_path_at_the_allowlist_instead_of_untracking_it
         "the remedy must suggest an allowlist entry for the exact path; got:\n{remedy}"
     );
     assert_no_removal_commands(&combined);
+    let (_, detail) = combined
+        .split_once("First violation detail:")
+        .unwrap_or_else(|| {
+            panic!("refusal must print its first-violation detail; got:\n{combined}")
+        });
+    assert!(
+        detail.contains("build/notes.md") && detail.contains(".amplihack-artifact-allowlist"),
+        "the first-violation detail must point the possibly-source path at review; got:\n{detail}"
+    );
+    assert!(
+        !combined.contains("remove the artifact"),
+        "no line may tell the reader to remove a path the guard calls possibly source; got:\n{combined}"
+    );
 
     // The suggested exact-path entry is one the allowlist parser accepts.
     write_file(

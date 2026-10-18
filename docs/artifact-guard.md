@@ -446,7 +446,8 @@ and never `-- 'apps/coverage'`.
 
 When the removal root is *none*, neither report prints `git rm -r --cached`,
 `git rm --cached`, `rm -rf`, or the `.gitignore && git commit` cleanup chain.
-The report says the path may be source and gives two ways forward:
+The report says the path may be source and points it at review and the
+allowlist:
 
 ```text
   Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:
@@ -454,12 +455,22 @@ The report says the path may be source and gives two ways forward:
       build/notes.md
   If a path is intentional source, add a reviewed entry to .amplihack-artifact-allowlist:
       build/notes.md
-  Otherwise remove it in a dedicated, reviewed change.
+  ...
+
+First violation detail:
+  build/notes.md: possibly source, so the guard does not suggest removing it; review the path, and if it is intentional add a narrow reviewed .amplihack-artifact-allowlist entry, otherwise rename it
 ```
 
 The wording above is illustrative. The parts that stay fixed are the
 `.amplihack-artifact-allowlist` name, the path itself, and the absence of any
 `git rm` or `rm -rf` command.
+
+The closing `First violation detail` line follows the same split. For a
+violation with a removal root it prints the rule's generic remediation, which
+begins "remove the artifact from the parent worktree". For a violation without
+one it prints the review sentence shown above instead, so the last line of the
+report never tells the reader to delete a path the report has just called
+possibly source.
 
 The guard suggests an exact-path allowlist entry only when the path can be
 expressed literally, as a line the
