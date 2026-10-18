@@ -338,6 +338,78 @@ All jobs use `Swatinem/rust-cache@v2` with two shared rules:
 build leg; each `cross-compile` leg keys by `matrix.target`. CI always passes
 from a cold cache — caching is an optimization only.
 
+## Recipe runner pin ancestry
+
+The `Recipe runner pin` workflow (`.github/workflows/recipe-runner-pin.yml`)
+runs one job, `Recipe runner pin ancestry`, which calls
+`scripts/check-recipe-runner-pin.sh` on `pull_request`, `merge_group` and
+`push` to `main`. It fails when `claude-plugin/recipe-runner.rev` moves to a
+runner commit that is an ancestor of, or has diverged from, the pin it replaces
+in `github.com/rysweet/amplihack-recipe-runner`. A forward move or an equal pin
+passes.
+
+Two commits are read for each event. The baseline decides whether the pin has
+changed and starts the range searched for a rollback trailer. The comparison
+commit supplies the pin that the new pin is ordered against:
+
+| Event | Baseline commit | Comparison commit |
+| --- | --- | --- |
+| `pull_request` | Merge-base of the pull request head and its base branch | Tip of the base branch (`pull_request.base.sha`) |
+| `merge_group` | `merge_group.base_sha` | `merge_group.base_sha` |
+| `push` | The push event's `before` SHA | The push event's `before` SHA |
+
+For a pull request this means that a branch which leaves the pin alone is
+never flagged after `main`'s pin moves on, while a stale branch that changes
+the pin is judged against `main` as it is now. For example, a branch cut when
+the pin was `a70d522` that moves it to `b4a82e7` fails if `main` has since
+moved to `4d5187e`, because `b4a82e7` is an ancestor of `4d5187e`.
+
+A push whose `before` SHA is all zeros, as when a branch is created, has no
+baseline and passes with a notice. If the pin is unchanged against the
+baseline, the check passes without contacting the runner repository. A missing
+or malformed head pin, an unknown SHA or an unreachable runner repository fails
+the check whatever the commit messages say. An absent or malformed pin on the
+baseline passes with a notice, so that a broken pin on `main` cannot block the
+change that repairs it. The job runs with `contents: read`, no secrets and
+`persist-credentials: false`, and push runs are never cancelled.
+
+An intentional rollback needs a `Recipe-Runner-Rollback` trailer with a
+non-empty reason on a commit in the range from the baseline to the head:
+
+```text
+fix(runner): roll back to b4a82e7 while rysweet/amplihack-recipe-runner#163 is investigated
+
+Recipe-Runner-Rollback: 4d5187e breaks Windows path quoting; see rysweet/amplihack-recipe-runner#163
+```
+
+The script reads trailers with Git's own trailer parser,
+`git log --format='%(trailers:key=Recipe-Runner-Rollback,valueonly)'`, which
+recognises only the trailer block in the final paragraph of a message. A
+`Recipe-Runner-Rollback:` line anywhere else in the message is ignored, and the
+check fails as if no trailer were present. When a trailer is found, the check
+passes and writes both SHAs, the relationship and every reason to the log and
+the step summary. The trailer is an audit record, not an approval; code review
+remains the control.
+
+Four limits apply. On push the check reports after the merge has happened. A
+squash merge keeps the trailer only if it survives in the final paragraph of
+the squashed commit message, and no override is inferred when it does not. The
+`merge_group` trigger, and the same trailer caveat for merge-queue commits, are
+inactive until the repository has a merge queue; [Merge Flow](merge-flow.md)
+explains why none is available today. A push whose `before` commit is absent
+after a force-push exits 2, because there is no base to compare against; rerun
+or re-push to clear it.
+
+The check was added under issue #1593. `main`'s pin went from `a70d522` to
+`b4a82e7` and then to `4d5187e`, a descendant of `b4a82e7`; it was not rolled
+back on `main`. The `Argument list too long` failures that prompted the check
+returned locally when a runner built from `4d5187e`, which contains
+rysweet/amplihack-recipe-runner#161 and
+rysweet/amplihack-recipe-runner#162, was replaced in `~/.cargo/bin`
+by one built from `b4a82e7`. The [installer downgrade
+guard](recipe-runner-validation.md#installer-downgrade-guard) prevents that
+replacement; this check prevents the equivalent change reaching `main`.
+
 ## Required checks and merge governance
 
 Branch protection on `main` requires **Lint & Format** (`check`), **Test**
@@ -348,6 +420,13 @@ still run on every PR for signal but are not required-to-merge, so scarce
 macOS/cross-arch runners cannot block a merge by sitting queued. That coverage
 is **relocated, not dropped**: it must pass in the merge queue and on tagged
 release builds before any artifact publishes.
+
+**Recipe runner pin ancestry**, described
+[above](#recipe-runner-pin-ancestry), becomes a required check only when an
+administrator adds it to branch protection by hand. Branch protection matches
+the job name `Recipe runner pin ancestry`, not the job ID `recipe-runner-pin`,
+so the job's `name:` in `.github/workflows/recipe-runner-pin.yml` must stay
+exactly as written.
 
 A GitHub **merge queue** (`merge_group:` trigger) batches approved PRs and runs
 the required checks once per batch instead of once per serialized merge.

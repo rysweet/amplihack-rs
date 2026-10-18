@@ -134,6 +134,15 @@ jobs:
       - name: CI scripts — no early-exit pipeline stage (issue #1434)
         shell: bash
         run: bash tests/issue_1434_no_early_exit_pipelines.sh
+      - name: Recipe runner pin — ancestry check and its workflow (issue #1593)
+        shell: bash
+        run: bash tests/recipe_runner_pin_ancestry_test.sh
+      - name: Recipe runner installers — never downgrade an installed runner (issue #1593)
+        shell: bash
+        run: bash tests/install_pinned_runner_downgrade_guard_test.sh
+      - name: Recipe runner installers — install-runtime copy of the ancestry library (issue #1593)
+        shell: bash
+        run: bash tests/runner_ancestry_lib_parity_test.sh
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
