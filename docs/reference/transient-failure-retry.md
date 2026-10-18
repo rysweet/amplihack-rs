@@ -57,7 +57,19 @@ failed (exit 1)`; the 529 was in the captured stdout, which is why both are read
 
 The markers are `session limit`, `usage limit`, `usage_limit_reached`,
 `quota exceeded`, `monthly limit`, `weekly limit`, `spend limit` and
-`credit balance is too low`.
+`credit balance is too low`. They are Claude Code's, and are kept in one
+table per harness in `limit_patterns.rs`, together with the patterns that
+read the reset time. The classifier, the auto-switch supervisor and the
+usage-limit wait all read that table; no other source file holds a Claude
+limit message.
+
+- **A usage limit is waited out before the runner sees it.** A Claude agent
+  step that hits a usage limit inside a recipe run first waits for the reset,
+  or for the login to change, and runs once more, inside the step's own
+  `amplihack claude -p` launch. The runner classifies only that last
+  attempt, so `usage_limit` here means the step still failed after the wait,
+  or the wait was turned off. See the
+  [usage-limit wait](./profile-command.md#usage-limit-wait).
 
 - **Why `spend limit` is listed.** `monthly limit` alone does not match Claude
   Code's `monthly spend limit` message, so both are markers (#1546).
@@ -153,6 +165,7 @@ undifferentiated `exit 1` is the point of this change.
 ## Source
 
 - `crates/amplihack-cli/src/commands/recipe/run/failure_class.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/limit_patterns.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/retry.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`
 - `crates/amplihack-utils/src/backoff.rs`
