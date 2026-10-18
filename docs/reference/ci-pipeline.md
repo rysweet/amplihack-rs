@@ -301,6 +301,26 @@ cargo test -p amplihack --test integration ci_speedup_optimization::
 cargo nextest run -p amplihack -E 'binary(integration) and test(/^ci_speedup_optimization::/)'
 ```
 
+The package's own `bins/amplihack/tests/` directory follows the same rule.
+Each file there is a module of the `amplihack_bin` target, whose crate root is
+`bins/amplihack/tests/main.rs`, and the package sets `autotests = false` so
+Cargo does not also build each file as a target of its own. A module keeps the
+name of its former target:
+
+```bash
+cargo test -p amplihack --test amplihack_bin spec_conformance_process::
+```
+
+`every_amplihack_bin_test_file_is_wired_into_a_test_binary`, in
+`tests/integration/test_harness_binary_path_contract_test.rs`, fails on any
+`.rs` file under that directory, at any depth, that no module declaration
+reachable from `main.rs` loads, and on a `#[cfg]` placed on a `mod` line, in
+any reached file, whose module lies inside that directory. A gate belongs
+inside the module file instead. The
+`tests/integration` guard applies the same checks to the `integration` root,
+and the test-target list is read from `cargo metadata`, not parsed from
+`Cargo.toml`.
+
 ## Disk management
 
 The `test` job frees runner disk with `jlumbroso/free-disk-space` before
