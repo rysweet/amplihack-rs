@@ -96,6 +96,22 @@ jobs:
       # restore-keys picks the newest. Only main saves (see the save step), so
       # pull requests start from main's cache and add no entries of their own.
       - name: Restore sccache disk cache
+        id: sccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+      # The Actions cache service rate-limits the whole repository, and a
+      # restore that gets HTTP 429 reports "Cache not found", leaving the job
+      # to compile everything. The limit resets within a minute, so try once
+      # more. A genuinely empty cache costs the same minute, once.
+      - name: Wait out a cache rate limit
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        run: sleep 60
+      - name: Restore sccache disk cache (retry)
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/sccache
@@ -419,6 +435,22 @@ jobs:
       # restore-keys picks the newest. Only main saves (see the save step), so
       # pull requests start from main's cache and add no entries of their own.
       - name: Restore sccache disk cache
+        id: sccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+      # The Actions cache service rate-limits the whole repository, and a
+      # restore that gets HTTP 429 reports "Cache not found", leaving the job
+      # to compile everything. The limit resets within a minute, so try once
+      # more. A genuinely empty cache costs the same minute, once.
+      - name: Wait out a cache rate limit
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        run: sleep 60
+      - name: Restore sccache disk cache (retry)
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/sccache
@@ -508,6 +540,22 @@ jobs:
       # restore-keys picks the newest. Only main saves (see the save step), so
       # pull requests start from main's cache and add no entries of their own.
       - name: Restore sccache disk cache
+        id: sccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+      # The Actions cache service rate-limits the whole repository, and a
+      # restore that gets HTTP 429 reports "Cache not found", leaving the job
+      # to compile everything. The limit resets within a minute, so try once
+      # more. A genuinely empty cache costs the same minute, once.
+      - name: Wait out a cache rate limit
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        run: sleep 60
+      - name: Restore sccache disk cache (retry)
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/sccache
@@ -625,6 +673,22 @@ jobs:
       # restore-keys picks the newest. Only main saves (see the save step), so
       # pull requests start from main's cache and add no entries of their own.
       - name: Restore sccache disk cache
+        id: sccache-restore
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ${{ runner.temp }}/sccache
+          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+      # The Actions cache service rate-limits the whole repository, and a
+      # restore that gets HTTP 429 reports "Cache not found", leaving the job
+      # to compile everything. The limit resets within a minute, so try once
+      # more. A genuinely empty cache costs the same minute, once.
+      - name: Wait out a cache rate limit
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
+        run: sleep 60
+      - name: Restore sccache disk cache (retry)
+        if: steps.sccache-restore.outputs.cache-matched-key == ''
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
         with:
           path: ${{ runner.temp }}/sccache
