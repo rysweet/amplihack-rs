@@ -17,7 +17,7 @@
 #   - the judging agents' working directory. The agent CLI loads AGENTS.md,
 #     CLAUDE.md and .claude hooks from it, so the crusty review, the
 #     merge-ready assessment and the loop-health analyzer start in the review
-#     dir (the main checkout of repo_path's repository), never in or under
+#     dir (the main checkout of the preflight repo's repository), never in or under
 #     the worktree;
 #   - these tools. autodrive_loop.sh hands its own directory to each round as
 #     `autodrive_launch_tools`; a round never looks for this file in the tree
@@ -86,9 +86,9 @@
 #       is the top of a LINKED worktree (its git dir differs from the absolute
 #       common dir; never the main checkout) on PR <pr>'s head branch.
 #
-# The review dir is the main checkout of repo_path's repository: the top of a
+# The review dir is the main checkout of the given repo's repository: the top of a
 # work tree whose git dir IS the common dir, and whose common dir resolves to
-# the same real path as repo_path's. Not "outside the worktree" alone: a
+# the same real path as that repo's. Not "outside the worktree" alone: a
 # directory in another repository would have its judging agent load that
 # repository's AGENTS.md and read the other repository's PR of the same number
 # with `gh pr diff N`, and a bare repository's neighbour directory is no
@@ -203,9 +203,9 @@ cmd_loop_preflight() {
 
 cmd_review_dir() {
   local repo="${1:-}" root why
-  [ -n "$repo" ] || stop "review-dir needs repo_path"
+  [ -n "$repo" ] || stop "review-dir needs the preflight repo"
   root="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh" root "$repo")" && root="$(real "$root")" \
-    && [ -n "$root" ] || stop "cannot resolve the main checkout of repo_path '${repo}'; the review dir is never taken from the working directory"
+    && [ -n "$root" ] || stop "cannot resolve the main checkout of the repository holding '${repo}'; the review dir is never taken from the working directory"
   why="$(not_main_checkout "$root" "$repo")"
   [ -z "$why" ] || stop "${why}; auto-drive's judging agents start only in the main checkout of the pull request's repository"
   printf '%s\n' "$root"

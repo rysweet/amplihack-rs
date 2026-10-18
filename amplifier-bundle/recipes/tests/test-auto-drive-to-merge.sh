@@ -4741,7 +4741,7 @@ cat > "${FAKE_TOOLS}/autodrive_pr_worktree.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/resolver-args"
 echo "${FAKE_CALLS_DIR}/pr-worktree"
 EOF
-# Step-02 takes the review dir from repo_path's main checkout (#1528); the
+# Step-02 takes the review dir from the main checkout of the preflight repo (#1528); the
 # recorder stands in for the guard's review-dir.
 cat > "${FAKE_TOOLS}/autodrive_worktree_guard.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/guard-args"
