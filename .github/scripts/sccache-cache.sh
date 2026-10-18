@@ -7,7 +7,8 @@
 # composite actions retry both with jitter, so jobs that were refused together
 # do not retry together, and use this script to decide whether to retry.
 #
-# Needs GH_TOKEN with actions: read, and GITHUB_REPOSITORY / GITHUB_OUTPUT.
+# Needs GH_TOKEN with actions: read, GITHUB_REPOSITORY, GITHUB_REF, GITHUB_OUTPUT
+# and DEFAULT_BRANCH (defaults to main).
 #
 #   sccache-cache.sh restore-gap <key-prefix> <attempt> <max-attempts>
 #   sccache-cache.sh save-check  <key> <attempt> <max-attempts>
@@ -21,12 +22,20 @@ jitter() {
   sleep "$s"
 }
 
-# Number of cache entries whose key starts with $1, on any ref; empty if the
-# REST call failed. The REST API has its own limit, separate from the cache
-# service that is refusing us.
+# Number of cache entries whose key starts with $1 on refs this run can
+# restore from: its own ref and the default branch. Empty if a REST call
+# failed. The REST API has its own limit, separate from the cache service
+# that is refusing us.
 count_entries() {
-  gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=$1&per_page=100" \
-    --jq '.total_count' 2>/dev/null
+  local total=0 n ref refs
+  refs=$(printf '%s\n' "${GITHUB_REF:-}" "refs/heads/${DEFAULT_BRANCH:-main}" | awk 'NF && !seen[$0]++')
+  while IFS= read -r ref; do
+    n=$(gh api "repos/${GITHUB_REPOSITORY}/actions/caches?key=$1&ref=${ref}&per_page=100" \
+      --jq '.total_count' 2>/dev/null) || return 0
+    [ -n "$n" ] || return 0
+    total=$((total + n))
+  done <<< "$refs"
+  echo "$total"
 }
 
 # 1 if an entry with exactly key $1 exists, 0 if not; empty if the call failed.
