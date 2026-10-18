@@ -16,9 +16,11 @@
 #
 # READ-ONLY. This tool never creates, fetches into, checks out in, commits in
 # or pushes from anything. It measures. A worktree whose HEAD differs from the
-# PR head is reported (head_matches=false plus a stderr WARNING), not refused:
-# the evidence records the tree's real HEAD and the merge gate refuses
-# evidence that disagrees with the head it merges.
+# PR head is reported (head_matches=false plus a stderr WARNING), not refused
+# here: the decision belongs to the caller. Both auto-drive loop preflights
+# refuse it as pr-worktree-stale before the loop starts, because every round
+# on such a tree would be refused (crusty-local-head-not-pr-head, or the
+# merge gate's head check).
 #
 # On success stdout is ONE JSON line:
 #   {"pr","head_sha","head_ref","worktree","worktree_head","head_matches","reason":"ok"}

@@ -701,8 +701,8 @@ echo "$*" >> "${GH_CALLS:-/dev/null}"
 JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
 pv() {
   local j
-  j="$(printf '{"number":42,"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"%s","baseRefName":"%s","url":"u"}' \
-    "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_BASE-main}")"
+  j="$(printf '{"number":42,"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","url":"u"}' \
+    "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_HEAD_REF:-}" "${GH_BASE-main}")"
   if [ -n "$JQ" ]; then printf '%s' "$j" | jq -r "$JQ"; else printf '%s\n' "$j"; fi
 }
 case "${GH_MODE:-}" in
@@ -4199,14 +4199,23 @@ for f in phases.tsv resolved-concerns.txt; do
 done
 
 # 13c. Each phase's preflight creates the state dir private, and refuses a
-# symlinked AUTODRIVE_STATE_DIR by name.
+# symlinked AUTODRIVE_STATE_DIR by name. The loops are handed PR #42, so their
+# preflights resolve its worktree (#1543). FX is detached by now, so this
+# section uses its own checkout on the stub PR's head branch, at its head.
+PF_FX="${WORK_PHYS}/umask-pf-fx"
+git init -q -b feat/pf "${PF_FX}" \
+  && git -C "${PF_FX}" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m pf \
+  || { echo "HARNESS-ERROR: 13c: cannot create the preflight checkout" >&2; exit 2; }
 PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
   GH_MODE=green GH_HEAD="${CR_SHA2}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 REAL_AMPLIHACK="${REAL_AMPLIHACK}")
+# env applies assignments in order, so these override PF_ENV's for 13c only;
+# the end-to-end section below keeps PF_ENV as it is.
+PF_PREFLIGHT_ENV=("${PF_ENV[@]}" REPO_PATH="${PF_FX}" GH_HEAD="$(git -C "${PF_FX}" rev-parse HEAD)" GH_HEAD_REF=feat/pf)
 for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-01-crusty-loop-preflight \
             autodrive-merge-loop:step-01-merge-loop-preflight; do
   r="${spec%%:*}"; body="$(extract_step_command "${RECIPES}/${r}.yaml" "${spec#*:}")"
   root="${WORK_PHYS}/umask-pf-${r}"
-  out="$(env -i "${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${root}" bash -c "umask 0002; ${body}" 2>"${root}.err")"; rc=$?
+  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" AMPLIHACK_STATE_DIR="${root}" bash -c "umask 0002; ${body}" 2>"${root}.err")"; rc=$?
   dir="$(printf '%s' "${out}" | jq -r '.state_dir // empty' 2>/dev/null)"
   if [ "${rc}" -eq 0 ] && [ -n "${dir}" ] && [ -d "${dir}" ] && [ "${dir#"${root}"/}" != "${dir}" ] \
      && [ -z "$(untrusted_in "${root}")" ]; then
@@ -4214,7 +4223,7 @@ for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-0
   else
     fail "PRIVATE-PREFLIGHT-${r}" "rc=${rc} dir='${dir}' untrusted: $(untrusted_in "${root}" | tr '\n' ' ') err=$(tr '\n' ' ' < "${root}.err")"
   fi
-  out="$(env -i "${PF_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
+  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
   if [ "${rc}" -ne 0 ] && [ -z "${out}" ] && grep -qF 'ERROR: state-dir-not-private:' "${root}.link.err"; then
     pass "PRIVATE-PREFLIGHT-${r}-symlink" "${r} stops by name on a symlinked AUTODRIVE_STATE_DIR"
   else
@@ -4230,9 +4239,15 @@ done
 # The qa evidence is written the way autodrive-merge-evidence.yaml writes it,
 # under umask 077 (that step's own umask is section 6b, case 29).
 fx_head "${CR_SHA2}"
+# The crusty preflight is handed PR #42 and resolves its worktree (#1543),
+# which needs the PR's head branch checked out. Point FX's HEAD at a branch
+# at the same commit (refs only, as fx_head does; the tree is untouched) and
+# detach it again after this section.
+git -C "$FX" update-ref refs/heads/pr-42 "${CR_SHA2}" && git -C "$FX" symbolic-ref HEAD refs/heads/pr-42 \
+  || { echo "HARNESS-ERROR: cannot put FX on the PR #42 branch" >&2; exit 2; }
 E2E="${WORK_PHYS}/umask-e2e"; mkdir -p "${E2E}.tmp"; chmod 0700 "${E2E}.tmp"
 printf 'drive the PR to merge' > "${E2E}.task"
-E2E_ENV=("${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
+E2E_ENV=("${PF_ENV[@]}" GH_HEAD_REF=pr-42 AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
   STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 STUB_HEALTH_RESOLVES=0 AMPLIHACK_BIN="${STUB_BIN}/amplihack")
 e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
   local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5
@@ -4287,6 +4302,7 @@ else
   fail "PRIVATE-E2E-gate" "rc=${E2E_GATE_RC} $(cat "${E2E}.gate.out") | $(grep -F 'BLOCKER' "${E2E}.gate.err" | tr '\n' ' ')"
 fi
 umask "${SAVED_UMASK}"
+fx_head "${CR_SHA2}"; git -C "$FX" update-ref -d refs/heads/pr-42
 
 # ---------------------------------------------------------------------------
 # 14. Issue #1511 — step outputs are read through RECIPE_VAR_<output>.

@@ -4946,7 +4946,7 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
                 ctx.get(Value::from(key)).and_then(Value::as_str),
                 Some(""),
                 "{loop_name} must declare `{key}` defaulting to \"\" so resolution \
-                 only runs when the user supplied pr_number"
+                 only runs when the loop was handed a PR number"
             );
         }
         let pf = field(step(&recipe, preflight), "command");
@@ -4955,8 +4955,20 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
             "{loop_name} {preflight} must resolve the PR head when pr_number was supplied"
         );
         assert!(
-            pf.contains("\"repo\"") && pf.contains("\"head_sha\""),
-            "{loop_name} {preflight} must emit the resolved repo and head_sha"
+            pf.contains("[ -n \"$PR_GIVEN\" ]") && !pf.contains("[ -n \"$PR_INPUT\" ]; then"),
+            "{loop_name} {preflight} must resolve on the build phase's PR as well as \
+             the operator's, or a fresh build from the main checkout measures main \
+             (PR #1588 review round 4)"
+        );
+        assert!(
+            pf.contains("head_matches") && pf.contains("pr-worktree-stale"),
+            "{loop_name} {preflight} must refuse a worktree that is not at the PR \
+             head by name, not enter a loop whose every round would be refused"
+        );
+        assert!(
+            pf.contains("\"repo\"") && !pf.contains("\"head_sha\""),
+            "{loop_name} {preflight} must emit the resolved repo, and no head_sha \
+             that nothing downstream reads"
         );
         let body = field(step(&recipe, run), "command");
         assert!(

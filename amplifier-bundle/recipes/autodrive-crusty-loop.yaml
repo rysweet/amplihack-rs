@@ -40,8 +40,8 @@ context:
   task_description: ""
   autodrive_state_dir: ""
   # #1543: the user's own pr_number (empty when phase 1 built the PR) and
-  # existing_branch. Non-empty autodrive_pr_input turns on PR worktree
-  # resolution in the preflight.
+  # existing_branch. A PR number in pr_number (the build phase's) or in
+  # autodrive_pr_input turns on PR worktree resolution in the preflight.
   autodrive_pr_input: ""
   existing_branch: ""
   crusty_loop_result: ""
@@ -68,6 +68,11 @@ steps:
       PR_INPUT="${AUTODRIVE_PR_INPUT:-${RECIPE_VAR_autodrive_pr_input:-}}"
       PR="${PR_NUMBER:-}"
       case "$PR" in ''|*[!0-9]*) PR="$PR_INPUT" ;; esac
+      # PR_GIVEN: the PR this loop was handed, either the build phase's PR
+      # (the composer passes build_result.pr as pr_number) or the operator's.
+      # Either names the PR from the platform's side; only the guess below
+      # comes from the launch checkout, and a guess never turns resolution on.
+      PR_GIVEN="$PR"
       [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
       [ -z "$PR_INPUT" ] || [ -n "$PR" ] \
@@ -94,12 +99,16 @@ steps:
       elif autodrive_phase_done "$DIR" "crusty-loop"; then
         RUN="false"; WHY="the crusty loop already completed for this PR in an earlier run"
       fi
-      # #1543: with pr_number supplied, every evidence step measures the PR
-      # head, wherever the run started. Resolve the PR branch's EXISTING
-      # worktree and hand it to the loop; refuse rather than measure cwd.
+      # #1543: whenever this loop was handed a PR number (the operator's, or
+      # the build phase's on a fresh build, where default-workflow builds in
+      # its own worktree and the launch checkout stays on main), every
+      # evidence step measures the PR head, wherever the run started. Resolve
+      # the PR branch's EXISTING worktree and hand it to the loop; refuse
+      # rather than measure cwd, and refuse a worktree that is not at the PR
+      # head rather than spend rounds that cannot succeed on it.
       json_esc() { case "$1" in *[[:cntrl:]]*) return 1 ;; esac; local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
-      REPO="${REPO_PATH:-.}"; HEAD_SHA=""
-      if [ "$RUN" = "true" ] && [ -n "$PR_INPUT" ]; then
+      REPO="${REPO_PATH:-.}"
+      if [ "$RUN" = "true" ] && [ -n "$PR_GIVEN" ]; then
         PR_HEAD="${STATE_HELPER%/autodrive_state.sh}/autodrive_pr_head.sh"
         [ -f "$PR_HEAD" ] || { echo "ERROR: crusty loop: autodrive_pr_head.sh not found next to $STATE_HELPER; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
         # The preflight already changed into REPO_PATH, so the resolver gets
@@ -122,13 +131,25 @@ steps:
           echo "ERROR: autodrive_pr_head returned no usable worktree/head_sha for PR #${PR}; refusing to enter the crusty loop (#1543)" >&2
           exit 1
         fi
+        # The resolver reports a stale worktree (head_matches=false) and leaves
+        # the decision here. Entering the loop on it cannot succeed: every
+        # crusty round would refuse with crusty-local-head-not-pr-head, and
+        # the loop would end STUCK after paying for evaluator calls.
+        MATCH="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_matches | amplihack orch helper extract-field --field head_matches --default '')"
+        if [ "$MATCH" != "true" ]; then
+          WT_HEAD="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_head | amplihack orch helper extract-field --field worktree_head --default '')"
+          echo "ERROR: pr-worktree-stale: worktree ${REPO} is at ${WT_HEAD:-<unreadable>}, PR #${PR} head is ${HEAD_SHA}; run: git -C ${REPO} pull --ff-only, then re-run. Refusing to enter the crusty loop: every crusty round would refuse with crusty-local-head-not-pr-head (#1543)" >&2
+          exit 1
+        fi
         echo "INFO: PR #${PR} head ${HEAD_SHA} resolved to worktree ${REPO}" >&2
       fi
       E_DIR="$(json_esc "$DIR")" && E_REPO="$(json_esc "$REPO")" \
         || { echo "ERROR: state_dir or repo contains control characters; refusing to enter the crusty loop" >&2; exit 1; }
       echo "INFO: crusty-loop preflight: pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY}) state_dir=${DIR}" >&2
-      printf '{"should_run":"%s","pr":"%s","pr_state":"%s","state_dir":"%s","repo":"%s","head_sha":"%s","reason":"%s"}\n' \
-        "$RUN" "$PR" "$STATE" "$E_DIR" "$E_REPO" "$HEAD_SHA" "$WHY"
+      # No head_sha here: each round reads its own `git rev-parse HEAD` in
+      # `repo`, and the check above is what binds `repo` to the PR head.
+      printf '{"should_run":"%s","pr":"%s","pr_state":"%s","state_dir":"%s","repo":"%s","reason":"%s"}\n' \
+        "$RUN" "$PR" "$STATE" "$E_DIR" "$E_REPO" "$WHY"
     output: "crusty_loop_preflight"
 
   - id: "step-02-crusty-loop"

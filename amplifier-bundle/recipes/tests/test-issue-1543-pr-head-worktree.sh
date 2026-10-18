@@ -12,22 +12,23 @@
 # stub `gh` first on PATH, takes the REAL step bodies out of the recipes (not
 # copies) and checks that:
 #
-#   * both loop preflights resolve the PR worktree and its head when pr_number
-#     was supplied, and refuse — fail closed, should_run never true — when no
-#     worktree has the PR branch checked out;
+#   * both loop preflights resolve the PR worktree and its head when they
+#     were handed a PR number (the operator's pr_number or the build phase's
+#     PR), and refuse — fail closed, should_run never true — when no worktree
+#     has the PR branch checked out or that worktree is not at the PR head;
 #   * step-02 of both loops hands that worktree to the loop as --repo and
 #     repo_path, and pins AMPLIHACK_HOME to the launch tree when it is unset;
 #   * the qa-team step, run where the preflight says, records head_sha=B and
 #     runs the scenario runner inside the worktree;
-#   * nothing changes when pr_number was not supplied;
+#   * nothing changes when no PR number was handed to the loop;
 #   * a relative repo_path is resolved once, from the directory the run
 #     started in, not twice (sub/sub);
 #   * through the REAL recipe-runner-rs and the REAL composed recipes
 #     (auto-drive-to-merge, autodrive-build, both loops), with only
 #     default-workflow, the loop driver and the merge gate stood in for:
-#       - a fresh build with no pr_number sends BOTH loops to the same tree,
-#         although the runner hands the crusty loop's pr_number back into
-#         the parent when that phase returns (T20);
+#       - a fresh build with no pr_number, whose stand-in default-workflow
+#         builds in its own worktree as the real one does, sends BOTH loops
+#         to that worktree, not the launch checkout (T20);
 #       - a run whose build and crusty phases are skipped as already done
 #         and whose gate merges reports MERGED with the PR number (T21).
 #
@@ -255,7 +256,9 @@ for loop in merge crusty; do
   preflight "$loop"
   check_eq "T1-$loop-rc" "$loop preflight succeeds" 0 "$RC"
   check_eq "T1-$loop-repo" "$loop preflight repo is the PR worktree" "$WT" "$(real "$(field "$OUT" repo)")"
-  check_eq "T1-$loop-sha" "$loop preflight head_sha is the PR head (B, not main's A)" "$SHA_B" "$(field "$OUT" head_sha)"
+  case "$ERR" in *"PR #7 head $SHA_B resolved to worktree"*) pass "T1-$loop-sha" "$loop preflight resolved the PR head (B, not main's A)" ;;
+    *) fail "T1-$loop-sha" "$loop preflight did not report head $SHA_B: ${ERR:0:300}" ;; esac
+  check_eq "T1-$loop-nosha" "$loop preflight emits no head_sha that nothing reads" "" "$(field "$OUT" head_sha)"
   check_eq "T1-$loop-run" "$loop preflight still runs the phase" true "$(field "$OUT" should_run)"
 done
 
@@ -442,19 +445,31 @@ for loop in merge crusty; do
     *) fail "T18-$loop-msg" "unexpected stderr: $ERR" ;; esac
 done
 
-echo "== T3: pr_number not supplied — unchanged behaviour, no head lookup =="
+echo "== T3: no PR number handed to the loop — unchanged behaviour, no head lookup =="
+# Neither the operator nor the build phase named a PR, so the preflight
+# guesses one from the launch checkout; a guess never turns resolution on.
 : > "$GH_LOG.t3"; GH_LOG_SAVE="$GH_LOG"; export GH_LOG="$GH_LOG.t3"
 for loop in merge crusty; do
-  preflight "$loop" AUTODRIVE_PR_INPUT=
+  preflight "$loop" PR_NUMBER= AUTODRIVE_PR_INPUT=
   check_eq "T3-$loop-rc" "$loop preflight succeeds" 0 "$RC"
   check_eq "T3-$loop-repo" "$loop preflight repo is REPO_PATH" "$(real "$MAIN")" "$(real "$(field "$OUT" repo)")"
 done
 if grep -q headRefOid "$GH_LOG"; then
   fail T3-gh "gh was asked for headRefOid although pr_number was not supplied: $(grep headRefOid "$GH_LOG" | head -1)"
 else
-  pass T3-gh "no head resolution without pr_number"
+  pass T3-gh "no head resolution without a PR number"
 fi
 cat "$GH_LOG" >> "$GH_LOG_SAVE"; export GH_LOG="$GH_LOG_SAVE"
+
+echo "== T3b: only the build phase's PR (no operator pr_number) — the PR worktree is resolved =="
+# PR #1588 review round 4: on a fresh build the composer hands both loops
+# pr_number=build_result.pr and an empty autodrive_pr_input. That PR comes
+# from the platform, not from the launch checkout, so it resolves.
+for loop in merge crusty; do
+  preflight "$loop" AUTODRIVE_PR_INPUT= EXISTING_BRANCH=
+  check_eq "T3b-$loop-rc" "$loop preflight succeeds" 0 "$RC"
+  check_eq "T3b-$loop-repo" "$loop preflight repo is the PR worktree, not REPO_PATH" "$WT" "$(real "$(field "$OUT" repo)")"
+done
 
 echo "== T2: no worktree has the PR branch — refuse before the loop =="
 make_fixture t2
@@ -476,7 +491,8 @@ for loop in merge crusty; do
   preflight "$loop"
   check_eq "T2b-$loop-rc" "$loop preflight succeeds" 0 "$RC"
   check_eq "T2b-$loop-repo" "$loop preflight repo is the main checkout" "$(real "$MAIN")" "$(real "$(field "$OUT" repo)")"
-  check_eq "T2b-$loop-sha" "$loop head_sha is the PR head" "$SHA_B" "$(field "$OUT" head_sha)"
+  case "$ERR" in *"PR #7 head $SHA_B resolved to worktree"*) pass "T2b-$loop-sha" "$loop resolved the PR head" ;;
+    *) fail "T2b-$loop-sha" "$loop preflight did not report head $SHA_B: ${ERR:0:300}" ;; esac
 done
 
 echo "== T6: a worktree path with a space and a double quote round-trips =="
@@ -516,6 +532,23 @@ if grep -q WARNING "$WORK/tool.err" && grep -q "$NEWER" "$WORK/tool.err" && grep
 else
   fail T13-warn "expected a WARNING with both SHAs on stderr; got: $(head -c 400 "$WORK/tool.err")"
 fi
+
+echo "== T13b: worktree behind the PR head — both preflights refuse as pr-worktree-stale =="
+# PR #1588 review round 4: entering the loop on a stale tree cannot succeed
+# (every crusty round refuses with crusty-local-head-not-pr-head; the merge
+# gate refuses every round's evidence), so the preflight refuses by name.
+for loop in merge crusty; do
+  preflight "$loop" STUB_HEAD_OID="$NEWER"
+  check_eq "T13b-$loop-rc" "$loop preflight refuses a stale worktree" 1 "$RC"
+  check_eq "T13b-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
+  case "$ERR" in
+    *"pr-worktree-stale: worktree $WT is at $SHA_B, PR #7 head is $NEWER; run: git -C $WT pull --ff-only"*)
+      pass "T13b-$loop-msg" "stderr names the reason, both SHAs and the recovery command" ;;
+    *) fail "T13b-$loop-msg" "unexpected stderr: ${ERR:0:400}" ;;
+  esac
+done
+preflight merge STUB_HEAD_OID="$NEWER" AUTODRIVE_PR_INPUT=
+check_eq T13b-build-pr "the build phase's PR on a stale worktree is refused too" 1 "$RC"
 
 echo "== T12: two worktrees on the PR branch — refuse as ambiguous =="
 make_fixture t12
@@ -783,6 +816,7 @@ steps:
   - id: "stub-build"
     type: "bash"
     command: |
+      ${E2E_BUILD_CMD:-:}
       : > "$E2E_LOG/built"
       echo built
 STUB
@@ -806,17 +840,26 @@ print(json.loads(out[0]).get(sys.argv[1], "") if out else "<no autodrive-report>
     || printf '<runner output is not JSON>'
 }
 
-echo "== T20: fresh build, no pr_number — both loops measure the same tree =="
+echo "== T20: fresh build from the main checkout, no pr_number — both loops measure the PR worktree =="
+# PR #1588 review round 4: the real default-workflow builds in its own
+# worktree (workflow-worktree, step-04) and leaves the launch checkout on
+# main. The stand-in does the same: the PR branch has no worktree until
+# phase 1 adds one, so a loop handed the launch checkout measures main.
 make_fixture t20
+git -C "$MAIN" worktree remove --force "$WT" || harness_error "T20: cannot remove the fixture worktree"
+E2E_BUILD_CMD="git -C '$MAIN' worktree add -q '$WT' feat/x >&2"
 e2e_setup t20
+E2E_BUILD_CMD=""
 e2e_run -c autodrive_state_dir="$WORK/state-t20"
 check_eq T20-rc "the composed recipe runs to the end" 0 "$E2E_RC"
 [[ "$E2E_RC" -eq 0 ]] || echo "${E2E_OUT: -3000}" >&2
 if [[ -e "$E2E_LOG/built" ]]; then pass T20-built "phase 1 ran default-workflow (fresh build)"; else fail T20-built "default-workflow did not run"; fi
 CRUSTY_REPO="$(argv_after "$E2E_LOG/loop-crusty.argv" --repo)"
 MERGE_REPO="$(argv_after "$E2E_LOG/loop-merge-ready.argv" --repo)"
-check_eq T20-crusty "the crusty loop ran in REPO_PATH" "$(real "$MAIN")" "$(real "$CRUSTY_REPO")"
-check_eq T20-merge "the merge loop ran in REPO_PATH, not a resolved PR worktree" "$(real "$MAIN")" "$(real "$MERGE_REPO")"
+check_eq T20-wt "phase 1 built in its own worktree" "refs/heads/feat/x" "$(git -C "$WT" symbolic-ref HEAD 2>/dev/null)"
+check_eq T20-main "the launch checkout stayed on main" main "$(git -C "$MAIN" branch --show-current)"
+check_eq T20-crusty "the crusty loop ran in the PR worktree, not the launch checkout" "$WT" "$(real "$CRUSTY_REPO")"
+check_eq T20-merge "the merge loop ran in the PR worktree, not the launch checkout" "$WT" "$(real "$MERGE_REPO")"
 check_eq T20-same "both loops got the same repo" "$(real "$CRUSTY_REPO")" "$(real "$MERGE_REPO")"
 check_eq T20-pr "the merge loop drove the PR phase 1 built" 7 "$(grep -m1 '^pr_number=' "$E2E_LOG/loop-merge-ready.argv" 2>/dev/null | cut -d= -f2-)"
 check_eq T20-outcome "the run reports MERGED" MERGED "$(summary outcome)"

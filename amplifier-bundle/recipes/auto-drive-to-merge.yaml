@@ -146,9 +146,11 @@ steps:
   # #1543: record the operator's pr_number once, before any sub-recipe can
   # overwrite `pr_number` (see autodrive_pr_input in the context above). The
   # prerequisites step before it runs no sub-recipe. The value is empty when
-  # the operator gave none, which keeps PR worktree resolution off in both
-  # loops on a fresh build. It is passed through verbatim; the loop
-  # preflights refuse one that is not a pull request number.
+  # the operator gave none. That no longer turns PR worktree resolution off:
+  # both loops also resolve on the build phase's PR (pr_number below), so a
+  # fresh build whose default-workflow built in its own worktree is measured
+  # there, not in the launch checkout. It is passed through verbatim; the
+  # loop preflights refuse one that is not a pull request number.
   - id: "autodrive-pr-input"
     type: "bash"
     command: |
