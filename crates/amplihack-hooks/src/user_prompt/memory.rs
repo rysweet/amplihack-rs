@@ -2312,6 +2312,43 @@ mod tests {
         assert_eq!(result, None);
     }
 
+    /// Two shared topic words are necessary but not sufficient: a memory
+    /// that shares them yet scores below [`RELEVANCE_THRESHOLD`] is dropped.
+    /// Pins the threshold on its own, apart from [`MIN_SHARED_TERMS`].
+    #[test]
+    fn two_shared_words_below_the_threshold_are_not_relevant() {
+        let prompt = "/analyze parser cleanup";
+        let analyzer = agents(&["analyzer"]);
+        let transcript = |fillers: usize| {
+            let words = (0..fillers)
+                .map(|index| {
+                    let [high, low] = [index / 26, index % 26].map(|n| char::from(b'a' + n as u8));
+                    format!("the zz{high}{low}")
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            format!("Agent general: assistant: the parser cleanup touched {words}")
+        };
+        let prompt_terms = topic_terms(prompt, &ignored_terms(&analyzer));
+        for (fillers, relevant) in [(10, true), (80, false)] {
+            let text = transcript(fillers);
+            let memory_terms = topic_terms(strip_agent_prefix(&text), &ignored_terms(&analyzer));
+            let shared = prompt_terms.intersection(&memory_terms).count();
+            let relevance = memory_relevance(&prompt_terms, &memory_terms);
+            assert_eq!(
+                shared, MIN_SHARED_TERMS,
+                "{fillers} fillers: {memory_terms:?}"
+            );
+            assert_eq!(
+                relevance >= RELEVANCE_THRESHOLD,
+                relevant,
+                "{fillers} fillers score {relevance:.3}"
+            );
+            let result = format_agent_memory_context(prompt, &analyzer, &[memory(&text)]);
+            assert_eq!(result.is_some(), relevant, "{fillers} fillers: {result:?}");
+        }
+    }
+
     #[test]
     fn injected_memory_is_bounded() {
         let long = format!("cargo test ci {}", "the detail ".repeat(250));
