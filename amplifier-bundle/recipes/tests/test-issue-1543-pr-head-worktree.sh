@@ -534,6 +534,7 @@ TOOL_OUT="$(cd "$WORK" && STUB_HEAD_OID="$NEWER" bash "$TOOL" --pr 7 --branch fe
 check_eq T13-rc "a stale worktree is not a refusal" 0 "$TRC"
 check_eq T13-match "head_matches is false" false "$(field "$TOOL_OUT" head_matches)"
 check_eq T13-wthead "worktree_head is the worktree's real HEAD" "$SHA_B" "$(field "$TOOL_OUT" worktree_head)"
+check_eq T13-rel "a PR head missing from the object store is unfetched, never ahead" unfetched "$(field "$TOOL_OUT" worktree_relation)"
 if grep -q WARNING "$WORK/tool.err" && grep -q "$NEWER" "$WORK/tool.err" && grep -q "$SHA_B" "$WORK/tool.err"; then
   pass T13-warn "stderr WARNING prints both SHAs"
 else
@@ -549,13 +550,65 @@ for loop in merge crusty; do
   check_eq "T13b-$loop-rc" "$loop preflight refuses a stale worktree" 1 "$RC"
   check_eq "T13b-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
   case "$ERR" in
-    *"pr-worktree-stale: worktree $WT is at $SHA_B, PR #7 head is $NEWER; run: git -C $WT pull --ff-only"*)
+    *"pr-worktree-stale: worktree $WT is at $SHA_B, PR #7 head is $NEWER (worktree unfetched); run: git -C $WT pull --ff-only"*)
       pass "T13b-$loop-msg" "stderr names the reason, both SHAs and the recovery command" ;;
     *) fail "T13b-$loop-msg" "unexpected stderr: ${ERR:0:400}" ;;
   esac
 done
 preflight merge STUB_HEAD_OID="$NEWER" AUTODRIVE_PR_INPUT=
 check_eq T13b-build-pr "the build phase's PR on a stale worktree is refused too" 1 "$RC"
+
+echo "== T13c: the stale-worktree remedy follows the direction (behind, ahead, diverged) =="
+# PR #1588 review round 8: a round whose `git push` failed leaves its fix
+# commits only in the worktree, which is then AHEAD of headRefOid. There
+# `pull --ff-only` prints "Already up to date" and the operator is refused
+# again; the remedy is to push. A reset onto the remote would discard them.
+make_fixture t13c
+# A PR head one commit past the worktree, present in the object store but
+# not checked out: the worktree is behind.
+SHA_D="$(git -C "$WT" commit-tree "${SHA_B}^{tree}" -p "$SHA_B" -m D)" || harness_error "commit-tree D failed"
+# stale_case <id> <relation> <remedy-prefix> — tool and both preflights.
+stale_case() {
+  local id="$1" rel="$2" remedy="$3" loop
+  TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"; TRC=$?
+  check_eq "$id-tool-rc" "the tool reports, it does not refuse" 0 "$TRC"
+  check_eq "$id-tool-rel" "worktree_relation" "$rel" "$(field "$TOOL_OUT" worktree_relation)"
+  case "$(field "$TOOL_OUT" remedy)" in
+    "$remedy"*) pass "$id-tool-remedy" "remedy starts with '$remedy'" ;;
+    *) fail "$id-tool-remedy" "remedy must start with '$remedy'; got: $(field "$TOOL_OUT" remedy)" ;;
+  esac
+  for loop in merge crusty; do
+    preflight "$loop"
+    check_eq "$id-$loop-rc" "$loop preflight refuses" 1 "$RC"
+    check_eq "$id-$loop-out" "$loop preflight prints nothing for step-02 to act on" "" "$OUT"
+    case "$ERR" in
+      *"pr-worktree-stale: worktree $WT is at "*" (worktree $rel); run: $remedy"*)
+        pass "$id-$loop-msg" "stderr names the direction and its remedy" ;;
+      *) fail "$id-$loop-msg" "want '(worktree $rel); run: $remedy'; got: ${ERR:0:500}" ;;
+    esac
+  done
+}
+export STUB_HEAD_OID="$SHA_D"
+stale_case T13c-behind behind "git -C $WT pull --ff-only"
+# The worktree one commit ahead of the PR head: a round's fix commit that
+# never reached the remote.
+printf 'c\n' > "$WT/file"
+git -C "$WT" commit -q -am C || harness_error "commit C failed"
+SHA_C="$(git -C "$WT" rev-parse HEAD)"
+export STUB_HEAD_OID="$SHA_B"
+stale_case T13c-ahead ahead "git -C $WT push origin feat/x"
+case "$ERR" in
+  *"run: git -C $WT pull --ff-only"*) fail T13c-ahead-nopull "an ahead worktree must not be told to pull --ff-only" ;;
+  *) pass T13c-ahead-nopull "an ahead worktree is not told to pull --ff-only" ;;
+esac
+# Local commit C and remote commit D both on top of B: diverged.
+export STUB_HEAD_OID="$SHA_D"
+stale_case T13c-diverged diverged "git -C $WT pull --no-rebase, then git -C $WT push origin feat/x"
+case "$(field "$TOOL_OUT" remedy)" in
+  *reset*discard*|*discard*) pass T13c-diverged-noreset "the diverged remedy merges and warns that a reset discards" ;;
+  *) fail T13c-diverged-noreset "the diverged remedy must keep local commits: $(field "$TOOL_OUT" remedy)" ;;
+esac
+check_eq T13c-readonly "the tool and preflights never moved the worktree" "$SHA_C" "$(git -C "$WT" rev-parse HEAD)"
 
 echo "== T12: two worktrees on the PR branch — refuse as ambiguous =="
 make_fixture t12

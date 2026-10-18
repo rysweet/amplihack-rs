@@ -138,7 +138,12 @@ steps:
         MATCH="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_matches | amplihack orch helper extract-field --field head_matches --default '')"
         if [ "$MATCH" != "true" ]; then
           WT_HEAD="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_head | amplihack orch helper extract-field --field worktree_head --default '')"
-          echo "ERROR: pr-worktree-stale: worktree ${REPO} is at ${WT_HEAD:-<unreadable>}, PR #${PR} head is ${HEAD_SHA}; run: git -C ${REPO} pull --ff-only, then re-run. Refusing to enter the merge loop: the merge gate would refuse every round's evidence (#1543)" >&2
+          REL="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_relation | amplihack orch helper extract-field --field worktree_relation --default '')"
+          FIX="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field remedy | amplihack orch helper extract-field --field remedy --default '')"
+          # The remedy depends on the direction: `pull --ff-only` for a
+          # worktree behind the PR head, `push` for one ahead of it (a round
+          # whose push failed left its commits here), a merge for diverged.
+          echo "ERROR: pr-worktree-stale: worktree ${REPO} is at ${WT_HEAD:-<unreadable>}, PR #${PR} head is ${HEAD_SHA} (worktree ${REL:-not at the PR head}); run: ${FIX:-git -C ${REPO} status, and bring it to the PR head}, then re-run. Refusing to enter the merge loop: the merge gate would refuse every round's evidence (#1543)" >&2
           exit 1
         fi
         echo "INFO: PR #${PR} head ${HEAD_SHA} resolved to worktree ${REPO}" >&2

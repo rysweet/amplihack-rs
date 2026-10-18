@@ -125,7 +125,7 @@ On success it prints one JSON line on stdout. Values in angle brackets are
 placeholders:
 
 ```json
-{"pr":"1543","head_sha":"<40-hex headRefOid>","head_ref":"feat/x","worktree":"<repo>/worktrees/feat/x","worktree_head":"<40-hex HEAD>","head_matches":"true","reason":"ok"}
+{"pr":"1543","head_sha":"<40-hex headRefOid>","head_ref":"feat/x","worktree":"<repo>/worktrees/feat/x","worktree_head":"<40-hex HEAD>","head_matches":"true","worktree_relation":"same","remedy":"","reason":"ok"}
 ```
 
 | Argument | Required | Meaning |
@@ -164,6 +164,8 @@ preflight to disagree about.
 | `worktree` | Absolute, symlink-resolved path of the chosen worktree. |
 | `worktree_head` | `git rev-parse HEAD` in that worktree. |
 | `head_matches` | `"true"` when `worktree_head` equals `head_sha`, else `"false"`. |
+| `worktree_relation` | `same`, `behind`, `ahead`, `diverged` or `unfetched`; see [A worktree that is not at the PR head](#a-worktree-that-is-not-at-the-pr-head). |
+| `remedy` | The command that brings the worktree to the PR head for that relation. Empty when `head_matches` is `"true"`. |
 
 | Exit | `reason` | Cause |
 | --- | --- | --- |
@@ -238,17 +240,35 @@ autodrive_pr_head: pr-lookup-failed: gh pr view failed (rc=1) for PR #1543
 ERROR: PR #1543 head resolution refused (autodrive_pr_head exit 4; reason on the line above); refusing to enter the crusty loop (#1543)
 ```
 
-### A worktree behind the PR head
+### A worktree that is not at the PR head
 
 If the worktree's HEAD is not `headRefOid`, the resolver does not refuse. It
-sets `head_matches` to `"false"` and prints both SHAs and the recovery command
-on stderr. The decision belongs to its caller, and both loop preflights refuse
-by name before the loop starts:
+sets `head_matches` to `"false"`, works out which way the worktree differs
+from the PR head with read-only commands (`git cat-file -e` and
+`git merge-base --is-ancestor`), and prints both SHAs, the relation and the
+remedy for that relation on stderr. The decision belongs to its caller, and
+both loop preflights refuse by name before the loop starts:
 
 ```
-WARNING: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha>; run: git -C <repo>/worktrees/feat/x pull --ff-only
-ERROR: pr-worktree-stale: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha>; run: git -C <repo>/worktrees/feat/x pull --ff-only, then re-run. Refusing to enter the crusty loop: every crusty round would refuse with crusty-local-head-not-pr-head (#1543)
+WARNING: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha> (worktree behind); run: git -C <repo>/worktrees/feat/x pull --ff-only
+ERROR: pr-worktree-stale: worktree <repo>/worktrees/feat/x is at <worktree_head>, PR #1543 head is <head_sha> (worktree behind); run: git -C <repo>/worktrees/feat/x pull --ff-only, then re-run. Refusing to enter the crusty loop: every crusty round would refuse with crusty-local-head-not-pr-head (#1543)
 ```
+
+The remedy depends on `worktree_relation`:
+
+| `worktree_relation` | Meaning | Remedy printed |
+| --- | --- | --- |
+| `behind` | The worktree's HEAD is an ancestor of the PR head. | `git -C <wt> pull --ff-only` |
+| `ahead` | The PR head is an ancestor of the worktree's HEAD: the worktree holds commits the PR does not have. | `git -C <wt> push origin <head_ref>` |
+| `diverged` | Each side has commits the other lacks. | `git -C <wt> pull --no-rebase`, then `git -C <wt> push origin <head_ref>` |
+| `unfetched` | The PR head is not in the local object store, so the worktree cannot be ahead of it; it is behind or diverged. | `git -C <wt> pull --ff-only`; if git refuses, follow the `diverged` remedy |
+
+`ahead` is the usual result of a previous run whose `git push` failed. The
+round treats a failed push as a warning (see below), and a push that fails on
+authentication or the network has the same effect: the round's fix commits
+stay in the worktree only. For that case `pull --ff-only` prints
+"Already up to date" and changes nothing, so the preflight tells the operator
+to push instead.
 
 The loop is not entered because it cannot succeed on that tree. Every crusty
 round refuses with `crusty-local-head-not-pr-head`, and the merge gate refuses
@@ -267,16 +287,18 @@ stale head, so the worktree diverges further from the PR.
 
 The merge gate also refuses evidence whose `head_sha` is not the PR head it
 is about to merge (see [No silent merge](#no-silent-merge)). It is the last
-line, not the first: the preflight refusal comes before any round runs. Bring
-the worktree up to date and re-run:
+line, not the first: the preflight refusal comes before any round runs. Run
+the printed remedy and re-run. For a worktree behind the PR head:
 
 ```bash
 git -C worktrees/feat/x pull --ff-only
 amplihack recipe run auto-drive-to-merge -c pr_number=1543 -c existing_branch=feat/x -c repo_path=.
 ```
 
-If `pull --ff-only` fails because local commits have already diverged, rebase
-or reset the worktree onto `origin/feat/x` yourself before re-running.
+The remedies never discard local commits. Resetting the worktree onto
+`origin/feat/x` also clears the refusal, but it throws away every commit the
+worktree has that the PR does not, including unpushed crusty-fix commits. Use
+it only when those commits are not wanted.
 
 ### What uses the resolved worktree
 
