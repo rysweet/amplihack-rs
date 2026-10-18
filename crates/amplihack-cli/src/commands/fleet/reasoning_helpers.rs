@@ -77,7 +77,7 @@ pub(super) fn gather_session_context(
     let gather_cmd = format!(
         concat!(
             "echo \"===TMUX===\"; ",
-            "tmux capture-pane -t {session} -p -S - 2>/dev/null || echo 'NO_SESSION'; ",
+            "tmux capture-pane -t {session} -p -S -{capture_lines} 2>/dev/null || echo 'NO_SESSION'; ",
             "echo \"===CWD===\"; ",
             "CWD=$(tmux display-message -t {session} -p \"#{{pane_current_path}}\" 2>/dev/null); ",
             "echo \"$CWD\"; ",
@@ -116,7 +116,8 @@ pub(super) fn gather_session_context(
             "fi; fi; ",
             "echo \"===END===\""
         ),
-        session = quoted_session
+        session = quoted_session,
+        capture_lines = REASONER_CAPTURE_LINES
     );
 
     let mut cmd = Command::new(azlin_path);

@@ -1,6 +1,8 @@
 # MarkItDown Examples
 
-Working examples for common document conversion scenarios. All examples are copy-paste ready.
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default. For image input, select a model that supports vision.
+
+Working examples for common document conversion scenarios. Replace configuration placeholders before running the examples.
 
 ## Table of Contents
 
@@ -117,7 +119,7 @@ from openai import OpenAI
 from markitdown import MarkItDown
 
 client = OpenAI()
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 
 # Get AI-generated description
 result = md.convert("diagram.png")
@@ -144,7 +146,7 @@ from openai import OpenAI
 from markitdown import MarkItDown
 
 client = OpenAI()
-md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+md = MarkItDown(llm_client=client, llm_model="<configured-model>")
 
 images = Path("./images").glob("*.png")
 
@@ -442,7 +444,7 @@ def main():
     if args.llm:
         from openai import OpenAI
         client = OpenAI()
-        md = MarkItDown(llm_client=client, llm_model="gpt-4o")
+        md = MarkItDown(llm_client=client, llm_model="<configured-model>")
     else:
         md = MarkItDown()
 

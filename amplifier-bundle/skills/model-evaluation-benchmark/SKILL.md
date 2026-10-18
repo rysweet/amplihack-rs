@@ -27,7 +27,7 @@ The skill automates the entire benchmark workflow from execution through cleanup
 
 ✅ **Use when**:
 
-- Comparing AI models (Opus vs Sonnet, etc.)
+- Comparing user-selected AI models
 - Measuring workflow adherence
 - Generating comprehensive benchmark reports
 - Need reproducible benchmarking
@@ -45,7 +45,7 @@ When this skill is invoked, follow these steps:
 ### Phase 1: Setup
 
 1. Read `tests/benchmarks/benchmark_suite_v3/BENCHMARK_TASKS.md`
-2. Identify models to benchmark (default: Opus 4.5, Sonnet 4.5)
+2. Identify models to benchmark from the user’s requested comparison and available runtime models; do not prescribe default model identities
 3. Create TodoWrite list with all phases
 
 ### Phase 2: Execute Benchmarks
@@ -95,7 +95,7 @@ Artifacts: https://github.com/.../releases/tag/benchmark-suite-v3-artifacts
 - **Reference Report**: `tests/benchmarks/benchmark_suite_v3/BENCHMARK_REPORT_V3.md`
 - **Task Definitions**: `tests/benchmarks/benchmark_suite_v3/BENCHMARK_TASKS.md`
 - **Cleanup Guide**: `tests/benchmarks/benchmark_suite_v3/CLEANUP_PROCESS.md`
-- **Runner Script**: `tests/benchmarks/benchmark_suite_v3/manual benchmark execution workflow`
+- **Execution**: Run the task definitions manually; no benchmark runner is shipped.
 
 ---
 

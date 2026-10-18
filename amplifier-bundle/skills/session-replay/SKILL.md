@@ -104,7 +104,7 @@ Analyze session health metrics from a trace file.
         "method": "POST",
         "url": "https://api.anthropic.com/v1/messages",
         "body": {
-            "model": "claude-...",
+            "model": "<model recorded in the source trace>",
             "messages": [...],
             "tools": [...]
         }

@@ -9,7 +9,9 @@
 
 use crate::command_error::exit_error;
 use crate::env_builder::EnvBuilder;
-use crate::util::{render_diagnostic_bytes, run_output_with_timeout};
+use crate::util::{
+    render_diagnostic_bytes, run_output_with_timeout, run_output_with_timeout_stdin,
+};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Local};
 use clap::{CommandFactory, Parser};
@@ -26,7 +28,7 @@ use std::iter;
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Command, Output};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -70,6 +72,9 @@ use reports::*;
 
 mod reasoning;
 use reasoning::*;
+
+mod reasoner_bounds;
+use reasoner_bounds::*;
 
 mod reasoning_engine;
 use reasoning_engine::*;
@@ -142,3 +147,7 @@ use tui_collect::*;
 
 #[cfg(all(test, unix))]
 mod tests;
+#[cfg(all(test, unix))]
+mod tests_issue_1570_admiral;
+#[cfg(all(test, unix))]
+mod tests_issue_1570_reasoner;

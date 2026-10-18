@@ -5,12 +5,13 @@ use super::failure_class::{
 };
 use super::retry::{AttemptOutcome, RetrySummary, TransientRetryLimits, run_with_transient_retry};
 use super::*;
-use crate::env_builder::{EnvBuilder, active_agent_binary};
+use crate::env_builder::EnvBuilder;
 #[cfg(windows)]
 use crate::util::run_with_timeout;
 use crate::util::truncate_chars_with_notice;
 use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::io::{BufRead, BufReader, Write as IoWrite};
 use std::process::{Child, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex, mpsc};
@@ -164,19 +165,14 @@ impl Drop for SpawnGuard {
     }
 }
 
-/// Threshold in bytes for total `--set` argument size before we switch
-/// to passing context via a temp file. Well under the typical Linux
-/// ARG_MAX (~2MB) to leave room for env vars and other args.
-const CONTEXT_ARG_SIZE_THRESHOLD: usize = 128 * 1024;
-
 /// Maximum byte length of a context value that we export as a single
 /// environment variable. The kernel rejects any individual argv/envp
 /// string longer than `MAX_ARG_STRLEN` (PAGE_SIZE * 32 = 131072 on Linux)
 /// with `E2BIG`. We cap conservatively below that so a pathologically large
 /// value cannot make the spawn fail. Over-limit values are still delivered
-/// to the runner via `--set` / `--context-file` for `{{placeholder}}`
+/// to the runner via `--set` for `{{placeholder}}`
 /// substitution; only the env mirror is skipped (issue #784, regression
-/// guard for the E2BIG / `--context-file` path).
+/// guard for the E2BIG path).
 const CONTEXT_ENV_VALUE_MAX_BYTES: usize = 96 * 1024;
 
 /// Per-entry byte overhead charged to every environment variable when
@@ -287,6 +283,13 @@ fn env_entry_bytes(name: &str, value: &str) -> usize {
     name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES
 }
 
+/// The `AMPLIHACK_` namespace belongs to amplihack. A context key in it is
+/// never mirrored into the env and never forwarded to the runner, so a recipe
+/// cannot choose, for example, the pinned Claude profile (issue #1567).
+fn is_reserved_context_key(key: &str) -> bool {
+    key.to_ascii_uppercase().starts_with("AMPLIHACK_")
+}
+
 /// Validate a single recipe context entry for env export (issue #784 / #1023),
 /// independent of any budget accounting. Returns the uppercased env name on
 /// success, or a static, name-only skip `reason` on rejection. The filters run
@@ -296,7 +299,7 @@ fn validate_context_entry(key: &str, value: &str) -> Result<String, &'static str
     if !is_valid_env_identifier(&name) {
         return Err("invalid_identifier");
     }
-    if name.starts_with("AMPLIHACK_") || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
+    if is_reserved_context_key(key) || RESERVED_ENV_DENYLIST.contains(&name.as_str()) {
         return Err("reserved_name");
     }
     if value.contains('\0') {
@@ -338,11 +341,71 @@ fn current_arg_max() -> usize {
     ARG_MAX_FALLBACK_BYTES
 }
 
+/// The runner's file-first context for the parent step (issue #1570).
+const CONTEXT_FILE_ENV: &str = "AMPLIHACK_CONTEXT_FILE";
+
+/// Prefix of the runner's per-step context variables.
+const RECIPE_VAR_PREFIX: &str = "RECIPE_VAR_";
+
+/// Issue #1570: `true` when the inherited variable `name` is removed from the
+/// runner command, because this run passes its own context explicitly and a
+/// parent's context would otherwise accumulate across nesting levels.
+///
+/// Removed: every `RECIPE_VAR_<key>`, the uppercase alias of each inherited
+/// `RECIPE_VAR_<key>` whose `<key>` has no `__`, and `AMPLIHACK_CONTEXT_FILE`.
+/// Never removed: [`RESERVED_ENV_DENYLIST`] names, other `AMPLIHACK_*` names
+/// and names that are not valid environment identifiers.
+/// `inherited_names` is the set of every inherited variable name.
+pub(super) fn is_stripped_inherited_name(name: &str, inherited_names: &BTreeSet<String>) -> bool {
+    if name == CONTEXT_FILE_ENV || name.starts_with(RECIPE_VAR_PREFIX) {
+        return true;
+    }
+    if !is_valid_env_identifier(name)
+        || RESERVED_ENV_DENYLIST.contains(&name)
+        || name.starts_with("AMPLIHACK_")
+    {
+        return false;
+    }
+    inherited_names
+        .iter()
+        .filter_map(|n| n.strip_prefix(RECIPE_VAR_PREFIX))
+        .any(|key| !key.contains("__") && key.eq_ignore_ascii_case(name))
+}
+
+/// Names of the current process environment that are valid UTF-8. A name
+/// that is not UTF-8 is never stripped.
+fn inherited_env_names() -> BTreeSet<String> {
+    utf8_env_names(&std::env::vars_os().collect::<Vec<_>>())
+}
+
+fn utf8_env_names(vars: &[(OsString, OsString)]) -> BTreeSet<String> {
+    vars.iter()
+        .filter_map(|(name, _)| name.to_str().map(str::to_owned))
+        .collect()
+}
+
 /// Total bytes the current process environment will consume as it passes
 /// THROUGH to the spawned recipe-runner (and is re-exported to every bash
-/// step). Summed with the same per-entry accounting used for the mirror.
+/// step). See [`inherited_env_bytes_from`].
 fn inherited_env_bytes() -> usize {
-    std::env::vars_os()
+    inherited_env_bytes_from(std::env::vars_os())
+}
+
+/// Bytes `vars` will consume in the runner's environment, summed with the
+/// same per-entry accounting used for the mirror. Names removed by
+/// [`is_stripped_inherited_name`] are not counted.
+pub(super) fn inherited_env_bytes_from<I>(vars: I) -> usize
+where
+    I: IntoIterator<Item = (OsString, OsString)>,
+{
+    let vars: Vec<_> = vars.into_iter().collect();
+    let names = utf8_env_names(&vars);
+    vars.iter()
+        .filter(|(name, _)| {
+            !name
+                .to_str()
+                .is_some_and(|name| is_stripped_inherited_name(name, &names))
+        })
         .map(|(name, value)| name.len() + value.len() + ENV_ENTRY_OVERHEAD_BYTES)
         .sum()
 }
@@ -394,7 +457,7 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// 5. Drop values containing a NUL byte (rejected by the OS for env vars;
 ///    would otherwise panic at spawn time).
 /// 6. Drop values larger than [`CONTEXT_ENV_VALUE_MAX_BYTES`] (would risk
-///    `E2BIG`); they remain available via the recipe context file.
+///    `E2BIG`); they are delivered to the runner as `--set` arguments.
 ///
 /// Aggregate budget (issue #1023): the total bytes of the exported mirror must
 /// stay within `budget` so the environment inherited by every bash step cannot
@@ -404,7 +467,7 @@ pub(super) fn resolve_context_env_budget() -> usize {
 /// keys, which fill the remaining budget SMALLEST-FIRST so the maximum number
 /// of useful vars survive. A non-essential entry that does not fit is dropped
 /// from the mirror ONLY; it is still delivered to the runner via
-/// `--set` / `--context-file` (see [`pass_context`]) for `{{placeholder}}`
+/// `--set` (see [`pass_context`]) for `{{placeholder}}`
 /// substitution (same contract as the per-value cap at #784).
 ///
 /// Skipped entries are logged name-only at `warn` level — values may carry
@@ -471,6 +534,9 @@ pub(super) fn context_env_pairs(
     pairs
 }
 
+// The resolved agent binary is an extra argument on purpose: the caller
+// decided it once, for the pre-flight and the steps alike (issue #1481).
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_recipe_via_rust(
     recipe_path: &Path,
     context: &BTreeMap<String, String>,
@@ -479,6 +545,7 @@ pub(super) fn execute_recipe_via_rust(
     working_dir: &Path,
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
+    agent_binary: amplihack_utils::agent_binary::Resolution,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -489,6 +556,18 @@ pub(super) fn execute_recipe_via_rust(
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
+
+    // Issue #1481: the caller resolved the agent binary once, from
+    // `working_dir`, while this process could still see the session markers of
+    // the CLI that invoked it; the #1482 pre-flight checked that same answer.
+    // Every step below runs under recipe-runner-rs's curated environment, and a
+    // nested `amplihack` resolving on its own there has lost the evidence -- it
+    // fell through to the vendor default and ran every agent step under Copilot
+    // from inside a Claude Code session.
+    crate::agent_binary_notice::report_agent_binary(
+        crate::agent_binary_notice::Reporter::RecipeRun,
+        &agent_binary,
+    );
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")
@@ -512,7 +591,19 @@ pub(super) fn execute_recipe_via_rust(
     // closure invoked once per attempt rather than hoisted state. The runtime
     // dir is deliberately NOT rebuilt: a retry of a transient transport fault
     // should reuse the same artifact/tmp scratch space it was already given.
-    let build_command = |run_id: &str| -> Result<(Command, Option<tempfile::NamedTempFile>)> {
+    let build_command = |run_id: &str| -> Result<Command> {
+        // Issue #1567: no `env_clear` here, so a pinned AMPLIHACK_CLAUDE_PROFILE
+        // (and AMPLIHACK_CLAUDE_PROFILE_ROOT) reaches the runner. The runner's
+        // own `bounded_env` clears the environment for agent steps but always
+        // keeps AMPLIHACK_* variables, which is why only the profile name (not
+        // CLAUDE_CONFIG_DIR) needs to survive: each step's nested
+        // `amplihack claude` rebuilds the dir from it. `pass_context` refuses
+        // `AMPLIHACK_*` keys from `-c` and this run's context. The runner still
+        // exports top-level context keys under their uppercase names
+        // (`legacy_uppercase_alias`), so a recipe's own YAML `context:`
+        // defaults or a step `output:` named `amplihack_claude_profile` can
+        // still override the pinned value until the runner refuses that
+        // namespace too (rysweet/amplihack-recipe-runner#146).
         let mut command = Command::new(&binary);
         command
             .arg(recipe_path)
@@ -536,9 +627,28 @@ pub(super) fn execute_recipe_via_rust(
             command.arg("--dry-run");
         }
 
-        // Pass context as a file when the total size would risk E2BIG (os error 7).
-        // The temp file is kept alive until the recipe runner child completes.
-        let context_file = pass_context(&mut command, context)?;
+        // Issue #1570: context goes to the runner as `--set` arguments; their
+        // size comes out of the env-mirror budget below so argv + envp stay
+        // under ARG_MAX together.
+        let context_argv_bytes = pass_context(&mut command, context)?;
+        let argv_room = current_arg_max().saturating_sub(inherited_env_bytes());
+        if context_argv_bytes > argv_room.saturating_sub(ENV_BUDGET_RESERVATION_BYTES) {
+            anyhow::bail!(
+                "recipe context totals {context_argv_bytes} bytes of --set arguments, more than \
+                 the {argv_room} bytes of ARG_MAX left after the inherited environment. Pass \
+                 large values as file paths in the context instead"
+            );
+        }
+
+        // Issue #1570: remove inherited recipe context before adding this
+        // run's own, so a nested run does not carry every ancestor's
+        // `RECIPE_VAR_*`, uppercase aliases and context file.
+        let inherited_names = inherited_env_names();
+        for name in &inherited_names {
+            if is_stripped_inherited_name(name, &inherited_names) {
+                command.env_remove(name);
+            }
+        }
 
         // Issue #784 / #4583: export recipe context as environment variables so
         // bash steps (and nested sub-recipes, via OS inheritance) can read
@@ -549,10 +659,13 @@ pub(super) fn execute_recipe_via_rust(
         // `context_env_pairs` (they are not EnvBuilder-managed). The aggregate byte
         // budget (#1023) keeps the total mirrored env under the kernel's ARG_MAX so
         // late bash steps cannot fail with "Argument list too long".
-        command.envs(context_env_pairs(context, resolve_context_env_budget()));
+        command.envs(context_env_pairs(
+            context,
+            resolve_context_env_budget().saturating_sub(context_argv_bytes),
+        ));
 
         let env_builder = EnvBuilder::new()
-            .with_agent_binary(active_agent_binary())
+            .with_resolved_agent_binary(agent_binary.binary.as_str(), agent_binary.source)
             .with_session_tree_context()
             .with_amplihack_home_from(working_dir)
             .with_asset_resolver()
@@ -591,7 +704,7 @@ pub(super) fn execute_recipe_via_rust(
         command.env("AMPLIHACK_WORKFLOW_ARTIFACT_DIR", &artifact_dir);
         command.env("TMPDIR", &tmp_dir);
 
-        Ok((command, context_file))
+        Ok(command)
     };
 
     // Issue #1267: a transient transport fault (529/503/429, reset connection,
@@ -613,7 +726,7 @@ pub(super) fn execute_recipe_via_rust(
                 context,
                 binary.as_path(),
             );
-            let (command, _context_file) = match build_command(correlation.run_id()) {
+            let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
                 // has nothing transport-level about it. Terminal.
@@ -1034,43 +1147,49 @@ fn parse_recipe_output_with_stderr_drops(
     })
 }
 
-/// Pass context key-value pairs to the command. When total serialised size
-/// is small, uses `--set key=value` CLI args. When large, writes a JSON
-/// file and passes `--context-file <path>` to avoid E2BIG (issues #209, #211).
+/// Largest single argv string the kernel accepts (`MAX_ARG_STRLEN`,
+/// PAGE_SIZE * 32 on Linux), including its trailing NUL.
+pub(super) const MAX_ARG_STRLEN_BYTES: usize = 131_072;
+
+/// Pass context key-value pairs to the command as `--set KEY=VALUE`
+/// arguments, the only context input `recipe-runner-rs` accepts (it has no
+/// `--context-file` option; the fallback that used one failed every run
+/// whose context totalled over 128 KiB, issue #1570).
 ///
-/// Returns an `Option<tempfile::NamedTempFile>` that must be kept alive
-/// until the child process has finished reading the file.
+/// Returns the argv bytes the pairs occupy, so the caller can take them out
+/// of the env-mirror budget. A pair longer than one argv string allows is
+/// refused with an error naming the key and size, never the value.
 pub(super) fn pass_context(
     command: &mut Command,
     context: &BTreeMap<String, String>,
-) -> Result<Option<tempfile::NamedTempFile>> {
-    if context.is_empty() {
-        return Ok(None);
+) -> Result<usize> {
+    if let Some(key) = context.keys().find(|k| is_reserved_context_key(k)) {
+        anyhow::bail!(
+            "recipe context key {} is reserved: the AMPLIHACK_ namespace cannot be set from recipe context",
+            crate::commands::profile::escape_for_error(key)
+        );
     }
-
-    let total_bytes: usize = context
+    if let Some((key, value)) = context
         .iter()
-        .map(|(k, v)| "--set".len() + k.len() + 1 + v.len())
-        .sum();
-
-    if total_bytes <= CONTEXT_ARG_SIZE_THRESHOLD {
-        for (key, value) in context {
-            command.arg("--set").arg(format!("{key}={value}"));
-        }
-        return Ok(None);
+        .find(|(k, v)| k.len() + 1 + v.len() + 1 > MAX_ARG_STRLEN_BYTES)
+    {
+        anyhow::bail!(
+            "recipe context value for key {} is {} bytes; recipe-runner-rs takes context only \
+             as --set arguments, and one argument cannot exceed {} bytes. Pass a file path \
+             in the context instead and read the file in the step",
+            crate::commands::profile::escape_for_error(key),
+            value.len(),
+            MAX_ARG_STRLEN_BYTES
+        );
     }
-
-    // Write context as JSON to a temp file.
-    let mut tmp =
-        tempfile::NamedTempFile::new().context("failed to create temp file for recipe context")?;
-    serde_json::to_writer(&mut tmp, context)
-        .context("failed to serialize recipe context to temp file")?;
-    tmp.flush()
-        .context("failed to flush recipe context temp file")?;
-
-    command.arg("--context-file").arg(tmp.path());
-
-    Ok(Some(tmp))
+    let mut argv_bytes = 0;
+    for (key, value) in context {
+        let pair = format!("{key}={value}");
+        // `--set\0`, `KEY=VALUE\0` and two argv pointers.
+        argv_bytes += "--set".len() + 1 + pair.len() + 1 + 2 * std::mem::size_of::<usize>();
+        command.arg("--set").arg(pair);
+    }
+    Ok(argv_bytes)
 }
 
 // Issue #1304: every exit from `run_recipe_runner` must leave a durable

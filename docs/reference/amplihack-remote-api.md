@@ -127,7 +127,14 @@ pub async fn exec(options: ExecOptions) -> Result<WorkflowResult, RemoteError>;
 2. Context packaging and secret scanning.
 3. VM provisioning or reuse through azlin.
 4. Context transfer.
-5. Remote command execution.
+5. Remote command execution. The API key and the prompt travel on `azlin`
+   stdin; the remote script exports `ANTHROPIC_API_KEY`, writes the prompt to a
+   0600 file and runs
+   `amplihack claude --auto --max-turns <n> --prompt-file <file>`. Only the
+   `auto` command is accepted; any other command is refused locally with
+   `remote command '<command>' is not supported: only 'auto' accepts --prompt-file`.
+   See
+   [Remote and admiral prompt hand-off](./large-payload-delivery.md#remote-and-admiral-prompt-hand-off).
 6. Log and git-state retrieval.
 7. Result integration and VM cleanup.
 

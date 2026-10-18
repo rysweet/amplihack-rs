@@ -2,8 +2,9 @@ name: "autodrive-merge-evidence"
 description: |
   Deterministic evidence collection for one round of the auto-drive-to-merge
   merge-ready loop: bring the branch up to date with its base, run the
-  `qa-team` scenarios for this repository type, and wait for CI on the current
-  head to reach a terminal state.
+  repository's own tests and, where qa-team's repo-type table requires
+  gadugi, validate and run the `qa-team` scenarios with gadugi-test, and wait
+  for CI on the current head to reach a terminal state.
 
   Everything here is MEASURED. No step in this brick forms an opinion, and
   nothing it reports is a model's impression. Unreadable is never reported as
@@ -13,14 +14,11 @@ version: "1.0.0"
 author: "Amplihack Team"
 tags: ["auto-drive", "merge-ready", "qa-team", "ci", "evidence"]
 
-# Pager safety: recipe-runner-rs sets GIT_PAGER=cat/PAGER=cat for subprocesses.
-#
 # NO-TIMEOUT POLICY (issue #439): no step declares `timeout` or
 # `timeout_seconds`. The CI wait below polls on a 60-second interval and stops
 # when CI reaches a terminal state or becomes unreadable — it is bounded by the
 # build finishing, not by a seconds-scale or single-digit-minute stopwatch. A
 # test suite is likewise never cut off mid-run.
-#
 # PROHIBITIONS: a hook-skipping commit flag and a branch-protection bypass are
 # NEVER used anywhere in this workflow. See
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -73,55 +71,41 @@ steps:
         "$BASE" "$SYNCED" "$CONFLICT" "$(git rev-parse HEAD 2>/dev/null || printf '')"
     output: "merge_sync"
 
+  # Criterion 1 is measured by amplifier-bundle/tools/autodrive_qa_evidence.sh:
+  # the repository's suite commands, then, only where autodrive_gadugi_required
+  # says true (a Node repository, or AUTODRIVE_QA_SCENARIO_DIR set), the qa-team
+  # scenarios validated and run with gadugi-test, one process per scenario
+  # file. A Rust CLI or Python repository gets gadugi_status NOT_REQUIRED, as
+  # qa-team's repo-type table says. It prints one JSON line and writes the
+  # same line, private, to autodrive_qa_evidence. A missing tool is an
+  # installation fault, so the step fails by name rather than reporting
+  # evidence it did not measure.
   - id: "step-02-qa-team-scenarios"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
-      EVIDENCE="${AUTODRIVE_QA_EVIDENCE:-}"
-      # Repo-type detection exactly as the qa-team skill specifies: a Rust CLI
-      # repo runs `cargo test` over tests/parity/scenarios/*.yaml and does NOT
-      # require the gadugi-agentic-test framework.
-      TYPE="unknown"; CMD=""; SCEN=""
-      if [ -f Cargo.toml ]; then
-        TYPE="rust-cli"; CMD="cargo test --workspace --locked --no-fail-fast"
-        SCEN="$(ls tests/parity/scenarios/* 2>/dev/null | tr '\n' ' ')"
-      elif [ -f package.json ]; then
-        TYPE="node"; CMD="gadugi-test run"
-      elif [ -f pyproject.toml ] || [ -f setup.py ]; then
-        TYPE="python"; CMD="pytest"
-      fi
-      # The evidence binds to the tree it was measured on. The merge gate
-      # refuses evidence whose head_sha is not the SHA being merged, so a
-      # PASS left behind by an earlier round cannot stand in for this one.
-      HEAD_SHA=""
+      cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
+      TOP=""; T=""; SEARCHED=""
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-        HEAD_SHA="$(git rev-parse HEAD 2>/dev/null || printf '')"
+        TOP="$(git rev-parse --show-toplevel 2>/dev/null)"
       else
-        echo "[skip] not a git repo; the qa evidence records no head sha, so the merge gate refuses it rather than merging unbound evidence" >&2
+        echo "[skip] not a git repo; the git toplevel is not searched for autodrive_qa_evidence.sh" >&2
       fi
-      STATUS="BLOCKED"; RC=""; SUMMARY=""
-      if [ -z "$CMD" ]; then
-        SUMMARY="no qa-team scenario runner could be selected for this repository"
-      elif ! command -v "${CMD%% *}" >/dev/null 2>&1; then
-        SUMMARY="${CMD%% *} is not installed; qa-team scenarios could not be RUN. Scenario files existing is not evidence."
-      else
-        LOG="$(mktemp -t autodrive-qa-XXXXXX)"
-        # No timeout: a test suite is never cut off mid-run.
-        # shellcheck disable=SC2086
-        $CMD >"$LOG" 2>&1
-        RC=$?
-        SUMMARY="$(tail -n 5 "$LOG" | tr '\n' ' ' | tr -d '"' | cut -c1-300)"
-        if [ "$RC" -eq 0 ]; then STATUS="PASS"; else STATUS="FAIL"; fi
-        echo "INFO: qa-team (${TYPE}) '${CMD}' exited ${RC}" >&2
-        tail -n 60 "$LOG" >&2 || true
-        rm -f "$LOG"
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$TOP" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] || continue
+        SEARCHED="${SEARCHED}${SEARCHED:+, }${c}/amplifier-bundle/tools"
+        [ -f "$c/amplifier-bundle/tools/autodrive_qa_evidence.sh" ] && { T="$c/amplifier-bundle/tools/autodrive_qa_evidence.sh"; break; }
+      done
+      if [ -z "$T" ]; then
+        echo "ERROR: autodrive-qa-evidence-tool-not-found: autodrive_qa_evidence.sh not found (searched ${SEARCHED:-no root})" >&2
+        exit 1
       fi
-      OUT="$(printf '{"qa_status":"%s","qa_repo_type":"%s","qa_command":"%s","qa_scenarios":"%s","qa_exit_code":"%s","qa_summary":"%s","qa_round":"%s","head_sha":"%s"}\n' \
-        "$STATUS" "$TYPE" "$CMD" "$SCEN" "${RC:-}" "$SUMMARY" "${AUTODRIVE_ROUND_LABEL:-round}" "$HEAD_SHA")"
-      [ -n "$EVIDENCE" ] && printf '%s' "$OUT" > "$EVIDENCE"
-      printf '%s\n' "$OUT"
+      # Executed, never sourced, on this directory: REPO_PATH is passed absolute
+      # so a relative one is not applied twice. It reads AUTODRIVE_QA_EVIDENCE,
+      # AUTODRIVE_ROUND_LABEL and the AUTODRIVE_QA_* overrides from this
+      # environment, and returns 0 whenever it produced evidence.
+      REPO_PATH="$PWD" bash "$T"
     output: "qa_evidence"
 
   - id: "step-03-wait-for-ci"

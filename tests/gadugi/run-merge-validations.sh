@@ -42,36 +42,39 @@ if ! command -v amplihack >/dev/null 2>&1; then
 fi
 
 # Substitute the {{...}} placeholders exactly as recipe-runner-rs would, then
-# run the resulting bash. Python keeps multi-line payloads byte-exact.
-SCRIPT_BODY="$(
-  RECIPE_PATH="$RECIPE" V1="$V1_FILE" V2="$V2_FILE" V3="$V3_FILE" \
-  THRESHOLD_VAL="$THRESHOLD" CYCLE_VAL="$CYCLE" OUTPUT_DIR_VAL="$OUTPUT_DIR" python3 - <<'PY'
-import os, yaml
-with open(os.environ["RECIPE_PATH"]) as fh:
-    recipe = yaml.safe_load(fh)
-for step in recipe["steps"]:
-    if step.get("id") == "merge-validations":
-        cmd = step["command"]
-        break
-else:
-    raise SystemExit("merge-validations step not found")
-
-def read(path):
-    with open(path) as fh:
-        return fh.read()
-
-subs = {
-    "validation_agent_1": read(os.environ["V1"]),
-    "validation_agent_2": read(os.environ["V2"]),
-    "validation_agent_3": read(os.environ["V3"]),
-    "validation_threshold": os.environ["THRESHOLD_VAL"],
-    "cycle_number": os.environ["CYCLE_VAL"],
-    "output_dir": os.environ["OUTPUT_DIR_VAL"],
+# run the resulting bash. The body is read with recipe-step-command.sh and the
+# placeholders are replaced in bash, not python3: auto-drive runs this scenario
+# with the real gadugi-test on any host, and a PyYAML import made it fail
+# wherever PyYAML was not installed (PR #1520 review).
+#
+# replace_all splits on the literal placeholder, so a payload is never read as
+# a pattern and its `&`, `\` and `*` stay byte-exact on every bash from 3.2 up.
+# Each payload keeps its trailing newlines (the trailing `x` stops $(...) from
+# stripping them), as the file read did before.
+replace_all() { # replace_all <text> <placeholder> <value>
+  local rest="$1" out=""
+  while :; do
+    case "$rest" in
+      *"$2"*) out="${out}${rest%%"$2"*}$3"; rest="${rest#*"$2"}" ;;
+      *) break ;;
+    esac
+  done
+  printf '%s' "${out}${rest}"
 }
-for key, val in subs.items():
-    cmd = cmd.replace("{{" + key + "}}", val)
-print(cmd, end="")
-PY
-)"
+read_payload() { cat -- "$1" && printf x; }
+
+SCRIPT_BODY="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" merge-validations)"
+for key in validation_agent_1 validation_agent_2 validation_agent_3 validation_threshold cycle_number output_dir; do
+  case "$key" in
+    validation_agent_1) val="$(read_payload "$V1_FILE")"; val="${val%x}" ;;
+    validation_agent_2) val="$(read_payload "$V2_FILE")"; val="${val%x}" ;;
+    validation_agent_3) val="$(read_payload "$V3_FILE")"; val="${val%x}" ;;
+    validation_threshold) val="$THRESHOLD" ;;
+    cycle_number) val="$CYCLE" ;;
+    output_dir) val="$OUTPUT_DIR" ;;
+  esac
+  SCRIPT_BODY="$(replace_all "$SCRIPT_BODY" "{{${key}}}" "$val"; printf x)"
+  SCRIPT_BODY="${SCRIPT_BODY%x}"
+done
 
 bash -c "$SCRIPT_BODY"

@@ -7,7 +7,7 @@ cd "$ROOT"
 export AMPLIHACK_HOME="$ROOT"
 
 echo "== [1/4] issue #808 deterministic cleanup + sibling-safety regression suite =="
-cargo test -p amplihack --test issue_808_finalization_cleanup
+cargo test -p amplihack --test integration issue_808_finalization_cleanup::
 
 echo "== [2/4] runtime-artifact helper contracts preserved =="
 bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh

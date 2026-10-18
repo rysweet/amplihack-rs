@@ -238,7 +238,7 @@ For **GitHub Copilot CLI** (`TOOL_CONTEXT="copilot"`):
 ```markdown
 # Session: 2025-11-23 19:32
 
-**Model**: claude-sonnet-4-6
+**Model**: <model recorded in the source transcript>
 **Messages**: 42
 
 ---

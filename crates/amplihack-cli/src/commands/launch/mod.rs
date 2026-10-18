@@ -21,6 +21,10 @@ mod tests_env;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
+mod tests_model;
+#[cfg(test)]
+mod tests_profile;
+#[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]
 mod tests_subprocess_safe;
@@ -30,7 +34,8 @@ mod tests_system_prompt_append;
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
 pub(crate) use command::{
-    resolve_no_reflection, resolve_subprocess_safe, validate_routed_copilot_workspace,
+    pin_profile_for_descendants, resolve_no_reflection, resolve_subprocess_safe,
+    validate_routed_copilot_workspace,
 };
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
@@ -55,7 +60,7 @@ use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
-use context::render_launcher_command;
+use context::{persist_launcher_context_with, render_launcher_command};
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
@@ -150,7 +155,7 @@ pub fn run_launch(
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
 ) -> Result<()> {
-    run_launch_with(
+    run_launch_profiled(
         tool,
         launcher_command,
         docker,
@@ -164,6 +169,44 @@ pub fn run_launch(
         extra_args,
         override_origin,
         proxy_target,
+        None,
+    )
+}
+
+/// [`run_launch`] with an optional Claude login-profile directory, exported to
+/// the child as `CLAUDE_CONFIG_DIR` (Claude-compatible tools only).
+#[allow(clippy::too_many_arguments)]
+pub fn run_launch_profiled(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        claude_config_dir,
         amplihack_utils::root_sandbox::detect,
     )
 }
@@ -171,6 +214,7 @@ pub fn run_launch(
 /// [`run_launch`] with the issue #1482 root-sandbox decision injected, so
 /// tests reach the call in the launch whatever uid they run as.
 #[allow(clippy::too_many_arguments)]
+#[cfg(test)]
 pub(crate) fn run_launch_with(
     tool: &str,
     launcher_command: &str,
@@ -185,6 +229,43 @@ pub(crate) fn run_launch_with(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        None,
+        root_sandbox_decision,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_launch_core(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
     root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
@@ -265,8 +346,25 @@ pub(crate) fn run_launch_with(
     // or the tool has no npm package mapping.
     maybe_print_npm_update_notice(tool, skip_update_check, override_origin);
 
+    let codex_binary = if tool == "codex" && prevalidated_binary.is_none() {
+        Some(
+            bootstrap::ensure_tool_available(tool, override_origin)
+                .with_context(|| missing_binary_context(tool))?,
+        )
+    } else {
+        None
+    };
     if !subprocess_safe {
-        bootstrap::prepare_launcher(tool)?;
+        if tool == "codex" {
+            let selected = prevalidated_binary
+                .as_ref()
+                .map(|p| &p.binary)
+                .or(codex_binary.as_ref())
+                .context("resolved Codex executable missing")?;
+            bootstrap::prepare_codex_launcher(&selected.path)?;
+        } else {
+            bootstrap::prepare_launcher(tool)?;
+        }
     }
 
     // Check nesting
@@ -291,8 +389,11 @@ pub(crate) fn run_launch_with(
     let (binary, preflight_identity) = match prevalidated_binary {
         Some(preflight) => (preflight.binary, Some(preflight.identity)),
         None => (
-            bootstrap::ensure_tool_available(tool, override_origin)
-                .with_context(|| missing_binary_context(tool))?,
+            match codex_binary {
+                Some(binary) => Ok(binary),
+                None => bootstrap::ensure_tool_available(tool, override_origin),
+            }
+            .with_context(|| missing_binary_context(tool))?,
             None,
         ),
     };
@@ -342,7 +443,8 @@ pub(crate) fn run_launch_with(
             .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
             .with_session_tree_context() // preserve orchestration tree vars if present
             .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
-            .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+            // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
+            .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
@@ -371,6 +473,7 @@ pub(crate) fn run_launch_with(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
+            claude_config_dir.as_deref(),
         );
         cmd.current_dir(&execution_dir);
         let routed_copilot = proxy_config.is_some()
@@ -384,6 +487,8 @@ pub(crate) fn run_launch_with(
             proxy_config.as_ref().zip(proxy_target),
             root_sandbox.as_ref(),
         )?;
+        // Issue #1569: only the supervising amplihack sees this marker.
+        cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
 
         // Spawn child in its own process group.
         //
@@ -392,7 +497,15 @@ pub(crate) fn run_launch_with(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
-        let mut child = match ManagedChild::spawn(cmd) {
+        // Issue #1569: the hold keeps auto-switch swaps out of the profile
+        // until the child exists and liveness scans can see it.
+        let launch_hold = claude_config_dir
+            .as_deref()
+            .map(crate::commands::profile::verify_launch_profile_dir)
+            .transpose()?;
+        let spawned = ManagedChild::spawn(cmd);
+        drop(launch_hold);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 let raw_os_error = err
@@ -415,7 +528,13 @@ pub(crate) fn run_launch_with(
         };
 
         // Wait for child or signal
-        let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // Issue #1569: hand back logins the session borrowed, on success and
+        // on error, before this process exits.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::return_after_session(dir);
+        }
+        let exit_code = exit_code?;
         tracker.complete_session(&session_id)?;
         if exit_code != 0 {
             std::process::exit(exit_code);

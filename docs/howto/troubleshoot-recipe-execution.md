@@ -123,7 +123,9 @@ amplihack recipe run /tmp/unbound-check.yaml \
 - **The name is reserved.** Names such as `PATH`, `HOME`, `IFS`, `BASH_ENV`,
   `LD_PRELOAD`, `PYTHONPATH`, and anything beginning with `AMPLIHACK_` are never
   exported from context (a `reason=reserved_name` warning is logged). Read those
-  values from their canonical source instead of from context.
+  values from their canonical source instead of from context. An `AMPLIHACK_*`
+  key passed to `amplihack recipe run` with `-c` or `--context-file` stops the
+  run with `recipe context key "…" is reserved`; remove the key.
 - **The context key is genuinely absent.** Confirm the value is supplied via the
   recipe's `context:` block or a `-c/--context` flag; an unset, un-inferred key
   produces no environment variable.
@@ -164,7 +166,7 @@ mirrors context only up to that budget. Essential keys
 (`task_description`, `repo_path`, `existing_branch`, `should_*`) are always
 exported; other keys are filled smallest-first and any that do not fit are
 dropped from the *environment mirror only* — they are still delivered to the
-runner via the context file for `{{placeholder}}` substitution. This keeps the
+runner as `--set` arguments for `{{placeholder}}` substitution. This keeps the
 inherited environment safely under `ARG_MAX`, so late steps no longer fail.
 
 **If a late step still fails with `os error 7`:**
@@ -209,6 +211,11 @@ or an older amplihack fails inside the step with
 non-interactive `claude` it starts. Claude Code refuses that flag as uid 0
 unless `IS_SANDBOX=1` is set (the exact value `1`) or it runs in its own
 bubblewrap sandbox.
+
+The pre-flight applies when the recipe's agent steps will run `claude`. That
+is decided once, from `--working-dir` (see
+[Resolving once for a whole recipe run](../reference/active-agent-binary.md#resolving-once-for-a-whole-recipe-run)),
+and the runner is handed the same answer.
 
 **What amplihack does as root** (for `claude` only):
 

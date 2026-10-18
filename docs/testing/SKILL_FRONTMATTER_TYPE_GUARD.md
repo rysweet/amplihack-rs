@@ -97,7 +97,7 @@ name: {value: merge-ready}       # mapping  → FAILS
 Run the guard on its own:
 
 ```bash
-cargo test -p amplihack --test skill_frontmatter_type -- --nocapture
+cargo test -p amplihack --test integration skill_frontmatter_type:: -- --nocapture
 ```
 
 Run it as part of the full suite (CI runs this on every PR):
@@ -163,22 +163,22 @@ The guard is organized into four test cases:
 ## Configuration
 
 Integration tests under `tests/integration/` are **not** auto-discovered by
-Cargo in this workspace; each is registered explicitly. The guard is wired up
-in `bins/amplihack/Cargo.toml`:
+Cargo in this workspace. They are all modules of one test binary, the
+`integration` target in `bins/amplihack/Cargo.toml`, whose crate root is
+`tests/integration/main.rs`. The guard is wired up there:
 
-```toml
-# Issue #890: Skill frontmatter TYPE validation.
-# Ensures Copilot-CLI string-scalar fields (name, description, argument-hint)
-# are never encoded as a YAML list/map. Regression guard for the
-# merge-ready `argument-hint` type fix (commit e0abfb4).
-[[test]]
-name = "skill_frontmatter_type"
-path = "../../tests/integration/skill_frontmatter_type_test.rs"
+```rust
+// Issue #890: Skill frontmatter TYPE validation.
+// Ensures every SKILL.md encodes name/description/argument-hint as string
+// scalars (not YAML lists/maps). Regression guard for the Copilot CLI
+// "argument-hint must be a string" failure (merge-ready fix, commit e0abfb4).
+#[path = "skill_frontmatter_type_test.rs"]
+mod skill_frontmatter_type;
 ```
 
-Without this block the test file compiles but never runs. If you add or move
+Without this `mod` line the test file is never compiled and never runs. If you add or move
 the test, keep this registration in sync — verify with an explicit
-`--test skill_frontmatter_type` run.
+`--test integration skill_frontmatter_type::` run.
 
 ## Adding a New Skill
 
@@ -186,7 +186,7 @@ When you add a new skill, the guard runs automatically in CI. To stay green:
 
 1. Write `name` and `description` as plain string scalars.
 2. If your skill takes an argument, quote the hint: `argument-hint: "[value]"`.
-3. Run `cargo test -p amplihack --test skill_frontmatter_type` locally before
+3. Run `cargo test -p amplihack --test integration skill_frontmatter_type::` locally before
    pushing.
 
 If the guard fails, read the aggregated report, open the named `SKILL.md`, and
@@ -199,7 +199,7 @@ locally without committing anything:
 
 ```bash
 # 1. Baseline: the guard passes on the current tree.
-cargo test -p amplihack --test skill_frontmatter_type
+cargo test -p amplihack --test integration skill_frontmatter_type::
 
 # 2. Reintroduce the bug (uncommitted edit).
 sed -i 's/argument-hint: "\[pr-number\]"/argument-hint: [pr-number]/' \
@@ -207,13 +207,13 @@ sed -i 's/argument-hint: "\[pr-number\]"/argument-hint: [pr-number]/' \
 
 # 3. The guard now FAILS, naming the file and field:
 #    amplifier-bundle/skills/merge-ready/SKILL.md → `argument-hint` must be a string, found sequence/list
-cargo test -p amplihack --test skill_frontmatter_type
+cargo test -p amplihack --test integration skill_frontmatter_type::
 
 # 4. Restore the correct source.
 git checkout -- amplifier-bundle/skills/merge-ready/SKILL.md
 
 # 5. Green again.
-cargo test -p amplihack --test skill_frontmatter_type
+cargo test -p amplihack --test integration skill_frontmatter_type::
 ```
 
 ## Audit Baseline

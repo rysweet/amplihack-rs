@@ -63,6 +63,9 @@ nav:
       - Repair PATH Conflicts: howto/repair-install-update-path-conflicts.md
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
+      - Claude Login Profiles: howto/claude-profiles.md
+      - Profile Command Reference: reference/profile-command.md
+      - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:
       - Philosophy: claude/context/PHILOSOPHY.md
       - Project Overview: claude/context/PROJECT.md
@@ -104,6 +107,10 @@ nav:
       - Investigation Workflow: claude/workflow/INVESTIGATION_WORKFLOW.md
       - Recipe CLI Commands: howto/recipe-cli-commands.md
       - Recipe CLI Reference: reference/recipe-cli-reference.md
+      - Large Payload Delivery:
+          - Explanation: concepts/large-payload-delivery.md
+          - How-To: howto/pass-large-recipe-context.md
+          - Reference: reference/large-payload-delivery.md
       - Clean Result Channel: reference/clean-result-channel.md
       - PR Recovery Readiness:
           - Overview: features/pr-recovery-readiness.md
@@ -159,6 +166,7 @@ nav:
           - Tutorial: tutorials/copilot-parity-control-plane.md
           - Configuration: howto/configure-copilot-parity-control-plane.md
           - Reference: reference/copilot-parity-control-plane.md
+      - Codex Ownership Migration: CODEX_OWNERSHIP_MIGRATION.md
       - External LiteLLM Gateway:
           - Tutorial: tutorials/external-litellm-gateway.md
           - Operations: howto/operate-external-litellm-route.md

@@ -46,10 +46,10 @@ fn codex_never_gets_the_flag() {
 
 #[test]
 fn amplifier_never_gets_the_flag_even_though_it_is_claude_compatible_elsewhere() {
-    // `build_command_for_dir`'s local `is_claude_compatible` includes
-    // "amplifier" and governs --dangerously-skip-permissions and --model. The
-    // flag matrix says supports_append_prompt == false. The two disagree and
-    // the FLAG MATRIX WINS. `is_claude_compatible` is deliberately left alone.
+    // `is_claude_compatible_tool` in command.rs includes "amplifier" and
+    // governs --dangerously-skip-permissions and --model. The flag matrix says
+    // supports_append_prompt == false. The two disagree and the FLAG MATRIX
+    // WINS. `is_claude_compatible_tool` is deliberately left alone.
     //
     // This test exists so that a future maintainer who "harmonizes" the two
     // does not silently start emitting a flag amplifier may not accept.
@@ -203,7 +203,7 @@ fn an_unrelated_flag_with_a_similar_name_does_not_suppress_injection() {
 
 use super::command::build_command_for_dir;
 use crate::binary_finder::BinaryInfo;
-use crate::test_support::{home_env_lock, restore_cwd, restore_home, set_cwd, set_home};
+use crate::test_support::{home_env_lock, restore_home, set_home};
 
 fn claude_binary() -> BinaryInfo {
     BinaryInfo {
@@ -227,7 +227,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
     let cwd = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(home.path().join(".amplihack/.claude/context")).unwrap();
     let original_home = set_home(home.path());
-    let original_cwd = set_cwd(cwd.path()).unwrap();
+    let original_cwd = crate::test_support::CwdGuard::set(cwd.path()).unwrap();
     let previous_uv_python = std::env::var_os("UV_PYTHON");
     let previous_opt_out = std::env::var_os("AMPLIHACK_NO_SYSTEM_PROMPT_APPEND");
     unsafe {
@@ -237,7 +237,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
 
     let result = f(cwd.path());
 
-    restore_cwd(&original_cwd).unwrap();
+    drop(original_cwd);
     restore_home(original_home);
     match previous_uv_python {
         Some(v) => unsafe { std::env::set_var("UV_PYTHON", v) },
@@ -252,7 +252,7 @@ fn with_clean_home<T>(f: impl FnOnce(&Path) -> T) -> T {
 
 fn argv_for(extra: &[String]) -> Vec<String> {
     let binary = claude_binary();
-    build_command_for_dir(&binary, false, false, false, extra, None, false)
+    build_command_for_dir(&binary, false, false, false, extra, None, false, None)
         .get_args()
         .map(|a| a.to_string_lossy().into_owned())
         .collect()
@@ -350,7 +350,7 @@ fn copilot_launches_are_untouched_by_this_feature() {
             path: std::path::PathBuf::from("/usr/bin/copilot"),
             version: Some("1.0.0".to_string()),
         };
-        build_command_for_dir(&binary, false, false, false, &[], None, false)
+        build_command_for_dir(&binary, false, false, false, &[], None, false, None)
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect::<Vec<_>>()

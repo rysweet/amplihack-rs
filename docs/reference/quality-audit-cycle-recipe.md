@@ -258,15 +258,23 @@ gracefully. The step exits non-zero and the recipe halts.
 **cycle_history handling:**
 
 The `cycle_history` context variable can contain large multi-line JSON. To avoid
-shell injection and argument-length limits, the step writes `cycle_history` to
-a temp file via a single-quoted heredoc, then passes it to the subprocess via
-`-c "cycle_history=$(cat "$tmpfile")"`. The temp file is cleaned up via `trap`
-on EXIT.
+shell injection and argument-length limits, the step writes `cycle_history` and
+`task_description` to `mktemp` files with `write_context_value` from
+`amplifier-bundle/tools/recipe_context_value.sh`, and passes the paths with
+`--context-from-file`. The helper reads `RECIPE_VAR_<key>` when the runner
+exported it and `AMPLIHACK_CONTEXT_FILE` when the context was too large for the
+environment, so neither value is rendered into the script or placed in argv,
+and a large history is never passed on as empty. The other values are read
+with `write_context_value <key> -` for the same reason. The files are created under `umask 077` and
+removed by a `trap` on EXIT. See
+[Re-invoke a recipe from a bash step](../howto/pass-large-recipe-context.md#re-invoke-a-recipe-from-a-bash-step).
 
 **Context variable propagation:**
 
-All 13 context variables are forwarded to the subprocess via `-c key=value`
-flags: `task_description`, `repo_path`, `target_path`, `min_cycles`,
+All 13 context variables are forwarded to the subprocess explicitly, because a
+nested `amplihack recipe run` does not inherit the parent's `RECIPE_VAR_*`
+values. `cycle_history` and `task_description` use `--context-from-file`; the
+others use `-c key="$(write_context_value <key> -)"`. The 13 variables are `task_description`, `repo_path`, `target_path`, `min_cycles`,
 `max_cycles`, `validation_threshold`, `severity_threshold`, `module_loc_limit`,
 `fix_all_per_cycle`, `categories`, `output_dir`, `cycle_number`, and
 `cycle_history`.

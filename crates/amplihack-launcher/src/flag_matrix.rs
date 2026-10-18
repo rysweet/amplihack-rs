@@ -72,6 +72,9 @@ pub struct FlagSet {
     pub supports_prompt_tempfile: bool,
     /// Supports task-prompt stdin delivery through a verified CLI contract.
     pub supports_prompt_stdin: bool,
+    /// Accepts one short argument telling the agent to read its task prompt
+    /// from a file (issue #1570). Used for agents with no stdin contract.
+    pub supports_prompt_file_reference: bool,
     /// Verified task-prompt tempfile flag, when supported.
     pub prompt_tempfile_flag: Option<&'static str>,
     /// The env var name set to identify the agent binary in nested sessions.
@@ -97,7 +100,8 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_remote: false,
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
-            supports_prompt_stdin: false,
+            supports_prompt_stdin: true,
+            supports_prompt_file_reference: false,
             prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
@@ -114,22 +118,24 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
             supports_prompt_stdin: false,
+            supports_prompt_file_reference: true,
             prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
         AgentBinary::Codex => FlagSet {
             binary: AgentBinary::Codex,
             supports_append_prompt: false,
-            supports_add_dir: false,
-            supports_model: false,
+            supports_add_dir: true,
+            supports_model: true,
             supports_skip_permissions: false,
-            supports_resume: false,
+            supports_resume: true,
             supports_print: false,
             supports_allow_all_tools: false,
             supports_remote: false,
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
             supports_prompt_stdin: false,
+            supports_prompt_file_reference: false,
             prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
@@ -146,6 +152,7 @@ pub fn flags_for(binary: AgentBinary) -> FlagSet {
             supports_prompt_argv: true,
             supports_prompt_tempfile: false,
             supports_prompt_stdin: false,
+            supports_prompt_file_reference: true,
             prompt_tempfile_flag: None,
             agent_binary_env: "AMPLIHACK_AGENT_BINARY",
         },
@@ -161,6 +168,7 @@ pub fn prompt_delivery_caps_for(
         supports_argv: flags.supports_prompt_argv,
         supports_tempfile: flags.supports_prompt_tempfile,
         supports_stdin: flags.supports_prompt_stdin,
+        supports_file_reference: flags.supports_prompt_file_reference,
         tempfile_flag: flags.prompt_tempfile_flag,
     }
 }
@@ -234,16 +242,17 @@ fn warning_for(
 fn note_for(binary: AgentBinary) -> String {
     match binary {
         AgentBinary::Claude => {
-            "task-prompt tempfile/stdin support pending verified Claude contract".to_string()
+            "large task prompts go to `claude -p` on stdin; no task-prompt file flag".to_string()
         }
         AgentBinary::Copilot => {
-            "no verified Copilot prompt-file or stdin task-prompt contract".to_string()
+            "no prompt-file or stdin contract; large task prompts are passed as a file reference"
+                .to_string()
         }
         AgentBinary::Codex => {
-            "stdin support pending verified Codex command contract".to_string()
+            "interactive: positional argv and terminal stdin; exec: complete stdin via -, resume subcommand".to_string()
         }
         AgentBinary::Amplifier => {
-            "Amplifier is routed through prompt_delivery as argv-only until a long-form contract exists".to_string()
+            "Amplifier has no prompt-file or stdin contract; large task prompts are passed as a positional file reference".to_string()
         }
     }
 }
@@ -264,6 +273,7 @@ pub fn delivery_mode_name(mode: amplihack_utils::prompt_delivery::DeliveryMode) 
         amplihack_utils::prompt_delivery::DeliveryMode::Argv => "argv",
         amplihack_utils::prompt_delivery::DeliveryMode::Tempfile => "tempfile",
         amplihack_utils::prompt_delivery::DeliveryMode::Stdin => "stdin",
+        amplihack_utils::prompt_delivery::DeliveryMode::FileReference => "file-reference",
     }
 }
 
@@ -329,15 +339,68 @@ mod tests {
         assert!(!flags.supports_remote);
     }
 
+    /// Issue #1570: the per-tool channel table in
+    /// docs/reference/large-payload-delivery.md#per-tool-channels.
     #[test]
-    fn prompt_delivery_caps_are_argv_only_until_contracts_are_verified() {
-        for binary in ALL_BINARIES {
-            let caps = prompt_delivery_caps_for(*binary);
-            assert!(caps.supports_argv);
-            assert!(!caps.supports_tempfile);
-            assert!(!caps.supports_stdin);
-            assert_eq!(caps.tempfile_flag, None);
+    fn prompt_delivery_caps_match_verified_cli_contracts() {
+        use amplihack_utils::prompt_delivery::DeliveryCaps;
+
+        let expected = [
+            (
+                AgentBinary::Claude,
+                DeliveryCaps {
+                    supports_argv: true,
+                    supports_tempfile: false,
+                    supports_stdin: true,
+                    supports_file_reference: false,
+                    tempfile_flag: None,
+                },
+            ),
+            (
+                AgentBinary::Copilot,
+                DeliveryCaps {
+                    supports_argv: true,
+                    supports_tempfile: false,
+                    supports_stdin: false,
+                    supports_file_reference: true,
+                    tempfile_flag: None,
+                },
+            ),
+            (
+                AgentBinary::Codex,
+                DeliveryCaps {
+                    supports_argv: true,
+                    supports_tempfile: false,
+                    supports_stdin: false,
+                    supports_file_reference: false,
+                    tempfile_flag: None,
+                },
+            ),
+            (
+                AgentBinary::Amplifier,
+                DeliveryCaps {
+                    supports_argv: true,
+                    supports_tempfile: false,
+                    supports_stdin: false,
+                    supports_file_reference: true,
+                    tempfile_flag: None,
+                },
+            ),
+        ];
+        assert_eq!(expected.len(), ALL_BINARIES.len());
+        for (binary, caps) in expected {
+            assert_eq!(prompt_delivery_caps_for(binary), caps, "{binary} caps");
         }
+    }
+
+    #[test]
+    fn file_reference_mode_is_named_file_reference() {
+        use amplihack_utils::prompt_delivery::DeliveryMode;
+        assert_eq!(
+            delivery_mode_name(DeliveryMode::FileReference),
+            "file-reference"
+        );
+        assert_eq!(delivery_mode_name(DeliveryMode::Stdin), "stdin");
     }
 
     #[test]
@@ -359,13 +422,13 @@ mod tests {
     }
 
     #[test]
-    fn codex_is_minimal_flags() {
+    fn codex_native_capabilities_are_mode_specific() {
         let flags = flags_for(AgentBinary::Codex);
         assert!(!flags.supports_append_prompt);
-        assert!(!flags.supports_add_dir);
-        assert!(!flags.supports_model);
+        assert!(flags.supports_add_dir);
+        assert!(flags.supports_model);
         assert!(!flags.supports_skip_permissions);
-        assert!(!flags.supports_resume);
+        assert!(flags.supports_resume);
         assert!(!flags.supports_print);
         assert!(!flags.supports_allow_all_tools);
         assert!(!flags.supports_remote);

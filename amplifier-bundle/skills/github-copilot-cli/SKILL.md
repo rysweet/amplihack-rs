@@ -62,7 +62,7 @@ export GH_TOKEN=your_token
 | Command              | Purpose                                          |
 | -------------------- | ------------------------------------------------ |
 | `/help`              | Show all commands and shortcuts                  |
-| `/model`             | Select AI model (Claude Sonnet 4.5, GPT-5, etc.) |
+| `/model`             | Select from models available in the current runtime |
 | `/agent`             | Browse and select available agents               |
 | `/skills`            | Manage skills                                    |
 | `/mcp`               | Manage MCP server configuration                  |

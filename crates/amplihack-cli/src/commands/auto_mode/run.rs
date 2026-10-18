@@ -9,7 +9,16 @@ pub fn run_auto_mode(
     raw_args: Vec<String>,
     checkout_repo: Option<String>,
     working_dir: Option<PathBuf>,
+    prompt_file: Option<PathBuf>,
 ) -> Result<()> {
+    // Read the prompt first, so an unusable --prompt-file fails before any
+    // staging or session bookkeeping.
+    let parsed = extract_prompt_args(&raw_args, prompt_file.as_deref())?.with_context(|| {
+        format!(
+            "--auto requires a prompt: {} --auto -- \"prompt\" (or -- -p \"prompt\", or --prompt-file <PATH>)",
+            tool.subcommand()
+        )
+    })?;
     let project_dir =
         working_dir.unwrap_or(env::current_dir().context("failed to resolve current directory")?);
     crate::commands::launch::validate_routed_copilot_workspace(
@@ -30,12 +39,6 @@ pub fn run_auto_mode(
         &nesting,
     )?;
     let result = (|| -> Result<()> {
-        let parsed = extract_prompt_args(&raw_args).with_context(|| {
-            format!(
-                "--auto requires a prompt: {} --auto -- \"prompt\" (or -- -p \"prompt\")",
-                tool.subcommand()
-            )
-        })?;
         if ui {
             bail!("--ui is not yet supported in native Rust auto mode");
         }

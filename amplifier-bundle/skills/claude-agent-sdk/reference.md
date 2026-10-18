@@ -1,5 +1,7 @@
 # Claude Agent SDK - Complete API Reference
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Architecture
 
 ### Agent Loop Internals
@@ -86,11 +88,11 @@ The Agent SDK implements a sophisticated agent loop that handles the complete li
 
 ```python
 # Default: No automatic compaction
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 
 # With context compaction threshold
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     max_context_tokens=100000,  # Start compaction at 100K tokens
     compaction_strategy="summarize"  # or "truncate"
 )
@@ -107,7 +109,7 @@ Subagents create isolated context bubbles:
 
 ```python
 # Parent context: Full conversation with user
-parent = Agent(model="claude-sonnet-4-5-20250929")
+parent = Agent(model="<configured-model>")
 
 # Subagent: Isolated context for specialized task
 with parent.subagent(
@@ -208,7 +210,7 @@ MCP servers expose their tools via the protocol. The SDK automatically:
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[
         MCPClient("npx", ["-y", "@modelcontextprotocol/server-filesystem"]),
         MCPClient("npx", ["-y", "@modelcontextprotocol/server-github"]),
@@ -238,7 +240,7 @@ from claude_agents import Agent
 
 agent = Agent(
     # Required
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
 
     # Authentication (optional if env var set)
     api_key="sk-ant-...",  # pragma: allowlist secret
@@ -270,7 +272,7 @@ agent = Agent(
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
 
     # Model parameters
     temperature=1.0,
@@ -309,7 +311,7 @@ import { Agent } from "@anthropics/agent-sdk";
 
 const agent = new Agent({
   // Required
-  model: "claude-sonnet-4-5-20250929",
+  model: "<configured-model>",
 
   // Authentication (optional if env var set)
   apiKey: process.env.ANTHROPIC_API_KEY,
@@ -350,7 +352,7 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # pragma: allowlist secret
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     api_key="sk-ant-..."  # pragma: allowlist secret
 )
 ```
@@ -362,7 +364,7 @@ import os
 from pathlib import Path
 
 api_key = Path("~/.anthropic/api_key").expanduser().read_text().strip()
-agent = Agent(model="claude-sonnet-4-5-20250929", api_key=api_key)
+agent = Agent(model="<configured-model>", api_key=api_key)
 ```
 
 ### Environment Configuration
@@ -570,7 +572,7 @@ The SDK includes production-ready built-in tools:
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     allowed_tools=["read_file", "write_file", "glob"]
 )
 ```
@@ -661,7 +663,7 @@ fetch_tool = Tool(
 ```python
 # Only specific tools can be used
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[tool1, tool2, tool3, tool4, tool5],
     allowed_tools=["tool1", "tool2"]  # Only these two
 )
@@ -672,7 +674,7 @@ agent = Agent(
 ```python
 # All tools except specified ones
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[tool1, tool2, tool3],
     disallowed_tools=["tool3"]  # All except tool3
 )
@@ -693,7 +695,7 @@ class DynamicPermissionHook(PreToolUseHook):
         return context
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=all_tools,
     hooks=[DynamicPermissionHook()]
 )
@@ -704,14 +706,14 @@ agent = Agent(
 ```python
 # Permissive mode (default): Agent can use allowed tools freely
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     permission_mode="permissive"
 )
 
 # Strict mode: Agent must request permission for each tool use
 # Requires PreToolUseHook to approve/deny
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     permission_mode="strict",
     hooks=[PermissionRequestHook()]
 )
@@ -732,7 +734,7 @@ fs_mcp = MCPClient("npx", ["-y", "@modelcontextprotocol/server-filesystem", "/al
 github_mcp = MCPClient("npx", ["-y", "@modelcontextprotocol/server-github"])
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[fs_mcp, github_mcp]
 )
 
@@ -751,7 +753,7 @@ MCP tools are prefixed with server name to avoid conflicts:
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[fs_mcp, github_mcp],
     allowed_tools=[
         "fs_read_file",
@@ -1022,7 +1024,7 @@ result = agent.run("How do I use agent sdk tools?")
 
 ```python
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     skills=["claude-agent-sdk", "python-expert"]  # Explicitly activate skills
 )
 ```

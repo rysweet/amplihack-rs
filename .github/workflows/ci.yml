@@ -72,6 +72,24 @@ jobs:
             echo "Run: cargo update -p cxx-build --precise 1.0.138"
             exit 1
           fi
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+        with:
+          components: clippy, rustfmt
+      # sccache must be installed before the first cargo invocation in this
+      # job. RUSTC_WRAPPER is set job-wide at the top, so any cargo running
+      # before this step dies with "could not execute process `sccache`". So the
+      # toolchain, sccache and the registry cache come before the first gate that
+      # builds, after only the cxx-build pin check (which needs no toolchain and
+      # fails fast). The recipe gates below build the amplihack binary; when they
+      # ran before this step they had to build it with RUSTC_WRAPPER='' --
+      # uncached, about 17 minutes of this job on every run.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Recipes — no bare python invocations (issue #248)
         run: scripts/check-recipes-no-python.sh
       - name: Repository — no tracked Python assets
@@ -98,6 +116,15 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Migrate skill — a default-guess agent binary is not an instruction (issue #1481)
+        shell: bash
+        run: bash tests/issue_1481_migrate_detect_cli_default_tag.sh
+      - name: Migrate skill — detect_cli agrees with the Rust resolver (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_migrate_detect_cli_parity.sh
+      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off, double-quoted (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_detached_launch_docs_carry_hand_off.sh
       - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
         shell: bash
         run: bash tests/issue_1423_bash4_constructs.sh
@@ -211,6 +238,9 @@ jobs:
       - name: Recipes — leak-proof, self-healing worktree setup (issue #840)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-840-worktree-leak-proof.sh
+      - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
@@ -220,6 +250,9 @@ jobs:
       - name: Recipes — canonical helper resolution ladders (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-runtime-artifact-ladders.sh
+      - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -267,17 +300,6 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
           fi
           shellcheck -s sh -S style claude-plugin/bin/*
-      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
-        with:
-          components: clippy, rustfmt
-      # sccache must be installed before the first cargo invocation in this
-      # job. RUSTC_WRAPPER is set job-wide at the top, so any cargo running
-      # before this step dies with "could not execute process `sccache`". The
-      # proof gate below was the first cargo call and was doing exactly that,
-      # turning Lint & Format red on main and on every PR branched from it.
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
       - name: Proof gate — spawn-accounting decisions (issue #1329)
         run: |
           set -euo pipefail
@@ -310,11 +332,6 @@ jobs:
           echo "${TLA2TOOLS_SHA256}  /tmp/tla2tools.jar" | sha256sum -c -
           TLA2TOOLS_JAR=/tmp/tla2tools.jar ./scripts/check-spec.sh
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          cache-targets: false
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
@@ -338,8 +355,8 @@ jobs:
     # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
     # runs; a lint failure only costs redundant Test compute, not correctness.
     env:
-      # Drop debug info from the workspace's large test-binary surface (60+
-      # integration [[test]] targets plus per-crate unit tests): smaller links
+      # Drop debug info from the workspace's large test-binary surface (the
+      # `integration` binary, per-crate integration and unit tests): smaller links
       # and lower peak disk. The suite asserts behavior, not backtraces (#744).
       CARGO_PROFILE_TEST_DEBUG: "0"
       # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
@@ -380,6 +397,9 @@ jobs:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install pinned recipe runner
+        shell: bash
+        run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
@@ -458,6 +478,29 @@ jobs:
           amplihack --version
           amplihack --help
           amplihack recipe list || true
+      # Issue #1527: outside-in check of the --model that claude, copilot and
+      # codex receive from the binary installed above. Runs the gadugi
+      # scenario's driver directly, as Lint & Format does for the issue-820
+      # scenario; CI does not run gadugi-test itself.
+      - name: Outside-in — dotted Claude model ids (issue #1527)
+        shell: bash
+        run: AMPLIHACK_1527_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1527-model-scenario.sh
+      # Issues #1481 and #1525: the scenario below needs tmux for its detached
+      # launch cases and the pinned recipe runner for its recipe-run cases.
+      - name: Install tmux and the pinned recipe runner (issues #1481, #1525)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
+          tmux -V
+          bash scripts/install-pinned-recipe-runner.sh
+      # Outside-in check of `amplihack agent-binary`, its --shell hand-off, the
+      # agent binary a recipe step is handed, and a real detached tmux launch,
+      # against the binary installed above. REQUIRE_ALL turns any case that
+      # could not run into a failure, so a missing tool cannot pass as green.
+      - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
+        shell: bash
+        run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
       - name: Install — npx shim does not abort install (issue #1480)
         run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
       - name: Install — bootstraps Rust toolchain when cargo is missing

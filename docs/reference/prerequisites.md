@@ -72,7 +72,9 @@ sudo dnf install git
 npm install -g @anthropic-ai/claude-code
 ```
 
-### Windows (WSL2 Recommended)
+### Windows (WSL2)
+
+Native Windows is not supported: no Windows binary is built or released. Use WSL2:
 
 ```bash
 # Install WSL2 first
@@ -80,12 +82,6 @@ wsl --install
 
 # Then follow Ubuntu instructions above inside WSL2
 ```
-
-For native Windows without WSL2, install:
-
-- Rust: [rustup-init.exe](https://rustup.rs/)
-- Node.js: [nodejs.org](https://nodejs.org/) (LTS installer)
-- git: [git-scm.com](https://git-scm.com/download/win)
 
 ## Verification
 

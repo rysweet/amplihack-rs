@@ -68,8 +68,10 @@ steps:
       fi
       IDENT="${PR:-$BRANCH}"
       DIR="${AUTODRIVE_STATE_DIR:-}"
-      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
-      mkdir -p "$DIR"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")" || exit 1
+      # Private whatever the caller's umask: the merge gate refuses state
+      # that anyone else could have written (autodrive_state.sh).
+      autodrive_private_dir "$DIR" || exit 1
 
       # Resume: merged work is never redone, and a phase this workflow already
       # completed is not repeated. Platform state wins over any local record.
@@ -97,15 +99,28 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
+      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
+      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
-      [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
+      # Refuse an empty or unsafe state_dir before anything touches it.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
+      esac
 
-      bash "$LOOP_HELPER" \
+      # Issue #1570: task_description is read with write_context_value
+      # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
+      # loop copies to its state directory. The uppercase TASK_DESCRIPTION
+      # alias is not used: the runner omits it for large values.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      TASK_IN="$(umask 077; mktemp)" || exit 1
+      trap 'rm -f -- "$TASK_IN"' EXIT
+      write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \
         --round-recipe "autodrive-crusty-round" \
         --clean-token "CLEAN" \
@@ -114,8 +129,7 @@ steps:
         --state-dir "$DIR" \
         --context "repo_path=${REPO_PATH:-.}" \
         --context "pr_number=${PR}" \
-        --context "pr_url=${PR_URL:-}" \
-        --context "task_description=${TASK_DESCRIPTION:-}"
+        --context "pr_url=${PR_URL:-}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the crusty loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2
@@ -137,14 +151,17 @@ steps:
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the crusty loop." >&2; exit 0; }
       . "$STATE_HELPER"
-      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
+      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-}" \
+      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
-      [ -n "$DIR" ] || exit 0
-      RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-}" \
+      # Refuse an empty or unsafe state_dir before anything touches it.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-03]" >&2; exit 1 ;;
+      esac
+      RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" \
         | amplihack orch helper extract-json --require-field loop_result \
         | amplihack orch helper extract-field --field loop_result --default '')"
       if [ "$RESULT" != "DONE" ]; then
@@ -153,14 +170,9 @@ steps:
       fi
       # Every concern crusty raised during this loop is now settled: the loop
       # only reports DONE on a round whose own verdict was CLEAN. Record the
-      # ids so a resumed run does not reopen them.
-      for f in "$DIR"/crusty-round-*.json.findings; do
-        [ -f "$f" ] || continue
-        while IFS= read -r id; do
-          [ -n "$id" ] && autodrive_record_resolved "$DIR" "$id"
-        done < "$f"
-      done
-      autodrive_mark_phase_done "$DIR" "crusty-loop"
+      # ids so a resumed run does not reopen them, then the marker. The
+      # re-review between merge rounds records its loop the same way.
+      autodrive_record_crusty_loop_done "$DIR"
       echo "INFO: crusty loop recorded complete for PR #${PR:-<none>}." >&2
     output: "crusty_phase_record"
 

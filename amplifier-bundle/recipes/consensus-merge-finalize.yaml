@@ -270,8 +270,15 @@ steps:
     parse_json: true
     command: |
       # FIX (#469/#311): Use jq --arg with "$ENV_VAR" — safe against injection and word-splitting.
+      # Issue #1570: the task text is unbounded, so it reaches jq by file.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      TASK_FILE=$(umask 077; mktemp) || exit 1
+      trap 'rm -f -- "$TASK_FILE"' EXIT
+      write_context_value task_description "$TASK_FILE" || exit 1
       jq -n \
-        --arg task "$TASK_DESCRIPTION" \
+        --rawfile task "$TASK_FILE" \
         --arg criticality "$CRITICALITY" \
         --arg gate1 "$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED" \
         --arg gate2 "$DESIGN_CONSENSUS_CONSENSUS_ACHIEVED" \

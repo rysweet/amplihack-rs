@@ -1,0 +1,83 @@
+name: issue-1517-crusty-rereview-at-loop-depth
+description: >
+  Regression scenario for amplihack issue #1517 (D4) and the PR #1520 review.
+  A code commit made after the clean crusty round must go back to crusty
+  before the next merge round. That re-review used to be a crusty loop nested
+  inside the merge round, one recipe runner deeper than the loop drivers,
+  where the recursion guard refuses it with exit 79. This scenario (via
+  tests/gadugi/run-autodrive-crusty-rereview-scenario.sh) runs the SHIPPED
+  autodrive_loop.sh with autodrive_crusty_rereview.sh as its before-round step
+  against a real git repository and asserts that the code commit is
+  re-reviewed before the merge round with every round started at the loop's
+  depth, that the re-review labels its crusty round after phase 2's (round-2)
+  and leaves phase 2's crusty-round-1.json, .findings and .log unchanged with
+  every crusty-records.tsv row still resolving, that a description-only
+  commit is not re-reviewed, and, with the real amplihack recursion guard and
+  a sealed ceiling of 3, that depth 4 is refused while depth 2 is admitted.
+version: "1.0"
+config:
+  timeout: 120000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, regression, qa-team, auto-drive, crusty, recursion-guard]
+  priority: high
+  issues: ["1517", "1327"]
+  pr: "1520"
+steps:
+  - name: run-crusty-rereview-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: tests/gadugi/run-autodrive-crusty-rereview-scenario.sh
+    timeout: 110000
+  - name: all-crusty-rereview-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: rereview-at-loop-depth
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "contains:crusty re-review runs before the merge round at the loop's depth"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: rereviewed-before-merge-round
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: code_commit_rereviewed_before_merge_round_at_loop_depth"
+  - name: phase2-crusty-round-kept
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: phase2_crusty_round_kept"
+  - name: rereview-rounds-continue-the-manifest
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: rereview_rounds_continue_the_manifest"
+  - name: description-not-rereviewed
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: description_commit_needs_no_rereview"
+  - name: real-guard-refuses-round-depth
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: round_step_depth_refused_by_real_guard"
+  - name: real-guard-admits-loop-depth
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: loop_depth_admitted_by_real_guard"

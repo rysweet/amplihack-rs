@@ -4,8 +4,10 @@ use super::models::{Workstream, WorkstreamScope};
 use super::process_scope::normalize_path;
 use super::utils::rand_u32;
 use amplihack_types::workflow;
+use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
+use std::ffi::OsString;
 use tracing::warn;
 
 /// Valid delegate commands for subprocess execution.
@@ -124,35 +126,53 @@ pub(super) fn build_resume_context(ws: &Workstream) -> HashMap<String, serde_jso
     ctx
 }
 
-pub(super) fn recipe_launcher_script(recipe: &str) -> String {
-    format!(
+/// `true` when `recipe` is a recipe name or path that is safe to single-quote
+/// into the launcher: non-empty, not option-like, and made only of ASCII
+/// letters, digits and `_ . - / + @ :`.
+fn is_valid_launcher_recipe(recipe: &str) -> bool {
+    !recipe.is_empty()
+        && !recipe.starts_with('-')
+        && recipe
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_.-/+@:".contains(&b))
+}
+
+/// Issue #1570: the launcher hands the workstream context to
+/// `amplihack recipe run` as a file, so no context value ever becomes an
+/// argument and no value is split by the shell.
+pub(super) fn recipe_launcher_script(recipe: &str) -> Result<String> {
+    if !is_valid_launcher_recipe(recipe) {
+        bail!(
+            "invalid recipe name '{}': only ASCII letters, digits and `_ . - / + @ :` \
+             are allowed, and it must not start with '-'",
+            recipe.escape_debug()
+        );
+    }
+    Ok(format!(
         r#"#!/bin/bash
 # Workstream launcher - Rust recipe runner execution.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 CONTEXT_JSON="$REPO_ROOT/context.json"
+RECIPE={recipe}
 
-# Build -c flags from context JSON
-CONTEXT_FLAGS=""
-if command -v jq >/dev/null 2>&1 && [ -f "$CONTEXT_JSON" ]; then
-    while IFS='=' read -r key value; do
-        CONTEXT_FLAGS="$CONTEXT_FLAGS -c $key=$value"
-    done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' "$CONTEXT_JSON")
-fi
-
-echo "Starting recipe: {recipe}"
+echo "Starting recipe: $RECIPE"
 echo "Work dir: $REPO_ROOT"
 
-exec amplihack recipe run {recipe} $CONTEXT_FLAGS --verbose
+exec amplihack recipe run "$RECIPE" --context-file "$CONTEXT_JSON" --verbose
 "#,
-        recipe = recipe,
-    )
+        recipe = sh_single_quote(recipe),
+    ))
 }
 
-pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> String {
+pub(super) fn recipe_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
+    let profile_exports = profile_exports(
+        env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
-    format!(
+    Ok(format!(
         r#"#!/bin/bash
 cd '{work_dir}'
 export AMPLIHACK_TREE_ID='{tree_id}'
@@ -164,7 +184,7 @@ export AMPLIHACK_WORKSTREAM_ISSUE='{issue}'
 export AMPLIHACK_WORKSTREAM_PROGRESS_FILE='{progress_file}'
 export AMPLIHACK_WORKSTREAM_STATE_FILE='{state_file}'
 export AMPLIHACK_WORKTREE_PATH='{worktree_path}'
-exec bash launcher.sh
+{profile_exports}exec bash launcher.sh
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -176,7 +196,8 @@ exec bash launcher.sh
         progress_file = ws.progress_file.display(),
         state_file = ws.state_file.display(),
         worktree_path = ws.worktree_path,
-    )
+        profile_exports = profile_exports,
+    ))
 }
 
 pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
@@ -191,16 +212,20 @@ pub(super) fn classic_task_markdown(ws: &Workstream) -> String {
     )
 }
 
-pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> String {
+pub(super) fn classic_run_script(ws: &Workstream, delegate: &str) -> Result<String> {
+    let profile_exports = profile_exports(
+        env_var_os,
+        crate::commands::profile::substitute_inherited_profile,
+    )?;
     let (tree_id, depth, max_depth, max_sessions) = session_tree_env(ws);
-    format!(
+    Ok(format!(
         r#"#!/bin/bash
 cd '{work_dir}'
 export AMPLIHACK_TREE_ID='{tree_id}'
 export AMPLIHACK_SESSION_DEPTH='{depth}'
 export AMPLIHACK_MAX_DEPTH='{max_depth}'
 export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
-{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
+{profile_exports}{delegate} --subprocess-safe -- -p "@TASK.md Execute task autonomously using the canonical {workflow_selection} via {dev_orchestrator} and {smart_orchestrator}. NO QUESTIONS. Work through all required workflow steps. Create PR when complete."
 "#,
         work_dir = ws.work_dir.display(),
         tree_id = tree_id,
@@ -211,7 +236,57 @@ export AMPLIHACK_MAX_SESSIONS='{max_sessions}'
         workflow_selection = workflow::DEFAULT_WORKFLOW_SELECTION,
         dev_orchestrator = workflow::DEV_ORCHESTRATOR_SKILL,
         smart_orchestrator = workflow::SMART_ORCHESTRATOR_RECIPE_COMMAND,
-    )
+        profile_exports = profile_exports,
+    ))
+}
+
+fn env_var_os(key: &str) -> Option<OsString> {
+    std::env::var_os(key)
+}
+
+/// Issue #1567: `export` lines that pass the pinned Claude login profile to
+/// the nested `amplihack` launch. tmux sessions do not inherit the client's
+/// environment, so the name (and the root, when one was set) must be written
+/// into the script. `CLAUDE_CONFIG_DIR` is not exported: the nested launch
+/// rebuilds and verifies the dir from the name. Values are not validated
+/// here; the nested launch does that and fails closed.
+///
+/// A value that is set but not valid UTF-8 is an error, not a skipped line:
+/// dropping it would make the nested launch fall back to the default root and
+/// possibly to a different account. The error names the variable only.
+///
+/// Issue #1569: `substitute` may replace the inherited profile name with
+/// another profile chosen by auto-switch; it is only asked about a set,
+/// non-empty profile name.
+pub(super) fn profile_exports(
+    get: impl Fn(&str) -> Option<OsString>,
+    substitute: impl Fn(&str) -> Option<String>,
+) -> Result<String> {
+    use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
+    let mut out = String::new();
+    for key in [PROFILE_ENV, ROOT_ENV] {
+        let Some(raw) = get(key).filter(|v| !v.is_empty()) else {
+            continue;
+        };
+        let Some(value) = raw.to_str() else {
+            bail!(
+                "{key} is set but is not valid UTF-8; refusing to start the \
+                 workstream because the nested launch could not keep the parent's \
+                 Claude profile. Unset it or set it to a UTF-8 value"
+            );
+        };
+        let value = match key {
+            PROFILE_ENV => substitute(value).unwrap_or_else(|| value.to_string()),
+            _ => value.to_string(),
+        };
+        out.push_str(&format!("export {key}={}\n", sh_single_quote(&value)));
+    }
+    Ok(out)
+}
+
+/// Quotes `value` for POSIX sh: `'...'`, with each `'` written as `'\''`.
+pub(super) fn sh_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 fn session_tree_env(ws: &Workstream) -> (String, u32, String, String) {

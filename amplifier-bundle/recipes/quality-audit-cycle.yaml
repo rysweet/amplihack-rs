@@ -750,31 +750,45 @@ steps:
     type: "bash"
     condition: "'CONTINUE:' in recurse_decision"
     command: |
-      # Bug #646: Convert from type:recipe to subprocess invocation so results
-      # propagate back. Use heredoc-to-tmpfile for cycle_history (multi-line JSON).
+      # Bug #646: subprocess invocation so results propagate back.
+      # Issue #1570: cycle_history and task_description are written to private
+      # mktemp files by write_context_value (RECIPE_VAR_* or
+      # AMPLIHACK_CONTEXT_FILE) and passed with --context-from-file, so neither
+      # is rendered into this script or placed in argv. The nested run does not
+      # inherit RECIPE_VAR_*, so every key is passed explicitly.
+      set -euo pipefail
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      umask 077
       _HISTORY_TMPFILE=$(mktemp)
-      chmod 600 "$_HISTORY_TMPFILE"
-      trap 'rm -f "$_HISTORY_TMPFILE"' EXIT
-      cat > "$_HISTORY_TMPFILE" <<'__AMPLIHACK_SAFE_HEREDOC_HISTORY_RECURSIVE__'
-      {{cycle_history}}
-      __AMPLIHACK_SAFE_HEREDOC_HISTORY_RECURSIVE__
+      _TASK_TMPFILE=$(mktemp)
+      trap 'rm -f -- "$_HISTORY_TMPFILE" "$_TASK_TMPFILE"' EXIT
+      write_context_value cycle_history "$_HISTORY_TMPFILE"
+      write_context_value task_description "$_TASK_TMPFILE"
+      v() { write_context_value "$1" -; }
+      REPO_V=$(v repo_path); TARGET_V=$(v target_path); MIN_V=$(v min_cycles)
+      MAX_V=$(v max_cycles); VTHRESH_V=$(v validation_threshold)
+      SEV_V=$(v severity_threshold); LOC_V=$(v module_loc_limit)
+      FIXALL_V=$(v fix_all_per_cycle); CAT_V=$(v categories)
+      OUT_V=$(v output_dir); NEXT_V=$(v next_cycle)
 
       # Bug #646: Shell timeout 900s prevents unbounded recursion hangs.
       # Uses shell `timeout` (not YAML timeout: field) for issue #439 compliance.
       timeout 900 amplihack recipe run quality-audit-cycle \
-        -c task_description="{{task_description}}" \
-        -c repo_path="{{repo_path}}" \
-        -c target_path="{{target_path}}" \
-        -c min_cycles="{{min_cycles}}" \
-        -c max_cycles="{{max_cycles}}" \
-        -c validation_threshold="{{validation_threshold}}" \
-        -c severity_threshold="{{severity_threshold}}" \
-        -c module_loc_limit="{{module_loc_limit}}" \
-        -c fix_all_per_cycle="{{fix_all_per_cycle}}" \
-        -c categories="{{categories}}" \
-        -c output_dir="{{output_dir}}" \
-        -c cycle_number="{{next_cycle}}" \
-        -c cycle_history="$(cat "$_HISTORY_TMPFILE")"
+        --context-from-file task_description="$_TASK_TMPFILE" \
+        --context-from-file cycle_history="$_HISTORY_TMPFILE" \
+        -c repo_path="$REPO_V" \
+        -c target_path="$TARGET_V" \
+        -c min_cycles="$MIN_V" \
+        -c max_cycles="$MAX_V" \
+        -c validation_threshold="$VTHRESH_V" \
+        -c severity_threshold="$SEV_V" \
+        -c module_loc_limit="$LOC_V" \
+        -c fix_all_per_cycle="$FIXALL_V" \
+        -c categories="$CAT_V" \
+        -c output_dir="$OUT_V" \
+        -c cycle_number="$NEXT_V"
     output: "final_report"
 
   # ========================================================================

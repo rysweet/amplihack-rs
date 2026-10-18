@@ -1,5 +1,7 @@
 # Claude Agent SDK - Practical Examples
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Basic Agent Examples
 
 ### Minimal Python Agent
@@ -8,7 +10,7 @@
 from claude_agents import Agent
 
 # Simplest possible agent
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 
 # Single task execution
 result = agent.run("What is the capital of France?")
@@ -23,7 +25,7 @@ import { Agent } from "@anthropics/agent-sdk";
 
 // Simplest possible agent
 const agent = new Agent({
-  model: "claude-sonnet-4-5-20250929",
+  model: "<configured-model>",
 });
 
 // Single task execution
@@ -38,7 +40,7 @@ console.log(result.response);
 from claude_agents import Agent
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     system="""You are a Python expert focused on writing clean, idiomatic code.
     Always follow PEP 8 guidelines and suggest best practices.
     When showing code examples, include docstrings and type hints."""
@@ -79,7 +81,7 @@ doc_search_tool = Tool(
 
 # Agent with custom tool
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[doc_search_tool],
     system="You are a helpful Python assistant with access to library documentation."
 )
@@ -110,7 +112,7 @@ github_mcp = MCPClient(
 
 # Agent with multiple MCP servers
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[fs_mcp, github_mcp],
     system="You are a development assistant with access to filesystem and GitHub."
 )
@@ -416,7 +418,7 @@ custom_mcp = MCPClient(
 
 # Agent automatically gets all tools from MCP server
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     mcp_clients=[custom_mcp]
 )
 
@@ -464,7 +466,7 @@ class ComprehensiveLoggingHook(PreToolUseHook, PostToolUseHook):
 
 # Usage
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[...],
     hooks=[ComprehensiveLoggingHook("agent_activity.log")]
 )
@@ -531,7 +533,7 @@ class SecurityValidationHook(PreToolUseHook):
 
 # Usage
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[...],
     hooks=[SecurityValidationHook()]
 )
@@ -597,7 +599,7 @@ class RateLimitHook(PreToolUseHook):
 
 # Usage
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[...],
     hooks=[RateLimitHook(global_limit=100, per_tool_limit=20)]
 )
@@ -657,7 +659,7 @@ class CostTrackingHook(PostToolUseHook):
 # Usage
 cost_tracker = CostTrackingHook()
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[...],
     hooks=[cost_tracker]
 )
@@ -676,7 +678,7 @@ from claude_agents.tools import Tool
 
 # Main coordinator agent
 main_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     system="You are a project coordinator. Delegate specialized tasks to subagents."
 )
 
@@ -716,7 +718,7 @@ from claude_agents import Agent
 
 # Agent with search and analysis tools
 search_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[web_search_tool, read_url_tool, summarize_tool],
     system="""You are a research assistant. When given a research topic:
     1. Search for relevant information
@@ -747,7 +749,7 @@ from claude_agents import Agent
 
 # Agent with automatic context compaction
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     max_context_tokens=50000,  # Start compaction at 50K tokens
     compaction_strategy="smart_summarize"
 )
@@ -765,7 +767,7 @@ from claude_agents import Agent
 
 # Agent with self-verification
 verification_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[calculator_tool, code_exec_tool],
     system="""You are a meticulous assistant. For any calculation or analysis:
     1. Perform the task
@@ -792,7 +794,7 @@ from claude_agents import Agent, AgentError
 
 # Agent with retry logic
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[flaky_api_tool],
     max_turns=15
 )
@@ -828,7 +830,7 @@ from claude_agents.tools import Tool
 def create_data_analyzer():
     """Create specialized data analysis agent."""
     return Agent(
-        model="claude-sonnet-4-5-20250929",
+        model="<configured-model>",
         system="""You are a data analysis expert. You can:
         - Load and explore datasets
         - Perform statistical analysis
@@ -857,7 +859,7 @@ from claude_agents.tools import Tool
 def setup_auto_mode_agent():
     """Create agent for auto mode with all Amplihack tools."""
     return Agent(
-        model="claude-sonnet-4-5-20250929",
+        model="<configured-model>",
         system=load_amplihack_system_prompt(),
         tools=get_amplihack_tools(),
         hooks=[
@@ -894,7 +896,7 @@ amplihack_tools = [
 ]
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=amplihack_tools
 )
 ```
