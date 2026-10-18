@@ -325,6 +325,7 @@ hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotatio
 | `profile root is owned by another user`, `profile root is writable by other users` | Fix the ownership or mode of the profile root (`chmod 700`). |
 | `atomic exchange is not supported here` | The system or filesystem cannot swap two files in one step. Only Linux can. Nothing was moved. |
 | `Claude holds its refresh lock; the swap waits for the next cycle` | A `claude` session is refreshing its token in `~/.claude` or the target profile. The rotator never breaks that lock; it tries again on the next cycle. If it repeats with no `claude` running, see "Stale refresh lock" under Limits. |
+| `~/.claude.json is not a JSON object` | The swap could not record the new account in `~/.claude.json`, so it refuses before anything moves. Repair the file so it holds a JSON object. |
 
 Two situations write an ALERT instead of refusing:
 

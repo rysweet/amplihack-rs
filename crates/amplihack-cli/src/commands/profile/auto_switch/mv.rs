@@ -139,9 +139,22 @@ pub fn take_refresh_lock_at(dir: &Path) -> std::io::Result<u64> {
 }
 
 /// Removes the refresh lock only if it is a directory with inode `ino`, the
-/// one amplihack created. Returns whether it was removed.
+/// one amplihack created. Returns whether it was removed. When it is ours
+/// but cannot be removed, says so: nothing retries, and while it stays
+/// Claude cannot refresh its token in `dir`.
 pub fn release_refresh_lock_at(dir: &Path, ino: u64) -> bool {
     let path = dir.join(REFRESH_LOCK);
-    fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.ino() == ino)
-        && fs::remove_dir(&path).is_ok()
+    if !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.ino() == ino) {
+        return false;
+    }
+    match fs::remove_dir(&path) {
+        Ok(()) => true,
+        Err(e) => {
+            eprintln!(
+                "warning: could not remove {} ({e}); remove it so Claude can refresh its token",
+                path.display()
+            );
+            false
+        }
+    }
 }

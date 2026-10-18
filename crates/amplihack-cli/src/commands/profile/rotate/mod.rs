@@ -54,6 +54,8 @@ mod tests_settings;
 mod tests_source_scan;
 #[cfg(all(test, unix))]
 mod tests_swap;
+#[cfg(all(test, unix))]
+mod tests_swap_refused;
 
 use super::store::ProfileStore;
 

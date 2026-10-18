@@ -2,7 +2,7 @@
 //! inodes are. Only renames; never deletes or opens a login.
 
 use super::ledger::{Phase, RotateJournal, RotateState};
-use super::swap::{LOGINS_MISPLACED, drop_locks, finish, ino_at, show};
+use super::swap::{LOGINS_MISPLACED, describe, drop_locks, finish, ino_at, show};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, move_login};
 use crate::commands::profile::name::ProfileName;
@@ -67,12 +67,12 @@ pub fn recover(
         return Ok(RecoverOutcome::RolledBack { from, to });
     }
     if at_t == Some(j.live_ino) && at_s.is_none() {
-        if move_login(&t, &s, &show).is_err() {
-            return freeze(
-                rs,
-                j,
-                "the outgoing login could not be moved to its profile",
+        if let Err(e) = move_login(&t, &s, &show) {
+            let why = format!(
+                "the outgoing login could not be moved to its profile: {}",
+                describe(e)
             );
+            return freeze(rs, j, &why);
         }
     } else if !(at_s == Some(j.live_ino) && at_t.is_none()) {
         return freeze(rs, j, LOGINS_MISPLACED);

@@ -18,8 +18,13 @@ pub enum Live<'a> {
     Unowned,
 }
 
-fn reading(p: &Probe) -> Reading {
+/// The reading for `p`. A failed probe counts as "swap needed", so its
+/// cause goes to stderr (the daemon's `rotate.err`); the text is fixed and
+/// never Claude's output.
+fn reading(who: &str, p: &Probe) -> Reading {
     if p.error.is_some() || p.report.state == UsageState::Error {
+        let why = p.error.map_or("unreadable /usage output", |e| e.as_str());
+        eprintln!("warning: rotate: probe of {who} failed: {why}");
         return Reading::Failed;
     }
     Reading::from_report(&p.report)
@@ -48,15 +53,18 @@ pub fn measure(
                 Live::Unowned => Ok(run::build_home_command(binary, &args)),
             };
             match cmd {
-                Ok(cmd) => reading(&usage_cmd::probe(cmd, timeout, now, false)),
-                Err(_) => Reading::Failed,
+                Ok(cmd) => reading("~/.claude", &usage_cmd::probe(cmd, timeout, now, false)),
+                Err(e) => {
+                    eprintln!("warning: rotate: probe of ~/.claude failed: {e}");
+                    Reading::Failed
+                }
             }
         });
         let probes = usage_cmd::probe_all(store, binary, candidates, None, timeout, now, false);
         let others = candidates
             .iter()
-            .cloned()
-            .zip(probes.iter().map(reading))
+            .zip(probes.iter())
+            .map(|(n, p)| (n.clone(), reading(n.as_str(), p)))
             .collect();
         // A panic in the probe thread is a bug; report the live login failed.
         (live.join().unwrap_or(Reading::Failed), others)

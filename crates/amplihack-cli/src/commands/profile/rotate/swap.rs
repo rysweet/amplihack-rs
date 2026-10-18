@@ -32,9 +32,10 @@ const NO_EXCHANGE: &str = "atomic exchange is not supported here";
 const ALREADY_LOGGED_IN: &str = "already has a login";
 pub(super) const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
 const REFRESHING: &str = "Claude holds its refresh lock; the swap waits for the next cycle";
+const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 8] = [
+pub const DOCUMENTED: [&str; 9] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -43,6 +44,7 @@ pub const DOCUMENTED: [&str; 8] = [
     ALREADY_LOGGED_IN,
     LOGINS_MISPLACED,
     REFRESHING,
+    HOME_JSON_UNREADABLE,
 ];
 
 /// Where the outgoing login goes.
@@ -57,7 +59,7 @@ fn refused(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateRefused(msg.into())
 }
 
-fn describe(e: MoveError) -> String {
+pub(super) fn describe(e: MoveError) -> String {
     match e {
         MoveError::Unsupported => NO_EXCHANGE.to_string(),
         MoveError::Exists => "the exchange found an unexpected file".to_string(),
@@ -142,6 +144,10 @@ pub fn swap(
         return Err(refused(format!(
             "profile {to} has no account in .claude.json"
         )));
+    }
+    // `s3` could not record the new account; nothing has moved yet.
+    if exists(&home.join(CLAUDE_JSON)) && read_claude_json(home).is_none() {
+        return Err(refused(HOME_JSON_UNREADABLE));
     }
     let dev = |p: &Path| fs::metadata(p).map(|m| m.dev()).ok();
     if dev(&dot).is_none() || dev(&dot) != dev(&to_dir) {
@@ -342,8 +348,10 @@ fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<
     let mut v = match read_claude_json(home) {
         Some((v, _)) => v,
         None if !exists(&home.join(CLAUDE_JSON)) => serde_json::json!({}),
+        // `swap` refuses this before J0; only a file damaged since then,
+        // during recovery, gets here.
         None => {
-            eprintln!("warning: ~/.claude.json is not a JSON object; its account was not updated");
+            eprintln!("warning: {HOME_JSON_UNREADABLE}; its account was not updated");
             return Ok(());
         }
     };

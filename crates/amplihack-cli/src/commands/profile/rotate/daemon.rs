@@ -145,7 +145,15 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         DaemonState::Stopped | DaemonState::Stale => {}
     }
     let pid = spawn(&rs, s)?;
-    write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes())?;
+    if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
+        // Without a pid file `stop` could never reach it. It is our own
+        // unreaped child, so the pid cannot have been reused.
+        if let Ok(pid) = libc::pid_t::try_from(pid) {
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+        return Err(e.into());
+    }
     println!(
         "rotate: started (pid {pid}), checking every {}s",
         s.interval
@@ -257,8 +265,9 @@ fn failure(e: &ProfileError) -> String {
 }
 
 fn log_line(rs: &RotateState, line: &str) {
-    if rs.ensure().is_ok() {
-        Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), line);
+    match rs.ensure() {
+        Ok(()) => Sink::new(open_or_warn(&rs.log, &rs.log1), false, true).emit(now(), line),
+        Err(e) => eprintln!("warning: rotate log unavailable ({e}): {line}"),
     }
 }
 
@@ -285,7 +294,8 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
 fn remove_own_pid(rs: &RotateState) {
     let own = format!("{}\n", std::process::id());
     if matches!(read_bounded_nofollow(&rs.pid, MAX_PID_FILE as u64), Ok(Some((raw, _))) if raw == own.as_bytes())
+        && let Err(e) = std::fs::remove_file(&rs.pid)
     {
-        let _ = std::fs::remove_file(&rs.pid);
+        eprintln!("warning: could not remove {} ({e})", rs.pid.display());
     }
 }
