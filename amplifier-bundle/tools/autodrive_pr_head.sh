@@ -142,22 +142,25 @@ WT_HEAD="$(git -C "$WT" rev-parse HEAD 2>/dev/null)" \
 # does nothing, and resetting onto the remote would throw them away. Every
 # check below is read-only (cat-file, merge-base --is-ancestor).
 MATCH="true"; RELATION="same"; REMEDY=""
+# The remedy is printed for an operator to paste, so the path and branch are
+# shell-quoted: a worktree under ".../my repo/..." must stay one argument.
+Q_WT="$(printf '%q' "$WT")"; Q_REF="$(printf '%q' "$HEAD_REF")"
 if [ "$WT_HEAD" != "$HEAD_SHA" ]; then
   MATCH="false"
   if ! git -C "$WT" cat-file -e "${HEAD_SHA}^{commit}" 2>/dev/null; then
     # The PR head is not in this repository yet, so the worktree cannot be
     # ahead of it: it is behind, or diverged, and a fetch decides which.
     RELATION="unfetched"
-    REMEDY="git -C ${WT} pull --ff-only (if git refuses, the branches have diverged: git -C ${WT} pull --no-rebase, then git -C ${WT} push origin ${HEAD_REF})"
+    REMEDY="git -C ${Q_WT} pull --ff-only (if git refuses, the branches have diverged: git -C ${Q_WT} pull --no-rebase, then git -C ${Q_WT} push origin ${Q_REF})"
   elif git -C "$WT" merge-base --is-ancestor "$WT_HEAD" "$HEAD_SHA" 2>/dev/null; then
     RELATION="behind"
-    REMEDY="git -C ${WT} pull --ff-only"
+    REMEDY="git -C ${Q_WT} pull --ff-only"
   elif git -C "$WT" merge-base --is-ancestor "$HEAD_SHA" "$WT_HEAD" 2>/dev/null; then
     RELATION="ahead"
-    REMEDY="git -C ${WT} push origin ${HEAD_REF} (the worktree has commits the PR does not; pull --ff-only would change nothing)"
+    REMEDY="git -C ${Q_WT} push origin ${Q_REF} (the worktree has commits the PR does not; pull --ff-only would change nothing)"
   else
     RELATION="diverged"
-    REMEDY="git -C ${WT} pull --no-rebase, then git -C ${WT} push origin ${HEAD_REF} (keeps the local commits; a reset onto the remote would discard them)"
+    REMEDY="git -C ${Q_WT} pull --no-rebase, then git -C ${Q_WT} push origin ${Q_REF} (keeps the local commits; a reset onto the remote would discard them)"
   fi
   echo "WARNING: worktree ${WT} is at ${WT_HEAD}, PR #${PR} head is ${HEAD_SHA} (worktree ${RELATION}); run: ${REMEDY}" >&2
 fi

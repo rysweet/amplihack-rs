@@ -610,6 +610,37 @@ case "$(field "$TOOL_OUT" remedy)" in
 esac
 check_eq T13c-readonly "the tool and preflights never moved the worktree" "$SHA_C" "$(git -C "$WT" rev-parse HEAD)"
 
+echo "== T13d: the remedy is a pasteable command when the worktree path has a space =="
+# PR #1588 review round 9: the remedy field is documented as the command to
+# run, so the worktree path in it must survive word-splitting as one argument.
+make_fixture t13d 'my wt'
+SHA_E="$(git -C "$WT" commit-tree "${SHA_B}^{tree}" -p "$SHA_B" -m E)" || harness_error "commit-tree E failed"
+# remedy_argv <cmd> — parse the command part (before any " (" or ", then")
+# as the shell would, one argument per line.
+remedy_argv() { local cmd="${1%% (*}"; cmd="${cmd%%, then*}"; eval "set -- $cmd" && printf '%s\n' "$@"; }
+export STUB_HEAD_OID="$SHA_E"
+TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
+check_eq T13d-behind-rel "worktree_relation" behind "$(field "$TOOL_OUT" worktree_relation)"
+check_eq T13d-behind-argv "the behind remedy parses to git -C <path> pull --ff-only" \
+  "$(printf '%s\n' git -C "$WT" pull --ff-only)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
+preflight merge
+case "$ERR" in
+  *"run: $(field "$TOOL_OUT" remedy)"*) pass T13d-preflight "the preflight prints the quoted remedy" ;;
+  *) fail T13d-preflight "the preflight must print the tool's remedy; got: ${ERR:0:500}" ;;
+esac
+printf 'c\n' > "$WT/file"
+git -C "$WT" commit -q -am C || harness_error "commit C failed"
+export STUB_HEAD_OID="$SHA_B"
+TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
+check_eq T13d-ahead-rel "worktree_relation" ahead "$(field "$TOOL_OUT" worktree_relation)"
+check_eq T13d-ahead-argv "the ahead remedy parses to git -C <path> push origin feat/x" \
+  "$(printf '%s\n' git -C "$WT" push origin feat/x)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
+export STUB_HEAD_OID="$SHA_E"
+TOOL_OUT="$(cd "$WORK" && bash "$TOOL" --pr 7 --branch feat/x --repo "$MAIN" 2>"$WORK/tool.err")"
+check_eq T13d-diverged-rel "worktree_relation" diverged "$(field "$TOOL_OUT" worktree_relation)"
+check_eq T13d-diverged-argv "the diverged remedy's first command parses to git -C <path> pull --no-rebase" \
+  "$(printf '%s\n' git -C "$WT" pull --no-rebase)" "$(remedy_argv "$(field "$TOOL_OUT" remedy)")"
+
 echo "== T12: two worktrees on the PR branch — refuse as ambiguous =="
 make_fixture t12
 git -C "$MAIN" worktree add -q -f "$WORK/t12/wt2" feat/x || harness_error "second worktree add failed"

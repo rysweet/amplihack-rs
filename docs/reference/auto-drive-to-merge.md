@@ -165,7 +165,7 @@ preflight to disagree about.
 | `worktree_head` | `git rev-parse HEAD` in that worktree. |
 | `head_matches` | `"true"` when `worktree_head` equals `head_sha`, else `"false"`. |
 | `worktree_relation` | `same`, `behind`, `ahead`, `diverged` or `unfetched`; see [A worktree that is not at the PR head](#a-worktree-that-is-not-at-the-pr-head). |
-| `remedy` | The command that brings the worktree to the PR head for that relation. Empty when `head_matches` is `"true"`. |
+| `remedy` | The command that brings the worktree to the PR head for that relation, with the worktree path and branch shell-quoted (`printf %q`) so it can be pasted as printed even when the path contains a space. Empty when `head_matches` is `"true"`. |
 
 | Exit | `reason` | Cause |
 | --- | --- | --- |
