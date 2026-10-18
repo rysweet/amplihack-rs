@@ -39,6 +39,11 @@ context:
   pr_url: ""
   task_description: ""
   autodrive_state_dir: ""
+  # #1543: the user's own pr_number (empty when phase 1 built the PR) and
+  # existing_branch. A PR number in pr_number (the build phase's) or in
+  # autodrive_pr_input turns on PR worktree resolution in the preflight.
+  autodrive_pr_input: ""
+  existing_branch: ""
   crusty_loop_result: ""
 
 steps:
@@ -47,7 +52,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      REPO_CD_OK=0; cd "${REPO_PATH:-.}" 2>/dev/null && REPO_CD_OK=1
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
@@ -57,9 +62,21 @@ steps:
       [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $STATE_HELPER; cwd=$(pwd)" >&2; exit 1; }
       . "$STATE_HELPER"
 
+      # #1543: the operator's own pr_number outranks a guess from the launch checkout.
+      # The composer produces autodrive_pr_input as a step output, so it is
+      # read through its RECIPE_VAR_ name as well.
+      PR_INPUT="${AUTODRIVE_PR_INPUT:-${RECIPE_VAR_autodrive_pr_input:-}}"
       PR="${PR_NUMBER:-}"
+      case "$PR" in ''|*[!0-9]*) PR="$PR_INPUT" ;; esac
+      # PR_GIVEN: the PR this loop was handed, either the build phase's PR
+      # (the composer passes build_result.pr as pr_number) or the operator's.
+      # Either names the PR from the platform's side; only the guess below
+      # comes from the launch checkout, and a guess never turns resolution on.
+      PR_GIVEN="$PR"
       [ -n "$PR" ] || PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      [ -z "$PR_INPUT" ] || [ -n "$PR" ] \
+        || { echo "ERROR: pr_number '${PR_INPUT}' is not a pull request number; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
       BRANCH="detached"
       if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || printf 'detached')"
@@ -82,9 +99,62 @@ steps:
       elif autodrive_phase_done "$DIR" "crusty-loop"; then
         RUN="false"; WHY="the crusty loop already completed for this PR in an earlier run"
       fi
+      # #1543: whenever this loop was handed a PR number (the operator's, or
+      # the build phase's on a fresh build, where default-workflow builds in
+      # its own worktree and the launch checkout stays on main), every
+      # evidence step measures the PR head, wherever the run started. Resolve
+      # the PR branch's EXISTING worktree and hand it to the loop; refuse
+      # rather than measure cwd, and refuse a worktree that is not at the PR
+      # head rather than spend rounds that cannot succeed on it.
+      json_esc() { case "$1" in *[[:cntrl:]]*) return 1 ;; esac; local s="${1//\\/\\\\}"; printf '%s' "${s//\"/\\\"}"; }
+      REPO="${REPO_PATH:-.}"
+      if [ "$RUN" = "true" ] && [ -n "$PR_GIVEN" ]; then
+        PR_HEAD="${STATE_HELPER%/autodrive_state.sh}/autodrive_pr_head.sh"
+        [ -f "$PR_HEAD" ] || { echo "ERROR: crusty loop: autodrive_pr_head.sh not found next to $STATE_HELPER; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
+        # The preflight already changed into REPO_PATH, so the resolver gets
+        # $PWD: passing REPO_PATH again would look a relative path up twice
+        # (sub/sub). A REPO_PATH it could not enter is refused, never
+        # replaced by the launch directory.
+        [ "$REPO_CD_OK" = 1 ] || { echo "ERROR: cannot cd to REPO_PATH='${REPO_PATH:-.}'; refusing to enter the crusty loop (#1543)" >&2; exit 1; }
+        RES="$(bash "$PR_HEAD" --pr "$PR" --branch "${EXISTING_BRANCH:-}" --repo "$PWD")"
+        PRC=$?
+        if [ "$PRC" -eq 3 ]; then
+          echo "ERROR: PR #${PR} head branch '${EXISTING_BRANCH:-<headRefName>}' has no single worktree (searched REPO_PATH=${REPO_PATH:-.} and git worktree list); refusing to enter the crusty loop (#1543)" >&2
+          exit 1
+        elif [ "$PRC" -ne 0 ]; then
+          echo "ERROR: PR #${PR} head resolution refused (autodrive_pr_head exit ${PRC}; reason on the line above); refusing to enter the crusty loop (#1543)" >&2
+          exit 1
+        fi
+        REPO="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree | amplihack orch helper extract-field --field worktree --default '')"
+        HEAD_SHA="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_sha | amplihack orch helper extract-field --field head_sha --default '')"
+        if [ -z "$REPO" ] || [ ! -d "$REPO" ] || ! [[ "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]]; then
+          echo "ERROR: autodrive_pr_head returned no usable worktree/head_sha for PR #${PR}; refusing to enter the crusty loop (#1543)" >&2
+          exit 1
+        fi
+        # The resolver reports a stale worktree (head_matches=false) and leaves
+        # the decision here. Entering the loop on it cannot succeed: every
+        # crusty round would refuse with crusty-local-head-not-pr-head, and
+        # the loop would end STUCK after paying for evaluator calls.
+        MATCH="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field head_matches | amplihack orch helper extract-field --field head_matches --default '')"
+        if [ "$MATCH" != "true" ]; then
+          WT_HEAD="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_head | amplihack orch helper extract-field --field worktree_head --default '')"
+          REL="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field worktree_relation | amplihack orch helper extract-field --field worktree_relation --default '')"
+          FIX="$(printf '%s' "$RES" | amplihack orch helper extract-json --require-field remedy | amplihack orch helper extract-field --field remedy --default '')"
+          # The remedy depends on the direction: `pull --ff-only` for a
+          # worktree behind the PR head, `push` for one ahead of it (a round
+          # whose push failed left its commits here), a merge for diverged.
+          echo "ERROR: pr-worktree-stale: worktree ${REPO} is at ${WT_HEAD:-<unreadable>}, PR #${PR} head is ${HEAD_SHA} (worktree ${REL:-not at the PR head}); run: ${FIX:-git -C ${REPO} status, and bring it to the PR head}, then re-run. Refusing to enter the crusty loop: every crusty round would refuse with crusty-local-head-not-pr-head (#1543)" >&2
+          exit 1
+        fi
+        echo "INFO: PR #${PR} head ${HEAD_SHA} resolved to worktree ${REPO}" >&2
+      fi
+      E_DIR="$(json_esc "$DIR")" && E_REPO="$(json_esc "$REPO")" \
+        || { echo "ERROR: state_dir or repo contains control characters; refusing to enter the crusty loop" >&2; exit 1; }
       echo "INFO: crusty-loop preflight: pr=${PR:-<none>} pr_state=${STATE} run=${RUN} (${WHY}) state_dir=${DIR}" >&2
-      printf '{"should_run":"%s","pr":"%s","pr_state":"%s","state_dir":"%s","reason":"%s"}\n' \
-        "$RUN" "$PR" "$STATE" "$DIR" "$WHY"
+      # No head_sha here: each round reads its own `git rev-parse HEAD` in
+      # `repo`, and the check above is what binds `repo` to the PR head.
+      printf '{"should_run":"%s","pr":"%s","pr_state":"%s","state_dir":"%s","repo":"%s","reason":"%s"}\n' \
+        "$RUN" "$PR" "$STATE" "$E_DIR" "$E_REPO" "$WHY"
     output: "crusty_loop_preflight"
 
   - id: "step-02-crusty-loop"
@@ -109,6 +179,25 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
       esac
+      REPO="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+        | amplihack orch helper extract-json --require-field repo \
+        | amplihack orch helper extract-field --field repo --default '')"
+      [ -n "$REPO" ] || { echo "ERROR: preflight produced no repo; refusing to run a loop that would measure the launch checkout (#1543) [autodrive-crusty-loop/step-02]" >&2; exit 1; }
+      # #1543: the loop runs in the preflight's repo (the PR worktree when
+      # pr_number was supplied). Tools stay on the launch side: pin
+      # AMPLIHACK_HOME, when it is unset, to the tree this step took its loop
+      # helper from (the launch checkout or ~/.copilot / ~/.amplihack), so the
+      # rounds' tool ladders never fall through to PR-authored tools. The
+      # round recipe is passed by absolute path from that same tree: by name,
+      # `recipe run --working-dir <PR worktree>` would take the PR branch's own
+      # amplifier-bundle/recipes first and let the PR judge itself (PR #1588).
+      ROUND_RECIPE="$(cd "$(dirname "$LOOP_HELPER")/../recipes" 2>/dev/null && pwd -P)/autodrive-crusty-round.yaml"
+      [ -f "$ROUND_RECIPE" ] || { echo "ERROR: autodrive-recipe-not-found: ${ROUND_RECIPE} (the round recipe must come from the loop driver's install, never the PR worktree) [autodrive-crusty-loop/step-02]" >&2; exit 1; }
+      if [ -z "${AMPLIHACK_HOME:-}" ]; then
+        AMPLIHACK_HOME="$(cd "$(dirname "$LOOP_HELPER")/../.." && pwd -P)" \
+          || { echo "ERROR: cannot resolve the tool root of $LOOP_HELPER; refusing to run the loop" >&2; exit 1; }
+        export AMPLIHACK_HOME
+      fi
 
       # The review dir: the main checkout of repo_path's repository. The
       # read-only judging agents (review, merge-ready assessment, loop-health
@@ -116,8 +205,11 @@ steps:
       # review does not supply their AGENTS.md, CLAUDE.md or .claude hooks.
       # Only each round's commit step works in the worktree. It is not
       # `pwd`: this step has entered repo_path, which may be the PR worktree.
-      REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "${REPO_PATH:-.}")" || { echo "STOP: cannot resolve the review dir from repo_path [autodrive-crusty-loop/step-02] (#1528)" >&2; exit 1; }
-      PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
+      # Both start from the preflight's repo (#1543): the PR head's worktree when
+      # a PR number was supplied, else repo_path. The #1528 resolver then
+      # refuses the main checkout and returns the PR's one linked worktree.
+      REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "$REPO")" || { echo "STOP: cannot resolve the review dir from repo_path [autodrive-crusty-loop/step-02] (#1528)" >&2; exit 1; }
+      PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
       # Issue #1570: task_description is read with write_context_value
       # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
       # loop copies to its state directory. The uppercase TASK_DESCRIPTION
@@ -130,7 +222,7 @@ steps:
       write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "crusty" \
-        --round-recipe "autodrive-crusty-round" \
+        --round-recipe "$ROUND_RECIPE" \
         --clean-token "CLEAN" \
         --verdict-field "crusty_verdict" \
         --repo "$PR_WORKTREE" \

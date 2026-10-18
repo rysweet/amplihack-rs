@@ -16,17 +16,21 @@ task runs more than once.
 
 ## Current implementation
 
-The `default-workflow.yaml` recipe (step `step-03-create-issue`) uses a
-two-guard idempotency pattern implemented entirely in Bash. Both guards
-run before any `gh issue create` call.
+The `workflow-prep.yaml` sub-recipe of `default-workflow` (step
+`step-03-create-issue`) uses a two-guard idempotency pattern implemented
+entirely in Bash. Both guards run before any `gh issue create` call. On
+GitHub, Guard 1 is `select_github_tracking_issue` in
+`amplifier-bundle/tools/workflow_issue_tracking.sh`; the
+[Tracking Issue Selection Reference](workflow-tracking-issue-selection.md)
+(#1595) describes it in full.
 
 ```
 task_description
        │
        ▼
 ┌──────────────┐    match    ┌──────────────┐   exists   ┌──────────┐
-│ Extract #NNN │───────────▶│ gh issue view │──────────▶│ Reuse    │
-│ from text    │            │ $REF_ISSUE    │           │ (exit 0) │
+│ issue_number │───────────▶│ gh issue view │──────────▶│ Reuse    │
+│ or task #NNN │            │ / gh api      │  (open)   │ (exit 0) │
 └──────────────┘            └──────────────┘           └──────────┘
        │ no match                   │ not found
        ▼                            ▼
@@ -44,27 +48,29 @@ task_description
 
 ## Guard 1: Reference extraction
 
-Extracts an issue number from the `task_description` context variable using
-a Bash regex match on `#([0-9]+)`.
+On a GitHub host, step-03 calls `select_github_tracking_issue`:
 
-```bash
-# From default-workflow.yaml, step-03-create-issue
-if [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then
-    REF_ISSUE_NUM="${BASH_REMATCH[1]}"
-fi
-```
+1. An explicit `issue_number` context value wins. It is checked with
+   `gh issue view N --json url`; if that lookup fails, step-03 uses local
+   tracking for that number instead of searching or creating.
+2. Otherwise up to five `#N` references in the task text are tried, marked
+   ones (`Issue #N`, `Fixes #N`, ...) first. `PR #N`, `owner/repo#N` and
+   `AB#N` are never tried. Each is checked with
+   `gh api repos/{owner}/{repo}/issues/N` and reused only if it is an open
+   issue, not a pull request, in this repository.
 
-If a number is extracted, the guard verifies the issue exists via
-`gh issue view "$REF_ISSUE_NUM"`. When the issue exists, its URL is printed
-and the step exits with code 0, skipping creation entirely.
+When an issue is accepted, its URL is printed and the step exits with
+code 0, skipping creation entirely. Every number is checked against
+`^[0-9]+$` before it reaches `gh`.
 
-**Defense-in-depth**: A secondary check rejects non-numeric values before
-interpolating into the `gh` command.
+On Azure DevOps, step-03 still takes the first `AB#N`, otherwise the first
+`#N`, into `REF_ISSUE_NUM` and reuses that work item if
+`az boards work-item show` finds it.
 
 ## Guard 2: Title search
 
-When Guard 1 does not match (no `#NNN` in the task description) or the
-referenced issue does not exist, Guard 2 searches open issues by title:
+When Guard 1 selects nothing (no explicit number and no task-text
+reference accepted as an open issue), Guard 2 searches open issues by title:
 
 ```bash
 SEARCH_QUERY="${ISSUE_TITLE:0:100}"

@@ -383,3 +383,16 @@ autodrive_pr_state() {
     printf 'UNKNOWN\n'
   fi
 }
+
+# autodrive_launch_recipe <name|path> -> the recipe in the tree beside this file
+# (#1543). The loops run with --working-dir in the PR worktree, whose own
+# recipes `recipe run <name>` would find first: the PR would judge itself.
+autodrive_launch_recipe() {
+  local n="${1##*/}" root f
+  n="${n%.yaml}"
+  case "$1" in /*) ;; ''|.*|*/*) return 1 ;; esac
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../recipes" 2>/dev/null && pwd -P)" || return 1
+  f="$root/$n.yaml"; [ -n "$n" ] && [ -f "$f" ] || return 1
+  case "$1" in /*) [ "$(cd "$(dirname "$1")" 2>/dev/null && pwd -P)/${1##*/}" = "$f" ] || return 1 ;; esac
+  printf '%s\n' "$f"
+}

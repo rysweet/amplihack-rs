@@ -1292,7 +1292,9 @@ fn loop_step_02s_pass_the_resolved_pr_worktree_to_repo_and_repo_path() {
         let resolve_line = logical_line_at(&command, resolve_at);
         for required in [
             "PR_WORKTREE=\"$(bash \"$(dirname \"$LOOP_HELPER\")/autodrive_pr_worktree.sh\" resolve",
-            "--repo \"${REPO_PATH:-.}\"",
+            // The preflight's `repo` (#1543): the PR head's worktree when a
+            // PR number was supplied, else repo_path.
+            "--repo \"$REPO\"",
             "--pr \"$PR\"",
             "|| {",
             "exit 1",
@@ -1419,6 +1421,17 @@ fn run_loop_step_02_from(
         tools.join("recipe_context_value.sh"),
     )
     .expect("copy recipe_context_value.sh");
+    // Step-02 passes the launch tree's round recipe by absolute path and
+    // refuses when it is missing there (#1543).
+    let recipes = root.join("ah/amplifier-bundle/recipes");
+    fs::create_dir_all(&recipes).expect("mkdir recipes");
+    for round in ["autodrive-crusty-round", "autodrive-merge-round"] {
+        fs::write(
+            recipes.join(format!("{round}.yaml")),
+            format!("name: {round}\n"),
+        )
+        .expect("write round recipe");
+    }
     // The merge loop's before-round step (#1517); it only has to exist here.
     write_exec(
         &tools.join("autodrive_crusty_rereview.sh"),
@@ -1438,6 +1451,7 @@ fn run_loop_step_02_from(
            'orch helper extract-json'*) cat ;;\n\
            *'extract-field --field state_dir'*) printf '%s' /stub/state ;;\n\
            *'extract-field --field pr'*) printf '%s' 7 ;;\n\
+           *'extract-field --field repo'*) printf '%s' \"$STUB_PRE_REPO\" ;;\n\
            *) printf 'stub amplihack: unexpected: %s\\n' \"$*\" >&2; exit 97 ;;\n\
          esac\n",
     );
@@ -1454,7 +1468,13 @@ fn run_loop_step_02_from(
         .env("HOME", &home)
         .env("AMPLIHACK_HOME", root.join("ah"))
         .env("REPO_PATH", repo_path)
-        .env(preflight_var, r#"{"state_dir":"/stub/state","pr":"7"}"#)
+        // The preflight's `repo` (#1543) is repo_path: these runs have no
+        // operator PR number, so #1543's own resolution did not run.
+        .env("STUB_PRE_REPO", repo_path)
+        .env(
+            preflight_var,
+            r#"{"state_dir":"/stub/state","pr":"7","repo":"<stub>"}"#,
+        )
         .env("RECIPE_VAR_task_description", "drive PR 7 to merge")
         .env("STUB_LOGS", &logs)
         .env("STUB_RESOLVE_FAIL", if resolve_fails { "1" } else { "0" })

@@ -100,6 +100,8 @@ GH
 cat > "$WORK/bin/amplihack" <<'STUB'
 #!/usr/bin/env bash
 [ "${1:-}" = orch ] && exec "$REAL_AMPLIHACK" "$@"
+# Recipes arrive as absolute launch-side paths (#1543); key on the name.
+[ "${1:-}" = recipe ] && [ $# -ge 3 ] && set -- "$1" "$2" "$(basename -- "$3" .yaml)" "${@:4}"
 [ "${1:-} ${2:-}" = "recipe show" ] && exit 0
 if [ "${1:-} ${2:-}" = "recipe run" ]; then
   # The loop runs each recipe by its launch-side path (#1528); match the name.

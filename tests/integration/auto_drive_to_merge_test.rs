@@ -8,7 +8,7 @@
 //!
 //! - Neither loop is terminated by a numeric iteration cap. Not a `max_rounds`,
 //!   not a "backstop" integer. Both loops delegate to the `loop-health-evaluator`
-//!   contract (issue #1337, PR #1347) and it is invoked by name, never copied.
+//!   contract (issue #1337, PR #1347), taken from the driver's own tree, never copied.
 //! - Every verdict is structured and read through the canonical
 //!   `extract-json | extract-field --default …` pipeline, and every fail-safe
 //!   default is the BLOCKING token: `CONCERNS`, `NOT_MERGE_READY`, `STUCK`.
@@ -47,13 +47,14 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 11] = [
+const AUTODRIVE_TOOLS: [&str; 12] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
     "autodrive_platform_facts.sh",
+    "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_round_evidence.sh",
     "autodrive_state.sh",
@@ -4648,6 +4649,20 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
     );
 }
 
+/// What auto-drive's own qa-team step hands this suite: the recipe runner
+/// exports step outputs as AUTODRIVE_* and RECIPE_VAR_* names. PR #1588's
+/// round-1 QA failed MERGEREADY-no-round-tool because an inherited
+/// AUTODRIVE_TOOLS_DIR outranked the case's own tools dir. Injecting it on
+/// every run proves the shell tests start from none of the caller's context.
+fn inherited_autodrive_context(root: &Path) -> Vec<(String, String)> {
+    let tools = root.join("amplifier-bundle/tools").display().to_string();
+    vec![
+        ("AUTODRIVE_TOOLS_DIR".to_string(), tools.clone()),
+        ("RECIPE_VAR_autodrive_tools_dir".to_string(), tools),
+        ("AUTODRIVE_ROUND_LABEL".to_string(), "round-1".to_string()),
+    ]
+}
+
 /// Runs the executable contract test — the STUCK path, the malformed-verdict
 /// path, and the forbidden-flag guard, exercised against the real extracted
 /// step bodies and the real tools.
@@ -4672,6 +4687,7 @@ fn auto_drive_contract_shell_test_passes() {
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
+        .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the auto-drive contract shell test");
 
@@ -4811,6 +4827,286 @@ fn shell_test_without_cargo_target_dir_uses_the_binary_on_path() {
             Some(want.as_str()),
             "CARGO_TARGET_DIR={cargo_target_dir:?}: the first stdout line must name the binary on \
              PATH (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+    }
+}
+
+// ── #1543: evidence measures the PR head, the report reports the merge ───────
+
+/// The behavioural regression test for #1543 — a run started from the main
+/// checkout records the PR head and runs qa-team in the PR worktree; a run
+/// that skipped build and crusty and merged reports MERGED with the PR. It
+/// needs the `orch helper` pipeline, so it runs here with the amplihack under
+/// test first on PATH rather than as a bare ci.yml step.
+#[test]
+fn issue_1543_pr_head_worktree_shell_test_passes() {
+    let root = workspace_root();
+    let script = root.join("amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh");
+    assert!(script.is_file(), "missing {}", script.display());
+
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
+    let bin_dir = bin.parent().expect("binary parent dir");
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{}:{p}", bin_dir.display()),
+        Err(_) => bin_dir.display().to_string(),
+    };
+
+    let out = Command::new("bash")
+        .arg(&script)
+        .current_dir(&root)
+        .env("PATH", path)
+        .envs(inherited_autodrive_context(&root))
+        .output()
+        .expect("run the #1543 shell test");
+
+    assert!(
+        out.status.success(),
+        "test-issue-1543-pr-head-worktree.sh failed ({:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+}
+
+/// Drop double- and single-quoted segments so message text ("refusing to
+/// enter the merge loop", "run `git pull --ff-only`") is not read as a verb.
+fn unquoted(line: &str) -> String {
+    let mut out = String::new();
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for c in line.chars() {
+        match quote {
+            Some(q) => {
+                if escaped {
+                    escaped = false;
+                } else if c == '\\' && q == '"' {
+                    escaped = true;
+                } else if c == q {
+                    quote = None;
+                }
+            }
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None => out.push(c),
+        }
+    }
+    out
+}
+
+#[test]
+fn the_pr_head_resolver_is_read_only() {
+    let path = tool_path("autodrive_pr_head.sh");
+    assert!(path.is_file(), "missing tool {}", path.display());
+    let text = read(&path);
+    const GIT_VERBS: [&str; 14] = [
+        "fetch",
+        "pull",
+        "checkout",
+        "switch",
+        "config",
+        "update-ref",
+        "reset",
+        "stash",
+        "commit",
+        "push",
+        "merge",
+        "rebase",
+        "clone",
+        "init",
+    ];
+    const WORKTREE_VERBS: [&str; 6] = ["add", "prune", "remove", "repair", "move", "lock"];
+    const GH_VERBS: [&str; 6] = ["merge", "edit", "close", "comment", "review", "api"];
+    let mut offenders = Vec::new();
+    for (n, raw) in text.lines().enumerate() {
+        let line = raw.trim_start();
+        if line.starts_with('#') {
+            continue;
+        }
+        let code = unquoted(line);
+        let words: Vec<&str> = code
+            .split(|c: char| c.is_whitespace() || matches!(c, ';' | '|' | '&' | '(' | ')' | '$'))
+            .filter(|w| !w.is_empty())
+            .collect();
+        for (i, w) in words.iter().enumerate() {
+            let rest = &words[i + 1..];
+            let hit = match *w {
+                "git" => {
+                    rest.iter().any(|r| GIT_VERBS.contains(r))
+                        || rest
+                            .windows(2)
+                            .any(|p| p[0] == "worktree" && WORKTREE_VERBS.contains(&p[1]))
+                }
+                "gh" => rest.iter().any(|r| GH_VERBS.contains(r)),
+                _ => false,
+            };
+            if hit {
+                offenders.push(format!("{}: {}", n + 1, raw.trim()));
+                break;
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "autodrive_pr_head.sh must never create, fetch into, check out, \
+         commit in, push from or merge anything — it only measures:\n{}",
+        offenders.join("\n")
+    );
+    assert!(
+        text.contains("pr view") && text.contains("headRefOid") && text.contains("headRefName"),
+        "the resolver must read the PR head from the platform (gh pr view headRefOid/headRefName)"
+    );
+    assert!(
+        text.contains("worktree list --porcelain"),
+        "the resolver must find the PR branch's EXISTING worktree via git worktree list --porcelain"
+    );
+}
+
+#[test]
+fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
+    for (loop_name, preflight, run) in [
+        (
+            "autodrive-crusty-loop",
+            "step-01-crusty-loop-preflight",
+            "step-02-crusty-loop",
+        ),
+        (
+            "autodrive-merge-loop",
+            "step-01-merge-loop-preflight",
+            "step-02-merge-ready-loop",
+        ),
+    ] {
+        let recipe = recipe_yaml(loop_name);
+        let ctx = recipe
+            .get("context")
+            .and_then(Value::as_mapping)
+            .unwrap_or_else(|| panic!("{loop_name} declares no context"));
+        for key in ["autodrive_pr_input", "existing_branch"] {
+            assert_eq!(
+                ctx.get(Value::from(key)).and_then(Value::as_str),
+                Some(""),
+                "{loop_name} must declare `{key}` defaulting to \"\" so resolution \
+                 only runs when the loop was handed a PR number"
+            );
+        }
+        let pf = field(step(&recipe, preflight), "command");
+        assert!(
+            pf.contains("autodrive_pr_head.sh") && pf.contains("AUTODRIVE_PR_INPUT"),
+            "{loop_name} {preflight} must resolve the PR head when pr_number was supplied"
+        );
+        assert!(
+            pf.contains("[ -n \"$PR_GIVEN\" ]") && !pf.contains("[ -n \"$PR_INPUT\" ]; then"),
+            "{loop_name} {preflight} must resolve on the build phase's PR as well as \
+             the operator's, or a fresh build from the main checkout measures main \
+             (PR #1588 review round 4)"
+        );
+        assert!(
+            pf.contains("head_matches") && pf.contains("pr-worktree-stale"),
+            "{loop_name} {preflight} must refuse a worktree that is not at the PR \
+             head by name, not enter a loop whose every round would be refused"
+        );
+        assert!(
+            pf.contains("\"repo\"") && !pf.contains("\"head_sha\""),
+            "{loop_name} {preflight} must emit the resolved repo, and no head_sha \
+             that nothing downstream reads"
+        );
+        let body = field(step(&recipe, run), "command");
+        assert!(
+            !body.contains("--repo \"${REPO_PATH:-.}\"")
+                && !body.contains("repo_path=${REPO_PATH:-.}"),
+            "{loop_name} {run} must hand the loop the preflight's repo, not the \
+             launch directory — that is how every evidence step ended up \
+             measuring the main checkout (#1543)"
+        );
+    }
+}
+
+#[test]
+fn the_composer_tells_both_loops_whether_pr_number_was_supplied() {
+    let recipe = recipe_yaml("auto-drive-to-merge");
+    // crusty round-1 on PR #1588: the runner copies a sub-recipe's whole
+    // context back into the parent, and the crusty loop is given
+    // pr_number={{build_result.pr}}, so `{{pr_number}}` read after that phase
+    // is the build phase's PR. The operator's value is captured once, before
+    // the first sub-recipe, and forwarded under a name no sub-recipe changes.
+    let seed = step(&recipe, "autodrive-pr-input");
+    assert_eq!(seed.get("type").and_then(Value::as_str), Some("bash"));
+    assert_eq!(
+        seed.get("output").and_then(Value::as_str),
+        Some("autodrive_pr_input")
+    );
+    assert!(
+        field(seed, "command").contains("RECIPE_VAR_pr_number"),
+        "autodrive-pr-input must print the operator's pr_number"
+    );
+    let seed_at = step_index(&recipe, "autodrive-pr-input");
+    for (i, s) in steps(&recipe).iter().enumerate() {
+        if s.get("type").and_then(Value::as_str) == Some("recipe") {
+            assert!(
+                seed_at < i,
+                "autodrive-pr-input must run before every sub-recipe step"
+            );
+        }
+    }
+    for id in ["autodrive-crusty-loop", "autodrive-merge-loop"] {
+        let ctx = step(&recipe, id)
+            .get("context")
+            .and_then(Value::as_mapping)
+            .unwrap_or_else(|| panic!("{id} forwards no context"));
+        assert_eq!(
+            ctx.get(Value::from("autodrive_pr_input"))
+                .and_then(Value::as_str),
+            Some("{{autodrive_pr_input}}"),
+            "{id} must forward the operator's pr_number captured by \
+             autodrive-pr-input, not `{{pr_number}}`, which the crusty loop \
+             overwrites with build_result.pr"
+        );
+        assert_eq!(
+            ctx.get(Value::from("existing_branch"))
+                .and_then(Value::as_str),
+            Some("{{existing_branch}}"),
+            "{id} must forward existing_branch"
+        );
+    }
+}
+
+/// The merge gate stays on the launch side, bound to the platform's
+/// headRefOid. Resolver output must never flow into the merge decision.
+#[test]
+fn the_merge_gate_never_receives_resolver_output() {
+    let recipe = recipe_yaml("autodrive-merge-loop");
+    let gate = field(step(&recipe, "step-03-merge-gate"), "command");
+    assert!(
+        gate.contains("--repo \"${REPO_PATH:-.}\""),
+        "the merge gate's --repo stays the launch REPO_PATH"
+    );
+    for leaked in [
+        "g repo",
+        "g head_sha",
+        "head_matches",
+        "worktree_head",
+        "autodrive_pr_head",
+    ] {
+        assert!(
+            !gate.contains(leaked),
+            "the merge gate must not read resolver output (`{leaked}`); it \
+             binds to gh's headRefOid on its own"
+        );
+    }
+}
+
+#[test]
+fn the_report_reads_phase_outputs_through_recipe_var_fallbacks() {
+    let recipe = recipe_yaml("auto-drive-to-merge");
+    let body = field(step(&recipe, "autodrive-report"), "command");
+    for spelling in [
+        "${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}",
+        "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}",
+        "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}",
+        "RECIPE_VAR_pr_number",
+    ] {
+        assert!(
+            body.contains(spelling),
+            "autodrive-report must read `{spelling}` — a run whose earlier \
+             phases were skipped otherwise reports NOT_MERGED with an empty pr (#1543)"
         );
     }
 }

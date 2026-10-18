@@ -53,6 +53,17 @@
 
 set -uo pipefail
 
+# This test runs inside auto-drive's own qa-team step, whose recipe runner
+# exports every step output as AUTODRIVE_*/upper-case and RECIPE_VAR_* names.
+# The step bodies read `${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir}}`,
+# so an inherited AUTODRIVE_TOOLS_DIR overrode the per-case tools dir and
+# MERGEREADY-no-round-tool found the real tool (PR #1588 round-1 QA). Start
+# from none of the caller's run context; every case sets what it needs.
+while IFS= read -r _inherited; do
+  case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
+done < <(compgen -e)
+unset _inherited
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 RECIPES="${REPO_ROOT}/amplifier-bundle/recipes"
@@ -65,8 +76,8 @@ AUTODRIVE_RECIPES=(
   autodrive-merge-loop
 )
 AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
-  autodrive_platform_facts.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh autodrive_trust.sh
-  autodrive_worktree_guard.sh)
+  autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
+  autodrive_trust.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
 # the round reads the directory from its output. A scalar output reaches bash
 # as RECIPE_VAR_<output> and as the upper-case name (recipe-runner 0.3.8,
@@ -140,6 +151,9 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 cat > "${STUB_BIN}/amplihack" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
+# The loop passes recipes by absolute path from its own tree (#1528, #1543).
+# `show` and `run` below key on the recipe's basename and record the path as
+# passed, so a test can still see which copy would have been loaded.
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "show" ]; then
   echo "${3:-}" >> "${STUB_SHOW_CALLS:-/dev/null}"
   case "$(basename "${3:-}" .yaml)" in
@@ -680,8 +694,9 @@ else
   fail "1528-helper-inside-reviewed-tree" "rc=${rc}; calls: $(cat "${LOOP_DIR}.calls" 2>/dev/null); err: $(cat "${LOOP_DIR}.err")"
 fi
 
-# A recipe given as a path, rather than a bare name, is refused: the loop is
-# the only thing that chooses where its recipes come from.
+# A round recipe given as a path other than the launch-side copy (here, the
+# PR worktree's own) is refused: the loop is the only thing that chooses
+# where its recipes come from.
 LOOP_DIR="${WORK}/loop-pathname"; mkdir -p "${LOOP_DIR}"
 export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
@@ -691,7 +706,7 @@ PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] && grep -qF '"loop_result":"UNTRUSTED_RECIPE"' "${LOOP_DIR}.out"; then
-  pass "1528-round-recipe-by-path-refused" "a round recipe given by path is refused before any round runs"
+  pass "1528-round-recipe-by-path-refused" "a round recipe given by a path outside the launch-side bundle is refused before any round runs"
 else
   fail "1528-round-recipe-by-path-refused" "rc=${rc}; calls: $(cat "${LOOP_DIR}.calls" 2>/dev/null)"
 fi
@@ -892,8 +907,8 @@ echo "$*" >> "${GH_CALLS:-/dev/null}"
 JQ=""; prev=""; for a in "$@"; do [ "$prev" = "--jq" ] && JQ="$a"; prev="$a"; done
 pv() {
   local j
-  j="$(printf '{"number":42,"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"%s","baseRefName":"%s","url":"u"}' \
-    "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_BASE-main}")"
+  j="$(printf '{"number":42,"state":"OPEN","mergedAt":null,"isDraft":false,"mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","reviewDecision":"APPROVED","headRefOid":"%s","headRefName":"%s","baseRefName":"%s","url":"u"}' \
+    "${GH_HEAD:-abc123def4567890abc123def4567890abc12345}" "${GH_HEAD_REF:-}" "${GH_BASE-main}")"
   if [ -n "$JQ" ]; then printf '%s' "$j" | jq -r "$JQ"; else printf '%s\n' "$j"; fi
 }
 case "${GH_MODE:-}" in
@@ -4535,14 +4550,23 @@ for f in phases.tsv resolved-concerns.txt; do
 done
 
 # 13c. Each phase's preflight creates the state dir private, and refuses a
-# symlinked AUTODRIVE_STATE_DIR by name.
+# symlinked AUTODRIVE_STATE_DIR by name. The loops are handed PR #42, so their
+# preflights resolve its worktree (#1543). FX is detached by now, so this
+# section uses its own checkout on the stub PR's head branch, at its head.
+PF_FX="${WORK_PHYS}/umask-pf-fx"
+git init -q -b feat/pf "${PF_FX}" \
+  && git -C "${PF_FX}" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m pf \
+  || { echo "HARNESS-ERROR: 13c: cannot create the preflight checkout" >&2; exit 2; }
 PF_ENV=(HOME="${TEST_HOME}" PATH="${STUB_BIN}:/usr/bin:/bin" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42
   GH_MODE=green GH_HEAD="${CR_SHA2}" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 REAL_AMPLIHACK="${REAL_AMPLIHACK}")
+# env applies assignments in order, so these override PF_ENV's for 13c only;
+# the end-to-end section below keeps PF_ENV as it is.
+PF_PREFLIGHT_ENV=("${PF_ENV[@]}" REPO_PATH="${PF_FX}" GH_HEAD="$(git -C "${PF_FX}" rev-parse HEAD)" GH_HEAD_REF=feat/pf)
 for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-01-crusty-loop-preflight \
             autodrive-merge-loop:step-01-merge-loop-preflight; do
   r="${spec%%:*}"; body="$(extract_step_command "${RECIPES}/${r}.yaml" "${spec#*:}")"
   root="${WORK_PHYS}/umask-pf-${r}"
-  out="$(env -i "${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${root}" bash -c "umask 0002; ${body}" 2>"${root}.err")"; rc=$?
+  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" AMPLIHACK_STATE_DIR="${root}" bash -c "umask 0002; ${body}" 2>"${root}.err")"; rc=$?
   dir="$(printf '%s' "${out}" | jq -r '.state_dir // empty' 2>/dev/null)"
   if [ "${rc}" -eq 0 ] && [ -n "${dir}" ] && [ -d "${dir}" ] && [ "${dir#"${root}"/}" != "${dir}" ] \
      && [ -z "$(untrusted_in "${root}")" ]; then
@@ -4550,7 +4574,7 @@ for spec in autodrive-build:step-01-build-preflight autodrive-crusty-loop:step-0
   else
     fail "PRIVATE-PREFLIGHT-${r}" "rc=${rc} dir='${dir}' untrusted: $(untrusted_in "${root}" | tr '\n' ' ') err=$(tr '\n' ' ' < "${root}.err")"
   fi
-  out="$(env -i "${PF_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
+  out="$(env -i "${PF_PREFLIGHT_ENV[@]}" AUTODRIVE_STATE_DIR="${PD}/link" bash -c "umask 0002; ${body}" 2>"${root}.link.err")"; rc=$?
   if [ "${rc}" -ne 0 ] && [ -z "${out}" ] && grep -qF 'ERROR: state-dir-not-private:' "${root}.link.err"; then
     pass "PRIVATE-PREFLIGHT-${r}-symlink" "${r} stops by name on a symlinked AUTODRIVE_STATE_DIR"
   else
@@ -4566,9 +4590,15 @@ done
 # The qa evidence is written the way autodrive-merge-evidence.yaml writes it,
 # under umask 077 (that step's own umask is section 6b, case 29).
 fx_head "${CR_SHA2}"
+# The crusty preflight is handed PR #42 and resolves its worktree (#1543),
+# which needs the PR's head branch checked out. Point FX's HEAD at a branch
+# at the same commit (refs only, as fx_head does; the tree is untouched) and
+# detach it again after this section.
+git -C "$FX" update-ref refs/heads/pr-42 "${CR_SHA2}" && git -C "$FX" symbolic-ref HEAD refs/heads/pr-42 \
+  || { echo "HARNESS-ERROR: cannot put FX on the PR #42 branch" >&2; exit 2; }
 E2E="${WORK_PHYS}/umask-e2e"; mkdir -p "${E2E}.tmp"; chmod 0700 "${E2E}.tmp"
 printf 'drive the PR to merge' > "${E2E}.task"
-E2E_ENV=("${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
+E2E_ENV=("${PF_ENV[@]}" GH_HEAD_REF=pr-42 AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umask" STUB_CALLS=/dev/null STUB_SHOW_CALLS=/dev/null
   STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 STUB_HEALTH_RESOLVES=0 AMPLIHACK_BIN="${STUB_BIN}/amplihack")
 e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
   local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5
@@ -4623,6 +4653,7 @@ else
   fail "PRIVATE-E2E-gate" "rc=${E2E_GATE_RC} $(cat "${E2E}.gate.out") | $(grep -F 'BLOCKER' "${E2E}.gate.err" | tr '\n' ' ')"
 fi
 umask "${SAVED_UMASK}"
+fx_head "${CR_SHA2}"; git -C "$FX" update-ref -d refs/heads/pr-42
 
 # ---------------------------------------------------------------------------
 # 14. Issue #1511 — step outputs are read through RECIPE_VAR_<output>.
@@ -4734,6 +4765,12 @@ cp "${TOOLS}/recipe_context_value.sh" "${FAKE_TOOLS}/recipe_context_value.sh"
 # merge-loop step-02 refuses to start without the crusty re-review beside the
 # loop driver (PR #1520); this run never reaches it, so it is only a file.
 printf '%s\n' 'exit 0' > "${FAKE_TOOLS}/autodrive_crusty_rereview.sh"
+# PR #1588 review: step-02 takes the round recipe from the recipes/ directory
+# beside the loop helper, by absolute path, and refuses when it is missing.
+mkdir -p "${FAKE_HOME}/amplifier-bundle/recipes"
+for r in autodrive-crusty-round autodrive-merge-round; do
+  printf 'name: "%s"\n' "$r" > "${FAKE_HOME}/amplifier-bundle/recipes/$r.yaml"
+done
 
 # Every bare alias of a step output is removed from the environment, so the
 # only way a step can see its input is RECIPE_VAR_<output>.
@@ -4741,6 +4778,10 @@ UNSET_ALIASES=()
 for name in "${OUT_NAMES[@]}"; do
   UNSET_ALIASES+=(-u "$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')")
 done
+# The run's own context, too: this test runs inside an auto-drive round, whose
+# environment carries the PR under review (PR_NUMBER=<that PR>), and the
+# report and the preflights read it before any step output (#1543).
+UNSET_ALIASES+=(-u PR_NUMBER -u RECIPE_VAR_pr_number -u AUTODRIVE_PR_INPUT -u RECIPE_VAR_autodrive_pr_input -u EXISTING_BRANCH)
 
 body_of() { # body_of <recipe> <step-id>
   local b
@@ -4766,7 +4807,10 @@ rec_field() { "$REAL_AMPLIHACK" orch helper extract-json < "$1" \
   | "$REAL_AMPLIHACK" orch helper extract-field --field "$2" --default MISSING; }
 
 SD="${WORK}/state-ok"; mkdir -p "${SD}"
-PRE="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${SD}\",\"reason\":\"r\"}"
+# #1543: step-02 of both loops refuses a preflight without repo, so it is part
+# of the fixture; the #1528 PR-worktree resolver must get it as --repo.
+PR_REPO="${WORK}/pr-worktree"; mkdir -p "${PR_REPO}"
+PRE="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${SD}\",\"repo\":\"${PR_REPO}\",\"reason\":\"r\"}"
 
 CL2="$(body_of autodrive-crusty-loop step-02-crusty-loop)"
 CL3="$(body_of autodrive-crusty-loop step-03-record-crusty-phase)"
@@ -4790,9 +4834,11 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null \
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
+   && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
    && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
-  pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir and pr through RECIPE_VAR_crusty_loop_preflight and runs the loop in the resolved PR worktree"
+  pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir, pr and repo through RECIPE_VAR_crusty_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
   fail "1511-crusty-loop-02" "crusty-loop step-02 did not get past the state_dir guard, or its stderr says 'no state_dir' (rc=${BODY_RC}); stderr: ${BODY_ERR}"
 fi
@@ -4812,8 +4858,10 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && grep -qxF "autodrive_qa_evidence=${SD}/qa-evidence.json" "${CALLS}/loop-args" 2>/dev/null \
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
-   && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ]; then
-  pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir through RECIPE_VAR_merge_loop_preflight and runs the loop in the resolved PR worktree"
+   && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
+   && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
+  pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir and repo through RECIPE_VAR_merge_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"
 fi
@@ -4847,7 +4895,7 @@ echo '{"before_round_result":"crusty-rereview-not-needed","range":"none","crusty
 REREVIEW
 int_run() { # int_run <body> <preflight-var> <round-record>
   local sd="${WORK_PHYS}/int-state-${BODY_N}"; mkdir -p "${sd}"
-  local pre="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${sd}\",\"reason\":\"r\"}"
+  local pre="{\"should_run\":\"true\",\"pr\":\"42\",\"pr_state\":\"OPEN\",\"state_dir\":\"${sd}\",\"repo\":\"${INT_WT}\",\"reason\":\"r\"}"
   set_stub "$3" 0 "$H_DONE"
   BODY_N=$((BODY_N + 1)); CALLS="${WORK_PHYS}/body-${BODY_N}"; mkdir -p "${CALLS}"
   env "${UNSET_ALIASES[@]}" \
