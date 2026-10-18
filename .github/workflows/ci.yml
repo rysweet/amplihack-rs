@@ -65,7 +65,7 @@ jobs:
       RUSTC_WRAPPER: sccache
       # Caps the local directory, so the per-job Actions cache entry stays
       # small enough for all seven jobs to fit the repository's 10 GB limit.
-      SCCACHE_CACHE_SIZE: "4G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
@@ -389,7 +389,7 @@ jobs:
       # sccache compiled-artifact caching (local disk, carried by actions/cache).
       # See check job.
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "4G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
@@ -495,7 +495,7 @@ jobs:
       # sccache compiled-artifact caching (local disk, carried by actions/cache).
       # See check job.
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "4G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
@@ -590,7 +590,7 @@ jobs:
       # All matrix entries build natively (cross: false), so RUSTC_WRAPPER wraps
       # the host rustc directly; sccache keys already include the target triple.
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "4G"
+      SCCACHE_CACHE_SIZE: "1G"
     strategy:
       fail-fast: false
       matrix:
