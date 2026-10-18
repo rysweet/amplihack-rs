@@ -250,7 +250,7 @@ impl Fixture {
             .map(|(p, _)| p)
     }
 
-    fn assert_isolated(&self) {
+    pub fn assert_isolated(&self) {
         let real = std::env::var_os("HOME").map(PathBuf::from);
         assert!(self.home.starts_with(self.tmp.path()));
         assert!(self.root.starts_with(self.tmp.path()));
@@ -260,6 +260,18 @@ impl Fixture {
     }
 
     pub fn cmd(&self, args: &[&str]) -> Command {
+        let mut c = self.base(args);
+        c.env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+        c
+    }
+
+    /// Like `cmd`, without `AMPLIHACK_CLAUDE_PROFILE_ROOT`: the root comes
+    /// from `~/.amplihack/profile-root` or the default under the temp HOME.
+    pub fn cmd_no_root_env(&self, args: &[&str]) -> Command {
+        self.base(args)
+    }
+
+    fn base(&self, args: &[&str]) -> Command {
         self.assert_isolated();
         let mut c = Command::new(amplihack_bin());
         c.args(args)
@@ -277,8 +289,7 @@ impl Fixture {
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
-            .env("AMPLIHACK_SKIP_REFLECTION", "1")
-            .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
+            .env("AMPLIHACK_SKIP_REFLECTION", "1");
         c
     }
 

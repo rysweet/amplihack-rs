@@ -5,16 +5,45 @@ use super::daemon::{DaemonState, current_state, daemon_err};
 use super::ledger::{LastCycle, Phase, RotateState};
 use super::log::timestamp;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::root_cmd::{pinned_line, root_line};
+use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, RootSource, config_dir, read_saved};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::sanitize_display;
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
 
-/// `status`: `key: value` lines; changes nothing.
-pub fn status(store: &ProfileStore) {
+/// The store whose rotator `status` and `stop` act on, and whether it was
+/// found through `~/.amplihack/rotate-root`. The record is followed only when
+/// the rotator under the resolved root is not running and the one under the
+/// recorded root is. An unreadable or stale record is ignored: it can only
+/// choose which pid file is read, and `stop` verifies the process before it
+/// signals anything. Also returns the state found for the chosen root, so
+/// callers do not probe the pid file and `/proc` a second time.
+pub fn locate(store: &ProfileStore, home: Option<&Path>) -> (ProfileStore, bool, DaemonState) {
+    let state = current_state(&RotateState::new(store.root()));
+    if !matches!(state, DaemonState::Running(_))
+        && let Some(home) = home
+        && let Ok(Some(root)) = read_saved(&config_dir(home).join(ROTATE_ROOT_FILE))
+    {
+        let recorded = current_state(&RotateState::new(&root));
+        if matches!(recorded, DaemonState::Running(_)) {
+            return (ProfileStore::new(root), true, recorded);
+        }
+    }
+    (store.clone(), false, state)
+}
+
+/// `status`: `key: value` lines after the root; changes nothing.
+pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
+    let (store, pinned, state) = locate(store, home);
+    if pinned {
+        println!("{}", pinned_line(store.root()));
+    } else {
+        println!("{}", root_line(store.root(), source));
+    }
     let rs = RotateState::new(store.root());
-    let state = current_state(&rs);
     let (word, pid) = match state {
         DaemonState::Running(pid) => ("running", pid.to_string()),
         DaemonState::Stopped => ("stopped", "-".into()),
@@ -46,10 +75,12 @@ pub fn status(store: &ProfileStore) {
 }
 
 /// `stop`: SIGTERM to a verified rotator only, then up to 10 seconds for it
-/// to exit. A stale pid file is removed and never signalled.
-pub fn stop(store: &ProfileStore) -> Result<(), ProfileError> {
+/// to exit. A stale pid file is removed and never signalled. Leaves
+/// `~/.amplihack/rotate-root` in place; the next `start` replaces it.
+pub fn stop(store: &ProfileStore, home: Option<&Path>) -> Result<(), ProfileError> {
+    let (store, _, state) = locate(store, home);
     let rs = RotateState::new(store.root());
-    match current_state(&rs) {
+    match state {
         DaemonState::Stopped => println!("rotate: not running"),
         DaemonState::Stale => {
             std::fs::remove_file(&rs.pid)?;

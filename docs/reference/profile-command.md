@@ -8,6 +8,7 @@ Manage Claude Code login profiles. See the
 ```
 amplihack profile add <name>
 amplihack profile list
+amplihack profile root [<dir>]
 amplihack profile show
 amplihack profile switch <name>
 amplihack profile remove <name> --yes
@@ -31,8 +32,9 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. |
-| `list` | One profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
+| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. The first `add` also saves the root it used; see [Saved on the first add](#saved-on-the-first-add). |
+| `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
+| `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks. |
@@ -597,7 +599,11 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 
 | Item | Value |
 |------|-------|
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. Must be absolute and non-empty. Default `~/.amplihack/claude-profiles/`. |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Profile root. When set and non-empty it must be absolute, and it overrides the saved root. An empty value counts as unset. See [Profile root](#profile-root). |
+| `~/.amplihack/profile-root` | The saved profile root: one absolute path and a trailing newline (mode `0600`). Written by `amplihack profile root <dir>` and by the first `profile add`. Used when `AMPLIHACK_CLAUDE_PROFILE_ROOT` is unset or empty. |
+| `~/.amplihack/rotate-root` | The root the most recent `profile rotate start` used, in the same format. Read by `rotate status` and `rotate stop`. See [Rotate root record](#rotate-root-record). |
+| `<root>/.auto-switch.d/rotate/root` | The root a rotator started with, written by `rotate start` next to the pid file. Informational. |
+| Default root | `~/.amplihack/claude-profiles/`, used when neither the variable nor the saved root is set. |
 | `AMPLIHACK_CLAUDE_PROFILE` | Profile name a launch passes to its children so nested launches use the same profile. Set by amplihack on the child process; may also be set by hand. Empty means unset. See [Resolution and environment](#resolution-and-environment). |
 | `<root>/<name>/` | Profile directory (mode `0700` on Unix; Windows uses its inherited ACL). |
 | Root directory | Created with mode `0700` on Unix; Windows uses its inherited ACL. A symlinked root is refused. An existing custom root is trusted input. |
@@ -676,6 +682,206 @@ anywhere, trailing `.`, path separators, NUL, and Windows-reserved names
 case-insensitive). `add` rejects names that differ only by case from an existing profile on
 every platform, so `Work` and `work` can never coexist.
 
+## Profile root
+
+The *profile root* is the directory that holds every profile, the default
+pointer and the auto-switch and rotate state. Every `amplihack profile`
+command, every launch with a profile and the background rotator choose one
+root, in this order:
+
+| Order | Source | Shown as |
+|-------|--------|----------|
+| 1 | `AMPLIHACK_CLAUDE_PROFILE_ROOT`, when set and non-empty | `source: env` |
+| 2 | `~/.amplihack/profile-root`, when the file exists | `source: config` |
+| 3 | `~/.amplihack/claude-profiles` | `source: default` |
+
+`~` is `$HOME`. If `HOME` is unset or empty and the variable is not set,
+every profile command fails with `InvalidRoot`.
+
+Rules:
+
+- An empty `AMPLIHACK_CLAUDE_PROFILE_ROOT` counts as unset, so a wrapper
+  script that leaves `AMPLIHACK_CLAUDE_PROFILE_ROOT=` behind still gets the
+  saved root.
+- A non-empty variable always wins. The saved file is not opened at all, so a
+  damaged `profile-root` never blocks a command run with the variable set.
+- A non-empty variable that is relative, holds control characters or has a
+  `..` component is an error, `InvalidRoot`. amplihack does not fall back to
+  the saved root or the default. Earlier releases accepted an absolute
+  variable with a `..` component, such as `/home/you/x/../profiles`; set the
+  path without the `..` instead.
+- A saved file that exists but is invalid is an error, `InvalidSavedRoot`.
+  amplihack does not fall back to the default. This applies to every command
+  that resolves the root, including `amplihack claude --profile` and the
+  other launch paths.
+- A missing saved file means no saved root, and the default is used. Any other
+  error reading it is `InvalidSavedRoot`.
+
+The saved root is what makes profiles work in shells that do not read
+`~/.bashrc`: cron jobs, systemd units, `tmux new-session -d` commands,
+`ssh host cmd` and `env -i`. See
+[Use profiles from non-interactive shells](../howto/claude-profiles.md#use-profiles-from-non-interactive-shells).
+
+### Root command
+
+```
+amplihack profile root
+amplihack profile root <dir>
+```
+
+`root` runs before the root is resolved for any other purpose, so it works
+when the saved file is damaged.
+
+With no argument, `root` prints the root in use and its source, and exits 0:
+
+```
+$ amplihack profile root
+root: /home/you/.claude-profiles (source: config)
+```
+
+If the saved file is invalid, it exits 1 with the `InvalidSavedRoot` error
+and hint instead.
+
+With `<dir>`, it saves `<dir>` to `~/.amplihack/profile-root`, prints where it
+saved it, and exits 0:
+
+```
+$ amplihack profile root /home/you/.claude-profiles
+saved profile root: /home/you/.claude-profiles (/home/you/.amplihack/profile-root)
+```
+
+`root <dir>` makes these checks in order, and writes nothing if any of them
+fails:
+
+| Check | Error |
+|-------|-------|
+| `<dir>` is non-empty, absolute and valid UTF-8, holds no control characters and has no `..` component. `~` is not expanded: a quoted `'~/x'` is relative and is refused. | `InvalidRoot` |
+| One trailing `/` is removed (`/` itself is kept). | - |
+| If `<dir>` exists, it is not a symlink. | `SymlinkRefused` |
+| `<dir>` is not `~/.claude` or inside it. | `SharedSourceContainsRoot` |
+| The file can be written safely (see [Saved root file format](#saved-root-file-format)). | `InvalidSavedRoot` |
+
+More behaviour:
+
+- `<dir>` is saved as given, apart from the trailing `/`. It is not
+  canonicalized, and the directory is not created; `profile add` creates it.
+- A `<dir>` with trailing whitespace, such as `"/srv/x "`, is refused with
+  `InvalidSavedRoot` (`has leading or trailing whitespace`) and nothing is
+  written. A leading space makes the path relative, so it gives `InvalidRoot`.
+- A valid `<dir>` replaces any saved value, including an invalid one. The old
+  file is never read, so `root <dir>` is how you repair a damaged
+  `profile-root`.
+- If `AMPLIHACK_CLAUDE_PROFILE_ROOT` is set and non-empty, `root <dir>` still
+  saves and exits 0, and also prints to stderr:
+
+  ```
+  note: AMPLIHACK_CLAUDE_PROFILE_ROOT=/tmp/scratch overrides the saved root in this shell
+  ```
+
+- There is no option to clear the saved root. Delete
+  `~/.amplihack/profile-root` to go back to the default.
+- Profiles under the old root are not moved. Move them yourself, or point the
+  root back.
+
+### Saved on the first add
+
+`profile add <name>` resolves the root first, so a damaged saved file makes
+`add` fail before it creates anything. After the profile is created, if
+`~/.amplihack/profile-root` does not exist, `add` saves the root it used,
+whether that came from the variable or the default, and prints:
+
+```
+recorded profile root /home/you/.claude-profiles in /home/you/.amplihack/profile-root
+```
+
+If the file already exists, `add` leaves it alone and prints nothing about
+it. Later `add`s therefore never change the saved root.
+
+```bash
+AMPLIHACK_CLAUDE_PROFILE_ROOT=/home/you/.claude-profiles amplihack profile add work
+env -u AMPLIHACK_CLAUDE_PROFILE_ROOT amplihack profile list
+```
+
+```
+root: /home/you/.claude-profiles (source: config)
+  work
+```
+
+If the save fails, `add` prints
+`warning: could not record profile root: <reason>` to stderr and still exits
+0, because the profile was created. No other command saves the root on its
+own.
+
+### Saved root file format
+
+`~/.amplihack/profile-root` and `~/.amplihack/rotate-root` each hold one
+absolute path followed by a single `\n`.
+
+| Rule | Detail |
+|------|--------|
+| Write | Atomic: a new temporary file in `~/.amplihack`, flushed to disk, then renamed over the target. Mode `0600`. The temporary file is created without following symlinks. A value that is not valid UTF-8, that fails the content checks, or that has leading or trailing whitespace is refused before anything is written, because the reader trims whitespace and would return a different root. |
+| `~/.amplihack` | Created with mode `0700` when missing. An existing directory keeps its mode; it also holds other amplihack settings such as `~/.amplihack/config`. |
+| Read | Never through a symlink, at most 4096 bytes. Leading and trailing whitespace is trimmed. |
+| Valid content | Non-empty, UTF-8, absolute, no control characters, no `..` component. |
+| Permissions | The file must be a regular file that is not writable by group or others. Ownership is not checked. |
+
+An invalid `profile-root` gives `InvalidSavedRoot`. The message names the file
+and one of these reasons, or the operating system's error text:
+
+| Reason | Cause |
+|--------|-------|
+| `empty` | The file holds only whitespace. |
+| `not an absolute path` | The path is relative, including `~/...`. |
+| `not UTF-8` | The bytes are not valid UTF-8. |
+| `larger than 4096 bytes` | The file is too large to be a path. |
+| `contains control characters` | The path holds a control character, such as an escape. |
+| `contains a .. component` | The path has a `..` component. |
+| `is a symlink` | The file is a symlink. It is not followed. |
+| `not a regular file` | The file is a directory or a special file. |
+| `writable by others` | The file's mode grants write to group or others. |
+
+The message never repeats the file's contents:
+
+```
+error: saved profile root in "/home/you/.amplihack/profile-root" is invalid: not an absolute path
+hint: fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>
+```
+
+A `profile-root` left behind by `sudo amplihack profile add` with `HOME` kept
+is owned by root and cannot be replaced by `profile root <dir>`. Remove it
+with `sudo rm ~/.amplihack/profile-root`, then save the root again.
+
+On Windows the file is written through a temporary file and a rename, and read
+with the same size limit. The mode check does not apply; Windows ACLs are out
+of scope.
+
+### Root line
+
+`profile root`, `profile list` and `profile rotate status` print the root on a
+line of its own:
+
+```
+root: <path> (source: env|config|default)
+```
+
+`rotate status` prints `root: <path> (pinned by running rotator)` instead when
+it found the rotator through the [rotate root record](#rotate-root-record).
+The path is escaped for the terminal, so control characters cannot write
+escape sequences.
+
+`profile list` prints the root line first, then the profiles:
+
+```
+$ amplihack profile list
+root: /home/you/.claude-profiles (source: config)
+* personal
+  work
+```
+
+With no profiles, the root line is followed by
+`` no profiles; create one with `amplihack profile add <name>` ``. Scripts
+that read `list` should skip the first line, which always starts `root: `.
+
 ## Resolution and environment
 
 `amplihack claude`, `amplihack launch` and `amplihack profile run` pick a
@@ -698,10 +904,16 @@ every command that starts Claude with a profile: `amplihack claude`,
 |----------|-------|
 | `CLAUDE_CONFIG_DIR` | `<root>/<name>`, overriding any ambient value |
 | `AMPLIHACK_CLAUDE_PROFILE` | `<name>` |
-| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `<root>`, only when `AMPLIHACK_CLAUDE_PROFILE_ROOT` was set in the launching process; otherwise left unset so the child uses the default root too |
+| `AMPLIHACK_CLAUDE_PROFILE_ROOT` | `<root>`, only when `AMPLIHACK_CLAUDE_PROFILE_ROOT` was set and non-empty in the launching process (that is, when the root's source is `env`); otherwise the child's environment is left as inherited, so the child reads the same saved root or uses the same default. An inherited empty value passes through unchanged and still counts as unset. |
 
 Copilot and Codex children get none of these, but variables already in the
 environment pass through them unchanged.
+
+A root that came from the saved file or the default is not exported, so a nested launch reads
+`~/.amplihack/profile-root` again, and fails with `InvalidSavedRoot` if the
+file has since been damaged. If you change the saved root while a
+session runs, launches nested in that session use the new root. Set
+`AMPLIHACK_CLAUDE_PROFILE_ROOT` before starting the session to pin it.
 
 ### Nested launches keep the parent's profile
 
@@ -721,7 +933,7 @@ How the name reaches each kind of descendant:
 |-------------|--------------------------|
 | Direct child, `amplihack recipe run` | Inherited environment (the recipe runner is detached with `setsid` but keeps the environment). |
 | Recipe agent steps | Inherited environment. `recipe-runner-rs` builds each step's environment from its own, and never drops `AMPLIHACK_*` variables when it trims the environment to fit its budget. The only `AMPLIHACK_*` value it removes is one whose `KEY=value` string is over the kernel's 131,072-byte per-string limit, which no child could receive anyway; a profile name and root are far smaller. In a bash step, values the recipe itself supplies (context keys and their uppercase aliases) that are too large for the environment become shell-local variables and are not exported (checked at the revision pinned in `claude-plugin/recipe-runner.rev`, `4d5187e`). Agent steps take no per-step environment. In bash steps, a step's `env:` block can set any variable, including these, and so can the runner's uppercase export of context keys (see [Recipe context cannot set the profile](#recipe-context-cannot-set-the-profile)). |
-| `multitask` / orch workstreams | Inherited environment: each workstream's `run.sh` is started with the parent's full environment. As a backup, the generated `run.sh` also exports `AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT`, single-quoted, when they are set and non-empty, so a `run.sh` re-run by hand or on resume uses the same profile. `CLAUDE_CONFIG_DIR` is not exported; the nested launch rebuilds it from the name and checks it again. If either variable is set but is not valid UTF-8, the workstream is refused before any script is written (the error names the variable, not its value), because leaving it out would send the nested launch to the default root. |
+| `multitask` / orch workstreams | Inherited environment: each workstream's `run.sh` is started with the parent's full environment. As a backup, the generated `run.sh` also exports `AMPLIHACK_CLAUDE_PROFILE` and `AMPLIHACK_CLAUDE_PROFILE_ROOT`, single-quoted, when they are set and non-empty, so a `run.sh` re-run by hand or on resume uses the same profile. `CLAUDE_CONFIG_DIR` is not exported; the nested launch rebuilds it from the name and checks it again. If either variable is set but is not valid UTF-8, the workstream is refused before any script is written (the error names the variable, not its value), because leaving it out would send the nested launch to the saved or default root. |
 
 Only the name and the root are passed on. Each nested launch resolves the
 name against the root and runs the full check below again, so an inherited
@@ -1465,9 +1677,9 @@ amplihack profile rotate status
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
 | `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
-| `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Prints `rotate: started (pid <pid>), checking every <interval>s` and `log: <path>`, and returns at once. |
+| `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
-| `rotate stop` | Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
+| `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
 
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
@@ -1817,6 +2029,45 @@ prints outside a cycle, such as start-up notices or a crash.
 `--spawned` is hidden; it tells `watch` that `start` has already written the
 pid file. No shell is involved.
 
+The child's environment is the parent's, with every `AMPLIHACK_ROTATE*`
+variable removed and `AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root
+`start` resolved. The child validates that value again when it starts, and
+never reads `~/.amplihack/profile-root`. Changing the variable or the saved
+root, or closing the shell that ran `start`, does not move a running rotator.
+To move it to another root, stop it and start it again.
+
+### Rotate root record
+
+After writing the pid file, `start` writes two files that hold the absolute
+root it started with, in the
+[saved root file format](#saved-root-file-format):
+
+| File | Purpose |
+|------|---------|
+| `<root>/.auto-switch.d/rotate/root` | Next to the pid file. Shows which root a rotator's state belongs to. |
+| `~/.amplihack/rotate-root` | Lets `status` and `stop` find the rotator from a shell whose root now resolves elsewhere. Only the most recent `start` is recorded. |
+
+If either file cannot be written, `start` prints a warning to stderr and the
+rotator keeps running.
+
+`rotate status` and `rotate stop` locate the rotator as follows:
+
+1. If a rotator under the resolved root is `running`, they use the resolved
+   root.
+2. Otherwise, if `~/.amplihack/rotate-root` names a different root and the
+   rotator under that root is `running`, they use that root.
+3. Otherwise they use the resolved root, and report what they find there as
+   they do without a record (`rotate: not running` for `stop`).
+
+A record that cannot be read, is invalid, or names a root whose rotator is
+`stopped`, `stale` or `unverifiable` is ignored. A stale record is therefore
+harmless: it can only choose which directory's pid file is read, and `stop`
+still makes the [verified](#rotate-daemon) checks before it signals anything.
+
+`stop` leaves the record in place; the next `start` replaces it. Rotators
+running under several roots at once are not supported; the record names only
+the latest.
+
 A pid file is *valid* when it holds at most 32 bytes of ASCII digits for a pid
 greater than 1 that is not the caller's own. A process is a *verified
 rotator* when `/proc/<pid>` is owned by your effective uid, its command line
@@ -1852,6 +2103,7 @@ the process is not responding, not that a cycle was slow.
 `status` takes no lock and changes nothing. It prints `key: value` lines:
 
 ```
+root: /home/you/.claude-profiles (source: config)
 rotate: running
 pid: 48213
 live: spare
@@ -1861,11 +2113,24 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 
 | Key | Value |
 |-----|-------|
+| `root` | Always the first line. `<path> (source: env\|config\|default)` for the resolved root, or `<path> (pinned by running rotator)` when the rotator was found through the [rotate root record](#rotate-root-record). The lines after it describe that root. |
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
 | `log` | The log path. |
+
+Run from a shell where the root now resolves elsewhere, for example cron with
+no saved root, `status` finds the running rotator through the record:
+
+```
+root: /home/you/.claude-profiles (pinned by running rotator)
+rotate: running
+pid: 48213
+live: spare
+last cycle: 2026-10-18T12:50:05Z stayed
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
 
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
@@ -1911,7 +2176,8 @@ failures use this format.
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` is an invalid name or not found | Unset `AMPLIHACK_CLAUDE_PROFILE`, or create the profile with `amplihack profile add <name>` |
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` names a profile that exists but cannot be used | The hint for the underlying cause, e.g. `check permissions on the profile root` for an I/O error or the `chmod go-rwx` hint for unsafe permissions |
 | Recipe context key in the `AMPLIHACK_` namespace (`recipe run -c amplihack_…=…`) | Remove the key; the namespace is reserved |
-| Invalid `AMPLIHACK_CLAUDE_PROFILE_ROOT` | Use an absolute path |
+| `InvalidRoot`: a non-empty `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or the `profile root` argument, is empty, relative, not UTF-8, holds control characters or has a `..` component; or `HOME` is unset | `use an absolute path: set AMPLIHACK_CLAUDE_PROFILE_ROOT to one, or run: amplihack profile root <absolute dir>` |
+| `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |

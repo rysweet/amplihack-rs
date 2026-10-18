@@ -58,9 +58,12 @@ fn pid_file(f: &Fixture) -> PathBuf {
     f.rotate_dir().join("rotate.pid")
 }
 
+/// Status without its first line, which is always the root (issue #1592).
 fn status(f: &Fixture) -> String {
-    let out = f.ok(&["profile", "rotate", "status"]);
-    text(&out.stdout)
+    let out = text(&f.ok(&["profile", "rotate", "status"]).stdout);
+    let (root, rest) = out.split_once('\n').unwrap_or_default();
+    assert!(root.starts_with("root: "), "{out}");
+    rest.to_string()
 }
 
 fn wait_for(what: &str, timeout: Duration, mut cond: impl FnMut() -> bool) {

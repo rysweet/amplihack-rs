@@ -106,7 +106,9 @@ amplihack profile login personal
 
 `add` copies the allowlisted shared assets into a private staging directory and
 publishes `~/.amplihack/claude-profiles/work/` atomically after seeding succeeds
-(mode `0700` on Unix); it fails if the profile already exists. `login`
+(mode `0700` on Unix); it fails if the profile already exists. The first `add`
+also saves the profile root it used; see
+[Choose where profiles live](#choose-where-profiles-live). `login`
 always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
 
@@ -179,12 +181,138 @@ See the
 [resolution reference](../reference/profile-command.md#resolution-and-environment)
 for how the name reaches each kind of nested launch.
 
+## Choose where profiles live
+
+Profiles live under one *profile root*. amplihack picks it in this order:
+
+1. `AMPLIHACK_CLAUDE_PROFILE_ROOT`, if set and non-empty.
+2. The root saved in `~/.amplihack/profile-root`.
+3. `~/.amplihack/claude-profiles`.
+
+Save a root once and every shell finds it, whether or not it reads
+`~/.bashrc`:
+
+```bash
+amplihack profile root /home/you/.claude-profiles
+```
+
+```
+saved profile root: /home/you/.claude-profiles (/home/you/.amplihack/profile-root)
+```
+
+Check which root is in use and where it came from:
+
+```bash
+amplihack profile root
+```
+
+```
+root: /home/you/.claude-profiles (source: config)
+```
+
+`amplihack profile list` prints the same line first.
+
+You may not need to run `profile root` at all. The first `amplihack profile
+add` saves the root it used when nothing is saved yet, so if you export
+`AMPLIHACK_CLAUDE_PROFILE_ROOT` in `~/.bashrc`, your first `add` records that
+path:
+
+```
+recorded profile root /home/you/.claude-profiles in /home/you/.amplihack/profile-root
+```
+
+Later `add`s never change it.
+
+If you created profiles before this feature existed, save the root once from a
+shell that has the variable:
+
+```bash
+amplihack profile root "$AMPLIHACK_CLAUDE_PROFILE_ROOT"
+```
+
+The variable still takes precedence while it is set and non-empty; an empty
+value counts as unset. When it is set, `profile root <dir>` saves anyway and
+adds a note on stderr:
+
+```
+note: AMPLIHACK_CLAUDE_PROFILE_ROOT=/tmp/scratch overrides the saved root in this shell
+```
+
+To go back to the default, delete `~/.amplihack/profile-root`. Changing the
+root does not move existing profiles.
+
+`profile root <dir>` refuses a relative or empty path, a path with a `..`
+component (the variable is refused for the same reasons), a symlink, and a path inside `~/.claude`, and saves nothing when it
+refuses. A quoted `'~/x'` is relative; let the shell expand `~` instead. The
+directory does not have to exist yet; `profile add` creates it.
+
+### Use profiles from non-interactive shells
+
+cron, systemd, `tmux new-session -d '<cmd>'`, `ssh host cmd` and `env -i` do
+not read `~/.bashrc`, so a root exported there is missing. With a saved root
+they need no extra setup:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" amplihack profile list
+```
+
+```
+root: /home/you/.claude-profiles (source: config)
+* personal
+  work
+```
+
+```cron
+*/30 * * * * amplihack profile usage --json > /tmp/claude-usage.json
+```
+
+```bash
+tmux new-session -d -s work 'amplihack claude --profile work'
+```
+
+If a command reports `source: default` where you expected your own root, no
+root is saved yet; run `amplihack profile root <dir>`.
+
+A launch exports `AMPLIHACK_CLAUDE_PROFILE_ROOT` to its children only when it
+was set and non-empty. Otherwise nested launches read `~/.amplihack/profile-root`
+themselves, so changing the saved root while a session runs moves that
+session's later nested launches to the new root. Set the variable before
+starting a session if it must stay on one root. The background rotator is
+always pinned to the root it started with; see
+[Which root the rotator uses](claude-profile-rotation.md#which-root-the-rotator-uses).
+
+### Repair a damaged saved root
+
+If `~/.amplihack/profile-root` is empty, relative, a symlink, writable by
+others or otherwise invalid, every command that needs the root fails rather
+than quietly using another one:
+
+```
+error: saved profile root in "/home/you/.amplihack/profile-root" is invalid: not an absolute path
+hint: fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>
+```
+
+Run `amplihack profile root <absolute dir>` to replace it; it never reads the
+damaged file. Deleting the file returns you to the default. Setting
+`AMPLIHACK_CLAUDE_PROFILE_ROOT` also works, because the file is not read while
+the variable is set and non-empty.
+
+If the file was written by `sudo` and is owned by root, remove it with
+`sudo rm ~/.amplihack/profile-root` first.
+
+See the [profile root reference](../reference/profile-command.md#profile-root)
+for every rule.
+
 ## List and remove
 
 ```bash
 amplihack profile list
 amplihack profile remove personal --yes
 ```
+
+`list` starts with the root in use, for example
+`root: /home/you/.claude-profiles (source: config)`, then one profile per
+line with the default marked `*`.
 
 `remove` deletes only the verified profile directory, requires `--yes`, and
 clears the default pointer if it named that profile. This deletes that
@@ -825,7 +953,8 @@ do not depend on these two behaviours.
 ## Testing without touching real state
 
 ```bash
-export AMPLIHACK_CLAUDE_PROFILE_ROOT="$(mktemp -d)"
+export HOME="$(mktemp -d)"
+export AMPLIHACK_CLAUDE_PROFILE_ROOT="$HOME/profiles"
 amplihack profile add demo
 d="$(mktemp -d)"
 printf '#!/bin/sh\necho "$CLAUDE_CONFIG_DIR"\n' > "$d/claude" && chmod +x "$d/claude"
@@ -833,5 +962,6 @@ PATH="$d:$PATH" amplihack profile run demo
 ```
 
 The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile
-directory. Profile creation copies only allowlisted assets from `$HOME/.claude`
-when that directory exists; use a temporary HOME to test that behavior safely.
+directory. The temporary `HOME` keeps the saved root
+(`$HOME/.amplihack/profile-root`, written by the first `add`) and the seeding
+source (`$HOME/.claude`) away from your real files.

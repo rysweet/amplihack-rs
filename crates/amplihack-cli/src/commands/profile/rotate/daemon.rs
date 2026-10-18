@@ -13,8 +13,9 @@ use crate::commands::profile::auto_switch::kit::{
     Source, State, effective, euid, now, read_bounded_nofollow, recover_auto_switch,
     write_private_atomic,
 };
-use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::PROBE_CANCEL;
+use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir, save};
+use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
+use crate::commands::profile::usage_cmd::{PROBE_CANCEL, sanitize_display};
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -144,7 +145,7 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         }
         DaemonState::Stopped | DaemonState::Stale => {}
     }
-    let pid = spawn(&rs, s)?;
+    let pid = spawn(&rs, s, store.root())?;
     if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
         // Without a pid file `stop` could never reach it. It is our own
         // unreaped child, so the pid cannot have been reused.
@@ -158,15 +159,35 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         "rotate: started (pid {pid}), checking every {}s",
         s.interval
     );
-    println!("log: {}", rs.log.display());
+    println!(
+        "log: {}",
+        sanitize_display(&rs.log.display().to_string(), false)
+    );
+    record_root(&rs, home, store.root());
+    println!(
+        "root: {}",
+        sanitize_display(&store.root().display().to_string(), false)
+    );
     Ok(())
+}
+
+/// Records the root a rotator started with, next to its pid file and in
+/// `~/.amplihack/rotate-root`, so `status` and `stop` find it from a shell
+/// whose root resolves elsewhere. The rotator runs either way.
+fn record_root(rs: &RotateState, home: &Path, root: &Path) {
+    for file in [rs.dir.join("root"), config_dir(home).join(ROTATE_ROOT_FILE)] {
+        if let Err(e) = save(&file, root) {
+            eprintln!("warning: could not record the rotator's root: {e}");
+        }
+    }
 }
 
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
-/// the child gets no `AMPLIHACK_ROTATE*` variable.
-fn spawn(rs: &RotateState, s: &Settings) -> Result<u32, ProfileError> {
+/// the child gets no `AMPLIHACK_ROTATE*` variable, and is pinned to `root`
+/// whatever the variable or the saved root say later (issue #1592).
+fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
     use std::os::unix::process::CommandExt;
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
     let (out, err) = (errors.file()?, errors.file()?);
@@ -182,6 +203,7 @@ fn spawn(rs: &RotateState, s: &Settings) -> Result<u32, ProfileError> {
             cmd.env_remove(k);
         }
     }
+    cmd.env(ROOT_ENV, root);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only setsid and signal, which are async-signal-safe.
     unsafe {

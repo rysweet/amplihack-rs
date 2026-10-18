@@ -10,6 +10,8 @@ mod auto_switch;
 mod default_live;
 mod name;
 mod pointer;
+mod root_cmd;
+mod root_config;
 mod rotate;
 mod run;
 mod store;
@@ -27,6 +29,10 @@ mod tests_name;
 #[cfg(test)]
 mod tests_pointer;
 #[cfg(test)]
+mod tests_root_config;
+#[cfg(test)]
+mod tests_root_save;
+#[cfg(test)]
 mod tests_run;
 #[cfg(test)]
 mod tests_seed;
@@ -42,6 +48,7 @@ mod tests_verify;
 use anyhow::Result;
 use clap::Subcommand;
 use name::ProfileName;
+use root_cmd::{render_list, render_show};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -71,6 +78,8 @@ pub enum ProfileError {
     PointerCorrupt(String),
     #[error("invalid profile root: {0:?}")]
     InvalidRoot(String),
+    #[error("saved profile root in {path:?} is invalid: {reason}")]
+    InvalidSavedRoot { path: String, reason: String },
     #[error("invalid shared Claude settings: {0}")]
     InvalidSharedSettings(String),
     #[error("shared Claude asset source is not a directory: {0:?}")]
@@ -141,7 +150,12 @@ impl ProfileError {
             Self::UnsupportedMode(_) => "launch without --docker/--auto, or without --profile",
             Self::PointerDangling(_) => "run `amplihack profile switch <name>` or add the profile",
             Self::PointerCorrupt(_) => "re-run `amplihack profile switch <name>`",
-            Self::InvalidRoot(_) => "set AMPLIHACK_CLAUDE_PROFILE_ROOT to an absolute path",
+            Self::InvalidRoot(_) => {
+                "use an absolute path: set AMPLIHACK_CLAUDE_PROFILE_ROOT to one, or run: amplihack profile root <absolute dir>"
+            }
+            Self::InvalidSavedRoot { .. } => {
+                "fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>"
+            }
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => {
@@ -245,7 +259,7 @@ pub(crate) fn with_hint(e: ProfileError) -> anyhow::Error {
 pub enum ProfileCommands {
     /// Create a profile and copy allowlisted shared Claude assets (does not run Claude)
     Add { name: String },
-    /// List profiles; the default is marked with '*'
+    /// List profiles after a `root:` line; the default is marked with '*'
     List,
     /// Show the default profile name and directory
     Show,
@@ -285,6 +299,8 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: auto_switch::AutoSwitchCommand,
     },
+    /// Print the profile root and its source, or save <dir> as the root
+    Root { dir: Option<String> },
     /// Keep the login in ~/.claude on the profile with the most capacity left
     Rotate(Box<rotate::RotateArgs>),
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
@@ -310,14 +326,20 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     if let ProfileCommands::Statusline { root, owner } = &cmd {
         std::process::exit(auto_switch::statusline(root, owner));
     }
-    let store = ProfileStore::from_env()?;
+    // Before the root is resolved, so it can repair a damaged saved root.
+    if let ProfileCommands::Root { dir } = cmd {
+        return Ok(root_cmd::run(dir)?);
+    }
+    let (store, source) = root_config::store_from_env()?;
     match cmd {
         ProfileCommands::Add { name } => {
             let dir = store.add(&ProfileName::parse(&name)?)?;
             println!("created profile {name} at {}", dir.display());
             println!("next: amplihack profile login {name}");
+            root_cmd::record_after_add(&store);
         }
         ProfileCommands::List => {
+            println!("{}", root_cmd::root_line(store.root(), source));
             let out = render_list(&store)?;
             if out.is_empty() {
                 println!("no profiles; create one with `amplihack profile add <name>`");
@@ -359,34 +381,12 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             timeout_secs,
         } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
-        ProfileCommands::Rotate(args) => rotate::run(&store, *args)?,
-        ProfileCommands::Statusline { .. } => unreachable!("handled above"),
-    }
-    Ok(())
-}
-
-fn render_list(store: &ProfileStore) -> Result<String, ProfileError> {
-    let default = pointer::read(store.root())?;
-    let mut out = String::new();
-    for n in store.list()? {
-        let mark = if default.as_ref().is_some_and(|d| d.as_str() == n) {
-            '*'
-        } else {
-            ' '
-        };
-        out.push_str(&format!("{mark} {n}\n"));
-    }
-    Ok(out)
-}
-
-fn render_show(store: &ProfileStore) -> Result<String, ProfileError> {
-    match pointer::read(store.root())? {
-        None => Ok("none\n".to_string()),
-        Some(name) => {
-            let dir = store.resolve(&name)?;
-            Ok(format!("name: {name}\ndir: {}\n", dir.display()))
+        ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
+        ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
+            unreachable!("handled above")
         }
     }
+    Ok(())
 }
 
 /// Resolution order: `--profile` flag, then a non-empty inherited

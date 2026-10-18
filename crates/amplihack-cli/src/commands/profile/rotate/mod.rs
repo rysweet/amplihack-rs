@@ -57,6 +57,7 @@ mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
 
+use super::root_config::RootSource;
 use super::store::ProfileStore;
 
 /// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
@@ -118,7 +119,7 @@ pub struct WatchFlags {
     pub spawned: bool,
 }
 
-pub fn run(store: &ProfileStore, args: RotateArgs) -> anyhow::Result<()> {
+pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
         use super::ProfileError;
@@ -146,14 +147,14 @@ pub fn run(store: &ProfileStore, args: RotateArgs) -> anyhow::Result<()> {
                 let s = settings::resolve(&w.tune, w.interval.as_deref(), &env)?;
                 daemon::watch(store, home?, s, w.spawned)?;
             }
-            Some(RotateAction::Stop) => control::stop(store)?,
-            Some(RotateAction::Status) => control::status(store),
+            Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
+            Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
         }
         Ok(())
     }
     #[cfg(not(unix))]
     {
-        let _ = (store, args);
+        let _ = (store, source, args);
         Err(super::ProfileError::RotateUnsupported.into())
     }
 }

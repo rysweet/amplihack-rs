@@ -281,3 +281,56 @@ fn rotate_howto_quotes_the_refusal_reasons_word_for_word() {
         );
     }
 }
+
+/// Issue #1592: the profile root command, its sources, the rotate record and
+/// both root hints appear in the docs as the code prints them.
+#[test]
+fn docs_describe_the_saved_profile_root() {
+    use super::ProfileError as E;
+    for s in [
+        "amplihack profile root",
+        "source: env",
+        "source: config",
+        "source: default",
+        "~/.amplihack/profile-root",
+        "~/.amplihack/rotate-root",
+        "pinned by running rotator",
+        "saved profile root: ",
+        "recorded profile root ",
+        "warning: could not record profile root: ",
+        "overrides the saved root in this shell",
+    ] {
+        assert!(REFERENCE.contains(s), "reference is missing `{s}`");
+    }
+    for e in [
+        E::InvalidRoot(String::new()),
+        E::InvalidSavedRoot {
+            path: String::new(),
+            reason: String::new(),
+        },
+    ] {
+        assert!(
+            REFERENCE.contains(e.hint()),
+            "reference is missing `{}`",
+            e.hint()
+        );
+    }
+    for reason in [
+        "empty",
+        "not an absolute path",
+        "not UTF-8",
+        "larger than 4096 bytes",
+        "contains control characters",
+        "contains a .. component",
+        "is a symlink",
+        "not a regular file",
+        "writable by others",
+    ] {
+        assert!(
+            REFERENCE.contains(&format!("| `{reason}` |")),
+            "reason `{reason}`"
+        );
+    }
+    assert!(HOWTO.contains("amplihack profile root"));
+    assert!(ROTATE_HOWTO.contains("pinned by running rotator"));
+}

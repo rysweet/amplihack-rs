@@ -23,6 +23,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Preview a rotation](#preview-a-rotation)
 - [Rotate once](#rotate-once)
 - [Run rotation in the background](#run-rotation-in-the-background)
+- [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
 - [Which profiles can take over](#which-profiles-can-take-over)
@@ -120,6 +121,7 @@ amplihack profile rotate start
 ```
 rotate: started (pid 48213), checking every 600s
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+root: /home/you/.claude-profiles
 ```
 
 Turning the toggle on also enables auto-switch for profiled sessions; see
@@ -138,6 +140,7 @@ amplihack profile rotate status
 ```
 
 ```
+root: /home/you/.claude-profiles (source: config)
 rotate: running
 pid: 48213
 live: spare
@@ -169,6 +172,45 @@ your login scripts.
 To run the loop in the foreground instead, for example under your own
 supervisor, use `amplihack profile rotate watch`. It takes the same flags as
 `start` and stops on Ctrl-C.
+
+## Which root the rotator uses
+
+The rotator keeps the profile root it was started with. `start` passes that
+root to the background process in `AMPLIHACK_CLAUDE_PROFILE_ROOT`, so the
+process does not depend on the shell that started it. Closing that shell,
+unsetting the variable or changing the saved root with `amplihack profile
+root` does not move a running rotator.
+
+`start` also records the root in `~/.amplihack/rotate-root`. When `status` or
+`stop` runs in a shell whose root now resolves elsewhere, for example a cron
+job with no saved root, they find the running rotator through that record and
+say so on the first line:
+
+```bash
+env -i HOME="$HOME" PATH="$PATH" amplihack profile rotate status
+```
+
+```
+root: /home/you/.claude-profiles (pinned by running rotator)
+rotate: running
+pid: 48213
+live: spare
+last cycle: 2026-10-18T12:50:05Z stayed
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+To move the rotator to a new root, stop it and start it again from a shell
+that resolves the new root:
+
+```bash
+amplihack profile rotate stop
+amplihack profile root /home/you/new-profiles
+amplihack profile rotate start
+```
+
+Only one rotator is tracked: the record names the most recent `start`. See
+[Rotate root record](../reference/profile-command.md#rotate-root-record) for
+the exact rules.
 
 ## Change the thresholds
 
