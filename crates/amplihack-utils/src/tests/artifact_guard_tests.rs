@@ -1254,6 +1254,39 @@ fn rule_table_with_a_manifest_set() {
             &[],
             Some(("build-artifact", Some("coverage/clover.xml"))),
         ),
+        // A tracked or staged report outside a project's `coverage/` directory
+        // may be a parser fixture: possibly source, no removal root.
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Tracked,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Staged,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        (
+            "coverage/fixtures/lcov.info",
+            Tracked,
+            &[],
+            Some(("build-artifact", None)),
+        ),
+        // The same file untracked or ignored is a run's output.
+        (
+            "tests/fixtures/coverage/lcov.info",
+            Untracked,
+            &[],
+            Some(("build-artifact", Some("tests/fixtures/coverage/lcov.info"))),
+        ),
+        (
+            "tests/fixtures/coverage/lcov.info",
+            IgnoredPresent,
+            &[],
+            Some(("build-artifact", Some("tests/fixtures/coverage/lcov.info"))),
+        ),
         // Bug 2: tracked/staged generic-segment matches may be source, so they
         // get no removal root; untracked output may still be removed.
         (
@@ -1847,5 +1880,139 @@ fn removal_root_check_rejects_anything_but_the_path_or_a_bounded_prefix() {
         ("other", "node_modules/a.js"),
     ] {
         assert!(!is_removal_root_of(root, path), "{root:?} for {path:?}");
+    }
+}
+
+/// A stacked PR (cut from another feature branch) measured against the default
+/// branch has its parent's paths attributed to it. That is the documented
+/// limitation of the default baseline; `--baseline origin/<base>` is the remedy
+/// (`docs/artifact-guard.md`, "Stacked PRs").
+#[test]
+fn a_stacked_pr_needs_its_base_branch_as_an_explicit_baseline() {
+    let root = TempDir::new().expect("tempdir");
+    let origin = root.path().join("origin.git");
+    let work = root.path().join("work");
+    run_git(root.path(), &["init", "-q", "--bare", "origin.git"]);
+    run_git(&origin, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(root.path(), &["clone", "-q", "origin.git", "work"]);
+    run_git(&work, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    run_git(
+        &work,
+        &["config", "user.email", "artifact-guard@example.invalid"],
+    );
+    run_git(&work, &["config", "user.name", "Artifact Guard Test"]);
+    write_file(&work.join("README.md"), "# fixture\n");
+    run_git(&work, &["add", "README.md"]);
+    run_git(&work, &["commit", "-qm", "initial"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "main"]);
+    run_git(&work, &["remote", "set-head", "origin", "main"]);
+
+    // The parent PR tracks an artifact-shaped path.
+    run_git(&work, &["checkout", "-q", "-b", "parent"]);
+    write_file(&work.join("build/out.log"), "log\n");
+    run_git(&work, &["add", "-f", "build/out.log"]);
+    run_git(&work, &["commit", "-qm", "parent: track a build log"]);
+    run_git(&work, &["push", "-q", "-u", "origin", "parent"]);
+
+    // The child PR is cut from the parent and touches only source.
+    run_git(&work, &["checkout", "-q", "-b", "child"]);
+    write_file(&work.join("src/lib.rs"), "pub fn f() {}\n");
+    run_git(&work, &["add", "src/lib.rs"]);
+    run_git(&work, &["commit", "-qm", "child work"]);
+
+    let config = ArtifactGuardConfig::new(&work).with_mode(ArtifactGuardMode::PrePublish);
+    let default = scan_artifacts(&config).expect("scan artifacts");
+    assert_eq!(
+        default.baseline.as_ref().map(|b| b.rev.as_str()),
+        Some("origin/HEAD")
+    );
+    assert_eq!(
+        violation_for(
+            &default.violations,
+            "build/out.log",
+            ArtifactSource::Tracked
+        )
+        .provenance,
+        ArtifactProvenance::Introduced,
+        "the default baseline is the repository's default branch, so the parent's \
+         path counts as introduced by the child"
+    );
+    assert!(
+        default.blocks(),
+        "the limitation blocks; it never lets a path through"
+    );
+
+    let explicit = scan_artifacts(&config.with_baseline("origin/parent")).expect("scan artifacts");
+    assert_eq!(
+        violation_for(
+            &explicit.violations,
+            "build/out.log",
+            ArtifactSource::Tracked
+        )
+        .provenance,
+        ArtifactProvenance::PreExisting,
+        "measured against its own base branch, the child introduced nothing"
+    );
+    assert!(!explicit.blocks(), "{:#?}", explicit.blocking_violations());
+}
+
+/// `staged` mode reads only the indexed manifests, not the whole index, yet
+/// the manifest exemption must still hold there.
+#[test]
+fn staged_mode_still_honours_an_indexed_manifest_exemption() {
+    let tmp = repo();
+    write_file(&tmp.path().join("apps/coverage/package.json"), "{}\n");
+    run_git(tmp.path(), &["add", "apps/coverage/package.json"]);
+    run_git(tmp.path(), &["commit", "-qm", "app"]);
+    write_file(
+        &tmp.path().join("apps/coverage/src/index.ts"),
+        "export {}\n",
+    );
+    write_file(&tmp.path().join("dist/bundle.js"), "x\n");
+    run_git(
+        tmp.path(),
+        &["add", "-f", "apps/coverage/src/index.ts", "dist/bundle.js"],
+    );
+
+    let report =
+        scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(ArtifactGuardMode::Staged))
+            .expect("scan artifacts");
+    let paths: Vec<&str> = report.violations.iter().map(|v| v.path.as_str()).collect();
+    assert_eq!(paths, ["dist/bundle.js"], "{:#?}", report.violations);
+}
+
+/// A failing `git worktree list` no longer ends the run (it was best effort
+/// before issue #1536). `scan_artifacts` then narrows every directory removal
+/// root to its exact path, so no `rm -rf -- 'worktrees'` can sweep a sibling
+/// worktree the guard could not see. Git offers no portable way to make that
+/// one command fail, so the fallback is driven directly.
+#[test]
+fn an_unknown_worktree_list_narrows_directory_roots_to_exact_paths() {
+    let tmp = repo();
+    write_file(&tmp.path().join("node_modules/leak/index.js"), "x\n");
+    write_file(&tmp.path().join("coverage/lcov.info"), "x\n");
+    let mut violations = scan_artifacts(&default_config(tmp.path()))
+        .expect("scan artifacts")
+        .violations;
+    assert_eq!(
+        violation_for(
+            &violations,
+            "node_modules/leak/index.js",
+            ArtifactSource::Untracked
+        )
+        .removal_root
+        .as_deref(),
+        Some("node_modules"),
+        "fixture: with the worktree list known, the directory root stands"
+    );
+
+    super::narrow_every_root_to_its_path(&mut violations);
+
+    for violation in &violations {
+        assert_eq!(
+            violation.removal_root.as_deref(),
+            Some(violation.path.as_str()),
+            "{violation:#?}"
+        );
     }
 }

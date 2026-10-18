@@ -20,10 +20,13 @@ moves, unstages, or rewrites files.
 - [Behavior](#behavior)
 - [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
   - [Baseline selection](#baseline-selection)
+  - [Stacked PRs](#stacked-prs)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
   - [Generic output segments and source manifests](#generic-output-segments-and-source-manifests)
 - [Remediation policy](#remediation-policy)
+  - [Cost in staged mode](#cost-in-staged-mode)
+  - [Hardening added with issue #1536](#hardening-added-with-issue-1536)
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
@@ -170,6 +173,29 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish --baseline origin/r
 `@{upstream}` is used only when no remote default branch and no local
 `main`/`master` exist. It can still attribute merged base-branch changes to the
 change under review in that case.
+
+### Stacked PRs
+
+The default list names the repository's default branch, not the base branch of
+a particular pull request. The guard has no way to learn a PR's base from Git
+alone. For a stacked PR, cut from another feature branch such as
+`feat/issue-1528-...`, the merge base with `origin/HEAD` lies below the parent
+branch, so every artifact-shaped path the parent added counts as `introduced`
+by the child and the gate blocks.
+
+The error is in the blocking direction: the default can make the guard stricter
+than intended, never more lenient. Pass the PR's base branch to measure the
+child on its own:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode pre-publish --baseline origin/feat/issue-1528-...
+```
+
+A caller that knows the base (for example from `gh pr view --json baseRefName`)
+should pass `--baseline origin/<baseRefName>` or set
+`AMPLIHACK_ARTIFACT_GUARD_BASELINE`. The test
+`a_stacked_pr_needs_its_base_branch_as_an_explicit_baseline` covers both the
+default behaviour and the remedy.
 
 ### Why the gates do not block on a pre-existing condition
 
@@ -347,7 +373,9 @@ matches it otherwise. In detail:
   `git ls-files -z`, which covers tracked and staged files. An untracked
   `package.json` exempts nothing.
 - **One set for every scan.** The guard builds the set once per run and uses it
-  in the staged, tracked, untracked, and ignored-present scans.
+  in the staged, tracked, untracked, and ignored-present scans. In `staged`
+  mode it lists only the manifests (`git ls-files -z -- '*/package.json' ...`)
+  rather than the whole index; see [Cost in staged mode](#cost-in-staged-mode).
 - **Fail closed.** If `git ls-files` fails, the run exits `2`. It never treats
   the set as empty.
 
@@ -357,7 +385,10 @@ exempts them.
 The coverage report files `lcov.info`, `coverage-final.json`,
 `coverage-summary.json`, and `clover.xml` match only inside a non-exempt output
 directory. A `lcov.info` at the repository root is not flagged, and neither is
-`apps/coverage/lcov.info` when the index contains `apps/coverage/package.json`. The other rules (`node-modules`, `plugin-bundle`,
+`apps/coverage/lcov.info` when the index contains `apps/coverage/package.json`.
+A match is not proof of output: a tracked `tests/fixtures/coverage/lcov.info`
+may be a hand-maintained parser fixture, so it is treated as possibly source
+(see [Remediation policy](#remediation-policy)). The other rules (`node-modules`, `plugin-bundle`,
 `cache-artifact`, `claude-runtime`, `nested-worktree`,
 `workflow-session-artifact`) are unaffected by manifests.
 
@@ -368,6 +399,7 @@ directory. A `lcov.info` at the repository root is not flagged, and neither is
 | `package.json` (repository root) | `dist/index.js` | `build-artifact` |
 | `pkg/package.json` | `pkg/dist/index.js` | `build-artifact`, because the manifest is in the parent |
 | nothing relevant | `coverage/lcov.info` | `build-artifact` |
+| nothing relevant | `tests/fixtures/coverage/lcov.info` (tracked) | `build-artifact`, possibly source |
 | nothing relevant | `build/notes.md` | `build-artifact`, possibly source (see [Remediation policy](#remediation-policy)) |
 | `apps/coverage/package.json` (untracked only) | `apps/coverage/src/index.ts` | `build-artifact` |
 | `packages/x/dist/package.json` | `packages/x/dist/index.js` | Not matched (known trade-off) |
@@ -433,7 +465,9 @@ entirely generated, or *none* when the guard cannot be sure:
 | `cache-artifact` under `.yarn/cache` | The file itself, because Yarn zero-install repositories commit that directory |
 | `build-artifact` on `target` or `.next` | The path up to and including that segment |
 | `build-artifact` on `index.scip` | The file itself |
-| `build-artifact` on `lcov.info`, `coverage-final.json`, `coverage-summary.json`, or `clover.xml` inside an output directory | The file itself |
+| `build-artifact` on `lcov.info`, `coverage-final.json`, `coverage-summary.json`, or `clover.xml` inside an output directory, untracked or ignored-present | The file itself |
+| The same report files, tracked or staged, directly inside a `coverage/` directory at the repository root or beside an indexed source manifest (`coverage/lcov.info`, `web/coverage/lcov.info` with `web/package.json`) | The file itself, because that is where coverage tools write their reports |
+| The same report files, tracked or staged, anywhere else (`tests/fixtures/coverage/lcov.info`) | *None*: it may be a test fixture |
 | `build-artifact` on another path in a generic output directory, untracked or ignored-present | The path up to and including the first qualifying (non-exempt) segment. For an untracked `apps/coverage/dist/x.js` with an indexed `apps/coverage/package.json`, that is `apps/coverage/dist` |
 | `build-artifact` on another path in a generic output directory, tracked or staged | *None* |
 
@@ -511,6 +545,11 @@ These rules make the printed commands safe to run:
   `rm -rf -- 'docs/build/scratch.log'`, never `-- 'docs/build'`; a leaked
   `worktrees/stale/leak.txt` next to a registered `worktrees/feat/x` gets
   `rm -rf -- 'worktrees/stale/leak.txt'`, never `-- 'worktrees'`.
+- **Unknown worktrees narrow every root.** Reading the registered worktrees
+  (`git worktree list`) is best effort, as it was before issue #1536: a
+  failure does not end the run. Because the guard then cannot tell what a
+  directory root would cover, every directory removal root in that run is
+  narrowed to the violating path itself.
 - **Segment-boundary containment.** When a removal root also contains
   pre-existing paths or possibly-source paths, the guard lists the introduced
   paths one by one. It does not untrack the whole directory. Containment is
@@ -539,6 +578,37 @@ These rules make the printed commands safe to run:
 
 The display groups (`build/` above) only organise the report. Removal commands
 always come from the removal root and never from the display group.
+
+### Cost in staged mode
+
+`--mode staged` (the pre-commit hook) runs on every commit, so it does no more
+work than it needs. It lists the staged paths and the indexed source manifests
+(a pathspec-limited `git ls-files`). It does not read the whole index, run
+`git worktree list`, or match rules against every indexed path. Those steps run
+only when a violation has a directory removal root, which is the one remedy
+that can reach paths the scan did not report, and then only once per run. A
+commit with no violations, or with only exact-path remedies, costs two `git`
+calls plus the allowlist read. The worktree and audit modes read the whole
+index anyway for the tracked scan, and reuse it.
+
+### Hardening added with issue #1536
+
+The three faults in issue #1536 needed three changes: the manifest exemption,
+no removal root for possibly-source paths, and the baseline order. Review of
+the first version found that the remedies it printed could still do damage for
+unusual file names, so this change also alters behaviour in the following ways.
+Each was a reachable problem before #1536 as well; they are listed here so they
+can be reviewed as separate decisions.
+
+| Change | Before | After |
+| --- | --- | --- |
+| Directory roots holding protected paths | `rm -rf -- 'docs/build'` even when `docs/build/guide.md` was allowlisted | Narrowed to the violating path ([rules above](#remediation-policy)) |
+| Pathspec magic and globs in `git rm` | `git rm --cached -- ':!x/node_modules'` untracked everything except that path | `git --literal-pathspecs rm` for such paths only |
+| `'` and control characters in paths | Printed inside single quotes, so the quoting could break | No removal command; the path is printed escaped |
+| `.gitignore` step of the cleanup chain | `echo '<root>' >> .gitignore` for any root | Only when the root is a literal ignore pattern |
+| Allowlist suggestions | General advice to add a narrow entry | The exact line, printed only when the parser would accept it |
+| Untracked or ignored paths | `git rm --cached` (which fails with `pathspec did not match`) alongside `rm -rf` | Plain `rm` only |
+| `git worktree list` failure | Best effort | Still best effort; directory roots are narrowed for that run |
 
 ## Allowlist configuration
 

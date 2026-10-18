@@ -450,48 +450,59 @@ pub fn scan_artifacts(
 ) -> Result<ArtifactGuardReport, ArtifactGuardError> {
     let repo = resolve_repo_root(&config.repo)?;
     let allowlist = load_effective_allowlist(config, &repo)?;
-    let index = read_index(&repo)?;
-    let manifests = manifest_dirs(&index);
+    // `staged` mode only needs the indexed manifests for the generic-segment
+    // exemption, not the whole index; the full index and the worktree list
+    // are read only by the worktree scans, or later if a directory removal
+    // root has to be checked. A pre-commit run with nothing to remove costs
+    // what it did before issue #1536 plus one pathspec-limited `ls-files`.
+    let mut index = if config.mode.scans_worktree() {
+        Some(read_index(&repo)?)
+    } else {
+        None
+    };
+    let manifests = match index.as_deref() {
+        Some(index) => manifest_dirs(index),
+        None => manifest_dirs(&read_manifest_paths(&repo)?),
+    };
     // Files inside legitimately-registered sibling task worktrees (concurrent
     // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution:
     // they are never flagged (issue #857) and never swept into a removal root.
-    let registered = registered_nested_worktree_prefixes(&repo)?;
-    let mut protected = protected_index_paths(&index, &allowlist, &manifests);
-    protected.extend(
-        registered
-            .iter()
-            .map(|prefix| prefix.trim_end_matches('/').to_string()),
-    );
+    // Only the worktree scans can list such files, so `staged` mode does not
+    // ask. `None` means `git worktree list` failed; see [`scan_artifacts`]'s
+    // handling of directory roots below.
+    let mut registered = if config.mode.scans_worktree() {
+        registered_nested_worktree_prefixes(&repo)
+    } else {
+        Some(Vec::new())
+    };
+    let skip_prefixes = registered.clone().unwrap_or_default();
+    // Paths outside the index that the allowlist marks as source.
+    let mut allowed_outside_index = BTreeSet::new();
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     let mut baseline = None;
-    let mut add = |paths: &[String],
-                   source: ArtifactSource,
-                   introduced: Option<&BTreeSet<String>>,
-                   protected: &mut BTreeSet<String>| {
-        for path in paths {
-            if source != ArtifactSource::Tracked
-                && is_inside_registered_nested_worktree(path, &registered)
-            {
-                continue;
+    let mut add =
+        |paths: &[String], source: ArtifactSource, introduced: Option<&BTreeSet<String>>| {
+            for path in paths {
+                if source != ArtifactSource::Tracked
+                    && is_inside_registered_nested_worktree(path, &skip_prefixes)
+                {
+                    continue;
+                }
+                if source != ArtifactSource::Tracked && allowlist.is_allowed(path) {
+                    allowed_outside_index.insert(path.clone());
+                }
+                add_violation_if_prohibited(
+                    path,
+                    source,
+                    &allowlist,
+                    &manifests,
+                    introduced,
+                    &mut violations,
+                    &mut seen,
+                );
             }
-            // Outside the index only an allowlist entry marks a path as
-            // source; everything else there is matched output or exempt
-            // runtime state.
-            if allowlist.is_allowed(path) {
-                protected.insert(path.clone());
-            }
-            add_violation_if_prohibited(
-                path,
-                source,
-                &allowlist,
-                &manifests,
-                introduced,
-                &mut violations,
-                &mut seen,
-            );
-        }
-    };
+        };
 
     if config.mode.scans_staged() {
         let staged = git_paths(
@@ -504,24 +515,19 @@ pub fn scan_artifacts(
                 "-z",
             ],
         )?;
-        add(&staged, ArtifactSource::Staged, None, &mut protected);
+        add(&staged, ArtifactSource::Staged, None);
     }
 
-    if config.mode.scans_worktree() {
+    if let Some(index) = index.as_deref() {
         // Only the *tracked* index can hold paths the change under review never
         // touched, so that is the one scan that needs a provenance baseline
         // (issue #1422). Staged, untracked, and ignored-present paths are all
         // live worktree state the change is carrying right now.
         baseline = resolve_baseline(&repo, config.baseline.as_deref())?;
         let introduced = introduced_paths(&repo, baseline.as_ref())?;
-        add(
-            &index,
-            ArtifactSource::Tracked,
-            Some(&introduced),
-            &mut protected,
-        );
+        add(index, ArtifactSource::Tracked, Some(&introduced));
         let untracked = git_paths(&repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
-        add(&untracked, ArtifactSource::Untracked, None, &mut protected);
+        add(&untracked, ArtifactSource::Untracked, None);
         if config.mode.scans_ignored_present() {
             let ignored = git_paths(
                 &repo,
@@ -533,40 +539,59 @@ pub fn scan_artifacts(
                     "-z",
                 ],
             )?;
-            add(
-                &ignored,
-                ArtifactSource::IgnoredPresent,
-                None,
-                &mut protected,
-            );
+            add(&ignored, ArtifactSource::IgnoredPresent, None);
         }
     }
 
-    // A mode may skip untracked or ignored files (`staged`, and the gates per
-    // issue #928), yet a directory root still covers them on disk. List every
-    // file outside the index under each candidate root, ignored included, so
-    // an allowlisted one is protected whatever the mode.
-    let dir_roots: BTreeSet<&str> = violations
+    // A directory removal root is the one remedy that can touch paths the scan
+    // did not report, so everything below runs only when one exists.
+    let dir_roots: BTreeSet<String> = violations
         .iter()
         .filter_map(|violation| {
             violation
                 .removal_root
-                .as_deref()
+                .clone()
                 .filter(|root| *root != violation.path)
         })
         .collect();
     if !dir_roots.is_empty() {
-        let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
-        args.extend(dir_roots);
-        for path in git_paths(&repo, &args)? {
-            // A nested repository is listed as one directory entry and never
-            // looked into, so whatever it holds is protected as a whole.
-            if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
-                protected.insert(path);
+        if registered.is_none() {
+            // `git worktree list` failed, so a registered sibling worktree
+            // could sit under any directory root. Rather than end the run (a
+            // new way for every hook to fail) or risk `rm -rf -- 'worktrees'`,
+            // offer only exact-path remedies this time.
+            narrow_every_root_to_its_path(&mut violations);
+        } else {
+            let index = match index.take() {
+                Some(index) => index,
+                None => read_index(&repo)?,
+            };
+            let mut protected = protected_index_paths(&index, &allowlist, &manifests);
+            protected.append(&mut allowed_outside_index);
+            protected.extend(
+                registered
+                    .take()
+                    .unwrap_or_default()
+                    .iter()
+                    .map(|prefix| prefix.trim_end_matches('/').to_string()),
+            );
+            // A mode may skip untracked or ignored files (`staged`, and the
+            // gates per issue #928), yet a directory root still covers them on
+            // disk. List every file outside the index under each candidate
+            // root, ignored included, so an allowlisted one is protected
+            // whatever the mode.
+            let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
+            args.extend(dir_roots.iter().map(String::as_str));
+            for path in git_paths(&repo, &args)? {
+                // A nested repository is listed as one directory entry and
+                // never looked into, so whatever it holds is protected whole.
+                if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
+                    protected.insert(path);
+                }
             }
+            narrow_roots_holding_protected_paths(&mut violations, &protected);
         }
     }
-    narrow_roots_holding_protected_paths(&mut violations, &protected);
 
     violations.sort_by(|left, right| {
         left.path
@@ -742,8 +767,9 @@ const SOURCE_MANIFESTS: &[&str] = &[
 pub const GENERIC_OUTPUT_SEGMENTS: &[&str] =
     &["dist", "build", "coverage", "out", "logs", "outputs"];
 
-/// Coverage tool reports: generated wherever they sit inside a non-exempt
-/// output directory, so they keep an exact removal root even when tracked.
+/// Coverage tool reports. Untracked or ignored, they always get an exact
+/// removal root; tracked or staged, only where [`is_project_coverage_report`]
+/// holds.
 const COVERAGE_REPORT_FILES: &[&str] = &[
     "lcov.info",
     "coverage-final.json",
@@ -755,6 +781,20 @@ const COVERAGE_REPORT_FILES: &[&str] = &[
 /// scan; it feeds the tracked scan, [`manifest_dirs`] and the protected set.
 fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
     git_paths(repo, &["ls-files", "-z"])
+}
+
+/// Indexed [`SOURCE_MANIFESTS`] below the repository root, listed with
+/// pathspecs so `staged` mode does not read the whole index. Default pathspec
+/// `*` matches across `/`, so `*/package.json` finds one at any depth; any
+/// overmatch is filtered by name in [`manifest_dirs`].
+fn read_manifest_paths(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
+    let patterns: Vec<String> = SOURCE_MANIFESTS
+        .iter()
+        .map(|name| format!("*/{name}"))
+        .collect();
+    let mut args = vec!["ls-files", "-z", "--"];
+    args.extend(patterns.iter().map(String::as_str));
+    git_paths(repo, &args)
 }
 
 /// The NUL-separated paths `git <args>` prints, slash-normalized, without a
@@ -848,6 +888,16 @@ fn narrow_roots_holding_protected_paths(
     }
 }
 
+/// Replace every directory removal root with the violating path itself. Used
+/// when the guard cannot tell what a directory root would cover.
+fn narrow_every_root_to_its_path(violations: &mut [ArtifactViolation]) {
+    for violation in violations {
+        if violation.removal_root.is_some() {
+            violation.removal_root = Some(violation.path.clone());
+        }
+    }
+}
+
 fn load_effective_allowlist(
     config: &ArtifactGuardConfig,
     repo: &Path,
@@ -889,26 +939,22 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
 /// registered under `<repo>/worktrees/`. These are legitimate concurrent task
 /// worktrees created by other recipe runs — not leaked scratch — so the artifact
 /// guard must never flag their contents (issue #857), and no removal root may
-/// cover them (issue #1536). Fails closed: a git error is an error, because an
-/// empty list would let `rm -rf -- 'worktrees'` sweep every sibling worktree.
-fn registered_nested_worktree_prefixes(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
-    let args = ["worktree", "list", "--porcelain"];
+/// cover them (issue #1536).
+///
+/// Best effort, as before issue #1536: `None` when `git worktree list` cannot
+/// run or fails. The caller then flags nothing as nested-worktree content and
+/// offers no directory-wide removal command, because an empty list would let
+/// `rm -rf -- 'worktrees'` sweep every sibling worktree. A failure never ends
+/// the run.
+fn registered_nested_worktree_prefixes(repo: &Path) -> Option<Vec<String>> {
     let output = amplihack_git::command()
         .args(["-C"])
         .arg(repo)
-        .args(args)
+        .args(["worktree", "list", "--porcelain"])
         .output()
-        .map_err(|error| ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: None,
-            stderr: error.to_string(),
-        })?;
+        .ok()?;
     if !output.status.success() {
-        return Err(ArtifactGuardError::Git {
-            args: args.join(" "),
-            code: output.status.code(),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
-        });
+        return None;
     }
     let repo_canon = repo.canonicalize().unwrap_or_else(|_| repo.to_path_buf());
     let mut prefixes = Vec::new();
@@ -928,7 +974,7 @@ fn registered_nested_worktree_prefixes(repo: &Path) -> Result<Vec<String>, Artif
             prefixes.push(format!("{rel}/"));
         }
     }
-    Ok(prefixes)
+    Some(prefixes)
 }
 
 /// Whether `raw_path` (a repo-relative scan path) lies inside one of the
@@ -1198,8 +1244,10 @@ fn is_cache_path(path: &str) -> bool {
 /// own, so output nested inside such a project is still caught.
 ///
 /// A tracked or staged path under a qualifying generic segment may still be
-/// source, so it gets no removal root; only coverage reports, which are never
-/// hand-written, keep one.
+/// source, so it gets no removal root. A tracked or staged coverage report
+/// keeps one only where a coverage tool writes it (see
+/// [`is_project_coverage_report`]); elsewhere, such as
+/// `tests/fixtures/coverage/lcov.info`, it may be a hand-maintained fixture.
 fn build_artifact_match(
     path: &str,
     source: ArtifactSource,
@@ -1221,13 +1269,32 @@ fn build_artifact_match(
         GENERIC_OUTPUT_SEGMENTS.contains(&part) && !manifests.contains(prefix)
     })?;
     let file_name = path.rsplit('/').next().unwrap_or(path);
-    if COVERAGE_REPORT_FILES.contains(&file_name) {
+    if COVERAGE_REPORT_FILES.contains(&file_name)
+        && (matches!(
+            source,
+            ArtifactSource::Untracked | ArtifactSource::IgnoredPresent
+        ) || is_project_coverage_report(path, manifests))
+    {
         return Some(Some(path.to_string()));
     }
     match source {
         ArtifactSource::Tracked | ArtifactSource::Staged => Some(None),
         ArtifactSource::Untracked | ArtifactSource::IgnoredPresent => Some(Some(segment_root)),
     }
+}
+
+/// Whether a coverage report sits where coverage tools write one: directly in
+/// a `coverage/` directory whose parent is the repository root or a directory
+/// holding an indexed source manifest (`coverage/lcov.info`,
+/// `packages/web/coverage/lcov.info` beside `packages/web/package.json`).
+/// A report anywhere else, such as `tests/fixtures/coverage/lcov.info`, may be
+/// a parser fixture, so a tracked or staged one is treated as possibly source.
+fn is_project_coverage_report(path: &str, manifests: &BTreeSet<String>) -> bool {
+    let Some((dir, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    let (project, name) = dir.rsplit_once('/').unwrap_or(("", dir));
+    name == "coverage" && (project.is_empty() || manifests.contains(project))
 }
 
 fn normalize_slashes(path: &str) -> String {
