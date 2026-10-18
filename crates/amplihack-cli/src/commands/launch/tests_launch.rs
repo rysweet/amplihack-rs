@@ -822,6 +822,35 @@ fn test_wait_for_child_returns_nonzero_on_normal_failure() {
     );
 }
 
+/// A `sh` that sends SIGINT to itself, started with SIGINT at its default
+/// disposition.
+///
+/// A disposition of `SIG_IGN` survives exec, and POSIX `sh` cannot reset a
+/// signal that was ignored on entry, so `kill -INT $$` would leave the shell
+/// alive to exit 0. The test binary inherits `SIG_IGN` whenever it is started
+/// as a background job of a non-interactive shell (as auto-drive's QA run
+/// is), and whether some other test has meanwhile installed a SIGINT handler,
+/// which exec resets to the default, depends on scheduling. Resetting the
+/// disposition in the child makes the result independent of both.
+#[cfg(unix)]
+fn sh_killing_itself_with_sigint() -> Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "kill -INT $$"]);
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // `signal`, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::signal(libc::SIGINT, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 /// Document the root cause: on Unix, a process killed by SIGINT has *no*
 /// numeric exit code — status.code() returns None.
 ///
@@ -833,8 +862,7 @@ fn test_sigint_killed_process_has_no_numeric_exit_code() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut child = std::process::Command::new("sh")
-        .args(["-c", "kill -INT $$"])
+    let mut child = sh_killing_itself_with_sigint()
         .spawn()
         .expect("failed to spawn sh");
     let status = child.wait().expect("wait failed");
@@ -861,8 +889,7 @@ fn test_wait_for_child_returns_zero_when_killed_by_sigint() {
 
     // Spawn a shell that immediately sends SIGINT to itself.
     // This models a user pressing Ctrl+C while the claude binary is running.
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "kill -INT $$"]);
+    let cmd = sh_killing_itself_with_sigint();
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
     let shutdown = Arc::new(AtomicBool::new(false));
 

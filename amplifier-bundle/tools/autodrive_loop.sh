@@ -92,6 +92,12 @@ autodrive_use_task_file "$TASK_FILE_IN" "${STATE_DIR}/${LOOP_NAME}-task_descript
 
 AMPLIHACK_BIN="${AMPLIHACK_BIN:-amplihack}"
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+# The round and the evaluator come from this driver's tree, never from the PR
+# worktree that is --repo: its own recipes would judge the PR (#1543). Without
+# the evaluator a full round would run and then die on an unreadable verdict.
+ROUND_RECIPE="$(autodrive_launch_recipe "$ROUND_RECIPE")" \
+  || { echo "ERROR: loop '${LOOP_NAME}': the round recipe is not in ${LOOP_HOME%/tools}/recipes; refusing to resolve it from --repo" >&2; exit 2; }
+HEALTH_RECIPE="$(autodrive_launch_recipe loop-health-evaluator)" || HEALTH_RECIPE=""
 
 # --- recursion context: propagate, never raise -----------------------------
 # AMPLIHACK_MAX_DEPTH is a ceiling handed down by the host. This loop passes it
@@ -153,16 +159,10 @@ escalate() { # escalate <verdict> <why>
 }
 
 # --- preflight: the terminator must resolve BEFORE round 1 ------------------
-# Both loops delegate termination to `loop-health-evaluator`, invoked by name.
-# When that recipe cannot be resolved, the first round still runs in full — a
-# crusty review, a builder fix pass, commits pushed — and only then dies with
-# "returned STUCK (or an unreadable verdict)", which names the loop as the
-# problem instead of the missing dependency. Resolve it first and refuse by
-# name, before a single round is spent.
-if ! "$AMPLIHACK_BIN" recipe show loop-health-evaluator >/dev/null 2>&1; then
-  echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve." >&2
+if [ -z "$HEALTH_RECIPE" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIPE" >/dev/null 2>&1; then
+  echo "ERROR: loop '${LOOP_NAME}' cannot start: the required recipe 'loop-health-evaluator' does not resolve in ${LOOP_HOME%/tools}/recipes." >&2
   echo "  It is this loop's ONLY terminator (issue #1337). Without it a full round runs first — a review, a fix pass, commits pushed — and the loop then stops on an unreadable verdict that blames the loop rather than the missing dependency." >&2
-  echo "  Install or update the amplifier bundle so 'loop-health-evaluator' resolves, then re-run. Check with: ${AMPLIHACK_BIN} recipe show loop-health-evaluator" >&2
+  echo "  Install or update the amplifier bundle so 'loop-health-evaluator' resolves, then re-run. Check with: ${AMPLIHACK_BIN} recipe show ${LOOP_HOME%/tools}/recipes/loop-health-evaluator.yaml" >&2
   printf '{"loop":"%s","loop_result":"MISSING_DEPENDENCY","round_label":"preflight","reason":"the required recipe loop-health-evaluator does not resolve"}\n' \
     "$LOOP_NAME"
   exit 1
@@ -312,7 +312,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
-  ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run loop-health-evaluator \
+  ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE" \
       --working-dir "$REPO" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
