@@ -581,8 +581,8 @@ always come from the removal root and never from the display group.
 
 ### Cost in staged mode
 
-`--mode staged` (the pre-commit hook) runs on every commit, so it does no more
-work than it needs. It lists the staged paths and the indexed source manifests
+`--mode staged` is meant to run on every commit, so it does no more work than
+it needs. (The repository's own pre-commit hook uses `--mode pre-commit`.) It lists the staged paths and the indexed source manifests
 (a pathspec-limited `git ls-files`). It does not read the whole index, run
 `git worktree list`, or match rules against every indexed path. Those steps run
 only when a violation has a directory removal root, which is the one remedy
@@ -590,6 +590,16 @@ that can reach paths the scan did not report, and then only once per run. A
 commit with no violations, or with only exact-path remedies, costs two `git`
 calls plus the allowlist read. The worktree and audit modes read the whole
 index anyway for the tracked scan, and reuse it.
+
+The manifest lookup uses pathspecs such as `*/package.json`, which match across
+`/` only under git's default pathspec rules. The guard therefore removes
+`GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_LITERAL_PATHSPECS` and
+`GIT_ICASE_PATHSPECS` from every git command it runs. Without this, a caller
+that exports `GIT_LITERAL_PATHSPECS=1` (Magit and Emacs VC do) would find no
+manifests in `staged` mode and flag `apps/coverage/tsconfig.json`, while
+`pre-commit` passed the same change; and an inherited `GIT_GLOB_PATHSPECS`
+would make git reject the `--literal-pathspecs` listing under a directory
+removal root, turning a block into a git failure.
 
 ### Hardening added with issue #1536
 

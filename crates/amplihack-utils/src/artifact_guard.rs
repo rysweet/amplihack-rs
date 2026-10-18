@@ -649,7 +649,7 @@ fn resolve_baseline(
 }
 
 fn head_exists(repo: &Path) -> bool {
-    amplihack_git::command()
+    guard_git()
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
@@ -658,7 +658,7 @@ fn head_exists(repo: &Path) -> bool {
 }
 
 fn merge_base(repo: &Path, rev: &str) -> Option<String> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         // `--end-of-options`: a `--baseline` value starting with `-` must be
@@ -706,7 +706,7 @@ fn collect_diff_paths(
     args: &[&str],
     paths: &mut BTreeSet<String>,
 ) -> Result<(), ArtifactGuardError> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(args)
@@ -735,7 +735,7 @@ fn collect_diff_paths(
 }
 
 fn resolve_repo_root(repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "--show-toplevel"])
@@ -797,6 +797,37 @@ fn read_manifest_paths(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
     git_paths(repo, &args)
 }
 
+/// Environment variables that change how git reads a pathspec. Each one is
+/// removed from every git command the guard runs.
+///
+/// [`read_manifest_paths`] asks for `*/package.json` and relies on git's
+/// default pathspec rules, under which `*` matches across `/`. With
+/// `GIT_GLOB_PATHSPECS` set, `*` stops at `/`; with `GIT_LITERAL_PATHSPECS`
+/// set (Magit and Emacs VC do this, and a hook passes it on), `*` is a literal
+/// character. Either way no manifest is found, nothing is exempt, and
+/// `--mode staged` would flag `apps/coverage/tsconfig.json` again while
+/// `--mode pre-commit` passed it (issue #1536). The flag `--glob-pathspecs`
+/// cannot be used instead: git rejects it when `GIT_LITERAL_PATHSPECS` is also
+/// set. The directory-root listing passes `--literal-pathspecs` explicitly,
+/// which git would likewise reject alongside an inherited `GIT_GLOB_PATHSPECS`.
+const PATHSPEC_ENV: &[&str] = &[
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+];
+
+/// A git command scrubbed by [`amplihack_git::command`] and, in addition,
+/// cleared of [`PATHSPEC_ENV`], so the verdict never depends on how the
+/// caller's environment tells git to read pathspecs.
+fn guard_git() -> std::process::Command {
+    let mut command = amplihack_git::command();
+    for name in PATHSPEC_ENV {
+        command.env_remove(name);
+    }
+    command
+}
+
 /// The NUL-separated paths `git <args>` prints, slash-normalized, without a
 /// trailing `/`, empty entries dropped.
 ///
@@ -804,7 +835,7 @@ fn read_manifest_paths(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
 /// unreadable index must not silently change what the guard matches or which
 /// removal commands it prints.
 fn git_paths(repo: &Path, args: &[&str]) -> Result<Vec<String>, ArtifactGuardError> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(args)
@@ -947,7 +978,7 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
 /// `rm -rf -- 'worktrees'` sweep every sibling worktree. A failure never ends
 /// the run.
 fn registered_nested_worktree_prefixes(repo: &Path) -> Option<Vec<String>> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(["worktree", "list", "--porcelain"])

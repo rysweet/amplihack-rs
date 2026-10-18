@@ -1333,3 +1333,94 @@ fn cli_never_deletes_a_nested_repository_under_a_directory_root() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1536, round 3: the caller's pathspec environment must not change the
+// verdict. `--mode staged` finds manifests with `*/package.json`-style
+// pathspecs, which only match across `/` under git's default rules. Magit and
+// Emacs VC export `GIT_LITERAL_PATHSPECS=1`, and a hook passes it on.
+// ---------------------------------------------------------------------------
+
+const PATHSPEC_ENV: &[(&str, &str)] = &[
+    ("GIT_LITERAL_PATHSPECS", "1"),
+    ("GIT_GLOB_PATHSPECS", "1"),
+    ("GIT_NOGLOB_PATHSPECS", "1"),
+    ("GIT_ICASE_PATHSPECS", "1"),
+];
+
+fn run_guard_with_env(repo: &Path, mode: &str, env: (&str, &str)) -> std::process::Output {
+    Command::new(bin())
+        .args(["hygiene", "artifact-guard", "--mode", mode, "--repo"])
+        .arg(repo)
+        .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
+        .env(env.0, env.1)
+        .output()
+        .expect("run artifact guard")
+}
+
+#[test]
+fn cli_staged_coverage_app_passes_whatever_the_pathspec_environment() {
+    let tmp = repo_on_task_branch();
+    for (path, content) in [
+        ("apps/coverage/package.json", "{\"name\":\"coverage\"}\n"),
+        ("apps/coverage/tsconfig.json", "{}\n"),
+        ("apps/coverage/src/i.ts", "export const x = 1;\n"),
+    ] {
+        write_file(&tmp.path().join(path), content);
+    }
+    run_git(tmp.path(), &["add", "apps"]);
+
+    for env in PATHSPEC_ENV {
+        for mode in ["staged", "pre-commit", "pre-publish"] {
+            let output = run_guard_with_env(tmp.path(), mode, *env);
+            let combined = combined(&output);
+            assert_eq!(
+                output.status.code(),
+                Some(0),
+                "staged apps/coverage source must pass {mode} with {}={}\n{combined}",
+                env.0,
+                env.1
+            );
+            assert!(
+                !combined.contains("apps/coverage"),
+                "{mode} with {}={} must not report apps/coverage; got:\n{combined}",
+                env.0,
+                env.1
+            );
+        }
+    }
+}
+
+#[test]
+fn cli_directory_root_listing_survives_an_inherited_pathspec_environment() {
+    // A staged `node_modules` file gives a directory removal root, so the guard
+    // lists the files under it with `--literal-pathspecs`. git refuses that
+    // flag alongside an inherited GIT_GLOB_PATHSPECS, which must not turn a
+    // plain block (exit 1) into a git failure (exit 2).
+    let tmp = repo();
+    write_file(
+        &tmp.path().join("node_modules/leak/index.js"),
+        "module.exports = 1;\n",
+    );
+    run_git(tmp.path(), &["add", "-f", "node_modules/leak/index.js"]);
+
+    for env in PATHSPEC_ENV {
+        for mode in ["staged", "pre-commit"] {
+            let output = run_guard_with_env(tmp.path(), mode, *env);
+            let combined = combined(&output);
+            assert_eq!(
+                output.status.code(),
+                Some(1),
+                "{mode} with {}={} must block, not fail\n{combined}",
+                env.0,
+                env.1
+            );
+            assert!(
+                combined.contains("node_modules/leak/index.js"),
+                "{mode} with {}={} must name the staged artifact; got:\n{combined}",
+                env.0,
+                env.1
+            );
+        }
+    }
+}
