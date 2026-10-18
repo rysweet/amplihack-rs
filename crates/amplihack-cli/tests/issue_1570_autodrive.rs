@@ -45,6 +45,9 @@ n=$((n + 1))
 printf '%s' "$n" > "$STUB_STATE/calls"
 flock -u 9
 exec 9>&-
+# The loop names its recipes by absolute launch-side path (#1543); this test
+# keys on the recipe name.
+[ "${1:-}" = recipe ] && [ $# -ge 3 ] && set -- "$1" "$2" "$(basename -- "$3" .yaml)" "${@:4}"
 printf '%s\0' "$@" > "$STUB_LOG/call-$(printf '%05d' "$n")"
 case "${1:-} ${2:-}" in
   "recipe show") exit 0 ;;

@@ -341,6 +341,11 @@ mod issue_746_default_workflow_guidance;
 #[path = "issue_684_host_aware_workflow_test.rs"]
 mod issue_684_host_aware_workflow;
 
+// Issue #1595: step-03 tracking-issue selection on GitHub (explicit
+// issue_number wins; task-text #N reused only when it is an open issue).
+#[path = "issue_1595_tracking_issue_selection_test.rs"]
+mod issue_1595_tracking_issue_selection;
+
 // Issues #815/#804: default-workflow local tracking issue-number extraction.
 // step-03b must accept hash-based `local-<hash>` references (propagate them),
 // never surface a bare number for a local fallback, and never abort the workflow.
