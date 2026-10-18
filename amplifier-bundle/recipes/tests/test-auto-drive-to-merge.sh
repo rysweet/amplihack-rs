@@ -1713,22 +1713,20 @@ CRUSTY_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "st
 # 5z. An agent step that stages something in the review dir fails its round
 #     (#1528; crusty rounds 3 and 4 on PR #1586).
 # ---------------------------------------------------------------------------
-# The agents start in the main checkout (judging) or are told to stay in the
-# linked worktree (step-04, which stages and commits), and both hold only by
-# their prompts. Each round's step-00 stamps the review dir's index and HEAD;
-# step-02b, straight after the judging step, and step-04b, straight after
-# step-04, compare. The real step bodies run here, around an agent step that
-# does what #1528's agent did: `git -C <main checkout> add -f`. Each check
-# step must carry its agent step's condition, or it would run (and pass)
-# when the agent did not, and be skipped when it did.
+# The judging agents start in the main checkout and hold only by their
+# prompts. Each round's step-00 stamps the review dir's index and HEAD;
+# step-02b, straight after the judging step, compares. The real step bodies
+# run here, around an agent step that does what #1528's agent did:
+# `git -C <main checkout> add -f`. The check step must carry its agent step's
+# condition, or it would run (and pass) when the agent did not, and be
+# skipped when it did. step-04, which stages and commits, is covered by the
+# loop's own check after the whole round (1528-loop-failed-round-review-dir).
 IX_FILE="${LAUNCH}/staged-by-the-agent.txt"
 step_condition() { # step_condition <recipe> <step>: its condition line, or nothing
   awk -v step="$2" 'index($0, "id: \"" step "\"") { s=1; next } s && /^  - id:/ { exit } s && /^    condition:/ { print; exit }' "$1"
 }
 for spec in autodrive-crusty-round:step-02-crusty-review:step-02b-review-dir-unchanged \
-            autodrive-crusty-round:step-04-address-concerns:step-04b-review-dir-unchanged \
-            autodrive-merge-round:step-02-merge-ready-assessment:step-02b-review-dir-unchanged \
-            autodrive-merge-round:step-04-address-blockers:step-04b-review-dir-unchanged; do
+            autodrive-merge-round:step-02-merge-ready-assessment:step-02b-review-dir-unchanged; do
   r="${spec%%:*}"; rest="${spec#*:}"; agent="${rest%%:*}"; check="${rest#*:}"
   G0="$(extract_step_command "${RECIPES}/${r}.yaml" step-00-review-dir-guard)"
   G2="$(extract_step_command "${RECIPES}/${r}.yaml" "${check}")"
@@ -1755,7 +1753,7 @@ done
 # could not be taken again, never that the step changed the review dir.
 IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
 G0="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-00-review-dir-guard)"
-G2="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-04b-review-dir-unchanged)"
+G2="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-02b-review-dir-unchanged)"
 STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"
 IX_GD="$(git -C "${LAUNCH}" rev-parse --absolute-git-dir)"
 cp -p -- "${IX_GD}/index" "${WORK}/launch-index.bak" && printf 'not an index' > "${IX_GD}/index"
@@ -1780,7 +1778,7 @@ if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIE
 else
   fail "1528-loop-evaluator-review-dir-index" "rc=${rc} out=${LOOP_OUT} err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
 fi
-# A stamp that cannot be taken before the evaluator is its own stop: the
+# A stamp that cannot be taken again after the round is its own stop: the
 # evaluator never runs, and nothing claims the review dir changed.
 set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
 cp -p -- "${LOOP_MAIN}/.git/index" "${WORK}/loop-main-index.bak"
@@ -1794,6 +1792,62 @@ if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIE
   pass "1528-loop-evaluator-unstamped" "a failed stamp stops the loop before the evaluator with REVIEW_DIR_UNSTAMPED, not REVIEW_DIR_CHANGED"
 else
   fail "1528-loop-evaluator-unstamped" "rc=${rc} out=${LOOP_OUT} calls=$(tr '\n' ' ' < "${LOOP_LOGS}/calls" 2>/dev/null) err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
+# A round whose agent stages in the review dir and then fails (its step-02b
+# STOP, or a step-04 that fails or times out after staging) is not terminal by
+# itself: it goes to the evaluator, which may continue. The loop compares its
+# own stamp after every round, so it stops there; the evaluator and a second
+# round, which would stamp the polluted index as its baseline, never run
+# (crusty round 5 on PR #1586).
+set_stub '' 0 "$H_CONTINUE"; export STUB_HEALTH_STDOUT_LATER=""
+export STUB_ROUND_BODY="printf 'x\n' > '${LOOP_MAIN}/round.txt' && git -C '${LOOP_MAIN}' add -f round.txt && exit 1"
+run_loop round-stages-and-fails; rc=$?
+unset STUB_ROUND_BODY STUB_HEALTH_STDOUT_LATER
+git -C "${LOOP_MAIN}" rm -q --cached -- round.txt >/dev/null 2>&1; rm -f -- "${LOOP_MAIN}/round.txt"
+if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIEW_DIR_CHANGED"' \
+   && [ "$(grep -c '^autodrive-crusty-round$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "1" ] \
+   && ! grep -qx 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null \
+   && grep -qF 'STOP: round-1 changed the index or HEAD of the review dir' "${LOOP_LOGS}/err"; then
+  pass "1528-loop-failed-round-review-dir" "a failed round that staged in the review dir stops the loop before the evaluator and any further round"
+else
+  fail "1528-loop-failed-round-review-dir" "rc=${rc} out=${LOOP_OUT} calls=$(tr '\n' ' ' < "${LOOP_LOGS}/calls" 2>/dev/null) err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
+# A stamp records the main checkout as found, so step-00 refuses one whose
+# index already holds a run worktree as a gitlink: one round's agent stages
+# it (as #1528's did), and the next round must not take it as its baseline.
+# Both forms artifact-guard calls run-worktree-gitlink: under worktrees/, and
+# a registered worktree elsewhere. A gitlink that is no worktree is not one.
+GL_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
+for r in autodrive-crusty-round autodrive-merge-round; do
+  G0="$(extract_step_command "${RECIPES}/${r}.yaml" step-00-review-dir-guard)"
+  for gl in worktrees/run-1 run-elsewhere; do
+    git -C "${LAUNCH}" worktree add -q --detach "${gl}" >/dev/null 2>&1
+    env "${GL_ENV[@]}" bash -c "${G0}" >/dev/null 2>&1; rc_first=$?
+    git -C "${LAUNCH}" add -f -- "${gl}" >/dev/null 2>&1
+    GL_ERR="$(env "${GL_ENV[@]}" bash -c "${G0}" 2>&1 >/dev/null)"; rc_next=$?
+    GL_MODE="$(git -C "${LAUNCH}" ls-files --stage -- "${gl}" | cut -c1-6)"
+    git -C "${LAUNCH}" rm -q --cached -f -- "${gl}" >/dev/null 2>&1
+    git -C "${LAUNCH}" worktree remove --force "${gl}" >/dev/null 2>&1; rm -rf -- "${LAUNCH:?}/worktrees"
+    if [ "$rc_first" -eq 0 ] && [ "$GL_MODE" = "160000" ] && [ "$rc_next" -ne 0 ] \
+       && printf '%s' "${GL_ERR}" | grep -qF "records a run worktree as a gitlink (${gl}" \
+       && printf '%s' "${GL_ERR}" | grep -qF 'rm --cached -f'; then
+      pass "1528-${r}-step-00-gitlink-${gl%%/*}" "the next round's step-00 refuses a review dir with the run worktree ${gl} staged as a gitlink"
+    else
+      fail "1528-${r}-step-00-gitlink-${gl%%/*}" "first rc=${rc_first} mode=${GL_MODE} next rc=${rc_next} err: ${GL_ERR}"
+    fi
+  done
+done
+GL_OTHER="${LAUNCH}/vendored"; git init -q "${GL_OTHER}" \
+  && git -C "${GL_OTHER}" update-ref HEAD "$(git -C "${GL_OTHER}" commit-tree "$(git -C "${GL_OTHER}" write-tree)" -m v)" \
+  && git -C "${LAUNCH}" add -- vendored >/dev/null 2>&1
+G0="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-00-review-dir-guard)"
+env "${GL_ENV[@]}" bash -c "${G0}" >/dev/null 2>&1; rc=$?
+GL_MODE="$(git -C "${LAUNCH}" ls-files --stage -- vendored | cut -c1-6)"
+git -C "${LAUNCH}" rm -q --cached -f -- vendored >/dev/null 2>&1; rm -rf -- "${GL_OTHER}"
+if [ "$rc" -eq 0 ] && [ "$GL_MODE" = "160000" ]; then
+  pass "1528-step-00-other-gitlink" "a gitlink that is no worktree of the repository does not stop step-00"
+else
+  fail "1528-step-00-other-gitlink" "rc=${rc} mode=${GL_MODE}"
 fi
 
 crusty_verdict() {

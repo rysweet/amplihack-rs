@@ -1464,16 +1464,29 @@ the repository that `repo_path` belongs to.
   instructions to a full-tool agent: one that improvises
   `git -C <main checkout> add -f ...` never reaches that block, and the
   artifact guard in it sees only `--repo .`, the worktree. The #1528 agent was
-  this step. `step-04b-review-dir-unchanged`, straight after `step-04` and
-  under the same condition, therefore compares the same `step-00` stamp again
-  and fails the round naming `step-04`.
-- `autodrive_loop.sh` does the same around `loop-health-evaluator` and stops
-  with `"loop_result":"REVIEW_DIR_CHANGED"`. When the stamp cannot be taken
-  before the evaluator (an index lock, a corrupt index, another git error) the
-  loop stops with `"loop_result":"REVIEW_DIR_UNSTAMPED"` without running the
-  evaluator, and claims no change. In a round, a stamp that cannot be taken
-  again makes `index-check` stop with "could not be stamped again ... no
-  change is claimed", never with "changed the index".
+  this step.
+- A failed round is not terminal on its own: it goes to the loop-health
+  evaluator, which may continue. So `autodrive_loop.sh` stamps the review dir
+  itself before each round (and before its `--before-round` step), and
+  compares after the round, whatever the round's exit status, and again after
+  `loop-health-evaluator`. Any change stops the loop with
+  `"loop_result":"REVIEW_DIR_CHANGED"`; the next round never starts from it.
+  That covers `step-04`, including a `step-04` that fails or times out after
+  staging there, so the rounds carry no separate check after it (an earlier
+  `step-04b` did, and was removed as a duplicate of this one). When a stamp
+  cannot be taken (an index lock, a corrupt index, another git error) the loop
+  stops with `"loop_result":"REVIEW_DIR_UNSTAMPED"` and claims no change:
+  `index-check` exits 3 for that case and says "could not be stamped again
+  ... no change is claimed", never "changed the index".
+- A stamp records the main checkout as it is found. `round-guard` therefore
+  refuses, before stamping, a review dir whose index holds a run worktree as
+  a gitlink (one under `worktrees/`, or any registered worktree of the
+  repository), staged or committed. That is the rule
+  `amplihack hygiene artifact-guard` calls `run-worktree-gitlink`, and the
+  #1528 state: a gitlink left there by an earlier run, or by a person, never
+  becomes a round's baseline. The `STOP:` line names the path and how to drop
+  it from the index alone, keeping the worktree and its files
+  ([artifact guard](../artifact-guard.md)).
 - A change is therefore caught by the round that made it, not by the next
   human commit in the main checkout. The check cannot tell who made the
   change: a person committing, staging or switching branch in the main
@@ -1699,9 +1712,10 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/autodrive-merge-loop.yaml` | phase 3 | Loop driver + merge gate + bookkeeping. |
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
+| `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
-| `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` and `step-02b-review-dir-unchanged` (index stamp and check), and the commit block's linked-worktree and head-branch check. Writes nothing. |
+| `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |

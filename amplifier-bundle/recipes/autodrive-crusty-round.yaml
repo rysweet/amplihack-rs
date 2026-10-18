@@ -49,7 +49,8 @@ context:
 
 steps:
   # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
-  # It prints a stamp of the review dir's index; step-02b and step-04b compare it.
+  # It prints a stamp of the review dir's index; step-02b compares it. The loop
+  # compares its own stamp after the whole round, step-04 included.
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
@@ -300,16 +301,6 @@ steps:
       blocks it, CI would catch it later, and it is prohibited by this
       workflow. The same goes for the merge later: no bypass, ever.
     output: "crusty_fixes"
-
-  # step-04 is the agent that stages and commits, and #1528 was such an agent
-  # forcing an add in the main checkout. Its prompt confines it to the linked
-  # worktree, but a prompt is not a check, and the guard in its commit block
-  # sees only `--repo .`. step-00's stamp still holds here: compare it again.
-  - id: "step-04b-review-dir-unchanged"
-    condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"
-    type: "bash"
-    command: |
-      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${REVIEW_INDEX:-${RECIPE_VAR_review_index:-}}" step-04-address-concerns || exit 1
 
   - id: "step-05-verify-concerns-addressed"
     condition: "crusty_verdict.crusty_verdict == 'CONCERNS'"

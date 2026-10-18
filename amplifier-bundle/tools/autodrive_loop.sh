@@ -152,7 +152,28 @@ escalate() { # escalate <verdict> <why>
     "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr -d '"' | tr '\n' ' ')"
 }
 
-PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$ROUND_RECIPE" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; } # #1528: see that file
+# #1528: the review dir (the main checkout) is stamped before each round and
+# compared after it and after the evaluator. Any change stops the loop: the
+# evaluator may continue a failed round, and the next would take it as baseline.
+stamp_review_dir() { # stamp_review_dir: sets REVIEW_STAMP, or stops as REVIEW_DIR_UNSTAMPED
+  REVIEW_STAMP="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-stamp "$REVIEW_REAL")"
+  [ $? -eq 0 ] && [ -n "$REVIEW_STAMP" ] && return 0
+  escalate "REVIEW_DIR_UNSTAMPED" "could not stamp the review dir ${REVIEW_REAL} (a lock or git error), so ${ROUND_LABEL} did not run (#1528)"
+  exit 1
+}
+check_review_dir() { # check_review_dir <who>: stops the loop unless REVIEW_STAMP still holds
+  bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-check "$REVIEW_REAL" "$REVIEW_STAMP" "$1"
+  case $? in
+    0) return 0 ;;
+    3) escalate "REVIEW_DIR_UNSTAMPED" "the review dir ${REVIEW_REAL} could not be stamped again after ${1}; nothing was compared (#1528)" ;;
+    *) escalate "REVIEW_DIR_CHANGED" "${1} changed the index or HEAD of the review dir ${REVIEW_REAL}; nothing runs from that state (#1528)" ;;
+  esac
+  exit 1
+}
+
+# #1528: the review-dir and launch-side recipe checks; see that file.
+PRE="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" loop-preflight \
+  "$LOOP_NAME" "$REPO" "$REVIEW_DIR" "$ROUND_RECIPE" "$CTX_REFUSED")" || { printf '%s\n' "$PRE"; exit 1; }
 { read -r REVIEW_REAL; read -r ROUND_RECIPE_PATH; read -r HEALTH_RECIPE_PATH; } <<<"$PRE"
 # --- preflight: the terminator must resolve BEFORE round 1 ------------------
 # Both loops delegate termination to `loop-health-evaluator`, run by its path in
@@ -168,31 +189,8 @@ if [ -z "$HEALTH_RECIPE_PATH" ] || ! "$AMPLIHACK_BIN" recipe show "$HEALTH_RECIP
   exit 1
 fi
 
-# --- round labels continue after this loop's earlier rounds ----------------
-# The state dir may already hold this loop's rounds (phase 2's crusty loop
-# before a re-review, or a resumed run). Relabelling from round-1 would
-# rewrite an earlier record that a manifest row still names (PR #1520
-# review), so the first label is one past the highest N in a
-# <loop>-round-N... entry or a round-N row of <loop>-records.tsv. It runs
-# after autodrive_private_dir, so untrusted entries are not counted.
-last_round_number() { # -> the highest N this loop has used in STATE_DIR, or 0
-  local -x LC_ALL=C
-  local top=0 f n label re='^[1-9][0-9]{0,8}$'
-  for f in "${STATE_DIR}/${LOOP_NAME}-round-"*; do
-    [ -e "$f" ] || [ -L "$f" ] || continue
-    n="${f#"${STATE_DIR}/${LOOP_NAME}-round-"}"; n="${n%%[!0-9]*}"
-    [[ "$n" =~ $re ]] && [ "$n" -gt "$top" ] && top="$n"
-  done
-  if [ -f "${STATE_DIR}/${LOOP_NAME}-records.tsv" ] && [ ! -L "${STATE_DIR}/${LOOP_NAME}-records.tsv" ]; then
-    while IFS=$'\t' read -r label _; do
-      n="${label#round-}"
-      [ "$n" != "$label" ] && [[ "$n" =~ $re ]] && [ "$n" -gt "$top" ] && top="$n"
-    done < <(tr -d '\r' < "${STATE_DIR}/${LOOP_NAME}-records.tsv")
-  fi
-  printf '%s\n' "$top"
-}
-
-EARLIER_ROUNDS="$(last_round_number)"
+# Round labels continue after this loop's earlier rounds (autodrive_last_round.sh).
+EARLIER_ROUNDS="$(bash "${LOOP_HOME}/autodrive_last_round.sh" "$STATE_DIR" "$LOOP_NAME")" || exit 2
 if [ "$EARLIER_ROUNDS" != "0" ]; then
   echo "INFO: loop '${LOOP_NAME}': ${STATE_DIR} already holds this loop's rounds up to round-${EARLIER_ROUNDS}; this run labels its rounds from round-$((EARLIER_ROUNDS + 1)) and overwrites none of them." >&2
 fi
@@ -211,6 +209,7 @@ while :; do
   RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"
   LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.log"
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
+  stamp_review_dir
 
   # --- the before-round step, at this loop's depth --------------------------
   # The baseline above is taken first, so the evaluator counts commits the
@@ -252,6 +251,7 @@ while :; do
     escalate "TERMINAL_POLICY_REFUSAL" "child returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
 
   # --- read the round's STRUCTURED record -----------------------------------
   # A missing or unparseable record is never read as a clean round. It becomes
@@ -311,7 +311,6 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
-  HEALTH_INDEX="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-stamp "$REVIEW_REAL")" && [ -n "$HEALTH_INDEX" ] || { escalate "REVIEW_DIR_UNSTAMPED" "could not stamp the index of the review dir ${REVIEW_REAL} (a lock or git error), so loop-health-evaluator, which starts there, was not run; nothing was changed (#1528)"; exit 1; }
   ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
@@ -336,7 +335,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
-  bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-check "$REVIEW_REAL" "$HEALTH_INDEX" loop-health-evaluator || { escalate "REVIEW_DIR_CHANGED" "loop-health-evaluator changed the index or HEAD of the review dir ${REVIEW_REAL} (#1528)"; exit 1; }
+  check_review_dir loop-health-evaluator
 
   # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and
   # exits non-zero on STUCK. The runner's formatter (issue #1512) prints

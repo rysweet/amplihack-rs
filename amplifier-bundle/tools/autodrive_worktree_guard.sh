@@ -56,19 +56,30 @@
 #       with an empty $REVIEW_DIR refused (there is no default; "." would be
 #       the worktree). Exit 1 with a STOP line. On success prints a stamp of
 #       the review dir's index and HEAD (index-stamp) for index-check.
+#       Before stamping, it refuses a review dir whose index holds a run
+#       worktree as a gitlink (one under worktrees/, or any registered
+#       worktree of the repository), staged or committed: the rule
+#       `amplihack hygiene artifact-guard` calls run-worktree-gitlink. A
+#       stamp records the main checkout as found, so without this a gitlink
+#       an earlier run left staged would become the round's baseline and
+#       every later check would pass against it.
 #   autodrive_worktree_guard.sh index-stamp <dir>
 #       Print one hash of <dir>'s HEAD, current branch and staged entries
 #       (`git ls-files --stage`). It reads; it writes no object.
 #   autodrive_worktree_guard.sh index-check <dir> <stamp> <step>
 #       After an agent step: exit 1 with a STOP line naming <step> unless
 #       index-stamp <dir> still prints <stamp>. The rounds run it after the
-#       judging step (step-02b) and after step-04, the agent that stages and
-#       commits (step-04b); the loop runs it after loop-health-evaluator. All
-#       are full-tool agents kept out of the main checkout by their prompts
-#       alone, and #1528 was an agent staging a forced gitlink there. A change
-#       is caught by the round that made it, not by the next human commit
-#       there. A person committing in the main checkout while one of those
-#       steps runs trips it too; the STOP line says so.
+#       judging step (step-02b). The loop stamps the review dir before each
+#       round and runs it after the whole round, whatever the round's exit
+#       status (so step-04, the agent that stages and commits, is covered even
+#       when it fails or dies), and again after loop-health-evaluator; a
+#       change there stops the loop. All are full-tool agents kept out of the
+#       main checkout by their prompts alone, and #1528 was an agent staging a
+#       forced gitlink there. A change is caught by the round that made it,
+#       not by the next human commit there. A person committing in the main
+#       checkout meanwhile trips it too; the STOP line says so. Exit 3, not 1,
+#       when <dir> cannot be stamped again: nothing was compared, so no change
+#       is claimed.
 #   autodrive_worktree_guard.sh commit-dir <pr>
 #       The round commit block's check, run in the block's shell after it
 #       enters repo_path: exit 1 with a STOP line unless the current directory
@@ -83,7 +94,8 @@
 # with `gh pr diff N`, and a bare repository's neighbour directory is no
 # checkout at all.
 #
-# Every refusal names #1528. Exit 2 is a usage error. Nothing here writes.
+# Every refusal names #1528. Exit 2 is a usage error, exit 3 an index-check
+# that could not stamp again. Nothing here writes.
 
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
@@ -113,6 +125,23 @@ not_main_checkout() {
     || { echo "review dir ${rd} belongs to another repository (${have:-unknown}), not repo_path's (${want}); its gh pr diff would read another pull request"; return; }
   [ "$(real "$(git -C "$rd" rev-parse --absolute-git-dir 2>/dev/null)")" = "$have" ] \
     || echo "review dir ${rd} is a linked worktree of ${want}, not its main checkout"
+}
+
+# run_worktree_gitlinks <dir>: print each gitlink in <dir>'s index that is a
+# run worktree, as artifact_guard/gitlink.rs decides it: the first path
+# component is "worktrees" (any case), or the path is a registered worktree.
+run_worktree_gitlinks() {
+  local dir="$1" wts entry path first r
+  wts="$(git -C "$dir" worktree list --porcelain | sed -n 's/^worktree //p' \
+    | while IFS= read -r p; do real "$p"; done)" || return 1
+  git -C "$dir" ls-files --stage -z | while IFS= read -r -d '' entry; do
+    case "$entry" in 160000\ *) ;; *) continue ;; esac
+    path="${entry#*$'\t'}"; first="$(printf '%s' "${path%%/*}" | tr '[:upper:]' '[:lower:]')"
+    r="$(real "${dir}/${path}")" || r=""
+    if [ "$first" = worktrees ] || { [ -n "$r" ] && printf '%s\n' "$wts" | grep -qxF -- "$r"; }; then
+      printf '%s\n' "$path"
+    fi
+  done
 }
 
 cmd_index_stamp() {
@@ -183,7 +212,7 @@ cmd_review_dir() {
 }
 
 cmd_round_guard() {
-  local rd repo_real
+  local rd repo_real links
   [ -n "${REVIEW_DIR:-}" ] || stop "review_dir is required; the judging agent never starts in the tree under review"
   rd="$(real "$REVIEW_DIR")" || rd=""
   [ -n "$rd" ] || stop "review_dir '${REVIEW_DIR}' is not a directory"
@@ -193,6 +222,9 @@ cmd_round_guard() {
     && stop "review_dir ${rd} is the tree under review (${repo_real}) or inside it; the reviewed tree never instructs its reviewer"
   why="$(not_main_checkout "$rd" "$repo_real")"
   [ -z "$why" ] || stop "$why"
+  links="$(run_worktree_gitlinks "$rd")" \
+    || stop "could not read the index or worktree list of the review dir ${rd}, so it was not checked for a staged run worktree"
+  [ -z "$links" ] || stop "the index of the review dir ${rd} records a run worktree as a gitlink ($(printf '%s' "$links" | tr '\n' ' ')). An earlier step staged it there; no round starts from that state. Drop it from the index only (git -C '${rd}' rm --cached -f -- <path>; the worktree and its files stay) and run auto-drive again"
   echo "INFO: judging agent starts in ${rd}; commits happen only in ${repo_real}" >&2
   cmd_index_stamp "$rd"
 }
@@ -200,7 +232,7 @@ cmd_round_guard() {
 cmd_index_check() {
   local dir="${1:-}" want="${2:-}" step="${3:-the judging step}" now
   [ -n "$want" ] || stop "${step}: no index stamp of the review dir was taken before it ran; nothing shows its index is unchanged"
-  now="$(cmd_index_stamp "$dir")" || stop "${step}: the review dir ${dir} could not be stamped again, so its index was not compared and no change is claimed; fix the git error above and run the round again"
+  now="$(cmd_index_stamp "$dir")" || { echo "STOP: ${step}: the review dir ${dir} could not be stamped again, so its index was not compared and no change is claimed; fix the git error above and run the round again (#1528)" >&2; exit 3; }
   [ "$now" = "$want" ] || stop "${step} changed the index or HEAD of the review dir ${dir} (git -C '${dir}' status; git -C '${dir}' reflog -n 5). Auto-drive agents never stage or commit there; undo the change there before another round. If a person committed there meanwhile, run the round again"
 }
 
