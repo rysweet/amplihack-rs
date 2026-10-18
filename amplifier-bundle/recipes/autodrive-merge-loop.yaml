@@ -106,11 +106,13 @@ steps:
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02]" >&2; exit 1 ;;
       esac
-      # The launch checkout. The read-only judging agents (review, merge-ready
-      # assessment, loop-health analyzer) start here, never in the PR worktree,
-      # so the branch under review does not supply their AGENTS.md, CLAUDE.md
-      # or .claude hooks. Only each round's commit step works in the worktree.
-      REVIEW_DIR="$(pwd -P)"
+      # The review dir: the main checkout of repo_path's repository. The
+      # read-only judging agents (review, merge-ready assessment, loop-health
+      # analyzer) start here, never in the PR worktree, so the branch under
+      # review does not supply their AGENTS.md, CLAUDE.md or .claude hooks.
+      # Only each round's commit step works in the worktree. It is not
+      # `pwd`: this step has entered repo_path, which may be the PR worktree.
+      REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "${REPO_PATH:-.}")" || { echo "STOP: cannot resolve the review dir from repo_path [autodrive-merge-loop/step-02] (#1528)" >&2; exit 1; }
       PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
       # Issue #1570: task_description is read with write_context_value
       # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the

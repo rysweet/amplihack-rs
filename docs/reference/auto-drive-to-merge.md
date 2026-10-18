@@ -1306,7 +1306,7 @@ so the launch checkout's index is never touched (issue #1528).
 | --- | --- | --- |
 | Phase 1, `autodrive-build` | Launch checkout | Not there. `default-workflow` commits in its own task worktree (issue #858); its commit steps refuse to stage or commit anywhere other than the top of a linked worktree (issue #1528). |
 | Loop preflights, `autodrive_pr_worktree.sh resolve`, the merge gate, phase bookkeeping | Launch checkout | No. The resolver may run `git worktree add`; the merge happens on GitHub. |
-| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the launch checkout (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
+| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the main checkout of `repo_path`'s repository (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
 | Round bash steps, the `step-04` fix agents, `autodrive-merge-evidence`, the evaluator's measurements (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
 
 The loop state directory stays keyed to the launch repository, so resuming is
@@ -1399,10 +1399,20 @@ worktree, so it is closed the same way.
 Only the commit step moves into the pull request worktree. The read-only
 judging agents — the crusty review, the merge-ready assessment and the
 loop-health analyzer, which together decide the Crusty `CLEAN`, `MERGE_READY`
-and when a loop stops — start in the **review dir**: the launch checkout.
+and when a loop stops — start in the **review dir**: the main checkout of
+the repository that `repo_path` belongs to.
 
-- Each loop's `step-02` passes `--review-dir "$REVIEW_DIR"`, the launch
-  checkout's real path, to `autodrive_loop.sh`.
+- Each loop's `step-02` sets `REVIEW_DIR` with
+  `autodrive_worktree_guard.sh review-dir "${REPO_PATH:-.}"`, which prints the
+  real path of that repository's main checkout (through
+  `workflow_worktree_root.sh root`, the same anchor the resolver uses), and
+  passes it to `autodrive_loop.sh` as `--review-dir`. It is not the step's
+  working directory: `step-02` enters `repo_path` first, and `repo_path` may
+  be the pull request worktree itself, either as
+  `-c repo_path=<pull request worktree>` from the main checkout or as
+  `-c repo_path=.` from inside the worktree. In each case the review dir is
+  the main checkout and the preflight passes. A linked worktree is never the
+  main checkout, so the review dir cannot be the tree under review.
 - `autodrive_loop.sh` hands it to every round as `review_dir`, after the
   caller's `--context` values, and runs `loop-health-evaluator` with
   `--working-dir` set to it and `loop_agent_working_dir` set to it.
@@ -1432,13 +1442,20 @@ and when a loop stops — start in the **review dir**: the launch checkout.
 The loop refuses, with `"loop_result":"UNTRUSTED_REVIEW_DIR"` and before any
 round runs, when the review dir is the tree under review or inside it — given
 by `--review-dir`, defaulted from the loop's own working directory, or passed as
-`--context review_dir=...`. Launch auto-drive from a checkout other than the
-pull request's worktree (normally the main checkout).
+`--context review_dir=...`. The launch directory does not decide the review
+dir in the loop recipes; `repo_path` does, through `review-dir`. A refusal
+there therefore means the main checkout is itself the tree under review: keep
+the pull request in a linked worktree. A direct call to `autodrive_loop.sh`
+must pass `--review-dir` the main checkout.
 
 `test-auto-drive-to-merge.sh` checks, against the tampered worktree, that the
 round gets the launch checkout as `review_dir` and the evaluator starts there
 (`1528-judging-agents-launch-side`), and covers each refusal
-(`1528-review-dir-refused-*`). `autodrive_pr_worktree_tests.rs` checks that in
+(`1528-review-dir-refused-*`). Its end-to-end runs of both loops' `step-02`
+(`1528-1570-*-loop-e2e`) set `repo_path` to the pull request's linked
+worktree and check that the real preflight passes with the main checkout as
+`review_dir`; `autodrive_pr_worktree_tests.rs` checks the same for `step-02`
+with `repo_path` set to the worktree and to the main checkout. `autodrive_pr_worktree_tests.rs` checks that in
 both round recipes every agent step except `step-04` takes `working_dir` from
 `review_dir`, that the evaluator's analyzer takes it from
 `loop_agent_working_dir`, and runs `step-00-review-dir-guard` against each bad

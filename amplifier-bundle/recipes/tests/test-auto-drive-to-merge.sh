@@ -4539,6 +4539,12 @@ cat > "${FAKE_TOOLS}/autodrive_pr_worktree.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/resolver-args"
 echo "${FAKE_CALLS_DIR}/pr-worktree"
 EOF
+# Step-02 takes the review dir from repo_path's main checkout (#1528); the
+# recorder stands in for the guard's review-dir.
+cat > "${FAKE_TOOLS}/autodrive_worktree_guard.sh" <<'EOF'
+printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/guard-args"
+[ "$1" = review-dir ] && echo "${FAKE_CALLS_DIR}/main-checkout"
+EOF
 cat > "${FAKE_TOOLS}/autodrive_merge_gate.sh" <<'EOF'
 printf '%s\n' "$@" > "${FAKE_CALLS_DIR}/gate-args"
 echo '{"merge_result":"DRY_RUN"}'
@@ -4650,9 +4656,14 @@ INT_HOME="${WORK_PHYS}/int-home"; INT_TOOLS="${INT_HOME}/amplifier-bundle/tools"
 mkdir -p "${INT_TOOLS}" "${INT_HOME}/amplifier-bundle/recipes"
 cp "${TOOLS}"/*.sh "${INT_TOOLS}/"
 cp "${RECIPES}"/*.yaml "${INT_HOME}/amplifier-bundle/recipes/"
-INT_WT="${WORK_PHYS}/int-pr-worktree"; mkdir -p "${INT_WT}"
-git -C "${INT_WT}" init -q 2>/dev/null
-git -C "${INT_WT}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
+# The PR worktree is a LINKED worktree of INT_MAIN, and repo_path is that
+# worktree: an operator passes `-c repo_path=<PR worktree>` from the main
+# checkout. The review dir must still come out as the main checkout and the
+# real loop preflight must pass (#1528, crusty round 1 on PR #1586).
+INT_MAIN="${WORK_PHYS}/int-main-checkout"; INT_WT="${WORK_PHYS}/int-pr-worktree"
+git init -q "${INT_MAIN}" 2>/dev/null
+git -C "${INT_MAIN}" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init 2>/dev/null
+git -C "${INT_MAIN}" worktree add -q -b int-pr-branch "${INT_WT}" 2>/dev/null
 printf '%s\n' 'printf "%s\n" "$@" > "${FAKE_CALLS_DIR}/resolver-args"' "echo '${INT_WT}'" \
   > "${INT_TOOLS}/autodrive_pr_worktree.sh"
 cat > "${INT_TOOLS}/autodrive_crusty_rereview.sh" <<'REREVIEW'
@@ -4669,7 +4680,7 @@ int_run() { # int_run <body> <preflight-var> <round-record>
   set_stub "$3" 0 "$H_DONE"
   BODY_N=$((BODY_N + 1)); CALLS="${WORK_PHYS}/body-${BODY_N}"; mkdir -p "${CALLS}"
   env "${UNSET_ALIASES[@]}" \
-    PATH="${STUB_BIN}:${PATH}" AMPLIHACK_HOME="${INT_HOME}" REPO_PATH="${WORK}/notgit" \
+    PATH="${STUB_BIN}:${PATH}" AMPLIHACK_HOME="${INT_HOME}" REPO_PATH="${INT_WT}" \
     HOME="${WORK}/nohome" FAKE_CALLS_DIR="${CALLS}" STUB_CALLS="${CALLS}/calls" STUB_SHOW_CALLS="${CALLS}/shows" \
     "$2=${pre}" RECIPE_VAR_task_description="drive PR 42 to merge" \
     bash -c "$1" >"${CALLS}/out" 2>"${CALLS}/err"
@@ -4682,6 +4693,7 @@ int_round_ok() { # int_round_ok <round-recipe>: the round ran in INT_WT and got 
   [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
     && printf '%s' "${argv}" | grep -qF -- "--working-dir ${INT_WT} " \
     && printf '%s' "${argv}" | grep -qF "repo_path=${INT_WT}" \
+    && printf '%s' "${argv}" | grep -qF "review_dir=${INT_MAIN} " \
     && [ "$(grep "^$1 " "${CALLS}/calls.task" 2>/dev/null | head -n1)" = "$1 drive PR 42 to merge" ] \
     && ! grep -qF 'task_description=drive' "${CALLS}/calls.argv"
 }

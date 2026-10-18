@@ -17,12 +17,22 @@
 #   - the judging agents' working directory. The agent CLI loads AGENTS.md,
 #     CLAUDE.md and .claude hooks from it, so the crusty review, the
 #     merge-ready assessment and the loop-health analyzer start in the review
-#     dir (the launch checkout), never in or under the worktree;
+#     dir (the main checkout of repo_path's repository), never in or under
+#     the worktree;
 #   - these tools. autodrive_loop.sh hands its own directory to each round as
 #     `autodrive_launch_tools`; a round never looks for this file in the tree
 #     it judges.
 #
 # Usage (executed, never sourced):
+#   autodrive_worktree_guard.sh review-dir <repo-path>
+#       The loops' step-02: print the real path of the MAIN checkout of
+#       <repo-path>'s repository (workflow_worktree_root.sh root, beside this
+#       script). It never comes from the step's working directory, because
+#       step-02 enters repo_path first, and repo_path may itself be the PR
+#       worktree (an operator passes `-c repo_path=<worktree>`, or runs
+#       `-c repo_path=.` from inside it). A linked worktree is never the main
+#       checkout, so the review dir is never the tree under review. Exit 1 with
+#       a STOP line when <repo-path> is not in a git work tree.
 #   autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>]
 #       autodrive_loop.sh's check, before round 1. On success prints three
 #       lines: the review dir's real path, the round recipe's absolute path in
@@ -93,10 +103,18 @@ cmd_loop_preflight() {
   rd="$(real "$dir")"
   [ -n "$rd" ] || refuse UNTRUSTED_REVIEW_DIR "review dir '${dir}' is not a directory"
   inside "$rd" "$repo_real" \
-    && refuse UNTRUSTED_REVIEW_DIR "review dir ${rd} is the tree under review (${repo_real}) or inside it; launch auto-drive from a checkout other than the PR worktree"
+    && refuse UNTRUSTED_REVIEW_DIR "review dir ${rd} is the tree under review (${repo_real}) or inside it; pass --review-dir the main checkout (the loop recipes derive it from repo_path with review-dir), and keep the pull request in a linked worktree, never the main checkout"
   round_path="$(launch_recipe "$round" "$repo_real")" \
     || refuse UNTRUSTED_RECIPE "round recipe ${round} does not resolve in the launch-side bundle"
   printf '%s\n%s\n%s\n' "$rd" "$round_path" "$(launch_recipe loop-health-evaluator "$repo_real" 2>/dev/null)"
+}
+
+cmd_review_dir() {
+  local repo="${1:-}" root
+  [ -n "$repo" ] || stop "review-dir needs repo_path"
+  root="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh" root "$repo")" && root="$(real "$root")" \
+    && [ -n "$root" ] || stop "cannot resolve the main checkout of repo_path '${repo}'; the review dir is never taken from the working directory"
+  printf '%s\n' "$root"
 }
 
 cmd_round_guard() {
@@ -128,7 +146,8 @@ cmd_commit_dir() {
 sub="${1:-}"; [ $# -gt 0 ] && shift
 case "$sub" in
   loop-preflight) cmd_loop_preflight "$@" ;;
+  review-dir) cmd_review_dir "$@" ;;
   round-guard) cmd_round_guard ;;
   commit-dir) cmd_commit_dir "$@" ;;
-  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | round-guard | commit-dir <pr>" >&2; exit 2 ;;
+  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | review-dir <repo-path> | round-guard | commit-dir <pr>" >&2; exit 2 ;;
 esac

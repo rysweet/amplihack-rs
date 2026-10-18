@@ -1320,13 +1320,53 @@ fn loop_step_02s_pass_the_resolved_pr_worktree_to_repo_and_repo_path() {
     }
 }
 
-/// Run a loop step-02 body under `env -i` with stubs for everything it calls.
-/// Returns the output and the directory holding the stubs' argv logs.
+/// Run a loop step-02 body under `env -i` with stubs for everything it calls,
+/// with `REPO_PATH` set to the launch checkout. Returns the output and the
+/// directory holding the stubs' argv logs.
 fn run_loop_step_02(
     recipe: &str,
     step: &str,
     preflight_var: &str,
     resolve_fails: bool,
+) -> (Output, TempDir) {
+    run_loop_step_02_from(recipe, step, preflight_var, resolve_fails, false)
+}
+
+/// git, isolated from the user's and the system's configuration and hooks.
+fn quiet_git(home: &Path, dir: &Path, args: &[&str]) {
+    let output = amplihack_git::command_in(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "core.hooksPath=/dev/null",
+        ])
+        .args(args)
+        .env("HOME", home)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .output()
+        .expect("run git");
+    assert!(
+        output.status.success(),
+        "git {args:?}\n{}",
+        describe(&output)
+    );
+}
+
+/// As `run_loop_step_02`. The launch checkout is the main checkout of a real
+/// repository. With `repo_path_is_worktree`, `REPO_PATH` is a linked worktree
+/// of it (`<root>/pr-wt`), which the stub resolver also returns, as when an
+/// operator passes `-c repo_path=<PR worktree>` from the main checkout.
+/// The real `autodrive_worktree_guard.sh` and `workflow_worktree_root.sh`
+/// derive the review dir.
+fn run_loop_step_02_from(
+    recipe: &str,
+    step: &str,
+    preflight_var: &str,
+    resolve_fails: bool,
+    repo_path_is_worktree: bool,
 ) -> (Output, TempDir) {
     let command = step_field(recipe, step, "command");
     let tmp = TempDir::new().expect("tempdir");
@@ -1334,8 +1374,36 @@ fn run_loop_step_02(
     let tools = root.join("ah/amplifier-bundle/tools");
     let logs = root.join("logs");
     let launch = root.join("launch");
+    let home = root.join("home");
     fs::create_dir_all(&logs).expect("mkdir logs");
     fs::create_dir_all(&launch).expect("mkdir launch");
+    fs::create_dir_all(&home).expect("mkdir home");
+    quiet_git(&home, &launch, &["init", "-q"]);
+    quiet_git(
+        &home,
+        &launch,
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    );
+    let worktree = root.join("pr-wt");
+    if repo_path_is_worktree {
+        let wt = worktree.display().to_string();
+        quiet_git(
+            &home,
+            &launch,
+            &["worktree", "add", "-q", "-b", "pr-branch", &wt],
+        );
+    }
+    let repo_path = if repo_path_is_worktree {
+        &worktree
+    } else {
+        &launch
+    };
+    fs::create_dir_all(&tools).expect("mkdir tools");
+    // Step-02 takes the review dir from the real guard (#1528).
+    for real_tool in ["autodrive_worktree_guard.sh", "workflow_worktree_root.sh"] {
+        fs::copy(tools_dir().join(real_tool), tools.join(real_tool))
+            .unwrap_or_else(|e| panic!("copy {real_tool}: {e}"));
+    }
     // The loop stub also keeps the task it was handed with --task-file
     // (#1570), read while the step's private file still exists.
     write_exec(
@@ -1361,7 +1429,7 @@ fn run_loop_step_02(
         "#!/usr/bin/env bash\n\
          printf '%s\\n' \"$@\" > \"$STUB_LOGS/resolver.argv\"\n\
          if [ \"${STUB_RESOLVE_FAIL:-0}\" = 1 ]; then echo 'stub resolver: refused' >&2; exit 1; fi\n\
-         printf '%s\\n' /stub/wt\n",
+         printf '%s\\n' \"${STUB_WT:-/stub/wt}\"\n",
     );
     write_exec(
         &root.join("bin/amplihack"),
@@ -1383,13 +1451,14 @@ fn run_loop_step_02(
             "PATH",
             format!("{}:/usr/bin:/bin", root.join("bin").display()),
         )
-        .env("HOME", root.join("home"))
+        .env("HOME", &home)
         .env("AMPLIHACK_HOME", root.join("ah"))
-        .env("REPO_PATH", &launch)
+        .env("REPO_PATH", repo_path)
         .env(preflight_var, r#"{"state_dir":"/stub/state","pr":"7"}"#)
         .env("RECIPE_VAR_task_description", "drive PR 7 to merge")
         .env("STUB_LOGS", &logs)
         .env("STUB_RESOLVE_FAIL", if resolve_fails { "1" } else { "0" })
+        .envs(repo_path_is_worktree.then_some(("STUB_WT", &worktree)))
         .output()
         .expect("run step-02");
     (output, tmp)
@@ -1484,6 +1553,146 @@ fn loop_step_02_refuses_before_the_loop_when_resolution_fails() {
             "{recipe}: the launch checkout must reach the loop only as --review-dir: {argv:?}"
         );
     }
+}
+
+/// Crusty round 1 on PR #1586: with `repo_path` set to the PR's linked
+/// worktree, step-02 used to take the review dir from `pwd` after entering
+/// `repo_path`, so the review dir WAS the PR worktree and the loop preflight
+/// refused UNTRUSTED_REVIEW_DIR before round 1. The review dir is now the
+/// main checkout, and the real preflight accepts it.
+#[test]
+fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_checkout() {
+    for (recipe, step, preflight_var) in LOOPS {
+        let (output, tmp) = run_loop_step_02_from(recipe, step, preflight_var, false, true);
+        let root = fs::canonicalize(tmp.path()).expect("canon");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{recipe}\n{}",
+            describe(&output)
+        );
+        let main = root.join("launch").display().to_string();
+        let worktree = root.join("pr-wt").display().to_string();
+        let argv: Vec<String> = read(&root.join("logs/loop.argv"))
+            .lines()
+            .map(str::to_string)
+            .collect();
+        let after = |flag: &str| {
+            let at = argv
+                .iter()
+                .position(|arg| arg == flag)
+                .unwrap_or_else(|| panic!("{recipe}: loop gets {flag}: {argv:?}"));
+            argv[at + 1].clone()
+        };
+        assert_eq!(after("--review-dir"), main, "{recipe}: {argv:?}");
+        assert_eq!(after("--repo"), worktree, "{recipe}: {argv:?}");
+        let resolver = read(&root.join("logs/resolver.argv"));
+        assert!(
+            resolver.lines().any(|line| line == worktree),
+            "{recipe}: the resolver is asked about repo_path: {resolver}"
+        );
+
+        // The loop's own check, with exactly what step-02 handed the loop.
+        let preflight = Command::new("bash")
+            .arg(tools_dir().join("autodrive_worktree_guard.sh"))
+            .args([
+                "loop-preflight",
+                "crusty",
+                &worktree,
+                &main,
+                "autodrive-crusty-round",
+            ])
+            .output()
+            .expect("run loop-preflight");
+        assert_eq!(
+            preflight.status.code(),
+            Some(0),
+            "{recipe}: the preflight accepts the main checkout as review dir\n{}",
+            describe(&preflight)
+        );
+        assert_eq!(
+            text(&preflight.stdout).lines().next(),
+            Some(main.as_str()),
+            "{recipe}: {}",
+            describe(&preflight)
+        );
+
+        // The step-02 working directory is no longer the review dir: the
+        // same worktree handed in as the review dir is still refused, and
+        // the refusal names --review-dir and repo_path, not the launch dir.
+        let refused = Command::new("bash")
+            .arg(tools_dir().join("autodrive_worktree_guard.sh"))
+            .args([
+                "loop-preflight",
+                "crusty",
+                &worktree,
+                &worktree,
+                "autodrive-crusty-round",
+            ])
+            .output()
+            .expect("run loop-preflight");
+        assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
+        let said = text(&refused.stderr);
+        assert!(
+            said.contains("--review-dir")
+                && said.contains("repo_path")
+                && !said.contains("launch auto-drive from"),
+            "{recipe}: the refusal points at the setting that matters: {said}"
+        );
+    }
+}
+
+#[test]
+fn guard_review_dir_prints_the_main_checkout_or_stops() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canon");
+    let (home, main, wt) = (root.join("home"), root.join("main"), root.join("wt"));
+    fs::create_dir_all(&home).expect("mkdir home");
+    fs::create_dir_all(&main).expect("mkdir main");
+    quiet_git(&home, &main, &["init", "-q"]);
+    quiet_git(
+        &home,
+        &main,
+        &["commit", "-q", "--allow-empty", "-m", "init"],
+    );
+    let wt_str = wt.display().to_string();
+    quiet_git(
+        &home,
+        &main,
+        &["worktree", "add", "-q", "-b", "pr", &wt_str],
+    );
+    let guard = tools_dir().join("autodrive_worktree_guard.sh");
+    for repo_path in [&main, &wt, &wt.join(".")] {
+        let output = Command::new("bash")
+            .arg(&guard)
+            .arg("review-dir")
+            .arg(repo_path)
+            .output()
+            .expect("run review-dir");
+        assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+        assert_eq!(
+            text(&output.stdout).trim_end(),
+            main.display().to_string(),
+            "repo_path {}",
+            repo_path.display()
+        );
+    }
+    let not_git = root.join("not-git");
+    fs::create_dir_all(&not_git).expect("mkdir");
+    let output = Command::new("bash")
+        .arg(&guard)
+        .arg("review-dir")
+        .arg(&not_git)
+        .env("GIT_CEILING_DIRECTORIES", &root)
+        .output()
+        .expect("run review-dir");
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(output.stdout.is_empty(), "{}", describe(&output));
+    assert!(
+        text(&output.stderr).contains("#1528"),
+        "{}",
+        describe(&output)
+    );
 }
 
 // ---------------------------------------------------------------------------

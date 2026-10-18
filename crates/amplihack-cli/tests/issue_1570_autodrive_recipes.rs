@@ -89,6 +89,13 @@ const RESOLVER_STUB: &str = r#"#!/usr/bin/env bash
 printf '%s\n' "$PR_WORKTREE_OUT"
 "#;
 
+/// Step-02 takes the review dir from the guard's `review-dir`, the main
+/// checkout of `repo_path`'s repository (#1528). The stand-in prints the
+/// repo directory; `autodrive_pr_worktree_tests.rs` runs the real guard.
+const GUARD_STUB: &str = r#"#!/usr/bin/env bash
+[ "$1" = review-dir ] && printf '%s\n' "$REPO_PATH"
+"#;
+
 struct StepRun {
     out: Output,
     task_seen: Option<Vec<u8>>,
@@ -117,6 +124,7 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
     executable(&bin.join("amplihack"), AMPLIHACK_STUB);
     executable(&tools.join("autodrive_loop.sh"), LOOP_STUB);
     executable(&tools.join("autodrive_pr_worktree.sh"), RESOLVER_STUB);
+    executable(&tools.join("autodrive_worktree_guard.sh"), GUARD_STUB);
     // merge-loop step-02 refuses to start without the crusty re-review beside
     // the loop driver (PR #1520); the stub loop never runs it.
     executable(
