@@ -34,21 +34,32 @@ impl NativeFixture {
         fs::create_dir_all(&case).unwrap();
         let target = case.join("target ' \" $(touch TARGET_INJECTION) ; [x]");
         let framework = case.join("framework ' \" $(touch FRAMEWORK_INJECTION) ; [x]");
-        fs::create_dir(&target).unwrap();
         let tools = framework.join("amplifier-bundle/tools");
         copy_tools(&repo().join("amplifier-bundle/tools"), &tools);
         if variant == "missing-helper" {
             fs::remove_file(tools.join("workflow_checkpoint_commit.sh")).unwrap();
         }
-        git(&target, &["init", "--quiet"]);
+        // The checkpoint commits only at the top of a linked task worktree
+        // (issue #1528), which is what workflow-worktree always produces.
+        let main = case.join("main");
+        fs::create_dir(&main).unwrap();
+        git(&main, &["init", "--quiet"]);
+        git(&main, &["config", "user.name", "Native Checkpoint Fixture"]);
+        git(&main, &["config", "user.email", "checkpoint@example.com"]);
+        fs::write(main.join("tracked.txt"), "original\n").unwrap();
+        git(&main, &["add", "tracked.txt"]);
+        git(&main, &["commit", "--quiet", "-m", "initial fixture"]);
         git(
-            &target,
-            &["config", "user.name", "Native Checkpoint Fixture"],
+            &main,
+            &[
+                "worktree",
+                "add",
+                "--quiet",
+                "-b",
+                "task",
+                target.to_str().unwrap(),
+            ],
         );
-        git(&target, &["config", "user.email", "checkpoint@example.com"]);
-        fs::write(target.join("tracked.txt"), "original\n").unwrap();
-        git(&target, &["add", "tracked.txt"]);
-        git(&target, &["commit", "--quiet", "-m", "initial fixture"]);
         let before = git(&target, &["rev-parse", "HEAD"]);
         fs::write(target.join("tracked.txt"), "genuine staged change\n").unwrap();
         if variant == "hook-config" {
@@ -59,14 +70,17 @@ impl NativeFixture {
         }
         git(&target, &["add", "-A"]);
         assert!(!git(&target, &["diff", "--cached", "--name-only"]).is_empty());
-        let hook = target.join(".git/hooks/pre-commit");
+        let hook = main.join(".git/hooks/pre-commit");
+        let hook_ran = target
+            .join(git(&target, &["rev-parse", "--absolute-git-dir"]).trim())
+            .join("hook-ran");
         let expected = if variant == "hook-config" {
             "unset"
         } else {
             "1"
         };
         fs::write(&hook, format!(
-            "#!/bin/sh\nprintf '%s' \"${{PRE_COMMIT_ALLOW_NO_CONFIG-unset}}\" > .git/hook-ran\n[ \"${{PRE_COMMIT_ALLOW_NO_CONFIG-unset}}\" = '{expected}' ] || exit 41\n{}\n",
+            "#!/bin/sh\nprintf '%s' \"${{PRE_COMMIT_ALLOW_NO_CONFIG-unset}}\" > \"$(git rev-parse --absolute-git-dir)/hook-ran\"\n[ \"${{PRE_COMMIT_ALLOW_NO_CONFIG-unset}}\" = '{expected}' ] || exit 41\n{}\n",
             if variant == "hook-failure" { "echo NATIVE_CHECKPOINT_HOOK_REJECTED >&2; exit 37" } else { "exit 0" }
         )).unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
@@ -154,7 +168,7 @@ impl NativeFixture {
             before,
             after: git(&target, &["rev-parse", "HEAD"]),
             staged: git(&target, &["diff", "--cached", "--name-only"]),
-            hook: fs::read_to_string(target.join(".git/hook-ran")).ok(),
+            hook: fs::read_to_string(&hook_ran).ok(),
             subject: git(&target, &["log", "-1", "--format=%s"]),
         };
         fs::write(

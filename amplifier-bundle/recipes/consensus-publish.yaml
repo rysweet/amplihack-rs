@@ -33,7 +33,7 @@ steps:
 
       # Stage all changes
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A
+      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
 
       # Issue #1570: agent text is read with write_context_value (RECIPE_VAR_* or
       # AMPLIHACK_CONTEXT_FILE) into private files and never placed in argv.

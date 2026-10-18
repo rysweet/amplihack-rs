@@ -156,6 +156,12 @@ mod artifact_guard_workflow;
 #[path = "pre_commit_artifact_guard_tests.rs"]
 mod pre_commit_artifact_guard;
 
+// Issue #1528: auto-drive phases 2-3 commit only inside the PR's linked
+// worktree. PR-worktree resolver behaviour, loop step-02 and round step-04
+// contracts.
+#[path = "autodrive_pr_worktree_tests.rs"]
+mod autodrive_pr_worktree;
+
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
 
