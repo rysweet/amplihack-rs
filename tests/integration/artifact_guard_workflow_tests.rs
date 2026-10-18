@@ -987,7 +987,9 @@ fn recipes_at_the_line_budget_recheck_on_the_add_line() {
 #[test]
 fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     // AC10. The phase recipes are covered by
-    // `every_phase_subrecipe_under_400_lines`; these are not.
+    // `every_phase_subrecipe_under_400_lines`; these are not. The budget is
+    // the shared `BRICK_LINE_BUDGET` (at most 400 lines), not a second copy.
+    use crate::auto_drive_to_merge::BRICK_LINE_BUDGET;
     for recipe in [
         "autodrive-crusty-loop.yaml",
         "autodrive-merge-loop.yaml",
@@ -998,8 +1000,8 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     ] {
         let lines = read(&recipe_path(recipe)).lines().count();
         assert!(
-            lines < 400,
-            "{recipe} has {lines} lines; the brick budget is 399"
+            lines <= BRICK_LINE_BUDGET,
+            "{recipe} has {lines} lines; the brick budget is {BRICK_LINE_BUDGET}"
         );
     }
 }

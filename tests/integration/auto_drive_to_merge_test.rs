@@ -28,7 +28,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BRICK_LINE_BUDGET: usize = 400;
+/// The one brick budget for a recipe or tool: at most this many lines.
+/// Other modules import it rather than restating the limit, so the
+/// definitions cannot drift apart (PR #1586 review, round 6).
+pub(crate) const BRICK_LINE_BUDGET: usize = 400;
 
 const AUTODRIVE_RECIPES: [&str; 7] = [
     "auto-drive-to-merge",
