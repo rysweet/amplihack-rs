@@ -152,7 +152,7 @@ falls through to the next priority level:
 ## Running the tests
 
 ```bash
-cargo test -p amplihack-cli --test active_agent_binary_default_test --locked
+cargo test -p amplihack-cli --test cli_integration active_agent_binary_default:: --locked
 ```
 
 All six tests (three probes + three contract tests) must pass.  The probes are
@@ -161,8 +161,8 @@ also runnable individually for debugging:
 ```bash
 # Run a single probe in isolation with an explicit env:
 AMPLIHACK_AGENT_BINARY=claude \
-  cargo test -p amplihack-cli --test active_agent_binary_default_test \
-  -- probe_claude_override --exact --nocapture
+  cargo test -p amplihack-cli --test cli_integration \
+  -- active_agent_binary_default::probe_claude_override --exact --nocapture
 ```
 
 ---

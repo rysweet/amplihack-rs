@@ -285,7 +285,7 @@ validator checks. Contributors changing the plugin files should run all three:
 
 ```bash
 claude plugin validate .
-cargo test -p amplihack-cli --test claude_code_plugin_manifest
+cargo test -p amplihack-cli --test cli_integration claude_code_plugin_manifest::
 shellcheck -s sh -S style claude-plugin/bin/*
 ```
 

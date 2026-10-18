@@ -104,5 +104,5 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test spec_conformance --locked -- spec_invariants_all_have_tests spec_gate_covers_every_config"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test cli_integration --locked -- spec_conformance::spec_invariants_all_have_tests spec_conformance::spec_gate_covers_every_config"
     timeout: 3600000
