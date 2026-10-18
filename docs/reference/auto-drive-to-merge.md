@@ -1454,12 +1454,12 @@ round gets the launch checkout as `review_dir` and the evaluator starts there
 (`1528-review-dir-refused-*`). Its end-to-end runs of both loops' `step-02`
 (`1528-1570-*-loop-e2e`) set `repo_path` to the pull request's linked
 worktree and check that the real preflight passes with the main checkout as
-`review_dir`; `autodrive_pr_worktree_tests.rs` checks the same for `step-02`
-with `repo_path` set to the worktree and to the main checkout. `autodrive_pr_worktree_tests.rs` checks that in
-both round recipes every agent step except `step-04` takes `working_dir` from
-`review_dir`, that the evaluator's analyzer takes it from
-`loop_agent_working_dir`, and runs `step-00-review-dir-guard` against each bad
-review dir.
+`review_dir`. `autodrive_pr_worktree_tests.rs` checks the same for `step-02`
+with `repo_path` set to the worktree and to the main checkout. The same file
+also checks that in both round recipes every agent step except `step-04` takes
+`working_dir` from `review_dir`, that the evaluator's analyzer takes it from
+`loop_agent_working_dir`, and it runs `step-00-review-dir-guard` against each
+bad review dir.
 
 The resolver sits next to `autodrive_loop.sh` in the launch-side bundle, never
 in the pull request worktree. The loops always resolve by `--pr`. The merge
