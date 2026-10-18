@@ -20,7 +20,7 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
 | File | What it holds |
 | --- | --- |
-| `memory.rs` | Agent detection, `inject_memory`, `format_agent_memory_context` and the output limits (`MAX_INJECTED_MEMORIES`, `MAX_MEMORY_CHARS`) |
+| `memory.rs` | Prompt agent detection (`prompt_agents`, which wraps `agent_memory.rs`), `inject_memory`, `format_agent_memory_context` and the output limits (`MAX_INJECTED_MEMORIES`, `MAX_MEMORY_CHARS`) |
 | `memory/text.rs` | Splitting text into words, paragraphs, transcript turns, fenced blocks and backtick spans |
 | `memory/language.rs` | The English check (`ENGLISH_MARKERS`) |
 | `memory/scoring.rs` | Stop words (the SMART list, `FOREIGN_FUNCTION_WORDS`), the foreign-code check (`FOREIGN_EVIDENCE`), topic words and the relevance score (`RELEVANCE_THRESHOLD`, `MIN_SHARED_TERMS`) |
