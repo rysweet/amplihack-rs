@@ -16,7 +16,17 @@ This document focuses on the framework injection mechanism (item 3).
 
 Memories are injected only when the prompt names an amplihack agent: by a slash command (`/analyze`, `/fix`), by an agent definition reference, or by `Use <name>.md agent` (with a capital `U`; it names any agent, and `<name>` is a file stem as in a definition reference). A slash word is its own whitespace-separated token, ignoring surrounding punctuation (`(/analyze`, `/reflect.`). It counts wherever it appears, including at the end of the prompt. An agent definition reference is `@` and a path to a `.md` file under a `.claude/agents/` directory, and it counts for any agent: bundled, project-defined (`@.claude/agents/my-reviewer.md`) or user-level (`@~/.claude/agents/my-reviewer.md`). The file can be at any directory depth below `.claude/agents/` (`@.claude/agents/team/security-reviewer.md`), and the `.claude` directory can have a relative, `~` or absolute path before it (`Include @~/.amplihack/.claude/agents/amplihack/core/architect.md`, `@/home/me/proj/.claude/agents/builder.md`). The agent is the file's stem, one path component, so a later `.md` in the prompt (`then check README.md`) is not part of its name. Ordinary words are not agents. Neither are path segments, even ones named like an agent (`docs/security`), or slash words that name no agent (`/skills`, `/bin`).
 
-Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The rules, in `crates/amplihack-hooks/src/user_prompt/memory.rs`:
+Each stored memory is scored against the prompt, and only relevant memories are injected (issue #1483). The code is in `crates/amplihack-hooks/src/user_prompt/`:
+
+| File | What it holds |
+| --- | --- |
+| `memory.rs` | Agent detection, `inject_memory`, `format_agent_memory_context` and the output limits (`MAX_INJECTED_MEMORIES`, `MAX_MEMORY_CHARS`) |
+| `memory/text.rs` | Splitting text into words, paragraphs, transcript turns, fenced blocks and backtick spans |
+| `memory/language.rs` | The English check (`ENGLISH_MARKERS`) |
+| `memory/scoring.rs` | Stop words (the SMART list, `FOREIGN_FUNCTION_WORDS`), the foreign-code check (`FOREIGN_EVIDENCE`), topic words and the relevance score (`RELEVANCE_THRESHOLD`, `MIN_SHARED_TERMS`) |
+| `smart_stop_words.txt` | The SMART stop list, read into `memory/scoring.rs` at compile time |
+
+The rules:
 
 - **Topic words.** Topic words are the prompt's and the memory's English words, minus:
   - the [SMART stop list](https://github.com/igorbrigadir/stopwords/blob/master/en/smart.txt) (a few developer words such as `value` and `name` are kept),
@@ -51,7 +61,7 @@ A memory's stored code context, if it has any, is printed on the lines after it 
 
 #### Checking the memory rules
 
-The unit tests are in `mod tests` of `memory.rs` and in `user_prompt/tests.rs`. `tests/issue_1483_memory_injection_outside_in.sh` runs the real binary: it stores learnings through `session-stop` under a temporary `HOME`, sends prompts to `user-prompt-submit`, and checks the JSON output. CI runs it against the release binary in the `cross-compile` job.
+The unit tests are in `user_prompt/memory/tests/` (`format.rs`, `stop_words.rs`, `english_check.rs`, `code_spans.rs`, `scoring.rs`) and in `user_prompt/tests.rs`. Run them with `cargo nextest run -p amplihack-hooks --locked user_prompt::`. `tests/issue_1483_memory_injection_outside_in.sh` runs the real binary: it stores learnings through `session-stop` under a temporary `HOME`, sends prompts to `user-prompt-submit`, and checks the JSON output. CI runs it against the release binary in the `cross-compile` job.
 
 ```bash
 cargo build --release --locked -p amplihack-hooks-bin
