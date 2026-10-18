@@ -1186,8 +1186,8 @@ crash, using the inode recorded in the journal).
 4. Update `ledger.json`, set `oauthAccount` in `<live dir>/.claude.json` to the
    target's saved block, delete the journal and sync.
 
-Before each move the file must be a regular file owned by you with exactly
-one hard link.
+Before each move the file must be a regular file owned by you, readable by
+nobody else (no group or other mode bits), with exactly one hard link.
 
 After a swap the wrapper writes one line to stderr (never to the status
 line):
@@ -1621,7 +1621,7 @@ set of skipped profiles changes, and by the one-shot command on every run.
 | Skip reason | Condition |
 |-------------|-----------|
 | `live` | It is the live profile. |
-| `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, or has more than one link. |
+| `no login` | `<root>/<name>/.credentials.json` is missing, a symlink, not a regular file, not owned by you, readable by other users, or has more than one link. |
 | `excluded` | It is in the auto-switch `exclude` list. |
 | `session running` | A running process has `CLAUDE_CONFIG_DIR=<root>/<name>` (the same `/proc` scan auto-switch uses). If `/proc` cannot be scanned, every profile is skipped and `skip: cannot see running sessions; no candidates` is logged once. |
 | `leased` | Its login is on loan to another profile's session in the auto-switch ledger. |
@@ -1642,7 +1642,8 @@ fails with `RotateRefused` and nothing changes:
   absolute, a directory rather than a symlink, and owned by you; `~/.claude` is owned by you and
   not writable by group or others; both profile directories pass the usual
   directory check;
-- `L` and `T` are regular files owned by you with exactly one link (checked
+- `L` and `T` are regular files owned by you, with no group or other mode
+  bits and exactly one link (checked
   with `lstat`, never opened);
 - `S` does not exist;
 - `~/.claude` and the profile root are on the same device;

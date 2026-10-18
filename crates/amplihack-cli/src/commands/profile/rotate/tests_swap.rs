@@ -279,8 +279,12 @@ fn a_swap_is_refused_when_the_source_already_has_a_login() {
 }
 
 #[test]
-fn a_swap_is_refused_for_a_missing_or_hard_linked_target() {
+fn a_swap_is_refused_for_a_loosened_hard_linked_or_missing_target() {
     let e = env();
+    fs::set_permissions(e.slot("spare"), fs::Permissions::from_mode(0o644)).unwrap();
+    refused(e.swap());
+    e.assert_unchanged();
+    fs::set_permissions(e.slot("spare"), fs::Permissions::from_mode(0o600)).unwrap();
     fs::hard_link(e.slot("spare"), e.root.join("spare/extra-link")).unwrap();
     refused(e.swap());
     e.assert_unchanged();

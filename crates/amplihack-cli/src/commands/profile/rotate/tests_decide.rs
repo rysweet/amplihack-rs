@@ -324,3 +324,15 @@ fn custom_thresholds_and_margins_apply() {
         "margin 0: equal headroom is enough"
     );
 }
+
+#[test]
+fn a_dry_run_reports_the_outcome_it_previewed() {
+    use super::cycle::CycleOutcome;
+    use super::observe::would;
+    assert_eq!(would(&Decision::Stay), CycleOutcome::Stayed);
+    assert_eq!(
+        would(&swap("spare", Reason::Threshold)),
+        CycleOutcome::Swapped
+    );
+    assert_eq!(would(&Decision::Alert), CycleOutcome::Alerted);
+}

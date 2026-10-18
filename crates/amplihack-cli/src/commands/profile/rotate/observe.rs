@@ -102,8 +102,20 @@ pub fn measure_and_decide(
     Ok((reading, others, decision))
 }
 
+/// The outcome a live cycle would record for `decision`. `--dry-run` returns
+/// it so the preview reports what it printed; nothing is recorded and the
+/// exit code does not depend on it.
+pub(super) fn would(decision: &Decision) -> CycleOutcome {
+    match decision {
+        Decision::Stay => CycleOutcome::Stayed,
+        Decision::Swap { .. } => CycleOutcome::Swapped,
+        Decision::Alert => CycleOutcome::Alerted,
+    }
+}
+
 /// `--dry-run`: no lock, no prototype check, no recovery, no writes. Prints
-/// `would ...` lines and the `cycle` line.
+/// `would ...` lines and the `cycle` line, and returns the outcome a live
+/// cycle would have recorded.
 pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let mut out = Sink::new(None, true, false);
     if exists(&ctx.rs.journal) {
@@ -131,6 +143,7 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
     let (live, others, decision) = measure_and_decide(ctx, &binary, &snap)?;
     let name = live_name(&snap.live);
     out.emit(0, &msg::cycle(name, &live, &others));
+    let outcome = would(&decision);
     match decision {
         Decision::Stay => out.emit(0, "would stay"),
         Decision::Alert => {
@@ -159,5 +172,5 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             );
         }
     }
-    Ok(CycleOutcome::Stayed)
+    Ok(outcome)
 }

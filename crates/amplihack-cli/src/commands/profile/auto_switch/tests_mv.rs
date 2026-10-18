@@ -93,6 +93,23 @@ fn exchange_refuses_a_hard_linked_or_symlinked_login() {
     assert!(fs::symlink_metadata(&pb).unwrap().file_type().is_symlink());
 }
 
+/// A login other users could read stays put: moving it into a
+/// group-readable `~/.claude` would expose it.
+#[test]
+fn a_login_readable_by_others_is_not_moved() {
+    let d = dirs();
+    let (pa, pb) = (d.a.join(".credentials.json"), d.b.join(".credentials.json"));
+    let (ia, ib) = (login(&pa), login(&pb));
+    fs::set_permissions(&pb, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(!fsx::movable_login(&pb));
+    assert!(exchange_logins(&pa, &pb).is_err(), "exchange");
+    assert_eq!((ino(&pa), ino(&pb)), (ia, ib));
+    fs::remove_file(&pa).unwrap();
+    assert!(move_login(&pb, &pa, &show).is_err(), "move");
+    assert_eq!(ino(&pb), ib);
+    assert!(!fsx::exists(&pa));
+}
+
 /// A cross-device exchange is `Unsupported`, and nothing is copied. Needs a
 /// second filesystem; `/dev/shm` usually is one.
 #[cfg(target_os = "linux")]

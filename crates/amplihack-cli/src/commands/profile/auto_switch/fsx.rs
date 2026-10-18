@@ -162,10 +162,14 @@ pub fn exists(path: &Path) -> bool {
     fs::symlink_metadata(path).is_ok()
 }
 
-/// A login file amplihack may move: a regular file owned by the current user
-/// with exactly one hard link. Only metadata is looked at.
+/// A login file amplihack may move: a regular file owned by the current user,
+/// readable by nobody else, with exactly one hard link. Only metadata is
+/// looked at. The mode check matters because a login hidden by a private
+/// profile directory would otherwise become readable once moved into a
+/// group-readable `~/.claude`.
 pub fn movable_login(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && m.uid() == euid() && m.nlink() == 1)
+    fs::symlink_metadata(path)
+        .is_ok_and(|m| m.is_file() && m.uid() == euid() && m.mode() & 0o077 == 0 && m.nlink() == 1)
 }
 
 /// Sets the modification time to now without following a symlink, so Claude
