@@ -12,6 +12,7 @@
 
 #![cfg(unix)]
 
+use crate::support::amplihack_bin::amplihack_bin;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -20,33 +21,6 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
-
-/// See `issue_1567_nested_profile.rs`: the binary lives in `bins/amplihack`,
-/// so build it once and use the one next to this test's `deps`.
-fn amplihack_bin() -> PathBuf {
-    static BIN: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
-    BIN.get_or_init(|| {
-        if let Some(p) = std::env::var_os("AMPLIHACK_TEST_BINARY") {
-            return PathBuf::from(p);
-        }
-        let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
-        let status = Command::new(cargo)
-            .args(["build", "--quiet", "-p", "amplihack", "--bin", "amplihack"])
-            .current_dir(env!("CARGO_MANIFEST_DIR"))
-            .status()
-            .expect("failed to run cargo build for the amplihack binary");
-        assert!(status.success(), "cargo build -p amplihack failed");
-        let bin = std::env::current_exe()
-            .unwrap()
-            .parent() // deps
-            .and_then(Path::parent) // debug
-            .unwrap()
-            .join("amplihack");
-        assert!(bin.is_file(), "no amplihack binary at {}", bin.display());
-        bin
-    })
-    .clone()
-}
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
@@ -63,8 +37,7 @@ fn now() -> i64 {
 }
 
 fn executable(path: &Path, body: &str) {
-    fs::write(path, body).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(path, body, 0o755);
 }
 
 fn private_file(path: &Path, body: &str) {
@@ -909,7 +882,7 @@ fn install_refuses_an_amplihack_binary_in_a_writable_directory() {
     fs::create_dir_all(&shared).unwrap();
     fs::set_permissions(&shared, fs::Permissions::from_mode(0o777)).unwrap();
     let exe = shared.join("amplihack");
-    fs::copy(amplihack_bin(), &exe).unwrap();
+    crate::support::exec_stub::copy_executable(&amplihack_bin(), &exe);
     let before = fs::read(f.dir("Y").join("settings.json")).ok();
     let mut c = f.cmd_bin(&exe, &["profile", "auto-switch", "install"]);
     let out = f.run(&mut c);

@@ -293,13 +293,7 @@ mod shell {
     use std::os::unix::fs::PermissionsExt;
     use std::path::Path;
     use std::process::{Command, Output, Stdio};
-    use std::sync::Mutex;
     use std::time::{Duration, Instant};
-
-    /// Held while writing an executable and while forking. A thread that forks
-    /// while another still has a script open for writing hands that fd to its
-    /// child until exec, and exec of the script then fails with ETXTBSY.
-    static EXEC_LOCK: Mutex<()> = Mutex::new(());
 
     const SCRIPTS: &[&str] = &["amplihack-hook", "bootstrap", "install-runtime"];
 
@@ -312,29 +306,15 @@ mod shell {
         }
     }
 
-    /// Spawn a freshly written script under `EXEC_LOCK`. The lock covers the
-    /// writes in `write_exe`, but other tests in this binary spawn `sh`, `id`,
-    /// `touch` and the like without it, and a fork of theirs can still hold a
-    /// script's write descriptor until its own exec. That window is brief, so
-    /// retry on ETXTBSY instead of failing the test.
+    /// Spawn a freshly written script. `write_exe` never holds a write
+    /// descriptor on it in this process (see `support::exec_stub`), so a
+    /// sibling test's fork cannot make this exec fail with ETXTBSY.
     fn spawn_script(cmd: &mut Command) -> std::process::Child {
-        let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut attempts = 0;
-        loop {
-            match cmd.spawn() {
-                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
-                    attempts += 1;
-                    std::thread::sleep(std::time::Duration::from_millis(20));
-                }
-                r => return r.unwrap(),
-            }
-        }
+        cmd.spawn().unwrap()
     }
 
     fn write_exe(path: &Path, body: &str) {
-        let _guard = EXEC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        fs::write(path, body).unwrap();
-        fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+        crate::support::exec_stub::write_executable(path, body, 0o755);
     }
 
     /// Run a plugin script with a hermetic HOME/PATH: only `stub` and the
@@ -514,11 +494,10 @@ mod shell {
         let bootstrap =
             fs::read_to_string(repo_root().join("claude-plugin/bin/bootstrap")).unwrap();
         write_exe(&bin.path().join("bootstrap"), &bootstrap);
-        fs::copy(
-            repo_root().join("claude-plugin/bin/plugin-lock.sh"),
-            bin.path().join("plugin-lock.sh"),
-        )
-        .unwrap();
+        crate::support::exec_stub::copy_executable(
+            &repo_root().join("claude-plugin/bin/plugin-lock.sh"),
+            &bin.path().join("plugin-lock.sh"),
+        );
         write_exe(
             &bin.path().join("install-runtime"),
             "#!/bin/sh\ntouch \"$HOME/installer-ran\"\nrm -rf \"$AMPLIHACK_PLUGIN_INSTALL_LOCK\"\n",

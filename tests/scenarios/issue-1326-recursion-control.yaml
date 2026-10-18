@@ -33,7 +33,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_ceiling_monotone"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test amplihack_bin --locked -- spec_conformance_process::invariant_ceiling_monotone"
     timeout: 3600000
 
   - name: the-session-cap-survives-a-tmpdir-change
@@ -45,7 +45,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- invariant_node_budget invariant_ledger_sound"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test amplihack_bin --locked -- spec_conformance_process::invariant_node_budget spec_conformance_process::invariant_ledger_sound"
     timeout: 3600000
 
   - name: a-policy-refusal-is-terminal-and-says-so
@@ -56,7 +56,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- unsealed_nested_run_fails_closed"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test amplihack_bin --locked -- spec_conformance_process::invariant_ceiling_monotone_unsealed_nested_run_fails_closed"
     timeout: 3600000
 
   - name: nesting-below-the-ceiling-still-works
@@ -68,7 +68,7 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test spec_conformance_process --locked -- root_run_is_admitted_and_seals_a_tree"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack --test amplihack_bin --locked -- spec_conformance_process::invariant_depth_bound_root_run_is_admitted_and_seals_a_tree"
     timeout: 3600000
 
   - name: a-stale-variable-does-not-wedge-a-user
@@ -104,5 +104,5 @@ steps:
     agent: cli-agent
     action: execute
     params:
-      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test spec_conformance --locked -- spec_invariants_all_have_tests spec_gate_covers_every_config"
+      command: "bash tests/issue-1326-cargo-step.sh -p amplihack-cli --test cli_integration --locked -- spec_conformance::spec_invariants_all_have_tests spec_conformance::spec_gate_covers_every_config"
     timeout: 3600000

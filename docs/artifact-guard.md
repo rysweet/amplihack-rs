@@ -19,8 +19,14 @@ moves, unstages, or rewrites files.
 
 - [Behavior](#behavior)
 - [Provenance: this change vs the repository's history](#provenance-this-change-vs-the-repositorys-history)
+  - [Baseline selection](#baseline-selection)
+  - [Stacked PRs](#stacked-prs)
 - [Command-line interface](#command-line-interface)
 - [Default prohibited rules](#default-prohibited-rules)
+  - [Generic output segments and source manifests](#generic-output-segments-and-source-manifests)
+- [Remediation policy](#remediation-policy)
+  - [Cost in staged mode](#cost-in-staged-mode)
+  - [Hardening added with issue #1536](#hardening-added-with-issue-1536)
 - [Allowlist configuration](#allowlist-configuration)
 - [Workflow and pre-commit coverage](#workflow-and-pre-commit-coverage)
 - [Output isolation](#output-isolation)
@@ -110,9 +116,8 @@ Every violation carries a **provenance**:
 | `pre-existing` | The path is committed on the baseline and untouched by the change under review, so it cannot enter that change's diff | **Report, do not block** | Block |
 
 Provenance is measured against a **baseline** revision: the merge base of `HEAD`
-and the first of `@{upstream}`, `origin/HEAD`, `origin/main`, `origin/master`,
-`main`, `master` that resolves, or the revision given to `--baseline` /
-`AMPLIHACK_ARTIFACT_GUARD_BASELINE`. A path is `introduced` when it appears in
+and the base branch the change will merge into (see
+[Baseline selection](#baseline-selection)). A path is `introduced` when it appears in
 `git diff <baseline> HEAD` or in `git diff HEAD` (the working tree and index),
 and `pre-existing` otherwise. Staged, untracked, and ignored-present paths are
 always `introduced`: they are live worktree state the change is carrying now,
@@ -123,6 +128,74 @@ configuration error (exit `2`) rather than a silent fallback. If no baseline
 resolves at all — a repository with no upstream and no `main`/`master` — the
 report says so and treats the tracked index as pre-existing, because the guard
 will not assert a provenance it could not measure.
+
+### Baseline selection
+
+The baseline is the merge base of `HEAD` and the first revision that resolves,
+in this order:
+
+| Order | Revision | Source |
+| --- | --- | --- |
+| 1 | `--baseline <rev>` | Explicit option |
+| 2 | `AMPLIHACK_ARTIFACT_GUARD_BASELINE` | Environment |
+| 3 | `origin/HEAD` | Default list |
+| 4 | `origin/main` | Default list |
+| 5 | `origin/master` | Default list |
+| 6 | `main` | Default list |
+| 7 | `master` | Default list |
+| 8 | `@{upstream}` | Default list, last resort |
+
+An explicit `--baseline` or environment value that does not resolve exits `2`.
+It never falls through to the default list.
+
+The base branch comes before `@{upstream}` because the upstream of a feature
+branch is usually its own remote copy. When a branch merges `origin/main` to
+catch up, `merge-base(HEAD, @{upstream})` is the branch's pre-merge head, so
+every file the merge brought in shows up as `introduced`. A tracked
+`build/out.log` that `main` added would then block a change that never touched
+it. `merge-base(HEAD, origin/main)` after that merge is the tip of `origin/main`,
+so only the branch's own work is in the diff.
+
+```bash
+git fetch origin && git merge origin/main      # main added build/out.log
+amplihack hygiene artifact-guard --repo . --mode pre-publish   # exit 0
+# Artifact Guard: 1 pre-existing prohibited artifact path(s) ...
+# These paths are committed in the baseline origin/HEAD (<tip of origin/main>) ...
+```
+
+Pass `--baseline` when the change targets a branch other than the remote's
+default branch, for example a release branch:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode pre-publish --baseline origin/release/2.4
+```
+
+`@{upstream}` is used only when no remote default branch and no local
+`main`/`master` exist. It can still attribute merged base-branch changes to the
+change under review in that case.
+
+### Stacked PRs
+
+The default list names the repository's default branch, not the base branch of
+a particular pull request. The guard has no way to learn a PR's base from Git
+alone. For a stacked PR, cut from another feature branch such as
+`feat/issue-1528-...`, the merge base with `origin/HEAD` lies below the parent
+branch, so every artifact-shaped path the parent added counts as `introduced`
+by the child and the gate blocks.
+
+The error is in the blocking direction: the default can make the guard stricter
+than intended, never more lenient. Pass the PR's base branch to measure the
+child on its own:
+
+```bash
+amplihack hygiene artifact-guard --repo . --mode pre-publish --baseline origin/feat/issue-1528-...
+```
+
+A caller that knows the base (for example from `gh pr view --json baseRefName`)
+should pass `--baseline origin/<baseRefName>` or set
+`AMPLIHACK_ARTIFACT_GUARD_BASELINE`. The test
+`a_stacked_pr_needs_its_base_branch_as_an_explicit_baseline` covers both the
+default behaviour and the remedy.
 
 ### Why the gates do not block on a pre-existing condition
 
@@ -164,7 +237,7 @@ amplihack hygiene artifact-guard \
 | `--repo <path>` | Repository worktree to scan. The path must resolve inside a Git repository. | current directory |
 | `--mode <mode>` | Scan mode: `pre-commit`, `pre-publish`, `all`, `staged`, or `worktree`. | `pre-commit` |
 | `--allowlist <path>` | Optional allowlist file. Relative paths resolve from the repository root. | `.amplihack-artifact-allowlist` when present |
-| `--baseline <rev>` | Revision the change under review is measured against for provenance. Env: `AMPLIHACK_ARTIFACT_GUARD_BASELINE`. | first resolvable of `@{upstream}`, `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master` |
+| `--baseline <rev>` | Revision the change under review is measured against for provenance. Env: `AMPLIHACK_ARTIFACT_GUARD_BASELINE`. | first resolvable of `origin/HEAD`, `origin/main`, `origin/master`, `main`, `master`, `@{upstream}` ([Baseline selection](#baseline-selection)) |
 | `--preexisting <policy>` | What the gate modes do about pre-existing artifacts: `report` (print in full, do not block) or `block`. Ignored by the audit modes, which always fail closed. Env: `AMPLIHACK_ARTIFACT_GUARD_PREEXISTING`. | `report` |
 
 | Mode | Sources checked | Typical use |
@@ -258,7 +331,7 @@ repository worktree:
 | Claude runtime | `.claude/runtime/` | Exempt as untracked/ignored-present; blocked only when **staged or tracked** (except the launcher-owned files — see below) |
 | Nested worktrees | `worktrees/` | Blocked in `worktree`/`all` only |
 | Cache directories | `.cache/`, `.npm/`, `.pnpm-store/`, `.yarn/cache/`, `.turbo/`, `.parcel-cache/`, `.pytest_cache/` | Blocked in `worktree`/`all` only |
-| Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip` | Blocked in `worktree`/`all` only |
+| Build output | `dist/`, `build/`, `coverage/`, `.next/`, `out/`, `logs/`, `outputs/`, `index.scip`. A `dist`, `build`, `coverage`, `out`, `logs`, or `outputs` directory that directly contains a tracked source manifest is not matched — see [Generic output segments and source manifests](#generic-output-segments-and-source-manifests) | Blocked in `worktree`/`all` only |
 | Rust build output | `target/` | Blocked only when staged, tracked, or untracked |
 | Generated indexes and logs | `index.scip`, generated runtime logs, generated output directories | Blocked in `worktree`/`all` only |
 
@@ -273,6 +346,69 @@ untracked-but-not-ignored.
 Rules match normalized repo-relative paths using `/` separators. The guard does
 not need to read artifact file contents; path-level scanning is the intended
 contract.
+
+### Generic output segments and source manifests
+
+`dist`, `build`, `coverage`, `out`, `logs`, and `outputs` are common names for
+output. They are also used as names for real projects, such as an
+`apps/coverage/` service. To separate the two, the guard looks for a **source
+manifest** that sits directly inside the directory:
+
+- `package.json`
+- `Cargo.toml`
+- `tsconfig.json`
+- `pyproject.toml`
+- `go.mod`
+
+A directory `D` with one of these generic names does not match the
+build-output rule when the Git index contains `D/<manifest>`. The rule still
+matches it otherwise. In detail:
+
+- **Direct child only.** The manifest must be `D/package.json`. A manifest in a
+  sibling, parent, or grandchild directory does not count. A manifest at the
+  repository root never counts.
+- **Each segment is checked on its own.** A source directory does not exempt an
+  output directory nested inside it.
+- **Only indexed manifests count.** The guard reads the manifest set from
+  `git ls-files -z`, which covers tracked and staged files. An untracked
+  `package.json` exempts nothing.
+- **One set for every scan.** The guard builds the set once per run and uses it
+  in the staged, tracked, untracked, and ignored-present scans. In `staged`
+  mode it lists only the manifests (`git ls-files -z -- '*/package.json' ...`)
+  rather than the whole index; see [Cost in staged mode](#cost-in-staged-mode).
+- **Fail closed.** If `git ls-files` fails, the run exits `2`. It never treats
+  the set as empty.
+
+`target`, `.next`, and `index.scip` are always output. A manifest never
+exempts them.
+
+The coverage report files `lcov.info`, `coverage-final.json`,
+`coverage-summary.json`, and `clover.xml` match only inside a non-exempt output
+directory. A `lcov.info` at the repository root is not flagged, and neither is
+`apps/coverage/lcov.info` when the index contains `apps/coverage/package.json`.
+A match is not proof of output: a tracked `tests/fixtures/coverage/lcov.info`
+may be a hand-maintained parser fixture, so it is treated as possibly source
+(see [Remediation policy](#remediation-policy)). The other rules (`node-modules`, `plugin-bundle`,
+`cache-artifact`, `claude-runtime`, `nested-worktree`,
+`workflow-session-artifact`) are unaffected by manifests.
+
+| Index contains | Path checked | Result |
+| --- | --- | --- |
+| `apps/coverage/package.json`, `apps/coverage/tsconfig.json` | `apps/coverage/src/index.ts` | Not matched |
+| `apps/coverage/tsconfig.json` | `apps/coverage/dist/index.js` | `build-artifact`, because `dist/` has no manifest |
+| `package.json` (repository root) | `dist/index.js` | `build-artifact` |
+| `pkg/package.json` | `pkg/dist/index.js` | `build-artifact`, because the manifest is in the parent |
+| nothing relevant | `coverage/lcov.info` | `build-artifact` |
+| nothing relevant | `tests/fixtures/coverage/lcov.info` (tracked) | `build-artifact`, possibly source |
+| nothing relevant | `build/notes.md` | `build-artifact`, possibly source (see [Remediation policy](#remediation-policy)) |
+| `apps/coverage/package.json` (untracked only) | `apps/coverage/src/index.ts` | `build-artifact` |
+| `packages/x/dist/package.json` | `packages/x/dist/index.js` | Not matched (known trade-off) |
+
+The last row is a deliberate trade-off. A tracked `package.json` inside a
+`dist/` directory makes the guard treat that directory as source. Missing some
+tracked output does less harm than telling an agent to delete a real
+application. Allowlist and manifest changes both show up in review, so watch
+for a new `dist/package.json` the same way you watch allowlist edits.
 
 ### Built-in `.claude/runtime/` exemption
 
@@ -311,6 +447,178 @@ Before this exemption, files under
 later the metrics file that agents append to on every tool call) failed the
 end-of-run `pre-publish` guard, which left `recipe-runner-rs` and its child
 agents hung after the work was already committed and pushed (issue #807).
+
+## Remediation policy
+
+Agents run the commands the guard prints. The guard therefore prints a removal
+command only for a path that is certainly generated. It never prints one for a
+path that might be source.
+
+Every violation has a **removal root**. This is the narrowest path that is
+entirely generated, or *none* when the guard cannot be sure:
+
+| Rule and match | Removal root |
+| --- | --- |
+| `node-modules` | The path up to and including the `node_modules` segment, for example `apps/coverage/node_modules` |
+| `plugin-bundle` | The directory holding `plugin.js`, for example `dist` |
+| `cache-artifact`, `claude-runtime`, `nested-worktree`, `workflow-session-artifact` | The path up to and including the matched segment |
+| `cache-artifact` under `.yarn/cache` | The file itself, because Yarn zero-install repositories commit that directory |
+| `build-artifact` on `target` or `.next` | The path up to and including that segment |
+| `build-artifact` on `index.scip` | The file itself |
+| `build-artifact` on `lcov.info`, `coverage-final.json`, `coverage-summary.json`, or `clover.xml` inside an output directory, untracked or ignored-present | The file itself |
+| The same report files, tracked or staged, directly inside a `coverage/` directory at the repository root or beside an indexed source manifest (`coverage/lcov.info`, `web/coverage/lcov.info` with `web/package.json`) | The file itself, because that is where coverage tools write their reports |
+| The same report files, tracked or staged, anywhere else (`tests/fixtures/coverage/lcov.info`) | *None*: it may be a test fixture |
+| `build-artifact` on another path in a generic output directory, untracked or ignored-present | The path up to and including the first qualifying (non-exempt) segment. For an untracked `apps/coverage/dist/x.js` with an indexed `apps/coverage/package.json`, that is `apps/coverage/dist` |
+| `build-artifact` on another path in a generic output directory, tracked or staged | *None* |
+
+A removal root is always the matched path itself, or a prefix of it that ends at
+a `/`. It is never a parent of the matched segment. For example, a new
+`apps/coverage/node_modules/a/index.js` next to a tracked
+`apps/coverage/package.json` yields
+`git rm -r --cached -- 'apps/coverage/node_modules'`
+and never `-- 'apps/coverage'`.
+
+When the removal root is *none*, neither report prints `git rm -r --cached`,
+`git rm --cached`, `rm -rf`, or the `.gitignore && git commit` cleanup chain.
+The report says the path may be source and points it at review and the
+allowlist:
+
+```text
+  Possibly source (matches a generic output directory name, or its name is unsafe in a shell command); the guard will not suggest removing it:
+  build/  — 1 path(s), rule build-artifact
+      build/notes.md
+  If a path is intentional source, add a reviewed entry to .amplihack-artifact-allowlist:
+      build/notes.md
+  ...
+
+First violation detail:
+  build/notes.md: possibly source, so the guard does not suggest removing it; review the path, and if it is intentional add a narrow reviewed .amplihack-artifact-allowlist entry, otherwise rename it
+```
+
+The wording above is illustrative. The parts that stay fixed are the
+`.amplihack-artifact-allowlist` name, the path itself, and the absence of any
+`git rm` or `rm -rf` command.
+
+The closing `First violation detail` line follows the same split. For a
+violation with a removal root it prints the rule's generic remediation, which
+begins "remove the artifact from the parent worktree". For a violation without
+one it prints the review sentence shown above instead, so the last line of the
+report never tells the reader to delete a path the report has just called
+possibly source.
+
+The guard suggests an exact-path allowlist entry only when the path can be
+expressed literally, as a line the
+[allowlist parser](#allowlist-configuration) reads back as that one path. The
+entry is printed as plain text; copy it into the allowlist as shown. The guard
+prints no suggestion when the path:
+
+- contains `*` or `?`, which the parser reads as globs that match more than the
+  path;
+- contains `\`, which the parser rejects;
+- contains `'` or `"`, which would need shell or display escaping;
+- starts with `#` after optional spaces, which the parser reads as a comment;
+- has leading or trailing spaces, or contains a control character.
+
+For such a path the report says it needs manual review instead. A tracked
+`build/a*b.txt`, for example, is listed as possibly source with no allowlist
+line and no removal command.
+
+The guard also checks every suggestion against the parser's own rules, so it
+never suggests an entry the parser would refuse. A tracked file that is itself
+a root artifact name, such as a `build` script or a `logs` file, cannot be
+allowlisted. The report says so and tells you to rename or remove it instead.
+A path reported by more than one source (for example both staged and tracked)
+is listed once.
+
+A directory with more than a few possibly-source paths lists the first few,
+followed by `... and N more`.
+
+These rules make the printed commands safe to run:
+
+- **No root over protected paths.** A directory removal root is narrowed to
+  the violating path itself when anything under that directory is protected:
+  an indexed path that is allowlisted, matches no rule, or may be source; a
+  untracked or ignored file under the root that the allowlist admits (listed
+  in every mode, even one that does not flag such files); or a registered
+  sibling worktree under `worktrees/`. With an allowlisted
+  `docs/build/guide.md`, an untracked `docs/build/scratch.log` gets
+  `rm -rf -- 'docs/build/scratch.log'`, never `-- 'docs/build'`; a leaked
+  `worktrees/stale/leak.txt` next to a registered `worktrees/feat/x` gets
+  `rm -rf -- 'worktrees/stale/leak.txt'`, never `-- 'worktrees'`.
+- **Unknown worktrees narrow every root.** Reading the registered worktrees
+  (`git worktree list`) is best effort, as it was before issue #1536: a
+  failure does not end the run. Because the guard then cannot tell what a
+  directory root would cover, every directory removal root in that run is
+  narrowed to the violating path itself.
+- **Segment-boundary containment.** When a removal root also contains
+  pre-existing paths or possibly-source paths, the guard lists the introduced
+  paths one by one. It does not untrack the whole directory. Containment is
+  checked at a `/` boundary, so `build` does not contain `buildtools/a.rs`.
+- **Commands match the index.** `git rm --cached` is printed only for staged
+  or tracked paths. An untracked or ignored path gets a plain `rm`, because
+  `git rm --cached` on it fails with `pathspec did not match any files`.
+- **Git reads every path literally.** Git reads `git rm` arguments as
+  pathspecs even after `--`: a leading `:` is pathspec magic
+  (`':!src/node_modules'` means "everything except that path", so a plain
+  `git rm -r --cached` on it untracks the whole repository), and `*`, `?` and
+  `[` are globs (`pkg[1]` also matches `pkg1`). When a path holds any of
+  these (or `\`), the printed command is `git --literal-pathspecs rm`, which
+  names exactly the path shown; every other path keeps the plain `git rm` form.
+  `rm` already reads its arguments literally. The advisory cleanup chain only
+  adds the `echo '<root>' >> .gitignore` step when the root is also a literal
+  `.gitignore` pattern (no `*`, `?`, `[`, `\`, leading `!` or `#`); otherwise it
+  tells you to write that entry by hand.
+- **No unsafe roots.** A removal root that contains `'` or a control character
+  is treated as *none*, because it cannot be printed inside a single-quoted
+  shell word. The same check applies to each path listed one by one. A
+  possibly-source path that is safe to print
+  is printed as plain text. Any other path is printed in escaped form (quoted,
+  with `\"` and control characters escaped) and gets no allowlist suggestion,
+  so a file name cannot inject shell syntax or fake a report line.
+
+The display groups (`build/` above) only organise the report. Removal commands
+always come from the removal root and never from the display group.
+
+### Cost in staged mode
+
+`--mode staged` is meant to run on every commit, so it does no more work than
+it needs. (The repository's own pre-commit hook uses `--mode pre-commit`.) It lists the staged paths and the indexed source manifests
+(a pathspec-limited `git ls-files`). It does not read the whole index, run
+`git worktree list`, or match rules against every indexed path. Those steps run
+only when a violation has a directory removal root, which is the one remedy
+that can reach paths the scan did not report, and then only once per run. A
+commit with no violations, or with only exact-path remedies, costs two `git`
+calls plus the allowlist read. The worktree and audit modes read the whole
+index anyway for the tracked scan, and reuse it.
+
+The manifest lookup uses pathspecs such as `*/package.json`, which match across
+`/` only under git's default pathspec rules. The guard therefore removes
+`GIT_GLOB_PATHSPECS`, `GIT_NOGLOB_PATHSPECS`, `GIT_LITERAL_PATHSPECS` and
+`GIT_ICASE_PATHSPECS` from every git command it runs. Without this, a caller
+that exports `GIT_LITERAL_PATHSPECS=1` (Magit and Emacs VC do) would find no
+manifests in `staged` mode and flag `apps/coverage/tsconfig.json`, while
+`pre-commit` passed the same change; and an inherited `GIT_GLOB_PATHSPECS`
+would make git reject the `--literal-pathspecs` listing under a directory
+removal root, turning a block into a git failure.
+
+### Hardening added with issue #1536
+
+The three faults in issue #1536 needed three changes: the manifest exemption,
+no removal root for possibly-source paths, and the baseline order. Review of
+the first version found that the remedies it printed could still do damage for
+unusual file names, so this change also alters behaviour in the following ways.
+Each was a reachable problem before #1536 as well; they are listed here so they
+can be reviewed as separate decisions.
+
+| Change | Before | After |
+| --- | --- | --- |
+| Directory roots holding protected paths | `rm -rf -- 'docs/build'` even when `docs/build/guide.md` was allowlisted | Narrowed to the violating path ([rules above](#remediation-policy)) |
+| Pathspec magic and globs in `git rm` | `git rm --cached -- ':!x/node_modules'` untracked everything except that path | `git --literal-pathspecs rm` for such paths only |
+| `'` and control characters in paths | Printed inside single quotes, so the quoting could break | No removal command; the path is printed escaped |
+| `.gitignore` step of the cleanup chain | `echo '<root>' >> .gitignore` for any root | Only when the root is a literal ignore pattern |
+| Allowlist suggestions | General advice to add a narrow entry | The exact line, printed only when the parser would accept it |
+| Untracked or ignored paths | `git rm --cached` (which fails with `pathspec did not match`) alongside `rm -rf` | Plain `rm` only |
+| `git worktree list` failure | Best effort | Still best effort; directory roots are narrowed for that run |
 
 ## Allowlist configuration
 
@@ -575,6 +883,10 @@ pub struct ArtifactViolation {
     pub rule_id: String,
     pub message: String,
     pub provenance: ArtifactProvenance,
+    /// Narrowest repo-relative path that is wholly generated. `None` means
+    /// the path may be source and the guard never suggests removing it.
+    /// See "Remediation policy".
+    pub removal_root: Option<String>,
 }
 
 pub struct ArtifactGuardReport {
@@ -651,6 +963,23 @@ Do not widen the allowlist to cover it. A directory-wide entry such as
 `node_modules/**` is rejected on purpose (see
 [Allowlist configuration](#allowlist-configuration)); provenance, not a broad
 exemption, is what keeps the pre-existing tree from stopping unrelated work.
+
+For a path reported as possibly source, decide whether it is source or output.
+If it is source, commit the allowlist entry the report suggests:
+
+```bash
+printf 'build/notes.md\n' >> .amplihack-artifact-allowlist
+git add .amplihack-artifact-allowlist && git commit -m 'chore: allowlist build/notes.md'
+```
+
+If it is output, remove it in its own reviewed change. Do not let an agent
+untrack it as a side effect of unrelated work.
+
+If the report says the path needs manual review, it has no literal allowlist
+form (for example `build/a*b.txt`). Rename it, or remove it in a reviewed
+change. A glob entry would also allowlist other paths. If it says the path
+cannot be allowlisted, the path is a root artifact name such as `build`, which
+the parser refuses. Rename it or remove it in a reviewed change.
 
 For an intentional fixture, add the narrowest allowlist entry that preserves the
 test:
@@ -761,7 +1090,9 @@ amplihack hygiene artifact-guard --repo . --mode pre-publish --preexisting block
 Review these changes carefully:
 
 1. New or changed `.amplihack-artifact-allowlist` entries.
-2. Changes to prohibited rules.
+2. Changes to prohibited rules, and new source manifests (`package.json`,
+   `Cargo.toml`, `tsconfig.json`, `pyproject.toml`, `go.mod`) placed directly
+   inside a `dist`, `build`, `coverage`, `out`, `logs`, or `outputs` directory.
 3. Recipe edits around `git add -A`, publication, finalization, or PR creation.
 4. Pre-commit changes that remove `pass_filenames: false`.
 5. Build, plugin, or runtime changes that redirect outputs into the parent

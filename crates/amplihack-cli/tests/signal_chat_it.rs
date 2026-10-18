@@ -3,7 +3,7 @@
 //! `Chat(SignalChatArgs)` clap variant and the `commands::signal::chat`
 //! module exist.
 //!
-//! Run: `cargo test -p amplihack-cli --features signal --test signal_chat_it`.
+//! Run: `cargo test -p amplihack-cli --features signal --test cli_integration signal_chat_it::`.
 //!
 //! Gated on the `signal` feature so a default build compiles it away (the
 //! subcommand's implementation only exists behind `--features signal`).
@@ -138,7 +138,7 @@ fn chat_variant_reuses_the_shared_six_code_exit_contract() {
 //     so a membership change can occur *between* chunk posts.
 // Both are part of the F6 implementation; until then this file is RED.
 //
-// Run: `cargo test -p amplihack-cli --features signal --test signal_chat_it`.
+// Run: `cargo test -p amplihack-cli --features signal --test cli_integration signal_chat_it::`.
 mod fix3_per_post_reverification {
     use amplihack_cli::commands::signal::chat::verify_and_post;
     use amplihack_signal::chat::outbound::redact_and_chunk;

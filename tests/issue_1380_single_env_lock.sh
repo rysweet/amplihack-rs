@@ -13,9 +13,13 @@
 # nothing else in `<crate>/src/` may declare one. Compatibility helpers such as
 # `test_serial::acquire()` must delegate to that same function.
 #
-# Integration tests (`<crate>/tests/*.rs`) are deliberately NOT covered: cargo
-# builds each of those files as its own binary, so a file-local mutex there
-# really does serialise everything in its process.
+# Integration tests (`<crate>/tests/*.rs`) are NOT covered. Where cargo builds
+# each file as its own binary, a file-local mutex there serialises everything
+# in its process. amplihack-cli's integration tests are instead modules of one
+# binary, `cli_integration`; there no test may change process state in the
+# shared process at all, which
+# `cli_integration_changes_process_state_only_in_quiet_children` in
+# tests/integration/test_harness_binary_path_contract_test.rs enforces.
 
 set -euo pipefail
 
