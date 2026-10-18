@@ -210,7 +210,8 @@ GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; e
 Prints up to five `N kind` lines in priority order, where `kind` is `marked`
 or `bare`. A number that appears in both forms is printed once, as `marked`.
 The selection log uses this kind, so the label always matches the reference
-that picked the number. Always returns 0.
+that picked the number. Makes no network calls. The caller reads it through
+process substitution, so its exit status is not used.
 
 ### `_github_open_issue_url N`
 
