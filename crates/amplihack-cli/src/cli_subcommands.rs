@@ -89,7 +89,7 @@ pub struct HygieneArtifactGuardArgs {
 
     /// Revision the change under review is measured against when deciding
     /// whether a tracked artifact is pre-existing. Defaults to the first of
-    /// @{upstream}, origin/HEAD, origin/main, origin/master, main, master that
+    /// origin/HEAD, origin/main, origin/master, main, master, @{upstream} that
     /// shares a merge base with HEAD. Env: AMPLIHACK_ARTIFACT_GUARD_BASELINE.
     #[arg(long)]
     pub baseline: Option<String>,

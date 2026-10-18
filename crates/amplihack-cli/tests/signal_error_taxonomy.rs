@@ -1,6 +1,6 @@
 //! TDD contract — Signal op error → exit-code taxonomy (#921/#923).
 //!
-//! Run with: `cargo test -p amplihack-cli --features signal --test signal_error_taxonomy`
+//! Run with: `cargo test -p amplihack-cli --features signal --test cli_integration signal_error_taxonomy::`
 //!
 //! A single source of truth maps every `SignalOpError` variant to a stable
 //! process exit code. Downstream tooling and the fleet orchestrator rely on

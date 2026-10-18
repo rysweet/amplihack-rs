@@ -420,8 +420,8 @@ full process command lines.
 The regression suite covers these contracts:
 
 ```bash
-cargo test -p amplihack-cli --test issue_754_scoped_monitor_contracts
-cargo test -p amplihack-cli --test pr_scope_primary_key_test
+cargo test -p amplihack-cli --test cli_integration issue_754_scoped_monitor_contracts::
+cargo test -p amplihack --test integration pr_scope_primary_key::
 
 amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh \
   scoped-pr-identity

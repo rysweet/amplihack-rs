@@ -1435,9 +1435,21 @@ fn step_03_preserves_github_path() {
         body.contains("gh issue create"),
         "step-03 must preserve the GitHub issue creation path (Issue #684)"
     );
+    // Issue #1595: the GitHub tracking-issue lookup moved into the sourced
+    // helper, so the idempotency check now looks there.
     assert!(
-        body.contains("gh issue view"),
-        "step-03 must preserve the GitHub issue lookup for idempotency (Issue #684)"
+        body.contains("select_github_tracking_issue"),
+        "step-03 must delegate GitHub issue selection to select_github_tracking_issue (Issues #684, #1595)"
+    );
+    let helper_path = workspace_root()
+        .join("amplifier-bundle")
+        .join("tools")
+        .join("workflow_issue_tracking.sh");
+    let helper = fs::read_to_string(&helper_path)
+        .unwrap_or_else(|e| panic!("read {}: {e}", helper_path.display()));
+    assert!(
+        helper.contains("gh issue view") && helper.contains("gh api"),
+        "workflow_issue_tracking.sh must preserve the GitHub issue lookup for idempotency (Issues #684, #1595)"
     );
 }
 

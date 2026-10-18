@@ -96,7 +96,7 @@ scenarios:
     steps:
       - type: command
         command: >-
-          cargo test -p amplihack-cli --test claude_install_contract --locked 2>&1 | grep 'test result' | tail -1
+          cargo test -p amplihack-cli --test cli_integration claude_install_contract:: --locked 2>&1 | grep 'test result' | tail -1
           | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
         expected_output: "PASS"
 
@@ -111,7 +111,7 @@ scenarios:
     steps:
       - type: command
         command: >-
-          cargo test -p amplihack-cli --test system_prompt_append_fragment --locked 2>&1 | grep 'test result' | tail -1
+          cargo test -p amplihack-cli --test cli_integration system_prompt_append_fragment:: --locked 2>&1 | grep 'test result' | tail -1
           | grep -qE 'ok\. [1-9][0-9]* passed' && echo PASS || echo FAIL
         expected_output: "PASS"
 

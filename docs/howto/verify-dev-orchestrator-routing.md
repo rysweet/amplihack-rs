@@ -207,7 +207,7 @@ NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli orch
 Run the workflow reliability contract tests:
 
 ```bash
-NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test issue_672_workflow_reliability_contracts
+NODE_OPTIONS=--max-old-space-size=32768 cargo test -p amplihack-cli --test cli_integration issue_672_workflow_reliability_contracts::
 ```
 
 ## Troubleshooting

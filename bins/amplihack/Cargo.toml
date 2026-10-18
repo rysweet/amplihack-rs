@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 default-run = "amplihack"
+# Every tests/*.rs file is a module of the one `amplihack_bin` target below.
+autotests = false
 
 [package.metadata.binstall]
 pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
@@ -69,6 +71,12 @@ amplihack-cli = { workspace = true, features = ["test-support"] }
 name = "integration"
 path = "../../tests/integration/main.rs"
 
+# This package's own tests/*.rs files are modules of ONE more test binary,
+# rooted at tests/main.rs (`autotests = false` above stops Cargo from also
+# building each file as its own target). Add new files as `mod` lines in
+# tests/main.rs, not as new [[test]] entries here.
+# Run one former target with:
+#   cargo test -p amplihack --test amplihack_bin <module_name>::
 [[test]]
-name = "issue_537_git_optional_recipes"
-path = "tests/issue_537_git_optional_recipes.rs"
+name = "amplihack_bin"
+path = "tests/main.rs"

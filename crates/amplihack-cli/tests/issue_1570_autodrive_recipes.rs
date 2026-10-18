@@ -14,7 +14,6 @@
 //! `autodrive_loop.sh` that copies the `--task-file` it receives. They skip,
 //! with a note, when `jq` is not installed.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -89,8 +88,7 @@ struct StepRun {
 }
 
 fn executable(path: &Path, text: &str) {
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(path, text, 0o755);
 }
 
 /// Run one recipe's loop step with `context` as the only context source.
@@ -112,16 +110,28 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
         &tools.join("autodrive_crusty_rereview.sh"),
         "#!/usr/bin/env bash\nexit 0\n",
     );
-    std::fs::copy(
-        repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
-        tools.join("recipe_context_value.sh"),
-    )
-    .unwrap();
+    crate::support::exec_stub::copy_executable(
+        &repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
+        &tools.join("recipe_context_value.sh"),
+    );
+    // PR #1588 review: step-02 takes the round recipe from the recipes/
+    // directory beside the loop driver and refuses when it is missing.
+    let recipes = tmp.path().join("home/amplifier-bundle/recipes");
+    std::fs::create_dir_all(&recipes).unwrap();
+    for r in ["autodrive-crusty-round", "autodrive-merge-round"] {
+        std::fs::write(
+            recipes.join(format!("{r}.yaml")),
+            format!("name: \"{r}\"\n"),
+        )
+        .unwrap();
+    }
     let ctx = tmp.path().join("context.json");
     std::fs::write(&ctx, context).unwrap();
     let preflight = serde_json::json!({
         "state_dir": tmp.path().join("state"),
         "pr": "1570",
+        // #1543: every preflight names the tree the loop measures.
+        "repo": repo,
     })
     .to_string();
 

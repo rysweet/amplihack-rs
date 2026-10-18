@@ -2,10 +2,9 @@
 #![cfg(unix)]
 #[path = "codex_frontdoor_contract/fixture.rs"]
 mod fixture;
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{fs, process::Command};
 fn executable(path: &std::path::Path, script: &str) {
-    fs::write(path, script).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+    crate::support::exec_stub::write_executable(path, script, 0o700);
 }
 #[test]
 fn fresh_codex_launch_attempts_client_install_before_plugin_preflight() {

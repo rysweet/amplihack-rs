@@ -266,6 +266,27 @@ test:
   cxx); restoring `target/` can exhaust runner disk before tests start, so
   target output is never cached (issue #744). nextest lowers peak disk; caching
   `target/` here would fight that.
+- **One process locally, one per test in CI.** Every file in
+  `crates/amplihack-cli/tests/` is a module of one test binary,
+  `cli_integration` (crate root `crates/amplihack-cli/tests/main.rs`; the
+  package sets `autotests = false`). A former target is selected with a module
+  filter, for example
+  `cargo test -p amplihack-cli --test cli_integration cargo_cxx_pin::`.
+  nextest runs each test in its own process, but a local `cargo test` runs all
+  of them as threads of one process. A test that changes `HOME`, `PATH` or the
+  working directory in-process therefore runs its body in a child process of
+  the binary (`support::quiet_process::in_quiet_process`) and makes the change
+  there with `child_set_var`, `child_remove_var` or `child_set_current_dir`,
+  which panic anywhere else. Stubs that tests exec are written with
+  `support::exec_stub`, so this process never holds a write descriptor on them
+  (ETXTBSY). Guards in
+  `tests/integration/test_harness_binary_path_contract_test.rs` fail on a `.rs`
+  file at any depth that no module declaration reachable from `main.rs` loads,
+  on a `#[cfg]` on a `mod` line in `main.rs`, on a test target other than
+  `cli_integration` and `lbug_ffi` (from `cargo metadata`), and on a
+  `set_var`, `remove_var` or `set_current_dir` call outside
+  `support/quiet_process.rs`. Feature-gated modules such as `signal_*` build
+  only with their feature, so pass `--features signal` to run them locally.
 
 ## Integration test binary convention
 
@@ -300,6 +321,26 @@ target's tests with:
 cargo test -p amplihack --test integration ci_speedup_optimization::
 cargo nextest run -p amplihack -E 'binary(integration) and test(/^ci_speedup_optimization::/)'
 ```
+
+The package's own `bins/amplihack/tests/` directory follows the same rule.
+Each file there is a module of the `amplihack_bin` target, whose crate root is
+`bins/amplihack/tests/main.rs`, and the package sets `autotests = false` so
+Cargo does not also build each file as a target of its own. A module keeps the
+name of its former target:
+
+```bash
+cargo test -p amplihack --test amplihack_bin spec_conformance_process::
+```
+
+`every_amplihack_bin_test_file_is_wired_into_a_test_binary`, in
+`tests/integration/test_harness_binary_path_contract_test.rs`, fails on any
+`.rs` file under that directory, at any depth, that no module declaration
+reachable from `main.rs` loads, and on a `#[cfg]` placed on a `mod` line, in
+any reached file, whose module lies inside that directory. A gate belongs
+inside the module file instead. The
+`tests/integration` guard applies the same checks to the `integration` root,
+and the test-target list is read from `cargo metadata`, not parsed from
+`Cargo.toml`.
 
 ## Disk management
 
