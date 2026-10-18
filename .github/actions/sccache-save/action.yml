@@ -1,0 +1,48 @@
+name: Save sccache disk cache
+description: >-
+  Stop the sccache server and save its disk cache as one Actions cache entry.
+  actions/cache/save only warns when the cache service refuses it, so check
+  that the entry exists and retry up to three times with jitter. Needs
+  `actions: read` on the job.
+inputs:
+  key-prefix:
+    description: Same prefix as given to sccache-restore.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Stop sccache server
+      shell: bash
+      run: |
+        sccache --stop-server > /dev/null || true
+        du -sh "$SCCACHE_DIR" || true
+    - uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+    - id: c1
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" save-check "${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}" 1 3
+    - if: steps.c1.outputs.retry == 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+    - id: c2
+      if: steps.c1.outputs.retry == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" save-check "${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}" 2 3
+    - if: steps.c2.outputs.retry == 'true'
+      uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+    - if: steps.c2.outputs.retry == 'true'
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" save-check "${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}" 3 3

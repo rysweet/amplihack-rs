@@ -48,6 +48,11 @@ jobs:
   check:
     name: Lint & Format
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     env:
       # Compiled-artifact caching via sccache (#1052 follow-up). Unlike
       # restoring the whole target/ dir (which exhausted runner disk, hence
@@ -89,35 +94,13 @@ jobs:
       # uncached, about 17 minutes of this job on every run.
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - name: Point sccache at its disk cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
-      # One entry per job (and target), keyed by run so every save is new;
-      # restore-keys picks the newest. Only main saves (see the save step), so
-      # pull requests start from main's cache and add no entries of their own.
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
-        id: sccache-restore
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: ./.github/actions/sccache-restore
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
-      # The Actions cache service rate-limits the whole repository, and a
-      # restore that gets HTTP 429 reports "Cache not found", leaving the job
-      # to compile everything. The limit resets within a minute, so try once
-      # more. A genuinely empty cache costs the same minute, once.
-      - name: Wait out a cache rate limit
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        run: sleep 60
-      - name: Restore sccache disk cache (retry)
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           cache-targets: false
@@ -375,20 +358,20 @@ jobs:
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
-      - name: Stop sccache server
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        shell: bash
-        run: sccache --stop-server > /dev/null || true; du -sh "$SCCACHE_DIR" || true
       - name: Save sccache disk cache
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — the lint/format job compiles the whole workspace for
     # clippy (~15 min under the no-artifact-cache policy), and gating the
     # expensive Test job behind it serialized the critical path to
@@ -428,35 +411,13 @@ jobs:
           tool: nextest
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - name: Point sccache at its disk cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
-      # One entry per job (and target), keyed by run so every save is new;
-      # restore-keys picks the newest. Only main saves (see the save step), so
-      # pull requests start from main's cache and add no entries of their own.
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
-        id: sccache-restore
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: ./.github/actions/sccache-restore
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
-      # The Actions cache service rate-limits the whole repository, and a
-      # restore that gets HTTP 429 reports "Cache not found", leaving the job
-      # to compile everything. The limit resets within a minute, so try once
-      # more. A genuinely empty cache costs the same minute, once.
-      - name: Wait out a cache rate limit
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        run: sleep 60
-      - name: Restore sccache disk cache (retry)
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # The full workspace test profile links large native artifacts. Restoring
@@ -499,20 +460,20 @@ jobs:
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
-      - name: Stop sccache server
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        shell: bash
-        run: sccache --stop-server > /dev/null || true; du -sh "$SCCACHE_DIR" || true
       - name: Save sccache disk cache
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
 
   install-smoke:
     name: Install Smoke Test
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
     env:
       # This job only asserts that `cargo install` succeeds and the binary
@@ -533,35 +494,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - name: Point sccache at its disk cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
-      # One entry per job (and target), keyed by run so every save is new;
-      # restore-keys picks the newest. Only main saves (see the save step), so
-      # pull requests start from main's cache and add no entries of their own.
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
-        id: sccache-restore
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: ./.github/actions/sccache-restore
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
-      # The Actions cache service rate-limits the whole repository, and a
-      # restore that gets HTTP 429 reports "Cache not found", leaving the job
-      # to compile everything. The limit resets within a minute, so try once
-      # more. A genuinely empty cache costs the same minute, once.
-      - name: Wait out a cache rate limit
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        run: sleep 60
-      - name: Restore sccache disk cache (retry)
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # Reuse the dependency-source cache namespace the native x86_64-linux
@@ -577,16 +516,11 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats
-      - name: Stop sccache server
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        shell: bash
-        run: sccache --stop-server > /dev/null || true; du -sh "$SCCACHE_DIR" || true
       - name: Save sccache disk cache
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - name: Verify binary
         run: |
           amplihack --version
@@ -623,6 +557,11 @@ jobs:
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
     env:
       # PR/branch runs only *verify* that each target compiles; the optimized
@@ -666,35 +605,13 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-      - name: Point sccache at its disk cache
-        shell: bash
-        run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
-      # One entry per job (and target), keyed by run so every save is new;
-      # restore-keys picks the newest. Only main saves (see the save step), so
-      # pull requests start from main's cache and add no entries of their own.
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
       - name: Restore sccache disk cache
-        id: sccache-restore
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        uses: ./.github/actions/sccache-restore
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
-      # The Actions cache service rate-limits the whole repository, and a
-      # restore that gets HTTP 429 reports "Cache not found", leaving the job
-      # to compile everything. The limit resets within a minute, so try once
-      # more. A genuinely empty cache costs the same minute, once.
-      - name: Wait out a cache rate limit
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        run: sleep 60
-      - name: Restore sccache disk cache (retry)
-        if: steps.sccache-restore.outputs.cache-matched-key == ''
-        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
-        with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: |
-            sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
@@ -741,16 +658,11 @@ jobs:
       - name: sccache stats
         if: always()
         run: sccache --show-stats
-      - name: Stop sccache server
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        shell: bash
-        run: sccache --stop-server > /dev/null || true; du -sh "$SCCACHE_DIR" || true
       - name: Save sccache disk cache
-        if: always() && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
-        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
         with:
-          path: ${{ runner.temp }}/sccache
-          key: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target || 'host' }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
       - name: Upload binary artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -759,6 +671,36 @@ jobs:
             target/${{ matrix.target }}/release/amplihack
             target/${{ matrix.target }}/release/amplihack-hooks
           if-no-files-found: error
+
+
+  # Every main save adds one sccache entry per job; delete all but the newest
+  # two for each job so they do not pile up against the 10 GB cache limit.
+  # Only this job holds actions: write.
+  sccache-prune:
+    name: Prune sccache caches
+    needs: [check, test, install-smoke, cross-compile]
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: .github/scripts
+      - name: Delete older sccache entries (keep newest 2 per job)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          bash .github/scripts/prune-sccache-caches.sh refs/heads/main 2
+          sccache-v1-Linux-check-host-
+          sccache-v1-Linux-test-host-
+          sccache-v1-Linux-install-smoke-host-
+          sccache-v1-Linux-cross-compile-x86_64-unknown-linux-gnu-
+          sccache-v1-Linux-cross-compile-aarch64-unknown-linux-gnu-
+          sccache-v1-macOS-cross-compile-x86_64-apple-darwin-
+          sccache-v1-macOS-cross-compile-aarch64-apple-darwin-
 
   release:
     name: Release
