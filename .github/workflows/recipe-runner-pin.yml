@@ -1,0 +1,56 @@
+name: Recipe runner pin
+
+# Fails a change that moves claude-plugin/recipe-runner.rev to a runner commit
+# that is an ancestor of, or has diverged from, the pin it replaces, unless a
+# commit in range carries a Recipe-Runner-Rollback trailer (issue #1593). See
+# docs/reference/ci-pipeline.md#recipe-runner-pin-ancestry.
+#
+# Runs on the plain pull_request trigger, never the privileged target-branch
+# variant: the check reads untrusted commit messages and needs no secrets or
+# write access.
+
+on:
+  pull_request:
+    branches: [main]
+  merge_group:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # Push runs on main are never cancelled, so every pin change on main is
+  # checked; github.ref keeps open pull requests from cancelling each other.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name != 'push' }}
+
+jobs:
+  recipe-runner-pin:
+    # Branch protection matches this name; keep it exactly as written.
+    name: Recipe runner pin ancestry
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check the pin only moves forward
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+          MG_BASE: ${{ github.event.merge_group.base_sha }}
+          MG_HEAD: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          case "$EVENT_NAME" in
+            pull_request) base="$PR_BASE"; head="$PR_HEAD" ;;
+            merge_group) base="$MG_BASE"; head="$MG_HEAD" ;;
+            push) base="$PUSH_BEFORE"; head="$PUSH_SHA" ;;
+            *) echo "unsupported event: $EVENT_NAME" >&2; exit 2 ;;
+          esac
+          bash scripts/check-recipe-runner-pin.sh --event "$EVENT_NAME" --base "$base" --head "$head"
