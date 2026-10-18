@@ -63,31 +63,42 @@ fn phase_recipes_from_authority() -> Vec<String> {
         .collect()
 }
 
-/// A sed on PATH that behaves like BSD sed on `\+`, or `None` when the host
-/// sed has no `--posix` (it is then BSD sed already).
+/// A sed on PATH that rejects GNU-only `\+` like BSD sed does.
+///
+/// On Linux the shim is required: without it the POSIX-sed tests would
+/// silently run GNU sed and prove nothing, so every failure here panics.
+/// Elsewhere the host sed is already BSD sed, and `None` means "use it".
 fn posix_sed_shim(dir: &Path) -> Option<PathBuf> {
-    let probe = Command::new("sed")
+    let linux = cfg!(target_os = "linux");
+    let supported = match Command::new("sed")
         .args(["--posix", "-n", "p"])
         .stdin(std::process::Stdio::null())
         .output()
-        .ok()?;
-    if !probe.status.success() {
+    {
+        Ok(out) => out.status.success(),
+        Err(e) => {
+            assert!(!linux, "could not run sed: {e}");
+            false
+        }
+    };
+    if !supported {
+        assert!(
+            !linux,
+            "host sed has no --posix; the POSIX-sed tests need GNU sed on Linux"
+        );
         return None;
     }
-    let real = String::from_utf8(
-        Command::new("sh")
-            .args(["-c", "command -v sed"])
-            .output()
-            .unwrap()
-            .stdout,
-    )
-    .unwrap();
+    let out = Command::new("sh")
+        .args(["-c", "command -v sed"])
+        .output()
+        .expect("run `command -v sed`");
+    assert!(out.status.success(), "`command -v sed` failed");
+    let real = String::from_utf8(out.stdout).expect("sed path is UTF-8");
+    let real = real.trim();
+    assert!(!real.contains('\''), "sed path has a single quote: {real}");
     let bin = dir.join("posix-bin");
     let shim = bin.join("sed");
-    write(
-        &shim,
-        &format!("#!/bin/sh\nexec {} --posix \"$@\"\n", real.trim()),
-    );
+    write(&shim, &format!("#!/bin/sh\nexec '{real}' --posix \"$@\"\n"));
     fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
     Some(bin)
 }
@@ -217,14 +228,13 @@ fn hook_passes_on_repository_recipes_with_posix_sed() {
 fn posix_sed_reads_the_limit_from_the_authority() {
     let f = Fixture::from_repo();
     let src = read(&f.path(DECOMP_TEST));
-    assert!(
-        src.contains("const BRICK_LIMIT: usize = 400;"),
-        "authority limit moved"
-    );
-    f.set_decomp_test(&src.replace(
-        "const BRICK_LIMIT: usize = 400;",
-        "const BRICK_LIMIT: usize = 1;",
-    ));
+    let decl = "const BRICK_LIMIT: usize = ";
+    let limit_line = src
+        .lines()
+        .find(|l| l.trim_start().starts_with(decl))
+        .expect("authority must declare `const BRICK_LIMIT: usize = N;`");
+    let indent = &limit_line[..limit_line.len() - limit_line.trim_start().len()];
+    f.set_decomp_test(&src.replacen(limit_line, &format!("{indent}{decl}1;"), 1));
     let out = f.run(true);
     assert_eq!(
         out.status.code(),

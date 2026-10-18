@@ -171,6 +171,17 @@ If this prints `exit 0`, the hook parsed nothing and is passing without
 checking anything. Deleting the `const BRICK_LIMIT` line from the copy instead
 should also give `exit 1`, with `ERROR: could not read BRICK_LIMIT`.
 
+The integration test `brick_budget_hook_portability` runs these checks for
+you under `sed --posix`:
+
+```bash
+cargo nextest run -p amplihack --test integration brick_budget_hook_portability
+```
+
+On Linux it needs GNU sed. If the host sed has no `--posix` (BusyBox, for
+example), the test fails rather than quietly running the hook under a sed that
+accepts `\+`.
+
 For the Rust rules, you can try clippy against an Apple target:
 
 ```bash
