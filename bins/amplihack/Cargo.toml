@@ -219,6 +219,11 @@ path = "../../tests/integration/artifact_guard_workflow_tests.rs"
 name = "pre_commit_artifact_guard"
 path = "../../tests/integration/pre_commit_artifact_guard_tests.rs"
 
+# PR #1530: brick-budget hook reads its limit with POSIX sed (macOS/BSD).
+[[test]]
+name = "brick_budget_hook_portability"
+path = "../../tests/integration/brick_budget_hook_portability_test.rs"
+
 [[test]]
 name = "doctor_node_remediation"
 path = "../../tests/integration/doctor_node_remediation_test.rs"
