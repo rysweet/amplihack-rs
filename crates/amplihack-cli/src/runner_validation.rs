@@ -68,6 +68,70 @@ pub(crate) fn probe(binary: &Path, provider: &str) -> Result<Value> {
     Ok(report)
 }
 
+/// Revisions of every receipt entry that installed the `recipe-runner-rs`
+/// package and binary from exactly `repository` (a `?query` is allowed).
+fn receipt_entries<'a>(receipt: &'a Value, repository: &str) -> Vec<&'a str> {
+    let Some(entries) = receipt["installs"].as_object() else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .filter_map(|(source, record)| {
+            let rest = source.strip_prefix("recipe-runner-rs ")?;
+            let (version, origin) = rest.split_once(" (git+")?;
+            let origin = origin.strip_suffix(')')?;
+            let (url, sha) = origin.rsplit_once('#')?;
+            let lists_binary = record["bins"]
+                .as_array()
+                .is_some_and(|bins| bins.iter().any(|b| b == "recipe-runner-rs"));
+            (!version.is_empty() && url.split('?').next() == Some(repository) && lists_binary)
+                .then_some(sha)
+        })
+        .collect()
+}
+
+/// Receipts larger than this are not parsed.
+const RECEIPT_LIMIT: u64 = 1024 * 1024;
+
+/// The revision Cargo recorded for the `recipe-runner-rs` installed from
+/// `repository` under `cargo_home`. `None` unless exactly one receipt entry
+/// matches and its revision is a full lowercase SHA; an unreadable,
+/// oversize or malformed receipt is also `None`.
+pub(crate) fn installed_revision(cargo_home: &Path, repository: &str) -> Option<String> {
+    use std::io::Read;
+    let unknown = |reason: &str| {
+        tracing::debug!("recipe-runner-rs receipt gives no installed revision: {reason}");
+        None
+    };
+    let file = match std::fs::File::open(cargo_home.join(".crates2.json")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return None,
+        Err(e) => return unknown(&format!("cannot open receipt ({:?})", e.kind())),
+    };
+    let mut bytes = Vec::new();
+    if let Err(e) = file.take(RECEIPT_LIMIT + 1).read_to_end(&mut bytes) {
+        return unknown(&format!("cannot read receipt ({:?})", e.kind()));
+    }
+    if bytes.len() as u64 > RECEIPT_LIMIT {
+        return unknown("receipt is larger than 1 MiB");
+    }
+    let Ok(receipt) = serde_json::from_slice::<Value>(&bytes) else {
+        return unknown("receipt is not valid JSON");
+    };
+    let mut revisions = receipt_entries(&receipt, repository);
+    revisions.sort_unstable();
+    revisions.dedup();
+    match revisions.as_slice() {
+        [sha] if crate::runner_ancestry::is_sha(sha) => Some((*sha).to_string()),
+        [] => unknown("no entry for the runner repository"),
+        [_] => unknown("the recorded revision is not a full SHA"),
+        many => unknown(&format!(
+            "{} entries match the runner repository",
+            many.len()
+        )),
+    }
+}
+
 pub(crate) fn provenance(
     binary: &Path,
     cargo_home: &Path,
@@ -88,28 +152,7 @@ pub(crate) fn provenance(
         .map_err(|_| error("RUNNER_RECEIPT_MISSING"))?;
     let receipt: Value =
         serde_json::from_slice(&bytes).map_err(|_| error("RUNNER_PROVENANCE_MISMATCH"))?;
-    let valid = receipt["installs"].as_object().is_some_and(|entries| {
-        entries.iter().any(|(source, record)| {
-            let Some(rest) = source.strip_prefix("recipe-runner-rs ") else {
-                return false;
-            };
-            let Some((version, origin)) = rest.split_once(" (git+") else {
-                return false;
-            };
-            let Some(origin) = origin.strip_suffix(')') else {
-                return false;
-            };
-            let Some((url, sha)) = origin.rsplit_once('#') else {
-                return false;
-            };
-            !version.is_empty()
-                && url.split('?').next() == Some(repository)
-                && sha == revision
-                && record["bins"]
-                    .as_array()
-                    .is_some_and(|bins| bins.iter().any(|b| b == "recipe-runner-rs"))
-        })
-    });
+    let valid = receipt_entries(&receipt, repository).contains(&revision);
     if !valid {
         return Err(error("RUNNER_PROVENANCE_MISMATCH"));
     }
@@ -196,5 +239,158 @@ pub(crate) fn run(command: InternalCommands) -> Result<()> {
             );
             std::process::exit(1)
         }
+    }
+}
+
+#[cfg(test)]
+mod installed_revision_tests {
+    use super::installed_revision;
+    use std::path::Path;
+
+    const URL: &str = "https://github.com/rysweet/amplihack-recipe-runner";
+    const SHA: &str = "4d5187eaf95836a549e6e68725f8f853d0dc7034";
+    const OTHER: &str = "b4a82e7000000000000000000000000000000000";
+
+    fn write(home: &Path, body: &str) {
+        std::fs::write(home.join(".crates2.json"), body).unwrap();
+    }
+
+    fn entry(source: &str, bins: &str) -> String {
+        format!(r#"{:?}:{{"bins":{bins}}}"#, source)
+    }
+
+    fn receipt(entries: &[String]) -> String {
+        format!(r#"{{"installs":{{{}}}}}"#, entries.join(","))
+    }
+
+    fn runner(url: &str, sha: &str) -> String {
+        entry(
+            &format!("recipe-runner-rs 0.5.0 (git+{url}#{sha})"),
+            r#"["recipe-runner-rs"]"#,
+        )
+    }
+
+    #[test]
+    fn exact_key_yields_the_revision() {
+        let home = tempfile::tempdir().unwrap();
+        write(home.path(), &receipt(&[runner(URL, SHA)]));
+        assert_eq!(installed_revision(home.path(), URL).as_deref(), Some(SHA));
+    }
+
+    #[test]
+    fn url_with_query_yields_the_revision() {
+        let home = tempfile::tempdir().unwrap();
+        write(
+            home.path(),
+            &receipt(&[runner(&format!("{URL}?rev={SHA}"), SHA)]),
+        );
+        assert_eq!(installed_revision(home.path(), URL).as_deref(), Some(SHA));
+    }
+
+    #[test]
+    fn other_repositories_and_lookalikes_are_ignored() {
+        for url in [
+            "https://github.com/someone/amplihack-recipe-runner",
+            "https://github.com/rysweet/amplihack-recipe-runner-evil",
+            "https://github.com/rysweet/amplihack-recipe-runner/evil",
+            "https://github.com/rysweet/amplihack-recipe-runner.git",
+        ] {
+            let home = tempfile::tempdir().unwrap();
+            write(home.path(), &receipt(&[runner(url, SHA)]));
+            assert_eq!(installed_revision(home.path(), URL), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn invalid_revisions_are_rejected() {
+        let upper = SHA.to_uppercase();
+        let non_hex = format!("{}g", &SHA[..39]);
+        let too_long = format!("{SHA}0");
+        for sha in [&SHA[..39], &upper, &non_hex, "", &too_long] {
+            let home = tempfile::tempdir().unwrap();
+            write(home.path(), &receipt(&[runner(URL, sha)]));
+            assert_eq!(installed_revision(home.path(), URL), None, "{sha:?}");
+        }
+    }
+
+    #[test]
+    fn two_distinct_runner_entries_are_ambiguous() {
+        let home = tempfile::tempdir().unwrap();
+        write(
+            home.path(),
+            &receipt(&[runner(URL, SHA), {
+                entry(
+                    &format!("recipe-runner-rs 0.4.0 (git+{URL}#{OTHER})"),
+                    r#"["recipe-runner-rs"]"#,
+                )
+            }]),
+        );
+        assert_eq!(installed_revision(home.path(), URL), None);
+    }
+
+    #[test]
+    fn unrelated_packages_do_not_count_as_a_second_entry() {
+        let home = tempfile::tempdir().unwrap();
+        write(
+            home.path(),
+            &receipt(&[
+                runner(URL, SHA),
+                entry(
+                    &format!("other-tool 1.0.0 (git+https://example.invalid/x#{OTHER})"),
+                    r#"["other-tool"]"#,
+                ),
+            ]),
+        );
+        assert_eq!(installed_revision(home.path(), URL).as_deref(), Some(SHA));
+    }
+
+    #[test]
+    fn an_entry_without_the_runner_binary_is_ignored() {
+        for bins in [r#"[]"#, r#"["something-else"]"#, r#""recipe-runner-rs""#] {
+            let home = tempfile::tempdir().unwrap();
+            write(
+                home.path(),
+                &receipt(&[entry(
+                    &format!("recipe-runner-rs 0.5.0 (git+{URL}#{SHA})"),
+                    bins,
+                )]),
+            );
+            assert_eq!(installed_revision(home.path(), URL), None, "{bins}");
+        }
+    }
+
+    #[test]
+    fn missing_malformed_and_oversize_receipts_yield_none() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(installed_revision(home.path(), URL), None, "no receipt");
+        for body in ["", "{", "[]", r#"{"installs":[]}"#, "\u{0}\u{1}"] {
+            write(home.path(), body);
+            assert_eq!(installed_revision(home.path(), URL), None, "{body:?}");
+        }
+        let mut big = receipt(&[runner(URL, SHA)]);
+        big.push_str(&" ".repeat(1024 * 1024 + 1));
+        write(home.path(), &big);
+        assert_eq!(installed_revision(home.path(), URL), None, "over 1 MiB");
+    }
+
+    #[test]
+    fn provenance_still_accepts_the_same_receipt() {
+        // receipt_entries is shared with provenance(); the refactor must not
+        // change what provenance accepts.
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join("bin")).unwrap();
+        let binary = home.path().join("bin/recipe-runner-rs");
+        std::fs::write(&binary, "").unwrap();
+        write(home.path(), &receipt(&[runner(URL, SHA)]));
+        super::provenance(&binary, home.path(), URL, SHA).unwrap();
+        assert!(super::provenance(&binary, home.path(), URL, OTHER).is_err());
+        write(
+            home.path(),
+            &receipt(&[runner(
+                "https://github.com/rysweet/amplihack-recipe-runner-evil",
+                SHA,
+            )]),
+        );
+        assert!(super::provenance(&binary, home.path(), URL, SHA).is_err());
     }
 }
