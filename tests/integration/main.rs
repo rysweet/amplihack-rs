@@ -163,6 +163,10 @@ mod doctor_node_remediation;
 #[path = "brick_budget_hook_portability_test.rs"]
 mod brick_budget_hook_portability;
 
+// PR #1530: Linux-only auto-switch test helpers allow dead_code on macOS.
+#[path = "linux_only_test_helpers_test.rs"]
+mod linux_only_test_helpers;
+
 // Consensus-workflow decomposition parity tests.
 // Locks the v3 contract: composer calls 11 phase sub-recipes, all 60 step IDs
 // preserved in order, brick budget enforced, and 7 mandatory consensus gates

@@ -2,7 +2,7 @@
 title: Keep the Pre-commit Hooks Portable to macOS
 type: howto
 updated: 2026-10-18
-related: PR #1530, issue #1423
+related: PR #1530, issue #1423, issue #1569
 ---
 
 # Keep the Pre-commit Hooks Portable to macOS
@@ -89,6 +89,52 @@ Rules:
 
 If the item is only ever used on Linux and nothing else needs it, gating the
 item itself with `#[cfg(target_os = "linux")]` is also fine.
+
+### Test helpers used only by a Linux-gated module
+
+`--all-targets` also lints the integration tests under `crates/*/tests/`. A
+test file is often `#![cfg(unix)]` at the top, with its Linux-only cases in a
+`#[cfg(target_os = "linux")] mod`. Shared fixture code sits outside that
+module, so on macOS any helper that only the Linux module calls is dead.
+
+`crates/amplihack-cli/tests/issue_1569_auto_switch.rs` is an example. Its
+`mod swap` is Linux only, and six items are used from nowhere else:
+`ABORT_ENV`, `Holder`, `Fixture::hold`, `Fixture::hosts`, `Fixture::oauth_uuid`
+and `Fixture::parked`. Each item has its own allow, placed after the doc
+comment and directly above the item:
+
+```rust
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
+struct Holder(Child);
+
+impl Drop for Holder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+```
+
+```rust
+    /// A process standing in for a Claude session running in `name`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
+    fn hold(&self, name: &str) -> Holder {
+```
+
+Leave the `impl Drop` alone. It is not reported as dead code, and it must stay
+active so that every test child process is killed and reaped.
+
+To find which helpers need the attribute, check each `fn`, `struct` and
+`const` defined outside the Linux-gated regions and count its uses outside
+them. An item with no such use needs the allow. An item that carries the allow
+counts as used, so helpers it calls need no attribute of their own. An item
+with a live use outside them does not, and adding the allow there would hide a
+later regression. Do the same for each `use` line; if every use of an import is
+inside the gated module, mark it with `allow(unused_imports)`.
+
+When a marked helper later gains a caller outside the gated module, remove its
+allow. The compiler does not warn about an allow that no longer suppresses
+anything, so a stale one stays in place until someone deletes it.
 
 ## libc FFI: use the libc type aliases
 
