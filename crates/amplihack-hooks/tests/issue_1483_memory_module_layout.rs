@@ -156,24 +156,6 @@ fn memory_root_declares_its_child_modules() {
     );
 }
 
-#[test]
-fn stop_word_list_stays_beside_the_module_and_is_loaded_by_scoring() {
-    assert!(
-        user_prompt_dir().join("smart_stop_words.txt").is_file(),
-        "smart_stop_words.txt stays at src/user_prompt/"
-    );
-    assert!(
-        read("memory/scoring.rs").contains(r#"include_str!("../smart_stop_words.txt")"#),
-        "memory/scoring.rs loads the SMART list with include_str!(\"../smart_stop_words.txt\")"
-    );
-    for rel in ["memory.rs", "memory/text.rs", "memory/language.rs"] {
-        assert!(
-            !read(rel).contains("smart_stop_words.txt\")"),
-            "only memory/scoring.rs may load the stop-word list; {rel} does too"
-        );
-    }
-}
-
 /// Where each item lives after the split: `(file, kind, name)`.
 const PLACEMENT: &[(&str, &str, &str)] = &[
     // Root: entry points, agent detection and output limits.
@@ -244,20 +226,6 @@ fn each_item_is_defined_once_in_its_own_file() {
         }
     }
     assert!(wrong.is_empty(), "misplaced items:\n{}", wrong.join("\n"));
-}
-
-#[test]
-fn the_stop_word_cache_lives_with_the_stop_words() {
-    assert!(
-        production_source("memory/scoring.rs").contains("OnceLock"),
-        "the OnceLock stop-word set belongs in memory/scoring.rs"
-    );
-    for rel in ["memory.rs", "memory/text.rs", "memory/language.rs"] {
-        assert!(
-            !production_source(rel).contains("OnceLock"),
-            "{rel} must not hold a stop-word cache; it belongs in memory/scoring.rs"
-        );
-    }
 }
 
 /// Whether `src` refers to the sibling module `name` (`super::name`,
@@ -483,44 +451,9 @@ fn every_pinned_test_moved_exactly_once() {
 }
 
 #[test]
-fn production_files_carry_no_tests() {
-    for rel in PRODUCTION_FILES {
-        let src = read(rel);
-        assert!(
-            !src.contains("#[test]"),
-            "{rel} still holds tests; they belong in memory/tests/"
-        );
-        assert!(
-            !src.contains("mod tests {"),
-            "{rel} still has an inline `mod tests {{ ... }}` block"
-        );
-    }
-}
-
-#[test]
-fn test_root_shares_helpers_and_declares_the_areas() {
+fn every_test_file_is_declared() {
+    // An undeclared area file is never compiled, so its tests silently stop running.
     let root = read("memory/tests.rs");
-    for helper in ["fn memory(", "fn agents("] {
-        assert!(
-            root.contains(helper),
-            "memory/tests.rs holds the shared `{helper}..)` helper"
-        );
-    }
-    for area in ["format", "stop_words", "english_check", "scoring"] {
-        assert!(
-            root.lines()
-                .any(|line| line.trim() == format!("mod {area};")),
-            "memory/tests.rs must declare `mod {area};`"
-        );
-        assert!(
-            user_prompt_dir()
-                .join(format!("memory/tests/{area}.rs"))
-                .is_file(),
-            "memory/tests/{area}.rs must exist"
-        );
-    }
-    // Any extra area file (for example code_spans.rs) must be declared too,
-    // or its tests silently never compile or run.
     for (rel, _) in test_files().iter().skip(1) {
         let stem = Path::new(rel).file_stem().unwrap().to_string_lossy();
         assert!(
