@@ -79,8 +79,9 @@ pub struct HygieneArtifactGuardArgs {
     #[arg(long)]
     pub repo: Option<PathBuf>,
 
-    /// Scan mode.
-    #[arg(long, default_value = "pre-commit", value_parser = ["pre-commit", "pre-publish", "all", "staged", "worktree"])]
+    /// Scan mode: pre-commit, pre-publish, all, staged or worktree. Validated
+    /// by the guard, so an unknown value exits 2 with the value escaped.
+    #[arg(long, default_value = "pre-commit")]
     pub mode: String,
 
     /// Optional repo-controlled allowlist file.

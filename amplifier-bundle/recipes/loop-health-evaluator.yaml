@@ -57,6 +57,7 @@ context:
   loop_last_round_output: ""
   # Machine-checkable progress evidence.
   loop_repo_path: "."
+  loop_agent_working_dir: "."  # step-02's agent starts here, never in loop_repo_path (#1528)
   loop_baseline_ref: ""
   loop_child_exit_code: ""
   loop_findings_current: ""
@@ -94,7 +95,7 @@ steps:
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
     agent: "amplihack:analyzer"
-    working_dir: "{{loop_repo_path}}"
+    working_dir: "{{loop_agent_working_dir}}"
     prompt: |
       # Loop-health evaluation — is this loop still doing useful work?
 

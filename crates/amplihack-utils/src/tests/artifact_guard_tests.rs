@@ -1981,38 +1981,1041 @@ fn staged_mode_still_honours_an_indexed_manifest_exemption() {
     assert_eq!(paths, ["dist/bundle.js"], "{:#?}", report.violations);
 }
 
-/// A failing `git worktree list` no longer ends the run (it was best effort
-/// before issue #1536). `scan_artifacts` then narrows every directory removal
-/// root to its exact path, so no `rm -rf -- 'worktrees'` can sweep a sibling
-/// worktree the guard could not see. Git offers no portable way to make that
-/// one command fail, so the fallback is driven directly.
-#[test]
-fn an_unknown_worktree_list_narrows_directory_roots_to_exact_paths() {
-    let tmp = repo();
-    write_file(&tmp.path().join("node_modules/leak/index.js"), "x\n");
-    write_file(&tmp.path().join("coverage/lcov.info"), "x\n");
-    let mut violations = scan_artifacts(&default_config(tmp.path()))
-        .expect("scan artifacts")
-        .violations;
-    assert_eq!(
-        violation_for(
-            &violations,
-            "node_modules/leak/index.js",
-            ArtifactSource::Untracked
-        )
-        .removal_root
-        .as_deref(),
-        Some("node_modules"),
-        "fixture: with the worktree list known, the directory root stands"
+// A failing `git worktree list` ends the scan with an error in every mode
+// (issue #1528), so #1536's fallback that narrowed every directory root when
+// the list was unknown has nothing left to handle. The fail-loud contract is
+// tested by `worktree_list_failure_exits_2_in_every_mode_and_never_prints_rm_rf`
+// (tests/integration/artifact_guard_cli_tests.rs) and the `WorktreeList` tests
+// below.
+
+// ---------------------------------------------------------------------------
+// Issue #1528: a run worktree recorded as a gitlink in the index.
+//
+// Auto-drive phases 2 and 3 committed in the launch checkout, and its index
+// ended up holding the run worktrees under `worktrees/` as gitlinks (mode
+// 160000). The `run-worktree-gitlink` rule refuses such an index in every
+// mode. It reads the whole index, so a gitlink already in `HEAD` is caught too.
+// The allowlist, the pre-existing policy and the baseline never soften it.
+// ---------------------------------------------------------------------------
+
+const GITLINK_RULE: &str = "run-worktree-gitlink";
+
+const ALL_MODES: [ArtifactGuardMode; 5] = [
+    ArtifactGuardMode::All,
+    ArtifactGuardMode::Staged,
+    ArtifactGuardMode::Worktree,
+    ArtifactGuardMode::PreCommit,
+    ArtifactGuardMode::PrePublish,
+];
+
+/// Run git with no global or system config, no prompts and a fixed identity,
+/// so a developer's config (signing, hooks, `init.defaultBranch`) cannot change
+/// a fixture. Returns stdout.
+fn hgit(repo: &Path, args: &[&str]) -> String {
+    let output = amplihack_git::command()
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_AUTHOR_NAME", "Artifact Guard Test")
+        .env("GIT_AUTHOR_EMAIL", "artifact-guard@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Artifact Guard Test")
+        .env("GIT_COMMITTER_EMAIL", "artifact-guard@example.invalid")
+        .output()
+        .unwrap_or_else(|e| panic!("run git {args:?} in {}: {e}", repo.display()));
+    assert!(
+        output.status.success(),
+        "git {args:?} failed in {}\nstdout:\n{}\nstderr:\n{}",
+        repo.display(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
     );
+    String::from_utf8_lossy(&output.stdout).into_owned()
+}
 
-    super::narrow_every_root_to_its_path(&mut violations);
+/// Feed NUL-terminated `git update-index -z --index-info` records, which lets
+/// a fixture write any index entry (any mode, any stage, any path bytes).
+fn hgit_index_info(repo: &Path, records: &[(&str, &str, u8, &str)]) {
+    use std::io::Write;
+    use std::process::Stdio;
 
-    for violation in &violations {
+    let mut input = Vec::new();
+    for (mode, sha, stage, path) in records {
+        input.extend_from_slice(format!("{mode} {sha} {stage}\t{path}").as_bytes());
+        input.push(0);
+    }
+    let mut child = amplihack_git::command()
+        .args(["update-index", "-z", "--index-info"])
+        .current_dir(repo)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn git update-index");
+    child
+        .stdin
+        .take()
+        .expect("stdin")
+        .write_all(&input)
+        .expect("write index-info");
+    let output = child.wait_with_output().expect("wait git update-index");
+    assert!(
+        output.status.success(),
+        "git update-index --index-info failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// A repository on `main` whose `.gitignore` excludes `worktrees/`, the shape of
+/// the launch checkout in issue #1528.
+fn gitlink_repo() -> TempDir {
+    let tmp = TempDir::new().expect("tempdir");
+    hgit(tmp.path(), &["init", "-q"]);
+    hgit(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    write_file(&tmp.path().join("README.md"), "# fixture\n");
+    write_file(&tmp.path().join(".gitignore"), "worktrees/\n");
+    hgit(tmp.path(), &["add", "README.md", ".gitignore"]);
+    hgit(tmp.path(), &["commit", "-qm", "initial"]);
+    tmp
+}
+
+fn head_sha(repo: &Path) -> String {
+    hgit(repo, &["rev-parse", "HEAD"]).trim().to_string()
+}
+
+/// Register a linked worktree at repo-relative `path` on a new branch.
+fn register_worktree(repo: &Path, path: &str, branch: &str) {
+    hgit(repo, &["worktree", "add", "-q", path, "-b", branch]);
+}
+
+/// Repo-relative paths of every gitlink (mode 160000) in the index.
+fn index_gitlinks(repo: &Path) -> Vec<String> {
+    let mut paths: Vec<String> = hgit(repo, &["ls-files", "-s", "-z"])
+        .split('\0')
+        .filter_map(|record| {
+            let (meta, path) = record.split_once('\t')?;
+            meta.starts_with("160000 ").then(|| path.to_string())
+        })
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+/// Stage the worktree at `path` as a gitlink the way a forced add does, then
+/// prove the fixture really produced a gitlink.
+fn force_stage_gitlink(repo: &Path, path: &str) {
+    hgit(repo, &["add", "-f", "--", path]);
+    assert!(
+        index_gitlinks(repo).iter().any(|p| p == path),
+        "fixture must stage {path} as a gitlink; index gitlinks: {:?}",
+        index_gitlinks(repo)
+    );
+}
+
+/// The index as git reports it: every entry, and the staged diff. A scan that
+/// is report-only leaves both byte-for-byte unchanged.
+fn index_snapshot(repo: &Path) -> (String, String) {
+    (
+        hgit(repo, &["ls-files", "-s"]),
+        hgit(repo, &["diff", "--cached", "--raw"]),
+    )
+}
+
+fn scan(repo: &Path, mode: ArtifactGuardMode) -> super::ArtifactGuardReport {
+    scan_artifacts(&ArtifactGuardConfig::new(repo).with_mode(mode))
+        .unwrap_or_else(|e| panic!("scan {mode} in {}: {e}", repo.display()))
+}
+
+fn gitlink_violation<'a>(
+    report: &'a super::ArtifactGuardReport,
+    path: &str,
+) -> &'a ArtifactViolation {
+    report
+        .violations
+        .iter()
+        .find(|violation| violation.path == path && violation.rule_id == GITLINK_RULE)
+        .unwrap_or_else(|| {
+            panic!(
+                "missing {GITLINK_RULE} violation for {path:?} (mode {}); got {:#?}",
+                report.mode, report.violations
+            )
+        })
+}
+
+fn has_gitlink_violation(report: &super::ArtifactGuardReport) -> bool {
+    report
+        .violations
+        .iter()
+        .any(|violation| violation.rule_id == GITLINK_RULE)
+}
+
+#[test]
+fn run_worktree_gitlink_force_staged_in_main_checkout_blocks_pre_commit_and_pre_publish() {
+    // AC4: the issue #1528 index exactly. `worktrees/` is ignored, yet a
+    // forced add records the registered run worktree as a gitlink.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    let before = index_snapshot(tmp.path());
+
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::PrePublish] {
+        let report = scan(tmp.path(), mode);
+        let violation = gitlink_violation(&report, "worktrees/feat/x");
+        assert_eq!(violation.source, ArtifactSource::Staged, "mode {mode}");
         assert_eq!(
-            violation.removal_root.as_deref(),
-            Some(violation.path.as_str()),
-            "{violation:#?}"
+            violation.provenance,
+            ArtifactProvenance::Introduced,
+            "a run-worktree gitlink is always introduced (mode {mode})"
+        );
+        assert!(
+            report.blocks(),
+            "{mode} must refuse an index holding a run-worktree gitlink; blocking: {:#?}",
+            report.blocking_violations()
+        );
+        assert!(
+            !report
+                .violations
+                .iter()
+                .any(|v| v.path == "worktrees/feat/x" && v.rule_id == "nested-worktree"),
+            "the gitlink rule takes precedence over nested-worktree (mode {mode}): {:#?}",
+            report.violations
         );
     }
+
+    assert_eq!(
+        index_snapshot(tmp.path()),
+        before,
+        "the guard is report-only: the index must be unchanged after a scan"
+    );
+    assert!(
+        tmp.path().join("worktrees/feat/x/README.md").exists(),
+        "the guard must never touch the run worktree's files"
+    );
+}
+
+#[test]
+fn run_worktree_gitlink_ignores_exact_path_allowlist_entry() {
+    // D9 case 1. An exact-path entry under `worktrees/` is a valid allowlist
+    // entry (it exits 0 today: the gap). The gitlink rule never consults it.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "# reviewed\nworktrees/feat/x\n",
+    );
+
+    let report = scan_artifacts(
+        &ArtifactGuardConfig::new(tmp.path())
+            .with_mode(ArtifactGuardMode::PreCommit)
+            .with_preexisting_policy(PreExistingPolicy::Report),
+    )
+    .expect("an exact-path allowlist entry is valid configuration, not an error");
+
+    gitlink_violation(&report, "worktrees/feat/x");
+    assert!(
+        report.blocks(),
+        "an allowlist entry must not authorize committing a run worktree"
+    );
+}
+
+#[test]
+fn run_worktree_gitlink_committed_before_baseline_still_blocks_under_report() {
+    // D9 case 2. The gitlink is committed on `main` before the task branch
+    // starts, so the tracked scan would call it pre-existing and `Report`
+    // would downgrade it. The gitlink rule is never pre-existing.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    hgit(
+        tmp.path(),
+        &["commit", "-qm", "history: run worktree gitlink"],
+    );
+    hgit(tmp.path(), &["checkout", "-q", "-b", "task/unrelated"]);
+    write_file(&tmp.path().join("package.json"), "{\"name\":\"x\"}\n");
+    hgit(tmp.path(), &["add", "package.json"]);
+    hgit(tmp.path(), &["commit", "-qm", "unrelated change"]);
+
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::PrePublish] {
+        let report = scan_artifacts(
+            &ArtifactGuardConfig::new(tmp.path())
+                .with_mode(mode)
+                .with_baseline("main")
+                .with_preexisting_policy(PreExistingPolicy::Report),
+        )
+        .expect("scan artifacts");
+
+        let violation = gitlink_violation(&report, "worktrees/feat/x");
+        assert_eq!(
+            violation.source,
+            ArtifactSource::Tracked,
+            "a committed, unstaged gitlink is reported as tracked (mode {mode})"
+        );
+        assert_eq!(
+            violation.provenance,
+            ArtifactProvenance::Introduced,
+            "a run-worktree gitlink is never pre-existing (mode {mode})"
+        );
+        assert!(
+            report.blocks(),
+            "{mode} under --preexisting report must still refuse a committed gitlink"
+        );
+        assert!(
+            !report
+                .advisory_violations()
+                .iter()
+                .any(|v| v.path == "worktrees/feat/x"),
+            "the gitlink must not also be listed as advisory (mode {mode})"
+        );
+    }
+}
+
+#[test]
+fn registered_worktree_outside_worktrees_root_blocks_despite_covering_allowlist() {
+    // D9 case 3. `wt/` is not ignored, so a plain broad add records the
+    // registered worktree as a gitlink. `wt/**` is a valid allowlist entry.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "wt/review", "review");
+    write_file(
+        &tmp.path().join(".amplihack-artifact-allowlist"),
+        "# reviewed\nwt/**\n",
+    );
+    hgit(tmp.path(), &["add", "-A"]);
+    assert!(
+        index_gitlinks(tmp.path()).contains(&"wt/review".to_string()),
+        "fixture: a broad add must record the registered worktree as a gitlink"
+    );
+
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::PrePublish] {
+        let report = scan_artifacts(
+            &ArtifactGuardConfig::new(tmp.path())
+                .with_mode(mode)
+                .with_preexisting_policy(PreExistingPolicy::Report),
+        )
+        .expect("a covering wt/** allowlist entry is valid configuration");
+        let violation = gitlink_violation(&report, "wt/review");
+        assert_eq!(violation.source, ArtifactSource::Staged);
+        assert!(
+            report.blocks(),
+            "{mode}: a registered worktree anywhere in the repo must be refused"
+        );
+    }
+}
+
+#[test]
+fn gitlink_for_unregistered_directory_under_worktrees_is_blocked() {
+    // AC5: an aborted worktree. The directory under `worktrees/` holds a
+    // partial copy and is not registered, but its gitlink is in the index.
+    // Rule (a) covers `worktrees` itself and anything below it.
+    for path in ["worktrees/aborted", "worktrees"] {
+        let tmp = gitlink_repo();
+        write_file(
+            &tmp.path().join("worktrees/aborted/partial.txt"),
+            "half-copied\n",
+        );
+        let sha = head_sha(tmp.path());
+        hgit(
+            tmp.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},{path}"),
+            ],
+        );
+
+        let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+        let violation = gitlink_violation(&report, path);
+        assert_eq!(violation.provenance, ArtifactProvenance::Introduced);
+        assert!(
+            report.blocks(),
+            "a gitlink at {path} must block even though nothing is registered there"
+        );
+    }
+}
+
+#[test]
+fn mixed_case_worktrees_component_gitlink_is_blocked() {
+    // SEC-8: on a case-insensitive filesystem (the macOS default)
+    // `Worktrees/` is the same directory as `worktrees/`.
+    for path in ["Worktrees/feat/x", "WORKTREES/feat/y", "wOrKtReEs"] {
+        let tmp = gitlink_repo();
+        let sha = head_sha(tmp.path());
+        hgit(
+            tmp.path(),
+            &[
+                "update-index",
+                "--add",
+                "--cacheinfo",
+                &format!("160000,{sha},{path}"),
+            ],
+        );
+
+        let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+        gitlink_violation(&report, path);
+        assert!(report.blocks(), "{path} must block");
+    }
+}
+
+#[test]
+fn only_the_first_component_selects_rule_a() {
+    // Rule (a) is about the first path component. A gitlink that merely has a
+    // `worktrees` component deeper down, and is not registered, is an ordinary
+    // submodule-shaped entry.
+    let tmp = gitlink_repo();
+    let sha = head_sha(tmp.path());
+    hgit(
+        tmp.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{sha},vendor/worktrees/lib"),
+        ],
+    );
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    assert!(
+        !has_gitlink_violation(&report),
+        "vendor/worktrees/lib is neither under the worktrees root nor registered: {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn real_submodule_outside_worktrees_is_not_flagged() {
+    // AC6: a real submodule, listed in `.gitmodules`, outside `worktrees/` and
+    // not registered as a worktree, is repository content.
+    let sources = TempDir::new().expect("tempdir");
+    let sub = sources.path().join("lib-src");
+    fs::create_dir_all(&sub).expect("create submodule source");
+    hgit(&sub, &["init", "-q"]);
+    hgit(&sub, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    write_file(&sub.join("lib.rs"), "pub fn f() {}\n");
+    hgit(&sub, &["add", "lib.rs"]);
+    hgit(&sub, &["commit", "-qm", "lib"]);
+
+    let tmp = gitlink_repo();
+    hgit(
+        tmp.path(),
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.to_str().expect("utf-8 path"),
+            "libs/sub",
+        ],
+    );
+    assert!(index_gitlinks(tmp.path()).contains(&"libs/sub".to_string()));
+    assert!(tmp.path().join(".gitmodules").exists());
+
+    // Staged, then committed: neither form is a run worktree.
+    for commit in [false, true] {
+        if commit {
+            hgit(tmp.path(), &["commit", "-qm", "add submodule"]);
+        }
+        for mode in ALL_MODES {
+            let report = scan(tmp.path(), mode);
+            assert!(
+                !report
+                    .violations
+                    .iter()
+                    .any(|v| v.path.starts_with("libs/sub")),
+                "a real submodule must not be flagged (mode {mode}, committed {commit}): {:#?}",
+                report.violations
+            );
+            assert!(!report.blocks(), "mode {mode}, committed {commit}");
+        }
+    }
+}
+
+#[test]
+fn submodule_inside_linked_worktree_under_worktrees_root_is_not_flagged() {
+    // K1 regression: the guard runs inside the PR's own worktree, which lives
+    // at `<main>/worktrees/feat/x`. A submodule there has an absolute path under
+    // the main checkout's `worktrees/`, but relative to the scanned top level it
+    // is `vendor/lib`. Flagging it would refuse every submodule in every run.
+    let sources = TempDir::new().expect("tempdir");
+    let sub = sources.path().join("lib-src");
+    fs::create_dir_all(&sub).expect("create submodule source");
+    hgit(&sub, &["init", "-q"]);
+    hgit(&sub, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    write_file(&sub.join("lib.rs"), "pub fn f() {}\n");
+    hgit(&sub, &["add", "lib.rs"]);
+    hgit(&sub, &["commit", "-qm", "lib"]);
+
+    let main = gitlink_repo();
+    register_worktree(main.path(), "worktrees/feat/x", "feat/x");
+    let linked = main.path().join("worktrees/feat/x");
+    hgit(
+        &linked,
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            "-q",
+            sub.to_str().expect("utf-8 path"),
+            "vendor/lib",
+        ],
+    );
+    hgit(&linked, &["commit", "-qm", "vendor lib"]);
+
+    for mode in ALL_MODES {
+        let report = scan(&linked, mode);
+        assert!(
+            !has_gitlink_violation(&report),
+            "a submodule inside the PR worktree is not a run worktree (mode {mode}): {:#?}",
+            report.violations
+        );
+        assert!(!report.blocks(), "mode {mode}: {:#?}", report.violations);
+    }
+}
+
+#[test]
+fn clean_index_passes_pre_commit_with_registered_worktrees() {
+    // AC6: live run worktrees on disk, none of them in the index.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    register_worktree(tmp.path(), "worktrees/feat/y", "feat/y");
+    write_file(
+        &tmp.path().join("worktrees/feat/x/target/.rustc_info.json"),
+        "{}\n",
+    );
+
+    for mode in ALL_MODES {
+        let report = scan(tmp.path(), mode);
+        assert!(
+            report.is_clean(),
+            "registered, unstaged run worktrees are not violations (mode {mode}): {:#?}",
+            report.violations
+        );
+    }
+}
+
+#[test]
+fn ignored_present_inside_registered_worktree_stays_exempt_while_its_gitlink_blocks() {
+    // AC6 / R6: the #857 exemption keeps hiding ignored files inside
+    // registered worktrees. It never hides a gitlink.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    register_worktree(tmp.path(), "worktrees/feat/y", "feat/y");
+    for wt in ["worktrees/feat/x", "worktrees/feat/y"] {
+        write_file(
+            &tmp.path().join(wt).join(".pytest_cache/CACHEDIR.TAG"),
+            "x\n",
+        );
+        write_file(&tmp.path().join(wt).join("target/.rustc_info.json"), "{}\n");
+    }
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+
+    let report = scan(tmp.path(), ArtifactGuardMode::All);
+
+    gitlink_violation(&report, "worktrees/feat/x");
+    assert!(report.blocks());
+    assert!(
+        !report.violations.iter().any(|v| {
+            v.path.starts_with("worktrees/feat/x/") || v.path.starts_with("worktrees/feat/y")
+        }),
+        "ignored files inside registered worktrees stay exempt (#857): {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn nested_worktree_exemption_does_not_cover_untracked_scan() {
+    // R6 pin: the #857 exemption is limited to the ignored-present scan. When
+    // `worktrees/` is NOT ignored, a registered worktree there is an untracked
+    // directory a broad add would sweep in, and it stays a violation.
+    let tmp = TempDir::new().expect("tempdir");
+    hgit(tmp.path(), &["init", "-q"]);
+    hgit(tmp.path(), &["symbolic-ref", "HEAD", "refs/heads/main"]);
+    write_file(&tmp.path().join("README.md"), "# fixture\n");
+    hgit(tmp.path(), &["add", "README.md"]);
+    hgit(tmp.path(), &["commit", "-qm", "initial"]);
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::All] {
+        let report = scan(tmp.path(), mode);
+        let violation = violation_for(
+            &report.violations,
+            "worktrees/feat/x",
+            ArtifactSource::Untracked,
+        );
+        assert_eq!(violation.rule_id, "nested-worktree", "mode {mode}");
+        assert!(report.blocks(), "mode {mode}");
+    }
+}
+
+#[test]
+fn regular_file_under_worktrees_stays_nested_worktree() {
+    // Regular (non-gitlink) entries under `worktrees/` keep their existing rule.
+    let tmp = gitlink_repo();
+    write_file(&tmp.path().join("worktrees/notes.md"), "notes\n");
+    hgit(tmp.path(), &["add", "-f", "worktrees/notes.md"]);
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    let violation = violation_for(
+        &report.violations,
+        "worktrees/notes.md",
+        ArtifactSource::Staged,
+    );
+    assert_eq!(violation.rule_id, "nested-worktree");
+    assert!(!has_gitlink_violation(&report));
+}
+
+#[test]
+fn run_worktree_gitlink_is_reported_once_and_takes_precedence_over_nested_worktree() {
+    // The gitlink is both committed (tracked) and re-staged at a newer commit
+    // (staged). It is one problem with one remedy: exactly one violation.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    hgit(tmp.path(), &["commit", "-qm", "oops: gitlink"]);
+    let wt = tmp.path().join("worktrees/feat/x");
+    write_file(&wt.join("change.txt"), "run work\n");
+    hgit(&wt, &["add", "change.txt"]);
+    hgit(&wt, &["commit", "-qm", "run work"]);
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+
+    for mode in ALL_MODES {
+        let report = scan(tmp.path(), mode);
+        let for_path: Vec<&ArtifactViolation> = report
+            .violations
+            .iter()
+            .filter(|v| v.path == "worktrees/feat/x")
+            .collect();
+        assert_eq!(
+            for_path.len(),
+            1,
+            "exactly one violation for the gitlink (mode {mode}); got {for_path:#?}"
+        );
+        assert_eq!(for_path[0].rule_id, GITLINK_RULE, "mode {mode}");
+        assert!(report.blocks(), "mode {mode}");
+    }
+}
+
+#[test]
+fn conflicted_gitlink_stages_are_reported_once() {
+    // SEC-10: a merge conflict gives a path stages 1-3 in the index.
+    let tmp = gitlink_repo();
+    let sha = head_sha(tmp.path());
+    hgit_index_info(
+        tmp.path(),
+        &[
+            ("160000", &sha, 1, "worktrees/feat/c"),
+            ("160000", &sha, 2, "worktrees/feat/c"),
+            ("160000", &sha, 3, "worktrees/feat/c"),
+        ],
+    );
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    let gitlinks: Vec<&ArtifactViolation> = report
+        .violations
+        .iter()
+        .filter(|v| v.path == "worktrees/feat/c")
+        .collect();
+    assert_eq!(gitlinks.len(), 1, "one violation per path: {gitlinks:#?}");
+    assert_eq!(gitlinks[0].rule_id, GITLINK_RULE);
+    assert!(report.blocks());
+}
+
+#[test]
+fn index_records_are_split_at_the_first_tab() {
+    // SEC-10: `git ls-files -s -z` prints `<mode> <sha> <stage>\t<path>`. A path
+    // may itself contain a tab, so only the first tab separates the fields.
+    let tmp = gitlink_repo();
+    let sha = head_sha(tmp.path());
+    hgit_index_info(tmp.path(), &[("160000", &sha, 0, "worktrees/a\tb")]);
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    gitlink_violation(&report, "worktrees/a\tb");
+    assert!(report.blocks());
+}
+
+#[test]
+fn only_mode_160000_entries_are_gitlinks() {
+    // SEC-10: only mode exactly 160000 is a gitlink. A symlink-mode (120000)
+    // index entry sitting at a registered worktree's path is not one, even
+    // though rule (b) would match its path.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "wt/review", "review");
+    let blob = {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = amplihack_git::command()
+            .args(["hash-object", "-w", "--stdin"])
+            .current_dir(tmp.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("spawn hash-object");
+        child
+            .stdin
+            .take()
+            .expect("stdin")
+            .write_all(b"target")
+            .expect("write blob");
+        let output = child.wait_with_output().expect("hash-object");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    };
+    hgit_index_info(tmp.path(), &[("120000", &blob, 0, "wt/review")]);
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    assert!(
+        !has_gitlink_violation(&report),
+        "a symlink entry is not a gitlink: {:#?}",
+        report.violations
+    );
+}
+
+#[test]
+fn prunable_registered_worktree_gitlink_is_blocked() {
+    // Rule (b) includes prunable records: the worktree was registered, its
+    // gitlink staged, and then its directory removed. Outside `worktrees/`,
+    // only the registration identifies it.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "wt/gone", "gone");
+    hgit(tmp.path(), &["add", "--", "wt/gone"]);
+    assert!(index_gitlinks(tmp.path()).contains(&"wt/gone".to_string()));
+    fs::remove_dir_all(tmp.path().join("wt/gone")).expect("remove worktree dir");
+    assert!(
+        hgit(tmp.path(), &["worktree", "list", "--porcelain"]).contains("prunable"),
+        "fixture: the registration must now be prunable"
+    );
+
+    let report = scan(tmp.path(), ArtifactGuardMode::PreCommit);
+    gitlink_violation(&report, "wt/gone");
+    assert!(report.blocks());
+}
+
+#[test]
+fn run_worktree_gitlink_blocks_in_every_mode() {
+    // The rule is not gated on the staged scan: `--mode worktree` and
+    // `--mode staged` report a committed gitlink too. Without the rule,
+    // worktree mode would call `worktrees/feat/x` a nested-worktree (with a
+    // remedy that fails on a gitlink) and would miss `wt/review` entirely.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    register_worktree(tmp.path(), "wt/review", "review");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    hgit(tmp.path(), &["add", "--", "wt/review"]);
+    hgit(tmp.path(), &["commit", "-qm", "oops: run worktrees"]);
+
+    for mode in ALL_MODES {
+        let report = scan(tmp.path(), mode);
+        for path in ["worktrees/feat/x", "wt/review"] {
+            let violation = gitlink_violation(&report, path);
+            assert_eq!(
+                violation.source,
+                ArtifactSource::Tracked,
+                "{path} is committed, not staged (mode {mode})"
+            );
+            assert_eq!(violation.provenance, ArtifactProvenance::Introduced);
+        }
+        assert!(report.blocks(), "mode {mode} must block");
+    }
+}
+
+#[test]
+fn report_lists_registered_worktrees_inside_the_repo() {
+    // The CLI uses `registered_worktrees` to never print a deleting command for
+    // a root that holds a live worktree. It is filled in every mode, holds
+    // repo-relative normalized paths, and excludes the scanned top level and
+    // worktrees outside it.
+    let tmp = gitlink_repo();
+    let outside = TempDir::new().expect("tempdir");
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    register_worktree(tmp.path(), "wt/review", "review");
+    let outside_path = outside.path().join("elsewhere");
+    hgit(
+        tmp.path(),
+        &[
+            "worktree",
+            "add",
+            "-q",
+            outside_path.to_str().expect("utf-8 path"),
+            "-b",
+            "elsewhere",
+        ],
+    );
+
+    for mode in ALL_MODES {
+        let report = scan(tmp.path(), mode);
+        let mut listed = report.registered_worktrees.clone();
+        listed.sort();
+        assert_eq!(
+            listed,
+            vec!["worktrees/feat/x".to_string(), "wt/review".to_string()],
+            "mode {mode}"
+        );
+    }
+
+    // From inside a linked worktree, the main checkout is outside the scanned
+    // top level and is not listed.
+    let report = scan(
+        &tmp.path().join("worktrees/feat/x"),
+        ArtifactGuardMode::PreCommit,
+    );
+    assert!(
+        report.registered_worktrees.is_empty(),
+        "nothing is registered inside worktrees/feat/x: {:?}",
+        report.registered_worktrees
+    );
+}
+
+#[test]
+fn gitlink_rule_is_a_named_default_rule() {
+    // The CLI and the docs refer to the rule by this constant. It sits in
+    // `DEFAULT_RULES` so `rule()` resolves it like every other rule, even
+    // though it matches index entries rather than path patterns.
+    assert_eq!(super::RUN_WORKTREE_GITLINK, GITLINK_RULE);
+    assert!(
+        super::DEFAULT_RULES
+            .iter()
+            .any(|rule| rule.id == super::RUN_WORKTREE_GITLINK),
+        "DEFAULT_RULES must carry a `{GITLINK_RULE}` entry"
+    );
+}
+
+#[test]
+fn worktree_list_errors_display_their_fixed_payload() {
+    // SEC-V6: the payload is one of three fixed strings, never Git's output,
+    // so it cannot carry attacker-chosen text into the CLI's error line.
+    for payload in [
+        "a worktree record is not an absolute path",
+        "no worktree records",
+        "ambiguous worktree records",
+    ] {
+        let error = super::ArtifactGuardError::WorktreeList(payload.to_string());
+        assert_eq!(
+            error.to_string(),
+            format!("artifact guard could not list worktrees: {payload}")
+        );
+    }
+}
+
+/// Register a worktree whose path holds a newline followed by a second
+/// `worktree <abs>` line. `git worktree list --porcelain` (without `-z`) prints
+/// it unquoted, so the output reads as two records, the first with no `HEAD`.
+#[cfg(unix)]
+fn register_forged_record_worktree(repo: &Path) {
+    let top = fs::canonicalize(repo).expect("canonicalize repo");
+    let forged = format!(
+        "{}/x\nworktree {}/worktrees/forged",
+        top.display(),
+        top.display()
+    );
+    hgit(repo, &["worktree", "add", "-q", &forged, "-b", "forged"]);
+    let listed = hgit(repo, &["worktree", "list", "--porcelain"]);
+    assert!(
+        listed.contains(&format!(
+            "/x\nworktree {}/worktrees/forged\nHEAD ",
+            top.display()
+        )),
+        "fixture: git must print the forged record unquoted:\n{listed}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn ambiguous_worktree_records_fail_the_scan_in_every_mode() {
+    // SEC-V6 / D8: a `worktree` line that arrives before the current record
+    // has shown `HEAD` or `bare` is refused. A failed list is an error with no
+    // partial report, even when the index also holds a gitlink.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    register_forged_record_worktree(tmp.path());
+    let before = index_snapshot(tmp.path());
+
+    for mode in ALL_MODES {
+        match scan_artifacts(&ArtifactGuardConfig::new(tmp.path()).with_mode(mode)) {
+            Err(super::ArtifactGuardError::WorktreeList(payload)) => {
+                assert_eq!(payload, "ambiguous worktree records", "mode {mode}");
+            }
+            other => panic!("mode {mode}: expected WorktreeList(ambiguous); got {other:#?}"),
+        }
+    }
+    assert_eq!(
+        index_snapshot(tmp.path()),
+        before,
+        "the scan writes nothing"
+    );
+}
+
+#[test]
+fn a_stray_line_before_head_is_an_ambiguous_record() {
+    // SEC-V6: a path `worktrees/a<LF>b` prints `worktree …/a`, then `b`, then
+    // `HEAD …`. Git always follows `worktree` with `HEAD` or `bare`, so the
+    // stray `b` means a path held a newline; recording `…/a` would register a
+    // path that does not exist.
+    let porcelain = "worktree /r\nHEAD x\nbranch refs/heads/main\n\n\
+                     worktree /r/worktrees/a\nb\nHEAD y\ndetached\n\n";
+    match super::gitlink::parse_worktree_porcelain(porcelain) {
+        Err(super::ArtifactGuardError::WorktreeList(payload)) => {
+            assert_eq!(payload, "ambiguous worktree records");
+        }
+        other => panic!("expected WorktreeList(ambiguous); got {other:#?}"),
+    }
+}
+
+#[test]
+fn optional_lines_after_head_or_bare_still_parse() {
+    // The strict second-line check must not refuse the attribute lines Git
+    // prints after `HEAD`/`bare`.
+    let porcelain = "worktree /r\nbare\n\n\
+                     worktree /r/worktrees/a\nHEAD a\nbranch refs/heads/a\nlocked\n\n\
+                     worktree /r/worktrees/b\nHEAD b\ndetached\nlocked held by ci\n\n\
+                     worktree /r/worktrees/c\nHEAD c\ndetached\n\
+                     prunable gitdir file points to non-existent location\n\n";
+    let records = super::gitlink::parse_worktree_porcelain(porcelain).expect("valid porcelain");
+    let records: Vec<String> = records
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        records,
+        ["/r", "/r/worktrees/a", "/r/worktrees/b", "/r/worktrees/c"]
+    );
+}
+
+#[test]
+fn gitlink_violations_are_listed_before_every_other_violation() {
+    // D8: gitlinks sort first, so the CLI's table, its commands and its
+    // `First violation detail` all lead with the one that cannot be
+    // allowlisted. Every other path here sorts before `worktrees/` and `wt/`.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/x", "feat/x");
+    register_worktree(tmp.path(), "wt/review", "review");
+    force_stage_gitlink(tmp.path(), "worktrees/feat/x");
+    hgit(tmp.path(), &["add", "--", "wt/review"]);
+    write_file(&tmp.path().join("dist/plugin.js"), "generated\n");
+    write_file(&tmp.path().join("node_modules/a/index.js"), "a\n");
+    hgit(
+        tmp.path(),
+        &["add", "-f", "dist/plugin.js", "node_modules/a/index.js"],
+    );
+
+    for mode in [ArtifactGuardMode::PreCommit, ArtifactGuardMode::All] {
+        let report = scan(tmp.path(), mode);
+        let rules: Vec<&str> = report
+            .violations
+            .iter()
+            .map(|violation| violation.rule_id.as_str())
+            .collect();
+        let gitlinks = rules.iter().filter(|rule| **rule == GITLINK_RULE).count();
+        assert_eq!(gitlinks, 2, "mode {mode}: {rules:?}");
+        assert!(
+            rules[..gitlinks].iter().all(|rule| *rule == GITLINK_RULE),
+            "mode {mode}: every gitlink must come before every other violation: {rules:?}"
+        );
+        assert!(
+            rules.len() > gitlinks,
+            "mode {mode}: the other violations are still reported: {rules:?}"
+        );
+        let first_blocking = report.blocking_violations()[0];
+        assert_eq!(first_blocking.rule_id, GITLINK_RULE, "mode {mode}");
+    }
+}
+
+#[test]
+fn gitlink_outside_worktrees_claims_its_path_from_every_other_rule() {
+    // D8: a gitlink is reported once, as `run-worktree-gitlink`, even when its
+    // path also matches a path rule. `build/review` is build output by path.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "build/review", "review");
+    hgit(tmp.path(), &["add", "--", "build/review"]);
+    assert!(index_gitlinks(tmp.path()).contains(&"build/review".to_string()));
+
+    for committed in [false, true] {
+        if committed {
+            hgit(tmp.path(), &["commit", "-qm", "oops: gitlink under build/"]);
+        }
+        for mode in ALL_MODES {
+            let report = scan(tmp.path(), mode);
+            let for_path: Vec<&ArtifactViolation> = report
+                .violations
+                .iter()
+                .filter(|violation| violation.path == "build/review")
+                .collect();
+            assert_eq!(
+                for_path.len(),
+                1,
+                "exactly one violation for build/review (mode {mode}, committed={committed}); \
+                 got {for_path:#?}"
+            );
+            assert_eq!(for_path[0].rule_id, GITLINK_RULE, "mode {mode}");
+            assert!(report.blocks(), "mode {mode}");
+        }
+    }
+}
+
+#[test]
+fn registered_worktrees_is_sorted_deduplicated_and_includes_prunable_entries() {
+    // D5: repo-relative, `/`-separated, no trailing `/`, sorted, deduplicated;
+    // prunable entries included. Compared without re-sorting, so the order is
+    // part of the contract.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "wt/b", "b");
+    register_worktree(tmp.path(), "worktrees/feat/a", "feat/a");
+    register_worktree(tmp.path(), "a/z", "z");
+    fs::remove_dir_all(tmp.path().join("wt/b")).expect("remove worktree dir");
+    assert!(
+        hgit(tmp.path(), &["worktree", "list", "--porcelain"]).contains("prunable"),
+        "fixture: wt/b must be prunable"
+    );
+
+    for mode in ALL_MODES {
+        let report = scan(tmp.path(), mode);
+        assert_eq!(
+            report.registered_worktrees,
+            vec![
+                "a/z".to_string(),
+                "worktrees/feat/a".to_string(),
+                "wt/b".to_string()
+            ],
+            "mode {mode}"
+        );
+    }
+}
+
+#[test]
+fn prunable_worktree_under_worktrees_keeps_its_ignored_files_exempt() {
+    // D5: the #857 nested-worktree exemption now comes from
+    // `registered_worktrees`, which includes prunable entries. A registered
+    // worktree whose `.git` file went missing (prunable) still holds a run's
+    // files; they stay exempt in the ignored-present scan.
+    let tmp = gitlink_repo();
+    register_worktree(tmp.path(), "worktrees/feat/p", "feat/p");
+    write_file(
+        &tmp.path().join("worktrees/feat/p/node_modules/a/index.js"),
+        "a\n",
+    );
+    fs::remove_file(tmp.path().join("worktrees/feat/p/.git")).expect("remove gitfile");
+    assert!(
+        hgit(tmp.path(), &["worktree", "list", "--porcelain"]).contains("prunable"),
+        "fixture: worktrees/feat/p must be prunable"
+    );
+
+    let report = scan(tmp.path(), ArtifactGuardMode::All);
+    assert_eq!(
+        report.registered_worktrees,
+        vec!["worktrees/feat/p".to_string()]
+    );
+    let inside: Vec<&ArtifactViolation> = report
+        .violations
+        .iter()
+        .filter(|violation| violation.path.starts_with("worktrees/feat/p"))
+        .collect();
+    assert!(
+        inside.is_empty(),
+        "files inside a registered (prunable) worktree are exempt: {inside:#?}"
+    );
 }
