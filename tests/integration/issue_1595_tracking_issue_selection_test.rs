@@ -98,10 +98,13 @@ fn write_executable(path: &Path, content: &str) {
 ///
 /// - `api repos/{owner}/{repo}/issues/N`: answered from `GH_API_<N>`:
 ///   `open`, `closed`, `pr` (an open pull request), `transferred` (open, but
-///   its URL points at another repository) or `garbage`. Unset gives a 404.
+///   its URL points at another repository), `nohttps` (open, but its URL has
+///   no `https://` scheme) or `garbage`. Unset gives a 404.
 /// - `issue view N`: succeeds, as the real `gh` does, for any N whose
 ///   `GH_API_<N>` is set, including closed issues and pull requests, or when N
 ///   equals `GH_VIEW_ISSUE`. `GH_VIEW_URL` overrides the URL printed.
+///   `GH_VIEW_EXIT` makes it print a token-like error and exit with that code
+///   (a timeout, rate limit or auth failure).
 /// - `issue list`: prints `GH_LIST_URL` if set.
 /// - `label create`: succeeds.
 /// - `issue create`: prints the issue #901 URL.
@@ -121,12 +124,14 @@ case "$1:$2" in
       open) printf 'open\tfalse\t%s/issues/%s\n' "$FAKE_REPO_URL" "$n"; exit 0 ;;
       closed) printf 'closed\tfalse\t%s/issues/%s\n' "$FAKE_REPO_URL" "$n"; exit 0 ;;
       pr) printf 'open\ttrue\t%s/pull/%s\n' "$FAKE_REPO_URL" "$n"; exit 0 ;;
+      nohttps) printf 'open\tfalse\tgithub.com/example-org/example-repo/issues/%s\n' "$n"; exit 0 ;;
       transferred) printf 'open\tfalse\thttps://github.com/other-org/other-repo/issues/%s\n' "$((n + 1000))"; exit 0 ;;
       garbage) printf 'not-a-tsv-row\n'; exit 0 ;;
       *) echo "gh: Not Found (HTTP 404)" >&2; exit 1 ;;
     esac
     ;;
   issue:view)
+    if [ -n "${GH_VIEW_EXIT:-}" ]; then echo "gh: auth failed for token ghp_FAKEFAKEFAKEFAKE" >&2; exit "$GH_VIEW_EXIT"; fi
     lookup_state "$3"
     if [ -n "$state" ] || { [ -n "${GH_VIEW_ISSUE:-}" ] && [ "$GH_VIEW_ISSUE" = "$3" ]; }; then
       if [ -n "${GH_VIEW_URL:-}" ]; then printf '%s\n' "$GH_VIEW_URL"
@@ -364,7 +369,16 @@ fn run_helper(call: &str, issue_number: &str, task: &str, env: &[(&str, &str)]) 
     }
 }
 
+/// Candidate numbers only (the first field of each `N kind` line).
 fn candidates(task: &str) -> Vec<String> {
+    candidate_lines(task)
+        .iter()
+        .map(|l| l.split_whitespace().next().unwrap_or_default().to_owned())
+        .collect()
+}
+
+/// Raw `N kind` candidate lines.
+fn candidate_lines(task: &str) -> Vec<String> {
     let run = run_helper("_tracking_issue_candidates", "", task, &[]);
     assert!(
         run.output.status.success(),
@@ -457,6 +471,78 @@ fn explicit_issue_number_that_cannot_be_resolved_falls_back_to_local_metadata() 
     assert_eq!(
         step_03b_issue_number(&run, "Background: #1578."),
         "local-issue-1592"
+    );
+}
+
+/// (S1) When `gh issue view` itself fails (auth or rate limit: exit 1;
+/// timeout: exit 124), the warning reports gh's exit code instead of blaming
+/// the number, gh's stderr stays out of the log, and nothing is created.
+#[test]
+fn explicit_issue_number_gh_failure_reports_the_exit_code() {
+    for code in ["1", "124"] {
+        let run = run_github(
+            "1592",
+            "Add a flag.",
+            &[("GH_API_1592", "open"), ("GH_VIEW_EXIT", code)],
+        );
+        run.assert_success();
+        let stderr = run.stderr();
+        assert!(
+            stderr.contains(&format!(
+                "WARN: could not verify issue #1592 (gh exit {code}); falling back to local tracking"
+            )),
+            "gh exit {code}\n{}",
+            run.diag()
+        );
+        assert!(
+            !stderr.contains("could not be resolved as an issue"),
+            "a gh failure must not blame the number\n{}",
+            run.diag()
+        );
+        assert!(
+            !stderr.contains("ghp_FAKE"),
+            "gh's stderr must stay discarded\n{}",
+            run.diag()
+        );
+        let stdout = run.stdout();
+        assert!(
+            stdout.contains("tracking_reference=local-issue-1592")
+                && stdout.lines().any(|l| l == "issue_number=1592"),
+            "gh exit {code}\n{}",
+            run.diag()
+        );
+        assert!(!run.called("issue list"), "{}", run.diag());
+        assert!(!run.called("issue create"), "{}", run.diag());
+        assert!(run.api_lookups().is_empty(), "{}", run.diag());
+    }
+}
+
+/// (S1) gh succeeds but returns a non-issue URL: the original wording stays.
+#[test]
+fn explicit_issue_number_bad_url_keeps_the_resolution_warning() {
+    let run = run_github(
+        "1592",
+        "Add a flag.",
+        &[
+            ("GH_VIEW_ISSUE", "1592"),
+            (
+                "GH_VIEW_URL",
+                "github.com/example-org/example-repo/issues/1592",
+            ),
+        ],
+    );
+    run.assert_success();
+    assert!(
+        run.stderr()
+            .contains("could not be resolved as an issue in this repository"),
+        "{}",
+        run.diag()
+    );
+    assert!(!run.stderr().contains("gh exit"), "{}", run.diag());
+    assert!(
+        run.stdout().contains("tracking_reference=local-issue-1592"),
+        "{}",
+        run.diag()
     );
 }
 
@@ -710,6 +796,32 @@ fn selection_source_is_logged_on_stderr() {
     );
 }
 
+/// (S2) A number written both bare and marked is labelled by the branch that
+/// picked it, which is the marked one because marked references come first.
+#[test]
+fn log_label_matches_the_kind_that_picked_the_number() {
+    let run = run_github("", "See #20. Fixes #20.", &[("GH_API_20", "open")]);
+    run.assert_selected(20);
+    assert!(
+        run.stderr()
+            .contains("tracking issue #20 selected (marked)"),
+        "{}",
+        run.diag()
+    );
+    assert_eq!(run.api_lookups().len(), 1, "{}", run.diag());
+    let run = run_github(
+        "",
+        "See #21. Fixes #20.",
+        &[("GH_API_20", "closed"), ("GH_API_21", "open")],
+    );
+    run.assert_selected(21);
+    assert!(
+        run.stderr().contains("tracking issue #21 selected (bare)"),
+        "{}",
+        run.diag()
+    );
+}
+
 /// (h) `PR #N`, `pull request #N`, `owner/repo#N` and `AB#N` are never looked up.
 #[test]
 fn masked_reference_forms_are_never_looked_up() {
@@ -780,6 +892,15 @@ fn transferred_issue_is_rejected() {
 fn unexpected_api_output_rejects_the_candidate() {
     let run = run_github("", "Issue #50: tidy up.", &[("GH_API_50", "garbage")]);
     run.assert_created();
+}
+
+/// (S3) A task-text candidate whose URL lacks `https://` is rejected, the
+/// same rule the explicit-number path uses.
+#[test]
+fn candidate_url_without_https_is_rejected() {
+    let run = run_github("", "Fixes #42.", &[("GH_API_42", "nohttps")]);
+    run.assert_created();
+    assert!(run.looked_up(42), "{}", run.diag());
 }
 
 /// (j) No reference: the title search and create path are unchanged.
@@ -1061,6 +1182,14 @@ fn candidates_are_deduplicated_and_capped_at_five() {
 }
 
 #[test]
+fn candidates_carry_their_kind_and_the_first_kind_wins() {
+    assert_eq!(
+        candidate_lines("See #20. Fixes #20. Also #21."),
+        ["20 marked", "21 bare"]
+    );
+}
+
+#[test]
 fn candidates_for_empty_or_reference_free_text_are_empty() {
     assert!(candidates("").is_empty());
     assert!(candidates("Add a --json flag to recipe list.").is_empty());
@@ -1198,8 +1327,11 @@ fn helper_header_names_the_file_and_lists_the_new_functions() {
     );
     for f in [
         "select_github_tracking_issue",
+        "_tracking_issue_masked_text",
+        "_tracking_issue_refs",
         "_tracking_issue_candidates",
         "_github_open_issue_url",
+        "_is_github_issue_url",
     ] {
         assert!(header.contains(f), "header must list {f}\n{header}");
         assert!(text.contains(&format!("{f}()")), "helper must define {f}");

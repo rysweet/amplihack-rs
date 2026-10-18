@@ -66,7 +66,8 @@ Step-03 reads it as `EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"`.
 | `issue_number` value | Result on `github` |
 | -------------------- | ------------------ |
 | `1592` or `#1592` | `gh issue view 1592` runs; its URL is printed |
-| `1592`, but the view fails or returns a URL that does not end in `/issues/1592` | Warning on stderr, local metadata with `tracking_reference=local-issue-1592` and `issue_number=1592`, exit 0 |
+| `1592`, but `gh issue view` exits non-zero (timeout, rate limit, authentication) | `WARN: could not verify issue #1592 (gh exit RC); falling back to local tracking`, then local metadata with `tracking_reference=local-issue-1592` and `issue_number=1592`, exit 0 |
+| `1592`, the view succeeds but its URL is not a single-line `https://…/issues/1592` (a PR, another repository) | `WARN: explicit issue_number #1592 could not be resolved as an issue in this repository …`, then the same local metadata, exit 0 |
 | `abc`, `12a`, `##1592`, `1592\nissue_number=9`, or more than 9 digits | Fixed warning on stderr (the value is not echoed); treated as unset for selection |
 | unset or empty | Task-text candidates are considered |
 
@@ -171,7 +172,7 @@ A candidate is accepted only when every check passes:
 | Exit status | `0` |
 | `state` | `open` |
 | PR flag | `false` |
-| `html_url` | ends in `/issues/N` (rejects issues transferred elsewhere) |
+| `html_url` | a single-line `https://…/issues/N` URL (rejects issues transferred elsewhere); the same check as the explicit path |
 
 A timeout, a 404, an authentication or rate-limit failure, or output in an
 unexpected shape rejects the candidate. If every candidate is rejected, the
@@ -180,8 +181,10 @@ the title search and then creates an issue.
 
 ## Helper function contract
 
-All three functions live in `amplifier-bundle/tools/workflow_issue_tracking.sh`,
-are sourced by step-03, and read `EXISTING_ISSUE_NUMBER` and `TASK_DESC` from
+These functions live in `amplifier-bundle/tools/workflow_issue_tracking.sh`
+(its header lists every function, including the internal
+`_tracking_issue_masked_text`, `_tracking_issue_refs` and
+`_is_github_issue_url`), are sourced by step-03, and read `EXISTING_ISSUE_NUMBER` and `TASK_DESC` from
 the caller's scope. None of them calls `exit`. All are bash 3.2 compatible.
 
 ### `select_github_tracking_issue`
@@ -201,7 +204,10 @@ GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; e
 
 ### `_tracking_issue_candidates`
 
-Prints up to five numbers, one per line, in priority order. Always returns 0.
+Prints up to five `N kind` lines in priority order, where `kind` is `marked`
+or `bare`. A number that appears in both forms is printed once, as `marked`.
+The selection log uses this kind, so the label always matches the reference
+that picked the number. Always returns 0.
 
 ### `_github_open_issue_url N`
 
@@ -225,7 +231,8 @@ block. `gh` stderr is discarded. The task text is never logged.
 | `INFO: tracking issue #1595 selected (marked)` | Marked candidate accepted |
 | `INFO: tracking issue #20 selected (bare)` | Bare candidate accepted |
 | `INFO: no task-text candidate accepted as an open issue (checked: 1595 1578); falling back to title search` | Every candidate was rejected; step-03 continues with the title search |
-| `WARN: ...` naming the explicit number and local tracking | Explicit lookup failed |
+| `WARN: could not verify issue #1592 (gh exit 124); falling back to local tracking` | `gh issue view` failed; the exit code tells a timeout (124) from an auth, rate-limit or network failure. gh's own stderr is not shown |
+| `WARN: explicit issue_number #1592 could not be resolved as an issue in this repository ...` | `gh issue view` succeeded but did not return this repository's issue URL |
 | `WARN: ...` with fixed text, no value | `issue_number` was not numeric |
 
 Search the step-03 log for `selected (bare)` to find runs that attached to an
@@ -293,8 +300,9 @@ The selection described above applies only to `github` hosts.
 
 - `tests/integration/issue_1595_tracking_issue_selection_test.rs` runs the
   shipped step-03 and step-03b bodies against a fake `gh` that logs every
-  call. Each `gh api` lookup is answered from `GH_API_<N>=open|closed|pr|transferred`;
-  an unset variable gives a 404.
+  call. Each `gh api` lookup is answered from `GH_API_<N>=open|closed|pr|transferred|nohttps|garbage`;
+  an unset variable gives a 404. `GH_VIEW_EXIT` makes `gh issue view` fail
+  with a given exit code.
   The candidate cases include `abc#12` (no candidate), `issue#5` and
   `Resolves: #30` (both marked), and `##1592` as an explicit value (rejected).
 - `tests/integration/issue_684_host_aware_workflow_test.rs`
