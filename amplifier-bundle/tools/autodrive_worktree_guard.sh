@@ -25,12 +25,14 @@
 #
 # Usage (executed, never sourced):
 #   autodrive_worktree_guard.sh review-dir <repo-path>
-#       The loops' step-02: print the real path of the MAIN checkout of
-#       <repo-path>'s repository (workflow_worktree_root.sh root, beside this
-#       script). It never comes from the step's working directory, because
-#       step-02 enters repo_path first, and repo_path may itself be the PR
-#       worktree (an operator passes `-c repo_path=<worktree>`, or runs
-#       `-c repo_path=.` from inside it). A linked worktree is never the main
+#       The loops' step-02, with <repo-path> the preflight repo ($REPO: the PR
+#       head's worktree when a PR number was supplied, else repo_path): print
+#       the real path of the MAIN checkout of <repo-path>'s repository
+#       (workflow_worktree_root.sh root, beside this script). It never comes
+#       from the step's working directory, which, like <repo-path> itself, may
+#       be the PR worktree (the preflight answers the head's worktree; an
+#       operator passes `-c repo_path=<worktree>`, or runs `-c repo_path=.`
+#       from inside it). A linked worktree is never the main
 #       checkout, so the review dir is never the tree under review. Exit 1 with
 #       a STOP line when <repo-path> is not in a git work tree, or the answer
 #       is not that repository's main checkout (see "The review dir" below):
@@ -117,12 +119,12 @@ repo_of() { real "$(git -C "$1" rev-parse --path-format=absolute --git-common-di
 not_main_checkout() {
   local rd="$1" want have top
   want="$(repo_of "$2")" || want=""
-  [ -n "$want" ] || { echo "repo_path '$2' is not in a git work tree"; return; }
+  [ -n "$want" ] || { echo "'$2' is not in a git work tree"; return; }
   top="$(git -C "$rd" rev-parse --show-toplevel 2>/dev/null)" && [ "$(real "$top")" = "$rd" ] \
     || { echo "review dir ${rd} is not the top of a git checkout; a bare repository has no main checkout to start the judging agents in"; return; }
   have="$(repo_of "$rd")" || have=""
   [ -n "$have" ] && [ "$have" = "$want" ] \
-    || { echo "review dir ${rd} belongs to another repository (${have:-unknown}), not repo_path's (${want}); its gh pr diff would read another pull request"; return; }
+    || { echo "review dir ${rd} belongs to another repository (${have:-unknown}), not the repository of '$2' (${want}); its gh pr diff would read another pull request"; return; }
   [ "$(real "$(git -C "$rd" rev-parse --absolute-git-dir 2>/dev/null)")" = "$have" ] \
     || echo "review dir ${rd} is a linked worktree of ${want}, not its main checkout"
 }

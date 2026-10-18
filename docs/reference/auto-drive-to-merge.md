@@ -1654,7 +1654,7 @@ so the launch checkout's index is never touched (issue #1528).
 | --- | --- | --- |
 | Phase 1, `autodrive-build` | Launch checkout | Not there. `default-workflow` commits in its own task worktree (issue #858); its commit steps refuse to stage or commit anywhere other than the top of a linked worktree (issue #1528). |
 | Loop preflights, `autodrive_pr_worktree.sh resolve`, the merge gate, phase bookkeeping | Launch checkout | No. The resolver may run `git worktree add`; the merge happens on GitHub. |
-| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the main checkout of `repo_path`'s repository (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
+| The judging agents: `step-02-crusty-review`, `step-02-merge-ready-assessment`, and the `loop-health-evaluator` analyzer | Start in the main checkout of the preflight repo's repository (`review_dir`); read the pull request through `gh pr diff` and `git -C <worktree>` | No |
 | Round bash steps, the `step-04` fix agents, `autodrive-merge-evidence`, the evaluator's measurements (recipe files are always loaded from the launch-side bundle; see below) | Pull request worktree | Yes: the round fixes in `step-04`, and the base-branch merge and push in `autodrive-merge-evidence` |
 
 The loop state directory stays keyed to the launch repository, so resuming is
@@ -1677,10 +1677,12 @@ guard ran only before staging, so it never saw either.
 ### How the worktree is resolved
 
 Each loop's `step-02` resolves the worktree once, after it reads the pull
-request number and before the loop starts:
+request number and before the loop starts. `$REPO` is the repo the loop's
+preflight (`step-01`) reports: the pull request head's worktree when a pull
+request number was supplied (#1543), else `repo_path`:
 
 ```bash
-PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "${REPO_PATH:-.}" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
+PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
 ```
 
 and starts the loop with:
@@ -1750,29 +1752,35 @@ Only the commit step moves into the pull request worktree. The read-only
 judging agents — the crusty review, the merge-ready assessment and the
 loop-health analyzer, which together decide the Crusty `CLEAN`, `MERGE_READY`
 and when a loop stops — start in the **review dir**: the main checkout of
-the repository that `repo_path` belongs to.
+the repository that the preflight repo belongs to.
 
 - Each loop's `step-02` sets `REVIEW_DIR` with
-  `autodrive_worktree_guard.sh review-dir "${REPO_PATH:-.}"`, which prints the
+  `autodrive_worktree_guard.sh review-dir "$REPO"`, which prints the
   real path of that repository's main checkout (through
   `workflow_worktree_root.sh root`, the same anchor the resolver uses), and
-  passes it to `autodrive_loop.sh` as `--review-dir`. It is not the step's
-  working directory: `step-02` enters `repo_path` first, and `repo_path` may
-  be the pull request worktree itself, either as
-  `-c repo_path=<pull request worktree>` from the main checkout or as
-  `-c repo_path=.` from inside the worktree. In each case the review dir is
-  the main checkout and the preflight passes. A linked worktree is never the
-  main checkout, so the review dir cannot be the tree under review.
+  passes it to `autodrive_loop.sh` as `--review-dir`. `$REPO` is the repo the
+  loop's preflight (`step-01`) reports (#1543): the pull request head's
+  worktree when a pull request number was supplied, else `repo_path`. The
+  review dir is never the step's working directory (`pwd`): that, like
+  `$REPO` itself, may be the pull request worktree, because the preflight
+  answers the head's worktree and because an operator may pass
+  `-c repo_path=<pull request worktree>` from the main checkout or
+  `-c repo_path=.` from inside the worktree. In each case `review-dir` answers
+  the main checkout of the same repository and the loop preflight passes. A
+  linked worktree is never the main checkout, so the review dir cannot be the
+  tree under review.
 - The guard unsets the repository-selecting variables (`GIT_DIR`,
   `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest of the list
   `autodrive_pr_worktree.sh` unsets) before its first git call. An inherited
   `GIT_DIR`, which a git hook runs with (githooks(5)), would otherwise make
   `review-dir` answer for another repository while the resolver, which unsets
-  them, answers for `repo_path`'s.
+  them, answers for the preflight repo's.
 - `review-dir`, the loop preflight and `round-guard` all accept a review dir
-  only when it is the **main checkout of `repo_path`'s repository**: the top
-  of a work tree whose git dir is its common dir, and whose
-  `--git-common-dir` resolves to the same real path as `repo_path`'s.
+  only when it is the **main checkout of the repository under review**: the
+  top of a work tree whose git dir is its common dir, and whose
+  `--git-common-dir` resolves to the same real path as that of the repo it is
+  checked against (`review-dir`: the preflight repo; the loop preflight:
+  `--repo`; `round-guard`: `repo_path`, all in the same repository).
   Outside the worktree is not enough. A checkout of another repository would
   have the judging agent load that repository's `AGENTS.md`, and its
   `gh pr diff N`, which has no `-R`, would read that repository's pull request
@@ -1854,7 +1862,9 @@ round runs, when the review dir is the tree under review or inside it — given
 by `--review-dir`, defaulted from the loop's own working directory, or passed as
 `--context review_dir=...` — or is not the main checkout of the pull request's
 repository. The launch directory does not decide the review
-dir in the loop recipes; `repo_path` does, through `review-dir`. A refusal
+dir in the loop recipes; the preflight repo (`$REPO` in `step-02`: the pull
+request head's worktree when a pull request number was supplied, else
+`repo_path`) does, through `review-dir "$REPO"`. A refusal
 there therefore means the main checkout is itself the tree under review: keep
 the pull request in a linked worktree. A direct call to `autodrive_loop.sh`
 must pass `--review-dir` the main checkout.
