@@ -40,11 +40,11 @@ Each stored memory is scored against the prompt, and only relevant memories are 
 
 #### Injected memory format
 
-Relevant memories are added under one heading that names the agents the prompt invoked (or just `## Relevant Memory` if it names none). Each memory is collapsed to one line, cut to 400 characters, and followed by its score:
+Relevant memories are added under one heading that names the agents the prompt invoked. Each memory is collapsed to one line, cut to 400 characters (with `…` added when it is cut), and followed by its score:
 
 ```text
 ## Relevant Memory (agents: analyzer)
-- <memory text, one line, at most 400 characters> (relevance: N.NN)
+- <memory text, one line, cut to 400 characters plus … when longer> (relevance: N.NN)
 ```
 
 A memory's stored code context, if it has any, is printed on the lines after it as stored. The 400-character cut and the line collapse do not apply to it.
