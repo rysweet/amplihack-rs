@@ -210,8 +210,18 @@ pub fn swap(
         // A failed sync after the exchange still exchanged the logins: go
         // on as journalled, or they would be filed under the wrong profiles
         // with no journal to say so.
-        if ino_at(&t) == Some(target_ino) {
-            return Err(abandon(store, rs, home, &mut j, refused(describe(e))));
+        match ino_at(&t) {
+            Some(ino) if ino == target_ino => {
+                return Err(abandon(store, rs, home, &mut j, refused(describe(e))));
+            }
+            // Cannot tell: the journal stays at J0 for recovery to settle.
+            None => {
+                return Err(ProfileError::RotateInconsistent(format!(
+                    "the target login could not be checked after the exchange failed: {}",
+                    describe(e)
+                )));
+            }
+            Some(_) => {}
         }
         eprintln!("warning: {}; the swap goes on", describe(e));
     }
