@@ -1,4 +1,4 @@
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
@@ -29,6 +29,17 @@ pub(crate) struct EnvGuard {
 }
 
 impl EnvGuard {
+    /// Capture variables before a fixture's manual mutations. The shared
+    /// environment lock must remain held until this guard drops.
+    pub(crate) fn capture(keys: &[&str]) -> Self {
+        Self {
+            previous: keys
+                .iter()
+                .map(|key| (OsString::from(key), std::env::var_os(key)))
+                .collect(),
+        }
+    }
+
     pub(crate) fn set<const N: usize>(values: [(&str, &str); N]) -> Self {
         let previous = values
             .iter()
@@ -39,6 +50,35 @@ impl EnvGuard {
         }
         Self { previous }
     }
+
+    /// Remove `names` from the environment until the guard is dropped.
+    pub(crate) fn unset<const N: usize>(names: [&str; N]) -> Self {
+        let previous = names
+            .iter()
+            .map(|name| (OsString::from(name), std::env::var_os(name)))
+            .collect();
+        for name in names {
+            unsafe { std::env::remove_var(name) };
+        }
+        Self { previous }
+    }
+}
+
+/// Runs `f` under the shared env lock with each variable set (or removed when
+/// `None`). The previous values are restored on return and on panic.
+pub(crate) fn with_env<T>(vars: &[(&str, Option<&OsStr>)], f: impl FnOnce() -> T) -> T {
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let keys: Vec<&str> = vars.iter().map(|(k, _)| *k).collect();
+    let _restore = EnvGuard::capture(&keys);
+    for (key, value) in vars {
+        unsafe {
+            match value {
+                Some(value) => std::env::set_var(key, value),
+                None => std::env::remove_var(key),
+            }
+        }
+    }
+    f()
 }
 
 impl Drop for EnvGuard {
@@ -48,6 +88,54 @@ impl Drop for EnvGuard {
                 match value {
                     Some(value) => std::env::set_var(name, value),
                     None => std::env::remove_var(name),
+                }
+            }
+        }
+    }
+}
+
+/// RAII guard giving a test a known agent-binary environment: every
+/// `agent_binary::SESSION_MARKERS` variable removed, and `AMPLIHACK_AGENT_BINARY`
+/// / `AMPLIHACK_AGENT_BINARY_SOURCE` set to `binary` / `tag` (or removed when
+/// `None`). Everything is restored on drop.
+///
+/// Tests must acquire `env_lock()` before constructing this guard.
+pub(crate) struct AgentBinaryEnv {
+    previous: Vec<(&'static str, Option<OsString>)>,
+}
+
+impl AgentBinaryEnv {
+    pub(crate) fn set(binary: Option<&str>, tag: Option<&str>) -> Self {
+        use amplihack_utils::agent_binary::{BINARY_ENV, SESSION_MARKERS, SOURCE_ENV};
+        let keys = SESSION_MARKERS
+            .iter()
+            .map(|(key, _)| *key)
+            .chain([BINARY_ENV, SOURCE_ENV]);
+        let previous = keys.map(|key| (key, std::env::var_os(key))).collect();
+        // SAFETY: edition 2024 requires unsafe; tests serialise via env_lock().
+        unsafe {
+            for (key, _) in SESSION_MARKERS {
+                std::env::remove_var(key);
+            }
+            for (key, value) in [(BINARY_ENV, binary), (SOURCE_ENV, tag)] {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        Self { previous }
+    }
+}
+
+impl Drop for AgentBinaryEnv {
+    fn drop(&mut self) {
+        for (key, value) in self.previous.drain(..) {
+            // SAFETY: as in `set`.
+            unsafe {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
                 }
             }
         }
@@ -85,9 +173,7 @@ pub(crate) fn restore_cwd(previous: &Path) -> std::io::Result<()> {
 ///
 /// Tests must acquire `env_lock()` (or an alias like `cwd_env_lock()`) before
 /// constructing this guard so concurrent tests don't observe the mutated cwd.
-/// Restore-on-drop is best-effort: if the prior cwd was deleted, the
-/// restoration is silently dropped — but the guard will never leak the test's
-/// chosen cwd into a subsequent test that runs in the same process.
+/// Restore-on-drop reports an error if the previous directory is unavailable.
 pub(crate) struct CwdGuard {
     previous: PathBuf,
 }
@@ -104,7 +190,9 @@ impl CwdGuard {
 
 impl Drop for CwdGuard {
     fn drop(&mut self) {
-        let _ = std::env::set_current_dir(&self.previous);
+        if let Err(error) = std::env::set_current_dir(&self.previous) {
+            eprintln!("failed to restore fixture working directory: {error}");
+        }
     }
 }
 

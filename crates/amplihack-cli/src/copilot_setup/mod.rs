@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 #[cfg(test)]
 use hooks::{build_wrapper_script, error_wrapper_script, replace_or_append_section};
-use hooks::{generate_copilot_instructions, stage_repo_hooks, write_user_level_hooks};
+use hooks::{generate_copilot_instructions, stage_repo_hooks, write_user_level_hooks_with};
 use staging::{register_plugin, stage_agents, stage_command_docs, stage_context, stage_skills};
 
 const INSTRUCTIONS_MARKER_START: &str = "<!-- AMPLIHACK_INSTRUCTIONS_START -->";
@@ -73,14 +73,71 @@ const COPILOT_HOOK_WRAPPERS: &[HookWrapperSpec] = &[
     },
 ];
 
-pub fn ensure_copilot_home_staged() -> Result<()> {
+/// How a staging run may treat `~/.copilot/config.json`, the user's Copilot
+/// configuration (issue #1526).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UserConfig {
+    /// Merge amplihack's plugin entries and hook block into it, replacing
+    /// older amplihack entries.
+    Merge,
+    /// Leave it byte-identical. Files under directories amplihack owns
+    /// (`~/.copilot/.github/hooks/`, `installed-plugins/`, staged agents and
+    /// skills) are still refreshed.
+    KeepExisting,
+}
+
+impl UserConfig {
+    /// The policy for an implicit installer (startup self-heal, the launch
+    /// bootstrap, `amplihack copilot`), decided once per run, before any
+    /// writer runs, so the first writer's output cannot change what a later
+    /// one decides. `Merge` only when `config.json` holds no amplihack entry
+    /// at all, which is a first install. A file that cannot be read or
+    /// parsed is kept as it is.
+    pub fn for_implicit_install() -> Self {
+        match copilot_home().map(|home| user_config_registers_amplihack(&home)) {
+            Ok(Ok(false)) => Self::Merge,
+            _ => Self::KeepExisting,
+        }
+    }
+}
+
+/// Whether `<copilot_home>/config.json` already registers amplihack in any of
+/// the places amplihack writes: an `installedPlugins` or `plugins` entry named
+/// `amplihack`, or an amplihack-owned hook. `Ok(false)` for a missing file.
+pub(crate) fn user_config_registers_amplihack(copilot_home: &Path) -> Result<bool> {
+    let path = copilot_home.join("config.json");
+    let raw = match fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e).with_context(|| format!("read {}", path.display())),
+    };
+    let stripped = jsonc::strip_jsonc_comments(&raw);
+    if stripped.trim().is_empty() {
+        return Ok(false);
+    }
+    let config: serde_json::Value =
+        serde_json::from_str(&stripped).with_context(|| format!("parse {}", path.display()))?;
+    let named = |key: &str| {
+        config
+            .get(key)
+            .and_then(serde_json::Value::as_array)
+            .is_some_and(|entries| {
+                entries.iter().any(|entry| {
+                    entry.get("name").and_then(serde_json::Value::as_str) == Some("amplihack")
+                })
+            })
+    };
+    Ok(named("installedPlugins") || named("plugins") || hooks::has_amplihack_owned_hook(&config))
+}
+
+pub fn ensure_copilot_home_staged(user_config: UserConfig) -> Result<()> {
     // Resolve the repo root from the current working directory exactly once,
     // up-front. This preserves the historical behaviour for the production
     // launcher path (which calls this from the repo the user is launching
     // amplihack against) while giving tests a side-door
     // (`ensure_copilot_home_staged_in`) that does not depend on cwd.
     let repo_root = std::env::current_dir().ok();
-    ensure_copilot_home_staged_in(repo_root.as_deref())
+    ensure_copilot_home_staged_with(repo_root.as_deref(), user_config)
 }
 
 /// Stage Copilot home assets, optionally wiring the per-repo
@@ -91,7 +148,16 @@ pub fn ensure_copilot_home_staged() -> Result<()> {
 /// preferred entry point from tests because it removes the implicit dependency
 /// on `current_dir()` — the leak vector behind the
 /// `github_hooks_scope_creep_is_absent` regression.
+#[cfg(test)]
 pub(crate) fn ensure_copilot_home_staged_in(repo_root: Option<&Path>) -> Result<()> {
+    ensure_copilot_home_staged_with(repo_root, UserConfig::Merge)
+}
+
+/// [`ensure_copilot_home_staged_in`] with an explicit [`UserConfig`] policy.
+pub(crate) fn ensure_copilot_home_staged_with(
+    repo_root: Option<&Path>,
+    user_config: UserConfig,
+) -> Result<()> {
     let staged = staged_framework_dir()?;
     let copilot_home = copilot_home()?;
     fs::create_dir_all(&copilot_home)?;
@@ -109,7 +175,7 @@ pub(crate) fn ensure_copilot_home_staged_in(repo_root: Option<&Path>) -> Result<
     let commands_dir = staged.join("commands").join("amplihack");
     if commands_dir.is_dir() {
         stage_command_docs(&commands_dir, &copilot_home)?;
-        register_plugin(&commands_dir, &copilot_home)?;
+        register_plugin(&commands_dir, &copilot_home, user_config)?;
     }
 
     let context_dir = staged.join("context");
@@ -138,7 +204,7 @@ pub(crate) fn ensure_copilot_home_staged_in(repo_root: Option<&Path>) -> Result<
 
     // Also stage hooks at the user level so they fire regardless of the
     // current working directory at Copilot launch time.
-    if let Err(err) = write_user_level_hooks(&copilot_home) {
+    if let Err(err) = write_user_level_hooks_with(&copilot_home, user_config) {
         eprintln!("⚠️  Failed to write user-level Copilot hooks: {err}");
     }
 
@@ -404,6 +470,37 @@ mod tests {
         assert!(script.contains("\"$HOOKS_BIN\" workflow-classification-reminder"));
         assert!(script.contains("\"$HOOKS_BIN\" user-prompt-submit"));
         assert!(!script.contains("python3"));
+    }
+
+    /// Issue #1526: what makes an implicit run treat config.json as already
+    /// holding amplihack, and so leave it byte-identical.
+    #[test]
+    fn user_config_registers_amplihack_recognizes_every_amplihack_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let registers = |body: &str| {
+            fs::write(dir.path().join("config.json"), body).unwrap();
+            user_config_registers_amplihack(dir.path()).unwrap()
+        };
+        assert!(
+            !user_config_registers_amplihack(dir.path()).unwrap(),
+            "missing file"
+        );
+        assert!(!registers(""), "empty file");
+        assert!(!registers(
+            "// header\n{ \"theme\": \"dark\", \"plugins\": [{\"name\":\"other\"}] }"
+        ));
+        assert!(registers(
+            "{ \"installedPlugins\": [{\"name\":\"amplihack\"}] }"
+        ));
+        assert!(registers("{ \"plugins\": [{\"name\":\"amplihack\"}] }"));
+        assert!(registers(
+            "{ \"hooks\": { \"sessionStart\": [{\"bash\":\"/h/.copilot/.github/hooks/session-start\"}] } }"
+        ));
+        fs::write(dir.path().join("config.json"), "{ not json").unwrap();
+        assert!(
+            user_config_registers_amplihack(dir.path()).is_err(),
+            "an unparseable file is an error, which for_implicit_install keeps as it is"
+        );
     }
 
     #[test]

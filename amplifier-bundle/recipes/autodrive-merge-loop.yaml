@@ -5,6 +5,11 @@ description: |
   `qa-team` scenarios passing, CI green, no merge conflicts, review threads
   resolved — and then merge behind an evidence gate.
 
+  Before every merge round, `autodrive_crusty_rereview.sh` sends commits made
+  after the clean crusty round back to the crusty loop. It runs in this
+  phase's loop shell, so that crusty loop runs at the same session depth as
+  phase 2's; no round recipe starts a loop.
+
   There is NO iteration cap here. The terminator is `loop-health-evaluator`
   (issue #1337), which judges absence of progress rather than counting
   attempts. Host safety stays where it belongs: structurally one layer down in
@@ -66,8 +71,10 @@ steps:
       fi
       IDENT="${PR:-$BRANCH}"
       DIR="${AUTODRIVE_STATE_DIR:-}"
-      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")"
-      mkdir -p "$DIR"
+      [ -n "$DIR" ] || DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$IDENT")" || exit 1
+      # Private whatever the caller's umask: the merge gate refuses state
+      # that anyone else could have written (autodrive_state.sh).
+      autodrive_private_dir "$DIR" || exit 1
       STATE="$(autodrive_pr_state "$PR")"
       RUN="true"; WHY="merge-ready loop not yet completed for this PR"
       if [ "$STATE" = "MERGED" ]; then
@@ -92,12 +99,32 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
-      [ -n "$DIR" ] || { echo "ERROR: preflight produced no state_dir; refusing to run an unrecorded loop." >&2; exit 1; }
-      bash "$LOOP_HELPER" \
+      # Refuse an empty or unsafe state_dir before anything touches it.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-02]" >&2; exit 1 ;;
+      esac
+      # Issue #1570: task_description is read with write_context_value
+      # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
+      # loop copies to its state directory. The uppercase TASK_DESCRIPTION
+      # alias is not used: the runner omits it for large values.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      TASK_IN="$(umask 077; mktemp)" || exit 1
+      trap 'rm -f -- "$TASK_IN"' EXIT
+      write_context_value task_description "$TASK_IN" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      # Commits after the clean crusty round go back to crusty BEFORE each
+      # merge round, from this shell, so that crusty loop runs at this step's
+      # depth like phase 2's. Started from a merge round step it would be one
+      # runner deeper and refused with exit 79 (PR #1520 review).
+      REREVIEW="$(dirname "$LOOP_HELPER")/autodrive_crusty_rereview.sh"
+      [ -f "$REREVIEW" ] || { echo "ERROR: autodrive-tools-not-found: ${REREVIEW} (the crusty re-review must come from the loop driver's install)" >&2; exit 1; }
+      bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "merge-ready" \
+        --before-round "$REREVIEW" \
         --round-recipe "autodrive-merge-round" \
         --clean-token "MERGE_READY" \
         --verdict-field "merge_ready_verdict" \
@@ -106,8 +133,8 @@ steps:
         --context "repo_path=${REPO_PATH:-.}" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}" \
-        --context "task_description=${TASK_DESCRIPTION:-}" \
-        --context "autodrive_qa_evidence=${DIR}/qa-evidence.json"
+        --context "autodrive_qa_evidence=${DIR}/qa-evidence.json" \
+        --context "autodrive_state_dir=${DIR}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal in the merge-ready loop (#1327/#1332). Final — surfaced and stopped, never retried into the guard." >&2
@@ -129,9 +156,13 @@ steps:
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
-      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
+      # Refuse an empty or unsafe state_dir before anything touches it.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-03]" >&2; exit 1 ;;
+      esac
       ARGS=(--pr "$PR" --repo "${REPO_PATH:-.}" --state-dir "$DIR" \
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
@@ -160,9 +191,12 @@ steps:
       . "$STATE_HELPER"
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default ''; }
-      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-}" pr)"
-      [ -n "$DIR" ] || exit 0
-      RESULT="$(g "${MERGE_GATE_RESULT:-}" merge_result)"
+      DIR="$(g "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" state_dir)"; PR="$(g "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" pr)"
+      # Refuse an empty or unsafe state_dir before anything touches it.
+      case "$DIR" in
+        ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-merge-loop/step-04]" >&2; exit 1 ;;
+      esac
+      RESULT="$(g "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}" merge_result)"
       case "$RESULT" in
         MERGED|ALREADY_MERGED)
           autodrive_mark_phase_done "$DIR" "merge-ready-loop"

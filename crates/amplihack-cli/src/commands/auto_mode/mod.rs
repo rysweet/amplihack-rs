@@ -21,7 +21,6 @@ use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc,
 };
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -150,53 +149,23 @@ impl PromptExecutor for SystemPromptExecutor {
     }
 }
 
+/// Runs one turn. The prompt's stdin payload, if any, is written by a
+/// separate thread inside `run_output_with_timeout_stdin`, and the delivery
+/// handle (which owns any prompt temporary file) is dropped only after the
+/// child has been waited on.
 fn run_delivered_output_with_timeout(
     delivered: DeliveredCommand,
     timeout: Duration,
 ) -> Result<std::process::Output> {
     let DeliveredCommand {
-        mut command,
+        command,
         delivery_handle,
         stdin_payload,
         ..
     } = delivered;
-    command.stdout(std::process::Stdio::piped());
-    command.stderr(std::process::Stdio::piped());
-    let mut child = command.spawn().context("failed to spawn subprocess")?;
-    let pid = child.id();
-    if let Some(payload) = stdin_payload
-        && let Some(mut stdin) = child.stdin.take()
-    {
-        stdin
-            .write_all(&payload)
-            .context("failed to write prompt to child stdin")?;
-        stdin.flush().context("failed to flush child stdin")?;
-    }
-    let (tx, rx) = mpsc::channel::<std::io::Result<std::process::Output>>();
-    std::thread::spawn(move || {
-        let result = child.wait_with_output();
-        drop(delivery_handle);
-        let _ = tx.send(result);
-    });
-
-    match rx.recv_timeout(timeout) {
-        Ok(result) => result.context("failed to wait for subprocess output"),
-        Err(_elapsed) => {
-            #[cfg(unix)]
-            {
-                let result = unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) };
-                if result != 0 {
-                    let error = std::io::Error::last_os_error();
-                    tracing::warn!(pid, %error, "failed to terminate timed-out subprocess");
-                }
-            }
-            bail!(
-                "subprocess timed out after {} seconds (pid {})",
-                timeout.as_secs(),
-                pid
-            )
-        }
-    }
+    let output = crate::util::run_output_with_timeout_stdin(command, timeout, stdin_payload);
+    drop(delivery_handle);
+    output
 }
 
 #[cfg(test)]

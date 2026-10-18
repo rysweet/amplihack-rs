@@ -48,26 +48,45 @@ Execute a workflow recipe through `recipe-runner-rs`.
 This section defines the stream, progress, and run-correlation contract.
 
 ```bash
-amplihack recipe run <RECIPE> [-c KEY=VALUE]... [OPTIONS]
+amplihack recipe run <RECIPE> [--context-file PATH] [--context-from-file KEY=PATH]... [-c KEY=VALUE]... [OPTIONS]
 ```
 
 | Option | Description | Default |
 | --- | --- | --- |
 | `<RECIPE>` | Recipe name or recipe YAML path | required |
 | `--context KEY=VALUE`, `-c KEY=VALUE` | Set a context variable; repeat for multiple values | none |
+| `--context-file <PATH>` | Read context from a file holding one JSON object; non-string values become text | none |
+| `--context-from-file KEY=PATH` | Set `KEY` to the raw UTF-8 contents of `PATH`; repeat for multiple keys | none |
 | `--dry-run` | Show the execution plan without running steps | `false` |
 | `--verbose`, `-v` | Add diagnostic detail to progress output | `false` |
 | `--format <format>`, `-f <format>` | Final stdout format: `table`, `json`, or `yaml` | `table` |
 | `--working-dir <dir>`, `-w <dir>` | Working directory for recipe execution | current directory |
 | `--step-timeout <seconds>` | Set `AMPLIHACK_STEP_TIMEOUT` for every step; `0` disables step timeouts | omitted |
 
-Context uses repeated `KEY=VALUE` flags, not a JSON blob:
+Short context uses repeated `KEY=VALUE` flags:
 
 ```bash
 amplihack recipe run default-workflow \
   -c task_description="Add user authentication" \
   -c repo_path=/home/user/src/myapp
 ```
+
+Values that can exceed a few kilobytes, such as an issue body or a cycle
+history, come from files so that they never occupy an argv element:
+
+```bash
+amplihack recipe run default-workflow \
+  --context-from-file task_description=/tmp/issue-1570.md \
+  -c repo_path=.
+```
+
+When a key is set by more than one source, `-c` wins over
+`--context-from-file`, which wins over `--context-file`. File sources reject
+keys outside `[A-Za-z0-9_]+`, `AMPLIHACK_*` keys, NUL bytes and files over
+16 MiB. See [Recipe context from files](./large-payload-delivery.md#recipe-context-from-files)
+for the conversion and validation rules, and
+[Pass Large Recipe Context](../howto/pass-large-recipe-context.md) for worked
+examples.
 
 Capture the final JSON result while still watching live progress:
 

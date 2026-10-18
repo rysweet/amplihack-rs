@@ -151,17 +151,27 @@ amplifier-bundle/tools/workflow_worktree_sweep.sh sweep "$REPO_PATH"
 Algorithm:
 
 1. `git -C "<repo_path>" worktree prune` — clear stale `.git/worktrees/`
-   registrations.
+   registrations — and add `/worktrees/` to the repository's `info/exclude`,
+   so kept task worktrees never show up as untracked files in the main
+   checkout (#1494).
 2. Enumerate registered worktrees via `git worktree list --porcelain` and
    restrict to entries under `<repo_path>/worktrees/` (realpath
    prefix-containment; symlink / `..` escapes are rejected).
 3. For each orphan candidate, remove the worktree directory **and** its branch
-   only when **both** are true:
+   only when **all** are true:
    - **Stale** — directory mtime is older than the staleness threshold
      (default 24h; see [Configuration](#configuration)).
+   - **Clean** — `git --no-optional-locks status --porcelain` in the worktree
+     is empty: no uncommitted or untracked files (#1560). Ignored files such as
+     build output do not count. A status that cannot be read, or a directory
+     that is not a worktree root, counts as dirty and is kept.
    - **No unmerged meaningful work** — `git rev-list --count <BASE_REF>..HEAD`
      equals `0` (mirrors the existing cleanliness gate at
-     `workflow-worktree.yaml` lines 284/300).
+     `workflow-worktree.yaml` lines 284/300), or merging the branch into
+     `<BASE_REF>` would change nothing (`git merge-tree --write-tree`, git
+     2.38+), or a commit on `<BASE_REF>` carries the branch's whole diff (same
+     `git patch-id`): its changes landed through a squash or rebase merge, even
+     if later commits edited the same lines.
 
 **Exit code is always `0`.** Per-orphan failures are logged (`WARN:`) and never
 abort the sweep or the surrounding setup step. This is what makes setup
@@ -177,11 +187,14 @@ amplifier-bundle/tools/workflow_worktree_sweep.sh cleanup_on_failure "$REPO_PATH
 
 Algorithm:
 
-1. If `<branch>` has unique commits (`<BASE_REF>..<branch> > 0`), archive/push
-   them first to `refs/amplihack-archive/<branch>` (and push to the configured
-   remote when available). **No destructive operation runs until the archive
-   succeeds.**
-2. Prune that run's worktree directory and branch.
+1. If `<branch>` has unique commits (`<BASE_REF>..<branch> > 0`) whose changes
+   are not already in `<BASE_REF>`, archive them first to
+   `refs/amplihack-archive/<branch>`, and push them to the configured remote when
+   available: to `refs/heads/<branch>` only while the remote still has that
+   branch (a merged PR's deleted branch is never recreated), otherwise to the
+   archive ref. **No destructive operation runs until the archive succeeds.**
+2. Prune that run's worktree directory and branch — unless the worktree has
+   uncommitted or untracked files (#1560), in which case both are kept.
 3. If meaningful unmerged work cannot be archived/pushed, **skip the prune** and
    log a `WARN:` — the branch/worktree is preserved so no work is lost.
 
@@ -189,6 +202,8 @@ Algorithm:
 
 > A worktree or branch with **unmerged meaningful commits is never destroyed.**
 > The archive/push must succeed first; only then may a prune proceed.
+> A worktree with **uncommitted or untracked files is never destroyed** (#1560):
+> no commit records that work, so no archive can save it.
 
 This gate is enforced in both modes and is covered by the contract test
 (see [Tests](#tests)).
@@ -271,7 +286,7 @@ The implementation is bound by two compiled assertions in
 Verify the contract:
 
 ```bash
-cargo test -p amplihack --test default_workflow_decomposition
+cargo test -p amplihack --test integration default_workflow_decomposition::
 ```
 
 ---

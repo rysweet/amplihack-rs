@@ -254,8 +254,7 @@ fn returns_additional_context_without_mutating_prompt() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = UserPromptSubmitHook;
     let result = hook
@@ -266,7 +265,7 @@ fn returns_additional_context_without_mutating_prompt() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     assert_eq!(
         result["hookSpecificOutput"]["hookEventName"],
@@ -306,8 +305,7 @@ fn extracts_prompt_from_extra_prompt_key() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = UserPromptSubmitHook;
     let result = hook
@@ -318,7 +316,7 @@ fn extracts_prompt_from_extra_prompt_key() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
@@ -336,8 +334,7 @@ fn extracts_prompt_from_user_message_dict() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = UserPromptSubmitHook;
     let result = hook
@@ -350,7 +347,7 @@ fn extracts_prompt_from_user_message_dict() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     assert!(
         result["hookSpecificOutput"]["additionalContext"]
@@ -368,8 +365,7 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let hook = UserPromptSubmitHook;
     let result = hook
@@ -413,7 +409,7 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     assert!(
         warning["warnings"][0]
@@ -459,8 +455,7 @@ fn workflow_active_semaphore_skips_dev_detection() {
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     // Create workflow-active semaphore with current PID.
     let dirs = ProjectDirs::new(dir.path());
@@ -481,7 +476,7 @@ fn workflow_active_semaphore_skips_dev_detection() {
         })
         .unwrap();
 
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     // When workflow is active, /dev detection should be suppressed.
     let ctx = result["hookSpecificOutput"]["additionalContext"]
@@ -500,8 +495,7 @@ fn workflow_active_via_session_depth_skips_dev_detection() {
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
     let dir = tempfile::tempdir().unwrap();
-    let original = std::env::current_dir().unwrap();
-    std::env::set_current_dir(dir.path()).unwrap();
+    let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
     let previous = std::env::var_os("AMPLIHACK_SESSION_DEPTH");
     unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", "1") };
@@ -519,7 +513,7 @@ fn workflow_active_via_session_depth_skips_dev_detection() {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_SESSION_DEPTH") },
     }
-    let _ = std::env::set_current_dir(&original);
+    drop(cwd);
 
     let ctx = result["hookSpecificOutput"]["additionalContext"]
         .as_str()

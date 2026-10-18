@@ -26,6 +26,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
+fs2 = "0.4"
 amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
@@ -45,6 +46,8 @@ clap = { workspace = true }
 clap_complete = "4"
 dialoguer = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Issue #1578: `profile usage` resolves reset times printed with an IANA zone.
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 flate2 = "1"
 libc = { workspace = true }
 semver = "1"
@@ -80,6 +83,9 @@ uuid = { version = "1", features = ["v4"] }
 # URI as a terminal QR (default-features off to avoid the image/svg stack).
 amplihack-signal = { path = "../amplihack-signal", features = ["signal"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
+
+[target.'cfg(unix)'.dependencies]
+errno = "0.3"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

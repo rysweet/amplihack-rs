@@ -38,7 +38,7 @@ tags: ["development", "feature", "bugfix", "refactoring", "standard", "full-work
 
 recursion:
   max_depth: 6
-  max_total_steps: 80
+  max_total_steps: 120
 
 context:
   # Description of the task

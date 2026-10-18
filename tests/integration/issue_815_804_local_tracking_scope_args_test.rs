@@ -111,6 +111,14 @@ fn arg_value(log: &str, flag: &str) -> String {
         .to_string()
 }
 
+/// A recipe run exports ISSUE_NUMBER for its own issue; the helpers prefer it
+/// over RECIPE_VAR_issue_number, so an inherited value would hide the input
+/// each test sets.
+fn clear_inherited_issue_env(cmd: &mut Command) {
+    cmd.env_remove("ISSUE_NUMBER")
+        .env_remove("RECIPE_VAR_issue_number");
+}
+
 fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &str)]) {
     let old_path = std::env::var("PATH").unwrap_or_default();
     let mut cmd = Command::new("bash");
@@ -118,6 +126,7 @@ fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &s
         .current_dir(repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("WORKFLOW_PR_SCOPE_HELPER", stub);
+    clear_inherited_issue_env(&mut cmd);
     for (k, v) in issue_env {
         cmd.env(k, v);
     }
@@ -134,6 +143,7 @@ fn run_final_status(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str
         .env("REMOTE_HOST_TYPE", "github")
         .env("PR_URL", "https://github.com/owner/repo/pull/7")
         .env("TASK_DESCRIPTION", "test task");
+    clear_inherited_issue_env(&mut cmd);
     for (k, v) in issue_env {
         cmd.env(k, v);
     }

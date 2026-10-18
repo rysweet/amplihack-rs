@@ -138,8 +138,8 @@ Two parity scenarios verify SIGINT exit code behavior. Both use a stub
 Run the native integration tests to verify behavior:
 
 ```sh
-cargo test -p amplihack --test cli_launch --locked
-cargo test -p amplihack --test no_python_probe --locked
+cargo test -p amplihack --test integration cli_launch:: --locked
+cargo test -p amplihack --test integration no_python_probe:: --locked
 ```
 
 Expected result: the Rust launcher preserves the documented SIGINT behavior and

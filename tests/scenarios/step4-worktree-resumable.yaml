@@ -38,5 +38,5 @@ scenarios:
     description: No steps accidentally added or removed
     steps:
       - type: command
-        command: cargo test --test default_workflow_decomposition -- composed_step_inventory_matches_expected_in_order --quiet 2>&1 | grep -q "ok" && echo "PASS" || echo "FAIL"
+        command: cargo test -p amplihack --test integration -- default_workflow_decomposition::composed_step_inventory_matches_expected_in_order --quiet 2>&1 | grep -q "ok" && echo "PASS" || echo "FAIL"
         expected_output: "PASS"

@@ -1,6 +1,6 @@
 //! Settings.json configuration, hook contract validation, and framework verification.
 
-use super::hooks::{ensure_array, ensure_object, update_hook_paths};
+use super::hooks::{ensure_array, ensure_object, update_hook_paths, wrapper_matches};
 use super::paths::xpia_hooks_dir;
 use super::types::*;
 use anyhow::{Context, Result, bail};
@@ -105,6 +105,33 @@ pub(super) fn ensure_settings_json(
     };
 
     Ok((true, registered_events))
+}
+
+/// Issue #1526: the amplihack hook registrations this build would add that
+/// `settings` lacks, as `Event (subcommand)`. Empty when `settings` holds no
+/// amplihack hook at all: that file is unconfigured rather than out of date,
+/// and the launch bootstrap registers hooks in it.
+pub(super) fn missing_hook_registrations(settings: &Value) -> Vec<String> {
+    let registered = |spec: &HookSpec| {
+        settings
+            .get("hooks")
+            .and_then(|hooks| hooks.get(spec.event))
+            .and_then(Value::as_array)
+            .is_some_and(|wrappers| {
+                wrappers
+                    .iter()
+                    .any(|wrapper| wrapper_matches(wrapper, spec, "amplihack"))
+            })
+    };
+    if !AMPLIHACK_HOOK_SPECS.iter().any(registered) {
+        return Vec::new();
+    }
+    let mut missing = BTreeSet::new();
+    for spec in AMPLIHACK_HOOK_SPECS.iter().filter(|spec| !registered(spec)) {
+        let HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
+        missing.insert(format!("{} ({subcmd})", spec.event));
+    }
+    missing.into_iter().collect()
 }
 
 pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {

@@ -1,5 +1,6 @@
 //! Command dispatch for all CLI subcommands.
 
+pub mod agent_binary;
 pub mod append;
 pub mod auto_mode;
 pub mod builder;
@@ -22,6 +23,7 @@ pub mod node;
 pub mod orch;
 pub mod plugin;
 pub mod pr;
+pub mod profile;
 pub mod query_code;
 pub mod recipe;
 pub mod reflect;
@@ -82,6 +84,22 @@ fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) ->
     Ok(())
 }
 
+/// Issue #1569: runs a nested `-p` step under the usage-limit rerun
+/// supervisor when auto-switch is on. `true` when the step has already run;
+/// a non-zero exit code ends the process with that code.
+fn run_supervised(
+    profile: Option<&str>,
+    docker: bool,
+    auto: bool,
+    claude_args: &[String],
+) -> Result<bool> {
+    match profile::maybe_supervise(profile, docker, auto, claude_args)? {
+        Some(0) => Ok(true),
+        Some(code) => std::process::exit(code),
+        None => Ok(false),
+    }
+}
+
 /// Dispatch a parsed CLI command to the appropriate handler.
 pub fn dispatch(command: Commands) -> Result<()> {
     match command {
@@ -93,7 +111,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
         } => crate::rust_toolchain::with_bootstrap_permitted(|| {
             install::run_install(local, interactive, force_refresh)
         }),
+        Commands::Internal { command } => crate::runner_validation::run(command),
         Commands::Uninstall => install::run_uninstall(),
+        Commands::Profile(cmd) => profile::run_profile(cmd),
         Commands::Launch {
             resume,
             continue_session,
@@ -107,12 +127,17 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            profile,
             claude_args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+                return Ok(());
+            }
+            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -123,9 +148,10 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     claude_args,
                     checkout_repo,
                     working_dir,
+                    None,
                 );
             }
-            launch::run_launch(
+            launch::run_launch_profiled(
                 "claude",
                 "launch",
                 docker,
@@ -142,6 +168,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // user's instruction.
                 OverrideOrigin::User,
                 Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+                claude_config_dir,
             )
         }
         Commands::Claude {
@@ -153,12 +180,18 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            profile,
+            prompt_file,
             claude_args,
         } => {
             if let Some(instruction) = append {
                 reject_gateway_append()?;
                 return append::run_append(&instruction);
             }
+            if run_supervised(profile.as_deref(), docker, auto, &claude_args)? {
+                return Ok(());
+            }
+            let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -169,10 +202,11 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     claude_args,
                     checkout_repo,
                     working_dir,
+                    prompt_file,
                 );
             }
             // Always inject --dangerously-skip-permissions to match Python launcher parity.
-            launch::run_launch(
+            launch::run_launch_profiled(
                 "claude",
                 "claude",
                 docker,
@@ -189,6 +223,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 // user's instruction.
                 OverrideOrigin::User,
                 Some(amplihack_utils::litellm_proxy::CliTarget::Claude),
+                claude_config_dir,
             )
         }
         Commands::Copilot {
@@ -200,6 +235,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -215,21 +251,23 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             // Issue #621: resolve subprocess-safe context once at dispatch
             // time, then propagate the resolved decision to all downstream
             // code (launch, docker launcher, env builder). Auto-detection
-            // signals: explicit --subprocess-safe flag, AMPLIHACK_AGENT_BINARY
-            // set non-empty, AMPLIHACK_NONINTERACTIVE=1, or any of stdio
-            // not being a TTY.
-            let env_agent_binary = std::env::var("AMPLIHACK_AGENT_BINARY").ok();
+            // signals: explicit --subprocess-safe flag,
+            // AMPLIHACK_NONINTERACTIVE=1, or any of stdio not being a TTY.
+            // Issue #1525: AMPLIHACK_AGENT_BINARY is not one of them; it
+            // names a CLI, not a non-interactive caller. See
+            // `resolve_subprocess_safe` and
+            // bins/amplihack/tests/issue_1525_agent_binary_is_not_subprocess_safe.rs.
             let env_amplihack_noninteractive =
                 std::env::var("AMPLIHACK_NONINTERACTIVE").as_deref() == Ok("1");
             let any_stream_non_tty = crate::util::any_stream_is_non_tty();
             let subprocess_safe_resolved = launch::resolve_subprocess_safe(
                 subprocess_safe,
-                env_agent_binary.as_deref(),
                 env_amplihack_noninteractive,
                 any_stream_non_tty,
             );
@@ -238,7 +276,6 @@ pub fn dispatch(command: Commands) -> Result<()> {
             tracing::debug!(
                 target: "amplihack_cli::commands::copilot",
                 explicit_subprocess_safe = subprocess_safe,
-                env_agent_binary = env_agent_binary.as_deref().unwrap_or(""),
                 env_amplihack_noninteractive = env_amplihack_noninteractive,
                 any_stream_non_tty = any_stream_non_tty,
                 subprocess_safe_resolved = subprocess_safe_resolved,
@@ -274,6 +311,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -289,6 +327,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             launch::run_launch(
@@ -318,6 +357,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             auto,
             max_turns,
             ui,
+            prompt_file,
             args,
         } => {
             if let Some(instruction) = append {
@@ -333,6 +373,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     args,
                     None,
                     None,
+                    prompt_file,
                 );
             }
             launch::run_launch(
@@ -394,6 +435,9 @@ pub fn dispatch(command: Commands) -> Result<()> {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
         }
+        Commands::AgentBinary { shell, working_dir } => {
+            agent_binary::run_agent_binary(shell, working_dir)
+        }
         Commands::Update { skip_install } => crate::update::run_update(skip_install),
         Commands::Fleet { args } => fleet::run_fleet(args),
         Commands::New {
@@ -438,6 +482,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                     max_turns,
                     ui,
                     args,
+                    None,
                     None,
                     None,
                 );
@@ -615,6 +660,8 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
         RecipeCommands::Run {
             recipe_path,
             context,
+            context_file,
+            context_from_file,
             dry_run,
             verbose,
             progress,
@@ -627,6 +674,10 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                     "--progress is no longer supported; recipe progress is streamed to stderr by default"
                 );
             }
+            // Issue #1570: file sources are merged under `-c` here, so
+            // `run_recipe` keeps taking `KEY=VALUE` pairs.
+            let context =
+                recipe::resolve_context_args(context_file.as_deref(), &context_from_file, context)?;
             recipe::run_recipe(
                 &recipe_path,
                 &context,

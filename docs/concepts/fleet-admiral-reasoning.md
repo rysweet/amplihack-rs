@@ -44,8 +44,8 @@ four sources:
 
 | Source | How it is collected |
 |--------|---------------------|
-| tmux terminal output | `azlin tmux capture-pane -p` (capped at `--capture-lines`, default 50) |
-| Transcript | Fetched via `azlin` SSH from the session's Claude transcript file |
+| tmux terminal output | `azlin tmux capture-pane -p -S -2000`, then the last 48 KiB, shown as `recent scrollback (bounded)` |
+| Transcript | Fetched via `azlin` SSH from the session's Claude transcript file; at most 200 messages, 4 KiB per message and 64 KiB in total |
 | Git context | `git branch --show-current` and `gh pr list` on the remote VM |
 | Agent status | Derived from terminal output patterns (see [confidence scoring](#confidence-scoring)) |
 
@@ -78,6 +78,12 @@ The response is parsed into a `SessionDecision` struct.  Malformed JSON causes
 a reasoner error (see [failure modes](#failure-modes-and-visibility)).
 
 ---
+
+The bounds are applied when the context is turned into a prompt, so cached
+captures are bounded too. They keep the reasoner's prompt small enough to stay
+fast, and the prompt travels on stdin so its size never meets the kernel's
+argument limit. The constants are listed in the
+[Large Payload Delivery Reference](../reference/large-payload-delivery.md#fleet-reasoner-bounds).
 
 ## The five actions
 
@@ -127,7 +133,7 @@ The reasoner backend is selected by `--backend` (CLI) or `NativeReasonerBackend:
 
 | Backend | How it is invoked | When it is selected by `auto` |
 |---------|-------------------|-------------------------------|
-| `claude` | `claude --dangerously-skip-permissions --print` with the prompt on stdin | `AMPLIHACK_FLEET_REASONER_BINARY_PATH` is set, or `claude` is on PATH |
+| `claude` | `claude --dangerously-skip-permissions -p` with the prompt on stdin | `AMPLIHACK_FLEET_REASONER_BINARY_PATH` is set, or `claude` is on PATH |
 | `none`   | Returns a synthetic `wait` decision for every session | No `claude` binary is found |
 
 The `none` backend is not a fallback in the degraded-service sense — it is an

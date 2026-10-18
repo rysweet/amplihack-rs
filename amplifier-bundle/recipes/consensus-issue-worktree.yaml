@@ -24,47 +24,40 @@ steps:
   - id: "step2-create-issue"
     type: "bash"
     command: |
-      # Create GitHub issue from consensus requirements
-      echo "Creating GitHub issue for: $TASK_DESCRIPTION"
-
-      # FIX (#311): Use env vars — safe against injection and word-splitting.
-      _TASK_DESC="$TASK_DESCRIPTION"
-      _REQS_EXPLICIT="$FINAL_REQUIREMENTS_EXPLICIT_REQUIREMENTS"
-      _REQS_SUCCESS="$FINAL_REQUIREMENTS_SUCCESS_CRITERIA"
-      _REQS_CONSTRAINTS="$FINAL_REQUIREMENTS_CONSTRAINTS"
-      _REQS_MECHANISM="$FINAL_REQUIREMENTS_CONSENSUS_MECHANISM_USED"
-      _REQS_AGENTS="$FINAL_REQUIREMENTS_AGENTS_INVOLVED"
-      _REQS_CONFIDENCE="$FINAL_REQUIREMENTS_CONFIDENCE_LEVEL"
-      _CRITICALITY="$CRITICALITY"
-      # NOTE: Unquoted heredoc — $VAR expansion runs with invoking user's privileges (no escalation).
-      ISSUE_BODY=$(cat <<ISSUE_EOF
-      ## Task Description
-      $_TASK_DESC
-
-      ## Requirements (Consensus-Validated)
-      $_REQS_EXPLICIT
-
-      ## Success Criteria
-      $_REQS_SUCCESS
-
-      ## Constraints
-      $_REQS_CONSTRAINTS
-
-      ## Consensus Process
-      - Mechanism Used: $_REQS_MECHANISM
-      - Agents Involved: $_REQS_AGENTS
-      - Confidence: $_REQS_CONFIDENCE
-
-      ---
-      Labels: consensus-validated, $_CRITICALITY
-      ISSUE_EOF
-      )
+      # Create GitHub issue from consensus requirements.
+      # Issue #1570: the task and requirement fields are read with
+      # write_context_value (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into private
+      # files, and the body reaches gh with --body-file, never through argv.
+      H=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_context_value.sh" ] && { H="$c/amplifier-bundle/tools"; break; }; done
+      [ -n "$H" ] || { echo "ERROR: amplifier-bundle/tools/recipe_context_value.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack)" >&2; exit 2; }
+      . "$H/recipe_context_value.sh" || exit 1
+      . "$H/workflow_body_file.sh" || exit 1
+      umask 077
+      V=$(mktemp -d) || exit 1
+      trap 'rm -rf -- "$V"' EXIT
+      write_context_value task_description "$V/task" || { echo "ERROR: task_description unavailable" >&2; exit 1; }
+      for f in explicit_requirements success_criteria constraints consensus_mechanism_used agents_involved confidence_level; do
+        write_context_value final_requirements.$f "$V/$f" || { echo "WARN: final_requirements.$f is not available; leaving it empty" >&2; : > "$V/$f"; }
+      done
+      _CRITICALITY="${CRITICALITY:-}"
+      echo "Creating GitHub issue for: $(tr '\n\r' ' ' < "$V/task" | cut -c1-200)"
+      sec() { printf '%s\n' "$1"; cat -- "$2"; printf '\n\n'; }
+      {
+        sec '## Task Description' "$V/task"
+        sec '## Requirements (Consensus-Validated)' "$V/explicit_requirements"
+        sec '## Success Criteria' "$V/success_criteria"
+        sec '## Constraints' "$V/constraints"
+        printf '## Consensus Process\n- Mechanism Used: '; cat -- "$V/consensus_mechanism_used"
+        printf '\n- Agents Involved: '; cat -- "$V/agents_involved"
+        printf '\n- Confidence: '; cat -- "$V/confidence_level"
+        printf '\n\n---\nLabels: consensus-validated, %s\n' "$_CRITICALITY"
+      } | write_body_file "$V/body" "the consensus-issue-worktree step2 log" || exit 1
 
       # Create issue (truncate title to 200 chars)
-      ISSUE_TITLE=$(printf '%s' "$_TASK_DESC" | tr '\n\r' ' ' | cut -c1-200)
+      ISSUE_TITLE=$(tr '\n\r' ' ' < "$V/task" | cut -c1-200)
       gh issue create \
         --title "$ISSUE_TITLE" \
-        --body "$ISSUE_BODY" \
+        --body-file "$V/body" \
         --label "consensus,$_CRITICALITY" 2>/dev/null || echo "Issue creation skipped (no gh CLI or not in repo)"
 
       echo '{"issue_created": true, "step": "step2-create-issue"}'

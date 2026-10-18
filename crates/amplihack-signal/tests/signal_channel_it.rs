@@ -125,6 +125,32 @@ async fn settle() {
     tokio::time::sleep(Duration::from_millis(200)).await;
 }
 
+/// Wait, up to `HANG_GUARD`, until the fake has recorded a post to `group`
+/// whose body contains `needle`. A fixed `settle()` is enough for assertions
+/// that something did NOT happen, but a positive assertion after it fails
+/// whenever the actor needs longer than 200 ms, as it can on a loaded host
+/// running the whole workspace suite.
+async fn wait_for_post(fake: &FakeSignalEndpoint, group: &str, needle: &str) {
+    let found = tokio::time::timeout(HANG_GUARD, async {
+        loop {
+            if fake
+                .sent()
+                .iter()
+                .any(|(g, b)| g == group && b.contains(needle))
+            {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    assert!(
+        found.is_ok(),
+        "no post to {group} containing {needle:?} within {HANG_GUARD:?}; sent={:?}",
+        fake.sent()
+    );
+}
+
 // =============================================================================
 // LISTEN: next_prompt / queue semantics
 // =============================================================================
@@ -183,8 +209,11 @@ async fn queue_evicts_oldest_at_capacity() {
     fake.enqueue_inbound(&operator_inbound("grp-cap==", "oldest"));
     fake.enqueue_inbound(&operator_inbound("grp-cap==", "middle"));
     fake.enqueue_inbound(&operator_inbound("grp-cap==", "newest"));
-    // Let the actor accept & enqueue all three before we start draining.
-    settle().await;
+    // Let the actor accept & enqueue all three before we start draining. It
+    // handles frames in order, so a trailing `status` whose reply reports the
+    // capped depth proves all three were accepted and the oldest evicted.
+    fake.enqueue_inbound(&operator_inbound("grp-cap==", "status"));
+    wait_for_post(&fake, "grp-cap==", "queue depth 2").await;
 
     assert_eq!(
         expect_ready(next_non_idle(&mut channel).await),
@@ -309,7 +338,7 @@ async fn status_command_posts_status_without_enqueuing_a_turn() {
     );
 
     fake.enqueue_inbound(&operator_inbound("grp-status==", "status"));
-    settle().await;
+    wait_for_post(&fake, "grp-status==", "status").await;
 
     // The status line was posted to the group ...
     assert!(
@@ -351,9 +380,17 @@ async fn stop_command_quits_group_and_closes_the_channel() {
         matches!(np, NextPrompt::Closed),
         "`stop` must drive the channel to NextPrompt::Closed, got {np:?}"
     );
-    settle().await;
+    // A positive assertion, so poll rather than trust a fixed `settle()`: the
+    // actor's quit request can take longer than 200 ms to reach the fake on a
+    // loaded host running the whole workspace suite.
+    let quit = tokio::time::timeout(HANG_GUARD, async {
+        while !fake.quit_groups().iter().any(|g| g == "grp-stop==") {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     assert!(
-        fake.quit_groups().iter().any(|g| g == "grp-stop=="),
+        quit.is_ok(),
         "`stop` must quit the operator-only group; quit_groups={:?}",
         fake.quit_groups()
     );

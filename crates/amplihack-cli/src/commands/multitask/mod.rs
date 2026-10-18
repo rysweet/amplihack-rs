@@ -7,7 +7,11 @@
 
 mod cleanup;
 mod command_builder;
+#[cfg(test)]
+mod command_builder_tests;
 mod default_branch;
+#[cfg(test)]
+mod issue_1570_launcher;
 mod launcher;
 #[cfg(test)]
 mod launcher_tests;
