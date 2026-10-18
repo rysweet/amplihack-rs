@@ -1639,7 +1639,9 @@ fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_chec
 
         // The step-02 working directory is no longer the review dir: the
         // same worktree handed in as the review dir is still refused, and
-        // the refusal names --review-dir and repo_path, not the launch dir.
+        // the refusal names --review-dir and the preflight repo it is derived
+        // from (not repo_path, which may differ when a PR number is given),
+        // and not the launch dir.
         let refused = Command::new("bash")
             .arg(tools_dir().join("autodrive_worktree_guard.sh"))
             .args([
@@ -1655,7 +1657,7 @@ fn loop_step_02_with_repo_path_set_to_the_pr_worktree_reviews_from_the_main_chec
         let said = text(&refused.stderr);
         assert!(
             said.contains("--review-dir")
-                && said.contains("repo_path")
+                && said.contains("preflight repo")
                 && !said.contains("launch auto-drive from"),
             "{recipe}: the refusal points at the setting that matters: {said}"
         );
