@@ -463,13 +463,10 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           sparse-checkout: .github/scripts
+      # Groups every sccache-v1 entry on main by prefix (see ci.yml), so it
+      # also covers CI's entries; keeping the newest 2 of each is the same rule.
       - name: Delete older sccache entries (keep newest 2 per target)
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
-        run: >
-          bash .github/scripts/prune-sccache-caches.sh refs/heads/main 2
-          sccache-v1-Linux-release-x86_64-unknown-linux-gnu-
-          sccache-v1-Linux-release-aarch64-unknown-linux-gnu-
-          sccache-v1-macOS-release-x86_64-apple-darwin-
-          sccache-v1-macOS-release-aarch64-apple-darwin-
+        run: bash .github/scripts/prune-sccache-caches.sh refs/heads/main 2

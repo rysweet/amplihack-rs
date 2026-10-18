@@ -50,15 +50,22 @@ case "$cmd" in
     prefix=$2 attempt=$3 max=$4
     n=$(count_entries "$prefix")
     if [ "$n" = "0" ]; then
-      echo "No cache entry starts with ${prefix}; nothing to restore, this job builds cold."
-      echo "retry=false" >> "$GITHUB_OUTPUT"
-    elif [ "$attempt" -ge "$max" ]; then
-      echo "::warning title=sccache cache not restored::Restore of ${prefix}* failed ${max} times although entries exist (likely the Actions cache rate limit, HTTP 429). This job is compiling cold."
+      echo "No restorable cache entry (this ref or the default branch) starts with ${prefix}; nothing to restore, this job builds cold."
       echo "retry=false" >> "$GITHUB_OUTPUT"
     else
-      echo "Restore attempt ${attempt} of ${max} found nothing, but ${n:-unknown number of} entries exist for ${prefix}; likely rate-limited."
-      jitter
-      echo "retry=true" >> "$GITHUB_OUTPUT"
+      if [ -n "$n" ]; then
+        why="although restorable entries exist (${n})"
+      else
+        why="and listing the cache entries failed too, so it could not check whether any exist"
+      fi
+      if [ "$attempt" -ge "$max" ]; then
+        echo "::warning title=sccache cache not restored::Restore of ${prefix}* found nothing ${max} times, ${why} (likely the Actions cache rate limit, HTTP 429). This job is compiling cold."
+        echo "retry=false" >> "$GITHUB_OUTPUT"
+      else
+        echo "Restore attempt ${attempt} of ${max} found nothing, ${why}; likely rate-limited."
+        jitter
+        echo "retry=true" >> "$GITHUB_OUTPUT"
+      fi
     fi
     ;;
   save-check)
