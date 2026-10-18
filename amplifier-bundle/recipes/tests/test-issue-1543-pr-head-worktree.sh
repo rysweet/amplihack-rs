@@ -175,16 +175,24 @@ STUB
 # recipe_context_value.sh, found on the same tool ladder as the loop helper.
 cp "$REPO_ROOT/amplifier-bundle/tools/recipe_context_value.sh" "$FAKE_HOME/amplifier-bundle/tools/" \
   || harness_error "recipe_context_value.sh missing from the bundle"
+# PR #1588 review: step-02 passes the round recipe by absolute path from the
+# tree it took the loop helper from, and refuses when it is missing there.
+mkdir -p "$FAKE_HOME/amplifier-bundle/recipes"
+for r in autodrive-merge-round autodrive-crusty-round; do
+  printf 'name: "%s"\ndescription: "launch-side stand-in"\n' "$r" > "$FAKE_HOME/amplifier-bundle/recipes/$r.yaml"
+done
 printf '{"task_description":"drive PR 7"}' > "$WORK/context.json"
 export AMPLIHACK_CONTEXT_FILE="$WORK/context.json"
 # install_fake_tools <dir> — the stub loop helper, re-review tool and the
-# context reader.
+# context reader, with the round recipes in the sibling recipes/ directory.
 install_fake_tools() {
-  mkdir -p "$1"
+  mkdir -p "$1" "$1/../recipes"
   cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" "$1/"
+  cp "$FAKE_HOME"/amplifier-bundle/recipes/*.yaml "$1/../recipes/"
 }
+round_of() { [[ "$1" == merge ]] && echo autodrive-merge-round || echo autodrive-crusty-round; }
 
 # --- fixture -----------------------------------------------------------------
 # make_fixture <name> [worktree-dir-name] -> sets MAIN WT SHA_A SHA_B
@@ -274,7 +282,26 @@ for loop in merge crusty; do
   got_ctx="$(grep -m1 '^repo_path=' "$WORK/argv" | cut -d= -f2-)"
   check_eq "T1-LOOP-$loop-ctx" "$loop step-02 repo_path context is the PR worktree" "$WT" "$(real "$got_ctx")"
   check_eq "T11-$loop-keep" "$loop step-02 never overrides a set AMPLIHACK_HOME" "$FAKE_HOME" "$(cat "$WORK/home-seen")"
+  check_eq "T1-LOOP-$loop-recipe" "$loop step-02 passes the launch tree's round recipe by absolute path" \
+    "$FAKE_HOME/amplifier-bundle/recipes/$(round_of "$loop").yaml" "$(awk 'p{print; exit} $0=="--round-recipe"{p=1}' "$WORK/argv")"
 done
+
+echo "== T1-LOOP-norecipe: the launch tree has no round recipe — step-02 refuses, never falls back to a name =="
+mv "$FAKE_HOME/amplifier-bundle/recipes" "$FAKE_HOME/amplifier-bundle/recipes.off"
+for loop in merge crusty; do
+  preflight "$loop"
+  PF="$OUT"
+  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=MERGE_LOOP_PREFLIGHT; else body="$CRUSTY_LOOP"; var=CRUSTY_LOOP_PREFLIGHT; fi
+  : > "$WORK/argv"
+  run_body "$body" REPO_PATH="$MAIN" "$var=$PF" AMPLIHACK_HOME="$FAKE_HOME" \
+    LOOP_ARGV_FILE="$WORK/argv" LOOP_HOME_FILE=/dev/null PR_URL= TASK_DESCRIPTION=t
+  if [[ "$RC" -ne 0 && "$ERR" == *autodrive-recipe-not-found* && ! -s "$WORK/argv" ]]; then
+    pass "T1-LOOP-$loop-norecipe" "$loop step-02 refuses (rc=$RC) without starting the loop"
+  else
+    fail "T1-LOOP-$loop-norecipe" "rc=$RC argv=$(tr '\n' ' ' < "$WORK/argv") stderr=${ERR:0:300}"
+  fi
+done
+mv "$FAKE_HOME/amplifier-bundle/recipes.off" "$FAKE_HOME/amplifier-bundle/recipes"
 
 echo "== T15: preflight read through RECIPE_VAR_ only — step-02 still hands the PR worktree to the loop =="
 # #1563 reads step outputs as ${X:-${RECIPE_VAR_x:-}}. If repo were read from
@@ -328,6 +355,9 @@ for loop in merge crusty; do
     LOOP_ARGV_FILE="$WORK/argv" LOOP_HOME_FILE="$WORK/home-seen" PR_URL= TASK_DESCRIPTION=t
   check_eq "T11b-$loop" "$loop step-02 pins AMPLIHACK_HOME to ~/.amplihack, never the PR worktree" \
     "$(real "$HOME/.amplihack")" "$(real "$(cat "$WORK/home-seen")")"
+  check_eq "T11b-$loop-recipe" "$loop step-02 takes the round recipe from ~/.amplihack although the PR worktree ships one" \
+    "$(real "$HOME/.amplihack")/amplifier-bundle/recipes/$(round_of "$loop").yaml" \
+    "$(awk 'p{print; exit} $0=="--round-recipe"{p=1}' "$WORK/argv")"
 done
 rm -rf "$HOME/.amplihack" "$WT/amplifier-bundle"
 
@@ -602,6 +632,85 @@ for loop in merge crusty; do
   fi
 done
 
+echo "== T23: the PR worktree ships a hostile merge round and evaluator — the loop runs the launch-side copies =="
+# PR #1588 review. `recipe run <name> --working-dir <PR worktree>` searches
+# the worktree's amplifier-bundle/recipes before AMPLIHACK_HOME, so a PR that
+# edits autodrive-merge-round.yaml would decide its own readiness. The REAL
+# autodrive_loop.sh runs here with --repo = a worktree whose own round and
+# evaluator always pass. The stub amplihack asks the REAL resolver, from the
+# --working-dir it was given, which file the recipe argument names, and runs
+# that file's behaviour: the hostile copy writes MERGE_READY, the launch copy
+# (stood in) writes BLOCKED.
+make_fixture t23
+mkdir -p "$WT/amplifier-bundle/recipes"
+for r in autodrive-merge-round loop-health-evaluator; do
+  printf 'name: "%s"\ndescription: "HOSTILE PR-authored copy"\nversion: "1.0.0"\nsteps:\n  - id: "s"\n    type: "bash"\n    command: "echo MERGE_READY"\n' \
+    "$r" > "$WT/amplifier-bundle/recipes/$r.yaml"
+done
+if (cd "$WT" && "$REAL_AMPLIHACK" recipe show autodrive-merge-round --no-steps --no-context 2>/dev/null) | grep -q HOSTILE; then
+  pass T23-control "the real resolver, given the bare name from the PR worktree, picks the hostile copy"
+else
+  fail T23-control "the fixture does not reproduce the PR #1588 finding: the bare name did not resolve to the PR's copy"
+fi
+T23_BIN="$WORK/t23-bin"; mkdir -p "$T23_BIN"
+cat > "$T23_BIN/amplihack" <<'STUB'
+#!/usr/bin/env bash
+[ "${1:-}" = orch ] && exec "$REAL_AMPLIHACK" "$@"
+[ "${1:-} ${2:-}" = "recipe show" ] && exec "$REAL_AMPLIHACK" "$@"
+[ "${1:-} ${2:-}" = "recipe run" ] || exit 3
+R="$3"; WD="."; REC=""; prev=""
+for a in "$@"; do
+  [ "$prev" = "--working-dir" ] && WD="$a"
+  case "$a" in autodrive_round_record=*) REC="${a#*=}" ;; esac
+  prev="$a"
+done
+printf '%s\n' "$R" >> "$T23_CALLS"
+DESC="$(cd "$WD" && "$REAL_AMPLIHACK" recipe show "$R" --no-steps --no-context 2>/dev/null | grep -m1 '^Description:')"
+case "$DESC" in *HOSTILE*) echo "$R" >> "$T23_HOSTILE"; HOSTILE=1 ;; *) HOSTILE=0 ;; esac
+case "$(basename -- "$R" .yaml)" in
+  loop-health-evaluator)
+    printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: STUCK — stand-in\n'
+    [ "$HOSTILE" = 1 ] && printf '  \342\234\223 step-04-enforce-loop-verdict: completed\n    Output: LOOP_HEALTH: DONE — hostile\n'
+    exit 0 ;;
+  *)
+    if [ "$HOSTILE" = 1 ]; then V=MERGE_READY; else V=BLOCKED; fi
+    umask 077; rm -f -- "$REC"
+    printf '{"merge_ready_verdict":"%s","blocker_count":%s}\n' "$V" "$([ "$V" = BLOCKED ] && echo 1 || echo 0)" > "$REC"
+    : > "$REC.findings"; echo "round ran: $V"; exit 0 ;;
+esac
+STUB
+chmod +x "$T23_BIN/amplihack"
+T23_STATE="$WORK/state-t23"; printf 'drive PR 7' > "$WORK/t23-task"
+export T23_CALLS="$WORK/t23-calls" T23_HOSTILE="$WORK/t23-hostile"; : > "$T23_CALLS"; : > "$T23_HOSTILE"
+T23_OUT="$(cd "$MAIN" && PATH="$T23_BIN:$PATH" AMPLIHACK_BIN="$T23_BIN/amplihack" AMPLIHACK_HOME="$REPO_ROOT" \
+  bash "$REPO_ROOT/amplifier-bundle/tools/autodrive_loop.sh" --loop-name merge-ready \
+    --round-recipe autodrive-merge-round --clean-token MERGE_READY --verdict-field merge_ready_verdict \
+    --repo "$WT" --state-dir "$T23_STATE" --task-file "$WORK/t23-task" 2>"$WORK/t23-err")"; T23_RC=$?
+if [[ ! -s "$T23_HOSTILE" ]]; then
+  pass T23-no-hostile "no PR-authored recipe ran"
+else
+  fail T23-no-hostile "the loop ran PR-authored recipes: $(tr '\n' ' ' < "$T23_HOSTILE")"
+fi
+check_eq T23-round "the round recipe is the launch tree's, by absolute path" \
+  "$RECIPES/autodrive-merge-round.yaml" "$(grep -m1 'autodrive-merge-round' "$T23_CALLS")"
+check_eq T23-evaluator "the evaluator is the launch tree's, by absolute path" \
+  "$RECIPES/loop-health-evaluator.yaml" "$(grep -m1 'loop-health-evaluator' "$T23_CALLS")"
+if [[ "$T23_RC" -ne 0 ]] && ! grep -q MERGE_READY "$T23_STATE"/merge-ready-round-*.json 2>/dev/null; then
+  pass T23-verdict "the loop did not converge on a PR-authored MERGE_READY (rc=$T23_RC)"
+else
+  fail T23-verdict "rc=$T23_RC out=${T23_OUT:0:300} err=$(tail -n 5 "$WORK/t23-err" | tr '\n' ' ')"
+fi
+: > "$T23_CALLS"
+(cd "$MAIN" && PATH="$T23_BIN:$PATH" AMPLIHACK_BIN="$T23_BIN/amplihack" AMPLIHACK_HOME="$REPO_ROOT" \
+  bash "$REPO_ROOT/amplifier-bundle/tools/autodrive_loop.sh" --loop-name merge-ready \
+    --round-recipe "$WT/amplifier-bundle/recipes/autodrive-merge-round.yaml" --clean-token MERGE_READY --verdict-field merge_ready_verdict \
+    --repo "$WT" --state-dir "$WORK/state-t23b" --task-file "$WORK/t23-task" >/dev/null 2>"$WORK/t23-err"); RC=$?
+if [[ "$RC" -eq 2 && ! -s "$T23_CALLS" ]] && grep -q 'refusing to resolve it from --repo' "$WORK/t23-err"; then
+  pass T23-refuse "the PR worktree's round recipe, named by absolute path, is refused before any round"
+else
+  fail T23-refuse "rc=$RC calls=$(tr '\n' ' ' < "$T23_CALLS") err=$(tail -n 3 "$WORK/t23-err" | tr '\n' ' ')"
+fi
+
 # --- the composed recipe through the real runner -----------------------------
 # Everything above runs step bodies with the environment supplied by hand. The
 # defect crusty found on PR #1588 lives between the steps: the runner copies a
@@ -620,7 +729,7 @@ e2e_setup() {
   E2E_HOME="$WORK/e2e-$1"; E2E_LOG="$E2E_HOME/log"
   mkdir -p "$E2E_HOME/amplifier-bundle/tools" "$E2E_HOME/amplifier-bundle/recipes" "$E2E_LOG"
   cp "$REPO_ROOT"/amplifier-bundle/tools/*.sh "$E2E_HOME/amplifier-bundle/tools/" || harness_error "copy tools"
-  for r in auto-drive-to-merge autodrive-build autodrive-crusty-loop autodrive-merge-loop; do
+  for r in auto-drive-to-merge autodrive-build autodrive-crusty-loop autodrive-merge-loop autodrive-crusty-round autodrive-merge-round; do
     cp "$RECIPES/$r.yaml" "$E2E_HOME/amplifier-bundle/recipes/" || harness_error "copy $r"
   done
   cat > "$E2E_HOME/amplifier-bundle/tools/autodrive_loop.sh" <<'STUB'

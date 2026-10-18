@@ -8,7 +8,7 @@
 //!
 //! - Neither loop is terminated by a numeric iteration cap. Not a `max_rounds`,
 //!   not a "backstop" integer. Both loops delegate to the `loop-health-evaluator`
-//!   contract (issue #1337, PR #1347) and it is invoked by name, never copied.
+//!   contract (issue #1337, PR #1347), taken from the driver's own tree, never copied.
 //! - Every verdict is structured and read through the canonical
 //!   `extract-json | extract-field --default …` pipeline, and every fail-safe
 //!   default is the BLOCKING token: `CONCERNS`, `NOT_MERGE_READY`, `STUCK`.
@@ -204,8 +204,10 @@ fn composer_delegates_to_the_three_phases_in_order() {
 fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     assert!(
-        driver.contains("recipe run loop-health-evaluator"),
-        "the loop driver must invoke the shared loop-health-evaluator brick by name"
+        driver.contains("recipe run \"$HEALTH_RECIPE\"")
+            && driver
+                .contains("HEALTH_RECIPE=\"$(autodrive_launch_recipe loop-health-evaluator)\""),
+        "the loop driver must invoke the shared loop-health-evaluator brick from its own tree (#1543)"
     );
     for ctx in [
         "loop_name=",
@@ -751,7 +753,7 @@ fn exit_79_is_terminal_and_never_retried_into() {
         .find("if terminal_refusal \"$ROUND_RC\"")
         .expect("round refusal check");
     let evaluator_at = driver
-        .find("recipe run loop-health-evaluator")
+        .find("recipe run \"$HEALTH_RECIPE\"")
         .expect("evaluator call");
     assert!(
         refusal_at < evaluator_at,
@@ -2243,7 +2245,7 @@ fn crusty_records_are_trusted_only_through_the_loop_manifest() {
         .find(append)
         .expect("the driver must append to <loop>-records.tsv");
     let health = driver
-        .find("recipe run loop-health-evaluator")
+        .find("recipe run \"$HEALTH_RECIPE\"")
         .expect("the driver must run loop-health-evaluator");
     assert!(
         latest < manifest && manifest < health,
@@ -2801,7 +2803,7 @@ fn the_loop_refuses_before_round_one_when_its_terminator_is_missing() {
     // the loop for a missing dependency.
     let driver = read(&tool_path("autodrive_loop.sh"));
     let preflight = driver
-        .find("recipe show loop-health-evaluator")
+        .find("recipe show \"$HEALTH_RECIPE\"")
         .expect("the driver must resolve loop-health-evaluator up front");
     let first_round = driver
         .find("recipe run \"$ROUND_RECIPE\"")

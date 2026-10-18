@@ -171,7 +171,12 @@ steps:
       # pr_number was supplied). Tools stay on the launch side: pin
       # AMPLIHACK_HOME, when it is unset, to the tree this step took its loop
       # helper from (the launch checkout or ~/.copilot / ~/.amplihack), so the
-      # rounds' tool ladders never fall through to PR-authored tools.
+      # rounds' tool ladders never fall through to PR-authored tools. The
+      # round recipe is passed by absolute path from that same tree: by name,
+      # `recipe run --working-dir <PR worktree>` would take the PR branch's own
+      # amplifier-bundle/recipes first and let the PR judge itself (PR #1588).
+      ROUND_RECIPE="$(cd "$(dirname "$LOOP_HELPER")/../recipes" 2>/dev/null && pwd -P)/autodrive-merge-round.yaml"
+      [ -f "$ROUND_RECIPE" ] || { echo "ERROR: autodrive-recipe-not-found: ${ROUND_RECIPE} (the round recipe must come from the loop driver's install, never the PR worktree) [autodrive-merge-loop/step-02]" >&2; exit 1; }
       if [ -z "${AMPLIHACK_HOME:-}" ]; then
         AMPLIHACK_HOME="$(cd "$(dirname "$LOOP_HELPER")/../.." && pwd -P)" \
           || { echo "ERROR: cannot resolve the tool root of $LOOP_HELPER; refusing to run the loop" >&2; exit 1; }
@@ -180,7 +185,7 @@ steps:
       bash "$LOOP_HELPER" --task-file "$TASK_IN" \
         --loop-name "merge-ready" \
         --before-round "$REREVIEW" \
-        --round-recipe "autodrive-merge-round" \
+        --round-recipe "$ROUND_RECIPE" \
         --clean-token "MERGE_READY" \
         --verdict-field "merge_ready_verdict" \
         --repo "$REPO" \

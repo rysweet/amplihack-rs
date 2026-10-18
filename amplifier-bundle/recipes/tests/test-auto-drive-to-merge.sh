@@ -139,6 +139,12 @@ STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
 cat > "${STUB_BIN}/amplihack" <<'STUB'
 #!/usr/bin/env bash
 if [ "${1:-}" = "orch" ]; then exec "$REAL_AMPLIHACK" "$@"; fi
+# The loop passes recipes by absolute path from its own tree (#1543); the
+# scenarios below key on the recipe's name.
+if [ "${1:-}" = "recipe" ] && [ $# -ge 3 ]; then
+  printf '%s\n' "$3" >> "${STUB_RECIPE_PATHS:-/dev/null}"
+  set -- "$1" "$2" "$(basename -- "$3" .yaml)" "${@:4}"
+fi
 if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "show" ]; then
   echo "${3:-}" >> "${STUB_SHOW_CALLS:-/dev/null}"
   case "${3:-}" in
@@ -3750,8 +3756,9 @@ fi
 # ---------------------------------------------------------------------------
 # 8. The loop-health-evaluator contract is used, not reimplemented.
 # ---------------------------------------------------------------------------
-if grep -qF 'recipe run loop-health-evaluator' "${LOOP}"; then
-  pass "LOOP-HEALTH-USED" "the loop driver invokes loop-health-evaluator by name"
+if grep -qF 'recipe run "$HEALTH_RECIPE"' "${LOOP}" \
+   && grep -qF 'HEALTH_RECIPE="$(autodrive_launch_recipe loop-health-evaluator)"' "${LOOP}"; then
+  pass "LOOP-HEALTH-USED" "the loop driver invokes the launch-side loop-health-evaluator"
 else
   fail "LOOP-HEALTH-USED" "the loop driver does not invoke loop-health-evaluator"
 fi
@@ -4379,6 +4386,12 @@ cp "${TOOLS}/recipe_context_value.sh" "${FAKE_TOOLS}/recipe_context_value.sh"
 # merge-loop step-02 refuses to start without the crusty re-review beside the
 # loop driver (PR #1520); this run never reaches it, so it is only a file.
 printf '%s\n' 'exit 0' > "${FAKE_TOOLS}/autodrive_crusty_rereview.sh"
+# PR #1588 review: step-02 takes the round recipe from the recipes/ directory
+# beside the loop helper, by absolute path, and refuses when it is missing.
+mkdir -p "${FAKE_HOME}/amplifier-bundle/recipes"
+for r in autodrive-crusty-round autodrive-merge-round; do
+  printf 'name: "%s"\n' "$r" > "${FAKE_HOME}/amplifier-bundle/recipes/$r.yaml"
+done
 
 # Every bare alias of a step output is removed from the environment, so the
 # only way a step can see its input is RECIPE_VAR_<output>.
@@ -4442,6 +4455,7 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${PR_REPO}" ] \
    && grep -qxF 'pr_number=42' "${CALLS}/loop-args" 2>/dev/null \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
    && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
   pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir, pr and repo through RECIPE_VAR_crusty_loop_preflight"
 else
@@ -4462,7 +4476,8 @@ run_body "$ML2" RECIPE_VAR_merge_loop_preflight="$PRE" RECIPE_VAR_task_descripti
 if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "${SD}" ] \
    && [ -n "$(arg_after --task-file "${CALLS}/loop-args")" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${PR_REPO}" ] \
-   && grep -qxF "autodrive_qa_evidence=${SD}/qa-evidence.json" "${CALLS}/loop-args" 2>/dev/null; then
+   && grep -qxF "autodrive_qa_evidence=${SD}/qa-evidence.json" "${CALLS}/loop-args" 2>/dev/null \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
   pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir and repo through RECIPE_VAR_merge_loop_preflight"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"

@@ -278,13 +278,30 @@ never fall through to an `amplifier-bundle/tools/` that the PR branch adds,
 and tools on the PR branch cannot produce the QA evidence the gate reads. An
 `AMPLIHACK_HOME` that is already set is never changed.
 
-**Known residual risk.** Recipes are discovered relative to the loop's
-working directory, which is now the PR worktree. If the PR branch carries its
-own `amplifier-bundle/recipes/` (in practice, only when the run drives
-amplihack-rs itself), the round recipes may come from the PR, not the launch
-tree. The merge gate is not affected: it stays on the launch side and binds
-to `headRefOid`. The round steps run the PR's own code by design (tests,
-hooks, `qa-team`), so drive only PRs whose code you are prepared to run.
+**Recipes come from the launch side too.** `amplihack recipe run <name>
+--working-dir <dir>` searches `<dir>`'s own `amplifier-bundle/recipes/` before
+`AMPLIHACK_HOME`. With the PR worktree as the working directory, a PR that
+ships `amplifier-bundle/recipes/` (any PR to amplihack-rs) would otherwise run
+its own `autodrive-merge-round.yaml`, which sets `merge_ready_verdict`, and its
+own `loop-health-evaluator.yaml`, which decides when the loop stops. The PR
+would judge its own readiness (PR #1588 review). So:
+
+- Step-02 of each loop passes the round recipe as an absolute path,
+  `$(dirname "$LOOP_HELPER")/../recipes/autodrive-<x>-round.yaml`, the tree it
+  took `autodrive_loop.sh` from. If that file is missing, the step refuses with
+  `autodrive-recipe-not-found` before the loop starts.
+- `autodrive_loop.sh` resolves both the round recipe and `loop-health-evaluator`
+  with `autodrive_launch_recipe` (in `autodrive_state.sh`). A bare name, as the
+  crusty re-review passes, resolves only to the `recipes/` directory beside the
+  driver. An absolute path is accepted only when it is that same file. Anything
+  else exits 2 before a round runs.
+- The runner searches a recipe's own directory first (`build_search_dirs`), so
+  sub-recipes reached from a round also come from the launch side.
+
+`test-issue-1543-pr-head-worktree.sh` T23 runs the real driver against a PR
+worktree whose round and evaluator always pass, and checks that neither runs.
+The round steps still run the PR's own code by design (tests, hooks,
+`qa-team`), so drive only PRs whose code you are prepared to run.
 
 ## Why there is no iteration cap
 
@@ -320,13 +337,13 @@ sneak in through the operator that was not on the list.
 
 ### The terminator is resolved before round 1
 
-Because the terminator is a separate recipe invoked by name, a bundle where
+Because the terminator is a separate recipe, a bundle where
 `loop-health-evaluator` does not resolve would otherwise cost a **full round**
 — a crusty review and a builder fix pass, with commits pushed — before the
 loop stopped with "returned STUCK (or an unreadable verdict)", which blames the
-loop for a missing dependency. `autodrive_loop.sh` therefore runs
-`amplihack recipe show loop-health-evaluator` before the first round and, if it
-does not resolve, refuses with `loop_result: MISSING_DEPENDENCY` and a message
+loop for a missing dependency. `autodrive_loop.sh` therefore resolves
+`loop-health-evaluator.yaml` beside itself and runs `amplihack recipe show` on
+that path before the first round and, if it does not resolve, refuses with `loop_result: MISSING_DEPENDENCY` and a message
 naming the recipe. Zero rounds are spent.
 
 Host safety is enforced structurally one layer down and is not this workflow's
@@ -1640,7 +1657,8 @@ tested instead, and the `amplihack binary:` line shows which one ran.
 
 ## Dependency on PR #1347
 
-Both loops invoke the `loop-health-evaluator` recipe **by name**. That brick,
+Both loops invoke the shared `loop-health-evaluator` recipe, taken from the
+`recipes/` directory beside `autodrive_loop.sh`. That brick,
 the `amplihack orch helper normalise-loop-verdict` helper, and
 [its reference](loop-health-evaluator.md) ship with PR #1347 (issue #1337).
 They are deliberately **not** reimplemented or copied here — one loop-health
