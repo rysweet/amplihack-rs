@@ -230,13 +230,20 @@ pub struct ArtifactBaseline {
 }
 
 /// Revisions tried, in order, when no baseline is configured.
+///
+/// The base branch comes first. A feature branch's `@{upstream}` is usually
+/// its own remote copy, so after the branch merges `origin/main` the merge base
+/// with `@{upstream}` is the pre-merge head and every path the merge brought in
+/// reads as introduced by the change (issue #1536). `@{upstream}` is only the
+/// last resort, for repositories with no remote default branch and no local
+/// `main`/`master`.
 pub const BASELINE_CANDIDATES: &[&str] = &[
-    "@{upstream}",
     "origin/HEAD",
     "origin/main",
     "origin/master",
     "main",
     "master",
+    "@{upstream}",
 ];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -253,6 +260,15 @@ pub struct ArtifactViolation {
     pub rule_id: String,
     pub remediation: String,
     pub provenance: ArtifactProvenance,
+    /// The narrowest repo-relative path that is wholly generated: the path
+    /// itself or a `/`-bounded prefix of it, never a parent of the matched
+    /// segment. Exception: `plugin-bundle` uses the bundle's parent directory
+    /// (pre-existing behaviour; narrowing it is a follow-up). A directory root
+    /// never holds an allowlisted or possibly-source indexed path; when it
+    /// would, the root is the path itself. `None` means the path may be
+    /// source, so callers must never suggest removing or untracking it
+    /// (issue #1536).
+    pub removal_root: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -460,14 +476,69 @@ pub fn scan_artifacts(
     config: &ArtifactGuardConfig,
 ) -> Result<ArtifactGuardReport, ArtifactGuardError> {
     let repo = resolve_repo_root(&config.repo)?;
+    // Read fail-loud, in every mode (issue #1528): the gitlink rule and the
+    // removal roots below both depend on it, so a failed or untrustworthy
+    // `git worktree list` is an error, never an empty or unknown list.
     let registered_worktrees = gitlink::registered_worktrees(&repo)?;
     let allowlist = load_effective_allowlist(config, &repo)?;
+    // `staged` mode only needs the indexed manifests for the generic-segment
+    // exemption, not the whole index; the full index and the worktree list
+    // are read only by the worktree scans, or later if a directory removal
+    // root has to be checked. A pre-commit run with nothing to remove costs
+    // what it did before issue #1536 plus one pathspec-limited `ls-files`.
+    let mut index = if config.mode.scans_worktree() {
+        Some(read_index(&repo)?)
+    } else {
+        None
+    };
+    let manifests = match index.as_deref() {
+        Some(index) => manifest_dirs(index),
+        None => manifest_dirs(&read_manifest_paths(&repo)?),
+    };
+    // Ignored files inside legitimately-registered sibling task worktrees
+    // (concurrent recipe runs nested under `<repo>/worktrees/`) are NOT leaked
+    // pollution: they are never flagged (issue #857), and no registered
+    // worktree is ever swept into a removal root (below). Only the worktree
+    // scans can list such files, so `staged` mode skips nothing.
+    let skip_prefixes = if config.mode.scans_worktree() {
+        registered_nested_worktree_prefixes(&registered_worktrees)
+    } else {
+        Vec::new()
+    };
+    // Paths outside the index that the allowlist marks as source.
+    let mut allowed_outside_index = BTreeSet::new();
     let mut violations = Vec::new();
     let mut seen = BTreeSet::new();
     let mut baseline = None;
+    let mut add =
+        |paths: &[String], source: ArtifactSource, introduced: Option<&BTreeSet<String>>| {
+            for path in paths {
+                // The #857 exemption covers the ignored-present scan only: a
+                // registered worktree under a `worktrees/` that is NOT ignored
+                // is an untracked directory a broad add would sweep in, and it
+                // stays a violation (issue #1528, R6).
+                if source == ArtifactSource::IgnoredPresent
+                    && is_inside_registered_nested_worktree(path, &skip_prefixes)
+                {
+                    continue;
+                }
+                if source != ArtifactSource::Tracked && allowlist.is_allowed(path) {
+                    allowed_outside_index.insert(path.clone());
+                }
+                add_violation_if_prohibited(
+                    path,
+                    source,
+                    &allowlist,
+                    &manifests,
+                    introduced,
+                    &mut violations,
+                    &mut seen,
+                );
+            }
+        };
 
     if config.mode.scans_staged() {
-        scan_git_paths(
+        let staged = git_paths(
             &repo,
             &[
                 "diff",
@@ -476,48 +547,71 @@ pub fn scan_artifacts(
                 "--name-only",
                 "-z",
             ],
-            ArtifactSource::Staged,
-            &allowlist,
-            None,
-            &mut violations,
-            &mut seen,
         )?;
+        add(&staged, ArtifactSource::Staged, None);
     }
 
-    if config.mode.scans_worktree() {
+    if let Some(index) = index.as_deref() {
         // Only the *tracked* index can hold paths the change under review never
         // touched, so that is the one scan that needs a provenance baseline
         // (issue #1422). Staged, untracked, and ignored-present paths are all
         // live worktree state the change is carrying right now.
         baseline = resolve_baseline(&repo, config.baseline.as_deref())?;
         let introduced = introduced_paths(&repo, baseline.as_ref())?;
-        scan_git_paths(
-            &repo,
-            &["ls-files", "-z"],
-            ArtifactSource::Tracked,
-            &allowlist,
-            Some(&introduced),
-            &mut violations,
-            &mut seen,
-        )?;
-        scan_git_paths(
-            &repo,
-            &["ls-files", "--others", "--exclude-standard", "-z"],
-            ArtifactSource::Untracked,
-            &allowlist,
-            None,
-            &mut violations,
-            &mut seen,
-        )?;
+        add(index, ArtifactSource::Tracked, Some(&introduced));
+        let untracked = git_paths(&repo, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+        add(&untracked, ArtifactSource::Untracked, None);
         if config.mode.scans_ignored_present() {
-            scan_ignored_present(
+            let ignored = git_paths(
                 &repo,
-                &registered_worktrees,
-                &allowlist,
-                &mut violations,
-                &mut seen,
+                &[
+                    "ls-files",
+                    "--others",
+                    "--ignored",
+                    "--exclude-standard",
+                    "-z",
+                ],
             )?;
+            add(&ignored, ArtifactSource::IgnoredPresent, None);
         }
+    }
+
+    // A directory removal root is the one remedy that can touch paths the scan
+    // did not report, so everything below runs only when one exists.
+    let dir_roots: BTreeSet<String> = violations
+        .iter()
+        .filter_map(|violation| {
+            violation
+                .removal_root
+                .clone()
+                .filter(|root| *root != violation.path)
+        })
+        .collect();
+    if !dir_roots.is_empty() {
+        let index = match index.take() {
+            Some(index) => index,
+            None => read_index(&repo)?,
+        };
+        let mut protected = protected_index_paths(&index, &allowlist, &manifests);
+        protected.append(&mut allowed_outside_index);
+        // Every registered worktree inside the top level, not only those under
+        // `worktrees/` (issue #1528): no removal root may cover one.
+        protected.extend(registered_worktrees.iter().cloned());
+        // A mode may skip untracked or ignored files (`staged`, and the
+        // gates per issue #928), yet a directory root still covers them on
+        // disk. List every file outside the index under each candidate
+        // root, ignored included, so an allowlisted one is protected
+        // whatever the mode.
+        let mut args = vec!["--literal-pathspecs", "ls-files", "--others", "-z", "--"];
+        args.extend(dir_roots.iter().map(String::as_str));
+        for path in git_paths(&repo, &args)? {
+            // A nested repository is listed as one directory entry and
+            // never looked into, so whatever it holds is protected whole.
+            if allowlist.is_allowed(&path) || repo.join(&path).is_dir() {
+                protected.insert(path);
+            }
+        }
+        narrow_roots_holding_protected_paths(&mut violations, &protected);
     }
 
     add_run_worktree_gitlinks(&repo, &registered_worktrees, &mut violations)?;
@@ -546,7 +640,9 @@ pub fn scan_artifacts(
 /// #1528). Each one claims its path and everything under it from the path
 /// rules, so it is reported once, with the one remedy that works on a
 /// gitlink. It bypasses the allowlist and is always introduced: the whole
-/// index is read, so a gitlink already committed is caught too.
+/// index is read, so a gitlink already committed is caught too. It has no
+/// removal root: nothing under a gitlink is ever deleted, only the index
+/// entry dropped.
 fn add_run_worktree_gitlinks(
     repo: &Path,
     registered_worktrees: &[String],
@@ -586,6 +682,7 @@ fn add_run_worktree_gitlinks(
             rule_id: RUN_WORKTREE_GITLINK.to_string(),
             remediation: remediation.to_string(),
             provenance: ArtifactProvenance::Introduced,
+            removal_root: None,
         });
     }
     Ok(())
@@ -631,7 +728,7 @@ fn resolve_baseline(
 }
 
 fn head_exists(repo: &Path) -> bool {
-    amplihack_git::command()
+    guard_git()
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "--verify", "--quiet", "HEAD"])
@@ -640,10 +737,12 @@ fn head_exists(repo: &Path) -> bool {
 }
 
 fn merge_base(repo: &Path, rev: &str) -> Option<String> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
-        .args(["merge-base", "HEAD", rev])
+        // `--end-of-options`: a `--baseline` value starting with `-` must be
+        // read as a revision, never as an option.
+        .args(["merge-base", "--end-of-options", "HEAD", rev])
         .output()
         .ok()?;
     if !output.status.success() {
@@ -681,10 +780,10 @@ fn introduced_paths(
     Ok(paths)
 }
 
-/// Run `git -C <repo> <args>` and return its stdout; a spawn failure or a
-/// non-zero exit is an [`ArtifactGuardError::Git`].
+/// Run `git -C <repo> <args>` (through [`guard_git`]) and return its stdout;
+/// a spawn failure or a non-zero exit is an [`ArtifactGuardError::Git`].
 fn git_stdout(repo: &Path, args: &[&str]) -> Result<Vec<u8>, ArtifactGuardError> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(args)
@@ -709,8 +808,7 @@ fn collect_diff_paths(
     args: &[&str],
     paths: &mut BTreeSet<String>,
 ) -> Result<(), ArtifactGuardError> {
-    let stdout = git_stdout(repo, args)?;
-    for raw in stdout.split(|byte| *byte == 0) {
+    for raw in git_stdout(repo, args)?.split(|byte| *byte == 0) {
         if raw.is_empty() {
             continue;
         }
@@ -722,7 +820,7 @@ fn collect_diff_paths(
 }
 
 fn resolve_repo_root(repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
-    let output = amplihack_git::command()
+    let output = guard_git()
         .args(["-C"])
         .arg(repo)
         .args(["rev-parse", "--show-toplevel"])
@@ -737,6 +835,155 @@ fn resolve_repo_root(repo: &Path) -> Result<PathBuf, ArtifactGuardError> {
     let root = PathBuf::from(stdout.trim());
     root.canonicalize()
         .map_err(|error| ArtifactGuardError::NotGitWorktree(error.to_string()))
+}
+
+/// Manifests whose presence directly inside a generic output-named directory
+/// marks that directory as a project rather than build output (issue #1536).
+const SOURCE_MANIFESTS: &[&str] = &[
+    "package.json",
+    "Cargo.toml",
+    "tsconfig.json",
+    "pyproject.toml",
+    "go.mod",
+];
+
+/// Directory names that are common output locations but are also used to name
+/// real projects (`apps/coverage/`). See [`build_artifact_match`].
+pub const GENERIC_OUTPUT_SEGMENTS: &[&str] =
+    &["dist", "build", "coverage", "out", "logs", "outputs"];
+
+/// Coverage tool reports. Untracked or ignored, they always get an exact
+/// removal root; tracked or staged, only where [`is_project_coverage_report`]
+/// holds.
+const COVERAGE_REPORT_FILES: &[&str] = &[
+    "lcov.info",
+    "coverage-final.json",
+    "coverage-summary.json",
+    "clover.xml",
+];
+
+/// Every indexed path (`git ls-files -z`: tracked and staged). Read once per
+/// scan; it feeds the tracked scan, [`manifest_dirs`] and the protected set.
+fn read_index(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
+    git_paths(repo, &["ls-files", "-z"])
+}
+
+/// Indexed [`SOURCE_MANIFESTS`] below the repository root, listed with
+/// pathspecs so `staged` mode does not read the whole index. Default pathspec
+/// `*` matches across `/`, so `*/package.json` finds one at any depth; any
+/// overmatch is filtered by name in [`manifest_dirs`].
+fn read_manifest_paths(repo: &Path) -> Result<Vec<String>, ArtifactGuardError> {
+    let patterns: Vec<String> = SOURCE_MANIFESTS
+        .iter()
+        .map(|name| format!("*/{name}"))
+        .collect();
+    let mut args = vec!["ls-files", "-z", "--"];
+    args.extend(patterns.iter().map(String::as_str));
+    git_paths(repo, &args)
+}
+
+/// Environment variables that change how git reads a pathspec. Each one is
+/// removed from every git command the guard runs.
+///
+/// [`read_manifest_paths`] asks for `*/package.json` and relies on git's
+/// default pathspec rules, under which `*` matches across `/`. With
+/// `GIT_GLOB_PATHSPECS` set, `*` stops at `/`; with `GIT_LITERAL_PATHSPECS`
+/// set (Magit and Emacs VC do this, and a hook passes it on), `*` is a literal
+/// character. Either way no manifest is found, nothing is exempt, and
+/// `--mode staged` would flag `apps/coverage/tsconfig.json` again while
+/// `--mode pre-commit` passed it (issue #1536). The flag `--glob-pathspecs`
+/// cannot be used instead: git rejects it when `GIT_LITERAL_PATHSPECS` is also
+/// set. The directory-root listing passes `--literal-pathspecs` explicitly,
+/// which git would likewise reject alongside an inherited `GIT_GLOB_PATHSPECS`.
+const PATHSPEC_ENV: &[&str] = &[
+    "GIT_GLOB_PATHSPECS",
+    "GIT_NOGLOB_PATHSPECS",
+    "GIT_LITERAL_PATHSPECS",
+    "GIT_ICASE_PATHSPECS",
+];
+
+/// A git command scrubbed by [`amplihack_git::command`] and, in addition,
+/// cleared of [`PATHSPEC_ENV`], so the verdict never depends on how the
+/// caller's environment tells git to read pathspecs.
+fn guard_git() -> std::process::Command {
+    let mut command = amplihack_git::command();
+    for name in PATHSPEC_ENV {
+        command.env_remove(name);
+    }
+    command
+}
+
+/// The NUL-separated paths `git <args>` prints, slash-normalized, without a
+/// trailing `/`, empty entries dropped.
+///
+/// Fails closed: a git failure is an error, never an empty list, because an
+/// unreadable index must not silently change what the guard matches or which
+/// removal commands it prints.
+fn git_paths(repo: &Path, args: &[&str]) -> Result<Vec<String>, ArtifactGuardError> {
+    Ok(git_stdout(repo, args)?
+        .split(|byte| *byte == 0)
+        .map(|raw| normalize_slashes(String::from_utf8_lossy(raw).trim_end_matches('/')))
+        .filter(|path| !path.is_empty())
+        .collect())
+}
+
+/// Repo-relative directories that directly contain an indexed
+/// [`SOURCE_MANIFESTS`] file. An untracked manifest exempts nothing. The
+/// repository root is never included, so a root `package.json` never exempts a
+/// top-level `dist/`.
+fn manifest_dirs(index: &[String]) -> BTreeSet<String> {
+    index
+        .iter()
+        .filter_map(|path| path.rsplit_once('/'))
+        .filter(|(dir, name)| !dir.is_empty() && SOURCE_MANIFESTS.contains(name))
+        .map(|(dir, _)| dir.to_string())
+        .collect()
+}
+
+/// Indexed paths a removal command must never touch: allowlisted, matched by
+/// no rule, or possibly source (matched with no removal root).
+fn protected_index_paths(
+    index: &[String],
+    allowlist: &ArtifactAllowlist,
+    manifests: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    index
+        .iter()
+        .filter(|path| {
+            allowlist.is_allowed(path)
+                || rule_for_path(path, ArtifactSource::Tracked, manifests)
+                    .is_none_or(|(_, root)| root.is_none())
+        })
+        .cloned()
+        .collect()
+}
+
+/// Narrow a directory removal root to the violating path itself whenever a
+/// `protected` path lies under that directory. Protected paths never become
+/// violations, so without this an untracked `docs/build/scratch.log` would get
+/// `rm -rf -- 'docs/build'` and delete an allowlisted `docs/build/guide.md`,
+/// and a leaked `worktrees/stale/` would get `rm -rf -- 'worktrees'` and
+/// delete every registered sibling worktree (issue #1536).
+fn narrow_roots_holding_protected_paths(
+    violations: &mut [ArtifactViolation],
+    protected: &BTreeSet<String>,
+) {
+    for violation in violations {
+        let Some(root) = violation.removal_root.as_deref() else {
+            continue;
+        };
+        if root == violation.path {
+            continue;
+        }
+        let dir = format!("{root}/");
+        if protected
+            .range(dir.clone()..)
+            .next()
+            .is_some_and(|path| path.starts_with(&dir))
+        {
+            violation.removal_root = Some(violation.path.clone());
+        }
+    }
 }
 
 fn load_effective_allowlist(
@@ -776,78 +1023,13 @@ fn resolve_allowlist_path(path: &Path, repo: &Path) -> Result<PathBuf, ArtifactG
     Ok(canonical)
 }
 
-fn scan_git_paths(
-    repo: &Path,
-    args: &[&str],
-    source: ArtifactSource,
-    allowlist: &ArtifactAllowlist,
-    introduced: Option<&BTreeSet<String>>,
-    violations: &mut Vec<ArtifactViolation>,
-    seen: &mut BTreeSet<(ArtifactSource, String)>,
-) -> Result<(), ArtifactGuardError> {
-    let stdout = git_stdout(repo, args)?;
-    for raw in stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let path = String::from_utf8_lossy(raw);
-        add_violation_if_prohibited(&path, source, allowlist, introduced, violations, seen);
-    }
-    Ok(())
-}
-
-fn scan_ignored_present(
-    repo: &Path,
-    registered_worktrees: &[String],
-    allowlist: &ArtifactAllowlist,
-    violations: &mut Vec<ArtifactViolation>,
-    seen: &mut BTreeSet<(ArtifactSource, String)>,
-) -> Result<(), ArtifactGuardError> {
-    let stdout = git_stdout(
-        repo,
-        &[
-            "ls-files",
-            "--others",
-            "--ignored",
-            "--exclude-standard",
-            "-z",
-        ],
-    )?;
-
-    // Files inside legitimately-registered sibling task worktrees (concurrent
-    // recipe runs nested under `<repo>/worktrees/`) are NOT leaked pollution and
-    // must not be flagged as `nested-worktree` violations (issue #857). Genuine
-    // leaked directories under `worktrees/` (not registered git worktrees) are
-    // still flagged. `git ls-files --others --ignored` recurses into these
-    // gitignored nested worktrees, so we filter their paths out explicitly.
-    let registered_nested = registered_nested_worktree_prefixes(registered_worktrees);
-
-    for raw in stdout.split(|byte| *byte == 0) {
-        if raw.is_empty() {
-            continue;
-        }
-        let path = String::from_utf8_lossy(raw);
-        if is_inside_registered_nested_worktree(&path, &registered_nested) {
-            continue;
-        }
-        add_violation_if_prohibited(
-            &path,
-            ArtifactSource::IgnoredPresent,
-            allowlist,
-            None,
-            violations,
-            seen,
-        );
-    }
-    Ok(())
-}
-
 /// Repo-relative path prefixes (each ending in `/`) of git worktrees that are
 /// registered under `<repo>/worktrees/`, prunable ones included. These are
 /// legitimate concurrent task worktrees created by other recipe runs — not
 /// leaked scratch — so the artifact guard must never flag their contents
 /// (issue #857). Built on [`ArtifactGuardReport::registered_worktrees`], so
-/// one strict parser reads `git worktree list` (issue #1528).
+/// one strict parser reads `git worktree list` (issue #1528); a failure to
+/// read it ends the scan with an error instead of an unknown list.
 fn registered_nested_worktree_prefixes(registered_worktrees: &[String]) -> Vec<String> {
     registered_worktrees
         .iter()
@@ -872,6 +1054,7 @@ fn add_violation_if_prohibited(
     raw_path: &str,
     source: ArtifactSource,
     allowlist: &ArtifactAllowlist,
+    manifests: &BTreeSet<String>,
     introduced: Option<&BTreeSet<String>>,
     violations: &mut Vec<ArtifactViolation>,
     seen: &mut BTreeSet<(ArtifactSource, String)>,
@@ -880,9 +1063,18 @@ fn add_violation_if_prohibited(
     if path.is_empty() || allowlist.is_allowed(&path) {
         return;
     }
-    let Some(rule) = rule_for_path(&path, source) else {
+    let Some((rule, mut removal_root)) = rule_for_path(&path, source, manifests) else {
         return;
     };
+    // Checked in release builds too: a root that is not the path or a
+    // /-bounded prefix of it could name files the violation does not cover.
+    // Fail safe to manual review (no removal command) rather than panic.
+    if removal_root
+        .as_deref()
+        .is_some_and(|root| !is_removal_root_of(root, &path))
+    {
+        removal_root = None;
+    }
     if seen.insert((source, path.clone())) {
         let provenance = provenance_for(&path, introduced);
         violations.push(ArtifactViolation {
@@ -891,8 +1083,18 @@ fn add_violation_if_prohibited(
             rule_id: rule.id.to_string(),
             remediation: rule.remediation.to_string(),
             provenance,
+            removal_root,
         });
     }
+}
+
+/// Whether `root` is `path` itself or a `/`-bounded prefix of it, relative,
+/// with no empty or `..` component.
+fn is_removal_root_of(root: &str, path: &str) -> bool {
+    !root.is_empty()
+        && !root.starts_with('/')
+        && !root.split('/').any(|part| part == ".." || part.is_empty())
+        && (root == path || path.starts_with(&format!("{root}/")))
 }
 
 /// Sources scanned without an `introduced` set are live worktree/index state
@@ -949,7 +1151,15 @@ fn is_claude_runtime_path(path: &str) -> bool {
     path == ".claude/runtime" || path.starts_with(".claude/runtime/")
 }
 
-fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static ArtifactRule> {
+/// The rule `path` violates, with its removal root (see
+/// [`ArtifactViolation::removal_root`]). Every root is taken from the matched
+/// segment itself, never from a shallower artifact-shaped ancestor, so
+/// `apps/coverage/node_modules/...` yields `apps/coverage/node_modules`.
+fn rule_for_path(
+    path: &str,
+    source: ArtifactSource,
+    manifests: &BTreeSet<String>,
+) -> Option<(&'static ArtifactRule, Option<String>)> {
     // Launcher-owned bookkeeping is exempt regardless of git source.
     if is_launcher_owned_runtime_file(path) {
         return None;
@@ -966,25 +1176,81 @@ fn rule_for_path(path: &str, source: ArtifactSource) -> Option<&'static Artifact
         return None;
     }
     if path_has_component(path, "node_modules") {
-        return rule("node-modules");
+        return with_root(
+            "node-modules",
+            prefix_through(path, |part, _| part == "node_modules"),
+        );
     }
     if path == "dist/plugin.js" || path.ends_with("/dist/plugin.js") {
-        return rule("plugin-bundle");
+        // Only `dist/plugin.js` itself lacks the `/plugin.js` suffix; falling
+        // back to the file's own path never widens the removal.
+        let parent = path.strip_suffix("/plugin.js").unwrap_or(path);
+        return with_root("plugin-bundle", Some(parent.to_string()));
     }
     if is_claude_runtime_path(path) {
-        return rule("claude-runtime");
+        return with_root("claude-runtime", Some(".claude/runtime".to_string()));
     }
     if path == "worktrees" || path.starts_with("worktrees/") {
-        return rule("nested-worktree");
+        return with_root("nested-worktree", Some("worktrees".to_string()));
     }
     if is_workflow_session_artifact_path(path) {
-        return rule("workflow-session-artifact");
+        let root = [".copilot/session-state", ".amplihack/session-state"]
+            .into_iter()
+            .find(|dir| path.starts_with(dir))
+            // Any other session artifact is removed as itself: the file's own
+            // path is the narrowest possible root.
+            .unwrap_or(path);
+        return with_root("workflow-session-artifact", Some(root.to_string()));
     }
     if is_cache_path(path) {
-        return rule("cache-artifact");
+        return with_root("cache-artifact", cache_root(path));
     }
-    if is_build_artifact_path(path, source) {
-        return rule("build-artifact");
+    if let Some(root) = build_artifact_match(path, source, manifests) {
+        return rule("build-artifact").map(|rule| (rule, root));
+    }
+    None
+}
+
+fn with_root(id: &str, root: Option<String>) -> Option<(&'static ArtifactRule, Option<String>)> {
+    rule(id).map(|rule| (rule, root))
+}
+
+/// `path` cut after the first segment `matches` accepts (given the segment and
+/// the prefix through it), or `None` when no segment matches.
+fn prefix_through(path: &str, matches: impl Fn(&str, &str) -> bool) -> Option<String> {
+    let mut end = 0;
+    for part in path.split('/') {
+        end += part.len();
+        let prefix = &path[..end];
+        if matches(part, prefix) {
+            return Some(prefix.to_string());
+        }
+        end += 1;
+    }
+    None
+}
+
+/// The cache directory [`is_cache_path`] matched: the first cache segment, or
+/// the `.next/cache` pair. A `.yarn/cache` file is its own root: Yarn
+/// zero-install repositories commit that directory, so a root over it would
+/// untrack or delete archives this run never listed (it was the file itself
+/// before issue #1536, too).
+fn cache_root(path: &str) -> Option<String> {
+    let parts: Vec<&str> = path.split('/').collect();
+    let mut end = 0;
+    for (index, part) in parts.iter().enumerate() {
+        end += part.len();
+        if CACHE_COMPONENTS.contains(part) {
+            return Some(path[..end].to_string());
+        }
+        if parts.get(index + 1) == Some(&"cache") {
+            match *part {
+                ".next" => return Some(path[..end + "/cache".len()].to_string()),
+                ".yarn" => return Some(path.to_string()),
+                _ => {}
+            }
+        }
+        end += 1;
     }
     None
 }
@@ -1010,18 +1276,18 @@ fn path_has_any_component(path: &str, components: &[&str]) -> bool {
     path.split('/').any(|part| components.contains(&part))
 }
 
+const CACHE_COMPONENTS: &[&str] = &[
+    ".cache",
+    ".npm",
+    ".pnpm-store",
+    ".turbo",
+    ".parcel-cache",
+    ".pytest_cache",
+];
+
 fn is_cache_path(path: &str) -> bool {
-    path_has_any_component(
-        path,
-        &[
-            ".cache",
-            ".npm",
-            ".pnpm-store",
-            ".turbo",
-            ".parcel-cache",
-            ".pytest_cache",
-        ],
-    ) || path == ".yarn/cache"
+    path_has_any_component(path, CACHE_COMPONENTS)
+        || path == ".yarn/cache"
         || path.starts_with(".yarn/cache/")
         || path.contains("/.yarn/cache/")
         || path == ".next/cache"
@@ -1029,24 +1295,79 @@ fn is_cache_path(path: &str) -> bool {
         || path.contains("/.next/cache/")
 }
 
-fn is_build_artifact_path(path: &str, source: ArtifactSource) -> bool {
+/// Whether `path` is build output, and if so its removal root.
+///
+/// `target`, `.next` and `index.scip` are always output. A generic output
+/// segment ([`GENERIC_OUTPUT_SEGMENTS`]) only qualifies when the directory it
+/// names does not directly hold an indexed source manifest (`manifests`, see
+/// [`manifest_dirs`]): `apps/coverage/` with its own `package.json` is a
+/// project, not coverage output (issue #1536). Each segment is judged on its
+/// own, so output nested inside such a project is still caught.
+///
+/// A tracked or staged path under a qualifying generic segment may still be
+/// source, so it gets no removal root. A tracked or staged coverage report
+/// keeps one only where a coverage tool writes it (see
+/// [`is_project_coverage_report`]); elsewhere, such as
+/// `tests/fixtures/coverage/lcov.info`, it may be a hand-maintained fixture.
+fn build_artifact_match(
+    path: &str,
+    source: ArtifactSource,
+    manifests: &BTreeSet<String>,
+) -> Option<Option<String>> {
     if path_has_component(path, "target") {
-        return source != ArtifactSource::IgnoredPresent;
+        if source == ArtifactSource::IgnoredPresent {
+            return None;
+        }
+        return Some(prefix_through(path, |part, _| part == "target"));
     }
     if path == "index.scip" || path.ends_with("/index.scip") {
-        return true;
+        return Some(Some(path.to_string()));
     }
-    if path_has_any_component(
-        path,
-        &["dist", "build", "coverage", "out", "logs", "outputs"],
-    ) {
-        return true;
+    if path == ".next" || path.starts_with(".next/") || path.contains("/.next/") {
+        return Some(prefix_through(path, |part, _| part == ".next"));
     }
-    path == ".next" || path.starts_with(".next/") || path.contains("/.next/")
+    let segment_root = prefix_through(path, |part, prefix| {
+        GENERIC_OUTPUT_SEGMENTS.contains(&part) && !manifests.contains(prefix)
+    })?;
+    let file_name = path.rsplit('/').next().unwrap_or(path);
+    if COVERAGE_REPORT_FILES.contains(&file_name)
+        && (matches!(
+            source,
+            ArtifactSource::Untracked | ArtifactSource::IgnoredPresent
+        ) || is_project_coverage_report(path, manifests))
+    {
+        return Some(Some(path.to_string()));
+    }
+    match source {
+        ArtifactSource::Tracked | ArtifactSource::Staged => Some(None),
+        ArtifactSource::Untracked | ArtifactSource::IgnoredPresent => Some(Some(segment_root)),
+    }
+}
+
+/// Whether a coverage report sits where coverage tools write one: directly in
+/// a `coverage/` directory whose parent is the repository root or a directory
+/// holding an indexed source manifest (`coverage/lcov.info`,
+/// `packages/web/coverage/lcov.info` beside `packages/web/package.json`).
+/// A report anywhere else, such as `tests/fixtures/coverage/lcov.info`, may be
+/// a parser fixture, so a tracked or staged one is treated as possibly source.
+fn is_project_coverage_report(path: &str, manifests: &BTreeSet<String>) -> bool {
+    let Some((dir, _)) = path.rsplit_once('/') else {
+        return false;
+    };
+    let (project, name) = dir.rsplit_once('/').unwrap_or(("", dir));
+    name == "coverage" && (project.is_empty() || manifests.contains(project))
 }
 
 fn normalize_slashes(path: &str) -> String {
     path.replace('\\', "/")
+}
+
+/// Whether `entry` would be accepted as a line in
+/// `.amplihack-artifact-allowlist`, using the exact rules the allowlist parser
+/// enforces. Callers suggesting allowlist entries must check this so they never
+/// recommend an entry the parser then rejects (issue #1536).
+pub fn is_valid_allowlist_entry(entry: &str) -> bool {
+    validate_allowlist_entry(entry, Path::new(".amplihack-artifact-allowlist"), 0).is_ok()
 }
 
 fn validate_allowlist_entry(
