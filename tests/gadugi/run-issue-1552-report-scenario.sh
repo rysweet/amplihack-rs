@@ -19,6 +19,7 @@ export AMPLIHACK_1552_REQUIRE_RECIPE_RUNNER=1
 export CARGO_BUILD_JOBS=4
 : "${CARGO_TARGET_DIR:?set CARGO_TARGET_DIR to a checkout-specific build directory}"
 cd "$REPO_ROOT"
-cargo test --locked -p amplihack-cli --test issue_1552_investigation_report_written \
-  recipe_runner_exports_context_and_executes_shipped_report_step -- --exact --nocapture
+cargo test --locked -p amplihack-cli --test cli_integration \
+  issue_1552_investigation_report_written::recipe_runner_exports_context_and_executes_shipped_report_step \
+  -- --exact --nocapture
 echo "ISSUE_1552_RECIPE_RUNNER_SCENARIO_PASSED"

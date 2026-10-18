@@ -105,8 +105,10 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         .expect("run step-15 commit-push command")
 }
 
-/// Build a clone whose `feature` branch is `ahead` of `origin/feature`. Returns
-/// the working repo path (inside `tmp`).
+/// Build a clone whose `feature` branch is `ahead` of `origin/feature`, and
+/// return the linked task worktree that has `feature` checked out. Step 15
+/// commits only at the top of a linked worktree (issue #1528), as
+/// workflow-worktree always produces.
 fn init_repo_with_feature_branch(tmp: &Path) -> (PathBuf, PathBuf) {
     let origin = tmp.join("origin.git");
     let repo = tmp.join("repo");
@@ -128,7 +130,19 @@ fn init_repo_with_feature_branch(tmp: &Path) -> (PathBuf, PathBuf) {
     git(&repo, &["add", "feature.txt"]);
     git(&repo, &["commit", "-m", "feature commit 1"]);
     git(&repo, &["push", "-u", "origin", "feature"]);
-    (origin, repo)
+    git(&repo, &["switch", "main"]);
+    let worktree = tmp.join("worktree");
+    git(
+        &repo,
+        &["worktree", "add", worktree.to_str().unwrap(), "feature"],
+    );
+    (origin, worktree)
+}
+
+/// Resolve a path inside the worktree's own git dir; `.git` is a file in a
+/// linked worktree, so `repo.join(".git/...")` would never exist.
+fn git_path(repo: &Path, name: &str) -> PathBuf {
+    repo.join(git_stdout(repo, &["rev-parse", "--git-path", name]))
 }
 
 #[test]
@@ -239,7 +253,7 @@ fn step15_fails_closed_on_divergent_upstream_instead_of_rebasing() {
         "step-15 must not leave add/add conflict markers, file:\n{file_after}"
     );
     assert!(
-        !repo.join(".git/rebase-merge").exists() && !repo.join(".git/rebase-apply").exists(),
+        !git_path(&repo, "rebase-merge").exists() && !git_path(&repo, "rebase-apply").exists(),
         "step-15 must not leave an in-progress rebase behind"
     );
 }

@@ -9,12 +9,15 @@
 #
 # and autodrive_loop.sh calls it, before every merge round, as
 #
-#   bash autodrive_crusty_rereview.sh --repo <repo> --state-dir <dir> \
+#   bash autodrive_crusty_rereview.sh --repo <repo> --review-dir <dir> --state-dir <dir> \
 #     -c <key=value>... --context-from-file task_description=<file>
 #
-# with the context the merge round gets. Only pr_number and pr_url are read
-# from the -c values. The task arrives as a file (issue #1570) and is handed to
-# the crusty loop with --task-file, so it never becomes an argv element.
+# with the context the merge round gets. The review dir is the launch checkout
+# the merge-ready loop already checked; the crusty loop started here gets it
+# too, so its judging agents never start in the PR worktree (#1528). Only
+# pr_number and pr_url are read from the -c values. The task arrives as a file
+# (issue #1570) and is handed to the crusty loop with --task-file, so it never
+# becomes an argv element.
 #
 # WHY HERE, AND NOT INSIDE THE MERGE ROUND. Every `amplihack recipe run` starts
 # a runner one session level deeper, and every step of that runner, bash or
@@ -61,10 +64,11 @@
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
 
-REPO=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""
+REPO=""; REVIEW_DIR=""; DIR=""; PR=""; PR_URL_V=""; TASK_FILE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO="${2:-}"; shift 2 ;;
+    --review-dir) REVIEW_DIR="${2:-}"; shift 2 ;;
     --state-dir) DIR="${2:-}"; shift 2 ;;
     -c)
       case "${2:-}" in
@@ -80,7 +84,7 @@ while [ $# -gt 0 ]; do
     *) echo "ERROR: autodrive_crusty_rereview.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
-[ -n "$REPO" ] && [ -n "$DIR" ] || { echo "ERROR: autodrive_crusty_rereview.sh: --repo and --state-dir are required" >&2; exit 2; }
+[ -n "$REPO" ] && [ -n "$REVIEW_DIR" ] && [ -n "$DIR" ] || { echo "ERROR: autodrive_crusty_rereview.sh: --repo, --review-dir and --state-dir are required" >&2; exit 2; }
 case "$PR" in *[!0-9]*) PR="" ;; esac
 
 result() { # result <before_round_result> <range> <crusty_loop_result> <exit>
@@ -123,6 +127,7 @@ OUT="$(bash "$HERE/autodrive_loop.sh" \
   --clean-token "CLEAN" \
   --verdict-field "crusty_verdict" \
   --repo "$REPO" \
+  --review-dir "$REVIEW_DIR" \
   --state-dir "$DIR" \
   --task-file "$TASK_FILE" \
   --context "repo_path=${REPO}" \

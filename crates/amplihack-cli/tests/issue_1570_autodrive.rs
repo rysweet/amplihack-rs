@@ -20,7 +20,6 @@
 //! 200 KiB, above the 131,072-byte limit on a single argv or environment
 //! string.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -61,7 +60,8 @@ case "${1:-} ${2:-}" in
     fi
     exit 0 ;;
   "recipe run")
-    if [ "${3:-}" = "loop-health-evaluator" ]; then
+    # The loop names each recipe by its launch-side path (#1528).
+    if [ "$(basename -- "${3:-}" .yaml)" = "loop-health-evaluator" ]; then
       h=$(cat "$STUB_STATE/health" 2>/dev/null || echo 0)
       h=$((h + 1))
       printf '%s' "$h" > "$STUB_STATE/health"
@@ -97,6 +97,7 @@ fn task_payload() -> String {
 }
 
 struct Run {
+    repo: PathBuf,
     state_dir: PathBuf,
     stub_state: PathBuf,
     calls: Vec<Vec<String>>,
@@ -104,6 +105,41 @@ struct Run {
     stderr: String,
     cwd: PathBuf,
     _tmp: tempfile::TempDir,
+}
+
+/// `git init` `main` with one commit (plumbing, so no hook runs), then add
+/// `worktree` as a detached linked worktree of it.
+fn main_checkout_with_worktree(
+    home: &std::path::Path,
+    main: &std::path::Path,
+    worktree: &std::path::Path,
+) {
+    let git = |args: &[&str]| {
+        let out = amplihack_git::command_in(main)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    let tree = git(&["write-tree"]);
+    let commit = git(&["commit-tree", &tree, "-m", "init"]);
+    git(&["update-ref", "HEAD", &commit]);
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        &worktree.display().to_string(),
+    ]);
 }
 
 /// Run the loop with `task` written to the file named by `--task-file`.
@@ -124,12 +160,15 @@ fn drive(task: Option<&str>) -> Run {
     if let Some(task) = task {
         std::fs::write(&task_file, task).unwrap();
     }
-    for d in [&bin, &log, &stub_state, &repo, &cwd] {
+    for d in [&bin, &log, &stub_state, &cwd] {
         std::fs::create_dir_all(d).unwrap();
     }
+    // The loop's review dir defaults to its working directory and must be the
+    // main checkout of --repo's repository (#1528), so `cwd` is a main
+    // checkout and `repo` its linked worktree, as in a real run.
+    main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
-    std::fs::write(&stub, STUB).unwrap();
-    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(&stub, STUB, 0o755);
 
     let script = repo_root().join("amplifier-bundle/tools/autodrive_loop.sh");
     let path = format!(
@@ -176,6 +215,7 @@ fn drive(task: Option<&str>) -> Run {
         })
         .collect();
     Run {
+        repo,
         state_dir,
         stub_state,
         calls,
@@ -186,13 +226,21 @@ fn drive(task: Option<&str>) -> Run {
     }
 }
 
+/// Whether `arg` names the crusty round recipe. The loop hands `recipe run`
+/// the launch-side path (`.../recipes/autodrive-crusty-round.yaml`, #1528),
+/// never the bare name.
+fn is_crusty_round(arg: Option<&String>) -> bool {
+    arg.and_then(|a| Path::new(a).file_stem())
+        .is_some_and(|stem| stem == "autodrive-crusty-round")
+}
+
 fn round_calls(run: &Run) -> Vec<&Vec<String>> {
     run.calls
         .iter()
         .filter(|c| {
             c.first().map(String::as_str) == Some("recipe")
                 && c.get(1).map(String::as_str) == Some("run")
-                && c.get(2).map(String::as_str) == Some("autodrive-crusty-round")
+                && is_crusty_round(c.get(2))
         })
         .collect()
 }
@@ -253,9 +301,7 @@ fn task_description_is_copied_to_a_private_state_file_and_removed_at_exit() {
 fn round_index(run: &Run, round: usize) -> usize {
     let mut seen = 0;
     for (i, c) in run.calls.iter().enumerate() {
-        if c.get(2).map(String::as_str) == Some("autodrive-crusty-round")
-            && c.first().map(String::as_str) == Some("recipe")
-        {
+        if is_crusty_round(c.get(2)) && c.first().map(String::as_str) == Some("recipe") {
             seen += 1;
             if seen == round {
                 return i + 1;
@@ -322,6 +368,19 @@ fn each_round_passes_the_task_by_file_and_never_in_argv() {
         assert!(
             !argv.iter().any(|a| a.contains("Fix E2BIG: héllo")),
             "round {}: the task text must not appear in argv",
+            i + 1
+        );
+        // The round runs in --repo (the PR worktree, #1528) and the task
+        // still reaches it through the state-dir copy (#1570).
+        let wd = argv
+            .iter()
+            .position(|a| a == "--working-dir")
+            .and_then(|at| argv.get(at + 1))
+            .unwrap_or_else(|| panic!("round {}: missing --working-dir: {argv:?}", i + 1));
+        assert_eq!(
+            Path::new(wd).canonicalize().ok(),
+            run.repo.canonicalize().ok(),
+            "round {}: the round must run in --repo",
             i + 1
         );
     }

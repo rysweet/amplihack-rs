@@ -260,11 +260,12 @@ run_resilient() {
 
 # Issue #647 — resilient steps: fall back and emit WARNING instead of aborting
 
-# step-20b-push-cleanup (resilient)
+# step-20b-push-cleanup (resilient, and never commits outside the task worktree:
+# no REPO_PATH or cwd fallback, issue #1528)
 run_resilient \
     "workflow-finalize.step-20b-push-cleanup" \
-    "WARNING" \
-    'set -euo pipefail; wt="${WORKTREE_SETUP_WORKTREE_PATH:-}"; if [ -d "$wt" ]; then cd "$wt"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-20b worktree missing, falling back to REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-20b worktree missing, using cwd" >&2; fi; pwd'
+    "never commits in REPO_PATH (#1528)" \
+    'set -euo pipefail; wt="${WORKTREE_SETUP_WORKTREE_PATH:-}"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then echo "WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; fi; cd "$wt"; pwd'
 
 # step-21-pr-ready (resilient)
 run_resilient \

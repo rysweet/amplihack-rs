@@ -113,8 +113,6 @@ pub(crate) fn capture(binary: &Path) -> Result<Output> {
     };
     #[cfg(all(test, unix))]
     testing::record_child(probe.child.id());
-    #[cfg(all(test, windows))]
-    testing::record_windows_handles(&probe.child);
     let result = (|| {
         let mut stdout = Pipe::new(probe.child.stdout.take().context("probe stdout missing")?)?;
         let mut stderr = Pipe::new(probe.child.stderr.take().context("probe stderr missing")?)?;

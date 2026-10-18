@@ -3,7 +3,8 @@ use std::path::PathBuf;
 
 use amplihack_utils::artifact_guard::{
     self, ArtifactGuardConfig, ArtifactGuardMode, ArtifactGuardReport, ArtifactSource,
-    ArtifactViolation, GENERIC_OUTPUT_SEGMENTS, PreExistingPolicy, scan_artifacts,
+    ArtifactViolation, GENERIC_OUTPUT_SEGMENTS, PreExistingPolicy, RUN_WORKTREE_GITLINK,
+    is_at_or_under, is_in_reserved_worktrees_dir, scan_artifacts,
 };
 use anyhow::Result;
 
@@ -20,11 +21,29 @@ const PREEXISTING_ENV: &str = "AMPLIHACK_ARTIFACT_GUARD_PREEXISTING";
 /// naming every one of them buries the remedy that follows.
 const ADVISORY_PATHS_PER_ROOT: usize = 5;
 
+/// Printed after a configuration error raised by the scan itself.
+const SCAN_ERROR_HINT: &str =
+    "Fix the repository path, Git state, mode, allowlist, or baseline and rerun the guard.";
+
+/// Issue #1528: the extra remediation bullet, printed only when a run-worktree
+/// gitlink blocks.
+const GITLINK_BULLET: &str = "  - A run worktree is a live checkout recorded as a gitlink: drop it from the index only, never delete it, and commit from inside the PR worktree. The allowlist does not apply to run-worktree-gitlink.";
+
+const GITLINK_LINE_SUFFIX: &str =
+    "   # index only: keeps the worktree and its files; -f only overrides git's up-to-date check";
+
+const NEVER_DELETE_REGISTERED: &str = "it holds registered worktree(s) — see git worktree list";
+const NEVER_DELETE_RESERVED: &str =
+    "it is reserved for run worktrees — inspect it and remove leftovers by hand";
+
 pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
     let repo = match args.repo {
         Some(repo) => repo,
         None => std::env::current_dir().map_err(|error| {
-            eprintln!("Artifact Guard configuration error: resolve current directory: {error}");
+            eprintln!(
+                "Artifact Guard configuration error: resolve current directory: {}",
+                escape(&error.to_string())
+            );
             command_error::exit_error(2)
         })?,
     };
@@ -32,7 +51,10 @@ pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
     let mode = match ArtifactGuardMode::parse(&args.mode) {
         Ok(mode) => mode,
         Err(error) => {
-            eprintln!("Artifact Guard configuration error: {error}");
+            eprintln!(
+                "Artifact Guard configuration error: {}",
+                escape(&error.to_string())
+            );
             return Err(command_error::exit_error(2));
         }
     };
@@ -45,7 +67,10 @@ pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
     let policy = match policy_input.as_deref().map(PreExistingPolicy::parse) {
         Some(Ok(policy)) => policy,
         Some(Err(error)) => {
-            eprintln!("Artifact Guard configuration error: {error}");
+            eprintln!(
+                "Artifact Guard configuration error: {}",
+                escape(&error.to_string())
+            );
             return Err(command_error::exit_error(2));
         }
         None => PreExistingPolicy::default(),
@@ -82,16 +107,18 @@ pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
             }
             println!(
                 "Artifact Guard clean: no prohibited artifacts introduced by this change in {} (mode: {}).",
-                report.repo.display(),
+                escape(&repo_text(&report)),
                 report.mode
             );
             Ok(())
         }
         Err(error) => {
-            eprintln!("Artifact Guard configuration error: {error}");
+            // The error can carry Git's stderr or repository content.
             eprintln!(
-                "Fix the repository path, Git state, mode, allowlist, or baseline and rerun the guard."
+                "Artifact Guard configuration error: {}",
+                escape(&error.to_string())
             );
+            eprintln!("{SCAN_ERROR_HINT}");
             Err(command_error::exit_error(2))
         }
     }
@@ -99,6 +126,10 @@ pub fn run(args: HygieneArtifactGuardArgs) -> Result<()> {
 
 fn print_violation_report(report: &ArtifactGuardReport) {
     let blocking = report.blocking_violations();
+    let (gitlinks, others): (Vec<&ArtifactViolation>, Vec<&ArtifactViolation>) = blocking
+        .iter()
+        .copied()
+        .partition(|violation| violation.rule_id == RUN_WORKTREE_GITLINK);
     let scope = if report.preexisting_is_advisory() {
         " introduced by this change"
     } else {
@@ -107,13 +138,13 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     eprintln!(
         "Artifact Guard blocked {} prohibited artifact path(s){scope} in {} (mode: {}).",
         blocking.len(),
-        report.repo.display(),
+        escape(&repo_text(report)),
         report.mode
     );
     if let Some(baseline) = &report.baseline {
         eprintln!(
             "Baseline: {} ({}).",
-            baseline.rev,
+            escape(&baseline.rev),
             short_commit(&baseline.commit)
         );
     }
@@ -140,8 +171,20 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     eprintln!(
         "  - If intentional source material, add a narrow reviewed entry to .amplihack-artifact-allowlist."
     );
+    if !gitlinks.is_empty() {
+        eprintln!("{GITLINK_BULLET}");
+    }
     eprintln!();
     eprintln!("Exact commands for the paths above:");
+    // Issue #1528: a gitlink is a live checkout. Plain `git rm --cached` fails
+    // on one whose worktree moved on, and grouping it under `worktrees` would
+    // print a delete for every run's work, so each gets its own index-only line.
+    for violation in &gitlinks {
+        match git_rm_cached_gitlink(&violation.path) {
+            Some(line) => eprintln!("  {line}{GITLINK_LINE_SUFFIX}"),
+            None => eprintln!("  {}", no_command_comment(&violation.path)),
+        }
+    }
     // Collapsing to an artifact root is only safe when the change owns the
     // whole root. If a pre-existing tree shares it -- the issue #1422 shape,
     // where one new package lands inside 668 vendored ones -- a
@@ -150,7 +193,7 @@ fn print_violation_report(report: &ArtifactGuardReport) {
     //
     // Removal commands come only from `removal_root`, never from the display
     // grouping, and never for a path that may be source (issue #1536).
-    let (removable, review) = split_removable(&blocking);
+    let (removable, review) = split_removable(&others);
     let advisory = report.advisory_violations();
     let untouchable: Vec<&str> = advisory
         .iter()
@@ -188,7 +231,14 @@ fn print_violation_report(report: &ArtifactGuardReport) {
                     git_rm_cached(&root, true)
                 );
             }
-            eprintln!("  rm -rf -- '{root}'               # or delete the leftover outright");
+            // Issue #1528: never print a delete for a root that can hold a
+            // run's uncommitted work.
+            match never_delete_reason(&root, &report.registered_worktrees) {
+                Some(reason) => eprintln!("  # never delete '{root}': {reason}"),
+                None => eprintln!(
+                    "  rm -rf -- '{root}'               # or delete the leftover outright"
+                ),
+            }
         }
     }
     if !review.is_empty() {
@@ -200,18 +250,19 @@ fn print_violation_report(report: &ArtifactGuardReport) {
         }
         print_review_remedy(&review);
     }
-    eprintln!(
-        "  amplihack hygiene artifact-guard --repo {} --mode {}   # re-run to confirm",
-        report.repo.display(),
-        report.mode
-    );
+    if let Some(repo) = safe_repo_arg(report) {
+        eprintln!(
+            "  amplihack hygiene artifact-guard --repo {repo} --mode {}   # re-run to confirm",
+            report.mode
+        );
+    }
     eprintln!();
     eprintln!("First violation detail:");
     if let Some(first) = blocking.first() {
         // The rule's generic remediation opens with "remove the artifact".
         // For a path the guard has just called possibly source, the last line
         // an agent reads must not tell it to delete that path (issue #1536).
-        let detail = if is_removable(first) {
+        let detail = if is_removable(first) || first.rule_id == RUN_WORKTREE_GITLINK {
             first.remediation.as_str()
         } else {
             REVIEW_DETAIL
@@ -247,13 +298,13 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
     eprintln!(
         "Artifact Guard: {} pre-existing prohibited artifact path(s) in {} — NOT blocking this {} gate.",
         advisory.len(),
-        report.repo.display(),
+        escape(&repo_text(report)),
         report.mode
     );
     match &report.baseline {
         Some(baseline) => eprintln!(
             "These paths are committed in the baseline {} ({}) and are untouched by this change, so they cannot enter its diff. This run did not create them (issue #1422).",
-            baseline.rev,
+            escape(&baseline.rev),
             short_commit(&baseline.commit)
         ),
         None => eprintln!(
@@ -279,7 +330,7 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
         let untrack = git_rm_cached(&root, true);
         if is_literal_ignore_pattern(&root) {
             eprintln!(
-                "  - Clean up in a dedicated change: {untrack} && echo '{ignore}' >> .gitignore && git commit -m 'chore: untrack {root}'"
+                "  - Clean up in a dedicated change: {untrack} && echo '{ignore}' >> .gitignore && git add .gitignore && git commit -m 'chore: untrack {root}'"
             );
         } else {
             // A .gitignore line is a pattern, not a literal path; the guard
@@ -295,10 +346,11 @@ fn print_advisory_report(report: &ArtifactGuardReport) {
         );
         print_review_remedy(&review);
     }
-    eprintln!(
-        "  - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo {} --mode all",
-        report.repo.display()
-    );
+    if let Some(repo) = safe_repo_arg(report) {
+        eprintln!(
+            "  - List every path and fail closed on the whole condition: amplihack hygiene artifact-guard --repo {repo} --mode all"
+        );
+    }
     eprintln!("  - Enforce it here anyway: --preexisting block (or {PREEXISTING_ENV}=block).");
     eprintln!();
 }
@@ -405,7 +457,7 @@ fn split_removable<'a>(
 /// paths, and [`git_rm_cached`] turns off git's pathspec reading, so nothing
 /// else needs to be refused.
 fn is_command_safe(path: &str) -> bool {
-    !path.chars().any(|c| c == '\'' || c.is_control())
+    !path.chars().any(|c| c == '\'' || is_unsafe_char(c))
 }
 
 /// The `git rm --cached` command that untracks exactly `path` (recursively when
@@ -424,6 +476,24 @@ fn git_rm_cached(path: &str, recursive: bool) -> String {
         "git"
     };
     format!("{git} rm {flags} -- '{path}'")
+}
+
+/// The index-only command for a run-worktree gitlink (issue #1528): `-f`
+/// overrides git's up-to-date check, which refuses a gitlink whose worktree
+/// moved on, and `--cached` keeps the worktree and its files. Unlike the
+/// removal commands it is printed for a path holding `'` too, quoted as `'\''`:
+/// it deletes nothing, and the gitlink must leave the index before anything
+/// else can be committed. `None` for a path with an unsafe character.
+fn git_rm_cached_gitlink(path: &str) -> Option<String> {
+    if has_unsafe_char(path) {
+        return None;
+    }
+    let git = if has_pathspec_magic(path) {
+        "git --literal-pathspecs"
+    } else {
+        "git"
+    };
+    Some(format!("{git} rm --cached -f -- {}", shell_quote(path)))
 }
 
 /// Whether git would read `path` as anything but itself: a leading `:` (magic
@@ -469,16 +539,18 @@ fn is_plain_path(path: &str) -> bool {
         && !path.starts_with('#')
         && !path
             .chars()
-            .any(|c| matches!(c, '*' | '?' | '\\' | '\'' | '"') || c.is_control())
+            .any(|c| matches!(c, '*' | '?' | '\\' | '\'' | '"') || is_unsafe_char(c))
 }
 
 /// `path` as plain text when [`is_plain_path`], otherwise escaped so a file
-/// name cannot forge a report line or inject shell syntax.
+/// name cannot forge a report line or inject shell syntax. `{:?}` leaves some
+/// characters [`is_unsafe_char`] refuses (U+FFFD, which stands in for bytes
+/// that were not UTF-8) printable, so those are escaped as well (issue #1528).
 fn display_path(path: &str) -> String {
     if is_plain_path(path) {
         path.to_string()
     } else {
-        format!("{path:?}")
+        escape(&format!("{path:?}"))
     }
 }
 
@@ -555,9 +627,101 @@ fn distinct_rules(violations: &[&ArtifactViolation]) -> String {
     rules.join(", ")
 }
 
+/// Why `root` must never get an `rm -rf` (issue #1528): it holds (or sits in)
+/// a registered worktree, or its first component is `worktrees` in any ASCII
+/// case, where an unregistered directory can still hold a run's work.
+fn never_delete_reason(root: &str, registered: &[String]) -> Option<&'static str> {
+    if registered
+        .iter()
+        .any(|worktree| is_at_or_under(worktree, root) || is_at_or_under(root, worktree))
+    {
+        return Some(NEVER_DELETE_REGISTERED);
+    }
+    is_in_reserved_worktrees_dir(root).then_some(NEVER_DELETE_RESERVED)
+}
+
+fn no_command_comment(path: &str) -> String {
+    format!(
+        "# no command for {}: the path contains an unsafe character; inspect it and fix it by hand",
+        escape(path)
+    )
+}
+
+fn repo_text(report: &ArtifactGuardReport) -> String {
+    report.repo.display().to_string()
+}
+
+/// `--repo` for a printed command line, or `None` when the path holds an
+/// unsafe character and no command may embed it.
+fn safe_repo_arg(report: &ArtifactGuardReport) -> Option<String> {
+    let repo = repo_text(report);
+    (!has_unsafe_char(&repo)).then(|| shell_quote(&repo))
+}
+
+/// Single-quote `value` for bash; a `'` becomes `'\''`.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+/// Control, bidirectional and invisible format characters, plus the
+/// replacement character that stands in for bytes that were not UTF-8. None
+/// of them may reach the terminal raw or a printed command.
+fn is_unsafe_char(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            c,
+            '\u{061c}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2060}'..='\u{2069}'
+                | '\u{feff}'
+                | '\u{fffd}'
+        )
+}
+
+fn has_unsafe_char(value: &str) -> bool {
+    value.chars().any(is_unsafe_char)
+}
+
+/// Escape unsafe characters for display: `\n`, `\t`, `\r`, otherwise `\u{hex}`.
+fn escape(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\n' => escaped.push_str(r"\n"),
+            '\t' => escaped.push_str(r"\t"),
+            '\r' => escaped.push_str(r"\r"),
+            c if is_unsafe_char(c) => escaped.push_str(&format!("\\u{{{:x}}}", u32::from(c))),
+            c => escaped.push(c),
+        }
+    }
+    escaped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn never_delete_reports_a_registered_worktree_before_the_reserved_dir() {
+        // Issue #1528. The library narrows a root that holds a registered
+        // worktree to the violating path (#1536), so in a scan this mostly
+        // guards a root that sits inside one; the order still holds.
+        let registered = ["worktrees/feat/pr-1530".to_string()];
+        assert_eq!(
+            never_delete_reason("worktrees", &registered),
+            Some(NEVER_DELETE_REGISTERED)
+        );
+        assert_eq!(
+            never_delete_reason("worktrees/feat/pr-1530/node_modules", &registered),
+            Some(NEVER_DELETE_REGISTERED)
+        );
+        assert_eq!(
+            never_delete_reason("worktrees/old/notes.md", &registered),
+            Some(NEVER_DELETE_RESERVED)
+        );
+        assert_eq!(never_delete_reason("build/out.txt", &registered), None);
+    }
 
     #[test]
     fn git_rm_reads_pathspec_magic_as_a_literal_path() {

@@ -53,7 +53,19 @@ fn run_forwards_args_literally_without_shell() {
         "$(id)".to_string(),
     ];
     let mut cmd = build_profile_command(&bin, &s, &name, &args).unwrap();
-    let out = cmd.output().unwrap();
+    // `setup` has just written the fake `claude`. Another test thread's fork
+    // can inherit that write descriptor until its own exec closes it, and an
+    // exec in that window fails with ETXTBSY. The window is brief, so retry.
+    let mut attempts = 0;
+    let out = loop {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    };
     let text = String::from_utf8_lossy(&out.stdout);
     let want = s.resolve(&name).unwrap();
     assert!(text.contains(&format!("CFG={}", want.display())), "{text}");

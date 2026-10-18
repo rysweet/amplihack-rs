@@ -14,7 +14,6 @@
 //! `autodrive_loop.sh` that copies the `--task-file` it receives. They skip,
 //! with a note, when `jq` is not installed.
 
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -77,20 +76,35 @@ esac
 const LOOP_STUB: &str = r#"#!/usr/bin/env bash
 while [ $# -gt 0 ]; do
   if [ "$1" = "--task-file" ]; then cp -- "$2" "$LOOP_OUT/task"; fi
+  if [ "$1" = "--repo" ]; then printf '%s' "$2" > "$LOOP_OUT/repo"; fi
   shift
 done
 exit 0
 "#;
 
+/// Step-02 resolves the PR's linked worktree before the loop starts and runs
+/// the rounds there (#1528). The stand-in prints `$PR_WORKTREE_OUT`.
+const RESOLVER_STUB: &str = r#"#!/usr/bin/env bash
+printf '%s\n' "$PR_WORKTREE_OUT"
+"#;
+
+/// Step-02 takes the review dir from the guard's `review-dir`, the main
+/// checkout of `repo_path`'s repository (#1528). The stand-in prints the
+/// repo directory; `autodrive_pr_worktree_tests.rs` runs the real guard.
+const GUARD_STUB: &str = r#"#!/usr/bin/env bash
+[ "$1" = review-dir ] && printf '%s\n' "$REPO_PATH"
+"#;
+
 struct StepRun {
     out: Output,
     task_seen: Option<Vec<u8>>,
+    repo_seen: Option<String>,
+    pr_worktree: PathBuf,
     _tmp: tempfile::TempDir,
 }
 
 fn executable(path: &Path, text: &str) {
-    std::fs::write(path, text).unwrap();
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    crate::support::exec_stub::write_executable(path, text, 0o755);
 }
 
 /// Run one recipe's loop step with `context` as the only context source.
@@ -101,22 +115,24 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
     let loop_out = tmp.path().join("loop-out");
     let repo = tmp.path().join("repo");
     let private_tmp = tmp.path().join("tmp");
-    for d in [&bin, &tools, &loop_out, &repo, &private_tmp] {
+    let pr_worktree = tmp.path().join("pr-worktree");
+    for d in [&bin, &tools, &loop_out, &repo, &private_tmp, &pr_worktree] {
         std::fs::create_dir_all(d).unwrap();
     }
     executable(&bin.join("amplihack"), AMPLIHACK_STUB);
     executable(&tools.join("autodrive_loop.sh"), LOOP_STUB);
+    executable(&tools.join("autodrive_pr_worktree.sh"), RESOLVER_STUB);
+    executable(&tools.join("autodrive_worktree_guard.sh"), GUARD_STUB);
     // merge-loop step-02 refuses to start without the crusty re-review beside
     // the loop driver (PR #1520); the stub loop never runs it.
     executable(
         &tools.join("autodrive_crusty_rereview.sh"),
         "#!/usr/bin/env bash\nexit 0\n",
     );
-    std::fs::copy(
-        repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
-        tools.join("recipe_context_value.sh"),
-    )
-    .unwrap();
+    crate::support::exec_stub::copy_executable(
+        &repo_root().join("amplifier-bundle/tools/recipe_context_value.sh"),
+        &tools.join("recipe_context_value.sh"),
+    );
     // PR #1588 review: step-02 takes the round recipe from the recipes/
     // directory beside the loop driver and refuses when it is missing.
     let recipes = tmp.path().join("home/amplifier-bundle/recipes");
@@ -157,11 +173,14 @@ fn run_step(recipe: &str, step_id: &str, preflight_var: &str, context: &str) -> 
         .env("AMPLIHACK_CONTEXT_FILE", &ctx)
         .env(preflight_var, preflight)
         .env("LOOP_OUT", &loop_out)
+        .env("PR_WORKTREE_OUT", &pr_worktree)
         .current_dir(&repo)
         .output()
         .expect("spawn bash");
     StepRun {
         task_seen: std::fs::read(loop_out.join("task")).ok(),
+        repo_seen: std::fs::read_to_string(loop_out.join("repo")).ok(),
+        pr_worktree,
         out,
         _tmp: tmp,
     }
@@ -199,6 +218,12 @@ fn a_task_over_96_kib_only_in_the_context_file_reaches_the_loop_whole() {
         assert!(
             seen == task.as_bytes(),
             "{recipe}: the loop must receive the task byte for byte"
+        );
+        // The same loop runs its rounds in the PR worktree (#1528).
+        assert_eq!(
+            run.repo_seen.as_deref(),
+            Some(run.pr_worktree.to_str().unwrap()),
+            "{recipe}: the loop must get the resolved PR worktree as --repo"
         );
     }
 }

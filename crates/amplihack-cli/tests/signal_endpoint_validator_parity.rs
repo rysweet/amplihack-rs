@@ -9,8 +9,8 @@
 //! pass closes. This test locks the two entry points together so any future
 //! drift is a conscious, reviewed decision.
 //!
-//! Run: `cargo test -p amplihack-cli --features signal --test
-//! signal_endpoint_validator_parity`.
+//! Run: `cargo test -p amplihack-cli --features signal --test cli_integration
+//! signal_endpoint_validator_parity::`.
 #![cfg(feature = "signal")]
 
 use amplihack_cli::commands::signal::validate::validate_loopback_endpoint;
