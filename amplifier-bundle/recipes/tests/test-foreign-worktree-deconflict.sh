@@ -135,15 +135,17 @@ else
 fi
 
 # A6: HARD non-destructive invariant — the helper must contain ZERO destructive
-# commands. It renames THIS run's branch; it must never delete/reset/force the
-# foreign run's branch or worktree.
+# commands, including update-ref and branch -m (#1565). It renames THIS run's
+# branch; it must never delete/reset/force/move the foreign run's branch or worktree.
 if [[ -f "${HELPER}" ]]; then
     if grep -qE 'git[[:space:]]+branch[[:space:]]+-[dD]' "${HELPER}" \
        || grep -qE 'git[[:space:]]+worktree[[:space:]]+remove' "${HELPER}" \
        || grep -qE 'reset[[:space:]]+--hard' "${HELPER}" \
        || grep -qE 'checkout[[:space:]]+-f' "${HELPER}" \
        || grep -qE 'push[[:space:]].*(--force|--delete|-f\b)' "${HELPER}" \
-       || grep -qE 'rm[[:space:]]+-[rRfial]*[rf]' "${HELPER}"; then
+       || grep -qE 'rm[[:space:]]+-[rRfial]*[rf]' "${HELPER}" \
+       || grep -qE 'update-ref' "${HELPER}" \
+       || grep -qE 'git[[:space:]]+branch[[:space:]]+-[mM]' "${HELPER}"; then
         fail "A6-nondestructive" "helper contains a DESTRUCTIVE command (must be read-only introspection)"
     else
         pass "A6-nondestructive" "helper contains no destructive git/fs commands (non-destructive invariant holds)"
