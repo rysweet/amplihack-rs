@@ -31,12 +31,10 @@ context:
   autodrive_state_dir: ""
 
 steps:
-  # The tools this round runs, found ONCE: the first amplifier-bundle/tools
-  # under AMPLIHACK_HOME, REPO_PATH, the git toplevel, ~/.copilot or
-  # ~/.amplihack that holds every one of them. Later bash steps read the
-  # directory from autodrive_tools_dir, and step-04's prompt sources
-  # git-identity.sh from it. A missing install fails here by name, never as a
-  # blocker repeated every round (#1517).
+  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under
+  # AMPLIHACK_HOME, REPO_PATH, the git toplevel, ~/.copilot or ~/.amplihack that
+  # holds them all. Later bash steps and step-04's prompt (git-identity.sh) read it
+  # from autodrive_tools_dir. A missing install fails here by name (#1517).
   - id: "step-00-tools-dir"
     type: "bash"
     command: |
@@ -68,15 +66,16 @@ steps:
       echo "ERROR: autodrive-tools-not-found: no amplifier-bundle/tools holds all of ${NEED} (searched ${SEARCHED:-no root})" >&2
       exit 1
     output: "autodrive_tools_dir"
-  # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
+  # Judging agents start outside the tree under review (#1528); it stamps the review
+  # dir's index for step-02b (autodrive_worktree_guard.sh).
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
       bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or missing from autodrive_launch_tools '${AUTODRIVE_LAUNCH_TOOLS:-}' (#1528)" >&2; exit 1; }
-  # merge-ready refuses agents, so bash finds its files for step-02. A missing
-  # install fails here by name, never as a blocker repeated every round
-  # (#1517). That includes gadugi-test, but only where criterion 1 needs it:
-  # autodrive_gadugi_required says true for a Node repository or an
+    output: "review_index"
+  # merge-ready refuses agents, so bash finds its files for step-02; a missing
+  # install fails here by name (#1517). So does gadugi-test where criterion 1
+  # needs it: autodrive_gadugi_required, true for a Node repository or an
   # operator-set AUTODRIVE_QA_SCENARIO_DIR (qa-team's repo-type table).
   - id: "step-00-merge-ready-files"
     type: "bash"
@@ -98,11 +97,10 @@ steps:
       fi
       printf '%s\n' "$OUT"
     output: "merge_ready_files"
-  # Commits after the clean crusty round (#1517 D4) are NOT re-reviewed here.
-  # A loop started from a round step runs one recipe runner deeper than the
-  # loop drivers, and the recursion guard refuses its rounds with exit 79
-  # (PR #1520 review). autodrive_crusty_rereview.sh does it before each round,
-  # from the merge-ready loop's shell; step-01b only measures the result.
+  # Commits after the clean crusty round (#1517 D4) are NOT re-reviewed here: a
+  # loop started from a round step runs one runner deeper, and the recursion guard
+  # refuses it with exit 79 (PR #1520 review). autodrive_crusty_rereview.sh does it
+  # before each round from the merge-ready loop's shell; step-01b measures it.
   - id: "merge-evidence"
     type: "recipe"
     recipe: "autodrive-merge-evidence"
@@ -235,6 +233,10 @@ steps:
       - `id` must be **stable across rounds**: derive it from the substance.
       - A missing or unreadable verdict is read as `NOT_MERGE_READY`.
     output: "merge_ready_review"
+  - id: "step-02b-review-dir-unchanged"
+    type: "bash"
+    command: |
+      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${REVIEW_INDEX:-${RECIPE_VAR_review_index:-}}" step-02-merge-ready-assessment || exit 1
   - id: "step-03-extract-merge-ready-verdict"
     type: "bash"
     parse_json: true
@@ -379,9 +381,8 @@ steps:
       that skips hooks, nor for a branch-protection bypass at merge time. Both
       are prohibited here without exception.
     output: "merge_ready_fixes"
-  # The round record the loop driver and the merge gate read, written private
-  # by `autodrive_round_evidence.sh round-record`: the verdict, head_sha, the
-  # qa and CI signals, and step-00d's qa_evidence_sha (#1517 D5).
+  # The round record (verdict, head_sha, qa and CI signals, step-00d's qa_evidence_sha;
+  # #1517 D5), written private by `autodrive_round_evidence.sh round-record`.
   - id: "step-05-write-round-record"
     type: "bash"
     command: |

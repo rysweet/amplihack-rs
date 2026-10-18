@@ -175,6 +175,8 @@ if [ "${1:-}" = "recipe" ] && [ "${2:-}" = "run" ]; then
   case "$RECIPE" in
     loop-health-evaluator)
       for a in "$@"; do case "$a" in loop_history=*) printf '%s\n---\n' "${a#*=}" >> "${STUB_HISTORY_LOG:-/dev/null}" ;; esac; done
+      # STUB_HEALTH_BODY: what a misbehaving evaluator agent does in its working dir.
+      [ -z "${STUB_HEALTH_BODY:-}" ] || bash -c "$STUB_HEALTH_BODY"
       # Snapshot a state file at the moment the evaluator (an agent) starts,
       # so a test can show what the loop had already written by then.
       if [ -n "${STUB_SNAPSHOT_FROM:-}" ]; then
@@ -242,6 +244,19 @@ set_stub() { # set_stub <round-record-json> <health-rc> <health-stdout> [round-r
   unset STUB_HEALTH_STDOUT_LATER
 }
 
+# main_and_worktree <main> <worktree>: a main checkout with one commit (plumbing,
+# so no hook runs) and a detached linked worktree of it. The loop's preflight
+# takes --review-dir only when it is the main checkout of --repo's repository
+# (#1528), so every loop below runs on such a pair, as a real run does.
+main_and_worktree() {
+  { git init -q "$1" \
+    && git -C "$1" update-ref HEAD "$(git -C "$1" commit-tree "$(git -C "$1" write-tree)" -m init)" \
+    && git -C "$1" worktree add -q --detach "$2"; } >/dev/null 2>&1 \
+    || { echo "HARNESS-ERROR: could not create the main checkout $1 and its linked worktree $2" >&2; exit 2; }
+}
+LOOP_MAIN="${WORK_PHYS}/loop-main-checkout"; LOOP_WT="${WORK_PHYS}/loop-pr-worktree"
+main_and_worktree "${LOOP_MAIN}" "${LOOP_WT}"
+
 # The harness's own files (the loop's stdout and stderr, and the stub's call
 # logs) live in LOOP_LOGS, beside the state dir and never in it. They are not
 # auto-drive state: autodrive_loop.sh makes the state dir private and sets
@@ -257,7 +272,7 @@ run_loop() { # run_loop <state-dir-suffix>
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${WORK}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
+      --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
   LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
@@ -530,8 +545,11 @@ TAMPERED="${WORK}/tampered-pr-worktree"
 # Every loop needs a task (#1570); without one it refuses before the checks
 # below are reached, and a refusal test would pass for the wrong reason.
 T1528_TASK="${WORK}/task-1528.txt"; printf 'drive the PR to merge' > "${T1528_TASK}"
+# A real PR worktree: a linked worktree of the launch checkout, which is the
+# main checkout and so the only review dir the preflight accepts.
+LAUNCH="${WORK}/launch-checkout"
+main_and_worktree "${LAUNCH}" "${TAMPERED}"
 mkdir -p "${TAMPERED}/amplifier-bundle/recipes"
-git -C "${TAMPERED}" init -q 2>/dev/null
 for r in autodrive-crusty-round autodrive-merge-round loop-health-evaluator; do
   printf 'name: %s\ndescription: TAMPERED by the PR under review\nsteps: []\n' "$r" \
     > "${TAMPERED}/amplifier-bundle/recipes/${r}.yaml"
@@ -542,7 +560,7 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+    --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 RECIPES_REAL="$(cd "${RECIPES}" && pwd -P)"
 if [ "$rc" -eq 0 ] \
@@ -569,7 +587,6 @@ fi
 # merge-ready agent starts) and the evaluator runs with that checkout as its
 # working dir and `loop_agent_working_dir`. The tampered worktree is only ever
 # `repo_path` / `loop_repo_path`, where the commit step and the measurements go.
-LAUNCH="${WORK}/launch-checkout"; mkdir -p "${LAUNCH}"
 LAUNCH_REAL="$(cd "${LAUNCH}" && pwd -P)"
 TAMPERED_REAL="$(cd "${TAMPERED}" && pwd -P)"
 LOOP_DIR="${WORK}/loop-review-dir"; mkdir -p "${LOOP_DIR}"
@@ -607,9 +624,15 @@ fi
 
 # A review dir that IS the tree under review, or sits inside it, is refused
 # before a single round runs: given explicitly, defaulted from the loop's own
-# working directory, or smuggled in as a round --context.
-mkdir -p "${TAMPERED}/sub"
-for case_ in explicit inside default context; do
+# working directory, or smuggled in as a round --context. So is one that is
+# not the main checkout of the PR's repository (crusty round 3 on PR #1586):
+# a checkout of another repository, whose `gh pr diff N` reads another pull
+# request; a directory that is no checkout, as a bare repository's neighbour
+# is; and another linked worktree of the same repository.
+mkdir -p "${TAMPERED}/sub" "${WORK}/not-a-checkout"
+main_and_worktree "${WORK}/other-repo" "${WORK}/other-repo-wt"
+git -C "${LAUNCH}" worktree add -q --detach "${WORK}/sibling-wt" >/dev/null 2>&1
+for case_ in explicit inside default context other-repo not-a-checkout sibling-worktree; do
   LOOP_DIR="${WORK}/loop-review-refused-${case_}"; mkdir -p "${LOOP_DIR}"
   export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
   case "$case_" in
@@ -617,6 +640,9 @@ for case_ in explicit inside default context; do
     inside)   RD_ARGS=(--review-dir "${TAMPERED}/sub"); RUN_IN="${LAUNCH}" ;;
     default)  RD_ARGS=(); RUN_IN="${TAMPERED}" ;;
     context)  RD_ARGS=(--context "review_dir=${TAMPERED}"); RUN_IN="${LAUNCH}" ;;
+    other-repo) RD_ARGS=(--review-dir "${WORK}/other-repo"); RUN_IN="${LAUNCH}" ;;
+    not-a-checkout) RD_ARGS=(--review-dir "${WORK}/not-a-checkout"); RUN_IN="${LAUNCH}" ;;
+    sibling-worktree) RD_ARGS=(--review-dir "${WORK}/sibling-wt"); RUN_IN="${LAUNCH}" ;;
   esac
   ( cd "${RUN_IN}" && PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
@@ -626,7 +652,7 @@ for case_ in explicit inside default context; do
   if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
      && grep -qF '"loop_result":"UNTRUSTED_REVIEW_DIR"' "${LOOP_DIR}.out" \
      && grep -qF '#1528' "${LOOP_DIR}.err"; then
-    pass "1528-review-dir-refused-${case_}" "a review dir in the tree under review is refused before any round"
+    pass "1528-review-dir-refused-${case_}" "a review dir that is not the main checkout of the PR's repository is refused before any round"
   else
     fail "1528-review-dir-refused-${case_}" "rc=${rc}; calls: $(cat "${LOOP_DIR}.calls" 2>/dev/null); out: $(cat "${LOOP_DIR}.out")"
   fi
@@ -644,7 +670,7 @@ export STUB_CALLS="${LOOP_DIR}.calls" STUB_SHOW_CALLS="${LOOP_DIR}.shows"
 PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${TAMPERED}/amplifier-bundle/tools/autodrive_loop.sh" --loop-name "crusty" \
     --round-recipe "autodrive-crusty-round" --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+    --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
 if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] \
    && grep -qF 'inside the tree under review' "${LOOP_DIR}.err" \
@@ -662,9 +688,9 @@ PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
   bash "${LOOP}" --loop-name "crusty" \
     --round-recipe "${TAMPERED}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" \
     --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-    --repo "${TAMPERED}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
+    --repo "${TAMPERED}" --review-dir "${LAUNCH}" --state-dir "${LOOP_DIR}" --task-file "${T1528_TASK}" \
     >"${LOOP_DIR}.out" 2>"${LOOP_DIR}.err"; rc=$?
-if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ]; then
+if [ "$rc" -ne 0 ] && [ ! -s "${LOOP_DIR}.calls" ] && grep -qF '"loop_result":"UNTRUSTED_RECIPE"' "${LOOP_DIR}.out"; then
   pass "1528-round-recipe-by-path-refused" "a round recipe given by path is refused before any round runs"
 else
   fail "1528-round-recipe-by-path-refused" "rc=${rc}; calls: $(cat "${LOOP_DIR}.calls" 2>/dev/null)"
@@ -714,7 +740,7 @@ run_loop_before() { # run_loop_before <state-dir-suffix> [before-round path]: ru
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" AMPLIHACK_SESSION_DEPTH=2 \
     bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
       --clean-token "CLEAN" --verdict-field "crusty_verdict" \
-      --repo "${WORK}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" --context "pr_number=42" \
+      --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" --context "pr_number=42" \
       --before-round "${2:-${BR_HOOK}}" >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
   LOOP_OUT="$(cat "${LOOP_LOGS}/out")"
@@ -726,12 +752,12 @@ printf 'LOOP_HEALTH: CONTINUE — confirm once more\nLOOP_HEALTH: DONE — conve
 export STUB_HEALTH_SEQ="${WORK}/health-seq-before"
 run_loop_before before-ok; rc=$?
 unset STUB_HEALTH_SEQ
-BR_REVIEW="$(pwd -P)"
+BR_REVIEW="${LOOP_MAIN}"
 BR_TASK="--context-from-file task_description=${LOOP_DIR}/crusty-task_description.txt"
-BR_WANT="before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
+BR_WANT="before --repo ${LOOP_WT} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
 loop-health-evaluator
-before --repo ${WORK} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
+before --repo ${LOOP_WT} --review-dir ${BR_REVIEW} --state-dir ${LOOP_DIR} -c pr_number=42 ${BR_TASK} depth=2
 autodrive-crusty-round
 loop-health-evaluator"
 if [ "$rc" -eq 0 ] && [ "$(cat "${LOOP_LOGS}/calls" 2>/dev/null)" = "${BR_WANT}" ]; then
@@ -946,7 +972,10 @@ make_gh_stub
 #
 # Commits are written with plumbing (no hooks run) and strictly increasing
 # dates, so `rev-list` order is deterministic.
-FX="${WORK_PHYS}/fx"; FX_ORIGIN="${WORK_PHYS}/fx-origin.git"; FX_T=1767225600
+# The commits are written in the main checkout FX_MAIN; FX then becomes its
+# linked worktree, as a PR worktree is, so a loop run on FX can take FX_MAIN
+# as its review dir (#1528).
+FX_MAIN="${WORK_PHYS}/fx-main-checkout"; FX="${FX_MAIN}"; FX_ORIGIN="${WORK_PHYS}/fx-origin.git"; FX_T=1767225600
 fx_tree() { # fx_tree <base-commit|-> <path>=<content|@delete|@symlink:target|@gitlink:sha> ... -> tree sha
   local base="$1" idx spec path val blob; shift
   idx="${WORK_PHYS}/fx-index.$$.${RANDOM}"
@@ -995,7 +1024,8 @@ for v in FX_M0 CR_SHA CR_SHA2 FX_M1 FX_MERGE FX_CODE; do
 done
 git -C "$FX" push -q origin "${FX_M1}:refs/heads/main" "${FX_CODE}:refs/heads/feature" >/dev/null 2>&1 \
   || { echo "HARNESS-ERROR: could not push the fixture base" >&2; exit 2; }
-git -C "$FX" update-ref --no-deref HEAD "$CR_SHA2" \
+git -C "$FX_MAIN" update-ref HEAD "$FX_M1" && git -C "$FX_MAIN" worktree add -q --detach "${WORK_PHYS}/fx" "$CR_SHA2" >/dev/null 2>&1 \
+  && FX="${WORK_PHYS}/fx" && git -C "$FX" update-ref --no-deref HEAD "$CR_SHA2" \
   || { echo "HARNESS-ERROR: could not set the fixture HEAD" >&2; exit 2; }
 fx_head() { git -C "$FX" update-ref --no-deref HEAD "$1"; } # fx_head <sha>: move FX's detached HEAD
 crusty_record() { # crusty_record <CLEAN|CONCERNS> <reviewed_sha> [label] -> one record line, as step-06 writes it
@@ -1678,6 +1708,49 @@ extract_step_command() {
 }
 CRUSTY_BODY="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" "step-03-extract-crusty-verdict")"
 [[ -n "${CRUSTY_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the crusty verdict step body" >&2; exit 2; }
+
+# ---------------------------------------------------------------------------
+# 5z. A judging agent that stages something in the review dir fails its round
+#     (#1528; crusty round 3 on PR #1586).
+# ---------------------------------------------------------------------------
+# The judging agents start in the main checkout and are read-only only by
+# their prompts. Each round's step-00 stamps the review dir's index and HEAD,
+# and step-02b, the step straight after the judging step, compares. Both real
+# step bodies run here, around a judging step that does what #1528's agent did.
+IX_FILE="${LAUNCH}/staged-by-the-reviewer.txt"
+for spec in autodrive-crusty-round:step-02-crusty-review autodrive-merge-round:step-02-merge-ready-assessment; do
+  r="${spec%%:*}"; judge="${spec#*:}"
+  G0="$(extract_step_command "${RECIPES}/${r}.yaml" step-00-review-dir-guard)"
+  G2="$(extract_step_command "${RECIPES}/${r}.yaml" step-02b-review-dir-unchanged)"
+  AFTER="$(awk '/^  - id: "/ { if (prev == "'"${judge}"'") { print; exit } prev = $3; gsub(/"/, "", prev) }' "${RECIPES}/${r}.yaml")"
+  IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
+  STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"; rc0=$?
+  env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
+  printf 'x\n' > "${IX_FILE}"; git -C "${LAUNCH}" add -f -- "${IX_FILE}" >/dev/null 2>&1
+  IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
+  git -C "${LAUNCH}" rm -q --cached -- "${IX_FILE}" >/dev/null 2>&1; rm -f -- "${IX_FILE}"
+  env -u REVIEW_INDEX "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
+  if [ "$rc0" -eq 0 ] && [ -n "${STAMP}" ] && [ "$rc_same" -eq 0 ] && [ "$rc_staged" -ne 0 ] && [ "$rc_nostamp" -ne 0 ] \
+     && printf '%s' "${IX_ERR}" | grep -qF "STOP: ${judge} changed the index or HEAD of the review dir" \
+     && printf '%s' "${AFTER}" | grep -qF 'id: "step-02b-review-dir-unchanged"'; then
+    pass "1528-${r}-review-dir-index" "a ${judge} that stages a file in the review dir fails the round at step-02b, which follows it directly"
+  else
+    fail "1528-${r}-review-dir-index" "step-00 rc=${rc0} stamp='${STAMP}' unchanged rc=${rc_same} staged rc=${rc_staged} no-stamp rc=${rc_nostamp} next step: ${AFTER} err: ${IX_ERR}"
+  fi
+done
+# The loop-health evaluator starts in the review dir too: the loop stamps it
+# before the evaluator and stops with REVIEW_DIR_CHANGED when it moved.
+set_stub '{"crusty_verdict":"CLEAN"}' 0 "$H_DONE"
+export STUB_HEALTH_BODY="printf 'x\n' > '${LOOP_MAIN}/evaluator.txt' && git -C '${LOOP_MAIN}' add -f evaluator.txt"
+run_loop evaluator-stages; rc=$?
+unset STUB_HEALTH_BODY
+git -C "${LOOP_MAIN}" rm -q --cached -- evaluator.txt >/dev/null 2>&1; rm -f -- "${LOOP_MAIN}/evaluator.txt"
+if [ "$rc" -ne 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"REVIEW_DIR_CHANGED"' \
+   && grep -qF 'STOP: loop-health-evaluator changed the index or HEAD of the review dir' "${LOOP_LOGS}/err"; then
+  pass "1528-loop-evaluator-review-dir-index" "an evaluator that stages a file in the review dir stops the loop instead of reading as DONE"
+else
+  fail "1528-loop-evaluator-review-dir-index" "rc=${rc} out=${LOOP_OUT} err=$(tail -n 3 "${LOOP_LOGS}/err" | tr '\n' ' ')"
+fi
 
 crusty_verdict() {
   PATH="${STUB_BIN}:${PATH}" CRUSTY_REVIEW="$1" AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" \
@@ -3711,7 +3784,7 @@ else
       STUB_CALLS="${RRT_LOGS}/calls" STUB_SHOW_CALLS="${RRT_LOGS}/shows" STUB_DEPTH_LOG="${RRT_LOGS}/depths" \
       STUB_HEALTH_RESOLVES=0 STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_ROUND_RC=0 \
       STUB_HEALTH_RC=0 STUB_HEALTH_STDOUT= STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= STUB_CRUSTY_RECORD= "$@" \
-      bash "${RR_TOOL}" --repo "${repo}" --review-dir "${WORK_PHYS}" --state-dir "${RRT_DIR}" \
+      bash "${RR_TOOL}" --repo "${repo}" --review-dir "${FX_MAIN}" --state-dir "${RRT_DIR}" \
         -c "repo_path=${repo}" -c "pr_number=42" -c "pr_url=u" -c "autodrive_qa_evidence=x" \
         --context-from-file "task_description=${RRT_LOGS}/task.txt" \
       >"${RRT_LOGS}/out" 2>"${RRT_LOGS}/err"; RRT_RC=$?
@@ -3785,7 +3858,7 @@ loop-health-evaluator 2" ]; then
     fail "RRTOOL-usage" "rc=${rc}"
   fi
   RR_ALONE="${WORK_PHYS}/rrt-alone"; mkdir -p "${RR_ALONE}"; cp "${RR_TOOL}" "${RR_ALONE}/"
-  env PATH="${STUB_BIN}:${PATH}" bash "${RR_ALONE}/autodrive_crusty_rereview.sh" --repo "${FX}" --review-dir "${WORK_PHYS}" --state-dir "${WORK_PHYS}/rrt-alone-state" \
+  env PATH="${STUB_BIN}:${PATH}" bash "${RR_ALONE}/autodrive_crusty_rereview.sh" --repo "${FX}" --review-dir "${FX_MAIN}" --state-dir "${WORK_PHYS}/rrt-alone-state" \
     >"${RR_ALONE}.out" 2>"${RR_ALONE}.err"; rc=$?
   if [ "$rc" -eq 1 ] && grep -qF '"before_round_result":"crusty-rereview-unavailable"' "${RR_ALONE}.out" \
      && grep -qF 'ERROR: autodrive-tools-not-found:' "${RR_ALONE}.err"; then
@@ -3808,7 +3881,7 @@ loop-health-evaluator 2" ]; then
     STUB_ROUND_WRITE_RECORD=true STUB_ROUND_STDOUT="round ran" STUB_HEALTH_STDOUT="${H_DONE}" STUB_HEALTH_RC=0 \
     STUB_ROUND_RC=0 STUB_HEALTH_SEQ= STUB_ROUND_BODY= STUB_ROUND_FINDINGS= \
     bash "${LOOP}" --loop-name merge-ready --round-recipe autodrive-merge-round --clean-token MERGE_READY \
-      --verdict-field merge_ready_verdict --repo "${FX}" --state-dir "${RRE_DIR}" --task-file "${RRE_LOGS}/task.txt" \
+      --verdict-field merge_ready_verdict --repo "${FX}" --review-dir "${FX_MAIN}" --state-dir "${RRE_DIR}" --task-file "${RRE_LOGS}/task.txt" \
       --context "repo_path=${FX}" --context "pr_number=42" --before-round "${RR_TOOL}" \
     >"${RRE_LOGS}/out" 2>"${RRE_LOGS}/err"; rc=$?
   RRE_WANT="autodrive-crusty-round 2
@@ -4402,8 +4475,8 @@ E2E_ENV=("${PF_ENV[@]}" AMPLIHACK_STATE_DIR="${E2E}" STUB_UMASK_LOG="${E2E}.umas
 e2e_loop() { # e2e_loop <loop-name> <round-recipe> <clean-token> <verdict-field> <step body> [VAR=value ...]
   local name="$1" recipe="$2" token="$3" vfield="$4" body="$5"; shift 5
   env -i "${E2E_ENV[@]}" STUB_ROUND_BODY="${body}" "$@" \
-    bash -c 'umask 0002; exec bash "$1" --loop-name "$2" --round-recipe "$3" --clean-token "$4" --verdict-field "$5" --repo "$6" --state-dir "$7" --task-file "$8"' \
-    _ "${LOOP}" "${name}" "${recipe}" "${token}" "${vfield}" "${FX}" "${E2E_DIR}" "${E2E}.task" >"${E2E}.${name}.out" 2>"${E2E}.${name}.err"
+    bash -c 'umask 0002; exec bash "$1" --loop-name "$2" --round-recipe "$3" --clean-token "$4" --verdict-field "$5" --repo "$6" --state-dir "$7" --task-file "$8" --review-dir "$9"' \
+    _ "${LOOP}" "${name}" "${recipe}" "${token}" "${vfield}" "${FX}" "${E2E_DIR}" "${E2E}.task" "${FX_MAIN}" >"${E2E}.${name}.out" 2>"${E2E}.${name}.err"
 }
 E2E_PRE="$(env -i "${E2E_ENV[@]}" bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-01-crusty-loop-preflight)" 2>"${E2E}.pre.err")"
 E2E_DIR="$(printf '%s' "${E2E_PRE}" | jq -r '.state_dir // empty' 2>/dev/null)"

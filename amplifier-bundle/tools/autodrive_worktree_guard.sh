@@ -32,7 +32,10 @@
 #       worktree (an operator passes `-c repo_path=<worktree>`, or runs
 #       `-c repo_path=.` from inside it). A linked worktree is never the main
 #       checkout, so the review dir is never the tree under review. Exit 1 with
-#       a STOP line when <repo-path> is not in a git work tree.
+#       a STOP line when <repo-path> is not in a git work tree, or the answer
+#       is not that repository's main checkout (see "The review dir" below):
+#       for a bare repository the resolver answers the directory beside the
+#       bare git dir, which is no checkout at all.
 #   autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>]
 #       autodrive_loop.sh's check, before round 1. On success prints three
 #       lines: the review dir's real path, the round recipe's absolute path in
@@ -43,26 +46,79 @@
 #         - <context-key> is given: review_dir or autodrive_launch_tools came
 #           in as a round --context, and only the loop sets those;
 #         - <review-dir> (default: the current directory) is not a directory,
-#           or is <repo> or inside it;
+#           is <repo> or inside it, or is not the main checkout of <repo>'s
+#           repository (see "The review dir" below);
 #         - <round-recipe> is a path, is not in the bundle beside this script,
 #           or that bundle lies inside <repo> (this script was itself picked
 #           up from the tree under review).
 #   autodrive_worktree_guard.sh round-guard
 #       A round's step-00: the review-dir check on $REVIEW_DIR and $REPO_PATH,
 #       with an empty $REVIEW_DIR refused (there is no default; "." would be
-#       the worktree). Exit 1 with a STOP line.
+#       the worktree). Exit 1 with a STOP line. On success prints a stamp of
+#       the review dir's index and HEAD (index-stamp) for index-check.
+#   autodrive_worktree_guard.sh index-stamp <dir>
+#       Print one hash of <dir>'s HEAD, current branch and staged entries
+#       (`git ls-files --stage`). It reads; it writes no object.
+#   autodrive_worktree_guard.sh index-check <dir> <stamp> <step>
+#       After a judging agent ran in <dir>: exit 1 with a STOP line naming
+#       <step> unless index-stamp <dir> still prints <stamp>. The judging
+#       agents are full-tool agents, read-only by their prompts alone, and
+#       #1528 was an agent staging a forced gitlink in the main checkout. A
+#       change is caught by the round that made it, not by the next human
+#       commit there. A person committing in the main checkout while a judging
+#       step runs trips it too; the STOP line says so.
 #   autodrive_worktree_guard.sh commit-dir <pr>
 #       The round commit block's check, run in the block's shell after it
 #       enters repo_path: exit 1 with a STOP line unless the current directory
 #       is the top of a LINKED worktree (its git dir differs from the absolute
 #       common dir; never the main checkout) on PR <pr>'s head branch.
+#
+# The review dir is the main checkout of repo_path's repository: the top of a
+# work tree whose git dir IS the common dir, and whose common dir resolves to
+# the same real path as repo_path's. Not "outside the worktree" alone: a
+# directory in another repository would have its judging agent load that
+# repository's AGENTS.md and read the other repository's PR of the same number
+# with `gh pr diff N`, and a bare repository's neighbour directory is no
+# checkout at all.
+#
 # Every refusal names #1528. Exit 2 is a usage error. Nothing here writes.
 
 set -uo pipefail
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+# As autodrive_pr_worktree.sh does: an inherited repository-selecting variable
+# (a hook runs with GIT_DIR set, githooks(5)) would answer every git call below
+# for another repository, whatever directory it is run in.
+unset GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_CEILING_DIRECTORIES GIT_COMMON_DIR \
+    GIT_DIR GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_INDEX_FILE GIT_INDEX_VERSION \
+    GIT_NAMESPACE GIT_OBJECT_DIRECTORY GIT_PREFIX GIT_QUARANTINE_PATH \
+    GIT_WORK_TREE CDPATH
 
 stop() { echo "STOP: $* (#1528)" >&2; exit 1; }
-real() { (cd -- "$1" 2>/dev/null && pwd -P); }
+real() { [ -n "${1:-}" ] && (cd -- "$1" 2>/dev/null && pwd -P); }
+# repo_of <dir>: the real path of <dir>'s repository (its common git dir).
+repo_of() { real "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"; }
+
+# not_main_checkout <review-dir-real> <repo>: print why <review-dir-real> is
+# not the main checkout of <repo>'s repository; print nothing when it is.
+not_main_checkout() {
+  local rd="$1" want have top
+  want="$(repo_of "$2")" || want=""
+  [ -n "$want" ] || { echo "repo_path '$2' is not in a git work tree"; return; }
+  top="$(git -C "$rd" rev-parse --show-toplevel 2>/dev/null)" && [ "$(real "$top")" = "$rd" ] \
+    || { echo "review dir ${rd} is not the top of a git checkout; a bare repository has no main checkout to start the judging agents in"; return; }
+  have="$(repo_of "$rd")" || have=""
+  [ -n "$have" ] && [ "$have" = "$want" ] \
+    || { echo "review dir ${rd} belongs to another repository (${have:-unknown}), not repo_path's (${want}); its gh pr diff would read another pull request"; return; }
+  [ "$(real "$(git -C "$rd" rev-parse --absolute-git-dir 2>/dev/null)")" = "$have" ] \
+    || echo "review dir ${rd} is a linked worktree of ${want}, not its main checkout"
+}
+
+cmd_index_stamp() {
+  local dir="${1:-}"
+  [ -n "$dir" ] && git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || stop "index-stamp: '${dir}' is not a git work tree"
+  { git -C "$dir" rev-parse -q --verify HEAD; git -C "$dir" symbolic-ref -q HEAD; git -C "$dir" ls-files --stage -z; } 2>/dev/null \
+    | git hash-object --stdin
+}
 
 # inside <path> <tree>: <path> is <tree> or lies under it (both real paths).
 inside() { [ -n "$2" ] && case "$1/" in "$2"/*) return 0 ;; esac; return 1; }
@@ -87,7 +143,7 @@ launch_recipe() {
 }
 
 cmd_loop_preflight() {
-  local loop="${1:-}" repo="${2:-.}" dir="${3:-}" round="${4:-}" key="${5:-}" repo_real rd round_path
+  local loop="${1:-}" repo="${2:-.}" dir="${3:-}" round="${4:-}" key="${5:-}" repo_real rd round_path why
   refuse() { # refuse <loop_result> <reason>
     echo "ERROR: loop '${loop}': $2. The reviewed tree never supplies its reviewer's instructions (#1528)." >&2
     printf '{"loop":"%s","loop_result":"%s","round_label":"preflight","reason":"%s"}\n' "$loop" "$1" "$(printf '%s' "$2" | tr -d '"\\')"
@@ -104,16 +160,20 @@ cmd_loop_preflight() {
   [ -n "$rd" ] || refuse UNTRUSTED_REVIEW_DIR "review dir '${dir}' is not a directory"
   inside "$rd" "$repo_real" \
     && refuse UNTRUSTED_REVIEW_DIR "review dir ${rd} is the tree under review (${repo_real}) or inside it; pass --review-dir the main checkout (the loop recipes derive it from repo_path with review-dir), and keep the pull request in a linked worktree, never the main checkout"
+  why="$(not_main_checkout "$rd" "$repo")"
+  [ -z "$why" ] || refuse UNTRUSTED_REVIEW_DIR "${why}; pass --review-dir the main checkout of the pull request's repository"
   round_path="$(launch_recipe "$round" "$repo_real")" \
     || refuse UNTRUSTED_RECIPE "round recipe ${round} does not resolve in the launch-side bundle"
   printf '%s\n%s\n%s\n' "$rd" "$round_path" "$(launch_recipe loop-health-evaluator "$repo_real" 2>/dev/null)"
 }
 
 cmd_review_dir() {
-  local repo="${1:-}" root
+  local repo="${1:-}" root why
   [ -n "$repo" ] || stop "review-dir needs repo_path"
   root="$(bash "$(dirname -- "${BASH_SOURCE[0]}")/workflow_worktree_root.sh" root "$repo")" && root="$(real "$root")" \
     && [ -n "$root" ] || stop "cannot resolve the main checkout of repo_path '${repo}'; the review dir is never taken from the working directory"
+  why="$(not_main_checkout "$root" "$repo")"
+  [ -z "$why" ] || stop "${why}; auto-drive's judging agents start only in the main checkout of the pull request's repository"
   printf '%s\n' "$root"
 }
 
@@ -126,7 +186,17 @@ cmd_round_guard() {
   [ -n "$repo_real" ] || stop "cannot enter repo_path '${REPO_PATH:-.}'"
   inside "$rd" "$repo_real" \
     && stop "review_dir ${rd} is the tree under review (${repo_real}) or inside it; the reviewed tree never instructs its reviewer"
+  why="$(not_main_checkout "$rd" "$repo_real")"
+  [ -z "$why" ] || stop "$why"
   echo "INFO: judging agent starts in ${rd}; commits happen only in ${repo_real}" >&2
+  cmd_index_stamp "$rd"
+}
+
+cmd_index_check() {
+  local dir="${1:-}" want="${2:-}" step="${3:-the judging step}" now
+  [ -n "$want" ] || stop "${step}: no index stamp of the review dir was taken before it ran; nothing shows its index is unchanged"
+  now="$(cmd_index_stamp "$dir")" || exit 1
+  [ "$now" = "$want" ] || stop "${step} changed the index or HEAD of the review dir ${dir} (git -C '${dir}' status; git -C '${dir}' reflog -n 5). Judging agents only read; undo the change there before another round. If a person committed there meanwhile, run the round again"
 }
 
 cmd_commit_dir() {
@@ -148,6 +218,8 @@ case "$sub" in
   loop-preflight) cmd_loop_preflight "$@" ;;
   review-dir) cmd_review_dir "$@" ;;
   round-guard) cmd_round_guard ;;
+  index-stamp) cmd_index_stamp "$@" ;;
+  index-check) cmd_index_check "$@" ;;
   commit-dir) cmd_commit_dir "$@" ;;
-  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | review-dir <repo-path> | round-guard | commit-dir <pr>" >&2; exit 2 ;;
+  *) echo "usage: autodrive_worktree_guard.sh loop-preflight <loop> <repo> <review-dir> <round-recipe> [<context-key>] | review-dir <repo-path> | round-guard | index-stamp <dir> | index-check <dir> <stamp> <step> | commit-dir <pr>" >&2; exit 2 ;;
 esac

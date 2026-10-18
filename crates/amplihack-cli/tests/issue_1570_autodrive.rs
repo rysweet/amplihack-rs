@@ -105,6 +105,41 @@ struct Run {
     _tmp: tempfile::TempDir,
 }
 
+/// `git init` `main` with one commit (plumbing, so no hook runs), then add
+/// `worktree` as a detached linked worktree of it.
+fn main_checkout_with_worktree(
+    home: &std::path::Path,
+    main: &std::path::Path,
+    worktree: &std::path::Path,
+) {
+    let git = |args: &[&str]| {
+        let out = amplihack_git::command_in(main)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(args)
+            .env("HOME", home)
+            .env("GIT_CONFIG_NOSYSTEM", "1")
+            .output()
+            .expect("run git");
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init", "-q"]);
+    let tree = git(&["write-tree"]);
+    let commit = git(&["commit-tree", &tree, "-m", "init"]);
+    git(&["update-ref", "HEAD", &commit]);
+    git(&[
+        "worktree",
+        "add",
+        "-q",
+        "--detach",
+        &worktree.display().to_string(),
+    ]);
+}
+
 /// Run the loop with `task` written to the file named by `--task-file`.
 fn drive_two_rounds(task: &str) -> Run {
     drive(Some(task))
@@ -123,9 +158,13 @@ fn drive(task: Option<&str>) -> Run {
     if let Some(task) = task {
         std::fs::write(&task_file, task).unwrap();
     }
-    for d in [&bin, &log, &stub_state, &repo, &cwd] {
+    for d in [&bin, &log, &stub_state, &cwd] {
         std::fs::create_dir_all(d).unwrap();
     }
+    // The loop's review dir defaults to its working directory and must be the
+    // main checkout of --repo's repository (#1528), so `cwd` is a main
+    // checkout and `repo` its linked worktree, as in a real run.
+    main_checkout_with_worktree(tmp.path(), &cwd, &repo);
     let stub = bin.join("amplihack");
     std::fs::write(&stub, STUB).unwrap();
     std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o755)).unwrap();

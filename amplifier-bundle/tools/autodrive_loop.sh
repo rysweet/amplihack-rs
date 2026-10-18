@@ -237,8 +237,7 @@ while :; do
   fi
 
   echo "=== auto-drive loop '${LOOP_NAME}': ${ROUND_LABEL} ===" >&2
-  # The log is created by this shell under umask 077; the round runs with the
-  # caller's umask.
+  # The log is created by this shell under umask 077; the round runs with the caller's umask.
   ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$ROUND_RECIPE_PATH" \
       --working-dir "$REPO" \
       -c "autodrive_round_record=${RECORD}" \
@@ -312,6 +311,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
   HEALTH_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-health.log"
+  HEALTH_INDEX="$(bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-stamp "$REVIEW_REAL")" || HEALTH_INDEX="" # #1528: the evaluator starts there too
   ( umask "$CALLER_UMASK" && exec "$AMPLIHACK_BIN" recipe run "$HEALTH_RECIPE_PATH" \
       --working-dir "$REVIEW_REAL" \
       -c "loop_name=auto-drive:${LOOP_NAME}" \
@@ -336,6 +336,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  bash "${LOOP_HOME}/autodrive_worktree_guard.sh" index-check "$REVIEW_REAL" "$HEALTH_INDEX" loop-health-evaluator || { escalate "REVIEW_DIR_CHANGED" "loop-health-evaluator changed the index or HEAD of the review dir ${REVIEW_REAL} (#1528)"; exit 1; }
 
   # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and
   # exits non-zero on STUCK. The runner's formatter (issue #1512) prints
@@ -343,10 +344,9 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   # then `    Output: LOOP_HEALTH: <verdict>`. Only the line straight after the
   # LAST completed step-04 status line, with no status line after it, is
   # trusted; its prefix is exactly `    Output: ` or none. Anything else is
-  # STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line).
-  # BSD awk and mawk safe. The format is owned by format_recipe_run_table in
-  # crates/amplihack-cli/src/commands/recipe/run/format.rs; the Rust test
-  # tests_autodrive_health_log.rs runs this awk over that function's output.
+  # STUCK (docs/reference/auto-drive-to-merge.md#reading-the-loop-health-line). BSD awk and
+  # mawk safe. format_recipe_run_table (crates/amplihack-cli/src/commands/recipe/run/format.rs)
+  # owns the format; tests_autodrive_health_log.rs runs this awk over its output.
   LOOP_VERDICT="STUCK"
   if [ "$HEALTH_RC" -eq 0 ]; then
     HEALTH_READ="$(LC_ALL=C awk '

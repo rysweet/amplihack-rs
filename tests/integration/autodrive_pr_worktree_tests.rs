@@ -1695,6 +1695,145 @@ fn guard_review_dir_prints_the_main_checkout_or_stops() {
     );
 }
 
+/// A main checkout with one commit and a linked worktree of it, under `root`.
+fn main_and_worktree(home: &Path, main: &Path, wt: &Path) {
+    fs::create_dir_all(main).expect("mkdir main");
+    quiet_git(home, main, &["init", "-q"]);
+    quiet_git(home, main, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    let wt_str = wt.display().to_string();
+    quiet_git(home, main, &["worktree", "add", "-q", "--detach", &wt_str]);
+}
+
+/// Crusty round 3 on PR #1586, item 1: `review-dir` must not take its answer
+/// from an inherited `GIT_DIR` (a git hook runs with one set, githooks(5)),
+/// and the loop preflight must refuse a review dir in another repository,
+/// whose `gh pr diff N` would read that repository's pull request N.
+#[test]
+fn review_dir_ignores_an_inherited_git_dir_and_the_preflight_refuses_another_repository() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canon");
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let (main, wt) = (root.join("main"), root.join("wt"));
+    let (other, other_wt) = (root.join("other"), root.join("other-wt"));
+    main_and_worktree(&home, &main, &wt);
+    main_and_worktree(&home, &other, &other_wt);
+    let guard = tools_dir().join("autodrive_worktree_guard.sh");
+
+    let output = Command::new("bash")
+        .arg(&guard)
+        .arg("review-dir")
+        .arg(&wt)
+        .env("GIT_DIR", other.join(".git"))
+        .env("GIT_COMMON_DIR", other.join(".git"))
+        .env("GIT_WORK_TREE", &other)
+        .env("GIT_INDEX_FILE", other.join(".git/index"))
+        .output()
+        .expect("run review-dir");
+    assert_eq!(output.status.code(), Some(0), "{}", describe(&output));
+    assert_eq!(
+        text(&output.stdout).trim_end(),
+        main.display().to_string(),
+        "an inherited GIT_DIR must not choose the review dir\n{}",
+        describe(&output)
+    );
+
+    for (review, why) in [
+        (&other, "another repository"),
+        (&other_wt, "another repository"),
+        (&root, "not the top of a git checkout"),
+    ] {
+        let refused = Command::new("bash")
+            .arg(&guard)
+            .arg("loop-preflight")
+            .arg("crusty")
+            .arg(&wt)
+            .arg(review)
+            .arg("autodrive-crusty-round")
+            .output()
+            .expect("run loop-preflight");
+        assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
+        assert!(
+            text(&refused.stdout).contains("\"loop_result\":\"UNTRUSTED_REVIEW_DIR\"")
+                && text(&refused.stderr).contains(why),
+            "review dir {}: {}",
+            review.display(),
+            describe(&refused)
+        );
+    }
+
+    // The round's own guard refuses it too, before the judging agent starts.
+    let refused = Command::new("bash")
+        .arg(&guard)
+        .arg("round-guard")
+        .env("REVIEW_DIR", &other)
+        .env("REPO_PATH", &wt)
+        .output()
+        .expect("run round-guard");
+    assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
+    assert!(refused.stdout.is_empty(), "{}", describe(&refused));
+}
+
+/// Crusty round 3 on PR #1586, item 2: for a bare repository the resolver
+/// answers the directory beside the bare git dir, which is no checkout.
+/// `review-dir` stops by name rather than start agents there.
+#[test]
+fn review_dir_stops_on_a_bare_repository_with_a_linked_worktree() {
+    let tmp = TempDir::new().expect("tempdir");
+    let root = fs::canonicalize(tmp.path()).expect("canon");
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    let (seed, seed_wt) = (root.join("seed"), root.join("seed-wt"));
+    main_and_worktree(&home, &seed, &seed_wt);
+    let parent = root.join("src");
+    fs::create_dir_all(&parent).expect("mkdir src");
+    let bare = parent.join("repo.git");
+    let bare_str = bare.display().to_string();
+    quiet_git(&home, &seed, &["clone", "-q", "--bare", ".", &bare_str]);
+    let wt = bare.join("wt");
+    let wt_str = wt.display().to_string();
+    quiet_git(
+        &home,
+        &bare,
+        &["worktree", "add", "-q", "--detach", &wt_str],
+    );
+
+    let guard = tools_dir().join("autodrive_worktree_guard.sh");
+    let output = Command::new("bash")
+        .arg(&guard)
+        .arg("review-dir")
+        .arg(&wt)
+        .env("GIT_CEILING_DIRECTORIES", &root)
+        .output()
+        .expect("run review-dir");
+    assert_eq!(output.status.code(), Some(1), "{}", describe(&output));
+    assert!(output.stdout.is_empty(), "{}", describe(&output));
+    let said = text(&output.stderr);
+    assert!(
+        said.contains("STOP:") && said.contains("bare repository") && said.contains("#1528"),
+        "{}",
+        describe(&output)
+    );
+
+    // Handed to the loop anyway, the directory beside the bare git dir is refused.
+    let refused = Command::new("bash")
+        .arg(&guard)
+        .arg("loop-preflight")
+        .arg("crusty")
+        .arg(&wt)
+        .arg(&parent)
+        .arg("autodrive-crusty-round")
+        .env("GIT_CEILING_DIRECTORIES", &root)
+        .output()
+        .expect("run loop-preflight");
+    assert_eq!(refused.status.code(), Some(1), "{}", describe(&refused));
+    assert!(
+        text(&refused.stdout).contains("UNTRUSTED_REVIEW_DIR"),
+        "{}",
+        describe(&refused)
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Round 3: judging agents never start in the tree they judge (#1528)
 // ---------------------------------------------------------------------------
@@ -1818,10 +1957,24 @@ fn round_review_dir_guard_refuses_the_tree_under_review() {
     let root = fs::canonicalize(tmp.path()).expect("canonicalize");
     let pr = root.join("pr-worktree");
     let launch = root.join("launch");
-    fs::create_dir_all(pr.join("sub")).expect("mkdir pr");
-    fs::create_dir_all(&launch).expect("mkdir launch");
+    let home = root.join("home");
+    fs::create_dir_all(&home).expect("mkdir home");
+    // The PR worktree is a linked worktree of the launch checkout, as in a
+    // real run; the guard accepts only that main checkout as the review dir.
+    main_and_worktree(&home, &launch, &pr);
+    fs::create_dir_all(pr.join("sub")).expect("mkdir pr/sub");
     // A symlink that points into the PR worktree is still the PR worktree.
     std::os::unix::fs::symlink(&pr, root.join("alias")).expect("symlink");
+    // Outside the PR worktree, yet not its main checkout (crusty round 3 on
+    // PR #1586): a plain directory, another repository, a sibling worktree.
+    fs::create_dir_all(root.join("plain")).expect("mkdir plain");
+    main_and_worktree(&home, &root.join("other"), &root.join("other-wt"));
+    let sibling = root.join("sibling-wt").display().to_string();
+    quiet_git(
+        &home,
+        &launch,
+        &["worktree", "add", "-q", "--detach", &sibling],
+    );
 
     for (recipe, _) in ROUNDS {
         let ok = run_review_dir_guard(recipe, &pr, Some(&launch));
@@ -1831,13 +1984,16 @@ fn round_review_dir_guard_refuses_the_tree_under_review() {
             "{recipe}: launch side passes\n{}",
             describe(&ok)
         );
-        let cases: [(&str, Option<PathBuf>); 6] = [
+        let cases: [(&str, Option<PathBuf>); 9] = [
             ("missing", None),
             ("empty", Some(PathBuf::new())),
             ("same", Some(pr.clone())),
             ("inside", Some(pr.join("sub"))),
             ("symlinked", Some(root.join("alias"))),
             ("absent", Some(root.join("nope"))),
+            ("plain", Some(root.join("plain"))),
+            ("other-repo", Some(root.join("other"))),
+            ("sibling-worktree", Some(root.join("sibling-wt"))),
         ];
         for (label, review) in &cases {
             let out = run_review_dir_guard(recipe, &pr, review.as_deref());
@@ -1939,7 +2095,7 @@ fn round_step_04_blocks_check_linked_worktree_and_head_branch_before_staging() {
         let tool = logical_lines(&read(&launch_tools().join("autodrive_worktree_guard.sh")));
         let linked_line = tool
             .iter()
-            .find(|l| l.contains("--absolute-git-dir"))
+            .find(|l| l.contains("gd=\"$(git rev-parse --absolute-git-dir)\""))
             .unwrap_or_else(|| panic!("autodrive_worktree_guard.sh: no linked-worktree check"));
         for required in [
             "--path-format=absolute --git-common-dir",

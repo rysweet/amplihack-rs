@@ -780,16 +780,16 @@ already used the dual-name form.
 A read is one `${<NAME>:-` occurrence, so a line that reads the same output
 twice counts twice. Reads made inside a bundled tool, such as the merge
 round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 29 in all:
+here; that file uses the same form. There are 31 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
 | `auto-drive-to-merge.yaml` | 3 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 5 |
-| `autodrive-crusty-round.yaml` | 7 |
+| `autodrive-crusty-round.yaml` | 8 |
 | `autodrive-merge-loop.yaml` | 5 |
-| `autodrive-merge-round.yaml` | 8 |
+| `autodrive-merge-round.yaml` | 9 |
 
 ### A stale bare variable wins
 
@@ -1413,6 +1413,25 @@ the repository that `repo_path` belongs to.
   `-c repo_path=.` from inside the worktree. In each case the review dir is
   the main checkout and the preflight passes. A linked worktree is never the
   main checkout, so the review dir cannot be the tree under review.
+- The guard unsets the repository-selecting variables (`GIT_DIR`,
+  `GIT_COMMON_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE` and the rest of the list
+  `autodrive_pr_worktree.sh` unsets) before its first git call. An inherited
+  `GIT_DIR`, which a git hook runs with (githooks(5)), would otherwise make
+  `review-dir` answer for another repository while the resolver, which unsets
+  them, answers for `repo_path`'s.
+- `review-dir`, the loop preflight and `round-guard` all accept a review dir
+  only when it is the **main checkout of `repo_path`'s repository**: the top
+  of a work tree whose git dir is its common dir, and whose
+  `--git-common-dir` resolves to the same real path as `repo_path`'s.
+  Outside the worktree is not enough. A checkout of another repository would
+  have the judging agent load that repository's `AGENTS.md`, and its
+  `gh pr diff N`, which has no `-R`, would read that repository's pull request
+  N. For a bare repository `workflow_worktree_root.sh root` answers the
+  directory beside the bare git dir, which is no checkout, so `review-dir`
+  stops there with a `STOP:` line: auto-drive needs a repository with a main
+  checkout to start its judging agents in. Another linked worktree of the
+  same repository is refused too; it carries its own branch's instruction
+  files.
 - `autodrive_loop.sh` hands it to every round as `review_dir`, after the
   caller's `--context` values, and runs `loop-health-evaluator` with
   `--working-dir` set to it and `loop_agent_working_dir` set to it.
@@ -1433,6 +1452,18 @@ the repository that `repo_path` belongs to.
   `repo_path` (symlinks resolved), or when `autodrive_launch_tools` holds no
   guard. Neither has a default, because `.` would resolve to the pull request
   worktree.
+- The judging agents are full-tool agents, read-only only by their prompts,
+  and #1528 was an agent staging a forced gitlink in the main checkout.
+  `round-guard` therefore prints a stamp of the review dir's `HEAD`, branch
+  and staged entries (`index-stamp`; it writes no object), which `step-00`
+  keeps as `review_index`. `step-02b-review-dir-unchanged`, the step straight
+  after each judging step, runs `index-check` and fails the round with a
+  `STOP:` line naming the judging step when the stamp has changed.
+  `autodrive_loop.sh` does the same around `loop-health-evaluator` and stops
+  with `"loop_result":"REVIEW_DIR_CHANGED"`. The change is caught by the round
+  that made it, before `step-04` commits anything, not by the next human
+  commit in the main checkout. A person committing in the main checkout while
+  a judging step runs trips the check as well; the `STOP:` line says so.
 - The judging prompts tell the agent where it is and to read the pull request
   as data — `gh pr diff`, `gh pr view`, `git -C <worktree> show HEAD:<path>` —
   never by `cd`-ing into the worktree or opening its files with file tools,
@@ -1442,7 +1473,8 @@ the repository that `repo_path` belongs to.
 The loop refuses, with `"loop_result":"UNTRUSTED_REVIEW_DIR"` and before any
 round runs, when the review dir is the tree under review or inside it — given
 by `--review-dir`, defaulted from the loop's own working directory, or passed as
-`--context review_dir=...`. The launch directory does not decide the review
+`--context review_dir=...` — or is not the main checkout of the pull request's
+repository. The launch directory does not decide the review
 dir in the loop recipes; `repo_path` does, through `review-dir`. A refusal
 there therefore means the main checkout is itself the tree under review: keep
 the pull request in a linked worktree. A direct call to `autodrive_loop.sh`
@@ -1451,7 +1483,13 @@ must pass `--review-dir` the main checkout.
 `test-auto-drive-to-merge.sh` checks, against the tampered worktree, that the
 round gets the launch checkout as `review_dir` and the evaluator starts there
 (`1528-judging-agents-launch-side`), and covers each refusal
-(`1528-review-dir-refused-*`). Its end-to-end runs of both loops' `step-02`
+(`1528-review-dir-refused-*`, including another repository's checkout, a
+directory that is no checkout and a sibling worktree). Every loop it runs works
+on a linked worktree with its real main checkout as the review dir. It runs
+both rounds' real `step-00` and `step-02b` bodies around a judging step that
+stages a file in the review dir and requires the round to fail
+(`1528-autodrive-*-round-review-dir-index`), and requires the loop to stop when
+the evaluator does the same (`1528-loop-evaluator-review-dir-index`). Its end-to-end runs of both loops' `step-02`
 (`1528-1570-*-loop-e2e`) set `repo_path` to the pull request's linked
 worktree and check that the real preflight passes with the main checkout as
 `review_dir`. `autodrive_pr_worktree_tests.rs` checks the same for `step-02`
@@ -1459,7 +1497,10 @@ with `repo_path` set to the worktree and to the main checkout. The same file
 also checks that in both round recipes every agent step except `step-04` takes
 `working_dir` from `review_dir`, that the evaluator's analyzer takes it from
 `loop_agent_working_dir`, and it runs `step-00-review-dir-guard` against each
-bad review dir.
+bad review dir. `review_dir_ignores_an_inherited_git_dir_and_the_preflight_refuses_another_repository`
+runs `review-dir` with `GIT_DIR` pointing at another repository, and
+`review_dir_stops_on_a_bare_repository_with_a_linked_worktree` runs it on a
+bare repository's linked worktree.
 
 The resolver sits next to `autodrive_loop.sh` in the launch-side bundle, never
 in the pull request worktree. The loops always resolve by `--pr`. The merge
@@ -1644,7 +1685,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
-| `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir), each round's `step-00-review-dir-guard`, and the commit block's linked-worktree and head-branch check. Writes nothing. |
+| `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` and `step-02b-review-dir-unchanged` (index stamp and check), and the commit block's linked-worktree and head-branch check. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |

@@ -49,10 +49,12 @@ context:
 
 steps:
   # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
+  # It prints a stamp of the review dir's index; step-02's check compares it.
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
       bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or missing from autodrive_launch_tools '${AUTODRIVE_LAUNCH_TOOLS:-}' (#1528)" >&2; exit 1; }
+    output: "review_index"
 
   - id: "step-01-round-context"
     type: "bash"
@@ -174,6 +176,11 @@ steps:
       - A missing or unreadable verdict is read as `CONCERNS`, never `CLEAN`.
         Failing safe here means more review, not an unearned advance.
     output: "crusty_review"
+
+  - id: "step-02b-review-dir-unchanged"
+    type: "bash"
+    command: |
+      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${REVIEW_INDEX:-${RECIPE_VAR_review_index:-}}" step-02-crusty-review || exit 1
 
   - id: "step-03-extract-crusty-verdict"
     type: "bash"
