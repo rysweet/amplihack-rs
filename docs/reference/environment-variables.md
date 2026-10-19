@@ -21,6 +21,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_STEP_TIMEOUT](#amplihack_step_timeout)
   - [AMPLIHACK_NONINTERACTIVE (recipe runner subprocess)](#amplihack_noninteractive-recipe-runner-subprocess)
   - [AMPLIHACK_RECIPE_RUN_ID](#amplihack_recipe_run_id)
+  - [AMPLIHACK_RUN_PRIORITY](#amplihack_run_priority)
+  - [AMPLIHACK_OVERFLOW_PRIMARY](#amplihack_overflow_primary)
   - [AMPLIHACK_RUNTIME_ROOT](#amplihack_runtime_root)
   - [AMPLIHACK_RESULT_SINK](#amplihack_result_sink)
   - [CLAUDECODE (recipe runner subprocess)](#claudecode-recipe-runner-subprocess)
@@ -37,6 +39,8 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
+  - [AMPLIHACK_OVERFLOW_HARNESSES](#amplihack_overflow_harnesses)
+  - [AMPLIHACK_OVERFLOW_MIN_PRIORITY](#amplihack_overflow_min_priority)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -498,6 +502,36 @@ pointer event schema and final result fields.
 
 ---
 
+### AMPLIHACK_RUN_PRIORITY
+
+**Type:** string
+**Values:** `low` | `normal` | `high`
+**Set by:** `amplihack recipe run`, only while harness overflow is enabled
+**Read by:** the nested launcher of each agent step
+
+The run's work priority, taken from `--priority`, then `-c priority=...`, then
+`normal`. A step may overflow only when this is at or above
+`AMPLIHACK_OVERFLOW_MIN_PRIORITY`. Treat it as read-only.
+
+See [Work priority](./agent-configuration.md#work-priority).
+
+---
+
+### AMPLIHACK_OVERFLOW_PRIMARY
+
+**Type:** string
+**Values:** `claude` | `codex` | `copilot`
+**Set by:** `amplihack recipe run`, only for a run that is eligible to overflow
+**Read by:** the nested launcher of each agent step
+
+The run's primary harness. Each agent step compares its capacity against this
+harness before deciding whether to run elsewhere; without the variable no step
+overflows. Treat it as read-only.
+
+See [When a run or step overflows](./agent-configuration.md#when-a-run-or-step-overflows).
+
+---
+
 ### AMPLIHACK_RUNTIME_ROOT
 
 **Type:** absolute path
@@ -947,6 +981,41 @@ or out of either backend without modifying on-disk state.
 
 See [Memory Backend Reference](./memory-backend.md) for the complete
 backend configuration reference.
+
+---
+
+### AMPLIHACK_OVERFLOW_HARNESSES
+
+**Type:** comma-separated string
+**Values:** any of `claude`, `codex`, `copilot`; or `off`, `none` or empty
+**Default:** unset (overflow off, unless `overflow.harnesses` is set in `~/.amplihack/config`)
+**Read by:** `amplihack recipe run` and the nested launcher of each agent step
+
+Harnesses a recipe run may move work to when the primary harness is exhausted,
+in order of preference. `off`, `none` or an empty value disables overflow for
+the command even when the config file enables it. `amplihack recipe run`
+exports the resolved list to its steps.
+
+```sh
+AMPLIHACK_OVERFLOW_HARNESSES=copilot,codex amplihack recipe run default-workflow \
+  -c task_description="Fix the flaky test" -c repo_path=.
+```
+
+See [Harness Overflow](./agent-configuration.md#harness-overflow).
+
+---
+
+### AMPLIHACK_OVERFLOW_MIN_PRIORITY
+
+**Type:** string
+**Values:** `low` | `normal` | `high`
+**Default:** `low`
+**Read by:** `amplihack recipe run` and the nested launcher of each agent step
+
+Lowest work priority that may overflow. It has no effect unless a harness list
+is set. Overrides `overflow.min_priority` in `~/.amplihack/config`.
+
+See [Overflow settings](./agent-configuration.md#overflow-settings).
 
 ---
 
@@ -1622,6 +1691,7 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
+- [Harness Overflow](./agent-configuration.md#harness-overflow): overflow settings, work priority and the per-run harness record
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
 - [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt, and why `AMPLIHACK_AGENT_BINARY` does not (#1525)
