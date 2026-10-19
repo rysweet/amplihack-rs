@@ -365,7 +365,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
   fi
 
   OVERRIDE_ARGS=("$ROUND_VERDICT" "$VERDICT_SAFE" "$PREV_OVERRIDDEN" "$PREV_VERDICT" "$FINDINGS" "$PREV_FINDINGS" "$BASELINE"
-    "$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')")
+    "$(git -C "$REPO" rev-parse HEAD || printf '')")
   PREV_FINDINGS="$FINDINGS"; PREV_TEST="$TEST_SIGNAL"; PREV_CI="$CI_SIGNAL"; PREV_VERDICT="$VERDICT_SAFE"; PREV_OVERRIDDEN=0
 
   # --- decide, on BOTH signals ---------------------------------------------
