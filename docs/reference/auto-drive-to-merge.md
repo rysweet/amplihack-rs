@@ -1533,18 +1533,21 @@ amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools
 
 | Form | Examples | Label |
 | --- | --- | --- |
-| `pr merge`, any flags | `gh pr merge 38 --squash --admin`; `gh -R o/r pr merge 38` | `gh pr merge` |
-| REST merge endpoints, any method | `gh api -X PUT repos/o/r/pulls/38/merge`; `gh api repos/o/r/merges` | `gh api merge endpoint` |
-| A non-canonical endpoint that mentions `pull` or `merge` | a full `https://` URL, an `api/v3/` prefix, a leading `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, a `pulls`, `merge` or `merges` segment that is not all lower-case (`PULLS`, `Pulls`), `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes | `gh api merge endpoint` |
+| `pr merge`, any flags | `gh pr merge 38 --squash`; `gh -R o/r pr merge 38`; with `--admin` too, a flag never used anywhere (prohibited) | `gh pr merge` |
+| REST merge endpoints, any method (never outside the gate) | `gh api -X PUT repos/o/r/pulls/38/merge`; `gh api repos/o/r/merges` | `gh api merge endpoint` |
+| A merge endpoint in another spelling | a full `https://` URL (any host or port), an `api/v3/` prefix, a leading or doubled `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, any letter case (`PULLS`, `Merge`) | `gh api merge endpoint` |
+| An ambiguous endpoint that mentions `pull` or `merge` | `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes | `gh api merge endpoint` |
 | GraphQL merge mutations | `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest` as whole names, any case | `gh api graphql merge mutation` |
 | A GraphQL body the shim cannot read | `--input`, `-F query=@file`, `@-`, stdin | `gh api graphql unreadable query` |
 | Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql`; a call through an alias that expands to a merge form; any alias lookup while `gh alias list` fails | `gh alias` |
 
-Endpoints are refused, not parsed: the canonical form is a relative
-`repos/<owner>/<repo>/…` path, and anything ambiguous that could reach a merge
-endpoint is refused. Write `gh api repos/o/r/pulls/38`, not
-`gh api /repos/o/r/pulls/38`. Only `gh api` arguments are inspected, so a
-`gh pr create --body` that mentions `mergePullRequest` passes through.
+The shim normalises an endpoint (scheme, host and port, `api/v3/`, repeated
+or leading `/`, query, fragment, letter case) and refuses it when the result is
+`repos/<owner>/<repo>/pulls/<n>/merge` or `repos/<owner>/<repo>/merges`. An
+endpoint that mentions `pull` or `merge` but carries `%`, `.` or `..`
+segments, a backslash or whitespace is refused without parsing. Only `gh api`
+arguments are inspected, so a `gh pr create --body` that mentions
+`mergePullRequest` passes through.
 
 A refused call never reaches the real `gh`. The shim prints one fixed line,
 with the label from the table and never the arguments, and exits `3`:
@@ -1573,7 +1576,8 @@ must hold:
 
 1. `/proc/self/stat` field 4 still equals `$PPID`.
 2. `/proc/$PPID/cmdline` is exactly `[<bash>, -p, <gate>, …]`, where `<gate>`
-   resolves to the trusted gate's real path.
+   is the trusted gate's physical path itself; a symlink, a relative path or
+   a `..` segment is refused.
 3. `/proc/$PPID/fd/255` is the same file as the trusted gate.
 4. `/proc/$PPID/exe` is a file named `bash`, owned by root and not writable by
    group, others or the current user.
@@ -1613,8 +1617,11 @@ still passes.
 
 ### A merge outside the gate ends the run
 
-After phase 1 (`autodrive-build.yaml` step-03) and after the crusty loop in
-`auto-drive-to-merge.yaml`, the run re-reads the PR with `autodrive_pr_state`.
+After phase 1 (`autodrive-build.yaml` step-03, when it built under
+`no_merge`) and after the crusty loop (`auto-drive-to-merge.yaml`
+`autodrive-check-unmerged`, skipped when the PR was already merged when the
+run started), `autodrive_require_unmerged` re-reads the PR with
+`autodrive_pr_state`.
 The PR number arrives through an environment variable and must match
 `^[0-9]+$`. `MERGED` exits `1` with
 `#1551 merged outside autodrive_merge_gate.sh`. An unreadable state is retried
@@ -1646,8 +1653,9 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
   gate path step-03 resolved come from one bundle tree, that `/bin/bash` is root-owned, and
   that the session exports no bash functions (`module purge`) and no
   `BASH_ENV`, `ENV`, `BASHOPTS`, `PS4` or `SHELLOPTS`. Then rerun phase 3.
-- **An agent's `gh api /repos/…` call is refused.** Drop the leading `/`,
-  scheme, host or query; use the canonical `repos/<owner>/<repo>/…` path.
+- **An agent's non-merge `gh api` call is refused.** It mentions `pull` or
+  `merge` and carries `%`, `.`/`..`, a backslash or whitespace; use the plain
+  `repos/<owner>/<repo>/…` path.
 - **The run exits `1` with `#1551 merged outside`.** Something merged the PR
   before phase 3. Review the merge in the PR's timeline; the run will not
   report it as a success.
