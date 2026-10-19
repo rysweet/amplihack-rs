@@ -20,7 +20,7 @@
 //! Each test skips gracefully if the binary has not been compiled yet.
 
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -56,7 +56,7 @@ fn tc09_fleet_cli_help_exits_zero() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -90,7 +90,7 @@ fn tc09b_top_level_help_mentions_fleet() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -118,7 +118,7 @@ fn tc09c_fleet_tui_help_exits_zero() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "tui", "--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -160,7 +160,7 @@ fn tc10_fleet_binary_does_not_crash_on_empty_locks_dir() {
     let empty_bin_dir = tempfile::tempdir().expect("create empty bin dir");
 
     // The TUI exits when stdin is not a terminal; redirect stdin from /dev/null.
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "tui"])
         .env("HOME", home.path())
         .env("PATH", empty_bin_dir.path())
@@ -312,7 +312,7 @@ fn tc12_fleet_tui_exits_on_non_terminal_stdin() {
     let empty_bin = tempfile::tempdir().expect("empty bin dir");
 
     // Spawn with null stdin (non-terminal).
-    let mut child = Command::new(&bin)
+    let mut child = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "tui"])
         .env("HOME", home.path())
         .env("PATH", empty_bin.path())
@@ -380,7 +380,7 @@ fn tc12_fleet_tui_no_lingering_threads_after_exit() {
     std::fs::create_dir_all(&locks_dir).unwrap();
     let empty_bin = tempfile::tempdir().unwrap();
 
-    let mut child = Command::new(&bin)
+    let mut child = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "tui"])
         .env("HOME", home.path())
         .env("PATH", empty_bin.path())
@@ -415,7 +415,7 @@ fn fleet_status_help_exits_zero() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "status", "--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -436,7 +436,7 @@ fn fleet_setup_help_exits_zero() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .args(["fleet", "setup", "--help"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -473,7 +473,7 @@ fn fleet_all_subcommands_help_exit_zero() {
     ];
 
     for sub in subcommands {
-        let output = Command::new(&bin)
+        let output = crate::isolated_amplihack::isolated(&bin)
             .args(["fleet", sub, "--help"])
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

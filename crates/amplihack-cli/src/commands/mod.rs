@@ -5,6 +5,7 @@ pub mod append;
 pub mod auto_mode;
 pub mod builder;
 pub mod completions;
+pub mod config;
 pub mod cs_validate;
 pub mod doctor;
 pub mod fleet;
@@ -435,6 +436,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
         }
+        Commands::Config { command } => config::run_config(command),
         Commands::AgentBinary { shell, working_dir } => {
             agent_binary::run_agent_binary(shell, working_dir)
         }

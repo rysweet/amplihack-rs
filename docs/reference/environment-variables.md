@@ -2,6 +2,8 @@
 
 All environment variables read or written by `amplihack` during a launch (`amplihack claude`, `amplihack copilot`, `amplihack codex`, `amplihack amplifier`).
 
+Several of these variables have a persistent equivalent in the [user config files](./user-config.md) (`amplihack config set ...`). A variable that is set always outranks the config files. For every `AMPLIHACK_*` name in the code, classified as user preference, internal or test-only, see the [AMPLIHACK_* Environment Variable Audit](./amplihack-env-vars.md).
+
 ## Contents
 
 - [Variables set by amplihack](#variables-set-by-amplihack)
@@ -73,17 +75,21 @@ These variables are injected into every child process launched by `amplihack`. T
 **Default:** `copilot`
 **Set by:** `EnvBuilder::with_launched_agent_binary()` (a launcher, tagged `session:<cli>`) and `EnvBuilder::with_resolved_agent_binary()` (`recipe run`, tagged by where its answer came from); `EnvBuilder` has no method that exports a bare name
 **Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
+**Config key:** [`agent.binary`](./user-config.md#agentbinary) (precedence step 3)
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
-2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). A value tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
-4. Built-in default: **`copilot`**
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`, `session:<same binary>`, `tmux_server:<marker>` or `user_config:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
+2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). A value tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux, a marker the tmux server's global environment also holds may be the server's copy of whatever started the server; it ranks at step 4 instead, and `recipe run` says so.
+3. `agent.binary` from the [user config file](./user-config.md#agentbinary) (`~/.amplihack/config.toml` only), labelled `user_config`; without one, an inherited value tagged `user_config:<same binary>`. It ranks above everything a tmux server supplied, so a server started from another CLI cannot override your configured choice.
+4. What a tmux server supplied: a value tagged `tmux_server:<marker>`, then a session marker the server holds.
+5. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
+6. Built-in default: **`copilot`**
 
 `amplihack recipe run` resolves once at entry and exports the result to the
 recipe runner. Only a result from layer 1 is exported untagged, as an
-instruction. A result from the built-in default is exported with
+instruction. A result from layer 3 (`agent.binary`) is exported with
+`AMPLIHACK_AGENT_BINARY_SOURCE=user_config:<binary>`. A result from the built-in default is exported with
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and one from a session
 marker or a launcher context with `AMPLIHACK_AGENT_BINARY_SOURCE=session:<binary>`;
 see
@@ -144,8 +150,9 @@ COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
 #### Why the precedence order
 
 - **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value amplihack exported itself is not an instruction, and is skipped while its tag still describes it: a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`), or a description of a session (`session:<binary>`), which ranks with the session markers instead.
-- **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
-- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
+- **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342), including your config: inside `amplihack claude` steps run under claude.
+- **Configured `agent.binary` third** is a choice you made, so it outranks anything a tmux server handed down. A tmux server's environment holds the markers of whatever started it, which may be a different CLI. Your own `AMPLIHACK_AGENT_BINARY` still wins over the config, so one command can try a different CLI.
+- **`.claude/runtime/launcher_context.json` fourth** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
@@ -202,6 +209,7 @@ If no binary is found, the variable is omitted. Callers that require native reso
 **Type:** path
 **Example:** `/home/alice/.amplihack`
 **Set by:** `EnvBuilder::with_amplihack_home()`
+**Config key:** [`paths.home`](./user-config.md#pathshome) (user file only)
 
 The root directory where amplihack stores framework assets, hooks, runtime state, and helper scripts. Recipe runner uses this to locate `.claude/tools/amplihack/` and related subdirectories without requiring hardcoded paths.
 
@@ -210,8 +218,10 @@ The root directory where amplihack stores framework assets, hooks, runtime state
 | Priority | Source | Example result |
 |----------|--------|----------------|
 | 1 | `AMPLIHACK_HOME` already set in environment | value is passed through unchanged |
-| 2 | `$HOME/.amplihack` | `/home/alice/.amplihack` |
-| 3 | Directory containing the `amplihack` binary | `/usr/local/bin/../amplihack` |
+| 2 | `paths.home` in `~/.amplihack/config.toml` | `/opt/amplihack` |
+| 3 | Bundle root (a directory with `amplifier-bundle/`) found by walking up from the working directory | `/home/alice/src/amplihack-rs` |
+| 4 | `$HOME/.amplihack` | `/home/alice/.amplihack` |
+| 5 | Directory containing the `amplihack` binary | `/usr/local/bin/../amplihack` |
 | — | All above fail | variable is not set (silent degradation) |
 
 ```sh
@@ -224,7 +234,7 @@ AMPLIHACK_HOME=/opt/amplihack amplihack claude --print-env 2>&1 | grep AMPLIHACK
 # AMPLIHACK_HOME=/opt/amplihack
 ```
 
-**Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log.
+**Security note:** The resolved path is validated to be absolute and must not contain `..` path components. Paths that fail validation are silently dropped; a warning is emitted to the trace log. A `paths.home` from the config must also still name an existing directory you own; otherwise it is skipped with a warning in the trace log and the next source answers.
 
 **Python parity:** Corresponds to `AMPLIHACK_HOME` propagation in the Python launcher.
 
@@ -395,7 +405,7 @@ AMPLIHACK_RELEASE_VERSION=0.9.78 cargo build --release --locked --bin amplihack
 **Type:** space-separated Node.js CLI flags
 **Set by:** launcher startup via `memory_config.rs`, then propagated by `EnvBuilder::with_amplihack_vars()`
 
-`amplihack` now computes a smart `--max-old-space-size=<mb>` value at top-level launcher startup based on detected system RAM, persists the consent choice in `~/.amplihack/config`, and displays the active choice on launch. The resolved value is then propagated through `EnvBuilder`.
+`amplihack` now computes a smart `--max-old-space-size=<mb>` value at top-level launcher startup based on detected system RAM, persists the consent choice as [`node.heap_consent`](./user-config.md#nodeheap_consent-and-nodemax_old_space_mb) in `~/.amplihack/config.toml`, and displays the active choice on launch. `node.max_old_space_mb` pins the limit instead of computing it from RAM. A consent saved by an older version in `~/.amplihack/config` is migrated on first read; see [Migration](./user-config.md#migration-from-amplihackconfig). The resolved value is then propagated through `EnvBuilder`.
 
 When startup does not supply an explicit value, `EnvBuilder` still falls back to `--max-old-space-size=32768`, and if ambient `NODE_OPTIONS` already contains `--max-old-space-size=` it is preserved rather than duplicated.
 
@@ -415,11 +425,12 @@ and [Recipe Runner Logging](./recipe-runner-logging.md) for full details.
 
 **Type:** string (unsigned integer as text)
 **Values:** `"0"` (disable timeouts) | `"600"` (override to 600 seconds) | any non-negative integer
-**Set by:** `amplihack recipe run --step-timeout <SECONDS>`
+**Set by:** `amplihack recipe run --step-timeout <SECONDS>`, or from [`recipe.step_timeout`](./user-config.md#recipestep_timeout) in the config files
+**Config key:** `recipe.step_timeout`
 
 Overrides the `timeout_seconds` value defined in individual recipe steps. When set, every step in the recipe uses this value instead of its YAML-defined timeout. A value of `"0"` disables step timeouts entirely, allowing steps to run indefinitely.
 
-This variable is only present in the child environment when the user passes `--step-timeout` to `amplihack recipe run`. When the flag is omitted, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
+This variable is present in the child environment when the user passes `--step-timeout`, when it is already set in the caller's environment (passed on unchanged), or when `recipe.step_timeout` is configured, in that order of precedence. When none applies, YAML-defined `timeout_seconds` values apply as-is (though the default-workflow agent steps no longer define `timeout_seconds`).
 
 ```sh
 # Override all step timeouts to 10 minutes
@@ -1617,6 +1628,8 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 
 ## Related
 
+- [User Configuration](./user-config.md) — Config files and keys that persist several of these variables
+- [AMPLIHACK_* Environment Variable Audit](./amplihack-env-vars.md) — Every `AMPLIHACK_*` name classified, with its config key
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists and how recipe runner uses it
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI and pipe usage guide
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract

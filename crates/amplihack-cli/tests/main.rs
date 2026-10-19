@@ -22,6 +22,8 @@
 //! the `amplihack` package's `integration` binary, fail on anything this root
 //! does not reach and on process-state changes outside a quiet child.
 
+#[path = "../../../tests/support/isolated_amplihack.rs"]
+mod isolated_amplihack;
 mod support;
 
 #[path = "active_agent_binary_default_test.rs"]
@@ -102,6 +104,8 @@ mod issue_1592_recovery;
 mod issue_1592_root;
 #[path = "issue_1592_root_rotator.rs"]
 mod issue_1592_root_rotator;
+#[path = "issue_1606_config_cli.rs"]
+mod issue_1606_config_cli;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

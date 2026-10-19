@@ -503,6 +503,55 @@ pub enum RemoteCommands {
     },
 }
 
+/// `amplihack config` subcommands (issue #1606). See
+/// docs/reference/user-config.md.
+#[derive(Subcommand, Debug)]
+pub enum ConfigCommands {
+    /// Print a key's effective value (empty line when unset)
+    Get {
+        /// Key, as `<table>.<key>`
+        key: String,
+        /// Also print where the value came from
+        #[arg(long)]
+        show_origin: bool,
+    },
+    /// Validate and save a value in the user file (or, with --project, the
+    /// project file)
+    Set {
+        /// Key, as `<table>.<key>`
+        key: String,
+        /// Value (a negative number is passed through and rejected by the
+        /// schema, not taken for a flag)
+        #[arg(allow_hyphen_values = true)]
+        value: String,
+        /// Write `.amplihack/config.toml` at the git root instead
+        #[arg(long)]
+        project: bool,
+    },
+    /// Remove a key from the user file (or, with --project, the project file)
+    Unset {
+        /// Key, as `<table>.<key>`
+        key: String,
+        /// Edit the project file instead
+        #[arg(long)]
+        project: bool,
+    },
+    /// Print every key with its effective value
+    List {
+        /// Also print where each value came from
+        #[arg(long)]
+        show_origin: bool,
+    },
+    /// Open the user (or project) file in $VISUAL or $EDITOR, then check it
+    Edit {
+        /// Edit the project file instead
+        #[arg(long)]
+        project: bool,
+    },
+    /// Print the paths of the config files
+    Path,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum RecipeCommands {
     /// Run a recipe

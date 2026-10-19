@@ -32,8 +32,24 @@ pub fn active_agent_binary() -> String {
 /// a nested `amplihack` would look for `launcher_context.json`. Resolving the
 /// run's binary from anywhere else can let one level guess `copilot` while the
 /// level below reads a context file the top never saw.
+///
+/// Issue #1606: the user's configured `agent.binary` ranks below an explicit
+/// `AMPLIHACK_AGENT_BINARY` and a live session marker, and above whatever a
+/// tmux server supplied, including a marker its global environment holds.
 pub fn resolve_agent_binary_in(dir: &Path) -> amplihack_utils::agent_binary::Resolution {
-    match amplihack_utils::agent_binary::resolve_detailed(dir) {
+    use crate::user_config::AgentBinaryConfig;
+    use amplihack_utils::agent_binary::ConfiguredBinary;
+    let configured = crate::user_config::configured_agent_binary(dir);
+    let configured = match &configured {
+        AgentBinaryConfig::NotRead => ConfiguredBinary::NotRead,
+        AgentBinaryConfig::Unset => ConfiguredBinary::Unset,
+        AgentBinaryConfig::Set(binary) => ConfiguredBinary::Set(binary),
+    };
+    match amplihack_utils::agent_binary::resolve_detailed_configured(
+        dir,
+        configured,
+        &crate::agent_binary_notice::marker_held_by_tmux_server,
+    ) {
         Ok(resolution) => resolution,
         Err(err) => {
             tracing::warn!(error = %err, "agent binary resolver failed; using built-in default");

@@ -3464,12 +3464,14 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
         fs::set_permissions(&runner, fs::Permissions::from_mode(0o755)).expect("chmod");
     }
     let run = |depth: u32| {
-        Command::new(env!("CARGO_BIN_EXE_amplihack"))
+        crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"))
             .args(["recipe", "run"])
             .arg(recipe_path("autodrive-crusty-round"))
             .arg("--dry-run")
             .current_dir(tmp.path())
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", "/usr/bin:/bin")
             .env("HOME", &home)
             .env("TMPDIR", &tmpdir)

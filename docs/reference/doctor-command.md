@@ -8,7 +8,7 @@ amplihack doctor
 
 ## Description
 
-Checks the local system for the conditions required to run amplihack correctly and prints a pass/fail summary. Each check is independent: all checks always run regardless of earlier failures. The command exits with code `0` if every check passed, or `1` if any check failed.
+Checks the local system for the conditions required to run amplihack correctly and prints a pass/fail summary. It then prints the effective [user configuration](./user-config.md) with the origin of each value. Each check is independent: all checks always run regardless of earlier failures. The command exits with code `0` if every check passed, or `1` if any check failed.
 
 `doctor` is the first thing to run when amplihack behaves unexpectedly. Its output identifies exactly which prerequisite is missing so you can fix it directly.
 
@@ -93,6 +93,26 @@ or:
 
 ANSI colour codes are always emitted: green for `✓` lines, red for `✗` lines, and bold for the summary. If you need plain text output (for log ingestion, for example), strip ANSI codes with a tool such as `sed 's/\x1b\[[0-9;]*m//g'` or `ansistrip`.
 
+## Effective config
+
+After the summary line, `doctor` prints an `Effective config` section. Its rows are the same as `amplihack config list --show-origin`: every config key in schema order, as `key = value  # origin`. Any problem found in a config file follows in a `Config problems:` block.
+
+```
+Effective config:
+  agent.binary = "claude"  # user (/home/alice/.amplihack/config.toml)
+  paths.home = (unset)  # default
+  node.heap_consent = true  # user (/home/alice/.amplihack/config.toml)
+  node.max_old_space_mb = (unset)  # default
+  recipe.verbose = false  # default
+  recipe.step_timeout = (unset)  # default
+  orchestrator.max_depth = 2  # project (/home/alice/src/myapp/.amplihack/config.toml)
+
+Config problems:
+  /home/alice/src/myapp/.amplihack/config.toml: paths.home: can only be set in the user file; ignored
+```
+
+The section is informational. It is not one of the checks, and a config problem never changes the exit code. Keys, values and paths taken from config files are escaped and truncated to 200 characters before they are printed. See [Validation and diagnostics](./user-config.md#validation-and-diagnostics).
+
 ## Security Properties
 
 - **No secrets printed.** `settings.json` content is never echoed. Only existence, JSON validity, and the presence of the string `"amplihack"` inside the `hooks` section are reported.
@@ -112,6 +132,15 @@ $ amplihack doctor
 ✓ amplihack v0.9.1
 
 All checks passed.
+
+Effective config:
+  agent.binary = (unset)  # default
+  paths.home = (unset)  # default
+  node.heap_consent = true  # user (/home/alice/.amplihack/config.toml)
+  node.max_old_space_mb = (unset)  # default
+  recipe.verbose = false  # default
+  recipe.step_timeout = (unset)  # default
+  orchestrator.max_depth = 3  # default
 ```
 
 ## Example: Two Failures
@@ -149,3 +178,4 @@ amplihack doctor || true
 - [How to Diagnose Problems with amplihack doctor](../howto/diagnose-with-doctor.md) — Actionable fix guide for each failing check
 - [Hook Specifications](./hook-specifications.md) — What hooks amplihack registers in settings.json
 - [amplihack install](./install-command.md) — Installs the prerequisites that doctor verifies
+- [User Configuration](./user-config.md) — The config files and keys shown under `Effective config`

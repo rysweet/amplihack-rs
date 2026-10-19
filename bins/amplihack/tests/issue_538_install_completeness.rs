@@ -155,7 +155,7 @@ fn amplihack_install_command_with_binary(
     hooks_bin: &Path,
     source: &Path,
 ) -> Command {
-    let mut cmd = Command::new(binary.as_ref());
+    let mut cmd = Command::from(crate::isolated_amplihack::isolated(binary.as_ref()));
     let recipe_runner = hooks_bin
         .parent()
         .expect("hooks binary has parent")

@@ -64,7 +64,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use amplihack_utils::agent_binary::{
-    BINARY_ENV, Resolution, ResolutionSource, SOURCE_ENV, SessionMarker,
+    BINARY_ENV, Resolution, ResolutionSource, SESSION_NONCE_ENV, SOURCE_ENV, SessionMarker,
     inherited_binary_is_default_guess, inherited_tmux_server_marker, validate_binary_name,
 };
 
@@ -195,10 +195,18 @@ fn marker_may_be_the_tmux_servers(resolution: &Resolution) -> bool {
     let matters = match resolution.source {
         ResolutionSource::SessionMarker => true,
         ResolutionSource::Env => marker.binary != resolution.binary,
-        ResolutionSource::LauncherContext | ResolutionSource::Default => false,
+        ResolutionSource::UserConfig
+        | ResolutionSource::LauncherContext
+        | ResolutionSource::Default => false,
     };
-    matters
-        && std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty())
+    matters && marker_held_by_tmux_server(marker)
+}
+
+/// Whether this process runs in tmux and the server's global environment
+/// holds what `marker` rests on, so the marker may be the server starter's
+/// copy rather than this session's own (see [`tmux_server_holds_marker`]).
+pub(crate) fn marker_held_by_tmux_server(marker: SessionMarker) -> bool {
+    std::env::var_os("TMUX").is_some_and(|tmux| !tmux.is_empty())
         && tmux_server_holds_marker(OsStr::new("tmux"), marker, |variable| {
             std::env::var_os(variable)
         })
@@ -229,6 +237,15 @@ const PER_SESSION_IDS: &[(&str, &str)] = &[("claude", "CLAUDE_CODE_SESSION_ID")]
 ///   session started, which `USER_PREFERENCES.md` has agents do.
 ///
 /// Without an ID, the marker's own value is compared.
+///
+/// Then, when this process holds an amplihack launcher's
+/// [`SESSION_NONCE_ENV`], the server must hold that same nonce too. It is
+/// unique to each `amplihack <cli>` launch, so it tells a live
+/// `amplihack copilot` in a pane of a server some other Copilot session
+/// started from the server's copy, which the marker's value cannot (issue
+/// #1606). It can only rule a marker out, never in: a Claude Code session in
+/// such a pane inherits the server starter's nonce, and its own session ID
+/// already says it is not the server's copy.
 fn tmux_server_holds_marker(
     tmux: &OsStr,
     marker: SessionMarker,
@@ -243,9 +260,11 @@ fn tmux_server_holds_marker(
         .iter()
         .find(|(binary, _)| *binary == marker.binary)
         .and_then(|&(_, id)| set(id));
-    session_id
+    let held = session_id
         .or_else(|| set(marker.variable))
-        .is_some_and(|(variable, value)| tmux_global_environment_holds(tmux, variable, &value))
+        .is_some_and(|(variable, value)| tmux_global_environment_holds(tmux, variable, &value));
+    held && set(SESSION_NONCE_ENV)
+        .is_none_or(|(variable, value)| tmux_global_environment_holds(tmux, variable, &value))
 }
 
 /// How long `tmux show-environment` may take. It answers from the server's
@@ -325,6 +344,33 @@ pub(crate) fn agent_binary_notice(
         }
         (ResolutionSource::Env, _) => {
             return session_override_notice(lead, resolution, from_tmux_server);
+        }
+        // Issue #1606: the user's configured `agent.binary` is an explicit
+        // choice. It outranks inherited markers by design, so it needs no
+        // notice, except to say that a rejected env value lost to it.
+        (ResolutionSource::UserConfig, EnvBinaryValue::Rejected) => {
+            return Some(format!(
+                "amplihack: {lead} '{}' (agent.binary from your config; {REJECTED}). \
+                 Set {SET_TO_AN_ALLOWED_NAME}, or unset it to use the configured value.",
+                resolution.binary
+            ));
+        }
+        // Review of #1647: the config answered over a session marker naming
+        // another CLI, taken for the tmux server's copy. Say so: if that
+        // marker is in fact this session's, the user needs to know why the
+        // steps run elsewhere.
+        (ResolutionSource::UserConfig, _) => {
+            let marker = resolution.session_marker?;
+            return (marker.binary != resolution.binary).then(|| {
+                format!(
+                    "amplihack: {lead} '{}' (agent.binary from your config). {}, a {} \
+                     session marker, is set too, but this tmux server's global environment \
+                     holds the same value, so it was taken for the server starter's rather \
+                     than this session's. Set AMPLIHACK_AGENT_BINARY={} to run under {} \
+                     instead.",
+                    resolution.binary, marker.variable, marker.binary, marker.binary, marker.binary
+                )
+            });
         }
         (ResolutionSource::SessionMarker, env_value) => {
             let marker = resolution.session_marker?;
@@ -547,6 +593,46 @@ mod tests {
             unusable_contexts: Vec::new(),
             session_marker: None,
         }
+    }
+
+    /// Review of #1647: the config answering over another CLI's marker (one
+    /// the tmux server holds) is announced; over the same CLI's, or with no
+    /// marker, it is not.
+    #[test]
+    fn a_configured_binary_over_another_clis_marker_is_announced() {
+        let mut resolution = resolved("claude", ResolutionSource::UserConfig);
+        assert_eq!(
+            agent_binary_notice(
+                Reporter::RecipeRun,
+                &resolution,
+                EnvBinaryValue::Unset,
+                false
+            ),
+            None
+        );
+        resolution.session_marker = Some(COPILOT_CLI);
+        let notice = agent_binary_notice(
+            Reporter::RecipeRun,
+            &resolution,
+            EnvBinaryValue::Unset,
+            false,
+        )
+        .expect("a notice");
+        assert!(notice.contains("agent.binary from your config"), "{notice}");
+        assert!(
+            notice.contains("COPILOT_CLI, a copilot session marker"),
+            "{notice}"
+        );
+        resolution.binary = "copilot".into();
+        assert_eq!(
+            agent_binary_notice(
+                Reporter::RecipeRun,
+                &resolution,
+                EnvBinaryValue::Unset,
+                false
+            ),
+            None
+        );
     }
 
     fn empty_context_at(path: &str) -> UnusableContext {
@@ -837,6 +923,52 @@ mod tests {
     /// session, so a Claude Code session in a pane of a server another one
     /// started was told its marker "may come from whatever started the
     /// server". The session IDs differ, and that decides it.
+    /// Review of #1647: Copilot exports no per-session ID, so an
+    /// `amplihack copilot` session in a pane of a server another Copilot
+    /// session started looked like the server's copy. The launch nonce tells
+    /// them apart.
+    #[cfg(unix)]
+    #[test]
+    fn an_amplihack_launch_is_told_from_the_servers_starter_by_its_nonce() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let tmux = dir.path().join("from-amplihack-copilot");
+        std::fs::write(
+            &tmux,
+            "#!/bin/sh\n[ \"$1 $2\" = \"show-environment -g\" ] || exit 2\n\
+             case \"$3\" in\n\
+             COPILOT_CLI) echo COPILOT_CLI=1 ;;\n\
+             AMPLIHACK_SESSION_NONCE) echo AMPLIHACK_SESSION_NONCE=starter-nonce ;;\n\
+             *) echo \"unknown variable: $3\" >&2; exit 1 ;;\nesac\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&tmux, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let copilot = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        let holds = |env: &[(&str, &str)]| {
+            tmux_server_holds_marker(tmux.as_os_str(), copilot, |name| {
+                env.iter()
+                    .find(|(key, _)| *key == name)
+                    .map(|(_, value)| value.into())
+            })
+        };
+        // This launch's own nonce: its own session, though COPILOT_CLI=1 is
+        // the same value the server holds.
+        assert!(!holds(&[
+            ("COPILOT_CLI", "1"),
+            (super::SESSION_NONCE_ENV, "this-launch")
+        ]));
+        // The server starter's nonce: the server's copy.
+        assert!(holds(&[
+            ("COPILOT_CLI", "1"),
+            (super::SESSION_NONCE_ENV, "starter-nonce")
+        ]));
+        // No nonce: the marker's value decides, as before.
+        assert!(holds(&[("COPILOT_CLI", "1")]));
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_claude_session_is_told_from_the_servers_starter_by_its_session_id() {

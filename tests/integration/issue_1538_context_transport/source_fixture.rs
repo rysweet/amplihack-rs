@@ -107,9 +107,11 @@ impl NativeFixture {
         } else {
             std::env::var_os("RECIPE_RUNNER_RS_PATH")
         };
-        let mut install = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut install = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
         install
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", &private_path)
             .env("CARGO_HOME", home.join(".cargo"))
             .env("XDG_CACHE_HOME", home.join(".cache"))

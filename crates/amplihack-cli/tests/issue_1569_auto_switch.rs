@@ -195,10 +195,12 @@ impl Fixture {
 
     /// Like `cmd`, but running another copy of the binary.
     fn cmd_bin(&self, bin: &Path, args: &[&str]) -> Command {
-        let mut c = Command::new(bin);
+        let mut c = crate::isolated_amplihack::isolated(bin);
         c.args(args)
             .current_dir(&self.work)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),

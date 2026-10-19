@@ -1079,7 +1079,7 @@ steps:
         );
         write_file(&recipe_path, &recipe);
 
-        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
         startup::isolate(
             &mut command,
             &tmp.path().join(format!("child-{terminal_state}")),

@@ -179,6 +179,18 @@ pub(crate) fn run_recipe_with(
 
     let working_dir = working_dir.unwrap_or(".");
     let abs_working_dir = validate_path(working_dir, false)?;
+    // Issue #1606: `recipe.verbose` turns --verbose on; it cannot turn it off.
+    let verbose = verbose || crate::user_config::recipe_verbose(&abs_working_dir);
+    // Issue #1606: --step-timeout, then an inherited AMPLIHACK_STEP_TIMEOUT
+    // (passed through untouched, as before), then `recipe.step_timeout`.
+    let step_timeout = step_timeout.or_else(|| {
+        let inherited = std::env::var_os("AMPLIHACK_STEP_TIMEOUT").is_some_and(|v| !v.is_empty());
+        if inherited {
+            None
+        } else {
+            crate::user_config::recipe_step_timeout(&abs_working_dir)
+        }
+    });
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
     let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);

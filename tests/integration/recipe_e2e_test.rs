@@ -144,7 +144,7 @@ fn recipe_list_exits_zero() {
         panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
     assert_exit(
-        Command::new(&bin).args(["recipe", "list"]),
+        crate::isolated_amplihack::isolated(&bin).args(["recipe", "list"]),
         true,
         "recipe list",
     );
@@ -153,8 +153,10 @@ fn recipe_list_exits_zero() {
 /// `amplihack recipe list` output must contain at least one recipe when
 /// ~/.amplihack/.claude/recipes/ exists and is populated.
 ///
-/// Expected: PASSES if the amplihack recipes directory is set up; skips
-/// gracefully if not.  This is a smoke test for the discovery logic.
+/// A smoke test for the discovery logic: a recipe planted in the child's own
+/// (temp) `~/.amplihack/.claude/recipes` must be listed. Issue #1606: the
+/// child never sees the developer's real HOME, so the test sets up the HOME
+/// it does see instead of probing the parent's.
 #[test]
 fn recipe_list_output_contains_at_least_one_recipe() {
     let bin = amplihack_bin();
@@ -162,30 +164,39 @@ fn recipe_list_output_contains_at_least_one_recipe() {
         panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
 
-    // Determine the expected recipes directory
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipes_dir = std::path::Path::new(&home).join(".amplihack/.claude/recipes");
-
-    if !recipes_dir.is_dir() {
-        // Directory not set up — this is a soft failure (environment not ready)
-        // We still run the command to confirm exit 0 at minimum.
-        assert_exit(
-            Command::new(&bin).args(["recipe", "list"]),
-            true,
-            "recipe list (no recipes dir)",
-        );
-        return;
-    }
+    let home = tempfile::tempdir().expect("temp HOME");
+    let recipes_dir = home.path().join(".amplihack/.claude/recipes");
+    std::fs::create_dir_all(&recipes_dir).expect("create the recipes dir");
+    let planted = write_temp_recipe("e2e-discovered-in-home", true);
+    std::fs::copy(
+        planted.path(),
+        recipes_dir.join("e2e-discovered-in-home.yaml"),
+    )
+    .expect("plant the recipe");
 
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args(["recipe", "list"]),
-        "recipe list with recipes dir",
+        crate::isolated_amplihack::isolated(&bin)
+            .env("HOME", home.path())
+            .current_dir(home.path())
+            .args(["recipe", "list"]),
+        "recipe list with a recipe in the temp HOME",
     );
     assert!(success, "recipe list must exit 0. stderr: {stderr}");
     assert!(
-        !stdout.trim().is_empty() || stdout.contains("No recipes"),
-        "recipe list must produce output. stdout: {stdout} stderr: {stderr}"
+        stdout.contains("e2e-discovered-in-home"),
+        "recipe list must find the recipe in $HOME/.amplihack/.claude/recipes. \
+         stdout: {stdout} stderr: {stderr}"
     );
+}
+
+/// The repository's own `default-workflow.yaml`. The tests that need it use
+/// this one, not whatever the developer's HOME has installed, so they always
+/// run instead of skipping.
+fn bundled_default_workflow() -> std::path::PathBuf {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../amplifier-bundle/recipes/default-workflow.yaml");
+    assert!(path.is_file(), "missing {path:?}");
+    path
 }
 
 /// `amplihack recipe list --format json` must produce valid JSON.
@@ -199,7 +210,7 @@ fn recipe_list_json_format_is_valid_json() {
     }
 
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args(["recipe", "list", "--format", "json"]),
+        crate::isolated_amplihack::isolated(&bin).args(["recipe", "list", "--format", "json"]),
         "recipe list --format json",
     );
 
@@ -236,7 +247,11 @@ fn recipe_validate_exits_zero_for_valid_recipe() {
 
     let tmp = write_temp_recipe("validate-test", true);
     assert_exit(
-        Command::new(&bin).args(["recipe", "validate", tmp.path().to_str().unwrap()]),
+        crate::isolated_amplihack::isolated(&bin).args([
+            "recipe",
+            "validate",
+            tmp.path().to_str().unwrap(),
+        ]),
         true,
         "recipe validate (valid YAML)",
     );
@@ -257,7 +272,11 @@ fn recipe_validate_exits_nonzero_for_invalid_recipe() {
     writeln!(tmp, "description: missing name field\nsteps: []").expect("failed to write bad YAML");
 
     assert_exit(
-        Command::new(&bin).args(["recipe", "validate", tmp.path().to_str().unwrap()]),
+        crate::isolated_amplihack::isolated(&bin).args([
+            "recipe",
+            "validate",
+            tmp.path().to_str().unwrap(),
+        ]),
         false,
         "recipe validate (missing required 'name' field)",
     );
@@ -266,7 +285,7 @@ fn recipe_validate_exits_nonzero_for_invalid_recipe() {
 /// `amplihack recipe validate` on the default-workflow recipe from the
 /// amplihack directory must succeed.
 ///
-/// Expected: PASSES if ~/.amplihack/.claude/recipes/default-workflow.yaml exists.
+/// Validates the repository's bundled `default-workflow.yaml`.
 #[test]
 fn recipe_validate_exits_zero_for_default_workflow() {
     let bin = amplihack_bin();
@@ -274,20 +293,14 @@ fn recipe_validate_exits_zero_for_default_workflow() {
         panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipe_path =
-        std::path::Path::new(&home).join(".amplihack/.claude/recipes/default-workflow.yaml");
-
-    if !recipe_path.exists() {
-        // Soft skip: recipe not installed in this environment
-        println!(
-            "SKIP: default-workflow.yaml not found at {recipe_path:?} — skipping validate test"
-        );
-        return;
-    }
+    let recipe_path = bundled_default_workflow();
 
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args(["recipe", "validate", recipe_path.to_str().unwrap()]),
+        crate::isolated_amplihack::isolated(&bin).args([
+            "recipe",
+            "validate",
+            recipe_path.to_str().unwrap(),
+        ]),
         "recipe validate default-workflow",
     );
 
@@ -323,7 +336,7 @@ fn recipe_run_dry_run_exits_zero() {
 
     let tmp = write_temp_recipe("e2e-dry-run", true);
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args([
+        crate::isolated_amplihack::isolated(&bin).args([
             "recipe",
             "run",
             tmp.path().to_str().unwrap(),
@@ -356,7 +369,12 @@ fn recipe_run_dry_run_output_contains_recipe_name() {
 
     let tmp = write_temp_recipe("name-check-recipe", true);
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args(["recipe", "run", tmp.path().to_str().unwrap(), "--dry-run"]),
+        crate::isolated_amplihack::isolated(&bin).args([
+            "recipe",
+            "run",
+            tmp.path().to_str().unwrap(),
+            "--dry-run",
+        ]),
         "recipe run --dry-run (name check)",
     );
 
@@ -385,26 +403,10 @@ fn recipe_run_dry_run_default_workflow_exits_zero() {
         panic!("amplihack binary not found at {bin:?}. Run `cargo build` first.");
     }
 
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    let recipe_path =
-        std::path::Path::new(&home).join(".amplihack/.claude/recipes/default-workflow.yaml");
-
-    if !recipe_path.exists() {
-        println!("SKIP: default-workflow.yaml not found at {recipe_path:?}");
-        // Still run a temp recipe to gate the recipe-runner-rs binary
-    }
-
-    // Use a temp recipe as fallback if default-workflow.yaml doesn't exist
-    let _tmp;
-    let path_to_use = if recipe_path.exists() {
-        recipe_path.clone()
-    } else {
-        _tmp = write_temp_recipe("fallback-e2e", true);
-        _tmp.path().to_path_buf()
-    };
+    let path_to_use = bundled_default_workflow();
 
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args([
+        crate::isolated_amplihack::isolated(&bin).args([
             "recipe",
             "run",
             path_to_use.to_str().unwrap(),
@@ -412,7 +414,7 @@ fn recipe_run_dry_run_default_workflow_exits_zero() {
             "task_description=echo hello",
             "--dry-run",
         ]),
-        "recipe run --dry-run (default-workflow or fallback)",
+        "recipe run --dry-run (default-workflow)",
     );
 
     assert!(
@@ -454,7 +456,7 @@ printf '{"recipe_name":"stderr-forwarding","success":true,"step_results":[],"con
     std::fs::create_dir_all(&amplihack_home).expect("failed to create AMPLIHACK_HOME");
 
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin)
+        crate::isolated_amplihack::isolated(&bin)
             .args([
                 "recipe",
                 "run",
@@ -507,7 +509,7 @@ fn recipe_run_progress_flag_fails_with_explicit_default_progress_guidance() {
 
     let recipe = write_temp_recipe("unsupported-progress", true);
     let (stdout, stderr, success) = run_output(
-        Command::new(&bin).args([
+        crate::isolated_amplihack::isolated(&bin).args([
             "recipe",
             "run",
             recipe.path().to_str().unwrap(),

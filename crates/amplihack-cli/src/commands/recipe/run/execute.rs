@@ -1,4 +1,6 @@
-use super::correlation::{RecipeRunCorrelation, RecipeRunFinalStatus, known_log_paths};
+use super::correlation::{
+    RecipeRunCorrelation, RecipeRunFinalStatus, RunSettings, known_log_paths,
+};
 use super::failure_class::{
     FAILURE_CLASS_RESULT_KEY, FailureVerdict, classify_error, classify_run_failure,
     emit_failure_class_marker,
@@ -553,7 +555,7 @@ pub(super) fn execute_recipe_via_rust(
     // so a failing / misbehaving orchestration can never recursively re-enter
     // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
     // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
-    let guard = enforce_recursion_depth_guard()?;
+    let guard = enforce_recursion_depth_guard(working_dir)?;
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
@@ -569,6 +571,17 @@ pub(super) fn execute_recipe_via_rust(
         crate::agent_binary_notice::Reporter::RecipeRun,
         &agent_binary,
     );
+
+    // Issue #1606: record what this run resolved in every log pointer. The
+    // home is resolved the same way `build_command` resolves it below.
+    let run_settings = RunSettings {
+        agent_binary: Some(agent_binary.binary.clone()),
+        agent_binary_source: Some(agent_binary.source.label()),
+        amplihack_home: EnvBuilder::new()
+            .with_amplihack_home_from(working_dir)
+            .build()
+            .remove("AMPLIHACK_HOME"),
+    };
 
     let runtime_dir = tempfile::Builder::new()
         .prefix("amplihack-workflow-")
@@ -739,7 +752,8 @@ pub(super) fn execute_recipe_via_rust(
                 working_dir,
                 context,
                 binary.as_path(),
-            );
+            )
+            .with_settings(run_settings.clone());
             let command = match build_command(correlation.run_id()) {
                 Ok(built) => built,
                 // Failing to BUILD the invocation (temp file, project graph db)
@@ -1464,13 +1478,14 @@ fn reap_recipe_runner_group(pgid_pid: u32, grace: Duration) {
 ///   coerced to `0` (which would defeat the guard);
 /// * `AMPLIHACK_MAX_DEPTH` may only LOWER the ceiling the root sealed into the
 ///   tree state, never raise it (issue #1326); it is additionally clamped to
-///   `MAX_DEPTH_CEILING`, and an unset / malformed value falls back to
-///   `DEFAULT_MAX_DEPTH`;
+///   `MAX_DEPTH_CEILING`, and an unset / malformed value falls back to the
+///   configured `orchestrator.max_depth` (issue #1606, under the same rules),
+///   then `DEFAULT_MAX_DEPTH`;
 /// * below the limit the caller spawns normally (no over-blocking).
 ///
 /// Logs numeric depth/limit fields only — never env-var *values*, which may
 /// carry session tokens or secrets.
-fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
+fn enforce_recursion_depth_guard(working_dir: &Path) -> Result<SpawnGuard> {
     use crate::commands::session_tree::state::{
         DEFAULT_MAX_SESSIONS, admit_session, effective_max_depth, memory_shortfall_mib,
         sealed_ceiling, validate_tree_id,
@@ -1482,7 +1497,8 @@ fn enforce_recursion_depth_guard() -> Result<SpawnGuard> {
     // authority is the value the root sealed into the tree state.
     let env_max_depth = std::env::var(MAX_DEPTH_ENV)
         .ok()
-        .and_then(|value| value.trim().parse::<u32>().ok());
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .or_else(|| crate::user_config::max_depth(working_dir));
     let tree_id = std::env::var(TREE_ID_ENV)
         .ok()
         .map(|id| id.trim().to_string())

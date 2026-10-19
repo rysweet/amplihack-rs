@@ -5,7 +5,6 @@
 
 use serde_json::Value;
 use std::path::Path;
-use std::process::Command;
 use tempfile::TempDir;
 
 fn bin() -> &'static str {
@@ -21,7 +20,7 @@ fn write_file(path: &Path, content: &str) {
 }
 
 fn run_inventory(root: &Path, format: Option<&str>) -> std::process::Output {
-    let mut command = Command::new(bin());
+    let mut command = crate::isolated_amplihack::isolated(bin());
     command
         .args(["orch", "helper", "workflow-log-inventory", "--root"])
         .arg(root)
@@ -34,7 +33,7 @@ fn run_inventory(root: &Path, format: Option<&str>) -> std::process::Output {
 
 #[test]
 fn workflow_log_inventory_help_is_wired_under_orch_helper() {
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args(["orch", "helper", "workflow-log-inventory", "--help"])
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .output()

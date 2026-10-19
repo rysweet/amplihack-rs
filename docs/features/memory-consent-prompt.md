@@ -20,6 +20,23 @@ Update NODE_OPTIONS with recommended limit? (y/n):
 
 Ye have 30 seconds to respond. If ye be in an automated environment (CI/CD, scripts), the system detects this and defaults to "yes" without hangin'.
 
+## Where Your Answer Is Saved
+
+Your answer is saved as `node.heap_consent` in `~/.amplihack/config.toml`, and later launches use it without asking:
+
+```text
+ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: amplihack config set node.heap_consent <true|false>
+```
+
+To pin the limit instead of computing it from RAM, set `node.max_old_space_mb` (8192 to 32768):
+
+```bash
+amplihack config set node.heap_consent true
+amplihack config set node.max_old_space_mb 16384
+```
+
+A consent saved by an older version in `~/.amplihack/config` is migrated on first read. See [User Configuration](../reference/user-config.md#nodeheap_consent-and-nodemax_old_space_mb).
+
 ## How It Works
 
 ### Interactive Mode (Default)
