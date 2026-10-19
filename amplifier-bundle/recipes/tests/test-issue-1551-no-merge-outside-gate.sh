@@ -998,6 +998,31 @@ secret_kept SEC7-gql "$L_GQL" api graphql -f 'query=mutation{mergePullRequest(in
 secret_kept SEC7-gql-unread "$L_GQL_UNREAD" api graphql -F 'query=@SECRET_1551_file'
 secret_kept SEC7-alias "$L_ALIAS" alias set pm 'pr merge SECRET_1551_x'
 
+# SEC8. macOS ships /bin/bash 3.2, where `${x,,}` is a bad substitution that
+# ends the script: lowercasing lives in to_lower only, and its tr fallback
+# (forced here in a copy) classifies like bash 4 and still passes through.
+if [ "$(grep -v '^[[:space:]]*#' "${SHIM}" | grep -c ',,}')" = "1" ] \
+   && grep -A3 '^to_lower()' "${SHIM}" | grep -qF 'LOWER="${1,,}"'; then
+  pass "SEC8-lower-once" "the shim lowercases with \${x,,} only inside to_lower"
+else
+  fail "SEC8-lower-once" "\${x,,} outside to_lower breaks the shim under bash 3.2"
+fi
+OLD_GUARD="${WORK}/old-bash/gh-merge-guard"; mkdir -p "${OLD_GUARD}"
+sed 's/BASH_VERSINFO\[0\] >= 4/BASH_VERSINFO[0] >= 99/' "${SHIM}" > "${OLD_GUARD}/gh"
+chmod 0755 "${OLD_GUARD}/gh"
+grep -qF 'BASH_VERSINFO[0] >= 99' "${OLD_GUARD}/gh" || harness_error "SEC8: could not force the tr fallback"
+old_bash_gh() { run_in "${OLD_GUARD}:${STUB}:${TOOLBIN}" "${BASH_BIN}" -c 'gh "$@"' agent-shell "$@"; }
+for spec in "3|api -X PUT REPOS/O/R/PULLS/38/MERGE" "3|api graphql -f query=mutation{MergePullRequest(x)}" \
+            "3|alias set pm pr_MERGE" "0|api repos/o/r/pulls/38" "0|api graphql -f query={viewer{login}}"; do
+  want="${spec%%|*}"; read -r -a argv <<< "${spec#*|}"
+  reset_stub; old_bash_gh "${argv[@]}"; rc=$?
+  if [ "$rc" = "$want" ] && ! grep -qF 'bad substitution' "${ERR}"; then
+    pass "SEC8-tr-fallback" "gh ${argv[*]} exits ${want} with the tr fallback"
+  else
+    fail "SEC8-tr-fallback" "gh ${argv[*]}: rc=${rc} (want ${want}), stderr: $(head -c 300 "${ERR}")"
+  fi
+done
+
 # ---------------------------------------------------------------------------
 # T6. The advisory directive.
 # ---------------------------------------------------------------------------

@@ -20,7 +20,7 @@
 # Exit codes: 3 = refused, 127 = no real gh or the re-entry cap was passed.
 
 # Second layer for anything this script starts (SR-4).
-builtin unset -f refuse classify classify_pr classify_api classify_alias_cmd \
+builtin unset -f refuse to_lower classify classify_pr classify_api classify_alias_cmd \
   classify_alias_use classify_extension_cmd is_merge_endpoint is_graphql_endpoint names_merge find_real_gh carries_marker \
   parent_is_gate parent_pid_matches parent_environ_clean sys_tool realpath \
   readlink stat test cd pwd 2>/dev/null
@@ -158,16 +158,34 @@ parent_is_gate() {
   return 0
 }
 
+# to_lower <text>: sets LOWER. macOS ships /bin/bash 3.2, where `${x,,}` is a
+# bad substitution that would end the shim on every `gh api` call, so older
+# bash lowercases through the system tr instead.
+to_lower() {
+  if (( BASH_VERSINFO[0] >= 4 )); then
+    LOWER="${1,,}"
+  else
+    local tr
+    tr="$(sys_tool tr)" || { LOWER="$1"; return 1; }
+    LOWER="$(printf '%s' "$1" | "$tr" '[:upper:]' '[:lower:]'; printf x)"
+    LOWER="${LOWER%x}"
+  fi
+}
+
 # names_merge <text>: mentions merge or graphql, in any case.
 names_merge() {
-  local lc="${1,,}"
+  local lc
+  to_lower "$1" || return 0
+  lc="$LOWER"
   [[ "$lc" == *merge* || "$lc" == *graphql* ]]
 }
 
 # is_merge_endpoint <endpoint>: a REST merge endpoint, or an endpoint that
 # mentions pull or merge in a form the guard will not resolve (SR-3).
 is_merge_endpoint() {
-  local e="${1,,}" seg
+  local e seg
+  to_lower "$1" || return 0
+  e="$LOWER"
   local -a segs=()
   if [[ "$e" == *pull* || "$e" == *merge* ]]; then
     [[ "$e" == *%* ]] && return 0
@@ -195,6 +213,7 @@ is_merge_endpoint() {
 }
 
 CLASS=""
+LOWER=""
 MUTATION_RE='(^|[^a-z0-9_])(mergepullrequest|enablepullrequestautomerge|enqueuepullrequest|mergebranch)([^a-z0-9_]|$)'
 
 classify_pr() {
@@ -213,7 +232,9 @@ classify_pr() {
 # Spellings are never listed one by one; a REST endpoint that merely names a
 # repo "graphql" is treated as GraphQL too, which fails closed.
 is_graphql_endpoint() {
-  local e="${1,,}"
+  local e
+  to_lower "$1" || return 0
+  e="$LOWER"
   [[ "$e" == *graphql* ]]
 }
 
@@ -236,7 +257,8 @@ classify_api() {
     esac
   done
   for t in ${all[@]+"${all[@]}"}; do
-    lc="${t,,}"
+    to_lower "$t" || { CLASS='gh api graphql unreadable query'; return 0; }
+    lc="$LOWER"
     if [[ "$lc" =~ $MUTATION_RE ]]; then CLASS='gh api graphql merge mutation'; return 0; fi
     [[ "$t" == *=@* ]] && unreadable=1
   done
