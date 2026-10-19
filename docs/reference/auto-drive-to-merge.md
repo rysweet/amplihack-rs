@@ -1781,11 +1781,11 @@ amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools
 | --- | --- | --- |
 | `pr merge`, any flags | `gh pr merge 38 --squash`; `gh -R o/r pr merge 38`; with `--admin` too, a flag never used anywhere (prohibited) | `gh pr merge` |
 | REST merge endpoints, any method (never outside the gate) | `gh api -X PUT repos/o/r/pulls/38/merge`; `gh api repos/o/r/merges` | `gh api merge endpoint` |
-| A merge endpoint in another spelling | a full `https://` URL (any host or port), an `api/v3/` prefix, a leading or doubled `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, any letter case (`PULLS`, `Merge`) | `gh api merge endpoint` |
-| An ambiguous endpoint that mentions `pull` or `merge` | `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes | `gh api merge endpoint` |
+| A merge endpoint in another spelling | a full `https://` URL (any host or port), an `api/v3/` prefix, a leading or doubled `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, the `repositories/<id>/` form, any letter case (`PULLS`, `Merge`) | `gh api merge endpoint` |
+| An ambiguous endpoint that mentions `pull` or `merge` | `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes; any endpoint holding `{branch}`, which gh fills in unescaped | `gh api merge endpoint` |
 | GraphQL merge mutations | `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `mergeBranch` as whole names, any case | `gh api graphql merge mutation` |
 | A GraphQL body the shim cannot read | any endpoint that mentions `graphql` (`graphql?`, a full `https://` URL, GHES `/api/graphql`, any case) with `--input` or `=@` in any argument, combined short flags (`-iF query=@f`) included | `gh api graphql unreadable query` |
-| Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql`; a call through an alias that expands to a merge form; any alias lookup while `gh alias list` fails | `gh alias` |
+| Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql` or holds a `$N` placeholder; a call through an alias that expands to a merge form or holds a placeholder or quotes; any alias lookup while `gh alias list` fails | `gh alias` |
 | Extensions | `gh extension install`/`upgrade`/`exec`; any first word that is neither a built-in command nor an alias, or an alias expanding to one | `gh extension` |
 
 Only `gh api` arguments are inspected, so a `gh pr create --body` that
@@ -1799,7 +1799,7 @@ REFUSED (amplihack #1551): gh pr merge is only allowed inside autodrive_merge_ga
 
 Every other call (`gh pr view`, `gh api repos/o/r/pulls/38/files`, a GraphQL
 query that reads `mergeable`) runs `exec "$REAL_GH" "$@"` unchanged. The shim
-(`#!/bin/bash -p`) takes the first executable `gh` on an absolute `PATH`
+(`#!/bin/bash -p`, bash 3.2 included, as on macOS) takes the first executable `gh` on an absolute `PATH`
 entry, skipping its own directory and any file with the marker line
 `# amplihack-gh-merge-guard`. It exits `127` when there is none, or when
 `AMPLIHACK_GH_GUARD_DEPTH` is not 1–3 digits or passes 4.
@@ -1874,10 +1874,11 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
+| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Trusted like phase 3. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them; its Crusty and QA records are files and can be forged (below). |
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |
-| No `/proc`, a `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root (macOS) | Fails closed: every merge is refused, the gate's included, so auto-drive cannot merge on macOS. |
+| No `/proc` (macOS), a `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root | Fails closed: every merge is refused, the gate's included, so auto-drive cannot merge on macOS. |
 | No `/bin/bash` at all (NixOS) | The shim cannot start, so **every** `gh` call in an auto-drive run fails, not only merges. |
 
 ### Troubleshooting
