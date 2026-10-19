@@ -5,7 +5,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 
-use super::fixture::{BRANCH, LEAK_MARKER, Outcome, PR_URL};
+use super::fixture::{BRANCH, Fixture, LEAK_MARKER, Outcome, PR_URL};
 
 pub fn check_run(status: &str, conclusion: Value) -> Value {
     json!({"__typename": "CheckRun", "name": "ci", "status": status, "conclusion": conclusion})
@@ -90,4 +90,33 @@ pub fn path_has_retry_scratch(dir: &Path) -> bool {
                 .starts_with(".workflow-gh-retry")
         })
     })
+}
+
+pub fn set_branch(envs: &mut [(&'static str, String)], branch: &str) {
+    let entry = envs
+        .iter_mut()
+        .find(|(k, _)| *k == "BRANCH_NAME")
+        .expect("resumed_env sets BRANCH_NAME");
+    entry.1 = branch.to_owned();
+}
+
+/// Proves the open-PR path really ran (one live `pr view 7`) and names why it
+/// failed, so a guard that bailed out early cannot pass as the intended check.
+pub fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &str, why: &str) {
+    let views = fx
+        .gh_calls()
+        .into_iter()
+        .filter(|c| c.starts_with("pr view 7 "))
+        .count();
+    assert_eq!(
+        views,
+        1,
+        "{why}: exactly one live pr view\n{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome.stderr.contains(reason),
+        "{why}: stderr must name `{reason}`\n{}",
+        outcome.describe()
+    );
 }

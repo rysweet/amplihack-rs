@@ -12,36 +12,6 @@ fn with_url(fx: &Fixture) -> Vec<(&'static str, String)> {
     envs
 }
 
-fn set_branch(envs: &mut [(&'static str, String)], branch: &str) {
-    let entry = envs
-        .iter_mut()
-        .find(|(k, _)| *k == "BRANCH_NAME")
-        .expect("resumed_env sets BRANCH_NAME");
-    entry.1 = branch.to_owned();
-}
-
-// Proves the open-PR path really ran (one live `pr view 7`) and names why it
-// failed, so a guard that bailed out early cannot pass as the intended check.
-fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &str, why: &str) {
-    let views: Vec<String> = fx
-        .gh_calls()
-        .into_iter()
-        .filter(|c| c.starts_with("pr view 7 "))
-        .collect();
-    assert_eq!(
-        views.len(),
-        1,
-        "{why}: exactly one live pr view
-{}",
-        outcome.describe()
-    );
-    assert!(
-        outcome.stderr.contains(reason),
-        "{why}: stderr must name `{reason}`\n{}",
-        outcome.describe()
-    );
-}
-
 // Core regression for #1641 (must still hold): nothing published, no evidence.
 #[test]
 fn run_with_no_pr_and_no_evidence_is_still_failed_implementation() {
