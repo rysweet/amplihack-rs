@@ -7,6 +7,9 @@ mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
+/// Issue #1437 — evidence gathering and the marker tables `failure_class` reads.
+mod failure_evidence;
+mod failure_markers;
 mod format;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
@@ -242,6 +245,7 @@ pub(crate) fn run_recipe_with(
     if result.success {
         Ok(())
     } else {
+        failure_class::emit_final_failure_class_marker(&result);
         Err(exit_error(1))
     }
 }
