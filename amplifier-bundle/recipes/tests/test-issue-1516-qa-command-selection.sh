@@ -334,6 +334,21 @@ expect_target rootfile-cargo-root $'rust-cli\t.'
 new_repo requirements.txt pyproject.toml c/Cargo.toml
 expect_target rootfile-pyproject $'python\t.'
 
+echo "== #1516: a find error (unreadable directory) is ambiguous, never the readable crate =="
+if [ "$(id -u)" = 0 ]; then
+    echo "  SKIP[unreadable]: running as root, which can read a mode-000 directory"
+else
+    new_repo a/Cargo.toml a/src/lib.rs z/b/Cargo.toml
+    chmod 000 "$REPO/z"
+    expect_target unreadable-target $'ambiguous\t_ a'
+    expect_type_req unreadable-type unknown false
+    run_tool
+    expect unreadable "a crate hidden in an unreadable directory is BLOCKED" \
+        qa_status=BLOCKED qa_repo_type=unknown
+    expect_calls unreadable-calls "cargo is never called when the search failed" cargo ""
+    chmod 755 "$REPO/z"
+fi
+
 echo "== #1516: installed check accepts ./<command> relative to AUTODRIVE_QA_DIR =="
 new_repo sub/bin/
 cat > "$REPO/sub/bin/x" <<'EOF'

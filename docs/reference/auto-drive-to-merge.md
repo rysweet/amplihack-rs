@@ -1162,10 +1162,10 @@ The branch's own manifests decide the repository type. A branch can turn a
 Node repository into a Python one by adding `pyproject.toml`, and so turn the
 gadugi requirement off. `qa_repo_type` and `qa_dir` in the evidence show the
 choice; set `AUTODRIVE_QA_SCENARIO_DIR` to require gadugi whatever the
-branch's manifests say. The nested crate search also reads an unreadable
-directory as empty, so a second crate inside one is not seen and the round can
-run the other crate instead of reporting it as ambiguous. Checking the type at
-the merge base and blocking on search errors are tracked in
+branch's manifests say. If the nested crate search hits an error, such as an
+unreadable directory that could hide a second crate, the result is
+`ambiguous` and the round is BLOCKED; it never runs the crate it could read.
+Checking the type at the merge base is tracked in
 [#1640](https://github.com/rysweet/amplihack-rs/issues/1640). Detected
 commands run in `qa_dir`, a directory the branch controls, so they are
 resolved through `PATH` first and must resolve to an absolute path outside the
