@@ -4,7 +4,9 @@ The `workflow-publish` recipe (`amplifier-bundle/recipes/workflow-publish.yaml`)
 derives both the implementation commit's conventional-commit prefix **and** the
 `[workspace.package].version` bump from the *real change type* of the branch.
 Bugfix branches produce `fix:` commits and leave the workspace version
-untouched; feature and breaking branches bump the version as before.
+untouched; on feature and breaking branches step 14 bumps the version, and
+step 15 commits that bump only when `allow_version_bump` is set (see
+[Step-15 handling of the version bump](#step-15-handling-of-the-version-bump)).
 
 This closes the class of bug reported in
 [#944](https://github.com/rysweet/amplihack-rs/issues/944) (previously observed
@@ -42,7 +44,7 @@ can never disagree.
 
 ```
 Classification : PATCH
-Commit title   : fix: correct off-by-one in retry backoff calculation
+Commit title   : fix: update 2 files in crates
 Cargo.toml     : version = "0.9.4"   (unchanged)
 Cargo.lock     : re-synced to 0.9.4  (no diff)
 package.json   : re-synced to 0.9.4  (no diff)
@@ -54,16 +56,16 @@ The publish PR contains **no** `[workspace.package].version` diff.
 
 ```
 Classification : MINOR
-Commit title   : feat: add --json output flag to `amplihack status`
-Cargo.toml     : version = "0.9.4" → "0.10.0"
+Commit title   : feat: update 4 files in bins, crates, docs
+Cargo.toml     : version = "0.9.4" → "0.10.0"   (committed only when allow_version_bump=true)
 ```
 
 **Breaking change branch**:
 
 ```
 Classification : MAJOR
-Commit title   : feat!: remove deprecated `--legacy-mode` flag
-Cargo.toml     : version = "0.9.4" → "1.0.0"
+Commit title   : feat!: update 3 files in crates, docs
+Cargo.toml     : version = "0.9.4" → "1.0.0"    (committed only when allow_version_bump=true)
 ```
 
 ## How the prefix is resolved
@@ -90,13 +92,20 @@ order:
 3. **Default.** Otherwise the prefix defaults to `feat:`, preserving the
    historical behavior for feature/release runs.
 
-The prefix is combined with the sanitized task description using the existing
-injection-safe pattern:
+The prefix is the only part of the commit message the task description can
+influence. Since issue
+[#1575](https://github.com/rysweet/amplihack-rs/issues/1575) the rest of the
+subject is built from the staged index by `workflow_commit_message.sh`:
 
 ```bash
-COMMIT_TITLE=$(printf '%s%.72s' "$PREFIX" \
-  "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
+COMMIT_TITLE=$(bash "$MSG" subject "$COMMIT_PREFIX") || COMMIT_TITLE=""
+[ -n "$COMMIT_TITLE" ] || COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX")
 ```
+
+A bugfix run touching seven files produces
+`fix: update 7 files in amplifier-bundle, docs, tests`. No task-description
+text reaches the commit. See
+[Step-15 commit message](features/workflow-publish-task-attribution.md#step-15-commit-message).
 
 The classification string is only ever consumed through a whitelist `case`
 statement — it is never `eval`'d or interpolated into a command — preserving
@@ -121,17 +130,27 @@ For a `PATCH` classification the agent performs **no edit** to the
 `version = "X.Y.Z"` line, and sets `new_version == current_version`. For
 `MINOR`/`MAJOR` it bumps the version as before.
 
-## Step-15 exclusion of version-only changes
+## Step-15 handling of the version bump
 
-Since issue [#1575](https://github.com/rysweet/amplihack-rs/issues/1575),
-step 14's version edit only reaches the commit when the `allow_version_bump`
-context variable is `true`, `1` or `yes`. With the default (`"false"`),
-`step-15-commit-push` removes version-only hunks from `Cargo.toml`,
-`Cargo.lock`, `package.json`, `package-lock.json` and `pyproject.toml`, saves
-them to `$(git rev-parse --git-dir)/amplihack-excluded-version-bump.patch`, and
-prints a `WARNING` naming that file. The commit prefix still follows the
-classification below. See
-[Publish and Finalize Task Attribution](features/workflow-publish-task-attribution.md#step-15-staging-filter).
+Step 14's version edit reaches the commit only when both of these hold:
+
+- the `allow_version_bump` context variable is `true`, `1` or `yes` (the
+  default is `"false"`);
+- step 14 asked for a bump: `new_version` and `current_version` are both
+  non-empty and differ. Missing step-14 output counts as no bump.
+
+Otherwise, when every changed line in the staged `Cargo.toml`, `Cargo.lock`
+and `package.json` files is the project's own version line (`[package]` or
+`[workspace.package]` in `Cargo.toml`, a `[[package]]` entry without `source`
+in `Cargo.lock`, the top-level `"version"` in `package.json`),
+`step-15-commit-push` saves
+those changes to
+`$(git rev-parse --git-path amplihack/excluded-version-churn.patch)`, restores
+the files, and prints a `WARNING` naming the patch. If any of those files also
+has other changes, including a dependency `version` change, all of them stay
+staged with a `WARNING`. The commit prefix
+still follows the classification. See
+[Step-15 staging](features/workflow-publish-task-attribution.md#version-churn).
 
 ## Lockfile & package.json consistency
 
