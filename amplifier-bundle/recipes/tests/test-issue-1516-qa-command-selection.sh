@@ -495,6 +495,27 @@ expect r1-ok "an out-of-repo cargo is still used when PATH holds an empty entry"
     qa_status=PASS qa_dir=x/y
 expect_calls r1-ok-calls "the out-of-repo cargo runs in x/y with full argv" cargo "cargo|x/y|$CARGO_ARGS"
 
+echo "== #1516 R2: a .venv pytest is refused when detected and runs when configured =="
+if PATH="$SYSPATH" command -v pytest >/dev/null 2>&1; then
+    echo "  SKIP[r2]: a pytest exists in $SYSPATH on this host"
+else
+    new_repo pyproject.toml .venv/bin/
+    cp -p "$STUBS/pytest" "$REPO/.venv/bin/pytest"
+    STUBPATH="$REPO/.venv/bin"
+    run_tool
+    expect r2-detected "a detected pytest in .venv is not installed" \
+        qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=python qa_dir=.
+    sum="$(f qa_summary)"
+    if [[ "$sum" == *"set AUTODRIVE_QA_COMMAND"* ]]; then
+        pass r2-summary "the summary names the AUTODRIVE_QA_COMMAND workaround"
+    else fail r2-summary "summary is '$sum'"; fi
+    expect_calls r2-calls "the .venv pytest never runs when detected" pytest ""
+    run_tool AUTODRIVE_QA_COMMAND=pytest
+    STUBPATH="$STUBS"
+    expect r2-configured "AUTODRIVE_QA_COMMAND=pytest runs the .venv pytest" qa_status=PASS qa_dir=.
+    expect_calls r2-configured-calls "the .venv pytest runs at the root" pytest "pytest|.|"
+fi
+
 echo "== #1516 security review: cd never resolves outside the checked directory =="
 # A crate in a directory named `-`: `cd -- -` would mean $OLDPWD.
 new_repo -/Cargo.toml

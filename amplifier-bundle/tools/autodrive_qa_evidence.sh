@@ -168,7 +168,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       p="$(cd -- "./$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
       pd=""; case "$p" in /*) pd="$(cd -P -- "${p%/*}/" 2>/dev/null && pwd -P)" || pd="" ;; esac
       case "$pd" in ""|"$ROOT"|"$ROOT"/*)
-        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed outside the repository"
+        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed outside the repository; set AUTODRIVE_QA_COMMAND to run a repository copy"
         continue ;;
       esac
       # No timeout: a test suite is never cut off mid-run.
