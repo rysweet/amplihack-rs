@@ -451,6 +451,10 @@ pub(super) fn copy_amplifier_bundle(repo_root: &Path, claude_dir: &Path) -> Resu
             staging_temp.display()
         )
     })?;
+    if let Err(err) = secure_merge_guard(&staging_temp) {
+        let _ = fs::remove_dir_all(&staging_temp);
+        return Err(err);
+    }
     if let Err(err) = validate_staged_framework_bundle(&staging_temp) {
         let _ = fs::remove_dir_all(&staging_temp);
         return Err(err).with_context(|| {
@@ -533,6 +537,31 @@ pub(super) fn create_runtime_dirs(claude_dir: &Path) -> Result<()> {
                 .with_context(|| format!("failed to set permissions on {}", full.display()))?;
         }
         println!("  ✅ Runtime directory {dir} ready");
+    }
+    Ok(())
+}
+
+/// Issue #1551: `amplihack recipe run` refuses a gh merge guard that group or
+/// others can write, so the staged shim and its directory get exactly 0755
+/// whatever mode the checkout and its umask gave them. A bundle without the
+/// guard is left alone.
+fn secure_merge_guard(bundle: &Path) -> Result<()> {
+    let dir = bundle.join("tools/gh-merge-guard");
+    let shim = dir.join("gh");
+    if !shim.is_file() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for path in [&shim, &dir] {
+            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).with_context(|| {
+                format!(
+                    "failed to set mode 0755 on the merge guard {} (#1551)",
+                    path.display()
+                )
+            })?;
+        }
     }
     Ok(())
 }

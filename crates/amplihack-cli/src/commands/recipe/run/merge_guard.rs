@@ -37,12 +37,21 @@ pub(crate) fn guard_applies(name: &str, path: &Path, inherited: Option<&str>) ->
 ///
 /// There is no fallback location: a missing shim, or a `home` that is not an
 /// absolute path (which would resolve against the working directory), stops
-/// the run.
+/// the run. So does a shim or guard directory that group or others can write
+/// (G11): anyone with that access could replace the guard.
 pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
     let dir = home.join(GUARD_REL);
-    if !home.is_absolute() || !is_executable_file(&dir.join("gh")) {
+    let shim = dir.join("gh");
+    if !home.is_absolute() || !is_executable_file(&shim) {
         bail!(
             "amplihack: merge guard not found at {}; refusing to run auto-drive without it (#1551)",
+            dir.display()
+        );
+    }
+    if is_group_or_other_writable(&shim) || is_group_or_other_writable(&dir) {
+        bail!(
+            "amplihack: merge guard at {} is writable by group or others; refusing to trust it \
+             (#1551). Rerun `amplihack install`, or chmod 0755 the directory and its gh.",
             dir.display()
         );
     }
@@ -59,4 +68,17 @@ fn is_executable_file(path: &Path) -> bool {
 #[cfg(not(unix))]
 fn is_executable_file(path: &Path) -> bool {
     std::fs::metadata(path).is_ok_and(|meta| meta.is_file())
+}
+
+/// Symlinks are followed: a link is judged by its target. A path whose mode
+/// cannot be read counts as writable.
+#[cfg(unix)]
+fn is_group_or_other_writable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path).map_or(true, |meta| meta.permissions().mode() & 0o022 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_group_or_other_writable(_path: &Path) -> bool {
+    false
 }
