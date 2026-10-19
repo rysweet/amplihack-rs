@@ -138,8 +138,8 @@ if ! [[ "$remote_oid" =~ $OID_RE ]] || ! [[ "$head_oid" =~ $OID_RE ]]; then
 fi
 
 # 5. Ancestry.
-ahead="$(git rev-list --count "$remote_oid..$head_oid" 2>/dev/null || true)"
-behind="$(git rev-list --count "$head_oid..$remote_oid" 2>/dev/null || true)"
+# One graph walk: left = commits only on the remote, right = only on HEAD.
+read -r behind ahead < <(git rev-list --left-right --count "$remote_oid...$head_oid" 2>/dev/null || true)
 if ! [[ "$ahead" =~ $COUNT_RE ]] || ! [[ "$behind" =~ $COUNT_RE ]]; then
   echo "ERROR: $label: could not count commits between HEAD and '$upstream'" >&2
   finish false "" invalid-ref 1
