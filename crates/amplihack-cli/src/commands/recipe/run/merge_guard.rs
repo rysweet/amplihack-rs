@@ -4,6 +4,7 @@
 //! This module decides when the shim applies and finds it in the bundle. The
 //! shim itself is `amplifier-bundle/tools/gh-merge-guard/gh`.
 
+use crate::env_builder::EnvBuilder;
 use anyhow::{Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
@@ -15,12 +16,15 @@ pub(crate) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 pub(crate) const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 
 /// The files in the guard directory's parent (`tools/`) that the shim trusts
-/// to merge: the gate, and the helpers the gate sources. Replacing any of
-/// them is as good as replacing the shim, so they get the shim's mode check.
-pub(crate) const GATE_FILES: [&str; 3] = [
+/// to merge: the gate, and every helper the gate sources, directly or through
+/// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`).
+/// Replacing any of them is as good as replacing the shim, so they get the
+/// shim's mode check.
+pub(crate) const GATE_FILES: [&str; 4] = [
     "autodrive_merge_gate.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
+    "autodrive_unmerged.sh",
 ];
 
 /// Whether a run of the recipe `name`, read from `path`, gets the guard.
@@ -40,6 +44,23 @@ pub(crate) fn guard_applies(name: &str, path: &Path, inherited: Option<&str>) ->
             .is_some_and(is_auto_drive)
 }
 
+/// Keeps the guard first on `PATH` for an agent CLI launched inside a guarded
+/// run (`inherited` is the launcher's [`MERGE_GUARD_ENV`]). The launcher may
+/// prepend the agent binary's own directory, which can also hold the real
+/// `gh`, so the guard is put back ahead of it. Fails closed like the runner.
+pub(crate) fn keep_guard_first(
+    env_builder: EnvBuilder,
+    inherited: Option<&str>,
+) -> Result<EnvBuilder> {
+    if !inherited.is_some_and(|value| !value.is_empty()) {
+        return Ok(env_builder);
+    }
+    let dir = guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
+    Ok(env_builder
+        .prepend_path_first(dir)
+        .set(MERGE_GUARD_ENV, "1"))
+}
+
 /// [`locate_guard_dir`] for the run's `AMPLIHACK_HOME`, which must be set.
 pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
     let home = home.ok_or_else(|| {
@@ -54,9 +75,9 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 /// file (symlinks followed). The directory is returned as given, never
 /// canonicalised, so `PATH` de-duplication still recognises it.
 ///
-/// There is no fallback location: a missing shim, or a `home` that is not an
-/// absolute path (which would resolve against the working directory), stops
-/// the run. So does a shim or guard directory that group or others can write
+/// There is no fallback location: a missing shim, a `home` that is not an
+/// absolute path (which would resolve against the working directory), or a
+/// non-Unix host, stops the run. So does a shim or guard directory that group or others can write
 /// (G11): anyone with that access could replace the guard. The same holds
 /// for the `tools/` directory above it and for each [`GATE_FILES`] entry that
 /// exists there, since the shim lets the gate merge.
@@ -74,6 +95,14 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
         bail!(
             "amplihack: merge guard not found at {}; refusing to run auto-drive without it (#1551)",
             dir.display()
+        );
+    }
+    // The shim is an extensionless bash script that reads /proc: off Unix it
+    // is never the `gh` an agent runs, so the guard would be on in name only.
+    if cfg!(not(unix)) {
+        bail!(
+            "amplihack: the merge guard needs a Unix host; refusing to run auto-drive on this \
+             platform (#1551)"
         );
     }
     if is_group_or_other_writable(&shim) || is_group_or_other_writable(&dir) {

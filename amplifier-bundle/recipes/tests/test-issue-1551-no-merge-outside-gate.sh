@@ -353,6 +353,22 @@ refused T1-extension-upgrade "$L_EXT" extensions upgrade --all
 RUN_ENV=("STUB_ALIASES=me: some-extension do-thing")
 refused T1-alias-to-extension "$L_EXT" me
 RUN_ENV=()
+# A `$N` placeholder fills the merge word in at call time (`pr $1` + `merge`),
+# and quotes are split by gh, not the shim: both refused at set and at use.
+refused T1-alias-set-placeholder "$L_ALIAS" alias set px 'pr $1'
+refused T1-alias-set-shell-placeholder "$L_ALIAS" alias set --shell ps '/usr/bin/gh pr $1'
+RUN_ENV=("STUB_ALIASES=px: pr \$1")
+refused T1-alias-use-placeholder "$L_ALIAS" px merge 38
+RUN_ENV=("STUB_ALIASES=pq: pr \"\$1\"")
+refused T1-alias-use-quoted "$L_ALIAS" pq merge 38
+RUN_ENV=("STUB_ALIASES=ps: '!/usr/bin/gh pr \$1'")
+refused T1-alias-use-shell-placeholder "$L_ALIAS" ps merge 38
+RUN_ENV=()
+# GitHub serves repo routes under repositories/<id>/ too, and {branch}
+# expands unescaped to the current branch, which may hold slashes.
+refused T1-api-repositories-id "$L_API" api -X PUT repositories/212613049/pulls/38/merge
+refused T1-api-repositories-merges "$L_API" api -X POST repositories/212613049/merges -f base=main -f head=x
+refused T1-api-branch-placeholder "$L_API" api -X PUT 'repos/o/{branch}'
 # `gh alias list` failing makes an unknown first word ambiguous: refused.
 RUN_ENV=("STUB_ALIAS_RC=1")
 reset_stub; agent_gh pm 38; rc=$?
@@ -596,6 +612,8 @@ parity T4-nonzero-rc-api api repos/o/r/pulls/38
 parity T4-discussion discussion list
 parity T4-codespace-alias cs list
 parity T4-ruleset-alias rs list
+parity T4-actions-topic actions
+parity T4-repositories-get api repositories/212613049/pulls/38
 parity T4-ext-list extension list
 parity T4-ext-remove ext remove some-ext
 RUN_ENV=()

@@ -72,6 +72,13 @@ impl EnvBuilder {
         self
     }
 
+    /// Put a directory at the very front of PATH, ahead of every directory
+    /// already prepended (deduplicated). Used by the #1551 merge guard.
+    pub fn prepend_path_first(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.path_prepend.insert(0, dir.into());
+        self
+    }
+
     /// Add AMPLIHACK_SESSION_ID (generate a new one if not already set).
     pub fn with_amplihack_session_id(self) -> Self {
         let session_id = env::var("AMPLIHACK_SESSION_ID").unwrap_or_else(|_| generate_session_id());

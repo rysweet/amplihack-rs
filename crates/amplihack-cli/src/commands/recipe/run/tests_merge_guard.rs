@@ -374,3 +374,77 @@ fn every_shipped_auto_drive_recipe_is_guarded_by_its_name() {
         recipes.display()
     );
 }
+
+/// Issue #1551: a helper the gate sources runs inside the process the shim
+/// trusts to merge, so a sourced helper missing from [`GATE_FILES`] would
+/// escape the mode check. Every `autodrive_*.sh` a shipped gate file sources
+/// (`. "${GATE_HOME}/…"` or a `shellcheck source=` directive) must be listed.
+#[test]
+fn every_helper_the_gate_sources_is_a_gate_file() {
+    let tools = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/tools");
+    let mut sourced = Vec::new();
+    for name in GATE_FILES {
+        let text = fs::read_to_string(tools.join(name)).expect("a shipped gate file");
+        for marker in [". \"${GATE_HOME}/", "shellcheck source="] {
+            for (at, _) in text.match_indices(marker) {
+                let rest = &text[at + marker.len()..];
+                let end = rest
+                    .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == '.'))
+                    .unwrap_or(rest.len());
+                let file = &rest[..end];
+                if file.starts_with("autodrive_") && file.ends_with(".sh") {
+                    sourced.push(file.to_string());
+                }
+            }
+        }
+    }
+    assert!(
+        sourced.iter().any(|f| f == "autodrive_unmerged.sh"),
+        "the scan must see autodrive_state.sh source autodrive_unmerged.sh; found {sourced:?}"
+    );
+    for file in &sourced {
+        assert!(
+            GATE_FILES.contains(&file.as_str()),
+            "{file} is sourced by the merge gate but missing from GATE_FILES"
+        );
+    }
+}
+
+/// Issue #1551: `amplihack claude` prepends the claude binary's directory,
+/// which may also hold the real gh. Inside a guarded run the guard must stay
+/// at PATH index 0 for the agent; outside one, PATH is left alone.
+#[cfg(unix)]
+#[test]
+fn keep_guard_first_puts_the_guard_ahead_of_the_agent_binary_dir() {
+    use super::merge_guard::keep_guard_first;
+    use crate::env_builder::EnvBuilder;
+    let (_tmp, home) = bundle_with_shim(Some(0o755));
+    let home_str = home.to_str().unwrap();
+    let launcher = || {
+        EnvBuilder::new()
+            .set("AMPLIHACK_HOME", home_str)
+            .prepend_path("/opt/claude-and-gh/bin")
+    };
+
+    let env = keep_guard_first(launcher(), Some("1")).unwrap().build();
+    let path = env.get("PATH").unwrap();
+    let first = path.split(':').next().unwrap();
+    assert_eq!(Path::new(first), home.join(GUARD_REL), "PATH: {path}");
+    assert_eq!(env.get(MERGE_GUARD_ENV).map(String::as_str), Some("1"));
+
+    for inherited in [None, Some("")] {
+        let env = keep_guard_first(launcher(), inherited).unwrap().build();
+        let path = env.get("PATH").unwrap();
+        assert!(path.starts_with("/opt/claude-and-gh/bin"), "PATH: {path}");
+    }
+}
+
+#[test]
+fn keep_guard_first_fails_closed_without_a_guard() {
+    use super::merge_guard::keep_guard_first;
+    use crate::env_builder::EnvBuilder;
+    let Err(err) = keep_guard_first(EnvBuilder::new().unset("AMPLIHACK_HOME"), Some("1")) else {
+        panic!("a guarded launch with no AMPLIHACK_HOME is refused");
+    };
+    assert!(err.to_string().contains("#1551"), "{err}");
+}

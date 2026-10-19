@@ -1756,13 +1756,16 @@ environment carries a non-empty `AMPLIHACK_MERGE_GUARD`; any value, `0`
 included, switches it on and none switches it off. The runner puts
 `$AMPLIHACK_HOME/amplifier-bundle/tools/gh-merge-guard` first on `PATH` once
 and sets `AMPLIHACK_MERGE_GUARD=1`, which every step, agent CLI and nested run
-inherits.
+inherits. `amplihack claude` prepends the claude binary's directory, which can
+hold the real `gh`, so under the marker the launcher puts the guard back at
+`PATH` index 0, and stops with the same errors if it cannot find it.
 
 The run stops before any step when `AMPLIHACK_HOME` is unset or not absolute
-(the error names which), the shim is missing or not a regular executable, or
+(the error names which), the host is not Unix (the bash shim cannot be the
+`gh` an agent runs there), the shim is missing or not a regular executable, or
 anything the shim trusts is group- or other-writable: the shim, its
-directory, `tools/` above it, and the gate, `autodrive_state.sh` and
-`autodrive_trust.sh` there. The install sets the shim and its directory to
+directory, `tools/` above it, and the gate and the helpers it sources there
+(`autodrive_state.sh`, `autodrive_trust.sh`, `autodrive_unmerged.sh`). The install sets the shim and its directory to
 `0755` and removes group and other write from the rest. Nothing skips this:
 
 ```text

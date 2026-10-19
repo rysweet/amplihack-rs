@@ -186,6 +186,11 @@ is_merge_endpoint() {
   e="${e#/}"
   [[ "$e" == api/v3/* ]] && e="${e#api/v3/}"
   e="${e%/}"
+  # gh expands {branch} to the current branch, unescaped, so it may carry
+  # slashes that complete a merge path: never resolved, refused.
+  [[ "$e" == *'{branch}'* ]] && return 0
+  # GitHub serves every repo route under repositories/<id>/ as well.
+  [[ "$e" =~ ^repositories/[^/]+/(.*)$ ]] && e="repos/_/_/${BASH_REMATCH[1]}"
   [[ "$e" =~ ^repos/[^/]+/[^/]+/pulls/[^/]+/merge$ || "$e" =~ ^repos/[^/]+/[^/]+/merges$ ]]
 }
 
@@ -256,8 +261,10 @@ classify_alias_cmd() {
   (( ${#pos[@]} > 0 )) && sub="${pos[0]}"
   case "$sub" in
     set)
+      # A `$N` placeholder takes words at call time, so `pr $1` + `merge`
+      # would merge: refused, like an expansion that names a merge.
       for t in "${pos[@]:2}"; do
-        if [[ "$t" == - ]] || names_merge "$t"; then CLASS='gh alias'; return 0; fi
+        if [[ "$t" == - || "$t" == *'$'* ]] || names_merge "$t"; then CLASS='gh alias'; return 0; fi
       done ;;
     import)
       t="${pos[1]-}"
@@ -295,6 +302,9 @@ classify_alias_use() {
     exp="${line#*:}"
     exp="${exp#"${exp%%[![:space:]]*}"}"
     if [[ "$exp" == \'*\' || "$exp" == \"*\" ]]; then exp="${exp:1:${#exp}-2}"; fi
+    # Placeholders and quotes are filled in or split by gh, not here: an
+    # expansion holding either cannot be classified, so it is refused.
+    if [[ "$exp" == *[\$\'\"]* ]]; then CLASS='gh alias'; return 0; fi
     if [[ "$exp" == '!'* ]]; then
       names_merge "$exp" && CLASS='gh alias'
       return 0
@@ -330,7 +340,7 @@ classify() {
     extension|extensions|ext) classify_extension_cmd "$@" ;;
     # Built-in commands that cannot merge. Fails safe: any other word is an
     # alias (checked below) or an extension, which is refused.
-    accessibility|agent|agents|agent-task|agent-tasks|at|attestation|auth|browse|cache|codespace|completion|config|copilot|cs|discussion|gist|gpg-key|help|issue|label|licenses|org|preview|project|release|repo|rs|ruleset|run|search|secret|skill|skills|ssh-key|status|variable|version|workflow) ;;
+    accessibility|actions|agent|agents|agent-task|agent-tasks|at|attestation|auth|browse|cache|codespace|completion|config|copilot|cs|discussion|gist|gpg-key|help|issue|label|licenses|org|preview|project|release|repo|rs|ruleset|run|search|secret|skill|skills|ssh-key|status|variable|version|workflow) ;;
     *)
       if [[ "$allow_alias" == 1 ]]; then
         classify_alias_use "$cmd" "$@"
