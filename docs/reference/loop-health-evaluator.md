@@ -83,8 +83,47 @@ Exactly three outcomes. There is no fourth, and no "maybe".
 | Verdict | Meaning | Effect |
 | ------- | ------- | ------ |
 | `CONTINUE` | Concrete evidence that the last round moved something, and a plausible next step exists. | Another round is authorised. |
-| `DONE` | The loop's objective is met. | Advance to the next phase. |
+| `DONE` | The loop's objective is met **and** this round's own verdict (`loop_round_verdict`) is the loop's clean token (`loop_clean_token`). | Advance to the next phase. |
 | `STUCK` | No progress is being made. | Stop. Do not proceed. Escalate with the specific evidence of what is not converging. |
+
+### `DONE` needs this round's own verdict to be clean
+
+A loop whose rounds are judged by a reviewer has a clean token: `CLEAN` for
+the crusty loop, `MERGE_READY` for the merge-ready loop. The caller passes
+that token as `loop_clean_token` and the verdict the reviewer gave **this**
+round as `loop_round_verdict`. The prompt's `## Decide` rules make `DONE`
+legal only when the two are equal.
+
+A non-clean round (`CONCERNS`, `NOT_MERGE_READY` and the like) is never
+`DONE`, even when every finding looks addressed — by a commit or by an edit
+to the pull request description. Only another review round can confirm a
+fix, so the evaluator answers `CONTINUE` if the round acted on its findings
+and `STUCK` only if it neither changed the code nor acted on a finding. A fix
+made outside the diff counts as movement **even with zero commits**: a pull
+request description edit or a reply on a review thread that the round output
+shows is `CONTINUE`, and the re-review is the next step. Issue #1597 is the
+case this rule closes: a crusty round said `CONCERNS`, the concerns were fixed
+by a description edit with no commit, and the evaluator answered `DONE`.
+Without the zero-commit clause, the measured `commits_since_baseline = 0` and
+the "if you are not sure, answer `STUCK`" fallback would steer the same round
+to `STUCK`, which the loop honours, and the run would end one round short.
+
+The prompt also defines the `done_overridden=1` marker. When `autodrive_loop.sh`
+refuses a `DONE` because the round's verdict was not clean, it appends that
+marker to the round's line in `loop_history`. The `## Decide` rule tells the
+evaluator that a history line ending in `done_overridden=1` is a `DONE` that was
+refused as non-clean, so the model does not have to guess what the marker means.
+
+When `loop_clean_token` is empty, the evaluator applies the same rule to the
+reviewer verdict shown for this round in `loop_history`, if there is one;
+otherwise it decides as before. The quality, self-improvement and
+smart-reflect loops pass neither input, so their behaviour does not change.
+
+The rule lives in the prompt only. Steps 03 and 04 do not compare the two
+inputs, and nothing about how the verdict is parsed changes: the
+deterministic check is `ROUND_CLEAN` in `autodrive_loop.sh`, which handles a
+`DONE` that breaks this rule anyway (see
+[Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 
 **A missing or unparseable verdict is `STUCK`, never `CONTINUE`.** Failing safe
 here means stopping, not looping: a fail-open default would authorise exactly
@@ -126,8 +165,7 @@ its last `##` heading, and shows the same example line both times:
    ```
    {"loop_verdict":"STUCK","not_converging":[]}
 
-   CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
-   any other word is STUCK.
+   Only CONTINUE, DONE and STUCK are legal; any other word is STUCK.
    ```
 
 The role paragraphs have no heading of their own, so they sit under
@@ -342,8 +380,10 @@ line gives the same result. A `DONE` alone does not advance a phase:
 [Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 If the round verdict is clean, the loop ends without the confirming round that
 a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
-If the round verdict is anything else, the pair is inconsistent and the run
-stops as `STUCK`. A `DONE` from the merge loop only hands over to the
+If the round verdict is anything else, the loop does not advance. It runs
+one more round to re-review, and stops as `STUCK` if the round record is
+missing or if the next round repeats the same non-clean `DONE` with no
+progress. A `DONE` from the merge loop only hands over to the
 [merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
 again before it merges.
 
@@ -356,7 +396,9 @@ write their reason (`CONTINUE — round 1 made real progress`), so it stays a
 legal ending. The control
 that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
 in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
-clean, and otherwise the run stops as `STUCK`.
+clean. Otherwise the loop runs another round to re-review, and stops as
+`STUCK` when the round record is missing or a repeated non-clean `DONE` shows
+no progress.
 
 ### Examples
 
@@ -550,7 +592,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | Field | Signal |
 | ----- | ------ |
 | `terminal_refusal`, `terminal_reason` | A child returned exit `79` / `BLOCKED_TERMINAL`. Terminal — see below. |
-| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means it produced nothing, whatever the round's prose claims. |
+| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means no code moved, whatever the round's prose claims. A non-clean round that acted on its findings outside the diff (a PR-description edit, a thread reply) is still `CONTINUE`; see the `DONE` rule. |
 | `repeated_duration_count`, `repeated_duration_value` | How many steps reported the *same* duration. Identical durations repeating are a cap, not work. |
 | `repeated_output` | Whether the last round's output is textually a repeat of something already in the history (compared after normalising away digits, punctuation and whitespace). |
 | `findings_new`, `findings_recurring`, `findings_resolved` | Set difference over `loop_findings_current` / `loop_findings_previous`. A round that resolves nothing and re-raises the same findings has not moved. |
@@ -574,6 +616,8 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
+| `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
+| `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
 
 ## Outputs

@@ -23,8 +23,8 @@
 # ceiling and the ceiling is never raised to accommodate one.
 #
 #   Exit 0  — the loop converged (DONE) and the round itself verified clean.
-#   Exit 1  — STUCK, a malformed/missing verdict, or an inconsistent round.
-#             Nothing advances. The escalation names what is not converging.
+#   Exit 1  — evaluator STUCK (or unreadable), a missing round record under
+#             DONE, or a repeated DONE over an unchanged non-clean round (#1597).
 #   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
 #             and NEVER retried into.
 #
@@ -99,9 +99,8 @@ ROUND_RECIPE="$(autodrive_launch_recipe "$ROUND_RECIPE")" \
   || { echo "ERROR: loop '${LOOP_NAME}': the round recipe is not in ${LOOP_HOME%/tools}/recipes; refusing to resolve it from --repo" >&2; printf '{"loop":"%s","loop_result":"UNTRUSTED_RECIPE","round_label":"preflight","reason":"the round recipe is not in the launch-side bundle"}\n' "$LOOP_NAME"; exit 2; }
 
 # --- recursion context: propagate, never raise -----------------------------
-# AMPLIHACK_MAX_DEPTH is a ceiling handed down by the host. This loop passes it
-# through untouched. Raising it is how a run walks into a sealed guard and gets
-# refused with 79; that is the behaviour #1327 exists to stop.
+# AMPLIHACK_MAX_DEPTH is a ceiling handed down by the host, passed through untouched.
+# Raising it walks a run into a sealed guard's exit-79 refusal, which #1327 exists to stop.
 AUTODRIVE_INHERITED_MAX_DEPTH="${AMPLIHACK_MAX_DEPTH:-}"
 export AMPLIHACK_TREE_ID="${AMPLIHACK_TREE_ID:-}"
 export AMPLIHACK_SESSION_DEPTH="${AMPLIHACK_SESSION_DEPTH:-0}"
@@ -114,24 +113,18 @@ assert_ceiling_untouched() {
   fi
 }
 
-# Read one field out of a round record or an agent's output.
-#
-# `--require-field` (issue #1337, PR #1347) is NOT optional here: plain
-# `extract-json` returns the FIRST parseable object and prefers a ```json fence
-# over raw prose, so a model that quotes an example or drafts a verdict before
-# reconsidering has its FIRST object read instead of its last. Requiring the
-# field and taking the LAST object that carries it agrees with the prompt's
-# "as the very last thing you emit", and returns nothing — so the blocking
-# `--default` applies — when no object carries the field at all.
+# Read one field out of a round record or an agent's output. `--require-field`
+# (issue #1337, PR #1347) is NOT optional: plain `extract-json` returns the FIRST
+# parseable object (a quoted example, a draft verdict), not the LAST that carries
+# the field, and with it no carrying object at all means the blocking `--default`.
 field() { # field <json> <name> <default>
   printf '%s' "${1:-}" \
     | "$AMPLIHACK_BIN" orch helper extract-json --require-field "$2" \
     | "$AMPLIHACK_BIN" orch helper extract-field --field "$2" --default "$3"
 }
 
-# copy_private <from> <to>: copies a regular file under this script's umask
-# 077. The old copy is removed first, because cp onto an existing file keeps
-# that file's mode and writes through it when it is a symlink.
+# copy_private <from> <to>: copies a regular file under umask 077, removing the old copy
+# first: cp onto an existing file keeps its mode and writes through a symlink.
 copy_private() {
   [ -f "$1" ] || return 0
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
@@ -200,7 +193,9 @@ ROUND_LABEL=""
 HISTORY=""
 PREV_FINDINGS=""
 PREV_TEST=""
-PREV_CI=""
+PREV_CI=""; PREV_VERDICT=""; PREV_OVERRIDDEN=0
+TOKEN_SAFE="$(printf '%s' "$CLEAN_TOKEN" | LC_ALL=C tr -cd 'A-Za-z0-9_')" # see VERDICT_SAFE
+[ -n "$TOKEN_SAFE" ] || echo "WARNING: loop '${LOOP_NAME}': the clean token has no A-Za-z0-9_ characters, so loop-health-evaluator gets an empty loop_clean_token." >&2
 
 while :; do
   assert_ceiling_untouched
@@ -266,22 +261,20 @@ while :; do
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
+  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
+  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [ "$ROUND_CLEAN" = "true" ] || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the most recent round record, so a later gate can bind its
   # evidence to the round that actually produced it without guessing a name.
   copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
   copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
-  # Manifest of the round records THIS loop wrote (issue #1517): one row per
-  # round in <loop>-records.tsv with the label, the record file name and the
-  # record's git blob hash. It is written here, before the loop-health
-  # evaluator or any later agent runs, so an agent cannot get a row for a
-  # record it wrote itself; autodrive_crusty_final (autodrive_state.sh) trusts
-  # a crusty record, and autodrive_qa_trusted (autodrive_trust.sh) a
-  # merge-ready record, only when the last row names it and the hash still
-  # matches. git runs from the state dir with GIT_DIR/GIT_WORK_TREE unset, as
-  # autodrive_blob_hash does, so both compute the same hash. A check that
-  # fails writes a WARNING and no row.
+  # Manifest of the round records THIS loop wrote (#1517): one row per round in
+  # <loop>-records.tsv (label, record name, git blob hash), written before any later
+  # agent runs, so no agent gets a row for a record it wrote. autodrive_crusty_final
+  # (autodrive_state.sh) and autodrive_qa_trusted (autodrive_trust.sh) trust a record
+  # only when the last row names it and the hash matches; git runs from the state dir,
+  # GIT_DIR/GIT_WORK_TREE unset, as autodrive_blob_hash does. A failed check: WARNING, no row.
   if [ -f "$RECORD" ]; then
     MANIFEST_FILE="${RECORD##*/}"; MANIFEST_HASH=""
     case "$MANIFEST_FILE" in
@@ -307,7 +300,7 @@ while :; do
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   CI_SIGNAL="$(field "$RAW" ci_signal "")"
   HISTORY="${HISTORY}
-${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
+${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
@@ -326,7 +319,8 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
       -c "loop_test_signal=${TEST_SIGNAL}" \
       -c "loop_test_signal_previous=${PREV_TEST}" \
       -c "loop_ci_signal=${CI_SIGNAL}" \
-      -c "loop_ci_signal_previous=${PREV_CI}" ) \
+      -c "loop_ci_signal_previous=${PREV_CI}" \
+      -c "loop_clean_token=${TOKEN_SAFE}" -c "loop_round_verdict=${VERDICT_SAFE}" ) \
       >"$HEALTH_LOG" 2>&1
   HEALTH_RC=$?
   tail -n 120 "$HEALTH_LOG" >&2 || true
@@ -370,7 +364,9 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
     esac
   fi
 
-  PREV_FINDINGS="$FINDINGS"; PREV_TEST="$TEST_SIGNAL"; PREV_CI="$CI_SIGNAL"
+  OVERRIDE_ARGS=("$ROUND_VERDICT" "$VERDICT_SAFE" "$PREV_OVERRIDDEN" "$PREV_VERDICT" "$FINDINGS" "$PREV_FINDINGS" "$BASELINE"
+    "$(git -C "$REPO" rev-parse HEAD || printf '')")
+  PREV_FINDINGS="$FINDINGS"; PREV_TEST="$TEST_SIGNAL"; PREV_CI="$CI_SIGNAL"; PREV_VERDICT="$VERDICT_SAFE"; PREV_OVERRIDDEN=0
 
   # --- decide, on BOTH signals ---------------------------------------------
   # Advancing needs the round's own machine-checked verdict AND the evaluator's
@@ -383,8 +379,12 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
           "$LOOP_NAME" "$ROUND_LABEL" "$ROUND_VERDICT"
         exit 0
       fi
-      escalate "STUCK" "loop-health said DONE while the round verdict is '${ROUND_VERDICT}', not '${CLEAN_TOKEN}'. An inconsistent pair never advances a phase."
-      exit 1
+      # #1597: re-review once; a missing record, or a repeat that moved nothing, is STUCK.
+      WHY="$(bash "${LOOP_HOME}/autodrive_done_override.sh" "${OVERRIDE_ARGS[@]}")" \
+        || { escalate "STUCK" "loop-health said DONE while the round verdict is '${VERDICT_SAFE}', not '${TOKEN_SAFE}'${WHY:+: ${WHY}}. An inconsistent pair never advances a phase."; exit 1; }
+      echo "INFO: loop-health said DONE but ${VERDICT_FIELD}=${VERDICT_SAFE}, not ${TOKEN_SAFE}; running another round to re-review." >&2
+      HISTORY="${HISTORY} done_overridden=1"; PREV_OVERRIDDEN=1
+      continue
       ;;
     CONTINUE)
       if [ "$ROUND_CLEAN" = "true" ]; then
