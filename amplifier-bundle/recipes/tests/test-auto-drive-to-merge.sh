@@ -75,7 +75,7 @@ AUTODRIVE_RECIPES=(
   autodrive-crusty-loop autodrive-merge-evidence autodrive-merge-round
   autodrive-merge-loop
 )
-AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
+AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
   autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
@@ -278,14 +278,19 @@ main_and_worktree "${LOOP_MAIN}" "${LOOP_WT}"
 # (autodrive_private_dir, section 13), and a log the harness opened under the
 # caller's umask is exactly such an entry.
 LOOP_DIR=""; LOOP_LOGS=""; LOOP_OUT=""
-run_loop() { # run_loop <state-dir-suffix>
+# The optional positionals pick the loop (issue #1597 runs the merge-ready
+# loop too); they default to the crusty loop. RUN_LOOP_TIMEOUT, when set,
+# runs the loop under `timeout`, so a loop that never stops fails with 124.
+run_loop() { # run_loop <state-dir-suffix> [loop-name] [round-recipe] [clean-token] [verdict-field]
   LOOP_DIR="${WORK}/loop-$1"; LOOP_LOGS="${WORK}/loop-$1.logs"
   mkdir -p "${LOOP_DIR}" "${LOOP_LOGS}"
   export STUB_CALLS="${LOOP_LOGS}/calls" STUB_SHOW_CALLS="${LOOP_LOGS}/shows"
   printf 'drive the PR to merge' > "${LOOP_LOGS}/task.txt"
+  local wrap=()
+  [ -z "${RUN_LOOP_TIMEOUT:-}" ] || wrap=(timeout "${RUN_LOOP_TIMEOUT}")
   PATH="${STUB_BIN}:${PATH}" AMPLIHACK_BIN="${STUB_BIN}/amplihack" \
-    bash "${LOOP}" --loop-name "crusty" --round-recipe "autodrive-crusty-round" \
-      --clean-token "CLEAN" --verdict-field "crusty_verdict" \
+    ${wrap[@]+"${wrap[@]}"} bash "${LOOP}" --loop-name "${2:-crusty}" --round-recipe "${3:-autodrive-crusty-round}" \
+      --clean-token "${4-CLEAN}" --verdict-field "${5:-crusty_verdict}" \
       --repo "${LOOP_WT}" --review-dir "${LOOP_MAIN}" --state-dir "${LOOP_DIR}" --task-file "${LOOP_LOGS}/task.txt" \
       >"${LOOP_LOGS}/out" 2>"${LOOP_LOGS}/err"
   local rc=$?
@@ -355,13 +360,22 @@ else
   fail "MALFORMED-norecord" "a missing round record was accepted as clean: ${LOOP_OUT}"
 fi
 
-# DONE over a non-clean round verdict is an inconsistent pair: never advance.
-set_stub '{"crusty_verdict":"CONCERNS"}' 0 "$H_DONE"
-run_loop incon; rc=$?
-if [ "$rc" -ne 0 ] && grep -qF 'inconsistent pair never advances' "${LOOP_LOGS}/err"; then
-  pass "MALFORMED-inconsistent" "DONE over a non-clean round verdict never advances a phase"
+# DONE over a non-clean round verdict never advances that round (issue
+# #1597): the loop runs one more round to re-review, and only a round that is
+# itself clean converges. Round 1 is CONCERNS, round 2 is CLEAN, DONE both times.
+set_stub '' 0 "$H_DONE"
+export STUB_ROUND_BODY='case "$AUTODRIVE_ROUND_LABEL" in
+  round-1) printf "%s" "{\"crusty_verdict\":\"CONCERNS\"}" > "$AUTODRIVE_ROUND_RECORD"; printf "C1: stale PR description\n" > "${AUTODRIVE_ROUND_RECORD}.findings" ;;
+  *) printf "%s" "{\"crusty_verdict\":\"CLEAN\"}" > "$AUTODRIVE_ROUND_RECORD"; : > "${AUTODRIVE_ROUND_RECORD}.findings" ;;
+esac'
+RUN_LOOP_TIMEOUT=120 run_loop incon; rc=$?
+unset STUB_ROUND_BODY
+if [ "$rc" -eq 0 ] && [ "$(grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null)" = "2" ] \
+   && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' \
+   && ! printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-1"'; then
+  pass "MALFORMED-inconsistent" "DONE over a non-clean round is not advanced: one more round runs and converges only when that round is clean"
 else
-  fail "MALFORMED-inconsistent" "an inconsistent DONE advanced the phase (rc=${rc})"
+  fail "MALFORMED-inconsistent" "DONE over CONCERNS did not lead to one re-review round then convergence (rc=${rc}): ${LOOP_OUT}; $(tail -n3 "${LOOP_LOGS}/err")"
 fi
 
 # The converging case still passes through — a healthy loop is not cut off.
@@ -2774,7 +2788,7 @@ ev_run() { # ev_run <stub-dir> [VAR=value ...] -> runs the step; EV_OUT = last s
   EV_ERR="${EV_REPO}.err"
 }
 evf() { printf '%s' "${EV_OUT}" | jq -r --arg k "$1" '.[$k] // "<absent>"' 2>/dev/null; }
-EV_KEYS="qa_status qa_reason qa_repo_type qa_command qa_suite_commands_count qa_scenarios qa_exit_code qa_summary qa_round head_sha
+EV_KEYS="qa_status qa_reason qa_repo_type qa_dir qa_command qa_suite_commands_count qa_scenarios qa_exit_code qa_summary qa_round head_sha
 gadugi_required gadugi_status gadugi_validate_exit_code gadugi_run_exit_code gadugi_scenario_count gadugi_scenario_dir
 gadugi_scenarios_validated gadugi_scenarios_run gadugi_scenarios_passed gadugi_scenarios_failed gadugi_failed_scenarios
 gadugi_scenario_results"
@@ -5475,6 +5489,341 @@ if [ "$rc" -ne 0 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err"; then
 else
   fail "1512-nonzero-exit" "a non-zero evaluator exit was overridden by its log (rc=${rc})"
 fi
+# ---------------------------------------------------------------------------
+# Issue #1597 — DONE needs this round's own verdict to be the clean token.
+# ---------------------------------------------------------------------------
+# loop-health-evaluator answered DONE over a round whose own verdict was not
+# clean (crusty CONCERNS fixed by a PR-description edit with no commit, PR
+# #1587; merge-ready DONE against NOT_MERGE_READY, PR #1586 round 5), and the
+# loop stopped STUCK when one more round would have converged. Now a DONE over
+# a parsed non-clean verdict runs one more round to re-review; a missing record
+# and an evaluator STUCK still stop; and a repeated DONE over a round that
+# moved nothing (same verdict, same findings, HEAD unchanged) stops STUCK, so
+# the override can never loop. Every run below is under `timeout 120`: a loop
+# that never stops fails with 124 instead of hanging the suite.
+echo "--- issue #1597: DONE over a non-clean round verdict ---"
+P1597_MAIN="${WORK_PHYS}/p1597-main-checkout"; P1597_WT="${WORK_PHYS}/p1597-pr-worktree"
+main_and_worktree "${P1597_MAIN}" "${P1597_WT}"
+SAVED_LOOP_MAIN="${LOOP_MAIN}"; SAVED_LOOP_WT="${LOOP_WT}"
+LOOP_MAIN="${P1597_MAIN}"; LOOP_WT="${P1597_WT}"
+export RUN_LOOP_TIMEOUT=120
+P1597_INFO_CRUSTY='INFO: loop-health said DONE but crusty_verdict=CONCERNS, not CLEAN; running another round to re-review.'
+P1597_REPEAT="repeated DONE over non-clean 'CONCERNS' with no progress (same verdict, same findings, HEAD unchanged)"
+P1597_PHRASE='An inconsistent pair never advances a phase.'
+
+# A scripted round per label. spec_round <spec-dir> <label> <field> <verdict-json> [findings] [commit]
+# writes what that round's body does: its record, its .findings, and, when
+# the sixth argument is "commit", one empty commit on the PR worktree (plumbing,
+# so no hook runs). A label with no spec uses the spec named "default".
+spec_round() {
+  mkdir -p "$1"
+  printf '{"%s":%s}' "$3" "$4" > "$1/$2.record"
+  if [ "$#" -ge 5 ]; then printf '%s' "$5" > "$1/$2.findings"; else rm -f "$1/$2.findings"; fi
+  if [ "${6:-}" = "commit" ]; then : > "$1/$2.commit"; else rm -f "$1/$2.commit"; fi
+}
+spec_body() { # spec_body <spec-dir>: exports STUB_ROUND_BODY that plays the spec
+  export STUB_ROUND_BODY="d='$1'; wt='${P1597_WT}'"'
+    l="$AUTODRIVE_ROUND_LABEL"; [ -f "$d/$l.record" ] || l=default
+    cp "$d/$l.record" "$AUTODRIVE_ROUND_RECORD" || exit 1
+    if [ -f "$d/$l.findings" ]; then cp "$d/$l.findings" "${AUTODRIVE_ROUND_RECORD}.findings"; else : > "${AUTODRIVE_ROUND_RECORD}.findings"; fi
+    if [ -f "$d/$l.commit" ]; then
+      git -C "$wt" update-ref HEAD "$(git -C "$wt" commit-tree "$(git -C "$wt" rev-parse "HEAD^{tree}")" -p HEAD -m "$l")" || exit 1
+    fi
+    echo "round $l ran"'
+}
+health_seq() { # health_seq <verdict>...: one LOOP_HEALTH marker per evaluator call, in order
+  : > "${WORK}/health-seq-1597"
+  for v in "$@"; do printf 'LOOP_HEALTH: %s — scripted\n' "$v" >> "${WORK}/health-seq-1597"; done
+  export STUB_HEALTH_SEQ="${WORK}/health-seq-1597"
+}
+# grep -c already prints 0 when nothing matches; `|| true` only absorbs its exit 1.
+evals() { grep -c '^loop-health-evaluator$' "${LOOP_LOGS}/calls" 2>/dev/null || true; }
+rounds() { grep -c "^${1:-autodrive-crusty-round}\$" "${LOOP_LOGS}/calls" 2>/dev/null || true; }
+history_of() { # history_of <n>: the loop_history the n-th evaluator call received
+  awk -v n="$1" 'BEGIN { RS = "\n---\n" } NR == n { print }' "${LOOP_LOGS}/history" 2>/dev/null
+}
+health_argv() { # health_argv <n>: the n-th evaluator call's flattened argv
+  grep -F 'loop-health-evaluator.yaml' "${LOOP_LOGS}/calls.argv" 2>/dev/null | sed -n "${1}p"
+}
+info_count() { grep -cF "running another round to re-review" "${LOOP_LOGS}/err" 2>/dev/null || true; }
+p1597_reset() { # p1597_reset <spec-dir>: stub defaults with DONE from every evaluator call
+  set_stub '' 0 "$H_DONE"
+  unset STUB_HEALTH_SEQ
+  rm -rf "$1"; mkdir -p "$1"
+  spec_body "$1"
+  export STUB_HISTORY_LOG="${WORK}/p1597-history.tmp"; : > "${STUB_HISTORY_LOG}"
+}
+p1597_collect() { # move the evaluator's history log beside this run's logs
+  mv "${STUB_HISTORY_LOG}" "${LOOP_LOGS}/history" 2>/dev/null || : > "${LOOP_LOGS}/history"
+}
+
+# (a) crusty: CONCERNS then CLEAN, the evaluator says DONE both times.
+SPEC="${WORK}/spec-1597-a"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: the PR description claims a test that does not exist\n'
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-crusty; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop_result":"DONE"' \
+   && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' && [ "$(evals)" = "2" ] && [ "$(rounds)" = "2" ]; then
+  pass "1597-crusty-converges" "DONE over CONCERNS runs one re-review round, which converges when it is CLEAN"
+else
+  fail "1597-crusty-converges" "rc=${rc}, evaluator calls=$(evals), rounds=$(rounds): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+if grep -qxF "${P1597_INFO_CRUSTY}" "${LOOP_LOGS}/err" && [ "$(info_count)" = "1" ]; then
+  pass "1597-crusty-info" "the override is announced once, naming the field, the verdict and the clean token"
+else
+  fail "1597-crusty-info" "expected exactly one line '${P1597_INFO_CRUSTY}' on stderr; got $(info_count): $(grep -F 'loop-health said DONE' "${LOOP_LOGS}/err")"
+fi
+H1="$(history_of 1)"; H2="$(history_of 2)"
+if ! printf '%s' "$H1" | grep -qF 'done_overridden' \
+   && printf '%s\n' "$H2" | grep -E '^round-1: crusty_verdict=CONCERNS ' | grep -qE ' done_overridden=1$' \
+   && [ "$(printf '%s\n' "$H2" | grep -c 'done_overridden=1')" = "1" ]; then
+  pass "1597-crusty-history-marker" "the overridden round's history line ends in done_overridden=1, seen by the next evaluator call only"
+else
+  fail "1597-crusty-history-marker" "history 1: [${H1}] history 2: [${H2}]"
+fi
+A1="$(health_argv 1)"; A2="$(health_argv 2)"
+if printf '%s' "$A1" | grep -qE '(^| )loop_clean_token=CLEAN( |$)' \
+   && printf '%s' "$A1" | grep -qE '(^| )loop_round_verdict=CONCERNS( |$)' \
+   && printf '%s' "$A2" | grep -qE '(^| )loop_round_verdict=CLEAN( |$)'; then
+  pass "1597-crusty-evaluator-inputs" "the evaluator is given loop_clean_token and this round's loop_round_verdict"
+else
+  fail "1597-crusty-evaluator-inputs" "evaluator argv lacks loop_clean_token/loop_round_verdict: call 1 [${A1}] call 2 [${A2}]"
+fi
+
+# (b) merge-ready: NOT_MERGE_READY then MERGE_READY, DONE both times.
+SPEC="${WORK}/spec-1597-b"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 merge_ready_verdict '"NOT_MERGE_READY"' $'CI is red on the docs job\n'
+spec_round "${SPEC}" default merge_ready_verdict '"MERGE_READY"' ''
+run_loop p1597-merge merge-ready autodrive-merge-round MERGE_READY merge_ready_verdict; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"loop":"merge-ready","loop_result":"DONE","round_label":"round-2"' \
+   && [ "$(rounds autodrive-merge-round)" = "2" ]; then
+  pass "1597-merge-ready-converges" "DONE over NOT_MERGE_READY runs one re-review round, which converges when it is MERGE_READY"
+else
+  fail "1597-merge-ready-converges" "rc=${rc}, rounds=$(rounds autodrive-merge-round): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+if grep -qxF 'INFO: loop-health said DONE but merge_ready_verdict=NOT_MERGE_READY, not MERGE_READY; running another round to re-review.' "${LOOP_LOGS}/err" \
+   && health_argv 1 | grep -qE '(^| )loop_clean_token=MERGE_READY( |$)' \
+   && health_argv 1 | grep -qE '(^| )loop_round_verdict=NOT_MERGE_READY( |$)'; then
+  pass "1597-merge-ready-inputs" "the merge-ready loop announces the override and gives the evaluator MERGE_READY and NOT_MERGE_READY"
+else
+  fail "1597-merge-ready-inputs" "argv: [$(health_argv 1)]; stderr: $(grep -F 'loop-health said DONE' "${LOOP_LOGS}/err")"
+fi
+
+# (c) the evaluator's STUCK still wins over a non-clean round.
+SPEC="${WORK}/spec-1597-c"; p1597_reset "${SPEC}"
+set_stub '' 1 ''; spec_body "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' $'C1: same finding\n'
+run_loop p1597-stuck; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && grep -qF 'AUTO_DRIVE_LOOP: STUCK' "${LOOP_LOGS}/err" && [ "$(rounds)" = "1" ] && [ "$(info_count)" = "0" ]; then
+  pass "1597-stuck-wins" "an evaluator STUCK over CONCERNS stops at round-1 with no override"
+else
+  fail "1597-stuck-wins" "rc=${rc}, rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}"
+fi
+
+# (d) DONE every round over an unchanged CONCERNS round: one override, then STUCK.
+SPEC="${WORK}/spec-1597-d"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' $'C1: same finding\nC2: another\n'
+run_loop p1597-noprogress; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
+   && grep -qF "stops at round label 'round-2'" "${LOOP_LOGS}/err" \
+   && grep -qF "${P1597_REPEAT}" "${LOOP_LOGS}/err" && grep -qF "${P1597_PHRASE}" "${LOOP_LOGS}/err"; then
+  pass "1597-no-progress-stuck" "a repeated DONE over an unchanged CONCERNS round stops STUCK at round-2 and names why"
+else
+  fail "1597-no-progress-stuck" "rc=${rc} (124 is the timeout), rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+if printf '%s' "${LOOP_OUT}" | grep -qF '"loop":"crusty","loop_result":"STUCK","round_label":"round-2"' \
+   && printf '%s' "${LOOP_OUT}" | grep -qF "${P1597_REPEAT}"; then
+  pass "1597-no-progress-stdout" "the STUCK result line on stdout carries round-2 and the repeated-pair reason"
+else
+  fail "1597-no-progress-stdout" "stdout: ${LOOP_OUT}"
+fi
+
+# Progress on any one of the three signals keeps the loop going.
+# HEAD moved: the same CONCERNS and findings, but each round commits.
+SPEC="${WORK}/spec-1597-head"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n' commit
+spec_round "${SPEC}" round-2 crusty_verdict '"CONCERNS"' $'C1: same finding\n' commit
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-head; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-3"' && [ "$(info_count)" = "2" ]; then
+  pass "1597-progress-head" "a commit in the round is progress: the repeated DONE over CONCERNS keeps going and converges at round-3"
+else
+  fail "1597-progress-head" "rc=${rc}, overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+# Findings changed, no commit.
+SPEC="${WORK}/spec-1597-findings"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: first finding\n'
+spec_round "${SPEC}" round-2 crusty_verdict '"CONCERNS"' $'C2: a different finding\n'
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-findings; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-3"'; then
+  pass "1597-progress-findings" "changed findings are progress: the loop converges at round-3"
+else
+  fail "1597-progress-findings" "rc=${rc}: ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+# Verdict changed, same findings, no commit.
+SPEC="${WORK}/spec-1597-verdict"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
+spec_round "${SPEC}" round-2 crusty_verdict '"BLOCKING"' $'C1: same finding\n'
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-verdict; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-3"'; then
+  pass "1597-progress-verdict" "a changed round verdict is progress: the loop converges at round-3"
+else
+  fail "1597-progress-verdict" "rc=${rc}: ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+
+# The helper on its own, for a repeated DONE over the same CONCERNS pair: an
+# unreadable HEAD (empty <head>) is "not moved", so the guard fails safe.
+p1597_helper() { bash "${TOOLS}/autodrive_done_override.sh" "$@" > "${WORK}/p1597-helper.out" 2>&1; }
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x "" ""; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'no progress' "${WORK}/p1597-helper.out"; then
+  pass "1597-helper-empty-head-stuck" "an empty baseline and an empty HEAD on a repeated DONE are no progress: STUCK"
+else
+  fail "1597-helper-empty-head-stuck" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x abc ""; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'no progress' "${WORK}/p1597-helper.out"; then
+  pass "1597-helper-head-unreadable-after" "HEAD unreadable after the round is no progress, not a move away from the baseline: STUCK"
+else
+  fail "1597-helper-head-unreadable-after" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x "" abc; rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "1597-helper-empty-baseline-moved" "an empty baseline with a readable HEAD counts as moved: another round"
+else
+  fail "1597-helper-empty-baseline-moved" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x abc; rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "1597-helper-usage" "seven arguments are a usage error (exit 2), which the loop reads as STUCK"
+else
+  fail "1597-helper-usage" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+
+# A CONTINUE in between resets the override: DONE, CONTINUE, DONE over three
+# identical CONCERNS rounds is two first-time overrides, then round-4 is CLEAN.
+SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"
+health_seq DONE CONTINUE DONE DONE
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
+spec_round "${SPEC}" round-2 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
+spec_round "${SPEC}" round-3 crusty_verdict '"CONCERNS"' $'C1: same finding\n'
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-reset; rc=$?; p1597_collect
+unset STUB_HEALTH_SEQ
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-4"' && [ "$(info_count)" = "2" ]; then
+  pass "1597-continue-resets" "a CONTINUE between two DONE-over-CONCERNS rounds resets the guard; the loop converges at round-4"
+else
+  fail "1597-continue-resets" "rc=${rc}, overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+
+# A missing record under DONE is still STUCK at once, and so is an
+# agent-written literal MISSING: neither gets a re-review round.
+set_stub '' 0 "$H_DONE" 0 false; unset STUB_ROUND_BODY STUB_HEALTH_SEQ
+run_loop p1597-norecord; rc=$?
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "1" ] && [ "$(info_count)" = "0" ] && grep -qF "${P1597_PHRASE}" "${LOOP_LOGS}/err"; then
+  pass "1597-missing-stays-stuck" "DONE over a missing round record stops STUCK at round-1 with no override"
+else
+  fail "1597-missing-stays-stuck" "rc=${rc}, rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}"
+fi
+SPEC="${WORK}/spec-1597-literal"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"MISSING"' ''
+run_loop p1597-literal-missing; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "1" ] && [ "$(info_count)" = "0" ]; then
+  pass "1597-literal-missing" "a round record that says MISSING is treated as missing: STUCK at round-1"
+else
+  fail "1597-literal-missing" "rc=${rc}, rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}"
+fi
+
+# Cleanliness is decided on the RAW verdict: 'CLEAN!' sanitises to CLEAN but
+# is not clean, so round-1 is overridden and only round-2's CLEAN converges.
+# The evaluator is never told such a round is clean: it gets CLEAN_NONCANONICAL,
+# which cannot equal loop_clean_token, and so does the round's history line.
+SPEC="${WORK}/spec-1597-raw"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CLEAN!"' $'C1: punctuation\n'
+spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
+run_loop p1597-raw-clean; rc=$?; p1597_collect
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' && [ "$(rounds)" = "2" ] \
+   && health_argv 1 | grep -qE 'loop_round_verdict=CLEAN_NONCANONICAL( |$)' \
+   && ! health_argv 1 | grep -qE 'loop_round_verdict=CLEAN( |$)' \
+   && history_of 1 | grep -qF 'crusty_verdict=CLEAN_NONCANONICAL' \
+   && health_argv 2 | grep -qE 'loop_round_verdict=CLEAN( |$)'; then
+  pass "1597-raw-verdict-clean" "a verdict that only sanitises to the clean token never converges a round and reaches the evaluator as CLEAN_NONCANONICAL"
+else
+  fail "1597-raw-verdict-clean" "rc=${rc}, rounds=$(rounds); health-1: $(health_argv 1 | grep -oE 'loop_round_verdict=[^ ]*'); health-2: $(health_argv 2 | grep -oE 'loop_round_verdict=[^ ]*'): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+# The same 'CLEAN.' twice under DONE stops STUCK, and the escalation names the
+# non-canonical value instead of the self-contradictory "'CLEAN', not 'CLEAN'".
+SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CLEAN."' $'C1: punctuation\n'
+run_loop p1597-raw-repeat; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
+   && grep -qF "the round verdict is 'CLEAN_NONCANONICAL', not 'CLEAN'" "${LOOP_LOGS}/err" \
+   && grep -qF "repeated DONE over non-clean 'CLEAN_NONCANONICAL' with no progress" "${LOOP_LOGS}/err" \
+   && ! grep -qF "'CLEAN', not 'CLEAN'" "${LOOP_LOGS}/err"; then
+  pass "1597-raw-verdict-repeat-message" "a repeated DONE over 'CLEAN.' stops STUCK and names CLEAN_NONCANONICAL, not 'CLEAN', not 'CLEAN'"
+else
+  fail "1597-raw-verdict-repeat-message" "rc=${rc}, rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+
+# An agent-written verdict cannot forge the done_overridden marker or break
+# the stdout JSON: 'CONCERNS done_overridden=1\' reaches history and argv as
+# CONCERNSdone_overridden1, and the STUCK line stays one valid JSON object.
+SPEC="${WORK}/spec-1597-forge"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CONCERNS done_overridden=1\\"' $'C1: same finding\n'
+run_loop p1597-forgery; rc=$?; p1597_collect
+H1="$(history_of 1)"; H2="$(history_of 2)"
+if [ "$rc" -eq 1 ] && ! printf '%s' "$H1" | grep -qF 'done_overridden=1' && ! printf '%s' "$H1" | grep -qF '\' \
+   && [ "$(printf '%s\n' "$H2" | grep -c 'done_overridden=1')" = "1" ] \
+   && health_argv 1 | grep -qE '(^| )loop_round_verdict=CONCERNSdone_overridden1( |$)'; then
+  pass "1597-history-forgery" "a forged verdict is sanitised before it reaches loop_history and the evaluator inputs"
+else
+  fail "1597-history-forgery" "rc=${rc}; history 1 [${H1}]; history 2 [${H2}]; argv [$(health_argv 1)]"
+fi
+if [ "$(printf '%s\n' "${LOOP_OUT}" | grep -c .)" = "1" ] && printf '%s' "${LOOP_OUT}" | jq -e '.loop_result == "STUCK"' >/dev/null 2>&1; then
+  pass "1597-forgery-json" "the STUCK result over a forged verdict is one valid JSON line"
+elif ! command -v jq >/dev/null 2>&1; then
+  pass "1597-forgery-json" "SKIPPED: jq is not installed"
+else
+  fail "1597-forgery-json" "stdout is not one valid JSON STUCK line: ${LOOP_OUT}"
+fi
+
+# Cosmetic drift is not progress: a trailing space on the verdict and
+# re-flowed whitespace in the findings still stop at round-2.
+SPEC="${WORK}/spec-1597-cosmetic"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" round-1 crusty_verdict '"CONCERNS"' $'C1:  the same   finding\n'
+spec_round "${SPEC}" default crusty_verdict '"CONCERNS "' $'  C1: the same finding  \n\n'
+run_loop p1597-cosmetic; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && grep -qF "repeated DONE over non-clean 'CONCERNS' with no progress" "${LOOP_LOGS}/err"; then
+  pass "1597-cosmetic-drift" "whitespace-only changes to the verdict and findings are not progress"
+else
+  fail "1597-cosmetic-drift" "rc=${rc}, rounds=$(rounds): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+
+# A clean token that sanitises to nothing is reported once, before round-1.
+SPEC="${WORK}/spec-1597-token"; p1597_reset "${SPEC}"
+set_stub '' 1 ''; spec_body "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CONCERNS"' ''
+run_loop p1597-token crusty autodrive-crusty-round '!!!' crusty_verdict; rc=$?; p1597_collect
+WARN_LINE="$(grep -niE '^WARNING:.*clean[ _-]?token' "${LOOP_LOGS}/err" | head -n1 | cut -d: -f1)"
+ROUND1_LINE="$(grep -nF "=== auto-drive loop 'crusty': round-1 ===" "${LOOP_LOGS}/err" | head -n1 | cut -d: -f1)"
+if [ "$(grep -ciE '^WARNING:.*clean[ _-]?token' "${LOOP_LOGS}/err")" = "1" ] && [ -n "${WARN_LINE}" ] && [ -n "${ROUND1_LINE}" ] \
+   && [ "${WARN_LINE}" -lt "${ROUND1_LINE}" ] && health_argv 1 | grep -qE '(^| )loop_clean_token=( |$)'; then
+  pass "1597-token-warning" "a clean token with no A-Za-z0-9_ characters is warned about once, before round-1"
+else
+  fail "1597-token-warning" "rc=${rc}; warning line ${WARN_LINE:-none}, round-1 line ${ROUND1_LINE:-none}; argv [$(health_argv 1)]"
+fi
+
+# The loop has exactly one way to succeed: the `exit 0` under DONE && clean.
+EXIT0="$(grep -cE '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "${LOOP}")"
+if [ "${EXIT0}" = "1" ] && grep -B12 -E '(^|[^A-Za-z0-9_])exit 0([^0-9]|$)' "${LOOP}" | grep -qF 'if [ "$ROUND_CLEAN" = "true" ]; then'; then
+  pass "1597-exit0-single" "autodrive_loop.sh has exactly one exit 0, inside the clean-round DONE branch"
+else
+  fail "1597-exit0-single" "autodrive_loop.sh has ${EXIT0} 'exit 0' lines, or the one it has is not under the ROUND_CLEAN check"
+fi
+
+unset STUB_ROUND_BODY STUB_HEALTH_SEQ STUB_HISTORY_LOG RUN_LOOP_TIMEOUT
+LOOP_MAIN="${SAVED_LOOP_MAIN}"; LOOP_WT="${SAVED_LOOP_WT}"
 echo
 echo "═══════════════════════════════"
 echo "Results: ${PASS_COUNT} passed, ${FAIL_COUNT} failed"

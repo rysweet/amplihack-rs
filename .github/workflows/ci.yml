@@ -295,6 +295,9 @@ jobs:
       - name: Recipes — #1551 no merge outside gate
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+      - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh

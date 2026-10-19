@@ -47,8 +47,9 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 13] = [
+const AUTODRIVE_TOOLS: [&str; 15] = [
     "autodrive_crusty_rereview.sh",
+    "autodrive_done_override.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
@@ -57,6 +58,7 @@ const AUTODRIVE_TOOLS: [&str; 13] = [
     "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_round_evidence.sh",
+    "autodrive_round_tail.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
     "autodrive_unmerged.sh",
@@ -327,6 +329,18 @@ fn no_numeric_iteration_cap_anywhere() {
     // a loop just as well from the other side, `(( ROUND > n ))` and
     // `[[ ${ROUND} -gt n ]]` are the same cap in different syntax, and
     // `${ROUND}` is the same variable as `$ROUND`.
+    // The matcher must see the label itself and nothing that merely shares
+    // its prefix: `$ROUND_VERDICT` is a different variable.
+    assert!(names_round_label(r#"[ "$ROUND" -gt 5 ]"#));
+    assert!(names_round_label("[[ ${ROUND} -ge 3 ]]"));
+    assert!(names_round_label("(( ROUND > 9 ))"));
+    assert!(names_round_label("((ROUND>9))"));
+    assert!(names_round_label(
+        r#"[ "$ROUND_CLEAN" = x ] || [ $ROUND -lt 2 ]"#
+    ));
+    assert!(!names_round_label(r#"[ "$ROUND_CLEAN" = "true" ]"#));
+    assert!(!names_round_label(r#"[ "$ROUND_VERDICT" != x ]"#));
+    assert!(!names_round_label("(( ROUND_RC > 0 ))"));
     const COMPARISONS: [&str; 12] = [
         "-ge", "-gt", "-le", "-lt", "-eq", "-ne", ">=", "<=", "==", "!=", ">", "<",
     ];
@@ -335,11 +349,7 @@ fn no_numeric_iteration_cap_anywhere() {
         if trimmed.starts_with('#') {
             continue;
         }
-        let names_round = line.contains("$ROUND")
-            || line.contains("${ROUND}")
-            || line.contains("((ROUND")
-            || line.contains("(( ROUND");
-        if !names_round {
+        if !names_round_label(line) {
             continue;
         }
         for op in COMPARISONS {
@@ -351,6 +361,24 @@ fn no_numeric_iteration_cap_anywhere() {
             );
         }
     }
+}
+
+/// True when `line` names the shell variable `ROUND` itself (`$ROUND`,
+/// `${ROUND}`, `((ROUND`, `(( ROUND`), not a longer identifier that merely
+/// starts with it such as `$ROUND_VERDICT` or `$ROUND_CLEAN`.
+fn names_round_label(line: &str) -> bool {
+    let continues_identifier = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if line.contains("${ROUND}") {
+        return true;
+    }
+    ["$ROUND", "((ROUND", "(( ROUND"].iter().any(|prefix| {
+        line.match_indices(prefix)
+            .any(|(i, m)| !continues_identifier(&line[i + m.len()..]))
+    })
 }
 
 #[test]
@@ -1532,11 +1560,31 @@ fn autodrive_gadugi_required_follows_the_qa_team_table() {
         (&[], Some("x"), "unknown", "true"),
         // Set but empty is not set.
         (&["Cargo.toml"], Some(""), "rust-cli", "false"),
+        // #1516: a root Python project wins over package.json, so a mixed
+        // root no longer requires gadugi.
+        (&["package.json", "pyproject.toml"], None, "python", "false"),
+        (&["setup.py", "package.json"], None, "python", "false"),
+        // #1516: a single nested Cargo workspace within depth 3 is Rust;
+        // unrelated nested crates, or one only under a pruned directory,
+        // decide nothing.
+        (&["a/Cargo.toml"], None, "rust-cli", "false"),
+        (&["a/Cargo.toml", "b/Cargo.toml"], None, "unknown", "false"),
+        (&["target/Cargo.toml"], None, "unknown", "false"),
+        // #1516: a root manifest wins over a nested crate (jamestown shape).
+        (
+            &["pyproject.toml", "grid-encode-decode/Cargo.toml"],
+            None,
+            "python",
+            "false",
+        ),
+        (&["package.json", "sub/Cargo.toml"], None, "node", "true"),
     ];
     for (files, scen, want_type, want_req) in cases {
         let tmp = tempfile::tempdir().expect("tempdir");
         for f in *files {
-            fs::write(tmp.path().join(f), "").expect("write marker");
+            let p = tmp.path().join(f);
+            fs::create_dir_all(p.parent().expect("marker parent")).expect("marker dir");
+            fs::write(p, "").expect("write marker");
         }
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
@@ -2134,6 +2182,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         "qa_status",
         "qa_reason",
         "qa_repo_type",
+        "qa_dir",
         "qa_command",
         "qa_suite_commands_count",
         "qa_exit_code",

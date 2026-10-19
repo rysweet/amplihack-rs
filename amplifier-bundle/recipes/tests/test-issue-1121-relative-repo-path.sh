@@ -168,8 +168,10 @@ fi
 
 # A1: FIX #1 — step-04 canonicalizes repo_path via `pwd -P` after the cd, so the
 # grep -Fx registration check matches git's absolute porcelain output.
-if printf '%s\n' "${STEP04}" \
-       | grep -qE 'REPO_PATH="\$\(pwd -P\)"'; then
+# Here-strings, not `printf | grep -q`: grep -q exits at its first match, the
+# writer then takes SIGPIPE on the large step body, and under pipefail the
+# pipeline reports failure even though the pattern matched (CI flake on #1639).
+if grep -qE 'REPO_PATH="\$\(pwd -P\)"' <<<"${STEP04}"; then
     pass "A1-canonicalize" "step-04 canonicalizes repo_path with pwd -P after cd"
 else
     fail "A1-canonicalize" "step-04 does not canonicalize repo_path (REPO_PATH=\"\$(pwd -P)\" missing)"
@@ -181,8 +183,7 @@ fi
 # ACTUAL executed `git worktree prune` line (not a comment/echo advising it) also
 # satisfies the guard. Comment/error-string mentions of "git worktree prune"
 # (issue #858 advice) must NOT count — hence the leading-whitespace/`;` anchor.
-if printf '%s\n' "${STEP04}" \
-       | grep -qE '(\bwt_add_idempotent\b|workflow_worktree_add|^[[:space:]]*git worktree prune\b)'; then
+if grep -qE '(\bwt_add_idempotent\b|workflow_worktree_add|^[[:space:]]*git worktree prune\b)' <<<"${STEP04}"; then
     pass "A2-add-guard" "new-branch add path routes through a guarded idempotent-add helper"
 else
     fail "A2-add-guard" "new-branch add path lacks a guarded idempotent-add helper (still bare 'git worktree add')"
@@ -198,7 +199,7 @@ fi
 
 # A4: guard must NOT reach for the unconditional `git worktree add --force`,
 # which can silently clobber a legitimately-populated directory.
-if printf '%s\n' "${STEP04}" | grep -qE 'git worktree add --force'; then
+if grep -qE 'git worktree add --force' <<<"${STEP04}"; then
     fail "A4-no-force-add" "step-04 uses 'git worktree add --force' (can clobber populated dir)"
 else
     pass "A4-no-force-add" "step-04 avoids unconditional 'git worktree add --force'"

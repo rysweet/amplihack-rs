@@ -1,0 +1,35 @@
+amplihack: AMPLIHACK_SKIP_AUTO_INSTALL set; skipping re-stage (stamp=1.2.26 current=1.2.0+snapshot.c6666b5; installed_bundle="compatible")
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5cc1a446-110e-4922-88f5-4f6c0c8bb626","recipe_name":"autodrive-crusty-round","cwd":"/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it","worktree":"/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it","branch":"feat/issue-1510-fix-issue-1510-read-it","task_description":"Fix rysweet/amplihack-rs issue #1510 (read it first with gh issue view, including the comment of 18 Oct 2026). In this text the guard's refusal token is called TOKEN (in the code it is the word BLOCKED, an underscore, then the word TERMINAL), the guard's full marker is TOKEN followed by a space and orchestration_unavailable, and the policy-refusal exit status is written as seventy-nine; this task text deliberately never spells them out, because the run log echoes it (see the last point). The autodrive_loop.sh half is fixed on main: terminal_refusal() drops agent output lines ([HH:MM:SS] [amplihack:...]) and needs the full marker. Fix the remaining half: amplifier-bundle/recipes/loop-evidence-collector.yaml (around line 95) matches a bare TOKEN, and its exit-status-seventy-nine regex, over agent prose in $HIST/$LAST, so a Crusty review that quotes them stops the loop as a terminal policy refusal (seen on PR #1586). Apply the same rule as terminal_refusal(). Also fix a second path of the same class, found on...","pr_number":"1632","pr_url":"https://github.com/rysweet/amplihack-rs/pull/1632","runner_path":"/opt/amplihack/bin/amplihack","timestamp":"2026-10-19T10:55:26Z"}
+  [11:01:58] [amplihack:claude:3756388] **3. Docs and PR body too narrow (minor) — fixed.**
+  [11:01:58] [amplihack:claude:3756388] - `loop-health-evaluator.md` has a new section, "Runner bookkeeping lines are not refusals". It explains the round-1 failure on this PR and the exit-code decision, and adds example rows for the log_pointer cases.
+  [11:01:58] [amplihack:claude:3756388] - Its "Known limits" list now notes that only the log_pointer key is recognised. Any new runner line that echoes inputs has to be added to the shared pattern, with a test.
+  [11:01:58] [amplihack:claude:3756388] - `auto-drive-to-merge.md` gives a short summary of the same rule.
+  [11:01:58] [amplihack:claude:3756388] - The PR body's Problem, Change, Tests and Docs sections now cover both the agent-prose path and the log_pointer path.
+  [11:01:58] [amplihack:claude:3756388] I didn't touch anything in the auto-drive state directory.
+  [11:02:00] [amplihack:claude:3756388] child process ended: exit 0 after 338s
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5cc1a446-110e-4922-88f5-4f6c0c8bb626","recipe_name":"autodrive-crusty-round","cwd":"/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it","worktree":"/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it","branch":"feat/issue-1510-fix-issue-1510-read-it","task_description":"Fix rysweet/amplihack-rs issue #1510 (read it first with gh issue view, including the comment of 18 Oct 2026). In this text the guard's refusal token is called TOKEN (in the code it is the word BLOCKED, an underscore, then the word TERMINAL), the guard's full marker is TOKEN followed by a space and orchestration_unavailable, and the policy-refusal exit status is written as seventy-nine; this task text deliberately never spells them out, because the run log echoes it (see the last point). The autodrive_loop.sh half is fixed on main: terminal_refusal() drops agent output lines ([HH:MM:SS] [amplihack:...]) and needs the full marker. Fix the remaining half: amplifier-bundle/recipes/loop-evidence-collector.yaml (around line 95) matches a bare TOKEN, and its exit-status-seventy-nine regex, over agent prose in $HIST/$LAST, so a Crusty review that quotes them stops the loop as a terminal policy refusal (seen on PR #1586). Apply the same rule as terminal_refusal(). Also fix a second path of the same class, found on...","pr_number":"1632","pr_url":"https://github.com/rysweet/amplihack-rs/pull/1632","runner_path":"/opt/amplihack/bin/amplihack","child_pid":3729716,"exit_code":0,"status":"success","timestamp":"2026-10-19T11:02:00Z"}
+Recipe: autodrive-crusty-round
+Run ID: 5cc1a446-110e-4922-88f5-4f6c0c8bb626
+Status: ✓ Success
+Log pointer: status=success branch=feat/issue-1510-fix-issue-1510-read-it worktree=/work/amplihack-rs/worktrees/feat/issue-1510-fix-issue-1510-read-it child_pid=3729716 exit_code=0 runner_path=/opt/amplihack/bin/amplihack
+
+Steps:
+  ✓ step-00-review-dir-guard: completed
+    Output: 9db119d12091007dd0f5ad40e596047f6c774233
+  ✓ step-01-round-context: completed
+    Output: {"head_sha":"19488a7c094f76c7f4cc87032a13532b2967c369","pr":"1632","resolved_concerns":"exit-79-regex-reads-unprefixed-prose,log-pointer-echoes-task-description","round_label":"round-2"}
+  ✓ step-02-crusty-review: completed
+    Output: ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: /home/user/.amplihack/config
+CLEAN: echoed BLOCKED_TERMINAL orchestration_unavailable and exit 79 are ignored.
+
+**What... (truncated)
+  ✓ step-02b-review-dir-unchanged: completed
+  ✓ step-03-extract-crusty-verdict: completed
+    Output: {"concern_count":3,"crusty_verdict":"CONCERNS","verdict_source":"crusty"}
+  ✓ step-04-address-concerns: completed
+    Output: ℹ NODE_OPTIONS=--max-old-space-size=32768 (saved preference). To change: /home/user/.amplihack/config
+I've fixed all three of crusty's concerns in commit `355dbd58`, which is pushed to `feat/issue-151... (truncated)
+  ✓ step-05-verify-concerns-addressed: completed
+    Output: {"base_sha":"19488a7c094f76c7f4cc87032a13532b2967c369","commits":1,"dirty_worktree":"false","git_observed":"true","head_sha":"355dbd584259975358930b408fab01d983cda6c8"}
+  ✓ step-06-write-round-record: completed
+    Output: {"crusty_verdict":"CONCERNS","concern_count":3,"commits_this_round":1,"head_sha":"355dbd584259975358930b408fab01d983cda6c8","reviewed_head_sha":"19488a7c094f76c7f4cc87032a13532b2967c369","round_label"... (truncated)
