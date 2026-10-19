@@ -252,8 +252,13 @@ step 2. It is a constant, not an environment knob.
 Resolution of the helper path in the recipe follows the same **best-effort
 ladder** modeled on `workflow_worktree_sweep.sh` (issue #829/#840 precedent). As
 wired in `workflow-worktree.yaml`, the call site probes, in order,
-`$AMPLIHACK_HOME`, `$REPO_PATH`, and the current directory for
-`amplifier-bundle/tools/workflow_worktree_deconflict.sh` (see the snippet under
+`$TOOLS_DIR/workflow_worktree_deconflict.sh` and then
+`$REPO_PATH/amplifier-bundle/tools/workflow_worktree_deconflict.sh` (falling
+back to the current directory only when `$REPO_PATH` is unset). `$TOOLS_DIR` is
+not a separate ladder: step-04 sets it to the directory where it found
+`workflow_worktree_sweep.sh` (`$AMPLIHACK_HOME`, `$REPO_PATH`, the current
+directory, `~/.copilot`, `~/.amplihack`), so the deconflict helper is taken
+from the same bundle as the sweep helper (see the snippet under
 [Integration in the recipes](#integration-in-the-recipes)). A **missing** helper
 is guarded by `-f`, and only fails the step when work is present: a clean
 State 1, a State 2 with no commits ahead, State 3 and a foreign branch proceed
