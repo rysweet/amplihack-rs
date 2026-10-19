@@ -1803,25 +1803,44 @@ redirections. It follows `bash -c`/`sh -c` (also `-lc`, `-ic`), `eval`, and
   mutation in any argument;
 - the command runs an interpreter (`bash`, `sh` and other shells, `python*`,
   `pypy*`, `perl`, `ruby`, `node`, `deno`, `bun`, `php`, `lua`, `tclsh`, `awk`
-  and its variants, `osascript`) anywhere, and any word, quoted or not, reads
-  as one of the forms above, an endpoint or a mutation. Quoted text is then
-  treated as code that will run: `echo 'gh pr merge 38' | bash`,
-  `bash -s <<<'gh pr merge 38'`, `python3 -c "os.system('gh pr merge 38')"`
-  and `subprocess.run(['gh','pr','merge','38'])` are refused;
-- any word's basename is `autodrive_merge_gate.sh`. The gate runs only from
-  auto-drive's own recipe bash step, never from an agent's shell tool, and it
-  trusts Crusty and QA record files an agent could write. So an agent that
-  runs it, as `bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh" --pr 38`
-  or any other way, is refused. Reading the file with `cat` or `grep` from the
-  shell tool is refused too; use the agent's read and search tools, which the
-  hook does not inspect.
+  and its variants, `osascript`) as a program, and any word, quoted or not,
+  reads as one of the forms above, an endpoint, a mutation or the gate's file
+  name. "As a program" means the first word of a simple command, after
+  `VAR=…` assignments and the wrappers `env`, `command`, `builtin`, `exec`,
+  `xargs`, `timeout`, `nohup`, `setsid`, `sudo`, `doas`, `nice`, `ionice`,
+  `stdbuf`, `time`, `flock`, `chrt`, `taskset` and `unbuffer` (with their
+  flags and operands), or the word after `find -exec`/`-execdir`/`-ok`/`-okdir`.
+  An argument named after an interpreter, as in `rg 'gh pr merge' --type sh`,
+  does not count. Quoted text is then treated as code that will run:
+  `echo 'gh pr merge 38' | bash`, `bash -s <<<'gh pr merge 38'`,
+  `python3 -c "os.system('gh pr merge 38')"`,
+  `subprocess.run(['gh','pr','merge','38'])` and
+  `cat amplifier-bundle/tools/autodrive_merge_gate.sh | bash` are refused;
+- the command runs `autodrive_merge_gate.sh`: the gate's basename is the
+  program word (found as above), or the script operand of `bash`, `sh`, `zsh`,
+  `dash`, `ksh`, `mksh`, `source` or `.` (shell flags skipped; `-o`/`-O` take a
+  value; with `-c` the script text is checked as a command instead). The gate
+  runs only from auto-drive's own recipe bash step, never from an agent's
+  shell tool, and it trusts Crusty and QA record files an agent could write.
+  So `bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh" --pr 38`,
+  `./autodrive_merge_gate.sh`, `source …/autodrive_merge_gate.sh` and
+  `bash -s < …/autodrive_merge_gate.sh` are refused. `bash -n` on the gate is
+  refused as well, since the hook does not tell a syntax check from a run; run
+  `shellcheck` or the recipe tests instead.
 
-With no interpreter in the command, text inside a quoted argument is one word,
-so `git commit -m 'gh pr merge'`, `grep mergePullRequest` and `gh pr create
---body …` pass. A command that both runs an interpreter and quotes merge text,
-such as `bash test.sh && git commit -m '… gh pr merge …'`, is refused; split
-it in two. `gh pr view --json mergeable` passes. The hook blocks with a
-message naming the form and the gate, never the command.
+Naming the gate without running it passes: `cat`, `git show HEAD:…`, `git
+diff -- …`, `git add`, `git checkout -- …`, `git log -p -- …`, `grep`, `rg` and
+`shellcheck` on `amplifier-bundle/tools/autodrive_merge_gate.sh` are not
+refused.
+
+With no interpreter running as a program, text inside a quoted argument is one
+word, so `git commit -m 'gh pr merge'`, `grep mergePullRequest`, `rg 'gh pr
+merge' --type sh` and `gh pr create --body …` pass. What this check still
+costs: a command that runs an interpreter as a program and also quotes merge
+text or names the gate, such as `bash test.sh && git commit -m '… gh pr merge
+…'` or `bash test.sh && git add …/autodrive_merge_gate.sh`, is refused; split
+it into two tool calls. `gh pr view --json mergeable` passes. The hook blocks
+with a message naming the form and the gate, never the command.
 
 The hook reads command text, so it does not see what that text only names:
 aliases, extensions, a script written to a file and then run, or a variable
@@ -1955,7 +1974,7 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
-| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the [hook check](#the-pre-tool-use-hook-check): any word whose basename is `autodrive_merge_gate.sh` in the agent's shell tool. The gate runs only from auto-drive's recipe step, so this costs nothing. Through a variable holding the installed gate's path (`G=…; bash -p "$G"`), the hook does not see it, and the shim then trusts the gate like phase 3 (a copy under another path is refused by the shim): the gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). An agent CLI that runs no amplihack hooks has only that second layer. |
+| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the [hook check](#the-pre-tool-use-hook-check) when the agent's shell tool runs it: the gate as the program word, or as the script operand of a shell or of `source`/`.`. Reading, diffing, staging or searching the gate passes; the costs that remain are listed there (`bash -n` on the gate, and compounds that run an interpreter and also name the gate). Through a variable holding the installed gate's path (`G=…; bash -p "$G"`), the hook does not see it, and the shim then trusts the gate like phase 3 (a copy under another path is refused by the shim): the gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). An agent CLI that runs no amplihack hooks has only that second layer. |
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |

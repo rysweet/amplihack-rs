@@ -99,10 +99,79 @@ fn refuses_an_agent_running_the_merge_gate_in_any_spelling() {
         "cd amplifier-bundle/tools && bash autodrive_merge_gate.sh --pr 38",
         "sh -c '/bin/bash -p ${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38'",
         "echo \"$(bash -p autodrive_merge_gate.sh --pr 38)\"",
+        // Crusty round 3: wrappers, `source`/`.`, stdin and interpreters.
+        "env -u AMPLIHACK_MERGE_GUARD amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "exec /bin/bash -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "timeout -s KILL 600 bash -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "sudo -u ryan nohup bash -o pipefail amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "X=1 . amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "source amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "bash -s < amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "bash -- amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "cat amplifier-bundle/tools/autodrive_merge_gate.sh | bash",
+        "find amplifier-bundle/tools -name '*.sh' -exec autodrive_merge_gate.sh {} \\;",
+        "python3 -c \"import subprocess; subprocess.run(['amplifier-bundle/tools/autodrive_merge_gate.sh', '--pr', '38'])\"",
+        "bash -n amplifier-bundle/tools/autodrive_merge_gate.sh",
     ] {
         let block = check(cmd).unwrap_or_else(|| panic!("not refused: {cmd}"));
         let message = block["message"].as_str().unwrap();
         assert!(message.contains("merge gate"), "{message}");
+    }
+}
+
+#[test]
+fn naming_the_gate_without_running_it_passes() {
+    // Crusty round 3: only a run of the gate is refused. Reading, diffing,
+    // staging and searching it from the shell are routine work on this PR
+    // and its follow-ups, and an agent has no other tool for the git ones.
+    let gate = "amplifier-bundle/tools/autodrive_merge_gate.sh";
+    for cmd in [
+        format!("cat {gate}"),
+        format!("git show HEAD:{gate}"),
+        format!("git -C /tmp/wt show HEAD:{gate}"),
+        format!("git diff origin/main -- {gate}"),
+        format!("git add {gate}"),
+        format!("git checkout -- {gate}"),
+        format!("git log -p -- {gate}"),
+        "grep -n autodrive_merge_gate.sh amplifier-bundle/recipes/autodrive-merge-loop.yaml".into(),
+        format!("rg -n 'mergePullRequest' {gate}"),
+        format!("shellcheck {gate}"),
+        format!("git show HEAD:{gate} > /tmp/autodrive_merge_gate.sh"),
+        format!("env LC_ALL=C grep -c gh {gate}"),
+    ] {
+        assert!(
+            !blocked(&cmd),
+            "refused a command that does not run the gate: {cmd}"
+        );
+    }
+    // The documented cost: with an interpreter as a program in the same
+    // command, the gate's name may be code, so the compound is refused and
+    // has to be split (docs/reference/auto-drive-to-merge.md).
+    assert!(blocked(&format!("bash test.sh && git add {gate}")));
+    assert!(!blocked("bash test.sh"));
+}
+
+#[test]
+fn interpreters_count_only_as_the_program_being_run() {
+    // Crusty round 3: a flag value or argument named after a shell is not an
+    // interpreter running the quoted text.
+    for cmd in [
+        "rg 'gh pr merge' --type sh",
+        "rg 'gh pr merge' -g '*.sh' -t sh docs/",
+        "grep -rn 'gh pr merge' --include=*.sh . && which node",
+        "git log --grep 'gh pr merge' -- bash",
+    ] {
+        assert!(!blocked(cmd), "refused a non-merge command: {cmd}");
+    }
+    // In command position, behind wrappers or `find -exec`, it still counts.
+    for cmd in [
+        "env FOO=1 python3 -c \"import os; os.system('gh pr merge 38')\"",
+        "timeout 30 bash <<<'gh pr merge 38'",
+        "echo 'gh pr merge 38' | xargs -I{} sh -s",
+        "echo 'gh pr merge 38' | sudo -u ryan bash",
+        "find . -name x -exec python3 -c \"import os; os.system('gh pr merge 38')\" \\;",
+    ] {
+        assert!(blocked(cmd), "not refused: {cmd}");
     }
 }
 

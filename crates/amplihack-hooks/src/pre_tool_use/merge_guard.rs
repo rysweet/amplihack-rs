@@ -12,18 +12,25 @@
 //! Active only when `AMPLIHACK_MERGE_GUARD` is non-empty, which the recipe
 //! runner sets for every auto-drive run and every agent CLI inside one. The
 //! merge gate itself runs from a recipe bash step, never through an agent's
-//! Bash tool, so this hook never sees a legitimate run of it. An agent naming
-//! the gate in its shell tool is therefore refused outright (crusty round 2):
-//! the gate trusts its Crusty and QA record files, which an agent can write.
+//! Bash tool, so this hook never sees a legitimate run of it. An agent
+//! *running* the gate is therefore refused (crusty round 2): the gate trusts
+//! its Crusty and QA record files, which an agent can write. Only a run is
+//! refused (crusty round 3): the gate as the command word, after `VAR=…` and
+//! wrappers such as `env`, `exec`, `xargs`, `timeout`, `nohup` or `sudo`, or
+//! as the script operand of a shell or of `source`/`.`. Naming it as an
+//! argument, as `cat`, `git show HEAD:…`, `git diff -- …`, `git add`, `grep`
+//! and `rg` do, passes.
 //!
 //! When the command also runs an interpreter (a shell, Python, Perl, Ruby,
-//! Node, awk, …), quoted text is code that will run, not prose, so every word
-//! is read as a command too and scanned for endpoints and mutations. That
-//! catches `echo 'gh pr merge 38' | bash`, `bash -s <<<'…'` and
-//! `python3 -c "os.system('gh pr merge 38')"`, while `git commit -m '… gh pr
-//! merge …'` with no interpreter in the command still passes. Variable
-//! indirection (`G=gh; $G pr merge`) and script files are not readable from
-//! the command text and are left to the shim and the `MERGED` checks.
+//! Node, awk, …) in command position, quoted text is code that will run, not
+//! prose, so every word is read as a command too and scanned for endpoints,
+//! mutations and the gate's name. That catches `echo 'gh pr merge 38' | bash`,
+//! `bash -s <<<'…'`, `python3 -c "os.system('gh pr merge 38')"` and
+//! `cat <gate> | bash`, while `git commit -m '… gh pr merge …'` and `rg 'gh pr
+//! merge' --type sh`, where no interpreter is the program being run, still
+//! pass. Variable indirection (`G=gh; $G pr merge`) and script files are not
+//! readable from the command text and are left to the shim and the `MERGED`
+//! checks.
 
 use regex::Regex;
 use serde_json::Value;
@@ -97,8 +104,8 @@ fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static st
     let scripted = scripted
         || segments
             .iter()
-            .flatten()
-            .any(|w| is_interpreter(basename(w)));
+            .flat_map(|words| command_words(words))
+            .any(|i| is_interpreter(basename(&i.1)));
     for nested_cmd in &nested {
         if let Some(label) = merge_form(nested_cmd, depth + 1, scripted) {
             return Some(label);
@@ -147,11 +154,160 @@ fn is_interpreter(name: &str) -> bool {
         || name.starts_with("pypy")
 }
 
+/// The words of `words` that run as programs, with their indices: the first
+/// word after `VAR=…` assignments and wrappers (`env`, `command`, `exec`,
+/// `xargs`, `timeout`, `nohup`, `sudo`, …, each with its flags and operands),
+/// and the same after each `find -exec`/`-execdir`/`-ok`/`-okdir`.
+fn command_words(words: &[String]) -> Vec<(usize, String)> {
+    let mut found = Vec::new();
+    let mut starts = vec![0];
+    starts.extend(
+        words
+            .iter()
+            .enumerate()
+            .filter(|(_, w)| matches!(w.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+            .map(|(i, _)| i + 1),
+    );
+    for start in starts {
+        if let Some(i) = command_index(words, start) {
+            found.push((i, words[i].clone()));
+        }
+    }
+    found
+}
+
+/// The index of the program word of the simple command starting at `start`.
+fn command_index(words: &[String], start: usize) -> Option<usize> {
+    let mut i = start;
+    loop {
+        let word = words.get(i)?;
+        if is_assignment(word) {
+            i += 1;
+            continue;
+        }
+        let Some((value_flags, operands)) = wrapper(basename(word)) else {
+            return Some(i);
+        };
+        i += 1;
+        while let Some(arg) = words.get(i) {
+            if arg == "--" {
+                i += 1;
+                break;
+            }
+            if arg.len() > 1 && arg.starts_with('-') {
+                i += if value_flags.contains(&arg.as_str()) {
+                    2
+                } else {
+                    1
+                };
+            } else if is_assignment(arg) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        i += operands;
+    }
+}
+
+/// `NAME=value`, a shell assignment or an `env` operand.
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        let mut chars = name.chars();
+        chars
+            .next()
+            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+    })
+}
+
+/// Programs that run the command after them: the flags that take a separate
+/// value, and how many operands come before the command.
+fn wrapper(name: &str) -> Option<(&'static [&'static str], usize)> {
+    Some(match name {
+        "env" => (
+            &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+            0,
+        ),
+        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" => (&[], 0),
+        "exec" => (&["-a"], 0),
+        "xargs" => (
+            &[
+                "-I",
+                "-L",
+                "-n",
+                "-P",
+                "-s",
+                "-d",
+                "-E",
+                "-a",
+                "--arg-file",
+                "--delimiter",
+            ],
+            0,
+        ),
+        "timeout" => (&["-s", "--signal", "-k", "--kill-after"], 1),
+        "sudo" | "doas" => (
+            &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"],
+            0,
+        ),
+        "nice" => (&["-n", "--adjustment"], 0),
+        "ionice" => (&["-c", "-n", "-p"], 0),
+        "stdbuf" => (&["-i", "-o", "-e"], 0),
+        "time" => (&["-f", "-o", "--format", "--output"], 0),
+        "flock" => (&["-w", "--timeout", "-E", "--conflict-exit-code"], 1),
+        "chrt" | "taskset" => (&[], 1),
+        _ => return None,
+    })
+}
+
+/// Whether the simple command `words` runs the merge gate: as its program,
+/// or as the script of a shell or of `source`/`.`.
+fn runs_gate(words: &[String]) -> bool {
+    command_words(words).into_iter().any(|(i, word)| {
+        let name = basename(&word);
+        if name == GATE_NAME {
+            return true;
+        }
+        if !matches!(
+            name,
+            "bash" | "sh" | "zsh" | "dash" | "ksh" | "mksh" | "source" | "."
+        ) {
+            return false;
+        }
+        let mut args = words[i + 1..].iter();
+        while let Some(arg) = args.next() {
+            if arg == "--" {
+                return args.next().is_some_and(|a| basename(a) == GATE_NAME);
+            }
+            if arg.len() > 1 && (arg.starts_with('-') || arg.starts_with('+')) {
+                if !arg.starts_with("--") && arg[1..].contains('c') {
+                    // `bash -c '<script>'`: the script is checked as a command.
+                    return false;
+                }
+                if matches!(arg.as_str(), "-o" | "+o" | "-O" | "+O") {
+                    args.next();
+                }
+                continue;
+            }
+            return basename(arg) == GATE_NAME;
+        }
+        false
+    })
+}
+
+const GATE_LABEL: &str = "a run of the merge gate autodrive_merge_gate.sh by an agent";
+
 fn segment_merge_form(words: &[String], depth: usize, scripted: bool) -> Option<&'static str> {
+    if runs_gate(words) {
+        return Some(GATE_LABEL);
+    }
     for (i, word) in words.iter().enumerate() {
         let rest = &words[i + 1..];
-        if basename(word) == GATE_NAME {
-            return Some("a run of the merge gate autodrive_merge_gate.sh by an agent");
+        // With an interpreter running, the gate named anywhere may be code
+        // that runs it (`cat <gate> | bash`, `subprocess.run(['<gate>'])`).
+        if scripted && basename(word) == GATE_NAME {
+            return Some(GATE_LABEL);
         }
         if scripted && let Some(label) = code_merge_form(word, depth) {
             return Some(label);
