@@ -88,6 +88,22 @@ mod issue_1570_recipe_text;
 mod issue_1570_run_output_stdin;
 #[path = "issue_1578_profile_usage.rs"]
 mod issue_1578_profile_usage;
+#[path = "issue_1618_fixture.rs"]
+mod issue_1618_fixture;
+#[path = "issue_1618_pattern_home.rs"]
+mod issue_1618_pattern_home;
+#[path = "issue_1618_wait_ends.rs"]
+mod issue_1618_wait_ends;
+#[path = "issue_1618_wait_profiles.rs"]
+mod issue_1618_wait_profiles;
+#[path = "issue_1618_wait_recipe.rs"]
+mod issue_1618_wait_recipe;
+#[path = "issue_1618_wait_settings.rs"]
+mod issue_1618_wait_settings;
+#[path = "issue_1618_wait_signals.rs"]
+mod issue_1618_wait_signals;
+#[path = "issue_1618_wait_step.rs"]
+mod issue_1618_wait_step;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
