@@ -251,3 +251,145 @@ fn a_rotator_symlink_even_dangling_is_an_untrusted_ledger() {
     std::os::unix::fs::symlink(&real, &dir).unwrap();
     assert_eq!(e.live(), (None, Some(LEDGER_WARNING)), "to a directory");
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1592 (D14): the `profile rotate` ledger and the prototype's.
+// ---------------------------------------------------------------------------
+
+impl Env {
+    fn rotate_ledger(&self, body: &str) -> PathBuf {
+        let dir = self.store.root().join(".auto-switch.d/rotate");
+        fs::create_dir_all(&dir).unwrap();
+        for d in [dir.parent().unwrap(), dir.as_path()] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let p = dir.join("ledger.json");
+        private(&p, body);
+        p
+    }
+}
+
+fn rotate_ledger(live: &str, since: Option<i64>) -> String {
+    let mut v = serde_json::json!({"version": 1, "live": live, "account": "u1"});
+    if let Some(s) = since {
+        v["since"] = s.into();
+    }
+    v.to_string()
+}
+
+#[test]
+fn the_rotate_ledger_alone_names_the_live_profile() {
+    let e = env();
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn the_ledger_with_the_later_since_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":5}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
+
+    let e = env();
+    e.ledger(r#"{"live":"a","since":20}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("a".into()), None), "prototype is later");
+}
+
+#[test]
+fn a_tie_goes_to_the_rotate_ledger() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":10}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn a_ledger_without_since_is_older() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    e.rotate_ledger(&rotate_ledger("b", None));
+    assert_eq!(e.live(), (Some("a".into()), None));
+}
+
+#[test]
+fn a_malformed_rotate_ledger_warns_and_the_prototype_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    e.rotate_ledger("not json");
+    assert_eq!(e.live(), (Some("a".into()), Some(LEDGER_WARNING)));
+}
+
+#[test]
+fn an_untrusted_rotate_ledger_warns_and_the_prototype_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    let p = e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(e.live(), (Some("a".into()), Some(LEDGER_WARNING)));
+}
+
+#[test]
+fn a_rotate_ledger_that_names_nobody_leaves_the_account_match() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    for body in [
+        r#"{"version":1,"last_cycle":{"at":1,"outcome":"alerted"},"alert":"no-capacity:-"}"#,
+        r#"{"version":1,"live":null}"#,
+    ] {
+        e.rotate_ledger(body);
+        assert_eq!(e.live(), (Some("a".into()), None), "{body}");
+    }
+}
+
+#[test]
+fn a_rotate_ledger_that_names_nobody_does_not_override_the_prototype() {
+    let e = env();
+    e.ledger(r#"{"live":"b"}"#);
+    e.rotate_ledger(r#"{"version":1,"alert":"no-capacity:-"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn reading_the_rotate_ledger_writes_nothing() {
+    let e = env();
+    let p = e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    let before = fs::read(&p).unwrap();
+    let _ = e.live();
+    assert_eq!(fs::read(&p).unwrap(), before);
+    assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn a_new_rotate_since_counts_as_a_swap() {
+    let e = env();
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    let live = detect(&e.store, Some(&e.home)).0.unwrap();
+    assert!(still_live(&e.store, Some(&e.home), &live));
+    e.rotate_ledger(&rotate_ledger("b", Some(11)));
+    assert!(!still_live(&e.store, Some(&e.home), &live));
+}
+
+#[test]
+fn a_prototype_iso_since_is_compared_as_a_time() {
+    let e = env();
+    // The prototype writes `datetime.now().isoformat()`, in local time.
+    e.ledger(r#"{"live":"a","since":"2999-01-01T00:00:00"}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(2_000_000_000)));
+    assert_eq!(e.live(), (Some("a".into()), None), "prototype is later");
+    e.ledger(r#"{"live":"a","since":"2000-01-01T00:00:00"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
+}
+
+#[test]
+fn a_rotate_ledger_for_another_account_is_ignored_after_a_hand_change() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"u-other","since":10}"#);
+    assert_eq!(
+        e.live(),
+        (Some("a".into()), None),
+        "the account match decides"
+    );
+}

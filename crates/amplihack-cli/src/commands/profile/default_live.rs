@@ -3,10 +3,12 @@
 //! login there, leaving that profile's own directory without one; `profile
 //! usage` then probes the profile against `~/.claude`.
 //!
-//! The rotator's ledger (`<root>/.rotator/ledger.json`) decides when it
-//! exists. Without one, the single login-less profile whose `oauthAccount`
-//! matches `~/.claude.json` is live. Read-only: nothing under `.rotator/` is
-//! written or locked. Linux-only in practice: it needs the login file
+//! A rotator ledger decides when one exists: the external prototype's
+//! (`<root>/.rotator/ledger.json`) or that of `profile rotate`
+//! (`<root>/.auto-switch.d/rotate/ledger.json`, issue #1592); with both, the
+//! one with the later `since` (D14). Without one, the single login-less
+//! profile whose `oauthAccount` matches `~/.claude.json` is live. Read-only:
+//! neither ledger is written or locked here. Linux-only in practice: it needs the login file
 //! `~/.claude/.credentials.json`, which Claude on macOS does not write (the
 //! login is kept in the Keychain), and the ownership checks are Unix-only.
 
@@ -38,6 +40,8 @@ pub(super) struct Live {
 enum Evidence {
     /// The ledger's `since` field (any JSON value) when it named the profile.
     Ledger(Option<serde_json::Value>),
+    /// The same, from the `profile rotate` ledger.
+    Rotate(Option<serde_json::Value>),
     /// The account in `~/.claude.json` the profile matched.
     Account(Account),
 }
@@ -108,6 +112,29 @@ pub(super) fn detect(
     }
 }
 
+/// The prototype rotator's ledger, for `profile rotate` (issue #1592).
+#[cfg(unix)]
+pub(super) enum Prototype {
+    Absent,
+    /// Present but failing the trust rules or not valid JSON.
+    Untrusted,
+    /// Its `live` value; `None` or JSON null is the idle state.
+    Live(Option<serde_json::Value>),
+}
+
+#[cfg(unix)]
+pub(super) fn prototype(root: &Path) -> Prototype {
+    match unix::prototype(root) {
+        unix::Ledger::Absent => Prototype::Absent,
+        unix::Ledger::Bad(_) => Prototype::Untrusted,
+        unix::Ledger::Valid(l) => Prototype::Live(l.live),
+    }
+}
+
+#[cfg(unix)]
+#[path = "default_live_since.rs"]
+mod since;
+
 #[cfg(unix)]
 mod unix {
     use super::super::auto_switch::{
@@ -125,14 +152,25 @@ mod unix {
     use std::path::Path;
 
     const LEDGER_DIR: &str = ".rotator";
+    const ROTATE_DIRS: [&str; 2] = [".auto-switch.d", "rotate"];
     const LEDGER_FILE: &str = "ledger.json";
     const MAX_LEDGER: u64 = 64 * 1024;
 
     /// The fields used; any others are ignored.
     #[derive(Deserialize)]
-    struct RotatorLedger {
-        live: Option<serde_json::Value>,
+    pub(super) struct RotatorLedger {
+        pub(super) live: Option<serde_json::Value>,
         since: Option<serde_json::Value>,
+        /// The rotate ledger's account key (uuid, else e-mail) of `live`.
+        #[serde(default)]
+        account: Option<serde_json::Value>,
+    }
+
+    pub(super) enum Ledger {
+        Absent,
+        /// Present but unusable; the warning to print.
+        Bad(&'static str),
+        Valid(RotatorLedger),
     }
 
     pub(super) fn detect(
@@ -143,42 +181,130 @@ mod unix {
         if !fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
             return (None, None);
         }
-        // Only a ledger that is not there falls back to the account match.
-        // A root that cannot be searched cannot be used at all. Anything at
-        // `.rotator` other than a real directory (a symlink, even a dangling
-        // one) is an untrusted ledger, and so is one inside a `.rotator`
-        // that cannot be searched.
-        let dir = store.root().join(LEDGER_DIR);
-        match fs::symlink_metadata(&dir) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return from_account(store, home),
-            Err(_) => return (None, Some(LIST_WARNING)),
-            Ok(m) if !m.is_dir() => return (None, Some(LEDGER_WARNING)),
-            Ok(_) => {}
-        }
-        match fs::symlink_metadata(dir.join(LEDGER_FILE)) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => from_account(store, home),
-            Err(_) => (None, Some(LEDGER_WARNING)),
-            Ok(_) => match read_ledger(store.root()) {
-                Some(l) => match from_ledger(store, l) {
-                    Ok(live) => (live, None),
-                    Err(w) => (None, Some(w)),
-                },
-                None => (None, Some(LEDGER_WARNING)),
+        let proto = || from(store, home, prototype(store.root()), Evidence::Ledger);
+        // A rotate ledger that names nobody (an alert, an idle cycle) says
+        // nothing about who is live, so it counts as absent.
+        // So does one whose account is not the one in `~/.claude.json`: a
+        // hand change the rotator alerts on and does not record.
+        let rotate = match rotate(store.root()) {
+            Ledger::Valid(r) if r.live.as_ref().is_none_or(serde_json::Value::is_null) => {
+                Ledger::Absent
+            }
+            Ledger::Valid(r) if !account_matches(&r, home) => Ledger::Absent,
+            l => l,
+        };
+        match rotate {
+            Ledger::Absent => proto(),
+            // A damaged rotate ledger is reported; the prototype's decides.
+            Ledger::Bad(w) => match prototype(store.root()) {
+                Ledger::Valid(l) => (
+                    from_ledger(store, l, Evidence::Ledger).ok().flatten(),
+                    Some(w),
+                ),
+                _ => (None, Some(w)),
+            },
+            Ledger::Valid(r) => match prototype(store.root()) {
+                // The later `since` wins; a tie goes to the rotate ledger, and
+                // a ledger without `since` is older.
+                Ledger::Valid(p) if since(&p) > since(&r) => {
+                    from(store, home, Ledger::Valid(p), Evidence::Ledger)
+                }
+                _ => from(store, home, Ledger::Valid(r), Evidence::Rotate),
             },
         }
     }
 
-    /// The ledger, if the profile root is private, `.rotator` is a real
-    /// directory owned by the user that nobody else can write to (a group
+    /// Whether the ledger's account, if it records one, is the account in
+    /// `~/.claude.json`.
+    fn account_matches(l: &RotatorLedger, home: &Path) -> bool {
+        let Some(key) = l.account.as_ref().and_then(serde_json::Value::as_str) else {
+            return true;
+        };
+        account(home).is_some_and(|a| {
+            a.uuid.as_deref() == Some(key)
+                || a.email
+                    .as_deref()
+                    .is_some_and(|e| e.eq_ignore_ascii_case(key))
+        })
+    }
+
+    fn since(l: &RotatorLedger) -> Option<f64> {
+        super::since::epoch_secs(l.since.as_ref()?)
+    }
+
+    /// The live profile a ledger gives; without one, the account match.
+    fn from(
+        store: &ProfileStore,
+        home: &Path,
+        l: Ledger,
+        evidence: fn(Option<serde_json::Value>) -> Evidence,
+    ) -> (Option<Live>, Option<&'static str>) {
+        match l {
+            Ledger::Absent => from_account(store, home),
+            Ledger::Bad(w) => (None, Some(w)),
+            Ledger::Valid(l) => match from_ledger(store, l, evidence) {
+                Ok(live) => (live, None),
+                Err(w) => (None, Some(w)),
+            },
+        }
+    }
+
+    /// The prototype's ledger. Only a ledger that is not there falls back to
+    /// the account match. A root that cannot be searched cannot be used at
+    /// all. Anything at `.rotator` other than a real directory (a symlink,
+    /// even a dangling one) is an untrusted ledger, and so is one inside a
+    /// `.rotator` that cannot be searched.
+    pub(super) fn prototype(root: &Path) -> Ledger {
+        let dir = root.join(LEDGER_DIR);
+        match fs::symlink_metadata(&dir) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ledger::Absent,
+            Err(_) => return Ledger::Bad(LIST_WARNING),
+            Ok(m) if !m.is_dir() => return Ledger::Bad(LEDGER_WARNING),
+            Ok(_) => {}
+        }
+        match fs::symlink_metadata(dir.join(LEDGER_FILE)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ledger::Absent,
+            Err(_) => Ledger::Bad(LEDGER_WARNING),
+            Ok(_) => {
+                read_ledger(root, &[LEDGER_DIR]).map_or(Ledger::Bad(LEDGER_WARNING), Ledger::Valid)
+            }
+        }
+    }
+
+    /// The `profile rotate` ledger, under the same trust rules.
+    fn rotate(root: &Path) -> Ledger {
+        match fs::symlink_metadata(root.join(ROTATE_DIRS[0])) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ledger::Absent,
+            Err(_) => return Ledger::Bad(LIST_WARNING),
+            Ok(_) => {}
+        }
+        let path = root
+            .join(ROTATE_DIRS[0])
+            .join(ROTATE_DIRS[1])
+            .join(LEDGER_FILE);
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ledger::Absent,
+            Err(_) => Ledger::Bad(LEDGER_WARNING),
+            Ok(_) => {
+                read_ledger(root, &ROTATE_DIRS).map_or(Ledger::Bad(LEDGER_WARNING), Ledger::Valid)
+            }
+        }
+    }
+
+    /// The ledger, if the profile root is private, each of `dirs` (such as
+    /// `.rotator`) is a real directory owned by the user that nobody else can write to (a group
     /// holding only the user counts as private, as for the root), and
     /// the file is a regular file owned by the user, not writable by group
     /// or others, at most 64 KiB, and valid JSON.
-    fn read_ledger(root: &Path) -> Option<RotatorLedger> {
+    fn read_ledger(root: &Path, dirs: &[&str]) -> Option<RotatorLedger> {
         check_root_private(root).ok()?;
-        let dir = root.join(LEDGER_DIR);
-        let m = fs::symlink_metadata(&dir).ok()?;
-        if !m.is_dir() || m.uid() != euid() || writable_by_others(&m) {
-            return None;
+        let mut dir = root.to_path_buf();
+        for d in dirs {
+            dir.push(d);
+            let m = fs::symlink_metadata(&dir).ok()?;
+            if !m.is_dir() || m.uid() != euid() || writable_by_others(&m) {
+                return None;
+            }
         }
         let (raw, meta) = read_bounded_nofollow(&dir.join(LEDGER_FILE), MAX_LEDGER).ok()??;
         if meta.uid() != euid() || meta.mode() & 0o022 != 0 {
@@ -197,7 +323,11 @@ mod unix {
 
     /// A null or missing `live` is the rotator's idle state: nobody is live.
     /// A name that is not a valid, usable profile is an unreadable ledger.
-    fn from_ledger(store: &ProfileStore, l: RotatorLedger) -> Result<Option<Live>, &'static str> {
+    fn from_ledger(
+        store: &ProfileStore,
+        l: RotatorLedger,
+        evidence: fn(Option<serde_json::Value>) -> Evidence,
+    ) -> Result<Option<Live>, &'static str> {
         let live = match l.live {
             None | Some(serde_json::Value::Null) => return Ok(None),
             Some(v) => v,
@@ -214,7 +344,7 @@ mod unix {
         }
         Ok(Some(Live {
             name,
-            evidence: Evidence::Ledger(l.since),
+            evidence: evidence(l.since),
         }))
     }
 

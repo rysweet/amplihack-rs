@@ -286,6 +286,7 @@ echo $AMPLIHACK_PROFILE
 
 ## Related
 
+- [Rotate Claude logins automatically](howto/claude-profile-rotation.md): Claude *login* profiles, not component profiles; keeps `~/.claude` on the account with the most capacity
 - Issue #1537: Profile staging implementation
 - `~/.amplihack/.claude/profiles/`: Built-in profile configurations
 - `~/.amplihack/.claude/tools/amplihack/profile_management/`: Implementation modules

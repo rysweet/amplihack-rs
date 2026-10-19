@@ -391,7 +391,7 @@ fn remove_never_follows_symlink_outside_root() {
 }
 
 #[test]
-fn from_env_rejects_relative_and_empty_root() {
+fn from_root_str_rejects_relative_and_empty_root() {
     for bad in ["", "relative/path"] {
         assert!(matches!(
             ProfileStore::from_root_str(bad),
