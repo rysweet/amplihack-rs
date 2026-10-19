@@ -836,3 +836,91 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
         "block message must be the main-branch protection: {message}"
     );
 }
+
+/// Issue #1551, crusty round 1 on PR #1644: an agent shell whose profile puts
+/// a real `gh` ahead of the merge-guard shim is still refused by the hook,
+/// because the hook reads the command, not PATH. Here a fake `gh` sits in the
+/// first PATH entry, as `~/.bashrc` prepending `~/.local/bin` would put it.
+#[cfg(unix)]
+#[test]
+fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
+    use std::os::unix::fs::PermissionsExt;
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let tmp = tempfile::tempdir().unwrap();
+    let profile_bin = tmp.path().join(".local/bin");
+    std::fs::create_dir_all(&profile_bin).unwrap();
+    let fake_gh = profile_bin.join("gh");
+    std::fs::write(&fake_gh, "#!/bin/sh\nexit 0\n").unwrap();
+    std::fs::set_permissions(&fake_gh, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    let old_path = std::env::var_os("PATH");
+    let old_marker = std::env::var_os("AMPLIHACK_MERGE_GUARD");
+    let reordered = format!(
+        "{}:/opt/amplihack/amplifier-bundle/tools/gh-merge-guard:{}",
+        profile_bin.display(),
+        old_path
+            .as_deref()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    );
+    // SAFETY: serialised by env_lock; restored below.
+    unsafe {
+        std::env::set_var("PATH", &reordered);
+        std::env::set_var("AMPLIHACK_MERGE_GUARD", "1");
+    }
+
+    let hook = PreToolUseHook;
+    let claude = hook
+        .process(make_bash_input("gh pr merge 38 --squash"))
+        .unwrap();
+    let by_path = hook
+        .process(make_bash_input(&format!(
+            "{} pr merge 38",
+            fake_gh.display()
+        )))
+        .unwrap();
+    let copilot = hook
+        .process(HookInput::PreToolUse {
+            tool_name: "bash".to_string(),
+            tool_input: serde_json::json!({"command": "gh api -X PUT repos/o/r/pulls/38/merge"}),
+            session_id: None,
+        })
+        .unwrap();
+    let view = hook
+        .process(make_bash_input("gh pr view 38 --json mergeable"))
+        .unwrap();
+
+    // SAFETY: serialised by env_lock.
+    unsafe {
+        std::env::remove_var("AMPLIHACK_MERGE_GUARD");
+    }
+    let outside_auto_drive = hook.process(make_bash_input("gh pr merge 38")).unwrap();
+
+    // SAFETY: serialised by env_lock.
+    unsafe {
+        match old_path {
+            Some(p) => std::env::set_var("PATH", p),
+            None => std::env::remove_var("PATH"),
+        }
+        if let Some(v) = old_marker {
+            std::env::set_var("AMPLIHACK_MERGE_GUARD", v);
+        }
+    }
+
+    for (what, result) in [
+        ("claude", &claude),
+        ("by path", &by_path),
+        ("copilot", &copilot),
+    ] {
+        assert_eq!(result["block"], true, "{what}: {result}");
+        assert!(
+            result["message"].as_str().unwrap().contains("#1551"),
+            "{what}: {result}"
+        );
+    }
+    assert!(view.as_object().unwrap().is_empty(), "{view}");
+    assert!(
+        outside_auto_drive.as_object().unwrap().is_empty(),
+        "no marker, no merge check: {outside_auto_drive}"
+    );
+}

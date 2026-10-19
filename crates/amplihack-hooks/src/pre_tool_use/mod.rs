@@ -5,12 +5,14 @@
 //! - CWD rename/move (mv targeting CWD or parent)
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
+//! - In an auto-drive run, merges outside the merge gate (#1551)
 //! - XPIA prompt injection attacks (all tools)
 
 mod command;
 mod cwd;
 mod git;
 pub mod launcher;
+mod merge_guard;
 mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
@@ -342,6 +344,22 @@ impl Hook for PreToolUseHook {
         // the runtime hard-fail with "Skill not found", which silently skips
         // the step (e.g. the requirements-clarification phase).
         if let Some(block) = check_skill_redirect(&tool_name, &tool_input) {
+            return Ok(block);
+        }
+
+        // Issue #1551: inside an auto-drive run, refuse a merge typed into the
+        // agent's shell tool. Unlike the `gh` shim this does not depend on
+        // PATH order, which the agent's profile can change. Copilot names the
+        // tool `bash`, Claude Code `Bash`.
+        if tool_name.eq_ignore_ascii_case("bash")
+            && merge_guard::guard_active(
+                std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
+            )
+            && let Some(block) = tool_input
+                .get("command")
+                .and_then(Value::as_str)
+                .and_then(merge_guard::check)
+        {
             return Ok(block);
         }
 

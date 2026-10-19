@@ -65,6 +65,9 @@ DIRECTIVE='[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/m
 MARKER='[amplihack:no-merge]'
 REFUSED_PREFIX='REFUSED (amplihack #1551): '
 REFUSED_SUFFIX=' is only allowed inside autodrive_merge_gate.sh'
+# An unknown first word is not necessarily a merge: its refusal says so, and
+# names the allowlist to extend, instead of claiming merging is forbidden.
+UNKNOWN_SUFFIX=' — the first word is not a built-in command in the merge guard'"'"'s allowlist (classify() in amplifier-bundle/tools/gh-merge-guard/gh) and not a gh alias.'
 
 [ -d /proc/self ] || harness_error "this test needs Linux /proc"
 [ -f "${REAL_GATE}" ] || harness_error "missing ${REAL_GATE}"
@@ -274,12 +277,14 @@ echo "--- T1: merge forms are refused ---"
 # label, nothing merged and nothing but `alias list` reached the stub.
 refused() {
   local id="$1" label="$2"; shift 2
+  local suffix="${REFUSED_SUFFIX}"
+  [ "${label}" = "${L_UNKNOWN}" ] && suffix="${UNKNOWN_SUFFIX}"
   reset_stub
   agent_gh "$@"; local rc=$?
   local leaked
   leaked="$(grep -vxF 'alias list' "${GH_LOG}" || true)"
   if [ "$rc" -eq 3 ] \
-     && grep -qF "${REFUSED_PREFIX}${label}${REFUSED_SUFFIX}" "${ERR}" \
+     && grep -qF "${REFUSED_PREFIX}${label}${suffix}" "${ERR}" \
      && [ -z "${leaked}" ] && [ "$(pr_state)" = "OPEN" ]; then
     pass "$id" "gh $* is refused as '${label}' and the PR stays OPEN"
   else
@@ -288,6 +293,7 @@ refused() {
 }
 L_PR='gh pr merge'; L_API='gh api merge endpoint'; L_GQL='gh api graphql merge mutation'
 L_GQL_UNREAD='gh api graphql unreadable query'; L_ALIAS='gh alias'
+L_UNKNOWN='unknown gh command or extension'
 
 refused T1-pr-merge "$L_PR" pr merge 38 --squash
 refused T1-repo-flag "$L_PR" -R o/r pr merge 38
@@ -344,14 +350,23 @@ refused T1-alias-existing "$L_PR" pm 38
 # An extension runs its own code and can merge without calling back into the
 # guard: running, installing or upgrading one is refused, and so is a word
 # that is neither a built-in nor an alias, or an alias that expands to one.
+# That last group is labelled as unknown, not as an extension: a command a
+# newer gh added lands there too, and its refusal must not read as a merge.
 L_EXT='gh extension'
-refused T1-extension-direct "$L_EXT" some-extension do-thing
+refused T1-extension-direct "$L_UNKNOWN" some-extension do-thing
+refused T1-unknown-new-builtin "$L_UNKNOWN" some-future-gh-command list
+reset_stub; agent_gh some-future-gh-command list
+if grep -qF 'merging' "${ERR}" || grep -qF 'leave the PR open' "${ERR}"; then
+  fail "T1-unknown-not-merge-wording" "an unknown command's refusal reads as a merge refusal: $(head -c 300 "${ERR}")"
+else
+  pass "T1-unknown-not-merge-wording" "an unknown command's refusal does not claim a merge was attempted"
+fi
 refused T1-extension-exec "$L_EXT" extension exec some-extension
 refused T1-extension-install "$L_EXT" extension install o/gh-merger
 refused T1-extension-install-ext "$L_EXT" ext install o/gh-merger
 refused T1-extension-upgrade "$L_EXT" extensions upgrade --all
 RUN_ENV=("STUB_ALIASES=me: some-extension do-thing")
-refused T1-alias-to-extension "$L_EXT" me
+refused T1-alias-to-extension "$L_UNKNOWN" me
 RUN_ENV=()
 # A `$N` placeholder fills the merge word in at call time (`pr $1` + `merge`),
 # and quotes are split by gh, not the shim: both refused at set and at use.
@@ -616,6 +631,11 @@ parity T4-actions-topic actions
 parity T4-repositories-get api repositories/212613049/pulls/38
 parity T4-ext-list extension list
 parity T4-ext-remove ext remove some-ext
+# Top-level commands and help topics of gh 2.102 that were missing from the
+# allowlist (crusty round 1): they cannot merge and must pass through.
+for c in environment exit-codes formatting mintty reference telemetry; do
+  parity "T4-builtin-${c}" "${c}"
+done
 RUN_ENV=()
 # stdin reaches the real gh.
 printf 'body from stdin\n' > "${WORK}/stdin.txt"
@@ -969,10 +989,10 @@ p[m]: pr merge
 pa: api -X PUT repos/o/r/pulls/38/merge
 ")
 # A word that matches an alias name only as a pattern is no alias: it is
-# refused as an extension, never expanded to the alias's `pr merge`.
-refused SEC6-dot-star-not-pattern "$L_EXT" mx 38
-refused SEC6-bracket-not-pattern "$L_EXT" pm 38
-refused SEC6-star-not-pattern "$L_EXT" zz 38
+# refused as an unknown command, never expanded to the alias's `pr merge`.
+refused SEC6-dot-star-not-pattern "$L_UNKNOWN" mx 38
+refused SEC6-bracket-not-pattern "$L_UNKNOWN" pm 38
+refused SEC6-star-not-pattern "$L_UNKNOWN" zz 38
 refused SEC6-literal-dot-star "$L_PR" 'm.*' 38
 refused SEC6-literal-bracket "$L_PR" 'p[m]' 38
 refused SEC6-alias-to-api "$L_API" pa

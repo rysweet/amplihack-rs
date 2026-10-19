@@ -1744,8 +1744,10 @@ make the exit-79 branch dead code and report every failure as "exit 0".
 
 `autodrive_merge_gate.sh` is the only place in this workflow allowed to merge,
 so a phase-1 agent cannot skip the crusty and merge-ready phases. A merge
-attempted anywhere else is refused by a `gh` shim, the agents are told so, and
-a merge that happens anyway ends the run.
+attempted anywhere else is refused by two independent layers: a `gh` shim
+first on `PATH`, and a check in the pre-tool-use hook that reads the command
+an agent types and does not depend on `PATH`. The agents are also told not to
+merge, and a merge that happens anyway ends the run.
 
 ### How the guard is applied
 
@@ -1762,7 +1764,11 @@ hold the real `gh`, so under the marker the launcher puts the guard back at
 
 The run stops before any step when `AMPLIHACK_HOME` is unset or not absolute
 (the error names which), the host is not Unix (the bash shim cannot be the
-`gh` an agent runs there), the shim is missing or not a regular executable, or
+`gh` an agent runs there), the host has no `/proc/self/stat` (macOS, the
+BSDs: the shim could never trust the gate, so the run would fail only at the
+final merge; tracked in [#1646](https://github.com/rysweet/amplihack-rs/issues/1646)),
+the host has no executable `/bin/bash` (NixOS: the shim could not start, so
+every `gh` call would fail), the shim is missing or not a regular executable, or
 anything the shim trusts is group- or other-writable: the shim, its
 directory, `tools/` above it, and the gate and the helpers it sources there
 (`autodrive_state.sh`, `autodrive_trust.sh`, `autodrive_unmerged.sh`). The install sets the shim and its directory to
@@ -1771,6 +1777,36 @@ directory, `tools/` above it, and the gate and the helpers it sources there
 ```text
 amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools/gh-merge-guard; refusing to run auto-drive without it (#1551)
 ```
+
+### The pre-tool-use hook check
+
+The shim works only if it is the first `gh` the agent's shell finds. Agent
+shells start from the user's profile, and a profile that prepends
+`~/.local/bin`, `~/.npm-global/bin` or Homebrew's directory (`brew shellenv`)
+puts a real `gh` ahead of it. So the pre-tool-use hook
+(`crates/amplihack-hooks/src/pre_tool_use/merge_guard.rs`) also refuses the
+merge forms when `AMPLIHACK_MERGE_GUARD` is non-empty. It reads the command
+text of the agent's shell tool (`Bash` in Claude Code, `bash` in Copilot), so
+`PATH` order makes no difference to it.
+
+It splits the command at unquoted `;`, `&`, `|`, newlines, parentheses and
+redirections. It follows `bash -c`/`sh -c` (also `-lc`, `-ic`), `eval`, and
+`$(…)` and backtick bodies, quoted or not, eight levels deep. It blocks when:
+
+- a word whose basename is `gh` (any path, after `env`, `command`, `xargs` or
+  `VAR=…`) is followed by `pr merge`, global and `pr` flags skipped;
+- `gh api` names a REST merge endpoint, which is forbidden outside the gate
+  (`…/pulls/<n>/merge`, `repos/<o>/<r>/merges`, `repositories/<id>/merges`,
+  any case, URL or path), a GraphQL merge mutation, or a GraphQL body from
+  `--input` or `=@`;
+- `curl`, `wget`, `http`/`https` (HTTPie) or `xh` has a merge endpoint or
+  mutation in any argument.
+
+Text inside a quoted argument is one word, so `git commit -m 'gh pr merge'`,
+`grep mergePullRequest` and `gh pr create --body …` pass. `gh pr view --json
+mergeable` passes too. The hook blocks with a message naming the form and the
+gate, never the command. Aliases, extensions and scripts written to a file are
+not visible in the command text, so the shim still handles those.
 
 ### What the shim refuses
 
@@ -1786,7 +1822,27 @@ amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools
 | GraphQL merge mutations | `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `mergeBranch` as whole names, any case | `gh api graphql merge mutation` |
 | A GraphQL body the shim cannot read | any endpoint that mentions `graphql` (`graphql?`, a full `https://` URL, GHES `/api/graphql`, any case) with `--input` or `=@` in any argument, combined short flags (`-iF query=@f`) included | `gh api graphql unreadable query` |
 | Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql` or holds a `$N` placeholder; a call through an alias that expands to a merge form or holds a placeholder or quotes; any alias lookup while `gh alias list` fails | `gh alias` |
-| Extensions | `gh extension install`/`upgrade`/`exec`; any first word that is neither a built-in command nor an alias, or an alias expanding to one | `gh extension` |
+| Extensions | `gh extension install`/`upgrade`/`exec` | `gh extension` |
+| Unknown first words | any first word that is neither in the shim's [built-in allowlist](#the-built-in-command-allowlist) nor an alias, or an alias expanding to one: an extension, or a command a newer `gh` added | `unknown gh command or extension` |
+
+An unknown first word gets its own line, because it is not necessarily a
+merge attempt. The line names the allowlist to extend:
+
+```text
+REFUSED (amplihack #1551): unknown gh command or extension — the first word is not a built-in command in the merge guard's allowlist (classify() in amplifier-bundle/tools/gh-merge-guard/gh) and not a gh alias. Extensions run their own code and could merge past this guard, so auto-drive refuses them. If a newer gh added this command, add it to that allowlist.
+```
+
+#### The built-in command allowlist
+
+`classify()` in `gh-merge-guard/gh` lists the `gh` top-level commands and
+help topics that cannot merge, checked against `gh` 2.102 (`gh help`). This
+includes `environment`, `exit-codes`, `formatting`, `mintty`, `reference` and
+`telemetry`. A word missing from the list fails safe: it is refused as
+`unknown gh command or extension`, never passed through. So after a `gh`
+upgrade, a new command is refused in auto-drive runs until it is added. Adding
+one is a one-word change to that `case` line, plus a `parity` line in
+`test-issue-1551-no-merge-outside-gate.sh`. Add a command only after checking
+that it cannot merge.
 
 Only `gh api` arguments are inspected, so a `gh pr create --body` that
 mentions `mergePullRequest` passes through. A refused call never reaches the
@@ -1869,7 +1925,10 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 
 | Route | Outcome |
 | --- | --- |
-| `gh` by absolute path, `PATH=… gh`, `curl` with `gh auth token`, or an agent CLI profile that reorders `PATH` | Not refused. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The shim is skipped. The [pre-tool-use hook check](#the-pre-tool-use-hook-check) still refuses every merge form typed into the agent's shell tool, since it reads the command, not `PATH`. |
+| `gh` by absolute path, `PATH=… gh`, `curl` to the merge endpoint | Refused by the hook check when typed into the agent's shell tool. |
+| A merge inside a script file the agent writes and then runs, through a real `gh` that `PATH` puts ahead of the shim | Not refused: neither layer sees it. The hook sees only `bash script.sh`, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
@@ -1878,8 +1937,10 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |
-| No `/proc` (macOS), a `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root | Fails closed: every merge is refused, the gate's included, so auto-drive cannot merge on macOS. |
-| No `/bin/bash` at all (NixOS) | The shim cannot start, so **every** `gh` call in an auto-drive run fails, not only merges. |
+| No `/proc` (macOS, BSDs) | `amplihack recipe run` stops the run at launch, before any step: the shim could never trust the gate's merge. Auto-drive does not run on macOS until [#1646](https://github.com/rysweet/amplihack-rs/issues/1646) adds a parent check that works there. |
+| A `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root | Fails closed: every merge is refused, the gate's included. |
+| No `/bin/bash` at all (NixOS) | `amplihack recipe run` stops the run at launch: the shim cannot start, so every `gh` call in the run would fail. |
+| A top-level command a newer `gh` added | Refused as `unknown gh command or extension` until it is added to the [allowlist](#the-built-in-command-allowlist). |
 
 ### Troubleshooting
 
@@ -1894,6 +1955,11 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 - **An agent's non-merge `gh api` call is refused.** It mentions `pull` or
   `merge` with `%`, `.`/`..`, a backslash or whitespace (use the plain
   `repos/<owner>/<repo>/…` path), or it is a `gh` extension.
+- **`unknown gh command or extension` after a `gh` upgrade.** The new command
+  is missing from the [allowlist](#the-built-in-command-allowlist). Check that
+  it cannot merge, then add it.
+- **`auto-drive needs /proc/self/stat` before step 1.** The host is macOS or
+  a BSD. See [#1646](https://github.com/rysweet/amplihack-rs/issues/1646).
 - **The run exits `1` with `#1551 merged outside`.** Something merged the PR
   before phase 3; review the merge in the PR's timeline.
 

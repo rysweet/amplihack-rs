@@ -448,3 +448,58 @@ fn keep_guard_first_fails_closed_without_a_guard() {
     };
     assert!(err.to_string().contains("#1551"), "{err}");
 }
+
+/// Crusty round 1 (#1644): a host without /proc (macOS) used to run all three
+/// phases and fail only when the shim refused the gate's own merge. The
+/// launch check stops it before any step instead.
+#[cfg(unix)]
+#[test]
+fn a_host_without_proc_is_refused_at_launch_not_at_the_merge() {
+    use super::merge_guard::check_guard_host;
+    let tmp = tempfile::tempdir().unwrap();
+    let no_proc = tmp.path().join("proc/self/stat");
+    let err = check_guard_host(&no_proc, Path::new("/bin/sh"))
+        .expect_err("no /proc must stop the run")
+        .to_string();
+    assert!(err.contains("macOS"), "{err}");
+    assert!(err.contains(&no_proc.display().to_string()), "{err}");
+    assert!(err.contains("#1551"), "{err}");
+}
+
+/// No /bin/bash (NixOS): the shim cannot start, so every gh call would fail.
+#[cfg(unix)]
+#[test]
+fn a_host_without_the_shim_interpreter_is_refused_at_launch() {
+    use super::merge_guard::check_guard_host;
+    let tmp = tempfile::tempdir().unwrap();
+    let stat = tmp.path().join("stat");
+    fs::write(&stat, "1 (x) S 0").unwrap();
+    let no_bash = tmp.path().join("bin/bash");
+    let err = check_guard_host(&stat, &no_bash)
+        .expect_err("no interpreter must stop the run")
+        .to_string();
+    assert!(err.contains(&no_bash.display().to_string()), "{err}");
+    assert!(err.contains("every gh call"), "{err}");
+
+    // Present but not executable is refused the same way.
+    fs::create_dir_all(no_bash.parent().unwrap()).unwrap();
+    fs::write(&no_bash, "").unwrap();
+    set_mode(&no_bash, 0o644);
+    assert!(check_guard_host(&stat, &no_bash).is_err());
+
+    set_mode(&no_bash, 0o755);
+    check_guard_host(&stat, &no_bash).expect("both present: the host is usable");
+}
+
+/// The real launch path runs the host check: on this (Linux) test host the
+/// real /proc/self/stat and /bin/bash exist, and locate_guard_dir passes.
+#[cfg(target_os = "linux")]
+#[test]
+fn locate_guard_dir_checks_the_real_host() {
+    use super::merge_guard::{PROC_SELF_STAT, SHIM_INTERPRETER, check_guard_host};
+    assert_eq!(PROC_SELF_STAT, "/proc/self/stat");
+    assert_eq!(SHIM_INTERPRETER, "/bin/bash");
+    if Path::new(SHIM_INTERPRETER).exists() {
+        check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER)).unwrap();
+    }
+}

@@ -76,8 +76,9 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 /// canonicalised, so `PATH` de-duplication still recognises it.
 ///
 /// There is no fallback location: a missing shim, a `home` that is not an
-/// absolute path (which would resolve against the working directory), or a
-/// non-Unix host, stops the run. So does a shim or guard directory that group or others can write
+/// absolute path (which would resolve against the working directory), a
+/// non-Unix host, or a host without `/proc` or `/bin/bash`
+/// ([`check_guard_host`]), stops the run. So does a shim or guard directory that group or others can write
 /// (G11): anyone with that access could replace the guard. The same holds
 /// for the `tools/` directory above it and for each [`GATE_FILES`] entry that
 /// exists there, since the shim lets the gate merge.
@@ -105,6 +106,7 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
              platform (#1551)"
         );
     }
+    check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER))?;
     if is_group_or_other_writable(&shim) || is_group_or_other_writable(&dir) {
         bail!(
             "amplihack: merge guard at {} is writable by group or others; refusing to trust it \
@@ -128,6 +130,43 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
         }
     }
     Ok(dir)
+}
+
+/// Read by the shim to trust the gate's own merge (`parent_is_gate`).
+pub(crate) const PROC_SELF_STAT: &str = "/proc/self/stat";
+
+/// The shim's `#!` interpreter, and the bash the gate must be run by.
+pub(crate) const SHIM_INTERPRETER: &str = "/bin/bash";
+
+/// Stops the run at launch on a host where the guard cannot work, instead of
+/// after three phases of agent work.
+///
+/// * No `proc_stat` (macOS, BSD): the shim can never confirm its parent is
+///   the gate, so it refuses the gate's own merge and the run could only
+///   ever fail at the final merge.
+/// * No executable `interpreter` (NixOS has no `/bin/bash`): the shim cannot
+///   start, so every `gh` call in the run would fail, not only merges.
+///
+/// The paths are parameters so tests can point them at a missing file.
+pub(crate) fn check_guard_host(proc_stat: &Path, interpreter: &Path) -> Result<()> {
+    if std::fs::metadata(proc_stat).is_err() {
+        bail!(
+            "amplihack: auto-drive needs {} to let autodrive_merge_gate.sh merge, and this host \
+             has none (macOS and the BSDs have no /proc). The merge guard would refuse the \
+             gate's own merge after every phase had run, so auto-drive stops now (#1551). \
+             Run auto-drive on Linux.",
+            proc_stat.display()
+        );
+    }
+    if !is_executable_file(interpreter) {
+        bail!(
+            "amplihack: the merge guard runs under {}, which is missing or not executable on \
+             this host (NixOS has none), so every gh call in an auto-drive run would fail; \
+             refusing to start auto-drive (#1551)",
+            interpreter.display()
+        );
+    }
+    Ok(())
 }
 
 #[cfg(unix)]

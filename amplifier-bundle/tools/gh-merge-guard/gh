@@ -48,7 +48,16 @@ self="${BASH_SOURCE[0]}"
 [[ "$self" == */* ]] || self="./$self"
 SELF_DIR="$(builtin cd -P -- "${self%/*}" 2>/dev/null && builtin pwd -P)" || SELF_DIR=""
 
+UNKNOWN_CLASS='unknown gh command or extension'
+
 refuse() { # refuse <label>: the fixed line, never argv (DP-1)
+  if [[ "$1" == "$UNKNOWN_CLASS" ]]; then
+    # Not necessarily a merge: a word that is neither in classify()'s list of
+    # built-in commands nor an alias. It may be an extension (its own code,
+    # which could merge without this guard) or a command a newer gh added.
+    printf 'REFUSED (amplihack #1551): unknown gh command or extension — the first word is not a built-in command in the merge guard'"'"'s allowlist (classify() in amplifier-bundle/tools/gh-merge-guard/gh) and not a gh alias. Extensions run their own code and could merge past this guard, so auto-drive refuses them. If a newer gh added this command, add it to that allowlist.\n' >&2
+    exit 3
+  fi
   printf 'REFUSED (amplihack #1551): %s is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive'"'"'s merge gate merges after Crusty CLEAN and the merge-ready loop. Do not retry with another gh path, PATH, alias, API client or token.\n' "$1" >&2
   exit 3
 }
@@ -313,8 +322,9 @@ classify_extension_cmd() {
 }
 
 # classify_alias_use <word> <args...>: a word that is not a built-in command
-# is an alias or an extension. An alias name is compared as a literal string,
-# never a pattern; a word that names no alias is an extension, refused.
+# is an alias, an extension or a command newer than the allowlist. An alias
+# name is compared as a literal string, never a pattern; a word that names no
+# alias is refused as an unknown command or extension.
 classify_alias_use() {
   local cmd="$1" out line exp
   shift
@@ -336,7 +346,7 @@ classify_alias_use() {
     classify 0 ${words[@]+"${words[@]}"} "$@"
     return 0
   done <<< "$out"
-  CLASS='gh extension'
+  CLASS="$UNKNOWN_CLASS"
   return 0
 }
 
@@ -360,14 +370,16 @@ classify() {
     api) classify_api "$@" ;;
     alias) classify_alias_cmd "$@" ;;
     extension|extensions|ext) classify_extension_cmd "$@" ;;
-    # Built-in commands that cannot merge. Fails safe: any other word is an
-    # alias (checked below) or an extension, which is refused.
-    accessibility|actions|agent|agents|agent-task|agent-tasks|at|attestation|auth|browse|cache|codespace|completion|config|copilot|cs|discussion|gist|gpg-key|help|issue|label|licenses|org|preview|project|release|repo|rs|ruleset|run|search|secret|skill|skills|ssh-key|status|variable|version|workflow) ;;
+    # Built-in commands that cannot merge, checked against gh 2.102. Fails safe: any
+    # other word is an alias (checked below), an extension, or a command a
+    # newer gh added; the last two are refused with their own message, which
+    # names this list. A new gh command that cannot merge belongs here.
+    accessibility|actions|agent|agents|agent-task|agent-tasks|at|attestation|auth|browse|cache|codespace|completion|config|copilot|cs|discussion|environment|exit-codes|formatting|gist|gpg-key|help|issue|label|licenses|mintty|org|preview|project|reference|release|repo|rs|ruleset|run|search|secret|skill|skills|ssh-key|status|telemetry|variable|version|workflow) ;;
     *)
       if [[ "$allow_alias" == 1 ]]; then
         classify_alias_use "$cmd" "$@"
       else
-        CLASS='gh extension'
+        CLASS="$UNKNOWN_CLASS"
       fi ;;
   esac
   return 0

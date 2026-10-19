@@ -194,12 +194,16 @@ Only `autodrive_merge_gate.sh` merges. Auto-drive runs with a `gh` shim first
 on `PATH` that refuses `gh pr merge`, the merge API and the GraphQL merge
 mutations with exit `3`, unless its direct parent is the installed gate run as
 `/bin/bash -p` from a clean environment. Agents are told the same in an
-`[amplihack:no-merge]` line. Leave the PR open. A PR found `MERGED` after
+`[amplihack:no-merge]` line. The pre-tool-use hook refuses the same merge
+forms in the agent's shell commands without relying on `PATH`, so a profile
+that puts another `gh` first does not bypass it. Leave the PR open. A PR found `MERGED` after
 phase 1 or phase 2 ends the run with exit `1`. The shim is a guardrail, not a
 sandbox, and branch protection stays the real boundary
 ([details](../../../docs/reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
-The parent check needs Linux `/proc` and a root-owned `/bin/bash`: on macOS
-every merge is refused, the gate's included, so auto-drive cannot merge there.
+The parent check needs Linux `/proc` and a root-owned `/bin/bash`, so
+`amplihack recipe run` stops an auto-drive run at launch on macOS or without
+`/bin/bash`, before any phase runs
+([#1646](https://github.com/rysweet/amplihack-rs/issues/1646)).
 
 ## Exit code 79 is terminal
 
