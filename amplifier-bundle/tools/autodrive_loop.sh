@@ -23,8 +23,8 @@
 # ceiling and the ceiling is never raised to accommodate one.
 #
 #   Exit 0  — the loop converged (DONE) and the round itself verified clean.
-#   Exit 1  — STUCK, a malformed/missing verdict, or a non-clean DONE that a
-#             re-review did not move (#1597). Nothing advances; the escalation says why.
+#   Exit 1  — evaluator STUCK (or unreadable), a missing round record under
+#             DONE, or a repeated DONE over an unchanged non-clean round (#1597).
 #   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
 #             and NEVER retried into.
 #
