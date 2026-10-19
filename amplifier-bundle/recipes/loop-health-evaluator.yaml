@@ -66,31 +66,27 @@ context:
   loop_test_signal_previous: ""
   loop_ci_signal: ""
   loop_ci_signal_previous: ""
+  loop_clean_token: ""    # #1597: the verdict that makes a round clean (CLEAN, MERGE_READY)
+  loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
   # When "false", step-04 reports STUCK loudly but exits 0, leaving the stop
   # decision entirely to the caller's `condition:`. Default is to enforce.
   loop_health_enforce: "true"
 
 steps:
   # ---------------------------------------------------------------------------
-  # Step 1 — collect the evidence deterministically.
-  #
-  # Its own brick (`loop-evidence-collector.yaml`), testable without a model:
-  # git counts, token repetition, set differences over findings, literal
-  # signal comparison — measured, not impressed. Step-02 gets that AS DATA
-  # beside the raw material, so its judgement is anchored to observations.
-  # The sub-recipe's `loop_evidence` output lands in this recipe's context, so
-  # step-02's `condition:` and the reads below see it as a local step's.
+  # Step 1 — collect the evidence deterministically, in its own brick
+  # (`loop-evidence-collector.yaml`, testable without a model): measured, not
+  # impressed. Step-02 gets it AS DATA beside the raw material; the `loop_evidence`
+  # output lands in this context, so step-02's `condition:` reads it as local.
   # ---------------------------------------------------------------------------
   - id: "step-01-collect-loop-evidence"
     type: "recipe"
     recipe: "loop-evidence-collector"
 
   # ---------------------------------------------------------------------------
-  # Step 2 — the agentic judgement.
-  #
-  # Skipped entirely on a terminal policy refusal: exit 79 is already a final
-  # answer from a structural guard, and asking a model whether to re-enter it
-  # is exactly the "retry into the guard" behaviour #1327 was written to stop.
+  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit
+  # 79 is already a final answer from a structural guard, and asking a model
+  # whether to re-enter it is the "retry into the guard" #1327 was written to stop.
   # ---------------------------------------------------------------------------
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
@@ -177,6 +173,11 @@ steps:
         (new diff, resolved findings, changed test/CI signal) and a plausible
         next step. Say what specifically moved.
       - `DONE` — the loop's objective is met; the next phase should advance.
+        Legal only when this round's own verdict `{{loop_round_verdict}}` equals the clean token `{{loop_clean_token}}`.
+        A non-clean round (CONCERNS, NOT_MERGE_READY and the like) is never `DONE`, even when every finding looks
+        addressed by a commit or a pull request description edit: only another review round can confirm a fix,
+        so answer `CONTINUE` if the round moved something and `STUCK` if nothing moved.
+        If `loop_clean_token` is empty, apply this rule to this round's reviewer verdict in the history above, if any.
       - `STUCK` — no progress is being made. Say precisely WHAT is not
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
@@ -337,8 +338,7 @@ steps:
     parse_json: true
 
   # ---------------------------------------------------------------------------
-  # Step 4 — enforce. A caller that forgot to write the CONTINUE condition
-  # still stops, because STUCK exits non-zero here.
+  # Step 4 — enforce: STUCK exits non-zero, so a caller without a CONTINUE condition still stops.
   # ---------------------------------------------------------------------------
   - id: "step-04-enforce-loop-verdict"
     type: "bash"

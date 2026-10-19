@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-17
+last_updated: 2026-10-19
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -480,9 +480,81 @@ token outside the allow-list falls to the safe default.
 1. the round's own machine-checked verdict is the clean token, **and**
 2. the loop-health evaluator returned `DONE`.
 
-`DONE` over a non-clean round verdict is an inconsistent pair and is treated as
-`STUCK` — it never advances. A clean round verdict with `CONTINUE` simply runs
-another confirming round, which is cheap and safe.
+A clean round verdict with `CONTINUE` simply runs another confirming round,
+which is cheap and safe. `DONE` over a round that is not clean never advances.
+What happens instead depends on the round:
+
+| Evaluator | Round verdict | Result |
+| --- | --- | --- |
+| `DONE` | the clean token | Exit `0`. The only `exit 0` in the loop. |
+| `DONE` | `MISSING` (no round record) | `STUCK`, exit `1`. |
+| `DONE` | non-clean, first time, or the round made progress | One more round to re-review. |
+| `DONE` | non-clean, the previous round was also overridden, and nothing moved | `STUCK`, exit `1`. |
+| `CONTINUE` | any | Another round. |
+| `STUCK` or unreadable | any | `STUCK`, exit `1`. |
+
+A non-clean `DONE` usually means the findings were addressed without a new
+review: in PR #1587 crusty said `CONCERNS` and the concerns were fixed by a
+pull request description edit with no commit; in PR #1586 round 5 the
+merge-ready loop got `DONE` against `NOT_MERGE_READY` (issue #1597). Only a
+review round can confirm such a fix, so the loop runs one and prints:
+
+```
+INFO: loop-health said DONE but crusty_verdict=CONCERNS, not CLEAN; running another round to re-review.
+```
+
+The overridden round's line in `loop_history` gains ` done_overridden=1`, so
+the next evaluator call sees it. The evaluator itself is told the same rule
+through `loop_clean_token` and `loop_round_verdict` (see
+[`DONE` needs this round's own verdict to be clean](loop-health-evaluator.md#done-needs-this-rounds-own-verdict-to-be-clean)).
+
+**No progress** means all three hold, compared with the previous round:
+
+- the round verdict is the same;
+- the round's findings text is the same, byte for byte after whitespace is
+  collapsed and trimmed;
+- `HEAD` after the round equals the round's baseline, so nothing was
+  committed. A commit made by the merge-ready loop's `--before-round` re-review
+  counts as progress, because the baseline is taken before that step runs. If
+  `git rev-parse HEAD` fails before or after the round, `HEAD` counts as
+  changed: the loop runs another round, which never advances a phase on its
+  own.
+
+If any one differs, the loop keeps going, exactly as for `CONTINUE`. A
+`CONTINUE` or a clean round in between resets the override, so a `DONE` over
+an unchanged non-clean round runs at most two rounds. That repeat stops
+with this on stderr (`<key>` is the run's state key):
+
+```
+AUTO_DRIVE_LOOP: STUCK — loop 'crusty' stops at round label 'round-2'.
+  Reason: loop-health said DONE while the round verdict is 'CONCERNS', not 'CLEAN': repeated DONE over non-clean 'CONCERNS' with no progress (same verdict, same findings, HEAD unchanged). An inconsistent pair never advances a phase.
+  Round record: ~/.amplihack/state/auto-drive/<key>/crusty-round-2.json
+  This is a judgement about absence of progress, not an attempt count.
+```
+
+and this one line on stdout:
+
+```json
+{"loop":"crusty","loop_result":"STUCK","round_label":"round-2","reason":"loop-health said DONE while the round verdict is 'CONCERNS', not 'CLEAN': repeated DONE over non-clean 'CONCERNS' with no progress (same verdict, same findings, HEAD unchanged). An inconsistent pair never advances a phase."}
+```
+
+A `DONE` over a missing round record keeps its existing reason, which also
+ends in `An inconsistent pair never advances a phase.`
+
+There is no counter behind this: the stop comes from the absence of progress,
+like every other stop in the loop. The loop asks
+`amplifier-bundle/tools/autodrive_done_override.sh` for this decision. The verdict and token are reduced to
+`A-Za-z0-9_` before they reach the evaluator's `-c` context arguments, the
+`loop_history` line, and the override `INFO` and `STUCK` messages above, so an
+agent-written verdict cannot forge a `done_overridden=1` marker or a fake
+history line. Other existing messages, such as the `DONE` line and the clean
+`CONTINUE` notice, still print the raw values.
+
+**Known limit:** a reviewer that rewrites its findings every round while
+the verdict stays non-clean and nothing is committed passes the no-progress
+check, so the evaluator's `DONE` can be overridden round after round. This
+is the same exposure as an ordinary run of `CONTINUE` answers, and it is
+visible: every overridden round carries `done_overridden=1` in the history.
 
 ### Measurement outranks the model
 
@@ -2073,6 +2145,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
 | `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
+| `amplifier-bundle/tools/autodrive_done_override.sh` | tool | What the loop does with a loop-health `DONE` over a non-clean round (#1597): exit `0` runs a re-review round; exit `1` is `STUCK` for a missing record or a repeat with no progress. Writes nothing. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |

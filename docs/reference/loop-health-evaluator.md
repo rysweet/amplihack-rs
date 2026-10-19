@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-06
+last_updated: 2026-10-19
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -83,8 +83,35 @@ Exactly three outcomes. There is no fourth, and no "maybe".
 | Verdict | Meaning | Effect |
 | ------- | ------- | ------ |
 | `CONTINUE` | Concrete evidence that the last round moved something, and a plausible next step exists. | Another round is authorised. |
-| `DONE` | The loop's objective is met. | Advance to the next phase. |
+| `DONE` | The loop's objective is met **and** this round's own verdict (`loop_round_verdict`) is the loop's clean token (`loop_clean_token`). | Advance to the next phase. |
 | `STUCK` | No progress is being made. | Stop. Do not proceed. Escalate with the specific evidence of what is not converging. |
+
+### `DONE` needs this round's own verdict to be clean
+
+A loop whose rounds are judged by a reviewer has a clean token: `CLEAN` for
+the crusty loop, `MERGE_READY` for the merge-ready loop. The caller passes
+that token as `loop_clean_token` and the verdict the reviewer gave **this**
+round as `loop_round_verdict`. The prompt's `## Decide` rules make `DONE`
+legal only when the two are equal.
+
+A non-clean round (`CONCERNS`, `NOT_MERGE_READY` and the like) is never
+`DONE`, even when every finding looks addressed — by a commit or by an edit
+to the pull request description. Only another review round can confirm a
+fix, so the evaluator answers `CONTINUE` if the round moved something and
+`STUCK` if nothing moved. Issue #1597 is the case this rule closes: a crusty
+round said `CONCERNS`, the concerns were fixed by a description edit with no
+commit, and the evaluator answered `DONE`.
+
+When `loop_clean_token` is empty, the evaluator applies the same rule to the
+reviewer verdict shown for this round in `loop_history`, if there is one;
+otherwise it decides as before. The quality, self-improvement and
+smart-reflect loops pass neither input, so their behaviour does not change.
+
+The rule lives in the prompt only. Steps 03 and 04 do not compare the two
+inputs, and nothing about how the verdict is parsed changes: the
+deterministic check is `ROUND_CLEAN` in `autodrive_loop.sh`, which handles a
+`DONE` that breaks this rule anyway (see
+[Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 
 **A missing or unparseable verdict is `STUCK`, never `CONTINUE`.** Failing safe
 here means stopping, not looping: a fail-open default would authorise exactly
@@ -342,8 +369,10 @@ line gives the same result. A `DONE` alone does not advance a phase:
 [Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
 If the round verdict is clean, the loop ends without the confirming round that
 a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
-If the round verdict is anything else, the pair is inconsistent and the run
-stops as `STUCK`. A `DONE` from the merge loop only hands over to the
+If the round verdict is anything else, the loop does not advance. It runs
+one more round to re-review, and stops as `STUCK` if the round record is
+missing or if the next round repeats the same non-clean `DONE` with no
+progress. A `DONE` from the merge loop only hands over to the
 [merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
 again before it merges.
 
@@ -356,7 +385,9 @@ write their reason (`CONTINUE — round 1 made real progress`), so it stays a
 legal ending. The control
 that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
 in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
-clean, and otherwise the run stops as `STUCK`.
+clean. Otherwise the loop runs another round to re-review, and stops as
+`STUCK` when the round record is missing or a repeated non-clean `DONE` shows
+no progress.
 
 ### Examples
 
@@ -574,6 +605,8 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
+| `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
+| `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
 
 ## Outputs
