@@ -1660,6 +1660,21 @@ looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
 reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
 merely discussed one.
 
+`terminal_refusal()` and the loop-health evidence collector both remove text
+that comes from inputs before their text checks (#1510). They cut the log at
+the runner's run summary header (`Recipe: <name>` then `Run ID:` or
+`Status:`), because the summary's `Steps:` block reprints each step's output,
+agent prose included, unprefixed at column 0. Then, with one ERE, they drop
+agent lines and the runner's `amplihack.recipe.log_pointer {...}` lines,
+which echo the run's `task_description`. A log_pointer `exit_code` of 79 is dropped with its
+line on purpose, because the round's own exit code is the structural signal.
+The collector's token check, like `terminal_refusal()`'s,
+requires the full `BLOCKED_TERMINAL orchestration_unavailable` marker. The
+round log is handed to it through `autodrive_round_tail.sh`, which drops the
+partial first line of the 20000-byte tail and keeps the summary header when
+a long summary would push it out of the window. See
+[Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
+
 ## Recursion context propagation
 
 `autodrive_loop.sh` exports `AMPLIHACK_TREE_ID` and `AMPLIHACK_SESSION_DEPTH`
@@ -2225,6 +2240,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
 | `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
+| `amplifier-bundle/tools/autodrive_round_tail.sh` | tool | The last 20000 bytes of a round log for the loop-health evaluator, without the partial first line a byte cut leaves, so no prefix-less agent fragment reaches the evidence collector, and with the runner summary's header kept when a long summary pushes it out of the window (#1510). Writes nothing. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |

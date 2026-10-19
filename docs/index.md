@@ -134,7 +134,7 @@ amplihack copilot
 **Codex**
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
-- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
+- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
 - [Codex ownership ledger migration](CODEX_OWNERSHIP_MIGRATION.md) - Safe upgrade of legacy schema 1 ownership proofs
@@ -156,7 +156,8 @@ amplihack copilot
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Isolated Claude logins per profile and what a new profile inherits
-- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, security rules, and errors
+- [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`
+- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
@@ -304,7 +305,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Simulate Provider-Neutral Workflows](tutorials/provider-neutral-workflow-simulation.md) - Run and inspect a provider-neutral recipe simulation
 - [Clean Up Stale Workflow Change Requests](howto/cleanup-stale-workflow-prs.md) - Dry-run and apply stale/superseded cleanup through the provider abstraction
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
-- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, and required checks
+- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, recipe runner pin ancestry, and required checks
 - [CI Wall-Clock Parallelization Reference](reference/ci-wallclock-parallelization.md) - Parallel fan-out job graph (no `needs: check`) and tag-conditional release optimization keeping shipped artifacts fully optimized
 - [Merge Flow Reference](reference/merge-flow.md) - How `main` merges: strict up-to-date branch protection with all 7 required checks stays on, why a GitHub merge queue is unavailable on a user-owned repo, and the serial green-and-up-to-date squash-merge flow
 - [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo detection that fails a check within one CI cycle when the strict up-to-date policy on `main` is turned off; the script, workflow, `BRANCH_PROTECTION_READ_TOKEN` setup, and why it is detection (not prevention)
@@ -325,7 +326,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Publish Lockfile Sync Reference](reference/workflow-publish-lockfile-sync.md) - Offline `Cargo.lock` sync after the version bump so `--locked` pre-commit gates pass (issue #915)
 - [Workflow Publish package.json Version Sync Reference](reference/workflow-publish-package-json-sync.md) - Offline sync of root `package.json` version to `[workspace.package].version` so the version-contract test and CI Test job pass (issue #925)
 - [Best-Effort PR Labeling Reference](reference/workflow-pr-labels.md) - `WORKFLOW_PR_LABELS` contract and the `apply_pr_labels_best_effort` helper that stamps labels onto the published PR via a single `gh pr edit --add-label` call
-- [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
+- [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, shell helper API, and the branch PR lookup for agent-opened PRs
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
 - [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics

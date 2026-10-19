@@ -137,13 +137,13 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's own
-# refusal line in the log. Agent output lines (`[HH:MM:SS] [amplihack:...]`)
-# are skipped first: a review that QUOTES the refusal, as crusty's review of
-# PR #1520 did, is not one, and reading it as one stopped the loop.
+# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's full marker
+# outside input echoes: run summary, agent and log_pointer lines (#1510). Same
+# awk+ERE as loop-evidence-collector.yaml; docs/reference/loop-health-evaluator.md.
 terminal_refusal() {
   [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$2" 2>/dev/null \
+  [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
+    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
     | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
   return 1
 }
@@ -317,7 +317,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
       -c "loop_history=${HISTORY}" \
-      -c "loop_last_round_output=$(tail -c 20000 "$LOG" 2>/dev/null || true)" \
+      -c "loop_last_round_output=$(bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG")" \
       -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_REAL}" \
       -c "loop_baseline_ref=${BASELINE}" \
       -c "loop_child_exit_code=${ROUND_RC}" \

@@ -43,9 +43,11 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
+  - [AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE](#amplihack_force_recipe_runner_downgrade)
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [RECIPE_RUNNER_ANCESTRY_REPO](#recipe_runner_ancestry_repo)
   - [External LiteLLM gateway variables](#external-litellm-gateway-variables)
   - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
@@ -1284,6 +1286,27 @@ does not affect bootstrap logic, and does not change exit codes or stdout output
 
 ---
 
+### AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE
+
+**Type:** flag
+**Values:** exactly `1` enables it; any other value, including `01`, `true`, `yes`, ` 1` and an empty value, is ignored
+**Used by:** launcher freshness, `amplihack install`, `scripts/install-pinned-recipe-runner.sh`, `claude-plugin/bin/install-runtime`
+
+Allows the recipe-runner installers to replace an installed `recipe-runner-rs`
+that is newer than, diverged from, or not comparable with the pinned revision.
+Without it they keep the installed runner and warn with both revisions. A
+forced install logs both SHAs and "downgrade forced", and clears the launcher's
+skip record. The shell installer also accepts `--force`. No other variable
+name is recognised as an override.
+
+```sh
+AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 amplihack install
+```
+
+See: [Installer downgrade guard](recipe-runner-validation.md#installer-downgrade-guard).
+
+---
+
 ### AMPLIHACK_SKIP_AUTO_INSTALL
 
 **Type:** flag
@@ -1408,6 +1431,29 @@ AMPLIHACK_TEST_FAKE_LATEST_VERSION=99.99.99 amplihack copilot --help
 completeness only.
 
 See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+
+---
+
+### RECIPE_RUNNER_ANCESTRY_REPO
+
+**Type:** repository URL or path (test-only)
+**Values:** a local repository path, or an `https://` or `file://` URL; any
+other value, including one starting with `-`, is rejected
+**Used by:** `scripts/install-pinned-recipe-runner.sh` and
+`claude-plugin/bin/install-runtime`
+
+Replaces both ancestry sources of the shell installers' downgrade guard,
+Cargo's git database and the fetch from
+`https://github.com/rysweet/amplihack-recipe-runner`, so that the test suite
+can order revisions against a local fixture repository. A rejected value is
+never passed to Git; the guard classifies the installed runner as
+`Unverifiable` and keeps it. It does not change where the runner is installed
+from. The Rust installers do not read it; their tests pass the fixture
+directly.
+
+**Production deployments should not set this variable.**
+
+See: [Installer downgrade guard](recipe-runner-validation.md#installer-downgrade-guard).
 
 ---
 

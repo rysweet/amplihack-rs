@@ -420,6 +420,14 @@ mod ci_wallclock_parallelize;
 #[path = "issue_1337_loop_health_evaluator_test.rs"]
 mod issue_1337_loop_health_evaluator;
 
+// Issue #1510: the loop-evidence collector drops agent output lines
+// (`[HH:MM:SS] [amplihack:...]`) before its BLOCKED_TERMINAL and exit-79
+// detectors, the same rule as terminal_refusal() in autodrive_loop.sh, so a
+// review quoting the token is not a terminal policy refusal. Runs the real
+// step-01 command through bash; needs bash and git, not the amplihack binary.
+#[path = "issue_1510_collector_agent_prose_test.rs"]
+mod issue_1510_collector_agent_prose;
+
 // auto-drive-to-merge: wrap default-workflow and drive the PR to merge through
 // two agentically-terminated loops (crusty, then merge-ready). Pins the absence
 // of any numeric iteration cap, the fail-safe-to-blocking verdict defaults, the
