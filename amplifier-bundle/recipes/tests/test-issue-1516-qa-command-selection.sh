@@ -316,6 +316,24 @@ run_tool
 expect none "empty repo" qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=unknown qa_dir=.
 expect_target none-target $'unknown\t.'
 
+echo "== #1516: a root project with no runner beats a nested helper crate (no wrong-suite PASS) =="
+for rf in requirements.txt setup.cfg tox.ini Pipfile go.mod pom.xml build.gradle build.gradle.kts \
+          Makefile makefile GNUmakefile CMakeLists.txt meson.build build.sbt Gemfile composer.json \
+          mix.exs flake.nix; do
+    new_repo "$rf" c/Cargo.toml c/src/lib.rs
+    run_tool
+    expect "rootfile:$rf" "$rf + c/Cargo.toml is BLOCKED, not cargo in c" \
+        qa_status=BLOCKED qa_reason=qa-command-missing qa_repo_type=unknown qa_dir=.
+    expect_calls "rootfile-calls:$rf" "cargo is never called beside $rf" cargo ""
+done
+new_repo go.mod tools/x/Cargo.toml
+expect_target rootfile-target $'unknown\t.'
+expect_type_req rootfile-type unknown false
+new_repo Makefile Cargo.toml
+expect_target rootfile-cargo-root $'rust-cli\t.'
+new_repo requirements.txt pyproject.toml c/Cargo.toml
+expect_target rootfile-pyproject $'python\t.'
+
 echo "== #1516: installed check accepts ./<command> relative to AUTODRIVE_QA_DIR =="
 new_repo sub/bin/
 cat > "$REPO/sub/bin/x" <<'EOF'

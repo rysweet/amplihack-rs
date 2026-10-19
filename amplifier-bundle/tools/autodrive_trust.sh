@@ -20,7 +20,7 @@
 #
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
-# there. This file only DEFINES functions and one read-only variable; sourcing
+# there. This file only DEFINES functions and two read-only variables; sourcing
 # it has no other side effect. Needs bash 3.2 or later, git and coreutils.
 #
 # Same-user limit: these checks catch an agent following instructions found in
@@ -38,6 +38,11 @@
 case "$(declare -p AUTODRIVE_RANGE_ALLOWLIST 2>/dev/null)" in
   "declare -ar "*) ;;
   *) readonly -a AUTODRIVE_RANGE_ALLOWLIST=("PR_DESCRIPTION.md" ".github/pull_request_template.md" ".autodrive/evidence/") ;;
+esac
+# Root files of projects autodrive_qa_target cannot run: a crate beside one is a helper.
+case "$(declare -p AUTODRIVE_ROOT_PROJECT_FILES 2>/dev/null)" in
+  "declare -ar "*) ;;
+  *) readonly -a AUTODRIVE_ROOT_PROJECT_FILES=(requirements.txt setup.cfg tox.ini Pipfile go.mod pom.xml build.gradle build.gradle.kts Makefile makefile GNUmakefile CMakeLists.txt meson.build build.sbt Gemfile composer.json mix.exs flake.nix) ;;
 esac
 
 # --- small checks ----------------------------------------------------------
@@ -344,7 +349,8 @@ _autodrive_cargo_dirs() {
 # target is chosen; the first rule that matches wins. At the top of <dir>:
 # Cargo.toml gives `rust-cli .`; pyproject.toml or setup.py `python .`, even
 # beside package.json; package.json `node .`. A root project always beats a
-# nested crate (mistt-repo/jamestown, #1516). Else one nested crate, or a
+# nested crate (mistt-repo/jamestown, #1516), so any other root project file
+# (AUTODRIVE_ROOT_PROJECT_FILES) gives `unknown .`. Else one nested crate, or a
 # first sorted hit that is an ancestor of every other, gives `rust-cli <rel>`.
 # Several unrelated hits, or a path that is absolute, has a `..` or empty
 # component or a byte outside A-Z a-z 0-9 . _ / -, give `ambiguous <list>`:
@@ -356,6 +362,7 @@ autodrive_qa_target() {
   if [ -f "$d/Cargo.toml" ]; then printf 'rust-cli\t.\n'; return 0; fi
   if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then printf 'python\t.\n'; return 0; fi
   if [ -f "$d/package.json" ]; then printf 'node\t.\n'; return 0; fi
+  for h in "${AUTODRIVE_ROOT_PROJECT_FILES[@]}"; do { [ -e "$d/$h" ] || [ -L "$d/$h" ]; } && { printf 'unknown\t.\n'; return 0; }; done
   list="$(_autodrive_cargo_dirs "$d")"
   if [ -z "$list" ]; then printf 'unknown\t.\n'; return 0; fi
   while IFS= read -r h; do
