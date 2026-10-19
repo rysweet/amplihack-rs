@@ -237,24 +237,30 @@ fn publish_treats_non_github_hosts_as_structured_successful_skip() {
 
 #[test]
 fn publish_commit_push_redacts_pull_and_push_failure_output() {
+    // #1575: step 15's fetch and push moved into workflow_sync_pr_head.sh, so
+    // the redaction contract is checked there.
     let recipe = load_publish_recipe();
     let command = step_command(&recipe, "step-15-commit-push");
-
     assert!(
-        command.contains("redact_sensitive_file"),
-        "publish commit/push step must use a shared redaction helper"
+        command.contains("workflow_sync_pr_head.sh") && command.contains("--mode step15"),
+        "publish commit/push step must push through the shared sync helper"
+    );
+    let helper = helper_text("workflow_sync_pr_head.sh");
+    assert!(
+        helper.contains("scrub <\"$push_err\""),
+        "push stderr must pass through the shared redaction function"
     );
     assert!(
-        command.contains("git fetch origin >\"$fetch_output_file\" 2>&1"),
-        "publish commit/push step must capture fetch output before logging (issue #978)"
+        helper.contains("2>\"$fetch_err\""),
+        "fetch output must be captured before logging (issue #978)"
     );
     assert!(
-        !command.contains("cat \"$push_stderr_file\""),
-        "publish commit/push step must not print raw push stderr"
+        !helper.contains("cat \"$push_err\""),
+        "the sync helper must not print raw push stderr"
     );
     assert!(
-        command.contains("https?://"),
-        "publish redaction must cover both http:// and https:// credential-bearing URLs"
+        helper.contains("[A-Za-z][A-Za-z0-9+.-]*://"),
+        "redaction must cover credential-bearing URLs of every scheme, http:// and https:// included"
     );
 }
 
@@ -378,6 +384,9 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         .env("TASK_DESCRIPTION", "publish existing feature branch")
         .env("ISSUE_NUMBER", "7")
         .env("REMOTE_HOST_TYPE", "github")
+        // #1575: step 15's helpers come from the lookup ladder; use this
+        // checkout, never a stale ~/.amplihack copy.
+        .env("AMPLIHACK_HOME", workspace_root())
         .output()
         .expect("run step-15 commit-push command");
 

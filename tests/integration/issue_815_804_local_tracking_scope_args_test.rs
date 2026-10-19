@@ -125,7 +125,9 @@ fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &s
     cmd.arg(helper_path("workflow_pr_ready.sh"))
         .current_dir(repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        .env("WORKFLOW_PR_SCOPE_HELPER", stub);
+        .env("WORKFLOW_PR_SCOPE_HELPER", stub)
+        // #1575: the step-21 auth gate retries with backoff; never sleep here.
+        .env("WORKFLOW_GH_AUTH_BASE_DELAY", "0");
     clear_inherited_issue_env(&mut cmd);
     for (k, v) in issue_env {
         cmd.env(k, v);

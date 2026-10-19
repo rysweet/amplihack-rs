@@ -13,10 +13,16 @@ if ! command -v gh >/dev/null 2>&1; then
   echo "ERROR: gh CLI not found — cannot verify or mutate GitHub PR readiness" >&2
   exit 127
 fi
-if ! timeout 30 gh auth status >/dev/null 2>&1; then
-  echo "ERROR: gh CLI is unavailable or unauthenticated — cannot verify or mutate GitHub PR readiness" >&2
-  exit 1
+# Issue #1575: a shared gh hosts.yml can drop the active account for a moment;
+# the gate retries with backoff before giving the same contract error.
+AUTH_GATE="${WORKFLOW_GH_AUTH_GATE_HELPER:-$SCRIPT_DIR/workflow_gh_auth_gate.sh}"
+if [ ! -f "$AUTH_GATE" ]; then
+  echo "ERROR: workflow_pr_ready.sh requires the gh auth gate at $AUTH_GATE" >&2
+  exit 2
 fi
+# shellcheck source=/dev/null
+. "$AUTH_GATE"
+gh_auth_gate || exit 1
 if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq CLI not found — cannot validate GitHub PR readiness metadata" >&2
   exit 127
@@ -151,6 +157,7 @@ local_head="$(git rev-parse --verify HEAD 2>/dev/null || true)"
 repo_identity="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" || true)"
 expected_base="$(resolve_expected_base_branch || true)"
 [ -n "$repo_identity" ] || { echo "ERROR: unable to determine current GitHub repo identity from origin remote" >&2; exit 1; }
+gh_push_permission_gate "$repo_identity" || exit 1
 [ -n "$current_branch" ] || { echo "ERROR: current branch is empty; refusing ambiguous PR readiness mutation" >&2; exit 1; }
 [ -n "$local_head" ] || { echo "ERROR: local HEAD does not resolve; refusing ambiguous PR readiness mutation" >&2; exit 1; }
 [ -n "$expected_base" ] || { echo "ERROR: unable to resolve expected base branch for scoped PR validation" >&2; exit 1; }

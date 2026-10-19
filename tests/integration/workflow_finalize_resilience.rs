@@ -47,6 +47,8 @@ fn workspace_helper_path(name: &str) -> PathBuf {
 fn workflow_pr_ready_command() -> Command {
     let mut command = Command::new("bash");
     command.arg(workspace_helper_path("workflow_pr_ready.sh"));
+    // #1575: the auth gate retries with backoff; tests must never sleep.
+    command.env("WORKFLOW_GH_AUTH_BASE_DELAY", "0");
     for key in [
         "PR_URL",
         "RECIPE_VAR_pr_url",
@@ -112,7 +114,19 @@ fn isolate_scope_child(command: &mut Command, tmp: &Path, repo: &Path) {
             "PATH",
             format!("{}:/usr/bin:/bin", tmp.join("bin").display()),
         )
-        .env("GH_CALL_LOG", tmp.join("gh-calls.log"));
+        .env("GH_CALL_LOG", tmp.join("gh-calls.log"))
+        // #1575: the auth gate retries with backoff; tests must never sleep.
+        .env("WORKFLOW_GH_AUTH_BASE_DELAY", "0");
+}
+
+// #1575: step 21 adds two read-only calls (push permission and the active
+// login). Mutations stay forbidden.
+fn is_allowed_read_only_gh_call(line: &str) -> bool {
+    line == "auth status"
+        || line.starts_with("pr view ")
+        || line.starts_with("pr list ")
+        || line.starts_with("api repos/")
+        || line == "api user --jq .login"
 }
 
 fn private_git(tmp: &Path, repo: &Path, args: &[&str]) {
@@ -197,7 +211,7 @@ fn assert_scoped_read(tmp: &Path, expected: &str) {
     );
     for line in calls.lines() {
         assert!(
-            line == "auth status" || line.starts_with("pr view ") || line.starts_with("pr list "),
+            is_allowed_read_only_gh_call(line),
             "unexpected GH call (including mutation): {line}"
         );
     }
@@ -525,12 +539,7 @@ fn final_status_missing_scope_remains_uncertain_without_scoped_read() {
     let calls = optional_gh_call_log(&tmp.path().join("gh-calls.log"))
         .unwrap_or_else(|error| panic!("read private GH call log: {error}"));
     assert!(!calls.contains("--repo owner/repo --json"), "{calls}");
-    assert!(
-        calls.lines().all(|line| {
-            line == "auth status" || line.starts_with("pr view ") || line.starts_with("pr list ")
-        }),
-        "{calls}"
-    );
+    assert!(calls.lines().all(is_allowed_read_only_gh_call), "{calls}");
 }
 
 #[test]
