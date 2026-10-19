@@ -363,6 +363,7 @@ run stays `FAILED_IMPLEMENTATION`, exactly as before.
 | --- | --- | --- |
 | 1 | Evaluation-order steps 1–4 returned no result: no invalid evidence, dirty worktree, missing tooling, prior blocker, hollow success, reporting-failure split, `IMPLEMENTED_VERIFIED` or `ALLOW_NO_OP`. | Classifier order |
 | 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
+| 2a | **Valid metadata.** None of `pr_url`, `pr_number`, `prior_terminal_state`, `publish_status`, `branch_name` or `remote_host_type` is invalid authoritative context (wrong JSON type, NUL byte). An invalid value would otherwise read as empty, so any one disables this path. | `workflow_finalization_metadata` status 3 |
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
 | 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
@@ -398,7 +399,9 @@ fail falsely.
    slash, `/files` suffix, different letter case), is rejected without calling
    `gh`. A valid `pr_number` takes precedence over the URL, so a malformed URL
    never hides it; the number is re-checked live like any other reference.
-   It never falls back to `gh pr list` from a rejected URL.
+   A non-canonical `pr_number` (`abc`, `0`, `#7`) with no `pr_url` is rejected
+   without calling `gh`. It never falls back to `gh pr list` from a rejected
+   reference.
 
 2. Otherwise, when condition 2 holds through a publish status alone (for
    example the GitHub publish path's lowercase `existing-open-pr`, which records

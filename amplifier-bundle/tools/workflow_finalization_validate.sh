@@ -246,14 +246,25 @@ FIELDS
   # An unset host type is allowed through: it cannot widen the check, because
   # finalization_open_pr_signal still requires a github.com origin URL.
   case "$remote_host_type" in ''|github|GitHub|GITHUB) remote_is_github="true" ;; *) remote_is_github="false" ;; esac
-  if [ "$publish_signal" = "true" ] && [ "$target_dir_explicit" = "true" ] && [ "$remote_is_github" = "true" ]; then
+  # Invalid authoritative metadata (status 3) is swallowed into "" above; it
+  # must never feed a success path, so any such key disables this path.
+  metadata_valid="true"
+  for metadata_key in pr_url pr_number prior_terminal_state publish_status branch_name remote_host_type; do
+    metadata_status=0
+    (workflow_finalization_metadata "$metadata_key" >/dev/null 2>&1) || metadata_status=$?
+    [ "$metadata_status" != 3 ] || metadata_valid="false"
+  done
+  [ "$metadata_valid" = "true" ] || { [ "$publish_signal" != "true" ] || echo "WARNING: invalid workflow metadata; not classified as EXISTING_OPEN_PR" >&2; }
+  if [ "$publish_signal" = "true" ] && [ "$metadata_valid" = "true" ] && [ "$target_dir_explicit" = "true" ] && [ "$remote_is_github" = "true" ]; then
     run_branch="$(workflow_finalization_metadata branch_name || :)"
     [ -n "$run_branch" ] || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
     # A canonical pr_number is preferred, so a malformed pr_url (trailing
     # slash, /files suffix, ...) cannot hide it; otherwise the pr_url is used.
-    # Either is re-checked live against the origin repo, branch and HEAD.
-    open_pr_ref="$pr_url"
-    [[ ! "$pr_number" =~ ^[1-9][0-9]{0,9}$ ]] || open_pr_ref="$pr_number"
+    # A bad pr_number with no pr_url is passed as-is so the helper rejects it
+    # instead of widening to the pr list search. Every reference is re-checked
+    # live against the origin repo, branch and HEAD.
+    open_pr_ref="$pr_number"
+    if ! _finalization_pr_number_valid "$pr_number" && [ -n "$pr_url" ]; then open_pr_ref="$pr_url"; fi
     if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$open_pr_ref")"; then
       # The helper emits only a validated number and the URL it built itself.
       open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
