@@ -8,8 +8,9 @@
 //! stopped as if the guard had refused.
 //!
 //! The fix applies the rule `terminal_refusal()` in
-//! `amplifier-bundle/tools/autodrive_loop.sh` already uses: drop agent output
-//! lines before BOTH text detectors. Only those two detectors read the filtered
+//! `amplifier-bundle/tools/autodrive_loop.sh` uses: drop agent output lines,
+//! and the runner's `amplihack.recipe.log_pointer` lines that echo
+//! `task_description` (round 1 of PR #1632), before BOTH text detectors. Only those two detectors read the filtered
 //! text; the duration / still-running / failure-class checks keep the full blob.
 //!
 //! These tests run the real step-01 command from the YAML through `bash`, in a
@@ -152,7 +153,7 @@ fn assert_not_terminal(evidence: &Json, case: &str) {
     assert_eq!(
         terminal(evidence),
         "false",
-        "{case}: agent prose must not be a terminal refusal; evidence: {evidence}"
+        "{case}: text echoed from inputs must not be a terminal refusal; evidence: {evidence}"
     );
 }
 
@@ -374,9 +375,10 @@ fn issue_1510_agent_only_log_does_not_abort_the_step() {
 #[test]
 fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
     // The two detectors must not drift apart. terminal_refusal() is the
-    // reference, and its rule has two halves: drop agent lines (this ERE)
+    // reference, and its rule has two halves: drop agent lines and the
+    // runner's log_pointer lines (this ERE)
     // and require the full marker (MARKER below). Both are pinned here.
-    const ERE: &str = r"'^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:'";
+    const ERE: &str = r"'^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)'";
     let root = workspace_root();
     let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
         .expect("read autodrive_loop.sh");
@@ -403,6 +405,213 @@ fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
             "both terminal detectors must read $WORK/terminal_blob; missing {detector:?}"
         );
     }
+}
+
+// --- Runner log_pointer lines echo task_description (round 1 of PR #1632) --
+
+/// The task text that stopped round 1 of PR #1632: it names the full marker
+/// and an exit-79 phrase, and the runner echoes it in every log_pointer line.
+const TASK_NAMING_MARKER: &str = "Fix #1510: a review quoting BLOCKED_TERMINAL orchestration_unavailable or saying the guard returns exit 79 must not stop the loop";
+
+/// A log_pointer line built the way `correlation.rs` builds it: the
+/// `amplihack.recipe.log_pointer ` prefix and one line of serde_json.
+fn log_pointer_line(event: &str, exit_code: Option<i32>) -> String {
+    let mut payload = serde_json::json!({
+        "schema_version": 1,
+        "event": event,
+        "run_id": "00000000-0000-0000-0000-000000000000",
+        "recipe_name": "default-workflow",
+        "cwd": "/tmp/w",
+        "task_description": TASK_NAMING_MARKER,
+        "runner_path": "/usr/bin/amplihack",
+        "timestamp": "2026-10-19T00:00:00Z",
+    });
+    if let Some(code) = exit_code {
+        payload["exit_code"] = code.into();
+        payload["status"] = "failure".into();
+    }
+    format!("amplihack.recipe.log_pointer {payload}")
+}
+
+fn log_pointer_round() -> String {
+    format!(
+        "{}\nordinary runner output\n{}",
+        log_pointer_line("early", None),
+        log_pointer_line("final", Some(79))
+    )
+}
+
+#[test]
+fn issue_1510_log_pointer_task_description_naming_the_marker_is_not_terminal() {
+    let text = log_pointer_round();
+    assert!(text.contains("BLOCKED_TERMINAL orchestration_unavailable"));
+    assert!(text.contains("exit 79"));
+    for var in ["LOOP_LAST_ROUND_OUTPUT", "LOOP_HISTORY"] {
+        let ev = run_collector(&[(var, &text)]);
+        assert_not_terminal(&ev, &format!("log_pointer in {var}"));
+    }
+}
+
+#[test]
+fn issue_1510_indented_log_pointer_line_is_not_terminal() {
+    let text = format!(
+        "  {}\n\t{}",
+        log_pointer_line("early", None),
+        log_pointer_line("final", Some(79))
+    );
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
+    assert_not_terminal(&ev, "indented log_pointer");
+}
+
+#[test]
+fn issue_1510_guard_line_after_log_pointer_is_terminal() {
+    let text = format!("{}\n{GUARD_LINE}", log_pointer_round());
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
+    assert_terminal_with(&ev, REASON_BLOCKED, "log_pointer then guard line");
+}
+
+#[test]
+fn issue_1510_log_pointer_exit_79_defers_to_the_child_exit_code() {
+    // The log_pointer exit_code is dropped with its line on purpose; the
+    // structural signal is loop_child_exit_code, which reads no text.
+    let text = log_pointer_line("final", Some(79));
+    let ev = run_collector(&[
+        ("LOOP_LAST_ROUND_OUTPUT", &text),
+        ("LOOP_CHILD_EXIT_CODE", "79"),
+    ]);
+    assert_terminal_with(&ev, REASON_EXIT_CODE, "log_pointer with child exit 79");
+}
+
+#[test]
+fn issue_1510_log_pointer_filter_is_anchored_on_its_key() {
+    // Only a line that BEGINS with `amplihack.recipe.log_pointer {` is
+    // dropped. A guard line inside any other JSON, a mention of the key
+    // mid-line, or the key without its JSON object is still read.
+    for (case, line) in [
+        ("other JSON object", format!(r#"{{"note":"{GUARD_LINE}"}}"#)),
+        (
+            "key mid-line",
+            format!(r#"echo amplihack.recipe.log_pointer {{"x":"{GUARD_LINE}"}}"#),
+        ),
+        (
+            "key without object",
+            format!("amplihack.recipe.log_pointer {GUARD_LINE}"),
+        ),
+        (
+            "upper-case key",
+            format!(r#"AMPLIHACK.RECIPE.LOG_POINTER {{"x":"{GUARD_LINE}"}}"#),
+        ),
+        (
+            "other key",
+            format!(r#"amplihack.recipe.other {{"x":"{GUARD_LINE}"}}"#),
+        ),
+    ] {
+        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &line)]);
+        assert_terminal_with(&ev, REASON_BLOCKED, case);
+    }
+}
+
+// --- terminal_refusal() in autodrive_loop.sh, extracted and run ------------
+
+/// The exact body of `terminal_refusal()` from autodrive_loop.sh, from its
+/// opening line to the first line that is only `}`.
+fn terminal_refusal_fn() -> String {
+    let path = workspace_root().join("amplifier-bundle/tools/autodrive_loop.sh");
+    let text =
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in text.lines() {
+        if line.starts_with("terminal_refusal() {") {
+            inside = true;
+        }
+        if inside {
+            out.push(line);
+            if line == "}" {
+                return out.join("\n");
+            }
+        }
+    }
+    panic!("terminal_refusal() not found in {}", path.display());
+}
+
+/// Run `terminal_refusal <exit_code> <log>` over `log` and return whether it
+/// called the round a refusal.
+fn terminal_refusal(exit_code: &str, log: &str) -> bool {
+    let scratch = ScratchDir::new();
+    let log_path = scratch.0.join("round.log");
+    std::fs::write(&log_path, log).expect("write round log");
+    let script = format!(
+        "AUTODRIVE_EXIT_POLICY_REFUSAL=79\n{}\nterminal_refusal \"$1\" \"$2\"",
+        terminal_refusal_fn()
+    );
+    let mut bash = Command::new("bash");
+    isolated(&mut bash, &scratch.0);
+    let out = bash
+        .arg("-c")
+        .arg(script)
+        .arg("terminal_refusal")
+        .arg(exit_code)
+        .arg(&log_path)
+        .output()
+        .expect("spawn bash");
+    match out.status.code() {
+        Some(0) => true,
+        Some(1) => false,
+        other => panic!(
+            "terminal_refusal exited {other:?}\nstderr:\n{}",
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    }
+}
+
+#[test]
+fn issue_1510_terminal_refusal_ignores_log_pointer_task_description() {
+    assert!(
+        !terminal_refusal("1", &log_pointer_round()),
+        "a log_pointer line echoing a task that names the marker is not a refusal"
+    );
+    let indented = format!("    {}", log_pointer_line("final", Some(79)));
+    assert!(
+        !terminal_refusal("1", &indented),
+        "indented log_pointer line"
+    );
+}
+
+#[test]
+fn issue_1510_terminal_refusal_still_sees_guard_line_after_log_pointer() {
+    let log = format!("{}\n{GUARD_LINE}\n", log_pointer_round());
+    assert!(
+        terminal_refusal("1", &log),
+        "unprefixed guard line must stop the loop"
+    );
+}
+
+#[test]
+fn issue_1510_terminal_refusal_exit_79_needs_no_text() {
+    assert!(
+        terminal_refusal("79", ""),
+        "exit 79 is the structural signal"
+    );
+    assert!(
+        terminal_refusal("79", &log_pointer_round()),
+        "exit 79 stops the loop whatever the log says"
+    );
+}
+
+#[test]
+fn issue_1510_terminal_refusal_ignores_agent_prose_and_bare_token() {
+    let log = format!("{AGENT_QUOTES_TOKEN}\nchild returned BLOCKED_TERMINAL at depth 4/3\n");
+    assert!(!terminal_refusal("0", &log));
+}
+
+#[test]
+fn issue_1510_terminal_refusal_log_pointer_filter_is_anchored_on_its_key() {
+    let log = format!("{{\"note\":\"{GUARD_LINE}\"}}\n");
+    assert!(
+        terminal_refusal("0", &log),
+        "a guard line echoed inside other JSON must still stop the loop"
+    );
 }
 
 // --- The byte tail handed to the collector ---------------------------------

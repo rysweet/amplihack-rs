@@ -673,8 +673,14 @@ terminal policy refusal (#1510).
 `terminal_refusal()` in `amplifier-bundle/tools/autodrive_loop.sh`, both
 halves of it, so the two detectors agree on which logs are refusals:
 
-1. Before either text detector runs, it drops every line matching this ERE
-   (the bytes are identical in both files).
+1. Before either text detector runs, it drops every line whose text comes
+   from an input rather than from the guard, using this ERE (the bytes are
+   identical in both files). It matches two kinds of line:
+   - agent output lines, `[HH:MM:SS] [amplihack:...] ...`;
+   - the runner's `amplihack.recipe.log_pointer {...}` bookkeeping lines
+     (`crates/amplihack-cli/src/commands/recipe/run/correlation.rs`), which
+     echo the run's `task_description`. See
+     [Runner bookkeeping lines are not refusals](#runner-bookkeeping-lines-are-not-refusals).
 2. The token check requires the guard's full marker,
    `BLOCKED_TERMINAL orchestration_unavailable`. The bare word
    `BLOCKED_TERMINAL` is not a refusal.
@@ -682,7 +688,7 @@ halves of it, so the two detectors agree on which logs are refusals:
 The first rule:
 
 ```bash
-grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$WORK/blob" > "$WORK/terminal_blob" || true
+grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' "$WORK/blob" > "$WORK/terminal_blob" || true
 ```
 
 Both the `BLOCKED_TERMINAL orchestration_unavailable` check and the
@@ -706,13 +712,17 @@ keep reading the unfiltered `$WORK/blob`, so an agent line reporting
 | `child exited with status 79` (no prefix) | `"true"` | `exit code 79 present in round output` |
 | `loop_child_exit_code` = `79`, with any text or none | `"true"` | `child process exited 79` |
 | `[loop-health-evaluator] child process exited 79` | `"false"` | — ([self-poisoning](#the-brick-does-not-poison-itself)) |
+| `amplihack.recipe.log_pointer {…"task_description":"… BLOCKED_TERMINAL orchestration_unavailable … exit 79 …","exit_code":79…}`, at column 0 or indented | `"false"` | — |
+| the same log_pointer line, then `BLOCKED_TERMINAL orchestration_unavailable: …` on its own line | `"true"` | `BLOCKED_TERMINAL reported by a child` |
 
 Rules that keep real refusals visible:
 
 - `loop_child_exit_code` = `79` is checked first and reads no text. It is the
   guard's structural signal, and no filter can hide it.
-- The filter matches only that exact prefix: no case folding, no partial
-  timestamps, no other tags. An unprefixed guard line is always seen.
+- The filter matches only those two exact line starts: no case folding, no
+  partial timestamps, no other tags, and no JSON other than a line that
+  begins with `amplihack.recipe.log_pointer {`. An unprefixed guard line is
+  always seen, and so is a guard line echoed inside any other JSON.
 - Every guard refusal in `crates/amplihack-cli/src/commands/recipe/run/execute.rs`
   begins with `BLOCKED_TERMINAL orchestration_unavailable:`, so requiring the
   full marker loses no real refusal. A false stop is not a safe direction: it
@@ -721,6 +731,25 @@ Rules that keep real refusals visible:
   `grep -v` leaves nothing and exits with status 1. `|| true` keeps that
   status 1 from counting as a failure, so `terminal_blob` is just empty and no
   refusal is reported.
+
+### Runner bookkeeping lines are not refusals
+
+Round 1 of PR #1632 stopped as a terminal policy refusal although no guard
+had refused. The recipe runner writes two `amplihack.recipe.log_pointer`
+lines per run to stderr, an `early` and a `final` event, each a single-line
+JSON object after that prefix. Each carries the run's `task_description`.
+The task for #1510 names the full marker and "exit 79", so the runner's
+own bookkeeping put both into the round log, unprefixed, and both detectors
+read them as the guard.
+
+The shared ERE drops those lines, at column 0 or indented, before the text
+checks run. A `final` log_pointer line also carries the child's `exit_code`.
+When that is `79`, it is dropped with the rest of the line. **This is
+deliberate.** The exit code of the round itself is the structural signal:
+`$1` of `terminal_refusal()` in `autodrive_loop.sh`, and
+`loop_child_exit_code` here. Both are checked before any text is read, and
+no input can fake them. Text matching is only a fallback for a refusal whose
+exit code was lost, and a fallback that inputs can trip is worse than none.
 
 Known limits, accepted rather than patched with heuristics:
 
@@ -734,6 +763,13 @@ Known limits, accepted rather than patched with heuristics:
   this path for the token, not for the regex. `loop_child_exit_code` = `79`
   remains the authoritative signal; the text checks are a fallback for a
   refusal whose exit code was lost.
+- Runner bookkeeping lines are recognised by one key only,
+  `amplihack.recipe.log_pointer`. Another runner line that echoes an input
+  and names the full marker or `exit 79` would still read as a refusal. Today
+  the log_pointer line is the only runner line that echoes
+  `task_description`; the final `log pointer:` summary in `format.rs` carries
+  `exit_code=` but no task text. A new input-echoing line must be added to the
+  shared ERE, in both files, with a test.
 - `loop_last_round_output` is a byte tail of the round log. `autodrive_loop.sh`
   builds it with `autodrive_round_tail.sh`, which drops the partial first line when
   the log is longer than 20000 bytes, so a fragment that has lost its

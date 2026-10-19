@@ -1508,8 +1508,12 @@ looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
 reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
 merely discussed one.
 
-The loop-health evidence collector applies the same rule (#1510): it drops
-agent lines before its own token and exit-79 checks, and its token check
+`terminal_refusal()` and the loop-health evidence collector both drop two
+kinds of line before their text checks (#1510), using one ERE: agent lines,
+and the runner's `amplihack.recipe.log_pointer {...}` lines, which echo the
+run's `task_description`. A log_pointer `exit_code` of 79 is dropped with its
+line on purpose, because the round's own exit code is the structural signal.
+The collector's token check, like `terminal_refusal()`'s,
 requires the full `BLOCKED_TERMINAL orchestration_unavailable` marker. The
 round log is handed to it through `autodrive_round_tail.sh`, which drops the
 partial first line of the 20000-byte tail. See
