@@ -365,7 +365,7 @@ run stays `FAILED_IMPLEMENTATION`, exactly as before.
 | 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github`, and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
-| 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and passes `git check-ref-format --branch`. | Metadata + live git |
+| 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
 | 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` (fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
 | 7 | **Verification signal.** Either `checks=green` (see below) or `verification_completed=true` from this run's typed `verification_terminal_evidence`. | `statusCheckRollup` or typed evidence |
 
