@@ -82,8 +82,63 @@ fn lets_every_non_merge_command_through() {
         "rg 'gh pr merge' docs/",
         "cargo test merge_guard",
         "curl https://api.github.com/repos/o/r/pulls/38",
-        "/bin/bash -p ~/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
         "",
+    ] {
+        assert!(!blocked(cmd), "refused a non-merge command: {cmd}");
+    }
+}
+
+#[test]
+fn refuses_an_agent_running_the_merge_gate_in_any_spelling() {
+    // Crusty round 2: the gate runs from a recipe bash step only, and trusts
+    // Crusty and QA record files an agent could write.
+    for cmd in [
+        "bash -p \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh\" --pr 38",
+        "/bin/bash -p ~/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "./amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38 --round-record r.json",
+        "cd amplifier-bundle/tools && bash autodrive_merge_gate.sh --pr 38",
+        "sh -c '/bin/bash -p ${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38'",
+        "echo \"$(bash -p autodrive_merge_gate.sh --pr 38)\"",
+    ] {
+        let block = check(cmd).unwrap_or_else(|| panic!("not refused: {cmd}"));
+        let message = block["message"].as_str().unwrap();
+        assert!(message.contains("merge gate"), "{message}");
+    }
+}
+
+#[test]
+fn refuses_merge_text_fed_to_an_interpreter_by_pipe_here_string_or_inline_code() {
+    for cmd in [
+        "echo 'gh pr merge 38' | bash",
+        "printf '%s\\n' \"gh pr merge 38 --squash\" | sh",
+        "bash -s <<<'gh pr merge 38'",
+        "bash <<< \"gh -R o/r pr merge 38\"",
+        "python3 -c \"import os; os.system('gh pr merge 38')\"",
+        "python3 -c \"import subprocess; subprocess.run(['gh', 'api', '-X', 'PUT', 'repos/o/r/pulls/38/merge'])\"",
+        "python -c \"import requests; requests.put('https://api.github.com/repos/o/r/pulls/38/merge')\"",
+        "perl -e 'system(\"gh pr merge 38\")'",
+        "python3 -c \"import subprocess; subprocess.run(['gh','pr','merge','38'])\"",
+        "ruby -e 'system(\"gh\", \"pr\", \"merge\", \"38\")'",
+        "node -e \"require('child_process').execSync('gh pr merge 38')\"",
+        "awk 'BEGIN { system(\"gh pr merge 38\") }'",
+        "echo 'mutation { mergePullRequest(input:{}) { clientMutationId } }' | python3 q.py",
+        "echo 'echo \"gh pr merge 38\"' | bash | bash",
+    ] {
+        assert!(blocked(cmd), "not refused: {cmd}");
+    }
+}
+
+#[test]
+fn quoted_merge_text_passes_when_no_interpreter_runs_it() {
+    // Without an interpreter in the command, quoted text is prose: commit
+    // messages, PR bodies and searches.
+    for cmd in [
+        "git commit -m 'refuse gh pr merge outside the gate'",
+        "gh pr create --title t --body 'never gh pr merge; the gate merges'",
+        "rg 'gh pr merge' docs/",
+        "echo 'gh pr merge 38' > notes.txt",
+        "python3 -c 'print(1)'",
+        "bash -n script.sh",
     ] {
         assert!(!blocked(cmd), "refused a non-merge command: {cmd}");
     }

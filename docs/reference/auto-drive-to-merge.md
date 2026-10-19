@@ -1800,13 +1800,34 @@ redirections. It follows `bash -c`/`sh -c` (also `-lc`, `-ic`), `eval`, and
   any case, URL or path), a GraphQL merge mutation, or a GraphQL body from
   `--input` or `=@`;
 - `curl`, `wget`, `http`/`https` (HTTPie) or `xh` has a merge endpoint or
-  mutation in any argument.
+  mutation in any argument;
+- the command runs an interpreter (`bash`, `sh` and other shells, `python*`,
+  `pypy*`, `perl`, `ruby`, `node`, `deno`, `bun`, `php`, `lua`, `tclsh`, `awk`
+  and its variants, `osascript`) anywhere, and any word, quoted or not, reads
+  as one of the forms above, an endpoint or a mutation. Quoted text is then
+  treated as code that will run: `echo 'gh pr merge 38' | bash`,
+  `bash -s <<<'gh pr merge 38'`, `python3 -c "os.system('gh pr merge 38')"`
+  and `subprocess.run(['gh','pr','merge','38'])` are refused;
+- any word's basename is `autodrive_merge_gate.sh`. The gate runs only from
+  auto-drive's own recipe bash step, never from an agent's shell tool, and it
+  trusts Crusty and QA record files an agent could write. So an agent that
+  runs it, as `bash -p "$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh" --pr 38`
+  or any other way, is refused. Reading the file with `cat` or `grep` from the
+  shell tool is refused too; use the agent's read and search tools, which the
+  hook does not inspect.
 
-Text inside a quoted argument is one word, so `git commit -m 'gh pr merge'`,
-`grep mergePullRequest` and `gh pr create --body …` pass. `gh pr view --json
-mergeable` passes too. The hook blocks with a message naming the form and the
-gate, never the command. Aliases, extensions and scripts written to a file are
-not visible in the command text, so the shim still handles those.
+With no interpreter in the command, text inside a quoted argument is one word,
+so `git commit -m 'gh pr merge'`, `grep mergePullRequest` and `gh pr create
+--body …` pass. A command that both runs an interpreter and quotes merge text,
+such as `bash test.sh && git commit -m '… gh pr merge …'`, is refused; split
+it in two. `gh pr view --json mergeable` passes. The hook blocks with a
+message naming the form and the gate, never the command.
+
+The hook reads command text, so it does not see what that text only names:
+aliases, extensions, a script written to a file and then run, or a variable
+that holds `gh` (`G=gh; $G pr merge 38`). The shim still handles those when
+it is first on `PATH`; [What this does not stop](#what-this-does-not-stop)
+lists what is left when it is not.
 
 ### What the shim refuses
 
@@ -1925,15 +1946,16 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 
 | Route | Outcome |
 | --- | --- |
-| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The shim is skipped. The [pre-tool-use hook check](#the-pre-tool-use-hook-check) still refuses every merge form typed into the agent's shell tool, since it reads the command, not `PATH`. |
+| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The shim is skipped. The [pre-tool-use hook check](#the-pre-tool-use-hook-check) still refuses the merge forms it can read in the command text of the agent's shell tool, since it reads the command, not `PATH`. The next rows list what it cannot read. |
 | `gh` by absolute path, `PATH=… gh`, `curl` to the merge endpoint | Refused by the hook check when typed into the agent's shell tool. |
 | A merge inside a script file the agent writes and then runs, through a real `gh` that `PATH` puts ahead of the shim | Not refused: neither layer sees it. The hook sees only `bash script.sh`, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| Variable indirection (`G=gh; $G pr merge 38`), a command built at run time (`$(printf g)h`, `xargs gh` with the subcommand on stdin, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command that does not exist until the shell builds it, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
 | An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
-| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Trusted like phase 3. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them; its Crusty and QA records are files and can be forged (below). |
+| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the [hook check](#the-pre-tool-use-hook-check): any word whose basename is `autodrive_merge_gate.sh` in the agent's shell tool. The gate runs only from auto-drive's recipe step, so this costs nothing. Through a variable holding the installed gate's path (`G=…; bash -p "$G"`), the hook does not see it, and the shim then trusts the gate like phase 3 (a copy under another path is refused by the shim): the gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). An agent CLI that runs no amplihack hooks has only that second layer. |
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |

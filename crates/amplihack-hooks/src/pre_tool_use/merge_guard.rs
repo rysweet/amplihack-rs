@@ -12,7 +12,18 @@
 //! Active only when `AMPLIHACK_MERGE_GUARD` is non-empty, which the recipe
 //! runner sets for every auto-drive run and every agent CLI inside one. The
 //! merge gate itself runs from a recipe bash step, never through an agent's
-//! Bash tool, so this hook never sees it.
+//! Bash tool, so this hook never sees a legitimate run of it. An agent naming
+//! the gate in its shell tool is therefore refused outright (crusty round 2):
+//! the gate trusts its Crusty and QA record files, which an agent can write.
+//!
+//! When the command also runs an interpreter (a shell, Python, Perl, Ruby,
+//! Node, awk, …), quoted text is code that will run, not prose, so every word
+//! is read as a command too and scanned for endpoints and mutations. That
+//! catches `echo 'gh pr merge 38' | bash`, `bash -s <<<'…'` and
+//! `python3 -c "os.system('gh pr merge 38')"`, while `git commit -m '… gh pr
+//! merge …'` with no interpreter in the command still passes. Variable
+//! indirection (`G=gh; $G pr merge`) and script files are not readable from
+//! the command text and are left to the shim and the `MERGED` checks.
 
 use regex::Regex;
 use serde_json::Value;
@@ -22,6 +33,9 @@ use std::sync::LazyLock;
 /// `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs`).
 pub(super) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 
+/// The merge gate's file name. Only auto-drive's own recipe step runs it.
+const GATE_NAME: &str = "autodrive_merge_gate.sh";
+
 /// How deep `bash -c '…'`, `eval …` and `$(…)` bodies are followed.
 const MAX_NESTING: usize = 8;
 
@@ -30,7 +44,8 @@ const BLOCK_MESSAGE: &str = "\
 \n\
 This is an auto-drive run (AMPLIHACK_MERGE_GUARD is set) and the command\n\
 contains {label}. Only autodrive_merge_gate.sh may merge: leave the PR open.\n\
-Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop.\n\
+Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop,\n\
+from its own recipe step; an agent's shell never runs the gate.\n\
 \n\
 This check reads the command itself, so it applies whichever gh your shell's\n\
 PATH finds. Do not retry with another gh path, PATH, alias, API client or token.";
@@ -62,7 +77,7 @@ pub(super) fn guard_active(value: Option<&str>) -> bool {
 
 /// The block response for a Bash `command` that merges, or `None`.
 pub(super) fn check(command: &str) -> Option<Value> {
-    let label = merge_form(command, 0)?;
+    let label = merge_form(command, 0, false)?;
     Some(serde_json::json!({
         "block": true,
         "message": BLOCK_MESSAGE.replace("{label}", label),
@@ -71,18 +86,26 @@ pub(super) fn check(command: &str) -> Option<Value> {
 
 /// The label of the first merge form in `command`, following `bash -c`,
 /// `eval` and command substitutions up to [`MAX_NESTING`] levels.
-fn merge_form(command: &str, depth: usize) -> Option<&'static str> {
+///
+/// `scripted` is set once any level of the command runs an interpreter; from
+/// then on every word is also read as code (see the module doc).
+fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static str> {
     if depth > MAX_NESTING {
         return None;
     }
     let (segments, nested) = split(command);
+    let scripted = scripted
+        || segments
+            .iter()
+            .flatten()
+            .any(|w| is_interpreter(basename(w)));
     for nested_cmd in &nested {
-        if let Some(label) = merge_form(nested_cmd, depth + 1) {
+        if let Some(label) = merge_form(nested_cmd, depth + 1, scripted) {
             return Some(label);
         }
     }
     for words in &segments {
-        if let Some(label) = segment_merge_form(words, depth) {
+        if let Some(label) = segment_merge_form(words, depth, scripted) {
             return Some(label);
         }
     }
@@ -93,9 +116,46 @@ fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-fn segment_merge_form(words: &[String], depth: usize) -> Option<&'static str> {
+/// Programs that run code given as text: a `-c`/`-e` argument, a here-string
+/// or a pipe on stdin.
+fn is_interpreter(name: &str) -> bool {
+    matches!(
+        name,
+        "bash"
+            | "sh"
+            | "zsh"
+            | "dash"
+            | "ksh"
+            | "mksh"
+            | "fish"
+            | "busybox"
+            | "perl"
+            | "ruby"
+            | "node"
+            | "nodejs"
+            | "deno"
+            | "bun"
+            | "php"
+            | "lua"
+            | "tclsh"
+            | "awk"
+            | "gawk"
+            | "mawk"
+            | "nawk"
+            | "osascript"
+    ) || name.starts_with("python")
+        || name.starts_with("pypy")
+}
+
+fn segment_merge_form(words: &[String], depth: usize, scripted: bool) -> Option<&'static str> {
     for (i, word) in words.iter().enumerate() {
         let rest = &words[i + 1..];
+        if basename(word) == GATE_NAME {
+            return Some("a run of the merge gate autodrive_merge_gate.sh by an agent");
+        }
+        if scripted && let Some(label) = code_merge_form(word, depth) {
+            return Some(label);
+        }
         let found = match basename(word) {
             "gh" => gh_merge_form(rest),
             // HTTP clients: an endpoint or mutation anywhere in the segment.
@@ -103,9 +163,9 @@ fn segment_merge_form(words: &[String], depth: usize) -> Option<&'static str> {
                 words.iter().find_map(|w| raw_merge_form(w))
             }
             "bash" | "sh" | "zsh" | "dash" | "ksh" => {
-                shell_c_body(rest).and_then(|body| merge_form(body, depth + 1))
+                shell_c_body(rest).and_then(|body| merge_form(body, depth + 1, scripted))
             }
-            "eval" => merge_form(&rest.join(" "), depth + 1),
+            "eval" => merge_form(&rest.join(" "), depth + 1, scripted),
             _ => None,
         };
         if found.is_some() {
@@ -113,6 +173,29 @@ fn segment_merge_form(words: &[String], depth: usize) -> Option<&'static str> {
         }
     }
     None
+}
+
+/// A word of a command that runs an interpreter, read as code: argument
+/// lists (`['gh', 'pr', 'merge']`, `"gh","pr"`) become words, and string
+/// literals keep their closing punctuation off the endpoint.
+fn code_merge_form(word: &str, depth: usize) -> Option<&'static str> {
+    let code: String = word
+        .chars()
+        .map(|c| {
+            if matches!(c, ',' | '[' | ']' | '{' | '}') {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    if code.chars().any(char::is_whitespace)
+        && let Some(label) = merge_form(&code, depth + 1, true)
+    {
+        return Some(label);
+    }
+    raw_merge_form(code.trim_matches(|c: char| !(c.is_alphanumeric() || c == '/')))
+        .or_else(|| raw_merge_form(word))
 }
 
 /// The script of `bash -c '<script>'` (also `-lc`, `-ic`, `-ec`, …).
