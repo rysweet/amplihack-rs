@@ -328,6 +328,18 @@ fn no_numeric_iteration_cap_anywhere() {
     // a loop just as well from the other side, `(( ROUND > n ))` and
     // `[[ ${ROUND} -gt n ]]` are the same cap in different syntax, and
     // `${ROUND}` is the same variable as `$ROUND`.
+    // The matcher must see the label itself and nothing that merely shares
+    // its prefix: `$ROUND_VERDICT` is a different variable.
+    assert!(names_round_label(r#"[ "$ROUND" -gt 5 ]"#));
+    assert!(names_round_label("[[ ${ROUND} -ge 3 ]]"));
+    assert!(names_round_label("(( ROUND > 9 ))"));
+    assert!(names_round_label("((ROUND>9))"));
+    assert!(names_round_label(
+        r#"[ "$ROUND_CLEAN" = x ] || [ $ROUND -lt 2 ]"#
+    ));
+    assert!(!names_round_label(r#"[ "$ROUND_CLEAN" = "true" ]"#));
+    assert!(!names_round_label(r#"[ "$ROUND_VERDICT" != x ]"#));
+    assert!(!names_round_label("(( ROUND_RC > 0 ))"));
     const COMPARISONS: [&str; 12] = [
         "-ge", "-gt", "-le", "-lt", "-eq", "-ne", ">=", "<=", "==", "!=", ">", "<",
     ];
@@ -336,11 +348,7 @@ fn no_numeric_iteration_cap_anywhere() {
         if trimmed.starts_with('#') {
             continue;
         }
-        let names_round = line.contains("$ROUND")
-            || line.contains("${ROUND}")
-            || line.contains("((ROUND")
-            || line.contains("(( ROUND");
-        if !names_round {
+        if !names_round_label(line) {
             continue;
         }
         for op in COMPARISONS {
@@ -352,6 +360,24 @@ fn no_numeric_iteration_cap_anywhere() {
             );
         }
     }
+}
+
+/// True when `line` names the shell variable `ROUND` itself (`$ROUND`,
+/// `${ROUND}`, `((ROUND`, `(( ROUND`), not a longer identifier that merely
+/// starts with it such as `$ROUND_VERDICT` or `$ROUND_CLEAN`.
+fn names_round_label(line: &str) -> bool {
+    let continues_identifier = |rest: &str| {
+        rest.chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_')
+    };
+    if line.contains("${ROUND}") {
+        return true;
+    }
+    ["$ROUND", "((ROUND", "(( ROUND"].iter().any(|prefix| {
+        line.match_indices(prefix)
+            .any(|(i, m)| !continues_identifier(&line[i + m.len()..]))
+    })
 }
 
 #[test]
