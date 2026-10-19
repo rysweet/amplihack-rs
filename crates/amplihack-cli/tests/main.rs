@@ -40,6 +40,8 @@ mod cargo_cxx_pin;
 mod claude_code_plugin_manifest;
 #[path = "claude_install_contract.rs"]
 mod claude_install_contract;
+#[path = "claude_profile_rotation_skill_present.rs"]
+mod claude_profile_rotation_skill_present;
 #[path = "codex_frontdoor_contract.rs"]
 mod codex_frontdoor_contract;
 #[path = "cycle2_module_budget.rs"]
@@ -90,6 +92,16 @@ mod issue_1570_recipe_text;
 mod issue_1570_run_output_stdin;
 #[path = "issue_1578_profile_usage.rs"]
 mod issue_1578_profile_usage;
+#[path = "issue_1592_daemon.rs"]
+mod issue_1592_daemon;
+#[path = "issue_1592_oneshot.rs"]
+mod issue_1592_oneshot;
+#[path = "issue_1592_recovery.rs"]
+mod issue_1592_recovery;
+#[path = "issue_1592_root.rs"]
+mod issue_1592_root;
+#[path = "issue_1592_root_rotator.rs"]
+mod issue_1592_root_rotator;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

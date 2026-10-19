@@ -135,6 +135,9 @@ jobs:
       - name: Terminal state — agentic adjudication, no rubber stamp (issue #1268)
         shell: bash
         run: bash tests/issue_1268_terminal_state_adjudication.sh
+      - name: Final status — resolves agent-opened branch PR (issue #1596)
+        shell: bash
+        run: bash tests/issue_1596_final_status_branch_pr_lookup.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -156,6 +159,15 @@ jobs:
       - name: CI scripts — no early-exit pipeline stage (issue #1434)
         shell: bash
         run: bash tests/issue_1434_no_early_exit_pipelines.sh
+      - name: Recipe runner pin — ancestry check and its workflow (issue #1593)
+        shell: bash
+        run: bash tests/recipe_runner_pin_ancestry_test.sh
+      - name: Recipe runner installers — never downgrade an installed runner (issue #1593)
+        shell: bash
+        run: bash tests/install_pinned_runner_downgrade_guard_test.sh
+      - name: Recipe runner installers — install-runtime copy of the ancestry library (issue #1593)
+        shell: bash
+        run: bash tests/runner_ancestry_lib_parity_test.sh
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
@@ -263,6 +275,11 @@ jobs:
       - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
+      - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1565-rerun-preserves-dirty-worktree.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
@@ -655,6 +672,13 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }}
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
+
+      # Outside-in: drive the real hooks binary through session-stop and
+      # user-prompt-submit, as Claude Code does (issue #1483).
+      - name: Outside-in — memory injection via the real hooks binary (issue #1483)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: bash tests/issue_1483_memory_injection_outside_in.sh "target/${{ matrix.target }}/release/amplihack-hooks"
 
       # Cross build (Linux ARM64)
       - name: Build (cross)

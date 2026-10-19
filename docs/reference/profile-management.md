@@ -289,6 +289,7 @@ echo $AMPLIHACK_PROFILE
 
 ## Related
 
+- [Rotate Claude logins automatically](../howto/claude-profile-rotation.md): Claude *login* profiles, not component profiles; keeps `~/.claude` on the account with the most capacity
 - `~/.amplihack/.claude/profiles/`: Built-in profile configurations
 - [Environment Variables](environment-variables.md): Environment variable reference including AMPLIHACK_PROFILE
 - [install Command](install-command.md): Installation command reference

@@ -37,6 +37,7 @@ pub mod env_builder;
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
 pub mod freshness;
+mod runner_ancestry;
 mod runner_probe;
 mod runner_validation;
 pub use runner_validation::InternalCommands;

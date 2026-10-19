@@ -12,7 +12,7 @@ inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
   - name: repo_path
-    description: "Absolute path to the repository root. Required by step-22b-final-status that runs the final status report against the parent repo."
+    description: "Absolute path to the repository root. Required by step-22b-final-status, which locates helpers through it and falls back to it only when the run's worktree (worktree_setup.worktree_path) is unset or gone; the final status itself runs in that worktree (issue #1596)."
 
 context:
   worktree_setup: ""
@@ -260,7 +260,13 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
+      : "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
+      # Issue #1596: the final status reads the run's branch and HEAD from cwd
+      # (branch PR lookup, scoped PR match). REPO_PATH is the main checkout, not
+      # the run's branch, so enter the run's worktree first, as step-21 does.
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      if [ -n "${WORKTREE_SETUP_WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_SETUP_WORKTREE_PATH" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b worktree path unset or gone, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
+      export WORKTREE_SETUP_WORKTREE_PATH
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"

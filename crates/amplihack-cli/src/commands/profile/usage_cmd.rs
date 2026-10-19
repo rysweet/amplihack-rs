@@ -36,6 +36,9 @@ const READ_GRACE: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(25);
 /// Reset text and labels are cut to this many characters in the table.
 const MAX_TEXT: usize = 64;
+/// Set by `profile rotate watch` on SIGTERM or SIGINT: running probes stop.
+pub(super) static PROBE_CANCEL: std::sync::LazyLock<Arc<AtomicBool>> =
+    std::sync::LazyLock::new(Arc::default);
 /// With one of these set, `claude` may report that credential's usage rather
 /// than the profile login's, so nothing is recorded.
 const ENV_CREDENTIAL_VARS: [&str; 3] = [
@@ -354,7 +357,7 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 
 /// Probes every profile, at most [`MAX_PARALLEL`] at once; `live` is probed
 /// against `~/.claude`. Results are in the order of `profiles`.
-fn probe_all(
+pub(super) fn probe_all(
     store: &ProfileStore,
     binary: &BinaryInfo,
     profiles: &[ProfileName],
@@ -492,7 +495,7 @@ pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: boo
                 let _ = child.wait();
                 break;
             }
-            Ok(false) if start.elapsed() >= timeout => {
+            Ok(false) if start.elapsed() >= timeout || PROBE_CANCEL.load(Ordering::Relaxed) => {
                 stop(&mut child);
                 return Probe {
                     report: UsageReport::empty(UsageState::Timeout),
