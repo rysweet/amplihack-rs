@@ -1850,7 +1850,17 @@ and no interpreter runs. This is deny by default (crusty round 5): `source
 and any program not on the list, including one added to a toolchain later,
 have the body read as commands. A `$(cat <<'EOF' … EOF)` is data only when
 the command it feeds is on the list too, so `ssh host "$(cat <<'EOF' … EOF)"`
-is code. `sed` and `awk` are left off: GNU sed's `e` command and awk scripts
+is code. A listed program reads a body as data only on its stdin or as a
+quoted option value, never as its own arguments (crusty round 6). Under
+`xargs` no program counts as a data consumer, and the text of the whole call
+(heredoc bodies, here-strings, what is piped in) is checked as words added
+to that program's arguments, so `xargs gh <<'EOF'` with `pr merge 38` in the
+body, `cat <<'EOF' | xargs gh` and `echo pr merge 38 | xargs gh` are
+refused. A `$(…)` or backtick that is the program word, or an argument of
+`gh` or `git` other than a quoted option value (`--body "$(…)"`, `-m
+"$(…)"`, `--body="$(…)"`), is checked as the words it would put there, so
+`gh $(cat <<'EOF' … pr merge 38 … EOF)` and `gh "$(cat <<'EOF' … pr …
+EOF)" merge 38` are refused. `sed` and `awk` are left off: GNU sed's `e` command and awk scripts
 run shell commands. The check covers every simple command at that level of
 the tool call, not just the pipeline holding the heredoc, so `cargo test &&
 git commit -F - <<'EOF' … gh pr merge … EOF` is refused; split it. So the
@@ -2006,7 +2016,7 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The shim is skipped. The [pre-tool-use hook check](#the-pre-tool-use-hook-check) still refuses the merge forms it can read in the command text of the agent's shell tool, since it reads the command, not `PATH`. The next rows list what it cannot read. |
 | `gh` by absolute path, `PATH=… gh`, `curl` to the merge endpoint | Refused by the hook check when typed into the agent's shell tool. |
 | A merge inside a script file the agent writes and then runs, through a real `gh` that `PATH` puts ahead of the shim | Not refused: neither layer sees it. The hook sees only `bash script.sh`, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. |
-| Variable indirection (`G=gh; $G pr merge 38`), a command built at run time (`$(printf g)h`, `xargs gh` with the subcommand on stdin, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command that does not exist until the shell builds it, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
+| Variable indirection (`G=gh; $G pr merge 38`), a command built at run time from text that is not in the call (`$(printf g)h`, `xargs gh` reading a file the agent wrote earlier, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command whose words are not in the command text, and the shim is not on that path. When the words are there (`xargs gh` with the subcommand in a heredoc, here-string or pipe, `gh $(cat <<'EOF' … EOF)`), the hook reads them and refuses. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
 | A heredoc fed to a listed data consumer that runs it anyway (a `git` alias or `core.pager` set in config rather than on the command line, a wrapped `cat` earlier on `PATH`), through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook trusts the [data-consumer allowlist](#the-pre-tool-use-hook-check) by name. Every program off the list, `eval`, `source`, `.`, `parallel`, `at`, `ssh` and unknown ones included, has its heredoc read as code and is refused. Caught by the phase 1 and phase 2 `MERGED` checks. |
 | An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |

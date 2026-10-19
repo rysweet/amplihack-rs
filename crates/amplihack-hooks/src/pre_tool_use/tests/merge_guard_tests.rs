@@ -260,6 +260,14 @@ fn heredoc_bodies_are_data_when_no_interpreter_reads_them() {
         "cat <<\\EOF\ngh pr merge 38\nEOF",
         // Two heredocs on one line.
         "paste - /dev/fd/3 <<A 3<<B\ngh pr merge 1\nA\ngh pr merge 2\nB",
+        // Crusty round 6 keeps quoted option values as data, in every
+        // spelling of the option.
+        "git commit -m 'subject' -m \"$(cat <<'EOF'\nnever gh pr merge\nEOF\n)\"",
+        "gh pr create --body=\"$(cat <<'EOF'\nnever gh pr merge\nEOF\n)\"",
+        "gh pr comment 38 -b \"$(cat <<'EOF'\nnever gh pr merge 38\nEOF\n)\"",
+        // `xargs` building a harmless argv, and a substitution naming a PR.
+        "git diff --name-only | xargs rg -l merge",
+        "gh pr view \"$(git branch --show-current)\"",
     ] {
         assert!(!blocked(cmd), "refused a heredoc of prose: {cmd:?}");
     }
@@ -311,6 +319,26 @@ fn heredoc_bodies_are_code_unless_a_known_data_consumer_reads_them() {
         "cargo fmt && git commit -F - <<'EOF'\nfix: gh pr merge 38\nEOF",
         // Here-strings to `source`/`eval` run too.
         "source /dev/stdin <<<'gh pr merge 38'",
+        // Crusty round 6: the body becomes `gh`'s own argv, through
+        // `xargs` or an unquoted `$(…)` where the subcommand goes.
+        "cat <<'EOF' | xargs gh\npr merge 38\nEOF",
+        "xargs gh <<'EOF'\npr merge 38\nEOF",
+        "xargs -a /dev/stdin gh <<'EOF'\npr merge 38\nEOF",
+        "gh $(cat <<'EOF'\npr merge 38\nEOF\n)",
+        // Their neighbours: a backtick, a quoted word in the subcommand's
+        // place, half the subcommand in the body, a pipe or here-string
+        // into `xargs`, and the program word itself built from a body.
+        "gh `cat <<'EOF'\npr merge 38\nEOF\n`",
+        "gh \"$(cat <<'EOF'\npr\nEOF\n)\" merge 38",
+        "gh pr $(cat <<'EOF'\nmerge 38\nEOF\n)",
+        "xargs gh pr <<'EOF'\nmerge 38\nEOF",
+        "echo 'pr merge 38' | xargs gh",
+        "printf '%s\\n' pr merge 38 | xargs gh",
+        "xargs gh <<<'pr merge 38'",
+        "xargs -n 3 gh <<'EOF'\n--repo o/r pr merge 38\nEOF",
+        "xargs gh api -X PUT <<'EOF'\nrepos/o/r/pulls/38/merge\nEOF",
+        "$(cat <<'EOF'\ngh\nEOF\n) pr merge 38",
+        "git commit -F - <<'EOF' | xargs gh\npr merge 38\nEOF",
     ] {
         assert!(blocked(cmd), "not refused: {cmd:?}");
     }

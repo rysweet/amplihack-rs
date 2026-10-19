@@ -48,6 +48,18 @@
 //! prose sent to `git` in the same tool call as `cargo test` is read as code;
 //! the refusal says to split the call. The `$(…)`/backtick substitutions of
 //! an unquoted body, which bash runs, are always checked as commands.
+//!
+//! A listed program is a data consumer only for its stdin and its option
+//! values, not for its own argv (crusty round 6). Under `xargs`, stdin
+//! becomes the program's arguments, so no program there reads a body as
+//! data, and the text of the whole command (heredocs, here-strings, what is
+//! piped in) is checked as words appended to that program's argv:
+//! `xargs gh <<'EOF'\npr merge 38\nEOF` and `echo pr merge 38 | xargs gh`
+//! are refused. A `$(…)` or backtick in the program word, or in `gh`'s or
+//! `git`'s arguments other than as a quoted option value (`--body "$(…)"`,
+//! `-m "$(…)"`, `--body="$(…)"`), is checked the same way, as the words it
+//! puts there, and its heredocs are code: `gh $(cat <<'EOF'\npr merge
+//! 38\nEOF\n)` is refused.
 
 use regex::Regex;
 use serde_json::Value;
@@ -145,9 +157,43 @@ fn merge_form(
     // data consumer and nothing runs code.
     let heredoc_data =
         heredoc_data && !scripted && segments.iter().all(|w| reads_heredoc_as_data(w));
-    for nested_cmd in &nested {
-        if let Some(label) = merge_form(nested_cmd, depth + 1, scripted, heredoc_data) {
+    for sub in &nested {
+        // Output that becomes a program's argv (crusty round 6): the
+        // substitution is checked as the words it puts there, and its
+        // heredocs are code.
+        let fed = sub
+            .at
+            .and_then(|(s, w)| argv_fed_by(segments.get(s)?, w, sub.quoted).map(|i| (s, w, i)));
+        if let Some((s, w, i)) = fed {
+            let words = &segments[s];
+            let tokens = text_tokens(&sub.body);
+            if let Some(label) = fed_argv_merge_form(&words[i..w], &tokens, &words[w + 1..], depth)
+            {
+                return Some(label);
+            }
+        }
+        if let Some(label) = merge_form(
+            &sub.body,
+            depth + 1,
+            scripted,
+            heredoc_data && fed.is_none(),
+        ) {
             return Some(label);
+        }
+    }
+    // `xargs P` turns its stdin into P's arguments (crusty round 6): any
+    // text in the command (a heredoc, a here-string, what is piped in) may
+    // end up there.
+    let mut level_tokens: Option<Vec<String>> = None;
+    for words in &segments {
+        for (i, _) in command_words(words) {
+            if !fed_by_xargs(words, i) {
+                continue;
+            }
+            let tokens = level_tokens.get_or_insert_with(|| text_tokens(command));
+            if let Some(label) = fed_argv_merge_form(&words[i..], tokens, &[], depth) {
+                return Some(label);
+            }
         }
     }
     if !heredoc_data {
@@ -163,6 +209,78 @@ fn merge_form(
         }
     }
     None
+}
+
+/// Whether the program at `i` in `words` runs under `xargs`, which builds
+/// its arguments from its stdin.
+fn fed_by_xargs(words: &[String], i: usize) -> bool {
+    words[..i].iter().any(|w| basename(w) == "xargs")
+}
+
+/// The index of the program whose argv the output of a substitution in word
+/// `w` of `segment` becomes, when that output may hold the program's own
+/// words: the substitution is the program word, or it is an argument of
+/// `gh` or `git` other than a quoted option value (`--body "$(…)"`, `-m
+/// "$(…)"`, `--body="$(…)"`). An unquoted one splits into several words, so
+/// it is never just a value.
+fn argv_fed_by(segment: &[String], w: usize, quoted: bool) -> Option<usize> {
+    let (i, name) = command_words(segment).into_iter().rfind(|(i, _)| *i <= w)?;
+    let word = segment.get(w)?;
+    if i == w {
+        return Some(i);
+    }
+    if !matches!(basename(&name), "gh" | "git") {
+        return None;
+    }
+    let option_value = word.starts_with('-')
+        || (w > i + 1 && segment[w - 1].len() > 1 && segment[w - 1].starts_with('-'));
+    (!(quoted && option_value)).then_some(i)
+}
+
+/// The words a piece of shell text can supply as arguments: the words of its
+/// commands and of its heredoc bodies, split on whitespace, with quotes and
+/// shell punctuation trimmed off their ends.
+fn text_tokens(text: &str) -> Vec<String> {
+    let Split {
+        segments,
+        nested,
+        heredocs,
+    } = split(text);
+    let words = segments.iter().flatten().map(String::as_str);
+    let bodies = heredocs
+        .iter()
+        .map(String::as_str)
+        .chain(nested.iter().map(|n| n.body.as_str()));
+    words
+        .chain(bodies)
+        .flat_map(str::split_whitespace)
+        .map(|t| t.trim_matches(|c: char| "'\"`$();|&<>".contains(c)))
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// A merge form in the argv `prefix`, then `tokens` from some point on, then
+/// `suffix`. The tokens are tried from the start and from each `gh`, `pr`,
+/// `api` and `merge`, so leading text (`cat`, a commit subject) does not
+/// hide a subcommand that follows it.
+fn fed_argv_merge_form(
+    prefix: &[String],
+    tokens: &[String],
+    suffix: &[String],
+    depth: usize,
+) -> Option<&'static str> {
+    (0..tokens.len().max(1))
+        .filter(|&k| k == 0 || matches!(tokens[k].as_str(), "gh" | "pr" | "api" | "merge"))
+        .find_map(|k| {
+            let argv: Vec<String> = prefix
+                .iter()
+                .chain(tokens.get(k..).unwrap_or(&[]))
+                .chain(suffix)
+                .cloned()
+                .collect();
+            segment_merge_form(&argv, depth, false)
+        })
 }
 
 fn basename(word: &str) -> &str {
@@ -218,6 +336,11 @@ fn reads_heredoc_as_data(words: &[String]) -> bool {
     !programs.is_empty()
         && programs.iter().all(|(i, word)| {
             let args = &words[i + 1..];
+            // `xargs` makes its stdin the program's arguments (crusty
+            // round 6), so no program under it reads the body as data.
+            if fed_by_xargs(words, *i) {
+                return false;
+            }
             match basename(word) {
                 // `gh api --input -` sends the body as a request.
                 "gh" => skip_flags(args).first().map(String::as_str) != Some("api"),
@@ -520,10 +643,19 @@ struct Split {
     /// Simple commands, as word lists.
     segments: Vec<Vec<String>>,
     /// Bodies of `$(…)` and backticks, to be checked as commands.
-    nested: Vec<String>,
+    nested: Vec<Nested>,
     /// Heredoc bodies: code unless every program in the command is a known
     /// data consumer (see [`reads_heredoc_as_data`]).
     heredocs: Vec<String>,
+}
+
+/// A `$(…)` or backtick substitution.
+struct Nested {
+    body: String,
+    /// The segment and word it sits in; `None` inside a heredoc body.
+    at: Option<(usize, usize)>,
+    /// Inside double quotes: its output is one word.
+    quoted: bool,
 }
 
 /// A heredoc redirection waiting for the end of its line.
@@ -727,12 +859,20 @@ fn split(command: &str) -> Split {
                         }
                         '$' if chars.get(i + 1) == Some(&'(') => {
                             let (body, end) = substitution(&chars, i + 2);
-                            nested.push(body);
+                            nested.push(Nested {
+                                body,
+                                at: Some((segments.len(), words.len())),
+                                quoted: true,
+                            });
                             i = end;
                         }
                         '`' => {
                             let (body, end) = backtick(&chars, i + 1);
-                            nested.push(body);
+                            nested.push(Nested {
+                                body,
+                                at: Some((segments.len(), words.len())),
+                                quoted: true,
+                            });
                             i = end;
                         }
                         other => {
@@ -746,13 +886,21 @@ fn split(command: &str) -> Split {
             }
             '$' if chars.get(i + 1) == Some(&'(') => {
                 let (body, end) = substitution(&chars, i + 2);
-                nested.push(body);
+                nested.push(Nested {
+                    body,
+                    at: Some((segments.len(), words.len())),
+                    quoted: false,
+                });
                 in_word = true;
                 i = end;
             }
             '`' => {
                 let (body, end) = backtick(&chars, i + 1);
-                nested.push(body);
+                nested.push(Nested {
+                    body,
+                    at: Some((segments.len(), words.len())),
+                    quoted: false,
+                });
                 in_word = true;
                 i = end;
             }
@@ -765,7 +913,13 @@ fn split(command: &str) -> Split {
                 if c == '\n' && !pending.is_empty() {
                     i = take_heredocs(&chars, i, &mut pending, |body, doc| {
                         if doc.expands {
-                            nested.extend(heredoc_substitutions(&body));
+                            nested.extend(heredoc_substitutions(&body).into_iter().map(|body| {
+                                Nested {
+                                    body,
+                                    at: None,
+                                    quoted: false,
+                                }
+                            }));
                         }
                         heredocs.push(body);
                     });
