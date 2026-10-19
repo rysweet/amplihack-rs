@@ -24,6 +24,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
 const ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
 const LIMIT_MARKER: &str = "Claude AI usage limit reached";
 const PROFILES: [&str; 3] = ["X", "Y", "Z"];
@@ -108,6 +109,7 @@ echo "done as $p"
 exit "${EXIT_CODE:-0}"
 "#;
 
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
 struct Holder(Child);
 
 impl Drop for Holder {
@@ -264,6 +266,7 @@ impl Fixture {
     }
 
     /// A process standing in for a Claude session running in `name`.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
     fn hold(&self, name: &str) -> Holder {
         let child = Command::new("sleep")
             .arg("120")
@@ -374,6 +377,7 @@ impl Fixture {
         }
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
     fn parked(&self, name: &str) -> PathBuf {
         self.state()
             .join("parked")
@@ -395,6 +399,7 @@ impl Fixture {
         serde_json::from_str(&raw).unwrap()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
     fn hosts(&self) -> BTreeMap<String, String> {
         self.ledger()["hosts"]
             .as_object()
@@ -406,6 +411,7 @@ impl Fixture {
             .unwrap_or_default()
     }
 
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
     fn oauth_uuid(&self, name: &str) -> String {
         let raw = fs::read_to_string(self.dir(name).join(".claude.json")).unwrap();
         let v: serde_json::Value = serde_json::from_str(&raw).unwrap();
@@ -726,7 +732,8 @@ fn state_directory_never_appears_in_profile_list() {
     f.seed_usage(&[("X", 10.0)]);
     let list = f.stdout(&["profile", "list"]);
     assert!(!list.contains(".auto-switch"), "{list}");
-    assert_eq!(list.lines().count(), PROFILES.len(), "{list}");
+    let n = list.lines().filter(|l| !l.starts_with("root: ")).count();
+    assert_eq!(n, PROFILES.len(), "{list}");
 }
 
 // ---------------------------------------------------------------------------

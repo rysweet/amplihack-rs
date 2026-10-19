@@ -900,6 +900,12 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         "dangerously-skip-permissions",
         // Public git revision pin for the authoritative RustyClawd build.
         "e03613a731ec2243590ccbb2b50db4dcf83ca69b",
+        // Public recipe-runner revision pin (recipe-runner.rev), used as a
+        // test fixture by runner_validation and runner_ancestry.
+        "4d5187eaf95836a549e6e68725f8f853d0dc7034",
+        // Made-up, obviously non-secret commit ids used by runner pin tests.
+        "0123456789abcdef0123456789abcdef01234567",
+        "b4a82e7000000000000000000000000000000000",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.

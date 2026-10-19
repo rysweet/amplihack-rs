@@ -18,7 +18,11 @@ mod config;
 #[cfg(unix)]
 mod fsx;
 #[cfg(unix)]
+pub(super) mod kit;
+#[cfg(unix)]
 mod liveness;
+#[cfg(unix)]
+mod mv;
 #[cfg(unix)]
 mod rerun;
 #[cfg(unix)]
@@ -38,6 +42,8 @@ mod tests_config;
 mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_liveness;
+#[cfg(all(test, unix))]
+mod tests_mv;
 #[cfg(all(test, unix))]
 mod tests_record;
 #[cfg(all(test, unix))]
