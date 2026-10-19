@@ -1541,8 +1541,12 @@ fi
 # that the PR was not merged outside the gate (#1551 G7).
 NM_MARKER='[amplihack:no-merge]'
 nm_in_step() { # nm_in_step <id> <recipe> <step-id> <why>
-  if awk -v id="$3" 'index($0, "- id: \"" id "\"") == 3 { f=1; print; next } f && /^  - id: / { exit } f { print }' \
-       "${RECIPES}/$2.yaml" | grep -qF -- "${NM_MARKER}"; then
+  # The step body is captured whole first: `awk | grep -q` lets grep exit
+  # early, and under pipefail awk's SIGPIPE turns a match into a failure.
+  local body
+  body="$(awk -v id="$3" 'index($0, "- id: \"" id "\"") == 3 { f=1; print; next } f && /^  - id: / { exit } f { print }' \
+       "${RECIPES}/$2.yaml")"
+  if [[ "$body" == *"${NM_MARKER}"* ]]; then
     pass "$1" "$4"
   else
     fail "$1" "$4 -- ${NM_MARKER} not found in $2 $3"
@@ -1556,8 +1560,8 @@ nm_in_step "1551-directive-crusty-fix" autodrive-crusty-round step-04-address-co
   "the crusty fix prompt carries the directive"
 nm_in_step "1551-directive-merge-round" autodrive-merge-round step-04-address-blockers \
   "the merge-round fix prompt carries the directive"
-if awk '/^  - id: "step-02-default-workflow"/{f=1;print;next} f&&/^  - id: /{exit} f' "${RECIPES}/autodrive-build.yaml" \
-     | grep -qF '"{{no_merge_directive.task_description}}"'; then
+BUILD_02_BODY="$(awk '/^  - id: "step-02-default-workflow"/{f=1;print;next} f&&/^  - id: /{exit} f' "${RECIPES}/autodrive-build.yaml")"
+if [[ "${BUILD_02_BODY}" == *'"{{no_merge_directive.task_description}}"'* ]]; then
   pass "1551-directive-build-02" "phase 1 hands default-workflow the directive-bearing task description"
 else
   fail "1551-directive-build-02" "autodrive-build step-02 does not pass {{no_merge_directive.task_description}}"
@@ -1569,11 +1573,13 @@ for f in default-workflow workflow-prep workflow-finalize; do
     fail "1551-directive-${f}" "${f}.yaml never mentions no_merge"
   fi
 done
-P2_AFTER_CRUSTY="$(grep -oE '^  - id: "[^"]+"' "${RECIPES}/auto-drive-to-merge.yaml" | sed -E 's/^  - id: "([^"]+)"/\1/' \
-  | awk 'p { print; exit } $0 == "autodrive-crusty-loop" { p=1 }')"
+P2_AFTER_CRUSTY="$(awk 'match($0, /^  - id: "[^"]+"/) { id = substr($0, 10, RLENGTH - 10); if (p && out == "") out = id; if (id == "autodrive-crusty-loop") p = 1 } END { print out }' \
+  "${RECIPES}/auto-drive-to-merge.yaml")"
+P2_BODY=""
+[ -n "${P2_AFTER_CRUSTY}" ] && P2_BODY="$(awk -v id="${P2_AFTER_CRUSTY}" 'index($0, "- id: \"" id "\"") == 3 { f=1; next } f && /^  - id: / { exit } f { print }' \
+  "${RECIPES}/auto-drive-to-merge.yaml")"
 if [ -n "${P2_AFTER_CRUSTY}" ] && [ "${P2_AFTER_CRUSTY}" != "autodrive-merge-loop" ] \
-   && awk -v id="${P2_AFTER_CRUSTY}" 'index($0, "- id: \"" id "\"") == 3 { f=1; next } f && /^  - id: / { exit } f { print }' \
-        "${RECIPES}/auto-drive-to-merge.yaml" | grep -qF 'autodrive_pr_state'; then
+   && [[ "${P2_BODY}" == *autodrive_pr_state* ]]; then
   pass "1551-phase2-check" "a check (${P2_AFTER_CRUSTY}) reads the PR state between the crusty loop and the merge loop"
 else
   fail "1551-phase2-check" "no autodrive_pr_state check between autodrive-crusty-loop and autodrive-merge-loop (next step: ${P2_AFTER_CRUSTY:-none})"

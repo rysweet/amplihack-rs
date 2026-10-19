@@ -1783,7 +1783,7 @@ amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools
 | A merge endpoint in another spelling | a full `https://` URL (any host or port), an `api/v3/` prefix, a leading or doubled `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, any letter case (`PULLS`, `Merge`) | `gh api merge endpoint` |
 | An ambiguous endpoint that mentions `pull` or `merge` | `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes | `gh api merge endpoint` |
 | GraphQL merge mutations | `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `mergeBranch` as whole names, any case | `gh api graphql merge mutation` |
-| A GraphQL body the shim cannot read | `--input`, `-F query=@file`, `@-`, stdin | `gh api graphql unreadable query` |
+| A GraphQL body the shim cannot read | any endpoint that mentions `graphql` (`graphql?`, a full `https://` URL, GHES `/api/graphql`, any case) with `--input` or `=@` in any argument, combined short flags (`-iF query=@f`) included | `gh api graphql unreadable query` |
 | Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql`; a call through an alias that expands to a merge form; any alias lookup while `gh alias list` fails | `gh alias` |
 
 Only `gh api` arguments are inspected, so a `gh pr create --body` that
@@ -1886,7 +1886,9 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
-| No `/proc`, a `/proc` where the parent's `environ` cannot be read, or no root-owned `/bin/bash` (macOS, NixOS) | Fails closed: every merge is refused, the gate's included. |
+| A `gh` extension (`gh <ext> …`) that merges | Not refused: an extension is not an alias and its code is not read. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| No `/proc`, a `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root (macOS) | Fails closed: every merge is refused, the gate's included, so auto-drive cannot merge on macOS. |
+| No `/bin/bash` at all (NixOS) | The shim cannot start, so **every** `gh` call in an auto-drive run fails, not only merges. |
 
 ### Troubleshooting
 

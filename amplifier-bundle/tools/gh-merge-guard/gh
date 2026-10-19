@@ -20,7 +20,7 @@
 
 # Second layer for anything this script starts (SR-4).
 builtin unset -f refuse classify classify_pr classify_api classify_alias_cmd \
-  classify_alias_use is_merge_endpoint names_merge find_real_gh carries_marker \
+  classify_alias_use is_merge_endpoint is_graphql_endpoint names_merge find_real_gh carries_marker \
   parent_is_gate parent_pid_matches parent_environ_clean sys_tool realpath \
   readlink stat test cd pwd 2>/dev/null
 builtin unset BASH_ENV ENV
@@ -202,20 +202,29 @@ classify_pr() {
   done
 }
 
+# is_graphql_endpoint <endpoint>: any endpoint that mentions graphql, in any
+# spelling: bare, /graphql, graphql?, a full https:// URL, GHES /api/graphql.
+# Spellings are never listed one by one; a REST endpoint that merely names a
+# repo "graphql" is treated as GraphQL too, which fails closed.
+is_graphql_endpoint() {
+  local e="${1,,}"
+  [[ "$e" == *graphql* ]]
+}
+
 # classify_api: a flag consumes the next argument only when it is an exact
 # token that takes a value (SR-2). Order: mutation, unreadable, endpoint.
+# A query is unreadable when any argument reads a file or stdin: --input, or
+# `=@` anywhere, including inside combined short flags such as -iF k=@f.
 classify_api() {
   local -a pos=() all=("$@")
-  local t v lc has_input=0 at_file=0
+  local t lc unreadable=0
   while (( $# > 0 )); do
     t="$1"; shift
     case "$t" in
       -X|--method|-H|--header|-f|--raw-field|-F|--field|--input|-q|--jq|-t|--template|--hostname|-p|--preview|--cache)
-        v="${1-}"; (( $# > 0 )) && shift
-        [[ "$t" == --input ]] && has_input=1
-        [[ ( "$t" == -F || "$t" == --field ) && "$v" == *=@* ]] && at_file=1 ;;
-      --input=*) has_input=1 ;;
-      --field=*=@*|-F*=@*) at_file=1 ;;
+        [[ "$t" == --input ]] && unreadable=1
+        (( $# > 0 )) && shift ;;
+      --input=*) unreadable=1 ;;
       -*) ;;
       *) pos+=("$t") ;;
     esac
@@ -223,10 +232,10 @@ classify_api() {
   for t in ${all[@]+"${all[@]}"}; do
     lc="${t,,}"
     if [[ "$lc" =~ $MUTATION_RE ]]; then CLASS='gh api graphql merge mutation'; return 0; fi
+    [[ "$t" == *=@* ]] && unreadable=1
   done
   for t in ${pos[@]+"${pos[@]}"}; do
-    lc="${t,,}"; lc="${lc#/}"
-    if [[ "$lc" == graphql && ( "$has_input" == 1 || "$at_file" == 1 ) ]]; then
+    if is_graphql_endpoint "$t" && (( unreadable )); then
       CLASS='gh api graphql unreadable query'; return 0
     fi
   done

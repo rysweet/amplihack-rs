@@ -231,8 +231,8 @@ if ! grep -qE '^#!/usr/bin/env bash -p' "${REAL_GATE}" "${SHIM}"; then
 else
   fail "S-G6-no-env-p" "a '#!/usr/bin/env bash -p' shebang never reaches bash as -p"
 fi
-GATE_UNSET_LINE="$(grep -nE '^[[:space:]]*builtin unset -f( [a-z]+)* gh( [a-z]+)* git( [a-z]+)* jq' "${REAL_GATE}" | head -n 1 | cut -d: -f1)"
-GATE_FIRST_GH="$(grep -nE '(^|[^[:alnum:]_./-])gh ' "${REAL_GATE}" | grep -vE '^[0-9]+:[[:space:]]*(#|builtin unset )' | head -n 1 | cut -d: -f1)"
+GATE_UNSET_LINE="$(grep -nE '^[[:space:]]*builtin unset -f( [a-z]+)* gh( [a-z]+)* git( [a-z]+)* jq' "${REAL_GATE}" | awk -F: 'NR==1{print $1}')"
+GATE_FIRST_GH="$(grep -nE '(^|[^[:alnum:]_./-])gh ' "${REAL_GATE}" | grep -vE '^[0-9]+:[[:space:]]*(#|builtin unset )' | awk -F: 'NR==1{print $1}')"
 if [ -n "${GATE_UNSET_LINE}" ] && { [ -z "${GATE_FIRST_GH}" ] || [ "${GATE_UNSET_LINE}" -lt "${GATE_FIRST_GH}" ]; }; then
   pass "S-G6-gate-unset" "the gate runs 'builtin unset -f gh git jq' before its first gh call"
 else
@@ -319,6 +319,19 @@ GQL_FILE="${WORK}/q.graphql"; printf 'query { viewer { login } }\n' > "${GQL_FIL
 refused T1-gql-input "$L_GQL_UNREAD" api graphql --input "${GQL_FILE}"
 refused T1-gql-at-file "$L_GQL_UNREAD" api graphql -F "query=@${GQL_FILE}"
 refused T1-gql-at-stdin "$L_GQL_UNREAD" api graphql -F 'query=@-'
+# Every endpoint spelling that reaches GraphQL, and file reads hidden in
+# combined short flags (PR #1644 review).
+refused T1-gql-url-file "$L_GQL_UNREAD" api https://api.github.com/graphql -F "query=@${GQL_FILE}"
+refused T1-gql-url-input "$L_GQL_UNREAD" api https://api.github.com/graphql --input "${GQL_FILE}"
+refused T1-gql-ghes-file "$L_GQL_UNREAD" api https://ghe.example.com/api/graphql -F "query=@${GQL_FILE}"
+refused T1-gql-ghes-path "$L_GQL_UNREAD" api /api/graphql --input "${GQL_FILE}"
+refused T1-gql-query-suffix "$L_GQL_UNREAD" api 'graphql?' -F "query=@${GQL_FILE}"
+refused T1-gql-slashes "$L_GQL_UNREAD" api '//graphql/' -F "query=@${GQL_FILE}"
+refused T1-gql-upper "$L_GQL_UNREAD" api GRAPHQL -F "query=@${GQL_FILE}"
+refused T1-gql-combined-iF "$L_GQL_UNREAD" api -iF "query=@${GQL_FILE}" graphql
+refused T1-gql-combined-iF-joined "$L_GQL_UNREAD" api "-iFquery=@${GQL_FILE}" graphql
+refused T1-gql-field-long "$L_GQL_UNREAD" api graphql --field "query=@${GQL_FILE}"
+refused T1-gql-url-inline "$L_GQL" api https://api.github.com/graphql -f 'query=mutation { mergePullRequest(input:{pullRequestId:"PR_x"}) { clientMutationId } }'
 refused T1-alias-set "$L_ALIAS" alias set pm 'pr merge'
 refused T1-alias-set-gql "$L_ALIAS" alias set q 'api graphql'
 ALIAS_FILE="${WORK}/aliases.yml"; printf 'pm: pr merge\n' > "${ALIAS_FILE}"
@@ -1034,7 +1047,7 @@ appended_once() {
   if [[ "$got" == "$in"* ]] && [ "$rest" = "${DIRECTIVE}" ] && [ "$(count_directive "$got")" = "1" ]; then
     pass "$id" "the directive is appended once, after the original text"
   else
-    fail "$id" "want the input followed by the directive once; got: $(printf '%s' "$got" | head -c 400)"
+    fail "$id" "want the input followed by the directive once; got: ${got:0:400}"
   fi
 }
 if [ -n "${S01B}" ]; then
@@ -1055,7 +1068,8 @@ if [ -n "${S01B}" ]; then
   if [ "$(field_01b task_description)" = "$GOT_TD" ] && [ "$(field_01b requirements)" = "$GOT_RQ" ]; then
     pass "T6-01b-idempotent" "text that already ends with the directive is not given a second copy"
   else
-    fail "T6-01b-idempotent" "got: $(field_01b task_description | head -c 400)"
+    local_td="$(field_01b task_description)"
+    fail "T6-01b-idempotent" "got: ${local_td:0:400}"
   fi
 
   for nm in "" false FALSE no; do
@@ -1063,7 +1077,8 @@ if [ -n "${S01B}" ]; then
     if [ "$(field_01b task_description)" = "$TD" ] && [ "$(field_01b requirements)" = "$RQ" ]; then
       pass "T6-01b-off-${nm:-empty}" "no_merge='${nm}' leaves both texts unchanged"
     else
-      fail "T6-01b-off-${nm:-empty}" "no_merge='${nm}' changed the text: $(field_01b task_description | head -c 300)"
+      local_td="$(field_01b task_description)"
+      fail "T6-01b-off-${nm:-empty}" "no_merge='${nm}' changed the text: ${local_td:0:300}"
     fi
   done
 
@@ -1134,7 +1149,8 @@ if [ -n "${S01B}" ]; then
      && [ "$(field_01b requirements)" = 'R1. as is' ]; then
     pass "T6-G1-off-passthrough" "no_merge=false passes both inputs through unchanged"
   else
-    fail "T6-G1-off-passthrough" "rc=${rc}, task_description: $(field_01b task_description | head -c 200)"
+    local_td="$(field_01b task_description)"
+    fail "T6-G1-off-passthrough" "rc=${rc}, task_description: ${local_td:0:200}"
   fi
 else
   fail "T6-G1" "step-01b-no-merge-directive has no command body to run"

@@ -249,12 +249,11 @@ steps:
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
-      GATE="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="$(pwd)/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
+      # Only the installed gate: the gh guard trusts the gate beside it under
+      # AMPLIHACK_HOME, never a copy in the PR's own tree.
+      [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; the merge gate is only run from the installed bundle" >&2; exit 1; }
+      GATE="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found under AMPLIHACK_HOME: $GATE (rerun amplihack install)" >&2; exit 1; }
       # Issue #1551: the gh merge guard trusts only [<root bash>, -p, <physical gate path>, ...].
       GATE_PHYS="$(cd "$(dirname "$GATE")" && pwd -P)/$(basename "$GATE")"
       g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \

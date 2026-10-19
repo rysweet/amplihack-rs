@@ -198,6 +198,8 @@ mutations with exit `3`, unless its direct parent is the installed gate run as
 phase 1 or phase 2 ends the run with exit `1`. The shim is a guardrail, not a
 sandbox, and branch protection stays the real boundary
 ([details](../../../docs/reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
+The parent check needs Linux `/proc` and a root-owned `/bin/bash`: on macOS
+every merge is refused, the gate's included, so auto-drive cannot merge there.
 
 ## Exit code 79 is terminal
 
