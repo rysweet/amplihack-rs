@@ -805,9 +805,21 @@ at once.
    is no second wait.
 
 If Claude's message gives no reset time that amplihack can read, the wait
-lasts at most 30 minutes. A reset time more than five hours away is treated
-as five hours away. A reset time already in the past means no wait: the
-step runs again at once.
+lasts at most 30 minutes. amplihack reads a clock time with a zone, such as
+`resets 8:30am (America/Los_Angeles)` or `resets 17:00 (Europe/London)`; it
+does not guess a missing zone and does not read dates, so a weekly-limit
+message such as `resets Oct 20 at 9am` gets the 30-minute default. A reset
+time more than five hours away is treated as five hours away.
+
+A clock time up to 10 minutes in the past counts as already reached: the
+step runs again at once. A clock time more than 10 minutes in the past
+means the same time tomorrow, which the five-hour cap then shortens.
+
+"The login changing" means a different account, not a refreshed token.
+amplihack compares the account named in Claude's `.claude.json`, the
+account the auto-switch or rotator ledger records, and whether a
+`.credentials.json` file exists. It never opens `.credentials.json`, so
+Claude refreshing its token during the wait does not end the wait early.
 
 ### What the log shows
 
@@ -880,11 +892,26 @@ no login is moved.
   wait off to get streaming output back for steps that inherit no profile.
 - **Piped input is copied to disk.** Each step's piped standard input is
   copied to a private file (mode `0600`) under
-  `<root>/.auto-switch.d/rerun/`, or `~/.amplihack/rerun/` when the step
-  inherits no profile, and deleted when the step ends. There is no size
-  limit, so very large input needs the same amount of free disk space.
-- **The retry repeats the step.** Anything the failed attempt already did,
-  such as a push or a comment, may happen again.
+  `<root>/.auto-switch.d/rerun/` when auto-switch is on, or under
+  `~/.amplihack/rerun/` otherwise (also for a step that inherits a profile
+  while auto-switch is off). The file is deleted when the step ends. There
+  is no size limit, so very large input needs the same amount of free disk
+  space. Input from a terminal is not copied.
+- **`~/.amplihack` must be private.** It must be owned by you and not
+  writable by group or others, and `~/.amplihack/rerun` must be mode
+  `0700`. amplihack creates them that way but never changes the mode of an
+  existing directory. If either check fails, the step writes
+  `skipped reason=not_supervised` and runs once, without the wait. Fix it
+  with `chmod go-w ~/.amplihack` and `chmod 700 ~/.amplihack/rerun`.
+- **A failed input copy can fail the step.** If copying piped input fails
+  part way through, for example on a full disk, the step prints a warning
+  and exits `1`, because the input has been read and cannot be given to
+  Claude again.
+- **The retry repeats the step from the start.** Claude gets the same
+  prompt with no memory of the failed attempt, so anything that attempt
+  already did, such as a push or a comment, may happen again. Keep agent
+  steps safe to run twice: have the prompt check whether its commit, PR or
+  comment already exists before creating it.
 - **Claude Code only.** Codex and Copilot steps are not supervised.
 - **Unix only.** On other platforms a usage limit ends the run as before.
 - **Step timeouts still apply.** The recipe runner can stop a step only at

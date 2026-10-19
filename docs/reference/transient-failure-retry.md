@@ -61,7 +61,14 @@ The markers are `session limit`, `usage limit`, `usage_limit_reached`,
 table per harness in `limit_patterns.rs`, together with the patterns that
 read the reset time. The classifier, the auto-switch supervisor and the
 usage-limit wait all read that table; no other source file holds a Claude
-limit message.
+limit message. `failure_class::usage_limit_reset_hint` is a thin wrapper
+over the table's reset reader, and the classifier's precedence is
+unchanged: work, then repo-selection and environmental, then usage limit,
+then transient. The integration test `tests/issue_1618_pattern_home.rs`
+fails if a non-test source file other than `limit_patterns.rs` contains a
+marker, the `resets ` anchor or `Claude AI usage limit reached` as a string
+literal. Comments and log text are not checked. To support another harness,
+add a `Harness` variant and its table there; nothing else needs to change.
 
 - **A usage limit is waited out before the runner sees it.** A Claude agent
   step that hits a usage limit inside a recipe run first waits for the reset,

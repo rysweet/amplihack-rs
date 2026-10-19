@@ -1318,9 +1318,9 @@ The launch runs Claude under a supervising amplihack process:
 - stderr streams live; its last 64 KiB is kept;
 - stdout is written to a private temp file under
   `<root>/.auto-switch.d/rerun/` and printed once, after the final attempt;
-- stdin, unless it is a terminal or `/dev/null`, is copied once, before the
-  first attempt, to a private file in the same directory, and every attempt
-  reads it from the start;
+- stdin, unless it is a terminal, is copied once, before the first attempt,
+  to a private file in the same directory, and every attempt reopens and
+  reads it from the start (see [Standard input](#standard-input));
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
 
@@ -1440,39 +1440,91 @@ does not depend on auto-switch. Task-oriented guidance is in the
 
 ### Gate
 
-A launch is supervised for the wait when all of these hold, checked in this
-order:
+A launch can wait when all of these hold, checked in this order:
 
 1. no `--profile` flag;
 2. Claude's arguments contain `-p`, `--print` or `--print=`;
 3. `AMPLIHACK_AUTO_SWITCH_SUPERVISED` is unset (the launch is not itself a
    supervised attempt);
-4. the mode is not `--docker` or `--auto`;
-5. the wait is enabled ([settings](#usage-limit-wait-settings)); and
-6. `AMPLIHACK_NONINTERACTIVE` is exactly `1`. `amplihack recipe run` sets
+4. `AMPLIHACK_NONINTERACTIVE` is exactly `1`. `amplihack recipe run` sets
    it for every step. Other values, and piped stdin alone, do not count.
+   The [settings](#usage-limit-wait-settings) are read only after this
+   check passes, so a launch typed at a terminal never reads them and never
+   warns about them;
+5. the wait is enabled; and
+6. the mode is not `--docker` or `--auto`.
 
-When a profile is inherited, the supervisor is the one described in
-[Usage-limit reruns](#usage-limit-reruns), with the wait added. When none is
-inherited, the same supervisor runs with no profile substitution: no
-auto-switch rerun, no ledger reading recorded, and its scratch files under
-`$HOME/.amplihack/rerun/` instead of `<root>/.auto-switch.d/rerun/`.
+A launch that fails checks 1 to 3 is left alone without a log line, exactly
+as before. A launch that passes them is then handled by one of these rows:
 
-A launch that fails the gate runs unsupervised, exactly as before, and
-waits for nothing. A launch with `--profile`, a launch that does not print,
-and a supervised attempt are left alone without a log line.
+| Inherited profile | Auto-switch | Wait (checks 4 and 5) | Supervisor |
+|-------------------|-------------|-----------------------|------------|
+| yes | on | applies | [Usage-limit reruns](#usage-limit-reruns), then the wait |
+| yes | on | does not apply | [Usage-limit reruns](#usage-limit-reruns) only. With check 4 passed and the wait disabled, a limit with no profile left writes `skipped reason=disabled` |
+| yes | off | applies | the same supervisor with no profile substitution, then the wait |
+| no | either | applies | the same supervisor with no profile substitution, then the wait |
+| yes or no | off, or no profile | does not apply | none: one unsupervised run, as before |
 
-The unprofiled scratch directory is created with mode `0700`. Both
-`$HOME/.amplihack` and `$HOME/.amplihack/rerun` must be owned by the
-current user and not writable by group or others. If `HOME` is unset,
-either check fails, or stdin cannot be copied, the launch runs once,
-unsupervised.
+"No profile substitution" means no auto-switch rerun, no lease and no
+ledger reading recorded. The retry runs under the inherited profile, or
+under no override when none was inherited.
 
-When a recipe step has the wait enabled but cannot be supervised (a
-`--docker` or `--auto` mode, or one of the failures above), the launch
-writes `skipped reason=not_supervised` once, before Claude starts. It is
-the only `skipped` line written without a usage-limit failure, because an
-unsupervised launch cannot see its own result.
+#### Scratch directory
+
+The supervisor keeps the held-back stdout and the stdin copy in a scratch
+directory:
+
+| Auto-switch | Scratch directory |
+|-------------|-------------------|
+| on | `<root>/.auto-switch.d/rerun/` |
+| off, or no profile inherited | `$HOME/.amplihack/rerun/` |
+
+A profiled step with auto-switch off therefore uses `$HOME/.amplihack/rerun/`
+and creates nothing under the profile root.
+
+`$HOME/.amplihack/rerun/` is checked before anything is written to it:
+
+- `$HOME/.amplihack` must be a real directory (not a symlink), owned by the
+  current user and not writable by group or others. If it is missing it is
+  created with mode `0700`. An existing directory is never `chmod`'ed: one
+  that fails the check makes the launch unsupervised.
+- `rerun/` must be a real directory owned by the current user with mode
+  exactly `0700`. It is created that way when missing.
+
+Files in either scratch directory are created with `create_new`, no-follow,
+close-on-exec and mode `0600`. The existing `rerun/` sweep removes stale
+`.out` and `.in` files whose process is gone, or that are older than 24
+hours. It removes only regular files whose names it can parse, follows no
+symlinks and does not recurse.
+
+#### Standard input
+
+When stdin is not a terminal, the supervisor copies it in full, before the
+first attempt, to `rerun/<pid>-0.in`. There is no size cap. The file's
+device and inode are recorded. Each attempt reopens the copy read-only and
+no-follow, and is refused if the reopened file is not the same device and
+inode, so a swapped file is never fed to an attempt. No descriptor is
+shared between attempts, so a process left over from one attempt cannot
+move another attempt's read position. The copy is deleted when the
+supervisor returns, on every exit path: success, the retry's exit code,
+`already_waited`, an error, or `128` plus a signal.
+
+When stdin is a terminal, nothing is copied and every attempt inherits it.
+
+If the copy cannot be made:
+
+| When it fails | Result |
+|---------------|--------|
+| Before any input is read (no `HOME`, a scratch check fails, the file cannot be created) | `skipped reason=not_supervised`, then one unsupervised run that reads stdin directly |
+| After input has been read (a read or write error part way through, a full disk) | one warning on stderr, and the launch exits `1` without running Claude. The input is already consumed, so an unsupervised run would get a truncated prompt |
+
+#### When `not_supervised` is written
+
+When checks 1 to 5 pass but the step cannot be supervised (a `--docker` or
+`--auto` mode, or a scratch or stdin failure before input is read), the
+launch writes `skipped reason=not_supervised` once, before Claude starts.
+It is the only `skipped` line written without a usage-limit failure,
+because an unsupervised launch cannot see its own result.
 
 ### Order of attempts
 
@@ -1497,6 +1549,25 @@ Every attempt, including the unprofiled ones and the retry, runs with
 `AMPLIHACK_AUTO_SWITCH_SUPERVISED=1`, so a nested launch inside a step
 cannot start a second wait.
 
+The order of the checks after a usage limit is fixed:
+
+1. a signal already received ends the step with `128` plus the signal
+   number, with no log line;
+2. auto-switch on, the wait unused, and an eligible profile left: rerun
+   under that profile at once, with no wait;
+3. the wait disabled: `skipped reason=disabled`, and the attempt's result
+   is passed up;
+4. the wait already used: `skipped reason=already_waited`, and the
+   attempt's result is passed up;
+5. otherwise: `start`, the wait, `end`, then `resume` and the retry, or
+   `128` plus the signal number after `end reason=signal`.
+
+The retry runs the step **from the start**: Claude gets the same prompt and
+has no memory of the failed attempt. Anything that attempt already did,
+such as a commit, a push or an issue comment, may happen again. Write
+recipe agent steps so that running one twice is harmless, for example by
+checking whether a commit or comment already exists before creating it.
+
 ### Reset time
 
 The reset time is read from the attempt's kept stderr tail and the last
@@ -1507,13 +1578,66 @@ are recognised, in this order:
 
 | Form | Example | Rule |
 |------|---------|------|
-| Epoch | `Claude AI usage limit reached\|1792335000` | A line that starts with `Claude AI usage limit reached\|` followed by digits. The digits are Unix seconds. Too many digits or an overflowing value gives no reset. |
-| Text | `You've hit your session limit · resets 8:30am (America/Los_Angeles)` | The text after the first `resets `, cut after the first `)` or at the end of the line, and at most 128 bytes, read as a time in the named IANA zone. A zone amplihack does not know gives no reset. |
+| Epoch | `Claude AI usage limit reached\|1792335000` | A line that starts with `Claude AI usage limit reached\|` followed by 1 to 19 ASCII digits. The digits are Unix seconds. A sign, a 20th digit or a value that overflows gives no reset. |
+| Text | `You've hit your session limit · resets 8:30am (America/Los_Angeles)` | The text after the first `resets `, read with the grammar below. |
 
-A reset is clamped to the range from now to now plus five hours. A reset
-already in the past means no wait: the end reason is `reset reached` and
-the retry runs at once. When the output has a usage-limit marker but
-neither form, the reset is `unparsed`.
+#### Text grammar
+
+The fragment after the first `resets ` is cut to 128 bytes, at a character
+boundary, before it is read. It must then be, in order:
+
+1. a clock time, either `H[:MM]am` or `H[:MM]pm` (1 to 12, any case), or
+   24-hour `HH:MM` (00 to 23);
+2. exactly one space;
+3. `(`, an IANA zone name, `)`.
+
+The zone is looked up only in the zone table compiled into amplihack
+(`chrono-tz`). No file under `/usr/share/zoneinfo` is opened and `TZ` is
+not consulted.
+
+| Fragment | Result |
+|----------|--------|
+| `8:30am (America/Los_Angeles)` | 08:30 Los Angeles time |
+| `9pm (Europe/London)` | 21:00 London time |
+| `12am (UTC)` | midnight |
+| `12pm (UTC)` | noon |
+| `17:00 (Asia/Tokyo)` | 17:00 Tokyo time |
+| `8 (America/Los_Angeles)` | no reset: an hour with no `am`/`pm` and no minutes |
+| `8:30am` | no reset: no zone |
+| `8:30am (Mars/Olympus)` | no reset: unknown zone |
+| `Oct 20 at 9am (UTC)` | no reset: dates are not read |
+| `99:99pm (UTC)` | no reset: not a clock time |
+
+No zone, date or day is ever guessed. A weekly-limit message that names a
+date therefore gives `unparsed`, which waits for the 30-minute default.
+
+#### Today or tomorrow
+
+The clock time is placed on today's date in the named zone:
+
+- If that instant is in the future, or at most 10 minutes in the past, it
+  is used as is. An instant up to 10 minutes in the past is already
+  reached, so the wait ends at once with `end reason=reset reached` and the
+  retry runs. This stops a message printed just after the reset from
+  causing a five-hour wait.
+- If it is more than 10 minutes in the past, the same clock time tomorrow
+  is used.
+
+Daylight saving changes:
+
+- A time that falls in a spring-forward gap becomes the first valid instant
+  after the gap. For `America/Los_Angeles` on 2026-03-08, `2:30am` becomes
+  03:00 PDT.
+- A time that occurs twice in a fall-back overlap becomes the earlier
+  instant. For `America/Los_Angeles` on 2026-11-01, `1:30am` becomes 01:30
+  PDT.
+
+#### Clamping
+
+A reset read for the wait, in either form, is clamped to the range from now
+to now plus five hours. A reset already in the past means no wait: the end
+reason is `reset reached` and the retry runs at once. When the output has a
+usage-limit marker but neither form gives a reset, the reset is `unparsed`.
 
 The auto-switch ledger keeps its existing rule: a limit without a readable
 reset is recorded as resetting five hours from now. That default is never
@@ -1552,23 +1676,40 @@ of:
 | `login changed` | The login fingerprint differs from the one taken when the wait began. |
 | `signal` | `SIGINT`, `SIGTERM` or `SIGHUP` was received. |
 
-The **login fingerprint** is read every 30 seconds from the credentials
-file that applies to the step:
+The **login fingerprint** describes which account the retry would use. It
+is taken when the wait starts and again every 30 seconds. It watches the
+configuration directory the retry will run with:
 
-1. `<root>/<inherited profile>/.credentials.json` when a profile is
-   inherited;
-2. otherwise `$CLAUDE_CONFIG_DIR/.credentials.json`;
-3. otherwise `$HOME/.claude/.credentials.json`.
+1. `<root>/<inherited profile>` when a profile is inherited;
+2. otherwise `$CLAUDE_CONFIG_DIR`;
+3. otherwise `$HOME/.claude`.
 
-It is the file's path, modification time, size and SHA-256 digest, plus the
-account recorded for that directory in the auto-switch ledger
-(`<root>/.auto-switch.d/ledger.json`) or, for `~/.claude`, the rotator
-ledger (`<root>/.rotator/ledger.json`), when either names one. A file that
-cannot be read (missing, a symlink, a FIFO, larger than 64 KiB) gives no
-fingerprint. A change between a fingerprint and none, in either direction,
-counts as a change. The file is only read: it is opened without following
-symlinks, hashed and dropped. Neither the digest nor the account is ever
-printed.
+A rotation into `~/.claude` does not help a step that inherited a profile,
+because its retry still runs under that profile, so it is ignored.
+
+The fingerprint has three parts:
+
+| Part | Source |
+|------|--------|
+| Ledger account | For a profile directory, the account the auto-switch ledger (`<root>/.auto-switch.d/ledger.json`) records for it. For `$HOME/.claude`, the `live` field of the rotator ledger (`<root>/.rotator/ledger.json`), read with the existing rotator-ledger trust checks. |
+| Account identity | `oauthAccount.accountUuid` from the directory's `.claude.json`, or `oauthAccount.emailAddress` when there is no UUID. For `$HOME/.claude` the file is `$HOME/.claude.json`. It is read without following symlinks, with the 32 MiB cap auto-switch already uses. |
+| Credentials present | Whether `.credentials.json` exists in the directory, checked with `lstat` only. |
+
+The wait ends with `login changed` when any part differs from the value
+taken when the wait began. A part that appears or disappears counts as a
+change.
+
+The credentials file is **never opened**: its bytes, size, modification
+time and digest are not part of the fingerprint. Claude rewrites that file
+whenever it refreshes its OAuth token, and a refresh is not a new account,
+so reading it would end waits early for no reason.
+
+The ledgers and `.claude.json` must each be a regular file (not a symlink),
+owned by the current user and not writable by group or others. A file that
+fails these checks, is missing, cannot be parsed or is too large counts as
+absent for its part, with no warning. The fingerprint is held only in
+memory: it is never printed, logged or written to disk, and no account
+name, UUID or e-mail address appears in any log line.
 
 After `reset reached`, `max reached`, `step timeout` and `login changed`,
 the retry runs. After `signal`, the supervisor prints the failed attempt's
@@ -1629,19 +1770,32 @@ valid, otherwise the file, otherwise the default.
   with no sign.
 - An empty variable is unset. Any other invalid value prints one warning
   per process, naming the variable, and the file decides.
-- The file is read without following symlinks and must be a regular file of
-  at most 64 KiB. A missing file or a missing key gives the defaults
-  silently. Invalid JSON, a `usage_limit_wait` value that is not an object,
-  or a field of the wrong type gives the defaults for the whole key, with
-  one warning that does not quote the file.
-- Settings are read when the step launches. Changing them affects later
+- The file is read without following symlinks. It must be a regular file
+  of at most 64 KiB, owned by the current user and not writable by group or
+  others. A file that fails any of these checks gives the defaults for the
+  whole key, with one warning. Fix it with `chmod go-w ~/.amplihack/config`
+  or by giving it back to your user.
+- A missing file or a missing key gives the defaults silently. Invalid
+  JSON, a `usage_limit_wait` value that is not an object, or a field of the
+  wrong type gives the defaults for the whole key, with one warning.
+- Warnings name the variable or the key, never the file's content or the
+  rejected value. Each is printed at most once per process.
+- Settings are read when the step launches, and only when
+  `AMPLIHACK_NONINTERACTIVE` is exactly `1`. Changing them affects later
   steps, not one that is already waiting.
 
 There is no subcommand for this key. Inside the crate,
-`wait_config::write` updates only `usage_limit_wait`, keeps every other key,
-and writes the file atomically at mode `0600`; it refuses a symlinked or
-foreign-owned file. It does not lock, so two concurrent writers can lose
-an update.
+`wait_config::write(home, settings)` updates only `usage_limit_wait`, keeps
+every other key, and writes the file atomically: a private temporary file
+in the same directory, set to mode `0600`, then renamed over the original.
+It refuses a symlinked file, a file owned by another user, and a file whose
+content is not a JSON object.
+
+`wait_config::write` takes no lock. The same file is also written by
+amplihack's saved-preference code (for example the `node_options_consent`
+prompt), so if both write at the same moment one of the two updates can be
+lost. Check the file after changing it while other amplihack processes are
+starting.
 
 ### Test seams
 
@@ -1662,7 +1816,8 @@ and signal check.
 ### Platform
 
 The wait is Unix-only, like the rest of the supervisor. On other platforms
-a usage limit ends the run as before.
+the settings are never read, no line is written, and a usage limit ends the
+run as before.
 
 ## Errors
 

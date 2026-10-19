@@ -968,7 +968,13 @@ the step changes, and then runs the step once more instead of ending the
 recipe run. With the wait off, a usage limit ends the run as it did before.
 
 The variable overrides the config file. Empty means unset. Any other value
-prints one warning and the config file, then the default, decides.
+prints one warning and the config file, then the default, decides. The
+warning names the variable but not its value.
+
+Both wait variables are read only when `AMPLIHACK_NONINTERACTIVE` is
+exactly `1`, and only on Unix. The config file is used only when it is a
+regular file, not a symlink, owned by the current user and not writable by
+group or others.
 
 ```sh
 # End the run on a usage limit instead of waiting
