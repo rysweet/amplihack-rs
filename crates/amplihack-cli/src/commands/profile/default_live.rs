@@ -108,6 +108,14 @@ pub(super) fn detect(
     }
 }
 
+/// The rotator ledger's `live` field, for the usage-limit wait's login
+/// fingerprint (#1618). Only a ledger that passes the trust checks counts;
+/// nothing is printed.
+#[cfg(unix)]
+pub(super) fn rotator_live(root: &Path) -> Option<String> {
+    unix::read_ledger(root)?.live?.as_str().map(str::to_string)
+}
+
 #[cfg(unix)]
 mod unix {
     use super::super::auto_switch::{
@@ -130,8 +138,8 @@ mod unix {
 
     /// The fields used; any others are ignored.
     #[derive(Deserialize)]
-    struct RotatorLedger {
-        live: Option<serde_json::Value>,
+    pub(super) struct RotatorLedger {
+        pub(super) live: Option<serde_json::Value>,
         since: Option<serde_json::Value>,
     }
 
@@ -173,7 +181,7 @@ mod unix {
     /// holding only the user counts as private, as for the root), and
     /// the file is a regular file owned by the user, not writable by group
     /// or others, at most 64 KiB, and valid JSON.
-    fn read_ledger(root: &Path) -> Option<RotatorLedger> {
+    pub(super) fn read_ledger(root: &Path) -> Option<RotatorLedger> {
         check_root_private(root).ok()?;
         let dir = root.join(LEDGER_DIR);
         let m = fs::symlink_metadata(&dir).ok()?;

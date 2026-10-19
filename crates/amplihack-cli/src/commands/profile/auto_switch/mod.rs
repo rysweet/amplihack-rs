@@ -16,11 +16,11 @@ mod cli;
 #[cfg(unix)]
 mod config;
 #[cfg(unix)]
-mod fsx;
+pub(crate) mod fsx;
 #[cfg(unix)]
 mod liveness;
 #[cfg(unix)]
-mod rerun;
+pub(crate) mod rerun;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]
@@ -61,6 +61,10 @@ pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, wr
 pub(super) use state::CREDS;
 #[cfg(unix)]
 pub(super) use swap::read_claude_json;
+#[cfg(all(test, unix))]
+pub(crate) use swap::rerun_owner;
+#[cfg(unix)]
+pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 
 #[cfg(not(unix))]
 #[derive(Debug, clap::Subcommand)]
@@ -251,32 +255,6 @@ pub fn return_after_session(dir: &Path) {
     }
     #[cfg(not(unix))]
     let _ = dir;
-}
-
-/// Runs a nested `-p` launch under the usage-limit supervisor when the switch
-/// is on. `None` when the launch should run normally (switch off, or already
-/// supervised). The caller has checked the flags and arguments.
-pub fn supervise(store: &ProfileStore, inherited: &str) -> anyhow::Result<Option<i32>> {
-    #[cfg(unix)]
-    {
-        if supervised() {
-            return Ok(None);
-        }
-        let Ok(name) = ProfileName::parse(inherited) else {
-            return Ok(None); // the normal launch reports the bad value
-        };
-        let eff = config::effective(store.root());
-        if !eff.on {
-            return Ok(None);
-        }
-        let state = state::State::new(store.root())?;
-        rerun::supervise(store, &state, &eff.config, name)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (store, inherited);
-        Ok(None)
-    }
 }
 
 /// Who holds which login, from the ledger: directory → account live there.
