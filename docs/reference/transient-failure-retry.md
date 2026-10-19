@@ -29,35 +29,39 @@ evaluator exists to do.
 
 `classify_failure_text` is a pure function: evidence text in, class out. It is
 unit-tested in isolation
-(`crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`).
+(`crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`, and
+`tests_failure_class_1437.rs` for `agent_api` and `structural_refusal`).
+The marker tables live in `failure_markers.rs` beside it, and the evidence
+helpers in `failure_evidence.rs`; `failure_class.rs` holds the decision and
+the marker writer.
 
 | Class                 | Examples                                                                                  | Retried by code? |
 | --------------------- | ----------------------------------------------------------------------------------------- | ---------------- |
 | `transient_transport` | `API Error: 529`, 503, 502, 500, 429, `overloaded_error`, `rate_limit_error`, `ECONNRESET`, `socket hang up`, `request timed out` | **Yes**, bounded |
 | `usage_limit`         | `usage limit`, `weekly limit`, `spend limit`; see [Usage-limit markers](#usage-limit-markers) | No               |
-| `environmental`       | 401/403, `invalid x-api-key`, `command not found`, `no space left on device`                | No               |
-| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, a `BLOCKED_TERMINAL orchestration_unavailable` policy refusal | No               |
-| `agent_api`           | `Execution failed: 400`, `API Error: 404`, `invalid_request_error`, `model_not_found`, `session not found` | No |
+| `environmental`       | 401/403, `invalid x-api-key`, `API Error: 404`, `404 Not Found`, `not_found_error`, `model_not_found`, `command not found`, `no space left on device` | No               |
+| `work`                | `test result: FAILED`, `assertion failed`, `panicked at`, `error[E0308]`, `merge conflict`, the guard's full `BLOCKED_TERMINAL orchestration_unavailable` phrase | No               |
+| `agent_api`           | `Execution failed: 400`, `Execution failed: 404`, `The resource you requested was not found`, `API Error: 400`, `400 Bad Request`, `invalid_request_error`, `session not found`, `conversation not found` | No               |
 | `indeterminate`       | nothing in the evidence identifies the failure                                              | No               |
 
-Four rules matter more than the tables:
+Five rules matter more than the tables:
 
 - **401 and 403 are not transient.** They are stable server answers. Retrying
   them burns the budget and can never succeed, so they are `environmental`.
-- **An agent endpoint rejection is not "we know nothing"** (issue #1437). A
-  `400 The resource you requested was not found` names its own cause. Calling
-  it `indeterminate` told the operator that nothing could be determined about a
-  message that determined itself, and a supervising loop reading that as a
-  structural refusal stopped a run whose agent had already committed and
-  pushed. It is `agent_api`: not retried mechanically (the identical request
-  gets the identical rejection), and explicitly **not** a policy refusal — a
-  loop is free to start a fresh round.
-- **A policy refusal is matched as the guard's whole line**, `BLOCKED_TERMINAL
-  orchestration_unavailable`, never as the bare word. The bare word appears in
-  a run transcript whenever a descendant was refused and the agent then did
-  what the refusal told it to do. The classification publishes one boolean,
-  `structural_refusal`, so a supervising loop reads a decision made by the
-  layer that knows instead of grepping prose.
+- **An agent endpoint rejection is `agent_api`, not `indeterminate`** (issue
+  #1437). `Execution failed: 400 The resource you requested was not found`
+  names its own cause. It is not retried mechanically, because the identical
+  request gets the identical rejection, and it is not a policy refusal: a
+  supervising loop may start a fresh round.
+- **A 404 that names an unknown model is `environmental`, not `agent_api`**
+  (issue #1421). `API Error: 404`, `404 Not Found`, `not_found_error` and
+  `model_not_found` are environmental markers, and environmental markers are
+  checked before agent-API markers, so the same evidence never gets two
+  classes depending on which phrase a provider used.
+- **A policy refusal is the guard's whole phrase**, `BLOCKED_TERMINAL
+  orchestration_unavailable`. Neither word on its own is a marker. Whether the
+  refusal ended the run is published separately, as
+  [`structural_refusal`](#the-structural_refusal-field).
 - **Ambiguity resolves toward not retrying.** When the same evidence carries a
   work marker *and* a transient marker, the verdict is `work`. A missed retry
   costs one run; an unbounded retry of an impossible step costs the whole budget
@@ -89,9 +93,10 @@ The markers are `session limit`, `usage limit`, `usage_limit_reached`,
   reports `spend limit`, and its reset hint is `Oct 10, ...`, the text after the
   first `resets `.
 - **Checked after work and environmental, before transient.** The order is
-  `work` → `environmental` → `usage_limit` → `transient_transport`, and the
-  first class with a match wins. A usage-limit marker inside a 429 envelope is
-  still `usage_limit`, and `weekly limit` text cannot hide a real test failure.
+  `work` → `environmental` → `usage_limit` → `agent_api` →
+  `transient_transport` → `indeterminate`, and the first class with a match
+  wins. A usage-limit marker inside a 429 envelope is still `usage_limit`, and
+  `weekly limit` text cannot hide a real test failure.
 - **`daily limit` is not a marker.** Provider and GitHub API daily request
   quotas use the same phrase. Filing those as `usage_limit` would stop retrying
   failures that clear on their own.
@@ -145,6 +150,66 @@ marker that a run ended abnormally.
 grep amplihack.recipe.failure_class run.log | jq -r '.class + " " + .action'
 ```
 
+### The `structural_refusal` field
+
+`structural_refusal` is a JSON boolean, never a string. It is `true` only when
+the failed step's own evidence contains the guard's full phrase,
+`BLOCKED_TERMINAL orchestration_unavailable`, matched without regard to case.
+The class is then `work`. Neither word on its own sets it: `blocked_terminal`
+and `orchestration_unavailable` appear in transcripts whenever a descendant
+was refused and the agent then did what the refusal told it to do. Every other
+failure, `agent_api` included, has `false`.
+
+```text
+BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3   -> true,  work
+blocked_terminal orchestration_unavailable                     -> true,  work
+the step mentioned blocked_terminal                            -> false
+Execution failed: 400 The resource you requested was not found -> false, agent_api
+```
+
+`structural_refusal` reads a narrower set of evidence than `class`. `class`
+also reads the run status and the last 40 lines of the runner's stderr, and
+that stderr tail can hold the transcripts of runs the runner started.
+`structural_refusal` reads only the failed steps' own evidence: their `error`
+and their captured stdout and stderr. The runner's other steps, its stderr
+tail, its run status and earlier output cannot set the field. When the
+evidence is longer than its 2,000-character bound and its start was elided,
+the lines ahead of the first surviving failed-step header have no known
+origin, so they do not count either.
+
+When the runner produced no structured result (a spawn failure, unparseable
+stdout, a runner that died before writing its JSON), the class comes from the
+error chain, which already includes the stderr tail. That evidence is not a
+failed step's own output, so on this path `structural_refusal` is always
+`false`, whatever the error says.
+
+The marker is serialised with `serde_json`. If serialisation fails the marker
+is `{}`, which a reader treats as no refusal unless the child exited `79`.
+
+A failed run writes the marker twice: when the failure is classified, and
+again, unchanged, as the run's last line after the result table. The table
+shows each step's output, and a multi-line output can put any text at the
+start of a line, including a line that looks like a marker; the second copy
+keeps the runner's own marker last.
+
+A supervising loop reads this field from the **last** marker in a child's log
+instead of searching the transcript. `autodrive_loop.sh` does so through
+`terminal_refusal` in
+[`autodrive_refusal.sh`](auto-drive-to-merge.md#autodrive_refusalsh), which
+treats a child as refused only when it exited `79` or its last marker has
+`"structural_refusal": true`:
+
+```bash
+. amplifier-bundle/tools/autodrive_refusal.sh
+if terminal_refusal 1 run.log; then echo "terminal: $TERMINAL_WHY"; else echo "not terminal"; fi
+# not terminal
+child_failure_summary 1 run.log
+# rc=1 class=agent_api retryable=false signal=execution failed: 400
+```
+
+The field was added without changing `schema_version`, the marker prefix or
+any existing key; a consumer that does not read it is unaffected.
+
 The same object is attached to the structured run result under
 `failure_classification`, so an agentic step consumes it as data rather than
 scraping prose:
@@ -168,6 +233,10 @@ undifferentiated `exit 1` is the point of this change.
 ## Source
 
 - `crates/amplihack-cli/src/commands/recipe/run/failure_class.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/failure_evidence.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/failure_markers.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/retry.rs`
 - `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class.rs`
+- `crates/amplihack-cli/src/commands/recipe/run/tests_failure_class_1437.rs`
+- `crates/amplihack-cli/tests/issue_1437_final_marker.rs`
 - `crates/amplihack-utils/src/backoff.rs`

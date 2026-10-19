@@ -659,12 +659,32 @@ Historically, agents read a `79` refusal as an infrastructure fault and retried
 one level deeper with a raised ceiling. That is what #1327 sealed, and it is
 what this branch refuses to re-open.
 
-The mirror-image failure is just as expensive (issue #1437): reading an
-*ordinary* failure as a refusal. `autodrive_loop.sh` decides terminality on the
-child's exit status and on the structured `structural_refusal` boolean in the
-child's own `amplihack.recipe.failure_class` marker — never by grepping a round
-transcript, which contains every file the round's agents read. See
-[auto-drive-to-merge](auto-drive-to-merge.md#and-not-every-failure-is-terminal-issue-1437).
+The opposite mistake, reading an ordinary failure as a refusal, is as costly
+(issue #1437). `autodrive_loop.sh` treats a child as refused only when its exit
+status is `79`, or when it failed and the last `amplihack.recipe.failure_class`
+marker in its log has `"structural_refusal": true`. A transcript that quotes
+`BLOCKED_TERMINAL orchestration_unavailable` does not stop the loop driver; the
+failure reaches this evaluator instead, with `child=rc=<n> class=<class> retryable=<bool>[ signal=<signal>]` on the
+round's `loop_history` line. See
+[auto-drive-to-merge](auto-drive-to-merge.md#not-every-failure-is-terminal-issue-1437).
+This evaluator does not yet follow that rule: `loop-evidence-collector` still
+sets `terminal_refusal` when round output contains the bare word
+`BLOCKED_TERMINAL`, so such a round ends as `STUCK` (exit `1`, not `79`).
+Moving the collector to exit `79` and the failure-class marker is tracked in
+[#1630](https://github.com/rysweet/amplihack-rs/issues/1630).
+
+`loop-evidence-collector.yaml` sets `infrastructure_fault=true` only for
+`transient_transport` and `environmental`, and the evaluator prompt names only
+those two. An `agent_api` round, an agent endpoint rejecting the request
+(`Execution failed: 400`, `session not found`), therefore arrives with
+`infrastructure_fault=false` and `agent_api` in `infrastructure_fault_class`.
+That is intended: it is judged as a round that made no progress, so one may be
+followed by a fresh round, but a run of them reads as `STUCK`. A 404 that
+carries an environmental marker (`API Error: 404`, `404 Not Found`,
+`not_found_error`, `model_not_found`) is `environmental`, not `agent_api`,
+because the classifier checks environmental markers first (see
+[transient-failure-retry](transient-failure-retry.md#classification)), so an
+unknown model still counts as an infrastructure fault.
 
 ## Fail-safe guarantees
 
