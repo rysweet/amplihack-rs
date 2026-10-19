@@ -44,6 +44,28 @@ fn local_head_ahead_of_the_pr_head_fails_closed() {
     assert_failed_implementation(&outcome, "precommit on an unpushed commit");
 }
 
+// An unborn run branch has no HEAD commit to compare: fail closed before gh.
+#[test]
+fn unresolvable_local_head_fails_closed_without_calling_gh() {
+    let fx = Fixture::new();
+    fx.gh_view(&open_pr(green_rollup()));
+    fx.git(&["switch", "-q", "--detach"]);
+    fx.git(&["branch", "-q", "-D", BRANCH]);
+    fx.git(&["switch", "-q", "--orphan", BRANCH]);
+
+    let outcome = fx.signal(BRANCH, Some("7"));
+    assert!(!outcome.success(), "unborn HEAD is no signal");
+    assert_eq!(outcome.stdout, "", "no stdout on failure");
+    assert!(
+        outcome
+            .stderr
+            .contains("no open-PR signal: local HEAD could not be resolved"),
+        "stderr must name the HEAD check\n{}",
+        outcome.describe()
+    );
+    fx.assert_gh_not_called("unresolvable local HEAD");
+}
+
 #[test]
 fn missing_or_malformed_pr_head_oid_fails_closed() {
     for (name, value) in [

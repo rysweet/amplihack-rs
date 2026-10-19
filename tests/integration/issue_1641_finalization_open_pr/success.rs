@@ -7,8 +7,8 @@ use serde_json::json;
 
 use super::fixture::*;
 
-const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=7,required_checks=green";
-const EVIDENCE_PRECOMMIT: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=7,precommit_passed=true";
+const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,required_checks=green";
+const EVIDENCE_PRECOMMIT: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,precommit_passed=true";
 
 fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert!(

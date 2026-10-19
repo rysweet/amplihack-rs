@@ -273,7 +273,7 @@ FIELDS
         pr_number="$open_pr_number"
         pr_url="$open_pr_url"
         publish_state_override="true"
-        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR with a passing verification signal" "No action required." "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=$pr_number,$open_pr_verification"
+        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR with a passing verification signal" "No action required." "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number,$open_pr_verification"
       fi
       if [ -z "$open_pr_verification" ]; then
         echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2

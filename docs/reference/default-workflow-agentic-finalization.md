@@ -450,7 +450,7 @@ pr_number=1641
 pr_url=https://github.com/rysweet/amplihack-rs/pull/1641
 hollow_success_detected=false
 reporting_failure=false
-evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=1641,required_checks=green
+evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=1641,required_checks=green
 ```
 
 The `terminal_reason` line above is a placeholder; its exact text is defined
