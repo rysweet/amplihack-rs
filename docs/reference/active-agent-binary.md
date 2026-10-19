@@ -46,7 +46,7 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored here while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>` (see [What amplihack exports is tagged](#what-amplihack-exports-is-tagged)). It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored here while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`, `session:<same binary>` or `overflow:<same binary>` (see [What amplihack exports is tagged](#what-amplihack-exports-is-tagged)). It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
 | 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. An `AMPLIHACK_AGENT_BINARY` tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may come from the server's copy of whatever started the server; see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch). |
 | 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never in or above a world-writable or foreign-owned directory. A file in such a directory is not read, but it is named when the answer was inferred (see below). |
 | 4 | Built-in default | `"copilot"` |
@@ -248,6 +248,7 @@ else amplihack exports is tagged:
 | --- | --- | --- |
 | A launcher (`amplihack claude`, `amplihack copilot`, `--auto`, the fleet reasoner's `claude -p`, ...) | the CLI it starts | `session:<cli>`, or `default:<cli>` when it was itself started on an inherited guess naming it |
 | `recipe run`, to its steps | its answer | none when the answer came from layer 1; `session:<binary>` from layer 2 or 3; `default:<binary>` from layer 4 |
+| `recipe run`, when [harness overflow](./agent-configuration.md#harness-overflow) starts the run under another harness | the overflow harness | `overflow:<harness>` |
 | `amplihack agent-binary --shell` (the hand-off) | the caller's answer | see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch) |
 | The Claude Code plugin's `bootstrap` | `claude`, unless you set a value | `session:claude` |
 
@@ -297,6 +298,46 @@ raw `copilot` started in a pane of a server whose environment holds
 `session:claude`, and no Claude marker, resolves to claude, just as it would
 with the server's `CLAUDE_CODE_ENTRYPOINT`. `amplihack copilot` started there
 resolves to copilot, because it removes Claude's markers and replaces the tag.
+
+### The overflow tag
+
+When [harness overflow](./agent-configuration.md#harness-overflow) is enabled
+and the primary harness has no capacity, `recipe run` may start its steps
+under another harness. It exports that harness tagged:
+
+```sh
+AMPLIHACK_AGENT_BINARY=copilot
+AMPLIHACK_AGENT_BINARY_SOURCE=overflow:copilot
+```
+
+An untagged value would read as your instruction one level down, and a
+nested launcher would persist it (#1481). The tag is built only by
+`agent_binary::overflow_tag`, and `agent_binary::export_tag` and the
+resolver treat it exactly as they treat `session:`:
+
+- It describes the value only while it names the same binary as
+  `AMPLIHACK_AGENT_BINARY`, compared after trimming. A value set later to a
+  different binary is an instruction, and the stale tag no longer applies.
+- It ranks with the session markers of the harness it names
+  (`agent_binary::rank_session_markers`), and resolves as
+  `ResolutionSource::SessionMarker`. There is no separate resolution source
+  for overflow.
+- A launcher started with it does not write `launcher_context.json`, and
+  hands the value on still tagged.
+- It keeps the work eligible for overflow at the next step, so a later step
+  can return to the primary, which is exported separately as
+  `AMPLIHACK_OVERFLOW_PRIMARY`.
+
+An untagged `AMPLIHACK_AGENT_BINARY`, and a value tagged `tmux_server:`, both
+resolve as `ResolutionSource::Env`. They are explicit choices, and overflow
+never replaces them, at run start or at any step. Overflow does not use
+`Resolution::is_inferred()` for this test, because that excludes session
+markers, which are eligible.
+
+A build of amplihack older than the overflow feature does not recognise the
+tag and treats the value as an explicit choice of the same binary. The step
+still runs under the overflow harness; it only cannot overflow again or
+return to the primary.
 
 ### Handing the binary to a detached launch
 
@@ -617,3 +658,4 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run smart-orchestrator \
 - [Environment Variables](./environment-variables.md#amplihack_agent_binary) — Full env var reference
 - [Agent Configuration](./agent-configuration.md#agent-binary-resolution) — Where the default fits into config precedence
 - [Hook Specifications](./hook-specifications.md) — Per-binary hook layout and supported events
+- [Harness Overflow](./agent-configuration.md#harness-overflow): configuration, eligibility and the per-run harness record
