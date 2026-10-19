@@ -12,6 +12,36 @@ fn with_url(fx: &Fixture) -> Vec<(&'static str, String)> {
     envs
 }
 
+fn set_branch(envs: &mut [(&'static str, String)], branch: &str) {
+    let entry = envs
+        .iter_mut()
+        .find(|(k, _)| *k == "BRANCH_NAME")
+        .expect("resumed_env sets BRANCH_NAME");
+    entry.1 = branch.to_owned();
+}
+
+// Proves the open-PR path really ran (one live `pr view 7`) and names why it
+// failed, so a guard that bailed out early cannot pass as the intended check.
+fn assert_rejected_after_pr_view(fx: &Fixture, outcome: &Outcome, reason: &str, why: &str) {
+    let views: Vec<String> = fx
+        .gh_calls()
+        .into_iter()
+        .filter(|c| c.starts_with("pr view 7 "))
+        .collect();
+    assert_eq!(
+        views.len(),
+        1,
+        "{why}: exactly one live pr view
+{}",
+        outcome.describe()
+    );
+    assert!(
+        outcome.stderr.contains(reason),
+        "{why}: stderr must name `{reason}`\n{}",
+        outcome.describe()
+    );
+}
+
 // Core regression for #1641 (must still hold): nothing published, no evidence.
 #[test]
 fn run_with_no_pr_and_no_evidence_is_still_failed_implementation() {
@@ -49,6 +79,12 @@ fn open_pr_without_a_passing_verification_signal_fails_closed() {
         fx.gh_view(&open_pr(rollup.clone()));
         let outcome = fx.validate(&as_refs(&with_url(&fx)));
         assert_failed_implementation(&outcome, &format!("rollup {rollup}"));
+        assert_rejected_after_pr_view(
+            &fx,
+            &outcome,
+            "no passing verification signal",
+            &format!("rollup {rollup}"),
+        );
     }
 }
 
@@ -82,6 +118,7 @@ fn pr_that_is_not_the_runs_open_same_repo_pr_fails_closed() {
         fx.gh_view(&view);
         let outcome = fx.validate(&as_refs(&with_url(&fx)));
         assert_failed_implementation(&outcome, name);
+        assert_rejected_after_pr_view(&fx, &outcome, "no open-PR signal: PR is not open", name);
         assert_eq!(
             outcome.field("pr_number"),
             "",
@@ -96,6 +133,12 @@ fn gh_failure_or_malformed_json_is_no_signal_and_does_not_leak() {
     failing.gh_fail("view", 1);
     let outcome = failing.validate(&as_refs(&with_url(&failing)));
     assert_failed_implementation(&outcome, "gh pr view exit 1");
+    assert_rejected_after_pr_view(
+        &failing,
+        &outcome,
+        "no open-PR signal: gh pr view failed",
+        "gh exit 1",
+    );
     assert_no_leak(&outcome);
 
     for body in ["not json", "{\"number\":", "[]", "\"OPEN\""] {
@@ -103,6 +146,12 @@ fn gh_failure_or_malformed_json_is_no_signal_and_does_not_leak() {
         fx.gh_view_raw(body);
         let outcome = fx.validate(&as_refs(&with_url(&fx)));
         assert_failed_implementation(&outcome, &format!("malformed view body {body:?}"));
+        assert_rejected_after_pr_view(
+            &fx,
+            &outcome,
+            "no open-PR signal: PR is not open",
+            &format!("malformed view body {body:?}"),
+        );
     }
 }
 
@@ -183,7 +232,7 @@ fn unusable_run_scope_fails_closed_without_calling_gh() {
     let fx = Fixture::new();
     fx.gh_view(&open_pr(green_rollup()));
     let mut envs = with_url(&fx);
-    envs[1].1 = "feat/other".to_owned();
+    set_branch(&mut envs, "feat/other");
     assert_failed_implementation(&fx.validate(&as_refs(&envs)), "branch mismatch");
     fx.assert_gh_not_called("branch mismatch");
 
@@ -194,7 +243,7 @@ fn unusable_run_scope_fails_closed_without_calling_gh() {
         view["headRefName"] = json!(branch);
         fx.gh_view(&view);
         let mut envs = with_url(&fx);
-        envs[1].1 = branch.to_owned();
+        set_branch(&mut envs, branch);
         assert_failed_implementation(&fx.validate(&as_refs(&envs)), branch);
         fx.assert_gh_not_called(branch);
     }

@@ -364,7 +364,7 @@ run stays `FAILED_IMPLEMENTATION`, exactly as before.
 | 1 | Evaluation-order steps 1–4 returned no result: no invalid evidence, dirty worktree, missing tooling, prior blocker, hollow success, reporting-failure split, `IMPLEMENTED_VERIFIED` or `ALLOW_NO_OP`. | Classifier order |
 | 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
-| 4 | **GitHub remote.** `remote_host_type` is empty or `github`, and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
+| 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
 | 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
 | 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` (fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
 | 7 | **Verification signal.** Either `checks=green` (see below) or `verification_completed=true` from this run's typed `verification_terminal_evidence`. | `statusCheckRollup` or typed evidence |
@@ -384,9 +384,10 @@ resolves the repo from the checkout's remotes and prefers `upstream` or a
 `gh repo set-default` choice, so a fork checkout would query the wrong repo and
 fail falsely.
 
-1. If the context carries `pr_number`, or a `pr_url` of the exact form
-   `https://github.com/<owner>/<repo>/pull/<n>` whose repo equals `R`, the
-   validator runs:
+1. If the context carries a canonical `pr_number` (`^[1-9][0-9]{0,9}$`), it is
+   used; otherwise a `pr_url` of the exact form
+   `https://github.com/<owner>/<repo>/pull/<n>` whose repo equals `R` is used.
+   The validator makes one signal call with that reference and runs:
 
    ```bash
    gh pr view 1641 --repo rysweet/amplihack-rs \
@@ -395,8 +396,8 @@ fail falsely.
 
    A `pr_url` that names any other repo, or is not in that exact form (trailing
    slash, `/files` suffix, different letter case), is rejected without calling
-   `gh`. If the context also carries a valid `pr_number`, the validator retries
-   with the number alone, which is re-checked live like any other reference.
+   `gh`. A valid `pr_number` takes precedence over the URL, so a malformed URL
+   never hides it; the number is re-checked live like any other reference.
    It never falls back to `gh pr list` from a rejected URL.
 
 2. Otherwise, when condition 2 holds through a publish status alone (for
@@ -417,9 +418,10 @@ fail falsely.
 
 3. With no publish signal, `gh` is never called.
 
-`gh` runs read-only with a fixed argv and literal `--json` field lists. Each run
-allows one transient retry, does not wait out rate limits and has no REST
-fallback, so the worst case is about two 60-second calls. A missing,
+`gh` runs read-only with a fixed argv and literal `--json` field lists. Each call
+makes a single attempt with a 60-second timeout, does not retry, does not wait
+out rate limits and has no REST fallback. A validation makes at most two calls
+(`pr list` then `pr view`), so the worst case is about two minutes. A missing,
 unauthenticated or failing `gh`, or malformed JSON, means "no signal": the run
 stays `FAILED_IMPLEMENTATION` and no new failure state is introduced.
 
@@ -478,10 +480,10 @@ success.
 | Open PR, a check failing or pending, `verification_completed` unset | `FAILED_IMPLEMENTATION` | Yes |
 | PR `CLOSED` or `MERGED` | `FAILED_IMPLEMENTATION` | Yes |
 | PR head ≠ run branch, or cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
-| `pr_url` names a different repo than `origin` (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
+| `pr_url` names a different repo than `origin` and no valid `pr_number` is set (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
 | `gh` missing, unauthenticated, non-zero exit or malformed JSON | `FAILED_IMPLEMENTATION` | Attempted |
 | `pr list` returns zero PRs, two PRs, or one cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
-| Target directory fell back to `.`, branch is `main`, or remote is AzDO | `FAILED_IMPLEMENTATION` | No |
+| Target directory fell back to `.` or is a `.git` directory / bare repo, branch is `main`, or remote is AzDO | `FAILED_IMPLEMENTATION` | No |
 | Dirty worktree with an open green PR | `FAILED_DIRTY_WORKTREE` | No |
 | Hollow-success signals with an open green PR | `HOLLOW_SUCCESS` | No |
 | `prior_terminal_state=BLOCKED_CI` with an open green PR | `BLOCKED_CI` | No |

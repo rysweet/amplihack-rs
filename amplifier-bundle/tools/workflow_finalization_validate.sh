@@ -229,8 +229,8 @@ FIELDS
   # 5. Resumed runs (#1641): a run resuming an earlier attempt's work may carry
   #    no implementation/verification outputs of its own. It succeeds only when
   #    it was published, its branch has an OPEN same-repo PR confirmed live by
-  #    gh whose head commit is the local HEAD, and a verification signal passes (all checks green, or this run's
-  #    typed verification_completed). Runs after every blocker, so it can only
+  #    gh whose head commit is the local HEAD, and a verification signal passes
+  #    (all checks green, or this run's typed verification_completed). Runs after every blocker, so it can only
   #    replace the default failure below; gh is never called without a publish
   #    signal, an explicit target directory and a GitHub remote.
   publish_signal="false"
@@ -249,37 +249,27 @@ FIELDS
   if [ "$publish_signal" = "true" ] && [ "$target_dir_explicit" = "true" ] && [ "$remote_is_github" = "true" ]; then
     run_branch="$(workflow_finalization_metadata branch_name || :)"
     [ -n "$run_branch" ] || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
-    # A malformed pr_url (trailing slash, /files suffix, ...) must not hide a
-    # valid pr_number: try the URL first, then the number. Both are re-checked
-    # live against the origin repo, so the fallback cannot widen the match.
-    open_pr_found="false"
-    if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "${pr_url:-$pr_number}")"; then
-      open_pr_found="true"
-    elif [ -n "$pr_url" ] && [ -n "$pr_number" ] \
-      && open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$pr_number")"; then
-      open_pr_found="true"
-    fi
-    if [ "$open_pr_found" = "true" ]; then
+    # A canonical pr_number is preferred, so a malformed pr_url (trailing
+    # slash, /files suffix, ...) cannot hide it; otherwise the pr_url is used.
+    # Either is re-checked live against the origin repo, branch and HEAD.
+    open_pr_ref="$pr_url"
+    [[ ! "$pr_number" =~ ^[1-9][0-9]{0,9}$ ]] || open_pr_ref="$pr_number"
+    if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$open_pr_ref")"; then
+      # The helper emits only a validated number and the URL it built itself.
       open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
-      open_pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number // empty')"
-      open_pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url // empty')"
       open_pr_verification=""
       if [ "$open_pr_checks" = "green" ]; then
         open_pr_verification="required_checks=green"
       elif [ "$verification_completed" = "true" ]; then
         open_pr_verification="precommit_passed=true"
       fi
-      if [ -n "$open_pr_verification" ] && [[ "$open_pr_number" =~ ^[1-9][0-9]{0,9}$ ]] && [ -n "$open_pr_url" ]; then
-        pr_number="$open_pr_number"
-        pr_url="$open_pr_url"
+      if [ -n "$open_pr_verification" ]; then
+        pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
+        pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
         publish_state_override="true"
         classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR with a passing verification signal" "No action required." "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number,$open_pr_verification"
       fi
-      if [ -z "$open_pr_verification" ]; then
-        echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
-      else
-        echo "WARNING: open-PR signal returned an unusable PR number or URL; not classified as EXISTING_OPEN_PR" >&2
-      fi
+      echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
     else
       # finalization_open_pr_signal already printed the specific reason.
       echo "WARNING: publish signal present but the open-PR check failed (reason above); not classified as EXISTING_OPEN_PR" >&2

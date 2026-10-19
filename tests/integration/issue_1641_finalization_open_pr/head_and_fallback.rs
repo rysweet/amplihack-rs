@@ -1,5 +1,5 @@
 //! Review fixes for PR #1643: the PR head commit must be the local HEAD, a
-//! malformed `pr_url` falls back to a valid `pr_number`, `publish_state_reached`
+//! valid `pr_number` takes precedence over a malformed `pr_url`, `publish_state_reached`
 //! counts as a publish signal, userinfo cannot smuggle a foreign host, and each
 //! fail-closed case names its reason.
 
@@ -85,7 +85,7 @@ fn missing_or_malformed_pr_head_oid_fails_closed() {
 }
 
 #[test]
-fn malformed_pr_url_falls_back_to_a_valid_pr_number() {
+fn valid_pr_number_takes_precedence_over_a_malformed_pr_url() {
     for bad_url in [
         "https://github.com/rysweet/fixture/pull/7/",
         "https://github.com/rysweet/fixture/pull/7/files",
@@ -105,6 +105,7 @@ fn malformed_pr_url_falls_back_to_a_valid_pr_number() {
         );
         assert_eq!(outcome.field("pr_url"), PR_URL);
         fx.assert_gh_reads_only();
+        assert_eq!(fx.gh_calls().len(), 1, "{bad_url}: one pr view, no retry");
     }
 
     // Without a pr_number there is nothing to fall back to.
@@ -169,4 +170,55 @@ fn userinfo_cannot_hide_a_foreign_host() {
     let outcome = fx.signal(BRANCH, Some("7"));
     assert!(outcome.success(), "{}", outcome.describe());
     assert!(!outcome.stderr.contains("abc"), "token must not be echoed");
+}
+
+// gh pr list failing is no signal: nothing is inspected and the run stays failed.
+#[test]
+fn failing_pr_list_is_no_signal() {
+    let fx = Fixture::new();
+    fx.gh_fail("list", 1);
+    fx.gh_view(&open_pr(green_rollup()));
+    let mut envs = resumed_env(&fx.repo_path());
+    envs.push((
+        "TERMINAL_STATE_PUBLISH_STATUS",
+        "existing-open-pr".to_owned(),
+    ));
+    let outcome = fx.validate(&as_refs(&envs));
+    assert_failed_implementation(&outcome, "pr list exit 1");
+    assert!(
+        outcome
+            .stderr
+            .contains("no open-PR signal: gh pr list failed"),
+        "{}",
+        outcome.describe()
+    );
+    let calls = fx.gh_calls();
+    assert!(calls.iter().any(|c| c.starts_with("pr list ")), "{calls:?}");
+    assert!(
+        !calls.iter().any(|c| c.starts_with("pr view ")),
+        "{calls:?}"
+    );
+}
+
+// A .git directory is not a worktree: the dirty probe cannot see untracked
+// files there, so the open-PR path must not vouch for it.
+#[test]
+fn git_dir_target_is_not_a_worktree() {
+    let fx = Fixture::new();
+    fs::write(fx.repo.join("untracked.txt"), "dirty\n").expect("dirty file");
+    fx.gh_view(&open_pr(green_rollup()));
+    let git_dir = fx.repo.join(".git").to_string_lossy().into_owned();
+    let mut envs = resumed_env(&git_dir);
+    envs.push(("PR_URL", PR_URL.to_owned()));
+    let outcome = fx.validate(&as_refs(&envs));
+    assert!(!outcome.success(), "{}", outcome.describe());
+    assert_ne!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
+    assert!(
+        outcome
+            .stderr
+            .contains("no open-PR signal: target directory is not a git worktree"),
+        "{}",
+        outcome.describe()
+    );
+    fx.assert_gh_not_called(".git target");
 }

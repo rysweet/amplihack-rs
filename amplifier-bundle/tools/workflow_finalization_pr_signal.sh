@@ -141,7 +141,9 @@ _finalization_open_pr_signal_in() {
   local live="" origin="" repo="" num="" prefix="" url="" list="" view="" checks="" head=""
 
   { [ -n "$dir" ] && [ -d "$dir" ]; } || { _finalization_no_signal "target directory missing"; return 1; }
-  git -C "$dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 \
+  # rev-parse exits 0 but prints "false" inside a .git dir or bare repo, where
+  # the dirty-worktree probe cannot see uncommitted files: require "true".
+  [ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null || :)" = "true" ] \
     || { _finalization_no_signal "target directory is not a git worktree"; return 1; }
 
   case "$branch" in ''|main|master|HEAD|-*) _finalization_no_signal "run branch is empty or a default branch"; return 1 ;; esac
