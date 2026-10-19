@@ -250,10 +250,12 @@ field contract.
 
 ## Rotate retry
 
-When a step failed on a login session or weekly limit and the runner swapped
-to another Claude login and ran the recipe once more, the result carries a
-top-level `rotate_retry` object. It is present whether the retried run
-succeeded or failed, and absent when no swap was made.
+When a step failed on a login session or weekly limit and the runner ran
+the recipe once more on another Claude login, the result carries a top-level
+`rotate_retry` object. The runner either made the swap itself or found that
+another run or the rotator had already made it. The object is present
+whether the retried run succeeded or failed, and absent when the rotate cycle
+returned `no_swap` or rotation is disabled.
 
 ```json
 {

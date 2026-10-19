@@ -1657,7 +1657,8 @@ is no fallback for other storage.
 ## Rotate
 
 `profile rotate` keeps the login in `~/.claude` on an account with capacity,
-preferring weekly capacity that expires soonest, by moving logins between `~/.claude` and the profiles. The
+preferring weekly capacity that expires soonest, by moving logins between
+`~/.claude` and the profiles. The
 [how-to](../howto/claude-profile-rotation.md) walks through using it; this
 section defines its behaviour. It is separate from [auto-switch](#auto-switch),
 which swaps logins inside profiled sessions, but shares its toggle, its
@@ -1703,7 +1704,7 @@ files atomically, the swap is refused with `RotateRefused`; see
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | `0` or more (seconds); `0` disables the hold |
 | `--min-headroom N` | `AMPLIHACK_ROTATE_MIN_HEADROOM` | `50` | `0`-`100` (points of session headroom); `0` turns the floor off |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
-| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | `1`-`100` (%); `start` and `watch` only |
+| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | `1`-`100` (%). The flag is for `start` and `watch` only; the variable also sets when the [on-limit cycle](#rotate-on-a-usage-limit) treats the live login as near its limit. |
 | `--fast-interval SECS` | `AMPLIHACK_ROTATE_FAST_INTERVAL` | `60` | `1`-`86400` (seconds); `start` and `watch` only. A value above `--interval` is lowered to `--interval` without an error. |
 
 A flag beats its variable, and the variable beats the default. An empty
@@ -1725,11 +1726,18 @@ The thresholds and margins are independent of the auto-switch `threshold`.
 The auto-switch `exclude` list applies to rotation.
 
 The [rotation that `amplihack recipe run` starts after a usage limit](#rotate-on-a-usage-limit)
-runs in the recipe process, not in the background rotator. It reads its
-settings from the `AMPLIHACK_ROTATE_*` variables in that process and the
-defaults above. Flags given to `start` or `watch` do not reach it. Only
-`--min-headroom` and `--margin` (through their variables) change its
-decision; the thresholds and the hold do not apply to it.
+runs in the recipe process, not in the background rotator. It resolves
+every setting in the table above from the variables in that process and the
+defaults; flags given to `start` or `watch` do not reach it. Three settings
+change what it does:
+
+- `min-headroom` and `margin` decide which candidates are eligible;
+- `fast-at` decides whether the live login is near enough to its limit for
+  the failure to force a swap.
+
+The thresholds, the upgrade margin, the hold and both intervals have no
+effect on it. An invalid value in any of the variables in the table still
+stops it, with `no swap` and reason `invalid rotate settings: <error>`.
 
 ### Rotate cycle
 
@@ -1868,12 +1876,12 @@ The cycle explains its choice with one line per measured candidate, sorted by
 name. The log and `--dry-run` use the same text:
 
 ```
-candidate <name>: score=<n.n|-> session_headroom=<n|-> week_left=<n|-> days_to_reset=<n.n>[ (assumed)] -> <verdict>
+candidate <name>: score=<n.n|-> session_headroom=<n|-> week_left=<n|-> days_to_reset=<n.nn>[ (assumed)] -> <verdict>
 ```
 
 A value the probe could not give, as for an exhausted or failed candidate,
-is shown as `-`. `days_to_reset` is always shown; the one-hour floor prints
-as `0.0`. The verdict is one of:
+is shown as `-`. `days_to_reset` is always shown, with two decimal places,
+so the one-hour floor prints as `0.04`. The verdict is one of:
 
 | Verdict | Meaning |
 |---------|---------|
@@ -1890,8 +1898,8 @@ The dry run for the example above prints:
 
 ```
 cycle live=work work:s=92%,w=41% personal:s=5%,w=60% spare:s=0%,w=20%
-candidate personal: score=40.0 session_headroom=95 week_left=40 days_to_reset=1.0 -> chosen: highest expiry-weighted score
-candidate spare: score=13.3 session_headroom=100 week_left=80 days_to_reset=6.0 -> rejected: lower score than personal
+candidate personal: score=40.0 session_headroom=95 week_left=40 days_to_reset=1.00 -> chosen: highest expiry-weighted score
+candidate spare: score=13.3 session_headroom=100 week_left=80 days_to_reset=6.00 -> rejected: lower score than personal
 would swap work->personal live s=92% w=41% target s=5% w=60% reason=threshold
 ```
 
@@ -1905,13 +1913,15 @@ After each cycle `watch` sleeps for:
 | Live reading after the cycle | Delay |
 |------------------------------|-------|
 | `session_exhausted` or `weekly_exhausted` | `--fast-interval` |
-| Measured with `session_used >= fast-at` | `--fast-interval` |
+| Measured with `max(session_used, week_used) >= fast-at` | `--fast-interval` |
 | Anything else, including a failed probe or a cycle that measured nothing | `--interval` |
 
 After a swap, the live reading is the new live login's reading from that
 cycle, usually low, so `watch` returns to `--interval`. With the defaults,
-`watch` checks every 60 seconds once the live session reaches `70%` and
-every 600 seconds below it. `--fast-interval` is never longer than
+`watch` checks every 60 seconds once either window of the live login reaches
+`70%`, and every 600 seconds while both are below it. The
+[on-limit cycle](#rotate-on-a-usage-limit) uses the same test to decide
+whether the live login is near its limit. `--fast-interval` is never longer than
 `--interval`: a larger value is lowered to `--interval` without an error.
 
 ### Rotate on a usage limit
@@ -1933,12 +1943,16 @@ describes the recipe side. This section describes the cycle.
 
 The variable is read only from the process environment. A recipe context key
 cannot set it; see [Recipe context cannot set the profile](#recipe-context-cannot-set-the-profile).
-On platforms without Unix file semantics it is never enabled.
+On platforms without Unix file semantics, such as Windows, it is never
+enabled, even with `AMPLIHACK_ROTATE_ON_LIMIT=1`, and the value is not
+checked, so no warning is printed.
 
 Even when enabled, nothing is swapped and the run is not retried when:
 
-- auto-switch is turned off (`auto-switch off` or
-  `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`), or its settings file is damaged;
+- auto-switch is off, as `watch` judges it in [Rotate cycle](#rotate-cycle)
+  step 2: turned off by `auto-switch off` or `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`,
+  or `<root>/.auto-switch` is damaged and `AMPLIHACK_CLAUDE_AUTO_SWITCH` is
+  not `1`. A missing `<root>/.auto-switch` does not stop it;
 - the [prototype rotator](#rotate-prototype-coexistence) holds its lock;
 - the profile root has no profiles.
 
@@ -1951,9 +1965,10 @@ Even when enabled, nothing is swapped and the run is not retried when:
    under the lock, after recovery, and writes
    `skip: already swapped since the failed attempt started (live=<name>)`.
    A ledger that cannot be read gives `no swap`, never a swap.
-2. **Settings.** Resolve the [settings](#rotate-settings) from the
-   variables and defaults. An invalid value gives
-   `no swap` with reason `invalid rotate settings: <error>`.
+2. **Settings.** Resolve every [setting](#rotate-settings) from the
+   variables and defaults. An invalid value in any of them, including one
+   the cycle does not use, gives `no swap` with reason
+   `invalid rotate settings: <error>`.
 3. **Cycle.** Run the [cycle](#rotate-cycle) with the live login treated as
    exhausted, which puts the decision in threshold mode. Probes are still run.
    The live probe decides whether the forced exhaustion stands:
@@ -1971,7 +1986,8 @@ Even when enabled, nothing is swapped and the run is not retried when:
    with reason `rotator busy`.
 
 The hold does not apply, because the decision is in threshold mode. Only
-`min-headroom` and `margin` decide which candidates are eligible.
+`min-headroom` and `margin` decide which candidates are eligible; `fast-at`
+is used only in step 3.
 
 #### Results
 
@@ -1984,11 +2000,11 @@ The hold does not apply, because the decision is in threshold mode. Only
 
 | `no swap` reason | When |
 |------------------|------|
-| `auto-switch is off` | Auto-switch is turned off or its settings file is damaged. |
+| `auto-switch is off` | Auto-switch is turned off, or `<root>/.auto-switch` is damaged and `AMPLIHACK_CLAUDE_AUTO_SWITCH` is not `1`. |
 | `the external rotator is running` | The prototype holds its lock. |
 | `no profiles are configured` | `AMPLIHACK_ROTATE_ON_LIMIT=1`, but the root has no profiles. |
 | `the rotate ledger cannot be read` | The ledger fails the hardened read. |
-| `invalid rotate settings: <error>` | A variable is out of range. |
+| `invalid rotate settings: <error>` | A variable from [Rotate settings](#rotate-settings) is invalid, including one the cycle does not use. `AMPLIHACK_ROTATE_ON_LIMIT` is not one of them; an invalid value there only gives its warning. |
 | `live login not near a limit` | Step 3, second row. |
 | `no profile has capacity` | No candidate is eligible. |
 | `rotator busy` | Step 4 ran out of time. |
@@ -2212,7 +2228,7 @@ stdout only, without the time.
 | `skip: state lock busy` / `skip: state changed during measurement` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
 | `skip: already swapped since the failed attempt started (live=<name>)` | [On-limit](#rotate-on-a-usage-limit) cycle: another run or the background rotator swapped after the failed attempt started. Nothing is probed or moved. |
-| `skip: live login is not near a limit (s=<n>% w=<n>%); no forced swap` | On-limit cycle: the live login measured below `--fast-at` in both windows, so the failure was not taken as a reason to swap. |
+| `skip: live login is not near a limit (s=<n>% w=<n>%); no forced swap` | On-limit cycle: the live login measured below `fast-at` (`AMPLIHACK_ROTATE_FAST_AT`) in both windows, so the failure was not taken as a reason to swap. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |

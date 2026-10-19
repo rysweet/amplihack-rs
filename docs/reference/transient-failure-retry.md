@@ -141,11 +141,19 @@ more.
 | unset or empty | Rotate only while the background rotator (`amplihack profile rotate start`) is running. |
 | anything else | One warning on stderr, then as if unset. |
 
+On Windows and other platforms without Unix file semantics nothing is
+rotated, whatever the value, and stderr is what it was before this feature.
+
 The variable is read from the environment of the `amplihack recipe run`
 process. A recipe context key cannot set it: `--set amplihack_rotate_on_limit=1`
 is refused like every other `AMPLIHACK_` key. The rotation settings come from
 the `AMPLIHACK_ROTATE_*` variables in the same environment and their
 defaults, never from the flags given to `rotate start`.
+`AMPLIHACK_ROTATE_MIN_HEADROOM` and `AMPLIHACK_ROTATE_MARGIN` decide which
+profiles can take over, and `AMPLIHACK_ROTATE_FAST_AT` decides whether the
+live login is near enough to its limit for a swap. An invalid value in any
+of the [rotate setting variables](profile-command.md#rotate-settings) means
+no swap, with reason `invalid rotate settings: <error>`.
 
 ### What happens
 
@@ -179,6 +187,10 @@ attempt. A swap gives:
 amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"usage_limit","signal":"session limit","reasoning":"...","action":"retry_after_rotate","attempt":1,"retryable":false,...}
 WARNING: recipe run attempt 1 hit a usage limit — rotated work->personal; retrying once. [issue #1608]
 ```
+
+`retryable` stays `false`. It says whether the transport retry would run
+the attempt again, and it never does for a usage limit; the second run comes
+from the rotation, which `action` records.
 
 When another run had already swapped, the `WARNING` line reads
 `... hit a usage limit — the login was already rotated to personal; retrying once. [issue #1608]`.
@@ -229,8 +241,9 @@ beside `failure_classification`, whether the retried run succeeded or failed:
 | `failed_attempt` | The attempt number that failed on the limit. |
 
 If the retried run fails too, `failure_classification` describes that
-failure with `action: "terminal"`. `rotate_retry` is absent when no swap was
-made or rotation is disabled. If the retried run cannot produce a result at
+failure with `action: "terminal"`. `rotate_retry` is absent when the cycle
+returned `no_swap` or rotation is disabled; an `already_swapped` outcome
+carries it. If the retried run cannot produce a result at
 all (the runner fails to start, for example), there is no result JSON and the
 `WARNING` line is the only record of the rotation.
 

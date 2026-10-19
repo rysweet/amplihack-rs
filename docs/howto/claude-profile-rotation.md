@@ -71,8 +71,8 @@ amplihack profile rotate --dry-run
 
 ```
 cycle live=work work:s=88%,w=41% personal:s=20%,w=35% spare:s=0%,w=12%
-candidate personal: score=9.3 session_headroom=80 week_left=65 days_to_reset=7.0 (assumed) -> rejected: lower score than spare
-candidate spare: score=12.6 session_headroom=100 week_left=88 days_to_reset=7.0 (assumed) -> chosen: highest expiry-weighted score
+candidate personal: score=9.3 session_headroom=80 week_left=65 days_to_reset=7.00 (assumed) -> rejected: lower score than spare
+candidate spare: score=12.6 session_headroom=100 week_left=88 days_to_reset=7.00 (assumed) -> chosen: highest expiry-weighted score
 would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
@@ -228,7 +228,7 @@ the exact rules.
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
 | `--min-headroom N` | `AMPLIHACK_ROTATE_MIN_HEADROOM` | `50` | Never swap to a profile with less than N points of session left. `0` turns the floor off. |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
-| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | Check every `--fast-interval` seconds instead once the live session use reaches N%. `start` and `watch` only. |
+| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | Check every `--fast-interval` seconds instead once either window of the live login reaches N%. The flag is for `start` and `watch` only; the variable also applies to [rescued recipe runs](#rescue-recipe-runs-that-hit-a-limit). |
 | `--fast-interval SECS` | `AMPLIHACK_ROTATE_FAST_INTERVAL` | `60` | Time between cycles while the live login is near its limit. Never longer than `--interval`. `start` and `watch` only. |
 
 A flag beats the variable, and the variable beats the default. For example, to
@@ -284,8 +284,9 @@ rejected. To go back to choosing by headroom over the live account alone:
 amplihack profile rotate start --min-headroom 0
 ```
 
-While the live session is at or above `--fast-at` (70% by default), the
-background rotator checks every `--fast-interval` seconds (60 by default)
+While either window of the live login is at or above `--fast-at` (70% by
+default), the background rotator checks every `--fast-interval` seconds (60
+by default)
 instead of every `--interval`, so a session that fills quickly is caught
 before it hits 100%.
 
@@ -339,8 +340,12 @@ and credit limits are never rescued, because a different login does not
 clear them. Each run is retried at most once.
 
 This rotation reads only the `AMPLIHACK_ROTATE_*` variables in the recipe's
-shell, not the flags you gave `start`. To set the floor for both, use the
-variable:
+shell, not the flags you gave `start`. It uses three of them: the floor
+(`AMPLIHACK_ROTATE_MIN_HEADROOM`), the margin (`AMPLIHACK_ROTATE_MARGIN`)
+and `AMPLIHACK_ROTATE_FAST_AT`. If the live login measures below
+`AMPLIHACK_ROTATE_FAST_AT` in both windows, the failure is not taken as a
+limit and nothing is swapped. An invalid value in any `AMPLIHACK_ROTATE_*`
+setting stops the rescue. To set the floor for both, use the variable:
 
 ```bash
 export AMPLIHACK_ROTATE_MIN_HEADROOM=60
@@ -359,8 +364,8 @@ the previous one.
 
 ```
 2026-10-18T13:00:05Z cycle live=spare spare:s=4%,w=13% personal:s=20%,w=35% work:s=88%,w=41%
-2026-10-18T17:10:05Z candidate personal: score=21.3 session_headroom=100 week_left=64 days_to_reset=3.0 -> chosen: highest expiry-weighted score
-2026-10-18T17:10:05Z candidate work: score=12.0 session_headroom=12 week_left=59 days_to_reset=2.5 -> rejected: session headroom 12 < min 50
+2026-10-18T17:10:05Z candidate personal: score=21.3 session_headroom=100 week_left=64 days_to_reset=3.00 -> chosen: highest expiry-weighted score
+2026-10-18T17:10:05Z candidate work: score=12.0 session_headroom=12 week_left=59 days_to_reset=2.50 -> rejected: session headroom 12 < min 50
 2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% target s=0% w=36% reason=threshold
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
