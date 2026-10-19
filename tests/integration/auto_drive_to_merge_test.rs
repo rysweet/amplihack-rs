@@ -3434,7 +3434,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        for p in [guard.clone(), guard.join("gh")] {
+        let tools = guard.parent().expect("tools dir").to_path_buf();
+        for p in [tools, guard.clone(), guard.join("gh")] {
             fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod guard");
         }
     }

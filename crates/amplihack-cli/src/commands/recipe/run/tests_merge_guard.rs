@@ -1,7 +1,7 @@
 //! Issue #1551: when the `gh` merge guard applies, and where it is found.
 
 use super::merge_guard::{
-    GUARD_REL, MERGE_GUARD_ENV, guard_applies, guard_dir_for_home, locate_guard_dir,
+    GATE_FILES, GUARD_REL, MERGE_GUARD_ENV, guard_applies, guard_dir_for_home, locate_guard_dir,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -83,7 +83,9 @@ fn bundle_with_shim(mode: Option<u32>) -> (tempfile::TempDir, PathBuf) {
     let home = tmp.path().to_path_buf();
     let dir = home.join(GUARD_REL);
     fs::create_dir_all(&dir).unwrap();
-    // Explicit, so the umask (often 002) cannot make the dir group-writable.
+    // Explicit, so the umask (often 002) cannot make the dir, or tools/
+    // above it, group-writable.
+    set_mode(dir.parent().unwrap(), 0o755);
     set_mode(&dir, 0o755);
     if let Some(mode) = mode {
         let shim = dir.join("gh");
@@ -281,4 +283,94 @@ fn locate_guard_dir_accepts_owner_only_modes() {
             "shim {shim_mode:o}, dir {dir_mode:o}"
         );
     }
+}
+
+/// G11: the shim lets the gate merge, so a writable tools/ directory or gate
+/// file is as untrustworthy as a writable shim.
+#[cfg(unix)]
+fn assert_refused_naming(home: &Path, path: &Path, what: &str) {
+    let err = locate_guard_dir(home)
+        .expect_err(&format!("{what} must fail closed"))
+        .to_string();
+    assert!(err.contains("(#1551)"), "{what}: {err}");
+    assert!(
+        err.contains(&path.display().to_string()),
+        "{what}: the error must name {}: {err}",
+        path.display()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn locate_guard_dir_refuses_a_group_writable_tools_dir() {
+    let (_tmp, home) = bundle_with_shim(Some(0o755));
+    let tools = home.join(GUARD_REL).parent().unwrap().to_path_buf();
+    set_mode(&tools, 0o775);
+    assert_refused_naming(&home, &tools, "a 0775 tools dir");
+}
+
+#[cfg(unix)]
+#[test]
+fn locate_guard_dir_refuses_a_writable_gate_or_gate_helper() {
+    for name in GATE_FILES {
+        for mode in [0o775, 0o757] {
+            let (_tmp, home) = bundle_with_shim(Some(0o755));
+            let file = home.join(GUARD_REL).parent().unwrap().join(name);
+            fs::write(&file, "#!/bin/bash\n").unwrap();
+            set_mode(&file, mode);
+            assert_refused_naming(&home, &file, &format!("a {mode:o} {name}"));
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn locate_guard_dir_accepts_read_only_gate_files_and_ignores_absent_ones() {
+    let (_tmp, home) = bundle_with_shim(Some(0o755));
+    let gate = home.join(GUARD_REL).parent().unwrap().join(GATE_FILES[0]);
+    fs::write(&gate, "#!/bin/bash\n").unwrap();
+    set_mode(&gate, 0o755);
+    locate_guard_dir(&home).expect("a 0755 gate beside an absent helper is trusted");
+}
+
+/// Issue #1551 D2: the guard is switched on by recipe name, so renaming an
+/// auto-drive recipe would silently switch it off. Every shipped recipe that
+/// is part of auto-drive (the entry recipe and each `autodrive-*.yaml`) must
+/// still be matched by its `name:`, and so must every recipe that runs the
+/// merge gate.
+#[test]
+fn every_shipped_auto_drive_recipe_is_guarded_by_its_name() {
+    let recipes = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../amplifier-bundle/recipes");
+    let mut checked = 0;
+    for entry in fs::read_dir(&recipes).expect("the bundle's recipes dir") {
+        let path = entry.unwrap().path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yaml") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or_default();
+        let body = fs::read_to_string(&path).unwrap();
+        let in_family = stem == "auto-drive-to-merge" || stem.starts_with("autodrive-");
+        if !in_family && !body.contains("autodrive_merge_gate.sh") {
+            continue;
+        }
+        let name = body
+            .lines()
+            .find_map(|l| l.strip_prefix("name:"))
+            .map(|v| v.trim().trim_matches('"').trim_matches('\'').to_string())
+            .unwrap_or_else(|| panic!("{} has no top-level name:", path.display()));
+        assert!(
+            guard_applies(&name, Path::new("unrelated.yaml"), None),
+            "{}: name {name:?} no longer switches the #1551 merge guard on",
+            path.display()
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 2,
+        "expected the auto-drive recipes under {}",
+        recipes.display()
+    );
 }

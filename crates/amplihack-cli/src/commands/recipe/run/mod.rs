@@ -9,7 +9,7 @@ pub(crate) mod execute;
 mod failure_class;
 mod format;
 /// Issue #1551 — the `gh` merge guard for auto-drive runs.
-mod merge_guard;
+pub(crate) mod merge_guard;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 

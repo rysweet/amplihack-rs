@@ -543,17 +543,26 @@ pub(super) fn create_runtime_dirs(claude_dir: &Path) -> Result<()> {
 
 /// Issue #1551: `amplihack recipe run` refuses a gh merge guard that group or
 /// others can write, so the staged shim and its directory get exactly 0755
-/// whatever mode the checkout and its umask gave them. A bundle without the
-/// guard is left alone.
+/// whatever mode the checkout and its umask gave them. The `tools/` directory
+/// and the gate files it trusts lose their group and other write bits for the
+/// same reason. A bundle without the guard is left alone.
 fn secure_merge_guard(bundle: &Path) -> Result<()> {
-    let dir = bundle.join("tools/gh-merge-guard");
+    let tools = bundle.join("tools");
+    let dir = tools.join("gh-merge-guard");
     let shim = dir.join("gh");
     if !shim.is_file() {
         return Ok(());
     }
     #[cfg(unix)]
     {
+        use crate::commands::recipe::run::merge_guard::GATE_FILES;
         use std::os::unix::fs::PermissionsExt;
+        let failed = |path: &Path| {
+            format!(
+                "failed to remove group and other write access from {} (#1551)",
+                path.display()
+            )
+        };
         for path in [&shim, &dir] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).with_context(|| {
                 format!(
@@ -561,6 +570,15 @@ fn secure_merge_guard(bundle: &Path) -> Result<()> {
                     path.display()
                 )
             })?;
+        }
+        let gate_files = GATE_FILES.iter().map(|name| tools.join(name));
+        for path in std::iter::once(tools.clone()).chain(gate_files.filter(|p| p.is_file())) {
+            let mode = fs::metadata(&path)
+                .with_context(|| failed(&path))?
+                .permissions()
+                .mode();
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode & 0o7755))
+                .with_context(|| failed(&path))?;
         }
     }
     Ok(())

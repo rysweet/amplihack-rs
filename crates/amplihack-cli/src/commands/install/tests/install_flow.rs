@@ -935,6 +935,49 @@ fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
     }
 }
 
+/// Issue #1551 G11: the guard also trusts tools/ and the gate files in it, so
+/// the install removes their group and other write bits, keeping the rest.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    let tools = repo_root.join("amplifier-bundle/tools");
+    let guard = tools.join("gh-merge-guard");
+    fs::create_dir_all(&guard).unwrap();
+    fs::write(
+        guard.join("gh"),
+        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+    )
+    .unwrap();
+    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(tools.join("autodrive_merge_gate.sh"), "#!/bin/bash\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_merge_gate.sh"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    fs::write(tools.join("autodrive_state.sh"), "# sourced\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_state.sh"),
+        fs::Permissions::from_mode(0o664),
+    )
+    .unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o775)).unwrap();
+
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&staged) & 0o022, 0, "tools/ mode {:o}", mode(&staged));
+    assert_eq!(mode(&staged.join("autodrive_merge_gate.sh")), 0o755);
+    assert_eq!(mode(&staged.join("autodrive_state.sh")), 0o644);
+}
+
 #[test]
 fn copy_amplifier_bundle_replaces_stale_installed_assets_instead_of_merging() {
     let temp = tempfile::tempdir().unwrap();

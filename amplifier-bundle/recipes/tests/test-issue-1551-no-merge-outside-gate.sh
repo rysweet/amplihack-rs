@@ -341,6 +341,18 @@ RUN_ENV=("STUB_ALIASES=pm: pr merge
 co: pr checkout
 ")
 refused T1-alias-existing "$L_PR" pm 38
+# An extension runs its own code and can merge without calling back into the
+# guard: running, installing or upgrading one is refused, and so is a word
+# that is neither a built-in nor an alias, or an alias that expands to one.
+L_EXT='gh extension'
+refused T1-extension-direct "$L_EXT" some-extension do-thing
+refused T1-extension-exec "$L_EXT" extension exec some-extension
+refused T1-extension-install "$L_EXT" extension install o/gh-merger
+refused T1-extension-install-ext "$L_EXT" ext install o/gh-merger
+refused T1-extension-upgrade "$L_EXT" extensions upgrade --all
+RUN_ENV=("STUB_ALIASES=me: some-extension do-thing")
+refused T1-alias-to-extension "$L_EXT" me
+RUN_ENV=()
 # `gh alias list` failing makes an unknown first word ambiguous: refused.
 RUN_ENV=("STUB_ALIAS_RC=1")
 reset_stub; agent_gh pm 38; rc=$?
@@ -580,9 +592,12 @@ parity T4-auth-status auth status
 RUN_ENV=("STUB_RC=4")
 parity T4-nonzero-rc pr view 38
 parity T4-nonzero-rc-api api repos/o/r/pulls/38
-RUN_ENV=("STUB_RC=1" "STUB_ALIASES=")
-# An extension (neither built-in nor alias) passes through.
-parity T4-extension some-extension do-thing
+# Built-ins and their aliases that gh itself defines still pass through.
+parity T4-discussion discussion list
+parity T4-codespace-alias cs list
+parity T4-ruleset-alias rs list
+parity T4-ext-list extension list
+parity T4-ext-remove ext remove some-ext
 RUN_ENV=()
 # stdin reaches the real gh.
 printf 'body from stdin\n' > "${WORK}/stdin.txt"
@@ -935,9 +950,11 @@ p[m]: pr merge
 *: pr merge
 pa: api -X PUT repos/o/r/pulls/38/merge
 ")
-parity SEC6-dot-star-not-pattern mx 38
-parity SEC6-bracket-not-pattern pm 38
-parity SEC6-star-not-pattern zz 38
+# A word that matches an alias name only as a pattern is no alias: it is
+# refused as an extension, never expanded to the alias's `pr merge`.
+refused SEC6-dot-star-not-pattern "$L_EXT" mx 38
+refused SEC6-bracket-not-pattern "$L_EXT" pm 38
+refused SEC6-star-not-pattern "$L_EXT" zz 38
 refused SEC6-literal-dot-star "$L_PR" 'm.*' 38
 refused SEC6-literal-bracket "$L_PR" 'p[m]' 38
 refused SEC6-alias-to-api "$L_API" pa

@@ -8,7 +8,8 @@
 # unchanged.
 #
 # Refused: `gh pr merge`, the REST merge endpoints, GraphQL merge mutations,
-# GraphQL queries the guard cannot read, and aliases that merge. A merge form
+# GraphQL queries the guard cannot read, aliases that merge, and running or
+# installing a gh extension. A merge form
 # is allowed only when this process's immediate parent is the trusted gate,
 # checked through /proc (no /proc: refused).
 #
@@ -20,7 +21,7 @@
 
 # Second layer for anything this script starts (SR-4).
 builtin unset -f refuse classify classify_pr classify_api classify_alias_cmd \
-  classify_alias_use is_merge_endpoint is_graphql_endpoint names_merge find_real_gh carries_marker \
+  classify_alias_use classify_extension_cmd is_merge_endpoint is_graphql_endpoint names_merge find_real_gh carries_marker \
   parent_is_gate parent_pid_matches parent_environ_clean sys_tool realpath \
   readlink stat test cd pwd 2>/dev/null
 builtin unset BASH_ENV ENV
@@ -267,8 +268,24 @@ classify_alias_cmd() {
   return 0
 }
 
+# classify_extension_cmd: an extension runs its own code, which can merge
+# without calling back into this guard, so installing, upgrading or running
+# one is refused. Listing, removing, searching and creating are not.
+classify_extension_cmd() {
+  local t
+  for t in "$@"; do
+    [[ "$t" == -* ]] && continue
+    case "$t" in
+      install|upgrade|exec) CLASS='gh extension' ;;
+    esac
+    return 0
+  done
+  return 0
+}
+
 # classify_alias_use <word> <args...>: a word that is not a built-in command
-# may be an alias. Its name is compared as a literal string, never a pattern.
+# is an alias or an extension. An alias name is compared as a literal string,
+# never a pattern; a word that names no alias is an extension, refused.
 classify_alias_use() {
   local cmd="$1" out line exp
   shift
@@ -287,6 +304,7 @@ classify_alias_use() {
     classify 0 ${words[@]+"${words[@]}"} "$@"
     return 0
   done <<< "$out"
+  CLASS='gh extension'
   return 0
 }
 
@@ -309,10 +327,16 @@ classify() {
     pr) classify_pr "$@" ;;
     api) classify_api "$@" ;;
     alias) classify_alias_cmd "$@" ;;
-    # Built-in commands that cannot merge. Fails safe: a subcommand missing
-    # here is looked up as an alias below, never passed through unchecked.
-    accessibility|agent-task|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|org|preview|project|release|repo|ruleset|run|search|secret|ssh-key|status|variable|version|workflow) ;;
-    *) [[ "$allow_alias" == 1 ]] && classify_alias_use "$cmd" "$@" ;;
+    extension|extensions|ext) classify_extension_cmd "$@" ;;
+    # Built-in commands that cannot merge. Fails safe: any other word is an
+    # alias (checked below) or an extension, which is refused.
+    accessibility|agent|agents|agent-task|agent-tasks|at|attestation|auth|browse|cache|codespace|completion|config|copilot|cs|discussion|gist|gpg-key|help|issue|label|licenses|org|preview|project|release|repo|rs|ruleset|run|search|secret|skill|skills|ssh-key|status|variable|version|workflow) ;;
+    *)
+      if [[ "$allow_alias" == 1 ]]; then
+        classify_alias_use "$cmd" "$@"
+      else
+        CLASS='gh extension'
+      fi ;;
   esac
   return 0
 }

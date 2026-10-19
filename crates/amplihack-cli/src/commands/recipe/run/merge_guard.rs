@@ -14,6 +14,15 @@ pub(crate) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 /// The shim's directory, relative to `AMPLIHACK_HOME`.
 pub(crate) const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 
+/// The files in the guard directory's parent (`tools/`) that the shim trusts
+/// to merge: the gate, and the helpers the gate sources. Replacing any of
+/// them is as good as replacing the shim, so they get the shim's mode check.
+pub(crate) const GATE_FILES: [&str; 3] = [
+    "autodrive_merge_gate.sh",
+    "autodrive_state.sh",
+    "autodrive_trust.sh",
+];
+
 /// Whether a run of the recipe `name`, read from `path`, gets the guard.
 ///
 /// True for `auto-drive-to-merge` and any `autodrive-*` recipe, matched on
@@ -48,7 +57,9 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 /// There is no fallback location: a missing shim, or a `home` that is not an
 /// absolute path (which would resolve against the working directory), stops
 /// the run. So does a shim or guard directory that group or others can write
-/// (G11): anyone with that access could replace the guard.
+/// (G11): anyone with that access could replace the guard. The same holds
+/// for the `tools/` directory above it and for each [`GATE_FILES`] entry that
+/// exists there, since the shim lets the gate merge.
 pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
     let dir = home.join(GUARD_REL);
     let shim = dir.join("gh");
@@ -71,6 +82,21 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
              (#1551). Rerun `amplihack install`, or chmod 0755 the directory and its gh.",
             dir.display()
         );
+    }
+    let tools = dir
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| anyhow!("amplihack: merge guard dir has no parent (#1551)"))?;
+    let gate_files = GATE_FILES.iter().map(|name| tools.join(name));
+    for path in std::iter::once(tools.clone()).chain(gate_files.filter(|p| p.exists())) {
+        if is_group_or_other_writable(&path) {
+            bail!(
+                "amplihack: {}, which the merge guard trusts to merge, is writable by group or \
+                 others; refusing to run auto-drive (#1551). Rerun `amplihack install`, or \
+                 `chmod go-w` it.",
+                path.display()
+            );
+        }
     }
     Ok(dir)
 }

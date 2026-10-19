@@ -68,7 +68,10 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         let dir = self.guard_dir();
         fs::create_dir_all(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        // tools/ too: G11 also refuses a writable directory above the guard.
+        for d in [dir.parent().unwrap(), dir.as_path()] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o755)).unwrap();
+        }
     }
 
     /// A fixture whose bundle holds the shipped shim itself.
