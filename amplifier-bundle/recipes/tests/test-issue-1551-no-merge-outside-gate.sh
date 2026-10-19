@@ -998,14 +998,15 @@ secret_kept SEC7-gql "$L_GQL" api graphql -f 'query=mutation{mergePullRequest(in
 secret_kept SEC7-gql-unread "$L_GQL_UNREAD" api graphql -F 'query=@SECRET_1551_file'
 secret_kept SEC7-alias "$L_ALIAS" alias set pm 'pr merge SECRET_1551_x'
 
-# SEC8. macOS ships /bin/bash 3.2, where `${x,,}` is a bad substitution that
-# ends the script: lowercasing lives in to_lower only, and its tr fallback
-# (forced here in a copy) classifies like bash 4 and still passes through.
+# SEC8. macOS ships /bin/bash 3.2, where the bash-4 lowercase expansion is a
+# bad substitution that ends the script: lowercasing lives in to_lower only,
+# and its tr fallback (forced here in a copy) classifies like bash 4 and still
+# passes through.
 if [ "$(grep -v '^[[:space:]]*#' "${SHIM}" | grep -c ',,}')" = "1" ] \
    && grep -A3 '^to_lower()' "${SHIM}" | grep -qF 'LOWER="${1,,}"'; then
-  pass "SEC8-lower-once" "the shim lowercases with \${x,,} only inside to_lower"
+  pass "SEC8-lower-once" "the shim uses the bash-4 lowercase expansion only inside to_lower"
 else
-  fail "SEC8-lower-once" "\${x,,} outside to_lower breaks the shim under bash 3.2"
+  fail "SEC8-lower-once" "bash-4 lowercase expansion outside to_lower breaks the shim under bash 3.2"
 fi
 OLD_GUARD="${WORK}/old-bash/gh-merge-guard"; mkdir -p "${OLD_GUARD}"
 sed 's/BASH_VERSINFO\[0\] >= 4/BASH_VERSINFO[0] >= 99/' "${SHIM}" > "${OLD_GUARD}/gh"
