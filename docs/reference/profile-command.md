@@ -1320,7 +1320,10 @@ The launch runs Claude under a supervising amplihack process:
   `<root>/.auto-switch.d/rerun/` and printed once, after the final attempt;
 - stdin, unless it is a terminal, is copied once, before the first attempt,
   to a private file in the same directory, and every attempt reopens and
-  reads it from the start (see [Standard input](#standard-input));
+  reads it from the start (see [Standard input](#standard-input)). Before
+  the usage-limit wait was added, attempts inherited stdin directly, so a
+  rerun could get an empty or partly read prompt; the copy replaces that
+  for auto-switch reruns too;
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
 
@@ -1452,7 +1455,10 @@ A launch can wait when all of these hold, checked in this order:
    check passes, so a launch typed at a terminal never reads them and never
    warns about them;
 5. the wait is enabled; and
-6. the mode is not `--docker` or `--auto`.
+6. the mode is not `--docker` or `--auto`. With an inherited profile these
+   modes never reach this check: the launch is refused earlier with
+   `not applied with --docker, --auto or Docker`. So check 6 only matters
+   for a launch with no inherited profile.
 
 A launch that fails checks 1 to 3 is left alone without a log line, exactly
 as before. A launch that passes them is then handled by one of these rows:
@@ -1521,7 +1527,8 @@ If the copy cannot be made:
 #### When `not_supervised` is written
 
 When checks 1 to 5 pass but the step cannot be supervised (a `--docker` or
-`--auto` mode, or a scratch or stdin failure before input is read), the
+`--auto` mode with no inherited profile, or a scratch or stdin failure
+before input is read), the
 launch writes `skipped reason=not_supervised` once, before Claude starts.
 It is the only `skipped` line written without a usage-limit failure,
 because an unsupervised launch cannot see its own result.
@@ -1534,8 +1541,9 @@ because an unsupervised launch cannot see its own result.
    the auto-switch loop.
 3. When that loop has no profile left, or auto-switch is off, and the wait
    has not been used for this step, wait once.
-4. Run exactly one more attempt with the same executable, arguments,
-   environment and stdin copy, under the inherited profile, or under no
+4. Unless the wait ended with `step timeout` or `signal`, run exactly one
+   more attempt with the same executable, arguments, environment and stdin
+   copy, under the inherited profile, or under no
    override when none was inherited. The last auto-switch candidate is not
    reused.
 5. Pass that attempt's output and exit code up.
@@ -1551,16 +1559,20 @@ cannot start a second wait.
 
 The order of the checks after a usage limit is fixed:
 
-1. a signal already received ends the step with `128` plus the signal
-   number, with no log line;
+1. a signal already received ends the step: the supervisor prints the
+   failed attempt's held-back stdout, deletes the stdin copy and exits with
+   `128` plus the signal number, exactly as after `end reason=signal`. No
+   log line is written, because no wait started;
 2. auto-switch on, the wait unused, and an eligible profile left: rerun
    under that profile at once, with no wait;
 3. the wait disabled: `skipped reason=disabled`, and the attempt's result
    is passed up;
 4. the wait already used: `skipped reason=already_waited`, and the
    attempt's result is passed up;
-5. otherwise: `start`, the wait, `end`, then `resume` and the retry, or
-   `128` plus the signal number after `end reason=signal`.
+5. otherwise: `start`, the wait and `end`. After `end reason=signal` the
+   step exits with `128` plus the signal number. After
+   `end reason=step timeout` the attempt's result is passed up with no
+   retry. After any other end reason, `resume` and the retry follow.
 
 The retry runs the step **from the start**: Claude gets the same prompt and
 has no memory of the failed attempt. Anything that attempt already did,
@@ -1617,9 +1629,10 @@ The clock time is placed on today's date in the named zone:
 
 - If that instant is in the future, or at most 10 minutes in the past, it
   is used as is. An instant up to 10 minutes in the past is already
-  reached, so the wait ends at once with `end reason=reset reached` and the
-  retry runs. This stops a message printed just after the reset from
-  causing a five-hour wait.
+  reached: the wait has length zero and ends at once with
+  `end reason=reset reached`, and the retry runs (see
+  [Past resets](#past-resets)). This stops a message printed just after
+  the reset from causing a five-hour wait.
 - If it is more than 10 minutes in the past, the same clock time tomorrow
   is used.
 
@@ -1634,10 +1647,20 @@ Daylight saving changes:
 
 #### Clamping
 
-A reset read for the wait, in either form, is clamped to the range from now
-to now plus five hours. A reset already in the past means no wait: the end
-reason is `reset reached` and the retry runs at once. When the output has a
-usage-limit marker but neither form gives a reset, the reset is `unparsed`.
+A reset read for the wait, in either form, is capped at now plus five
+hours. It is not raised to now: a reset in the past is kept as read, so the
+deadline step below can tell it apart from a reset that is exactly now.
+When the output has a usage-limit marker but neither form gives a reset,
+the reset is `unparsed`.
+
+#### Past resets
+
+A reset at or before the moment the wait starts (an epoch in the past, or a
+clock time inside the 10-minute grace) has already been reached. The
+deadline is then now itself, not now plus the 120-second margin: `start` is
+written with `until=` equal to the start time and `bound=reset+margin`,
+the wait ends at once with `end reason=reset reached`, and the retry runs.
+The 120-second margin applies only to a reset still in the future.
 
 The auto-switch ledger keeps its existing rule: a limit without a readable
 reset is recorded as resetting five hours from now. That default is never
@@ -1649,14 +1672,16 @@ The wait ends at the earliest candidate that applies:
 
 | Candidate | Applies when | `bound=` |
 |-----------|--------------|----------|
-| reset + 120 s | a reset was read | `reset+margin` |
+| reset + 120 s, or now when the reset is at or before now | a reset was read | `reset+margin` |
 | now + 1800 s | no reset was read | `default` |
 | now + `max_wait_secs` | a maximum is configured | `max_wait` |
 | step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s | `AMPLIHACK_STEP_TIMEOUT` is set and greater than 0 | `step_timeout` |
 
 "Now" is when the wait starts. "Step start" is when the supervisor started,
-which is before the first attempt. A step timeout of 60 s or less gives a
-deadline of now. All arithmetic saturates, so no input can make the wait
+which is before the first attempt. The `step_timeout` deadline is never
+earlier than now: a step timeout of 60 s or less, or one already used up,
+gives a deadline of now, and the step then ends without a retry (see
+[Ending the wait early](#ending-the-wait-early)). All arithmetic saturates, so no input can make the wait
 longer than five hours and 120 seconds. On a tie, the earlier row in the
 table names the bound.
 
@@ -1711,11 +1736,23 @@ absent for its part, with no warning. The fingerprint is held only in
 memory: it is never printed, logged or written to disk, and no account
 name, UUID or e-mail address appears in any log line.
 
-After `reset reached`, `max reached`, `step timeout` and `login changed`,
-the retry runs. After `signal`, the supervisor prints the failed attempt's
-buffered stdout, deletes the stdin copy and exits with `128` plus the
-signal number. No attempt is running during the wait and no login is
-moved, so nothing is left behind.
+After `reset reached`, `max reached` and `login changed`, the retry runs.
+
+After `step timeout` there is no retry. The step timeout is less than 60 s
+away, too little for a fresh Claude attempt to finish, and the runner
+would kill it part way. The supervisor prints the failed attempt's
+held-back stdout, deletes the stdin copy and exits with that attempt's exit
+code, so the runner sees the usage-limit failure and reports it with its
+usual message. A step timeout of 60 s or less, or one already used up when
+the wait starts, gives a deadline of now, so the wait ends at once with
+`end reason=step timeout` and no retry.
+
+After `signal`, the supervisor prints the failed attempt's held-back
+stdout, deletes the stdin copy and exits with `128` plus the signal
+number.
+
+No attempt is running during the wait and no login is moved, so nothing is
+left behind on any of these paths.
 
 ### Log lines
 
@@ -1729,7 +1766,7 @@ names are fixed; any new field is added at the end of its line.
 | `start` | `reason=usage_limit harness=claude reset=<time>\|unparsed until=<time> bound=reset+margin\|default\|max_wait\|step_timeout` | when the wait begins |
 | `progress` | `remaining=<secs>s` | every 60 s while waiting |
 | `end` | `reason=reset reached\|login changed\|max reached\|step timeout\|signal` | when the wait ends |
-| `resume` | `attempt=<n>` | before the retry; `<n>` counts every attempt in the step, including auto-switch reruns |
+| `resume` | `attempt=<n>` | before the retry, so not after `end reason=step timeout` or `signal`; `<n>` counts every attempt in the step, including auto-switch reruns |
 | `skipped` | `reason=disabled\|already_waited\|not_supervised` | `disabled` and `already_waited`: once, when a supervised step hits a usage limit and does not wait. `not_supervised`: once, at launch; see [Gate](#gate) |
 
 Example of a step that waited for the login to change:
@@ -1806,7 +1843,7 @@ builds ignore them.
 | Variable | Effect |
 |----------|--------|
 | `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW` | Unix seconds used as the time the wait starts. |
-| `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE` | Divides every sleep by this number. Must be finite and at least 1; any other value is ignored. |
+| `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE` | Divides every sleep by this number. Must be a finite number from 1 to 1000000 inclusive; any other value is ignored and sleeps run in real time. |
 
 Log lines and deadlines use virtual time; signals are still checked at
 least once per real second. Unit tests do not use these variables: they

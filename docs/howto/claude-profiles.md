@@ -771,7 +771,9 @@ applies when all of these hold:
 - the launch prints and exits (`-p`, `--print` or `--print=`);
 - it runs inside `amplihack recipe run`, which sets
   `AMPLIHACK_NONINTERACTIVE=1` for every step;
-- there is no `--profile` flag, and the launch is not `--docker` or `--auto`;
+- there is no `--profile` flag, and the launch is not `--docker` or `--auto`
+  (with an inherited profile those modes are refused outright; see
+  [Limits](#limits));
 - the attempt exits non-zero and its output matches the recipe runner's
   usage-limit check, the same check
   [auto-switch](#what-happens-for-nested-launches-and-recipe-steps) uses.
@@ -797,7 +799,8 @@ at once.
    - the configured maximum, if one is set;
    - one minute before the step's timeout, when the run was started with
      `--step-timeout`.
-5. The step runs once more, with the same arguments, environment and
+5. Unless the wait ended because of the step timeout or a signal, the step
+   runs once more, with the same arguments, environment and
    standard input. It runs under the profile it inherited, or with no
    profile if it inherited none.
 6. That attempt's output and exit code go to the recipe runner. If it hits
@@ -811,8 +814,9 @@ does not guess a missing zone and does not read dates, so a weekly-limit
 message such as `resets Oct 20 at 9am` gets the 30-minute default. A reset
 time more than five hours away is treated as five hours away.
 
-A clock time up to 10 minutes in the past counts as already reached: the
-step runs again at once. A clock time more than 10 minutes in the past
+A reset time already in the past, including a clock time up to 10 minutes
+in the past, counts as already reached: the step runs again at once, with
+no two-minute margin. A clock time more than 10 minutes in the past
 means the same time tomorrow, which the five-hour cap then shortens.
 
 "The login changing" means a different account, not a refreshed token.
@@ -915,9 +919,12 @@ no login is moved.
 - **Claude Code only.** Codex and Copilot steps are not supervised.
 - **Unix only.** On other platforms a usage limit ends the run as before.
 - **Step timeouts still apply.** The recipe runner can stop a step only at
-  its timeout, so the wait ends a minute before it. Start long runs without
-  `--step-timeout`, or with a value larger than the longest wait you
-  accept.
+  its timeout, so the wait ends a minute before it, with
+  `end reason=step timeout`. The step is then **not** run again, because a
+  fresh attempt would be killed part way; the usage-limit failure goes to
+  the runner, which ends the run. Start long runs without `--step-timeout`,
+  or with a value larger than the longest wait you accept plus the time the
+  step itself needs.
 
 ## Limits
 
