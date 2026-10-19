@@ -1183,8 +1183,9 @@ exit 1
                 &mut master_fd,
                 &mut slave_fd,
                 std::ptr::null_mut(),
-                std::ptr::null(),
-                std::ptr::null(),
+                // `*mut` on macOS and `*const` on Linux; `*mut` coerces to both.
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
             )
         };
         assert_eq!(rc, 0, "failed to allocate PTY");

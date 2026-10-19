@@ -12,7 +12,7 @@ inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
   - name: repo_path
-    description: "Absolute path to the repository root. Required by step-22b-final-status that runs the final status report against the parent repo."
+    description: "Absolute path to the repository root. Required by step-22b-final-status, which locates helpers through it and falls back to it only when the run's worktree (worktree_setup.worktree_path) is unset or gone; the final status itself runs in that worktree (issue #1596)."
 
 context:
   worktree_setup: ""
