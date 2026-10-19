@@ -353,6 +353,68 @@ for tok in CONTINUE DONE STUCK; do
 done
 
 # ---------------------------------------------------------------------------
+# 6a. Issue #1597 — DONE needs this round's own verdict to be the clean token.
+# ---------------------------------------------------------------------------
+# The evaluator answered DONE over a round whose reviewer said CONCERNS (or
+# NOT_MERGE_READY) because the findings looked addressed. The caller now
+# passes its clean token and this round's verdict, and the Decide rules make
+# DONE legal only when the two are equal.
+CONTEXT_BLOCK="$(LC_ALL=C awk '/^context:/ { inctx = 1; next } inctx && /^[^ #]/ { exit } inctx { print }' "${RECIPE}")"
+for var in loop_clean_token loop_round_verdict; do
+    if printf '%s\n' "${CONTEXT_BLOCK}" | grep -qE "^  ${var}: \"\"[[:space:]]*(#.*)?$"; then
+        pass "1597-context-${var}" "the recipe declares ${var} in context:, empty by default"
+    else
+        fail "1597-context-${var}" "context: has no '${var}: \"\"' entry"
+    fi
+    if printf '%s' "${PROMPT}" | grep -qF "{{${var}}}"; then
+        pass "1597-prompt-${var}" "the evaluator prompt shows {{${var}}} to the agent"
+    else
+        fail "1597-prompt-${var}" "the step-02 prompt never shows {{${var}}}"
+    fi
+done
+DECIDE="$(printf '%s\n' "${PROMPT}" | LC_ALL=C awk '/^## Decide/ { on = 1; next } on && /^## / { exit } on { print }')"
+DONE_RULE="$(printf '%s\n' "${DECIDE}" | LC_ALL=C awk '/^- `DONE`/ { on = 1; print; next } on && /^- `/ { exit } on && /^$/ { exit } on { print }')"
+if [[ -n "${DONE_RULE}" ]] && printf '%s' "${DONE_RULE}" | grep -qF '{{loop_round_verdict}}' \
+   && printf '%s' "${DONE_RULE}" | grep -qF '{{loop_clean_token}}'; then
+    pass "1597-done-rule" "the Decide section's DONE rule requires {{loop_round_verdict}} to equal {{loop_clean_token}}"
+else
+    fail "1597-done-rule" "the DONE rule in ## Decide does not reference both placeholders: [${DONE_RULE}]"
+fi
+# The #1587 round: CONCERNS, fixed by a PR-description edit, zero commits,
+# nothing re-reviewed yet. Forbidding DONE without naming CONTINUE for it lets
+# "zero and zero" plus "if you are not sure, answer STUCK" decide, and the loop
+# honours an evaluator STUCK, so #1597 comes back by another path. The DONE
+# rule must name the zero-commit case as CONTINUE and keep STUCK for a round
+# that acted on nothing; the evidence and fallback lines must not override it.
+DONE_FLAT="$(printf '%s' "${DONE_RULE}" | tr -s '[:space:]' ' ')"
+if printf '%s' "${DONE_FLAT}" | grep -qF '`CONTINUE` if it acted on its findings, EVEN WITH ZERO COMMITS' \
+   && printf '%s' "${DONE_FLAT}" | grep -qF 'PR-description edit or a thread reply' \
+   && printf '%s' "${DONE_FLAT}" | grep -qF '`STUCK` only if it neither changed code nor acted on a finding'; then
+    pass "1597-zero-commit-fix-is-continue" "the DONE rule names a non-clean round fixed outside the diff as CONTINUE, and STUCK only for a round that acted on nothing"
+else
+    fail "1597-zero-commit-fix-is-continue" "the DONE rule does not name the zero-commit, description-only fix as CONTINUE: [${DONE_FLAT}]"
+fi
+PROMPT_FLAT="$(printf '%s' "${PROMPT}" | tr -s '[:space:]' ' ')"
+if ! printf '%s' "${PROMPT_FLAT}" | grep -qF 'Zero and zero means it produced nothing' \
+   && printf '%s' "${PROMPT_FLAT}" | grep -qF 'acting on findings outside the diff: DONE rule' \
+   && printf '%s' "${PROMPT_FLAT}" | grep -qF 'a round that visibly acted on its findings is not in doubt'; then
+    pass "1597-evidence-and-fallback-defer" "the zero-diff evidence note and the 'not sure' fallback both defer to the DONE rule for a round that acted on its findings"
+else
+    fail "1597-evidence-and-fallback-defer" "the evidence note or the 'not sure' fallback still reads a zero-diff fix as no progress"
+fi
+if printf '%s' "${PROMPT}" | grep -qF 'If `loop_clean_token` is empty'; then
+    pass "1597-fallback" "the prompt says what to do when a loop passes no clean token"
+else
+    fail "1597-fallback" "the prompt has no 'If \`loop_clean_token\` is empty' fallback for loops that pass neither input"
+fi
+# The new rule is prompt-only: steps 03 and 04 decide exactly as before.
+if ! printf '%s\n%s' "${RESOLVE}" "${ENFORCE}" | grep -qE 'loop_clean_token|loop_round_verdict'; then
+    pass "1597-prompt-only" "steps 03 and 04 do not read the new inputs; the deterministic check stays in autodrive_loop.sh"
+else
+    fail "1597-prompt-only" "step-03 or step-04 reads loop_clean_token/loop_round_verdict"
+fi
+
+# ---------------------------------------------------------------------------
 # 6b. Issue #1513 — every evaluator output shape, and where its verdict came
 #     from. Order (docs/reference/loop-health-evaluator.md#how-step-03-
 #     resolves-the-verdict): `loop_verdict` JSON -> `verdict` JSON -> one
