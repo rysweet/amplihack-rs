@@ -201,7 +201,8 @@ if [[ "$qd" != /* && "$OUT" != *"$WORK"* ]]; then pass c-sec-d3 "qa_dir is relat
 else fail c-sec-d3 "host path leaked: qa_dir='$qd' record=$OUT"; fi
 
 echo "== #1516 (c'): a nested workspace root with member crates picks the ancestor =="
-new_repo ws/Cargo.toml ws/crates/a/Cargo.toml
+# Two members within depth 3, so the ancestor rule (not a single hit) decides.
+new_repo ws/Cargo.toml ws/a/Cargo.toml ws/b/Cargo.toml
 run_tool
 expect c2 "workspace root ws wins over its member" qa_status=PASS qa_repo_type=rust-cli qa_dir=ws
 expect_calls c2-calls "cargo runs once, in ws" cargo "cargo|ws|$CARGO_ARGS"
@@ -340,11 +341,15 @@ if [ "$(id -u)" = 0 ]; then
 else
     new_repo a/Cargo.toml a/src/lib.rs z/b/Cargo.toml
     chmod 000 "$REPO/z"
-    expect_target unreadable-target $'ambiguous\t_ a'
+    expect_target unreadable-target $'ambiguous\t(search-error) a'
     expect_type_req unreadable-type unknown false
     run_tool
     expect unreadable "a crate hidden in an unreadable directory is BLOCKED" \
         qa_status=BLOCKED qa_repo_type=unknown
+    case "$(f qa_summary)" in
+        *"ambiguous nested Cargo workspace candidates: (search-error) a"*) pass unreadable-summary "the summary names the search error" ;;
+        *) fail unreadable-summary "summary does not name the search error: $(f qa_summary)" ;;
+    esac
     expect_calls unreadable-calls "cargo is never called when the search failed" cargo ""
     chmod 755 "$REPO/z"
 fi
@@ -522,6 +527,11 @@ new_repo -/Cargo.toml
 run_tool
 expect cd-dash "a crate in '-' runs there" qa_status=PASS qa_repo_type=rust-cli qa_dir=-
 expect_calls cd-dash-calls "cargo runs in '-', not \$OLDPWD" cargo "cargo|-|$CARGO_ARGS"
+# The same for a configured AUTODRIVE_QA_DIR=- : run in the repository's `-`.
+: > "$CALLS"
+run_tool AUTODRIVE_QA_COMMAND="cargo test" AUTODRIVE_QA_DIR=-
+expect cd-dash-word "AUTODRIVE_QA_DIR=- runs in the repository's '-'" qa_status=PASS qa_dir=-
+expect_calls cd-dash-word-calls "configured cargo runs in '-', not \$OLDPWD" cargo "cargo|-|test"
 # An exported CDPATH holding the same relative names must not redirect cd.
 mkdir -p "$WORK/cdpath/x/y" "$WORK/cdpath/sub"
 new_repo x/y/Cargo.toml sub/

@@ -716,7 +716,7 @@ The hits are sorted in the C locale, then:
 | Hits | Result |
 | --- | --- |
 | One, in `x/y` | `rust-cli`, `qa_dir` `x/y`. |
-| Several, where the first sorted hit's directory is an ancestor of every other hit (`ws/Cargo.toml` with `ws/crates/a/Cargo.toml`) | `rust-cli`, `qa_dir` `ws`. Cargo resolves the members itself, so the root does not need a `[workspace]` table. |
+| Several, where the first sorted hit's directory is an ancestor of every other hit (`ws/Cargo.toml` with `ws/a/Cargo.toml` and `ws/b/Cargo.toml`) | `rust-cli`, `qa_dir` `ws`. Cargo resolves the members itself, so the root does not need a `[workspace]` table. |
 | Several otherwise (`a/Cargo.toml` and `b/Cargo.toml`) | `unknown`, `BLOCKED` with `qa-command-missing`. `qa_summary` reads `ambiguous nested Cargo workspace candidates: a b`. |
 | None | `unknown`, `BLOCKED` with `qa-command-missing`. |
 
@@ -753,7 +753,7 @@ never falls back to running at the root.
 $ . amplifier-bundle/tools/autodrive_trust.sh
 $ autodrive_qa_target "$PWD"          # root pyproject.toml + grid-encode-decode/Cargo.toml
 python	.
-$ autodrive_qa_target "$PWD"          # only ws/Cargo.toml and ws/crates/a/Cargo.toml
+$ autodrive_qa_target "$PWD"          # only ws/Cargo.toml, ws/a/Cargo.toml and ws/b/Cargo.toml
 rust-cli	ws
 $ autodrive_qa_target "$PWD"          # only a/Cargo.toml and b/Cargo.toml
 ambiguous	a b
@@ -1174,6 +1174,7 @@ choice; set `AUTODRIVE_QA_SCENARIO_DIR` to require gadugi whatever the
 branch's manifests say. If the nested crate search hits an error, such as an
 unreadable directory that could hide a second crate, the result is
 `ambiguous` and the round is BLOCKED; it never runs the crate it could read.
+The candidate list then names the error as `(search-error)`.
 Checking the type at the merge base is tracked in
 [#1640](https://github.com/rysweet/amplihack-rs/issues/1640). Detected
 commands run in `qa_dir`, a directory the branch controls, so they are

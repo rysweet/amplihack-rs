@@ -356,7 +356,7 @@ _autodrive_cargo_dirs() {
 # Several unrelated hits, or a path that is absolute, has a `..` or empty
 # component or a byte outside A-Z a-z 0-9 . _ / -, give `ambiguous <list>`:
 # space-separated, other bytes as `_`, each cut to 128 bytes, at most 10 and
-# then `(+N more)`. No manifest at all gives `unknown .`.
+# then `(+N more)`; a search error is `(search-error)`. No manifest: `unknown .`.
 autodrive_qa_target() {
   local -x LC_ALL=C
   local d="${1:-.}" list="" first="" h="" bad="" n=0 shown=""
@@ -372,8 +372,8 @@ autodrive_qa_target() {
   done <<< "$list"
   if [ -z "$bad" ]; then printf 'rust-cli\t%s\n' "$first"; return 0; fi
   while IFS= read -r h; do
-    n=$((n + 1))
-    [ "$n" -gt 10 ] || shown="${shown}${shown:+ }$(printf '%s' "$h" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-128)"
+    n=$((n + 1)); [ "$h" = "!" ] && h="(search-error)" || h="$(printf '%s' "$h" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-128)"
+    [ "$n" -gt 10 ] || shown="${shown}${shown:+ }${h}"
   done <<< "$list"
   if [ "$n" -gt 10 ]; then shown="${shown} (+$((n - 10)) more)"; fi
   printf 'ambiguous\t%s\n' "$shown"

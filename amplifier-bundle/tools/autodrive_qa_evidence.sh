@@ -154,8 +154,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
   else
     dir="$QA_DIR"
     first="$(set -f; set -- $text; printf '%s' "${1:-}")"
-    # A configured directory that is not there is named as such, never
-    # reported as "<cmd> not installed" (#1516).
+    # A missing AUTODRIVE_QA_DIR is named, never "<cmd> not installed" (#1516).
     if [ "$kind" = "word" ] && [ ! -d "$dir" ]; then
       S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
       continue
@@ -164,7 +163,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       # A detected command must resolve to an absolute path outside the
       # repository: a '.' or empty PATH entry, or a PATH entry inside the
       # tree, never runs a cargo, pytest or npm planted in the branch.
-      # `./` keeps a directory named `-` from meaning $OLDPWD to cd.
+      # `./` (also for a configured dir) keeps `-` from meaning $OLDPWD.
       p="$(cd -- "./$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
       pd=""; case "$p" in /*) pd="$(cd -P -- "${p%/*}/" 2>/dev/null && pwd -P)" || pd="" ;; esac
       case "$pd" in ""|"$ROOT"|"$ROOT"/*)
@@ -177,6 +176,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       rc=$?
     else
       # A configured word may also be ./<first> inside AUTODRIVE_QA_DIR.
+      case "$dir" in /*) ;; *) dir="./$dir" ;; esac
       if ! ( cd -- "$dir" 2>/dev/null && { command -v "$first" >/dev/null 2>&1 || [ -x "./${first}" ]; } ); then
         S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
         continue
