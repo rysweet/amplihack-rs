@@ -199,6 +199,17 @@ steps:
         export AMPLIHACK_HOME
       fi
 
+      # The review dir is the main checkout of the repository that holds the
+      # preflight's repo ($REPO, #1543): the PR head's worktree when a PR
+      # number was supplied, else repo_path. The read-only judging agents
+      # (review, merge-ready assessment, loop-health analyzer) start there,
+      # never in the PR worktree, so the branch under review does not supply
+      # their AGENTS.md, CLAUDE.md or .claude hooks; it is never `pwd`, which
+      # may be the PR worktree. The PR worktree is resolved from the same
+      # $REPO: the #1528 resolver refuses the main checkout and returns the
+      # PR's one linked worktree, where only each round's commit step works.
+      REVIEW_DIR="$(bash "$(dirname "$LOOP_HELPER")/autodrive_worktree_guard.sh" review-dir "$REPO")" || { echo "STOP: cannot resolve the review dir from the preflight repo ($REPO) [autodrive-crusty-loop/step-02] (#1528)" >&2; exit 1; }
+      PR_WORKTREE="$(bash "$(dirname "$LOOP_HELPER")/autodrive_pr_worktree.sh" resolve --repo "$REPO" --pr "$PR")" || { echo "STOP: cannot resolve the PR's linked worktree; rounds never run in the launch checkout (#1528)" >&2; exit 1; }
       # Issue #1570: task_description is read with write_context_value
       # (RECIPE_VAR_* or AMPLIHACK_CONTEXT_FILE) into a private file that the
       # loop copies to its state directory. The uppercase TASK_DESCRIPTION
@@ -214,9 +225,10 @@ steps:
         --round-recipe "$ROUND_RECIPE" \
         --clean-token "CLEAN" \
         --verdict-field "crusty_verdict" \
-        --repo "$REPO" \
+        --repo "$PR_WORKTREE" \
+        --review-dir "$REVIEW_DIR" \
         --state-dir "$DIR" \
-        --context "repo_path=${REPO}" \
+        --context "repo_path=$PR_WORKTREE" \
         --context "pr_number=${PR}" \
         --context "pr_url=${PR_URL:-}"
       RC=$?

@@ -28,7 +28,14 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const BRICK_LINE_BUDGET: usize = 400;
+/// The brick budget for a recipe or tool: at most this many lines.
+/// The #1528 recipe-length test in `artifact_guard_workflow_tests.rs`
+/// imports this rather than restating it (PR #1586 review, round 6).
+/// Other brick checks still carry their own copies of the limit
+/// (`issue_1337_loop_health_evaluator_test.rs`,
+/// `issue_684_host_aware_workflow_test.rs` and the `*_decomposition_test.rs`
+/// files), so changing it here does not change them.
+pub(crate) const BRICK_LINE_BUDGET: usize = 400;
 
 const AUTODRIVE_RECIPES: [&str; 7] = [
     "auto-drive-to-merge",
@@ -40,8 +47,9 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 10] = [
+const AUTODRIVE_TOOLS: [&str; 12] = [
     "autodrive_crusty_rereview.sh",
+    "autodrive_last_round.sh",
     "autodrive_loop.sh",
     "autodrive_merge_gate.sh",
     "autodrive_merge_ready_files.sh",
@@ -51,6 +59,7 @@ const AUTODRIVE_TOOLS: [&str; 10] = [
     "autodrive_round_evidence.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
+    "autodrive_worktree_guard.sh",
 ];
 
 fn workspace_root() -> PathBuf {
@@ -203,11 +212,22 @@ fn composer_delegates_to_the_three_phases_in_order() {
 #[test]
 fn both_loops_terminate_on_the_loop_health_evaluator_contract() {
     let driver = read(&tool_path("autodrive_loop.sh"));
+    // Resolved to an absolute path in the launch-side bundle (by
+    // autodrive_worktree_guard.sh loop-preflight), never by name under
+    // `--working-dir <PR worktree>`: a name lookup there would load the PR's
+    // own copy of its stop rule (#1528).
+    let guard = read(&tool_path("autodrive_worktree_guard.sh"));
     assert!(
-        driver.contains("recipe run \"$HEALTH_RECIPE\"")
-            && driver
-                .contains("HEALTH_RECIPE=\"$(autodrive_launch_recipe loop-health-evaluator)\""),
-        "the loop driver must invoke the shared loop-health-evaluator brick from its own tree (#1543)"
+        guard.contains("launch_recipe loop-health-evaluator")
+            && driver.contains("read -r HEALTH_RECIPE_PATH")
+            && driver.contains("recipe run \"$HEALTH_RECIPE_PATH\""),
+        "the loop driver must invoke the shared loop-health-evaluator brick from the launch-side bundle"
+    );
+    assert!(
+        driver.contains("recipe run \"$ROUND_RECIPE_PATH\"")
+            && !driver.contains("recipe run \"$ROUND_RECIPE\" ")
+            && !driver.contains("recipe run loop-health-evaluator"),
+        "no recipe may reach `recipe run` by bare name; the reviewed tree would answer the lookup"
     );
     for ctx in [
         "loop_name=",
@@ -753,7 +773,7 @@ fn exit_79_is_terminal_and_never_retried_into() {
         .find("if terminal_refusal \"$ROUND_RC\"")
         .expect("round refusal check");
     let evaluator_at = driver
-        .find("recipe run \"$HEALTH_RECIPE\"")
+        .find("recipe run \"$HEALTH_RECIPE_PATH\"")
         .expect("evaluator call");
     assert!(
         refusal_at < evaluator_at,
@@ -2245,7 +2265,7 @@ fn crusty_records_are_trusted_only_through_the_loop_manifest() {
         .find(append)
         .expect("the driver must append to <loop>-records.tsv");
     let health = driver
-        .find("recipe run \"$HEALTH_RECIPE\"")
+        .find("recipe run \"$HEALTH_RECIPE_PATH\"")
         .expect("the driver must run loop-health-evaluator");
     assert!(
         latest < manifest && manifest < health,
@@ -2803,10 +2823,10 @@ fn the_loop_refuses_before_round_one_when_its_terminator_is_missing() {
     // the loop for a missing dependency.
     let driver = read(&tool_path("autodrive_loop.sh"));
     let preflight = driver
-        .find("recipe show \"$HEALTH_RECIPE\"")
+        .find("recipe show \"$HEALTH_RECIPE_PATH\"")
         .expect("the driver must resolve loop-health-evaluator up front");
     let first_round = driver
-        .find("recipe run \"$ROUND_RECIPE\"")
+        .find("recipe run \"$ROUND_RECIPE_PATH\"")
         .expect("the driver must run the round recipe");
     assert!(
         preflight < first_round,
@@ -3145,6 +3165,8 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         "--round-recipe \"autodrive-crusty-round\"",
         "--clean-token \"CLEAN\"",
         "--verdict-field \"crusty_verdict\"",
+        // Its judging agents start in the checked review dir, not the PR worktree (#1528).
+        "--review-dir \"$REVIEW_DIR\"",
         "--state-dir \"$DIR\"",
         "autodrive_record_crusty_loop_done \"$DIR\"",
         "crusty-rereview-not-needed",
@@ -3179,7 +3201,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
     let driver = read(&tool_path("autodrive_loop.sh"));
     for needle in [
         "--before-round)",
-        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --state-dir \"$STATE_DIR\"",
+        "exec bash \"$BEFORE_ROUND\" --repo \"$REPO\" --review-dir \"$REVIEW_REAL\" --state-dir \"$STATE_DIR\"",
         "BEFORE_ROUND_FAILED",
         "before_round_result",
         "if terminal_refusal \"$BEFORE_RC\" \"$BEFORE_LOG\"",
@@ -3193,7 +3215,7 @@ fn crusty_rereview_runs_between_merge_rounds_at_the_loop_depth() {
         .find("exec bash \"$BEFORE_ROUND\"")
         .expect("before-round call");
     let round_at = driver
-        .find("recipe run \"$ROUND_RECIPE\"")
+        .find("recipe run \"$ROUND_RECIPE_PATH\"")
         .expect("round call");
     assert!(
         before_at < round_at,

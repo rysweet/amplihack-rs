@@ -568,6 +568,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_history` | `""` | Accumulated structured verdicts from every round so far, oldest first. |
 | `loop_last_round_output` | `""` | Raw output of the round just finished. |
 | `loop_repo_path` | `.` | Repo to measure diff/commit evidence in. |
+| `loop_agent_working_dir` | `.` | Where the `step-02` analyzer agent starts. Kept separate from `loop_repo_path` so a caller that measures the tree under judgement (auto-drive passes the pull request worktree) can start the agent elsewhere: the agent CLI loads `AGENTS.md`, `CLAUDE.md` and `.claude/` hooks from its working directory, and the judged tree must not instruct its judge (issue #1528). |
 | `loop_baseline_ref` | `""` | Git ref at the start of the round just finished. Falls back to the working-tree diff with a visible `WARNING` when unresolvable. |
 | `loop_child_exit_code` | `""` | Exit code of the last child. `79` is a terminal policy refusal. |
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |

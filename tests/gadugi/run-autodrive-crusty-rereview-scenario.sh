@@ -27,7 +27,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 TOOLS="$REPO_ROOT/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_crusty_rereview.sh autodrive_state.sh autodrive_trust.sh autodrive_round_evidence.sh; do
+for t in autodrive_loop.sh autodrive_crusty_rereview.sh autodrive_state.sh autodrive_trust.sh autodrive_round_evidence.sh autodrive_worktree_guard.sh; do
   [ -f "$TOOLS/$t" ] || { echo "FAIL: missing $TOOLS/$t"; echo "SCENARIO_FAILED"; exit 1; }
 done
 for c in git jq; do
@@ -60,8 +60,10 @@ fl() { echo "FAIL: $1 — $2"; fail=1; }
 # --- the repository --------------------------------------------------------
 #   M0 --- R (code, reviewed by crusty) --- D (PR_DESCRIPTION.md only)
 #                                       \-- C (code)
-# origin/main is M0. Commits are written with plumbing, so no hook runs.
-FX="$WORK/repo"; ORIGIN="$WORK/origin.git"; T=1767225600
+# origin/main is M0. Commits are written with plumbing, so no hook runs. They
+# are written in the main checkout FX_MAIN; FX is then its linked worktree, as
+# the pull request's worktree is, and FX_MAIN the loop's review dir (#1528).
+FX_MAIN="$WORK/main-checkout"; FX="$FX_MAIN"; ORIGIN="$WORK/origin.git"; T=1767225600
 git init -q --bare "$ORIGIN" && git init -q "$FX" && git -C "$FX" remote add origin "$ORIGIN" \
   || { echo "FAIL: could not create the fixture repository"; echo "SCENARIO_FAILED"; exit 1; }
 commit() { # commit <parent|-> <message> <path>=<content>... -> sha
@@ -86,6 +88,8 @@ D="$(commit "$R" "describe the pull request" PR_DESCRIPTION.md=description)"
 C="$(commit "$R" "change src.rs again" src.rs=v2)"
 git -C "$FX" push -q origin "$M0:refs/heads/main" >/dev/null 2>&1 \
   || { echo "FAIL: could not push the fixture base"; echo "SCENARIO_FAILED"; exit 1; }
+git -C "$FX_MAIN" update-ref HEAD "$M0" && git -C "$FX_MAIN" worktree add -q --detach "$WORK/repo" "$R" >/dev/null 2>&1 \
+  && FX="$WORK/repo" || { echo "FAIL: could not add the pull request worktree"; echo "SCENARIO_FAILED"; exit 1; }
 
 # --- stand-ins ---------------------------------------------------------------
 cat > "$WORK/bin/gh" <<'GH'
@@ -100,13 +104,15 @@ cat > "$WORK/bin/amplihack" <<'STUB'
 [ "${1:-}" = recipe ] && [ $# -ge 3 ] && set -- "$1" "$2" "$(basename -- "$3" .yaml)" "${@:4}"
 [ "${1:-} ${2:-}" = "recipe show" ] && exit 0
 if [ "${1:-} ${2:-}" = "recipe run" ]; then
-  printf '%s depth=%s\n' "${3:-}" "${AMPLIHACK_SESSION_DEPTH:-unset}" >> "$CALLS"
+  # The loop runs each recipe by its launch-side path (#1528); match the name.
+  RECIPE="$(basename "${3:-}" .yaml)"
+  printf '%s depth=%s\n' "$RECIPE" "${AMPLIHACK_SESSION_DEPTH:-unset}" >> "$CALLS"
   REC=""; LABEL=""
   for a in "$@"; do
     case "$a" in autodrive_round_record=*) REC="${a#*=}" ;; autodrive_round_label=*) LABEL="${a#*=}" ;; esac
   done
   HEAD="$(git -C "$FIXTURE" rev-parse HEAD)"
-  case "${3:-}" in
+  case "$RECIPE" in
     # autodrive_loop.sh (#1512) trusts only the runner formatter's last
     # completed step-04 block, so the stub prints exactly that.
     loop-health-evaluator)
@@ -169,7 +175,7 @@ merge_loop() {
     AMPLIHACK_BIN="$WORK/bin/amplihack" REAL_AMPLIHACK="$REAL" FIXTURE="$FX" CALLS="$3" \
     AMPLIHACK_SESSION_DEPTH=2 AMPLIHACK_MAX_DEPTH=3 AMPLIHACK_TREE_ID=scenario \
     bash "$TOOLS/autodrive_loop.sh" --loop-name merge-ready --round-recipe autodrive-merge-round \
-      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --state-dir "$2" --task-file "$WORK/task.txt" \
+      --clean-token MERGE_READY --verdict-field merge_ready_verdict --repo "$FX" --review-dir "$FX_MAIN" --state-dir "$2" --task-file "$WORK/task.txt" \
       --context "repo_path=$FX" --context "pr_number=42" --context "autodrive_state_dir=$2" \
       --before-round "$TOOLS/autodrive_crusty_rereview.sh"
 }

@@ -122,16 +122,19 @@ The flattening convention is: uppercase the parent key, replace dots with unders
 ### Directory access tiers
 
 Not all steps that consume `WORKTREE_SETUP_WORKTREE_PATH` treat a missing
-directory the same way. Steps are classified into two tiers:
+directory the same way. Steps are classified into three tiers:
 
 | Tier | Steps | Guard pattern | Missing directory behavior |
 |------|-------|---------------|---------------------------|
 | **Hard-fail** | 15, 16, 18c | `cd "${WORKTREE_SETUP_WORKTREE_PATH:?…}"` | Recipe aborts (`:?` expansion errors on unset/null variable) |
-| **Resilient** | 19c, 20b, 21 | `if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd …; elif [ -d "${REPO_PATH:-}" ]; then cd …; fi` | Falls back to `REPO_PATH` then `$(pwd)`, emits WARNING to stderr |
+| **Resilient** | 19c, 21 | `if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd …; elif [ -d "${REPO_PATH:-}" ]; then cd …; fi` | Falls back to `REPO_PATH` then `$(pwd)`, emits WARNING to stderr |
+| **Skip** | 20a, 20b | `if [ -z "$wt" ] \|\| [ ! -d "$wt" ]; then echo "WARNING: …" >&2; exit 0; fi; cd "$wt"` | Also skips when the path is not the top of a linked worktree. Emits WARNING to stderr and exits `0`; never runs in `REPO_PATH` |
 
 Hard-fail steps need worktree files to perform their work (review, verdict
-enforcement). Resilient steps perform read-only verification or cleanup that
-functions from any directory inside the repository.
+enforcement). Resilient steps perform read-only verification that functions
+from any directory inside the repository. Skip steps stage, commit, or clean
+up, and `REPO_PATH` is the launch checkout, so they run in the task worktree or
+not at all (issue #1528).
 
 See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
 for the full rationale and fallback chain specification.

@@ -141,6 +141,11 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: version-bump
     runs-on: ${{ matrix.runner }}
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     strategy:
       fail-fast: false
       matrix:
@@ -167,9 +172,13 @@ jobs:
       #
       # cache-targets stays false: restoring the whole target/ dir exhausted
       # runner disk, which is exactly why sccache was adopted in ci.yml.
-      SCCACHE_GHA_ENABLED: "true"
+      #
+      # sccache keeps a local disk cache that actions/cache restores and saves
+      # once per job, as in ci.yml. Its per-object Actions cache backend
+      # (SCCACHE_GHA_ENABLED) got HTTP 429 from the repository-wide cache rate
+      # limit on most writes, and this workflow runs beside CI on every merge.
       RUSTC_WRAPPER: sccache
-      SCCACHE_CACHE_SIZE: "2G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -184,6 +193,13 @@ jobs:
       # red on main and blocked every PR until #1341.
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
+      - name: Restore sccache disk cache
+        uses: ./.github/actions/sccache-restore
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-
 
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
@@ -218,6 +234,12 @@ jobs:
           cargo build --release --locked --target ${{ matrix.target }} \
             -p amplihack -p amplihack-hooks-bin \
             --features amplihack-hooks-bin/signal
+
+      - name: Save sccache disk cache
+        if: always() && github.ref == 'refs/heads/main'
+        uses: ./.github/actions/sccache-save
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-release-${{ matrix.target }}-
 
       - name: Package
         # Use bash on every runner so the .sha256 line format stays
@@ -426,3 +448,25 @@ jobs:
             ```
 
             Or: `amplihack update`
+
+  # Each release build saves one sccache entry per target; keep the newest two.
+  # Only this job holds actions: write.
+  sccache-prune:
+    name: Prune sccache caches
+    needs: build
+    if: always() && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: .github/scripts
+      # Groups every sccache-v1 entry on main by prefix (see ci.yml), so it
+      # also covers CI's entries; keeping the newest 2 of each is the same rule.
+      - name: Delete older sccache entries (keep newest 2 per target)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prune-sccache-caches.sh refs/heads/main 2

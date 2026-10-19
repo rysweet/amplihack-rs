@@ -156,8 +156,22 @@ mod artifact_guard_workflow;
 #[path = "pre_commit_artifact_guard_tests.rs"]
 mod pre_commit_artifact_guard;
 
+// Issue #1528: auto-drive phases 2-3 commit only inside the PR's linked
+// worktree. PR-worktree resolver behaviour, loop step-02 and round step-04
+// contracts.
+#[path = "autodrive_pr_worktree_tests.rs"]
+mod autodrive_pr_worktree;
+
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
+
+// PR #1530: brick-budget hook reads its limit with POSIX sed (macOS/BSD).
+#[path = "brick_budget_hook_portability_test.rs"]
+mod brick_budget_hook_portability;
+
+// PR #1530: Linux-only auto-switch test helpers allow dead_code on macOS.
+#[path = "linux_only_test_helpers_test.rs"]
+mod linux_only_test_helpers;
 
 // Consensus-workflow decomposition parity tests.
 // Locks the v3 contract: composer calls 11 phase sub-recipes, all 60 step IDs
