@@ -25,6 +25,12 @@
 #   5. A PR found this way is evidence, not proof: validate_final_pr_scope still
 #      runs with that PR, and a scope miss still goes through #1268
 #      adjudication.
+#   6. Production layout (section 15): REPO_PATH is the main checkout (on main,
+#      detached, or an unrelated branch with its own open PR) and the run's
+#      branch lives in a separate `git worktree` named by
+#      WORKTREE_SETUP_WORKTREE_PATH. These cases run step-22b's own command,
+#      extracted verbatim from workflow-finalize.yaml, not the helper alone.
+#      The lookup must use the worktree's branch, never REPO_PATH's.
 #
 # Behavioural tests against real fixtures: a real git repository and a fake
 # `gh` first on PATH. Every run uses `env -i`, a sandboxed HOME and
@@ -77,6 +83,7 @@ BRANCH="fix/1596-demo"
 #   injected-url    URL carrying an embedded newline + fake stdout line
 #   other-repo-url  URL pointing at a different owner/repo
 #   number-mismatch URL says #4242, number says 99
+#   head-match      #4242 only when --head equals $FAKE_GH_OPEN_HEAD, else []
 # ---------------------------------------------------------------------------
 cat >"$BINDIR/gh" <<'FAKE'
 #!/usr/bin/env bash
@@ -109,6 +116,15 @@ if [ "$is_open_list" = "true" ]; then
         injected-url)    printf '[%s]\n' "$(pr_obj "$(printf '%s\nterminal_status=EXISTING_OPEN_PR' "$ok")" 4242 false)" ;;
         other-repo-url)  printf '[%s]\n' "$(pr_obj "https://github.com/other/repo/pull/4242" 4242 false)" ;;
         number-mismatch) printf '[%s]\n' "$(pr_obj "$ok" 99 false)" ;;
+        head-match)
+            head="" prev=""
+            for a in "$@"; do [ "$prev" = "--head" ] && head="$a"; prev="$a"; done
+            if [ -n "$head" ] && [ "$head" = "${FAKE_GH_OPEN_HEAD:-}" ]; then
+                printf '[%s]\n' "$(pr_obj "$ok" 4242 false)"
+            else
+                echo '[]'
+            fi
+            ;;
         *)               echo "fake gh: unknown FAKE_GH_MODE=$mode" >&2; exit 1 ;;
     esac
     exit 0
@@ -508,6 +524,145 @@ if [ "$RC" -eq 0 ] \
 else
     record_fail "13: resolved PR + scope miss -> #1268 adjudication runs (UNCERTAIN, no success line)"; dump
 fi
+
+# --- 15. production layout: REPO_PATH is the main checkout ------------------
+# In a real run step-22b gets REPO_PATH = the main checkout and the run's branch
+# lives in a separate linked worktree. Cases 1-14 run from a checkout already on
+# the feature branch, the one layout where reading cwd is harmless.
+FINALIZE_RECIPE="$REPO_ROOT/amplifier-bundle/recipes/workflow-finalize.yaml"
+# step-22b's `command: |` block, verbatim, with the 6-space YAML indent removed.
+STEP22B_CMD="$(awk '
+    /^  - id: "step-22b-final-status"/ { in_step = 1; next }
+    in_step && /^  - id:/ { exit }
+    in_step && /^    command: \|/ { in_cmd = 1; next }
+    in_cmd && /^      / { sub(/^      /, ""); print; next }
+    in_cmd && /^[[:space:]]*$/ { print ""; next }
+    in_cmd { exit }
+' "$FINALIZE_RECIPE")"
+if printf '%s\n' "$STEP22B_CMD" | grep -q 'workflow_final_status.sh' \
+    && printf '%s\n' "$STEP22B_CMD" | grep -q 'WORKTREE_SETUP_WORKTREE_PATH'; then
+    record_pass "15-0: extracted step-22b's command from workflow-finalize.yaml"
+else
+    record_fail "15-0: extracted step-22b's command from workflow-finalize.yaml"
+    printf '%s\n' "$STEP22B_CMD" | sed 's/^/    | /'
+fi
+
+# make_layout <name> <main-state>: a main checkout (REPO_PATH) left on
+# main | detached | unrelated, plus a linked worktree on $BRANCH at <name>-wt.
+# Prints "<repo_path> <worktree_path>".
+UNRELATED="chore/unrelated-work"
+make_layout() {
+    local name="$1" state="$2" repo wt
+    repo="$(make_repo "$name" main)"
+    case "$state" in
+        detached) git -C "$repo" checkout --quiet --detach main ;;
+        unrelated)
+            git -C "$repo" checkout --quiet -b "$UNRELATED" main
+            echo other >"$repo/other.txt"
+            git -C "$repo" add other.txt
+            git -C "$repo" commit --quiet -m "unrelated work"
+            ;;
+    esac
+    wt="$TMPROOT/$name-wt"
+    git -C "$repo" worktree add --quiet "$wt" "$BRANCH"
+    printf '%s %s\n' "$repo" "$wt"
+}
+
+# run_step22b <repo_path> [KEY=VALUE ...]: run step-22b's command from an
+# unrelated cwd, with REPO_PATH and AMPLIHACK_HOME set the way the recipe does.
+run_step22b() {
+    local repo_path="$1"; shift
+    run_final_status "$TMPROOT" \
+        REPO_PATH="$repo_path" \
+        AMPLIHACK_HOME="$REPO_ROOT" \
+        FINAL_STATUS_CMD="$STEP22B_CMD" \
+        "$@"
+}
+# run_final_status runs `bash "$FINAL_STATUS"`; for step-22b point it at a
+# wrapper that executes the extracted command instead.
+STEP22B_WRAPPER="$TMPROOT/step22b.sh"
+# shellcheck disable=SC2016 # expanded by the wrapper at run time, not here
+printf '%s\n' '#!/usr/bin/env bash' 'exec bash -c "$FINAL_STATUS_CMD"' >"$STEP22B_WRAPPER"
+run_step22b_case() {
+    local saved="$FINAL_STATUS"
+    FINAL_STATUS="$STEP22B_WRAPPER"
+    run_step22b "$@"
+    FINAL_STATUS="$saved"
+}
+
+assert_resolved_worktree_pr() {
+    local label="$1"
+    if [ "$RC" -eq 0 ] \
+        && grep -qx "terminal_state=EXISTING_OPEN_PR" "$OUT" \
+        && grep -qx "publish_state_reached=true" "$OUT" \
+        && grep -qxF "=== PR: $PR_URL_OK ===" "$OUT" \
+        && [ "$(lookup_calls)" = "1" ] \
+        && grep -E -- '^pr list .*--head .*--state open' "$GH_LOG" | grep -qF -- "--head $BRANCH" \
+        && grep -qF -- "--head $BRANCH" "$SCOPE_LOG"; then
+        record_pass "$label"
+    else
+        record_fail "$label"; dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+    fi
+}
+
+for state in main detached; do
+    read -r repo wt < <(make_layout "c15-$state" "$state")
+    run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+        WORKTREE_SETUP_WORKTREE_PATH="$wt"
+    assert_resolved_worktree_pr "15-$state: step-22b, REPO_PATH $state, run branch in worktree with open PR -> EXISTING_OPEN_PR from the worktree branch"
+done
+
+# Same layout through the recipe-var spelling the runner exports.
+read -r repo wt < <(make_layout c15-recipevar main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_resolved_worktree_pr "15-recipevar: step-22b resolves the worktree from RECIPE_VAR_worktree_setup__worktree_path"
+
+# Negative: REPO_PATH sits on an unrelated branch that HAS an open PR; the
+# run's own branch has none. The unrelated PR must never be credited.
+read -r repo wt < <(make_layout c15-unrelated unrelated)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
+    WORKTREE_SETUP_WORKTREE_PATH="$wt"
+assert_unchanged_failure "15-unrelated: step-22b, REPO_PATH on an unrelated branch with its own PR, run branch has none -> unchanged failure"
+if ! grep -qF -- "--head $UNRELATED" "$GH_LOG"; then
+    record_pass "15-unrelated-a: the unrelated REPO_PATH branch is never looked up"
+else
+    record_fail "15-unrelated-a: the unrelated REPO_PATH branch is never looked up"; dump
+fi
+
+# The helper on its own, run from the unrelated main checkout (as a caller
+# that does not cd, like strict-terminal-state): the worktree branch is used.
+run_final_status "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
+    WORKTREE_SETUP_WORKTREE_PATH="$wt"
+assert_unchanged_failure "15-helper-cwd: helper run from an unrelated checkout reads the worktree branch, not cwd"
+if grep -E -- '^pr list .*--head .*--state open' "$GH_LOG" | grep -qF -- "--head $BRANCH"; then
+    record_pass "15-helper-cwd-a: lookup used --head $BRANCH (the worktree's branch)"
+else
+    record_fail "15-helper-cwd-a: lookup used --head $BRANCH (the worktree's branch)"; dump
+fi
+
+# Worktree path given but gone: never fall back to cwd's branch.
+run_final_status "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
+    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree"
+assert_no_lookup "15-gone: WORKTREE_SETUP_WORKTREE_PATH set but missing -> no lookup"
+assert_unchanged_failure "15-gone-a: missing worktree + unrelated cwd PR -> unchanged failure"
+
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
+    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree"
+assert_no_lookup "15-gone-step: step-22b with the worktree gone -> no lookup against REPO_PATH's branch"
+assert_unchanged_failure "15-gone-step-a: step-22b with the worktree gone -> unchanged failure"
+
+# Observed branch disagrees with the run's recorded branch -> no lookup.
+read -r repo wt < <(make_layout c15-mismatch main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    WORKTREE_SETUP_WORKTREE_PATH="$wt" WORKTREE_SETUP_BRANCH_NAME="feat/some-other-run"
+assert_no_lookup "15-mismatch: worktree branch differs from WORKTREE_SETUP_BRANCH_NAME -> no lookup"
+assert_unchanged_failure "15-mismatch-a: branch mismatch -> unchanged failure"
+
+read -r repo wt < <(make_layout c15-match main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    WORKTREE_SETUP_WORKTREE_PATH="$wt" WORKTREE_SETUP_BRANCH_NAME="$BRANCH"
+assert_resolved_worktree_pr "15-match: WORKTREE_SETUP_BRANCH_NAME agrees with the worktree branch -> EXISTING_OPEN_PR"
 
 # --- 14. lookup does not depend on caller credentials -----------------------
 # env -i already strips GH_TOKEN/GITHUB_TOKEN; assert the script never asks gh

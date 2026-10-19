@@ -313,8 +313,15 @@ adjudicate_terminal_state() {
 # A development run can open its PR from an agent step instead of the publish
 # step. pr_publish_result.pr_url is then empty and the run used to close with
 # FAILED_MISSING_TERMINAL_EVIDENCE while its PR sat open. Before deciding that
-# publish evidence is missing, ask GitHub (read-only) whether the current
-# branch already has an open, same-repository PR.
+# publish evidence is missing, ask GitHub (read-only) whether the run's branch
+# already has an open, same-repository PR.
+#
+# The run's branch is read from the run's worktree (WORKTREE_SETUP_WORKTREE_PATH),
+# never blindly from cwd: the finalize step historically ran from REPO_PATH, the
+# main checkout, whose branch is main, detached, or something unrelated. When a
+# worktree path is given but is gone, or the observed branch disagrees with
+# WORKTREE_SETUP_BRANCH_NAME / BRANCH_NAME, the lookup does not run. cwd is used
+# only when the caller gives no worktree path at all.
 #
 # Fail closed: every guard, gh error, malformed result or candidate that fails
 # validation leaves PR_URL, PR_NUMBER and PUBLISH_STATE untouched. stdout is
@@ -325,7 +332,7 @@ branch_pr_lookup_warn() {
 }
 
 resolve_open_pr_for_current_branch() {
-  local branch base repo json pick cand_url cand_number url_number previous
+  local branch base repo json pick cand_url cand_number url_number previous run_dir expected_branch
   [ "$HOST_TYPE" = "github" ] || return 0
   [ -z "$PR_URL" ] || return 0
   [ "$publish_state_reached" != "true" ] || return 0
@@ -342,17 +349,25 @@ resolve_open_pr_for_current_branch() {
   fi
   command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  run_dir="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+  if [ -n "$run_dir" ]; then
+    [ -d "$run_dir" ] || return 0
+  else
+    run_dir="."
+  fi
+  git -C "$run_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
 
-  branch="$(git branch --show-current 2>/dev/null || true)"
+  branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
   [ -n "$branch" ] || return 0
+  expected_branch="${WORKTREE_SETUP_BRANCH_NAME:-${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}"
+  [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || return 0
   case "$branch" in -*|main|master) return 0 ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
-  base="$(resolve_expected_base_branch 2>/dev/null || true)"
+  base="$(cd "$run_dir" && resolve_expected_base_branch 2>/dev/null || true)"
   [ -z "$base" ] || [ "$branch" != "$base" ] || return 0
 
   # Never log the raw origin URL: it may embed credentials.
-  repo="$(parse_github_repo_identity "$(git config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
+  repo="$(parse_github_repo_identity "$(git -C "$run_dir" config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 0
 
   # Raw gh/retry stderr is dropped: it is untrusted and may carry PR content.
