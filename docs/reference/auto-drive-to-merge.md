@@ -1835,11 +1835,32 @@ refused.
 
 With no interpreter running as a program, text inside a quoted argument is one
 word, so `git commit -m 'gh pr merge'`, `grep mergePullRequest`, `rg 'gh pr
-merge' --type sh` and `gh pr create --body …` pass. What this check still
-costs: a command that runs an interpreter as a program and also quotes merge
-text or names the gate, such as `bash test.sh && git commit -m '… gh pr merge
-…'` or `bash test.sh && git add …/autodrive_merge_gate.sh`, is refused; split
-it into two tool calls. `gh pr view --json mergeable` passes. The hook blocks
+merge' --type sh` and `gh pr create --body …` pass.
+
+A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`) is
+data, the stdin of its command, not commands. So the usual ways to write a
+commit message or PR body pass whatever merge text the body holds:
+`git commit -F - <<'EOF' … EOF`, `git commit -m "$(cat <<'EOF' … EOF
+)"`, `gh pr create --body "$(cat <<'EOF' … EOF
+)"` and `cat > docs/x.md <<'EOF' … EOF`. Apostrophes and parentheses in the
+body do not unbalance a surrounding `$(…)`. The body is read as code only
+when the command runs an interpreter as a program (`bash <<'EOF'`,
+`python3 - <<'EOF'`, `cat <<'EOF' | bash`); then a merge form in it is
+refused. An unquoted delimiter (`<<EOF`) lets bash run the body's `$(…)` and
+backticks, so those are checked as commands; a quoted one (`<<'EOF'`) does
+not. A body with no closing delimiter line, and a delimiter that does not
+start with a letter, `_`, a quote or a backslash (as in the shift
+`$((1<<2))`), are not read as heredocs, so the text after them is read as
+commands as before. Here-strings (`<<<`) are unchanged: their text is code
+when an interpreter runs.
+
+What this check still costs: a command that runs an interpreter as a program
+and also quotes merge text or names the gate, such as `bash test.sh && git
+commit -m '… gh pr merge …'`, `bash test.sh && git commit -F - <<'EOF' … gh pr
+merge … EOF` or `bash test.sh && git add …/autodrive_merge_gate.sh`, is
+refused; split it into two tool calls. The refusal says so: when the match is
+prose, it tells the agent to write the prose in a call that runs no
+interpreter rather than drop or reword it. `gh pr view --json mergeable` passes. The hook blocks
 with a message naming the form and the gate, never the command.
 
 The hook reads command text, so it does not see what that text only names:

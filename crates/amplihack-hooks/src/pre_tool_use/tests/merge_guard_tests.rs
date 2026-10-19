@@ -240,3 +240,65 @@ fn nesting_is_followed_to_the_bound_and_no_further() {
     assert!(!blocked("`"));
     assert!(!blocked("\\\\"));
 }
+
+#[test]
+fn heredoc_bodies_are_data_when_no_interpreter_reads_them() {
+    // Crusty round 4: the usual way agents write commit messages and PR
+    // bodies. Each of these was refused when heredoc lines were read as
+    // commands.
+    for cmd in [
+        "git commit -F - <<'EOF'\nfix: refuse gh pr merge outside the gate\nEOF",
+        "git commit -m \"$(cat <<'EOF'\nfix: refuse gh pr merge outside the gate\nEOF\n)\"",
+        "gh pr create --title t --body \"$(cat <<'EOF'\nNever run gh pr merge yourself.\nEOF\n)\"",
+        "cat > docs/x.md <<'EOF'\nUse curl -X PUT https://api.github.com/repos/o/r/pulls/1/merge\nEOF",
+        // Prose apostrophes and parentheses inside `$(…)` do not unbalance it.
+        "git commit -m \"$(cat <<'EOF'\nDon't (ever) run gh pr merge; it's the gate's job.\n\nCo-Authored-By: x <x@y>\nEOF\n)\"",
+        // Unquoted, `<<-` with tab-indented delimiter, and a later command.
+        "cat <<EOF > notes.md\ngh pr merge 38\nmutation { mergePullRequest }\nEOF\ngit add notes.md",
+        "cat <<-EOF\n\tgh pr merge 38\n\tEOF",
+        "cat <<\"EOF\" && git status\ngh pr merge 38\nEOF",
+        "cat <<\\EOF\ngh pr merge 38\nEOF",
+        // Two heredocs on one line.
+        "paste - /dev/fd/3 <<A 3<<B\ngh pr merge 1\nA\ngh pr merge 2\nB",
+    ] {
+        assert!(!blocked(cmd), "refused a heredoc of prose: {cmd:?}");
+    }
+}
+
+#[test]
+fn heredoc_bodies_are_code_when_an_interpreter_reads_them() {
+    for cmd in [
+        "bash <<'EOF'\ngh pr merge 38\nEOF",
+        "python3 - <<'EOF'\nimport os\nos.system('gh pr merge 38')\nEOF",
+        "sudo -u ryan sh <<EOF\ngh -R o/r pr merge 38\nEOF",
+        "cat <<'EOF' | bash\ngh pr merge 38\nEOF",
+        "bash <<-EOF\n\tgh api -X PUT repos/o/r/pulls/38/merge\n\tEOF",
+        "bash -s <<'EOF'\nbash -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38\nEOF",
+        "x=\"$(python3 <<'EOF'\nimport subprocess; subprocess.run(['gh','pr','merge','38'])\nEOF\n)\"",
+    ] {
+        assert!(blocked(cmd), "not refused: {cmd:?}");
+    }
+}
+
+#[test]
+fn heredocs_hide_neither_substitutions_nor_the_commands_after_them() {
+    for cmd in [
+        // An unquoted body runs its `$(…)` and backticks.
+        "cat <<EOF\n$(gh pr merge 38)\nEOF",
+        "cat <<EOF\n`gh pr merge 38`\nEOF",
+        "git commit -F - <<EOF\nmerged: $(gh pr merge 38 --squash)\nEOF",
+        // The command after the delimiter line is a command again.
+        "cat <<'EOF'\nprose\nEOF\ngh pr merge 38",
+        "git commit -m \"$(cat <<'EOF'\nprose\nEOF\n)\" && gh pr merge 38",
+        // No delimiter line closes it: read as commands, as before.
+        "cat <<'EOF'\ngh pr merge 38",
+        // A shift is not a heredoc; the next line still counts.
+        "echo $((1<<2))\ngh pr merge 38\n2",
+        // A here-string is not a heredoc either.
+        "bash <<<'gh pr merge 38'",
+    ] {
+        assert!(blocked(cmd), "not refused: {cmd:?}");
+    }
+    // A quoted delimiter turns expansion off: the body is prose.
+    assert!(!blocked("cat <<'EOF'\n$(gh pr merge 38)\nEOF"));
+}

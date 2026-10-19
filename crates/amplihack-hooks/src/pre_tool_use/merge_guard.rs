@@ -31,6 +31,14 @@
 //! pass. Variable indirection (`G=gh; $G pr merge`) and script files are not
 //! readable from the command text and are left to the shim and the `MERGED`
 //! checks.
+//!
+//! A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`) is data, not commands
+//! (crusty round 4): `git commit -F - <<'EOF'`, `git commit -m "$(cat
+//! <<'EOF' … EOF)"` and `gh pr create --body "$(cat <<'EOF' … EOF)"` pass
+//! whatever prose the body holds. The body is read as code only when the
+//! command runs an interpreter (`bash <<'EOF'`, `python3 - <<'EOF'`, `cat
+//! <<'EOF' | bash`), and the `$(…)`/backtick substitutions of an unquoted
+//! body, which bash runs, are checked as commands.
 
 use regex::Regex;
 use serde_json::Value;
@@ -55,7 +63,12 @@ Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop,
 from its own recipe step; an agent's shell never runs the gate.\n\
 \n\
 This check reads the command itself, so it applies whichever gh your shell's\n\
-PATH finds. Do not retry with another gh path, PATH, alias, API client or token.";
+PATH finds. Do not retry with another gh path, PATH, alias, API client or token.\n\
+\n\
+If the match is prose (a commit message, PR body or doc) and you meant no merge:\n\
+the command also runs an interpreter, so its text was read as code. Write the\n\
+prose in a separate tool call that runs no interpreter (git commit -F - <<'EOF'\n\
+… EOF passes); keep the prose as it is.";
 
 /// GraphQL mutations that merge, as whole names in any case (same list as
 /// the shim's `MUTATION_RE`).
@@ -100,7 +113,11 @@ fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static st
     if depth > MAX_NESTING {
         return None;
     }
-    let (segments, nested) = split(command);
+    let Split {
+        segments,
+        nested,
+        heredocs,
+    } = split(command);
     let scripted = scripted
         || segments
             .iter()
@@ -109,6 +126,15 @@ fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static st
     for nested_cmd in &nested {
         if let Some(label) = merge_form(nested_cmd, depth + 1, scripted) {
             return Some(label);
+        }
+    }
+    // A heredoc body is the stdin of its command: code when an interpreter
+    // runs in this command, data (a commit message, a PR body) otherwise.
+    if scripted {
+        for body in &heredocs {
+            if let Some(label) = merge_form(body, depth + 1, true) {
+                return Some(label);
+            }
         }
     }
     for words in &segments {
@@ -410,17 +436,174 @@ fn skip_flags(mut args: &[String]) -> &[String] {
     args
 }
 
+/// What [`split`] reads from a command.
+struct Split {
+    /// Simple commands, as word lists.
+    segments: Vec<Vec<String>>,
+    /// Bodies of `$(…)` and backticks, to be checked as commands.
+    nested: Vec<String>,
+    /// Heredoc bodies: data unless an interpreter runs in the command.
+    heredocs: Vec<String>,
+}
+
+/// A heredoc redirection waiting for the end of its line.
+struct Heredoc {
+    delimiter: String,
+    /// `<<-`: leading tabs are stripped before matching the delimiter.
+    strip_tabs: bool,
+    /// An unquoted delimiter: bash expands `$(…)` and backticks in the body.
+    expands: bool,
+}
+
+/// The heredoc redirection whose `<<` starts at `i`, and the index after its
+/// delimiter word. `None` for a here-string (`<<<`), and for a delimiter
+/// that does not start with a letter, `_`, a quote or a backslash, so the
+/// shift in `$((1<<2))` is not read as one.
+fn heredoc_at(chars: &[char], i: usize) -> Option<(Heredoc, usize)> {
+    if chars.get(i + 1) != Some(&'<')
+        || chars.get(i + 2) == Some(&'<')
+        || (i > 0 && chars[i - 1] == '<')
+    {
+        return None;
+    }
+    let mut j = i + 2;
+    let strip_tabs = chars.get(j) == Some(&'-');
+    if strip_tabs {
+        j += 1;
+    }
+    while matches!(chars.get(j), Some(' ' | '\t')) {
+        j += 1;
+    }
+    let first = *chars.get(j)?;
+    if !(first.is_ascii_alphabetic() || matches!(first, '_' | '\'' | '"' | '\\')) {
+        return None;
+    }
+    let mut delimiter = String::new();
+    let mut quoted = false;
+    while let Some(&c) = chars.get(j) {
+        match c {
+            '\'' | '"' => {
+                quoted = true;
+                j += 1;
+                while let Some(&d) = chars.get(j) {
+                    j += 1;
+                    if d == c {
+                        break;
+                    }
+                    delimiter.push(d);
+                }
+            }
+            '\\' => {
+                quoted = true;
+                if let Some(&d) = chars.get(j + 1) {
+                    delimiter.push(d);
+                }
+                j += 2;
+            }
+            c if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')') => {
+                break;
+            }
+            c => {
+                delimiter.push(c);
+                j += 1;
+            }
+        }
+    }
+    (!delimiter.is_empty()).then_some((
+        Heredoc {
+            delimiter,
+            strip_tabs,
+            expands: !quoted,
+        },
+        j,
+    ))
+}
+
+/// The body of `doc` starting at `start` (just after the newline that ends
+/// the redirection's line), and the index after its delimiter line. `None`
+/// when no line closes it: the text is then read as commands, as before.
+fn heredoc_body(chars: &[char], start: usize, doc: &Heredoc) -> Option<(String, usize)> {
+    let mut i = start;
+    let mut body = String::new();
+    while i < chars.len() {
+        let end = chars[i..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(chars.len(), |p| i + p);
+        let line: String = chars[i..end].iter().collect();
+        let compared = if doc.strip_tabs {
+            line.trim_start_matches('\t')
+        } else {
+            line.as_str()
+        };
+        if compared == doc.delimiter {
+            return Some((body, (end + 1).min(chars.len())));
+        }
+        body.push_str(&line);
+        body.push('\n');
+        i = end + 1;
+    }
+    None
+}
+
+/// Consumes the bodies of `pending` heredocs starting at `start`, and
+/// returns the index after the last one closed.
+fn take_heredocs(
+    chars: &[char],
+    start: usize,
+    pending: &mut Vec<Heredoc>,
+    mut on_body: impl FnMut(String, &Heredoc),
+) -> usize {
+    let mut i = start;
+    for doc in pending.drain(..) {
+        if let Some((body, end)) = heredoc_body(chars, i, &doc) {
+            on_body(body, &doc);
+            i = end;
+        }
+    }
+    i
+}
+
+/// The `$(…)` and backtick bodies of an unquoted heredoc body, which bash
+/// runs while reading it. Quotes are literal there, so they hide nothing.
+fn heredoc_substitutions(body: &str) -> Vec<String> {
+    let chars: Vec<char> = body.chars().collect();
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 2,
+            '$' if chars.get(i + 1) == Some(&'(') => {
+                let (inner, end) = substitution(&chars, i + 2);
+                found.push(inner);
+                i = end;
+            }
+            '`' => {
+                let (inner, end) = backtick(&chars, i + 1);
+                found.push(inner);
+                i = end;
+            }
+            _ => i += 1,
+        }
+    }
+    found
+}
+
 /// Splits `command` into simple commands (word lists) at unquoted `;`, `&`,
 /// `|`, newlines, parentheses and redirections, honouring quotes and
 /// backslashes. Bodies of `$(…)` and backticks, quoted or not, are returned
-/// separately to be checked as commands of their own.
+/// separately to be checked as commands of their own. Heredoc bodies are
+/// returned separately too, as data (crusty round 4): a line of a commit
+/// message is not a command.
 ///
 /// This is a reader for the commands agents write, not a shell: anything it
 /// misreads still meets the `gh` shim, and branch protection after that.
-fn split(command: &str) -> (Vec<Vec<String>>, Vec<String>) {
+fn split(command: &str) -> Split {
     let chars: Vec<char> = command.chars().collect();
     let mut segments = Vec::new();
     let mut nested = Vec::new();
+    let mut heredocs = Vec::new();
+    let mut pending: Vec<Heredoc> = Vec::new();
     let mut words: Vec<String> = Vec::new();
     let mut word = String::new();
     let mut in_word = false;
@@ -499,6 +682,19 @@ fn split(command: &str) -> (Vec<Vec<String>>, Vec<String>) {
                     segments.push(std::mem::take(&mut words));
                 }
                 i += 1;
+                if c == '\n' && !pending.is_empty() {
+                    i = take_heredocs(&chars, i, &mut pending, |body, doc| {
+                        if doc.expands {
+                            nested.extend(heredoc_substitutions(&body));
+                        }
+                        heredocs.push(body);
+                    });
+                }
+            }
+            '<' if let Some((doc, end)) = heredoc_at(&chars, i) => {
+                end_word(&mut words, &mut word, &mut in_word);
+                pending.push(doc);
+                i = end;
             }
             '<' | '>' => {
                 end_word(&mut words, &mut word, &mut in_word);
@@ -519,22 +715,39 @@ fn split(command: &str) -> (Vec<Vec<String>>, Vec<String>) {
     if !words.is_empty() {
         segments.push(words);
     }
-    (segments, nested)
+    Split {
+        segments,
+        nested,
+        heredocs,
+    }
 }
 
 /// The body of a `$(` starting at `start`, up to its matching `)`, and the
 /// index after it. Quotes inside are skipped so their parentheses do not
-/// count; an unterminated body runs to the end.
+/// count, and so are heredoc bodies, whose apostrophes and parentheses are
+/// prose (`$(cat <<'EOF' … don't (ever) … EOF)`); `$((…))` arithmetic has no
+/// heredocs. An unterminated body runs to the end.
 fn substitution(chars: &[char], start: usize) -> (String, usize) {
     let mut depth = 1usize;
     let mut i = start;
     let mut quote: Option<char> = None;
+    let mut pending: Vec<Heredoc> = Vec::new();
+    let arithmetic = chars.get(start) == Some(&'(');
     while i < chars.len() {
         let c = chars[i];
         match quote {
             Some(q) if c == q => quote = None,
             Some(_) => {}
             None => match c {
+                '<' if !arithmetic && let Some((doc, end)) = heredoc_at(chars, i) => {
+                    pending.push(doc);
+                    i = end;
+                    continue;
+                }
+                '\n' if !pending.is_empty() => {
+                    i = take_heredocs(chars, i + 1, &mut pending, |_, _| {});
+                    continue;
+                }
                 '\'' | '"' => quote = Some(c),
                 '\\' => i += 1,
                 '(' => depth += 1,
