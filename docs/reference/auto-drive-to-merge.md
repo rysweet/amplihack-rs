@@ -1508,8 +1508,11 @@ looks for the guard's own `BLOCKED_TERMINAL orchestration_unavailable` text;
 reading any `BLOCKED_TERMINAL` as a refusal ended the loop on a review that
 merely discussed one.
 
-The loop-health evidence collector drops the same agent lines before its own
-`BLOCKED_TERMINAL` and exit-79 checks (#1510); see
+The loop-health evidence collector applies the same rule (#1510): it drops
+agent lines before its own token and exit-79 checks, and its token check
+requires the full `BLOCKED_TERMINAL orchestration_unavailable` marker. The
+round log is handed to it through `autodrive_round_tail.sh`, which drops the
+partial first line of the 20000-byte tail. See
 [Agent output lines are not refusals](loop-health-evaluator.md#agent-output-lines-are-not-refusals).
 
 ## Recursion context propagation
@@ -2077,6 +2080,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/recipes/loop-health-evaluator.yaml` | terminator | Agentic loop-health verdict. |
 | `amplifier-bundle/tools/autodrive_loop.sh` | tool | The uncapped, agentically-terminated loop driver; writes `<loop>-records.tsv`; runs a `--before-round` step at its own depth. |
 | `amplifier-bundle/tools/autodrive_last_round.sh` | tool | The highest round number a loop already has in the state dir, so a second or resumed loop labels its rounds after it. Writes nothing. |
+| `amplifier-bundle/tools/autodrive_round_tail.sh` | tool | The last 20000 bytes of a round log for the loop-health evaluator, without the partial first line a byte cut leaves, so no prefix-less agent fragment reaches the evidence collector (#1510). Writes nothing. |
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |

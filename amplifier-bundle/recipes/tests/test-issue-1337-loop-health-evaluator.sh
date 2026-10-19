@@ -226,13 +226,15 @@ else
     fail "EXIT79-detect" "exit 79 not detected (terminal_refusal='${T}'): ${EV79}"
 fi
 
+# The guard's own line (execute.rs), not a paraphrase of it: the collector
+# needs the full marker, as terminal_refusal() in autodrive_loop.sh does (#1510).
 EVBT="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
-    LOOP_LAST_ROUND_OUTPUT="child returned BLOCKED_TERMINAL at depth 4/3" \
+    LOOP_LAST_ROUND_OUTPUT="BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3" \
     run_step "${COLLECT}" 2>/dev/null)"
 T="$(printf '%s' "${EVBT}" | amplihack orch helper extract-json \
     | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
 if [[ "${T}" == "true" ]]; then
-    pass "EXIT79-blocked-terminal" "BLOCKED_TERMINAL in round output is a terminal policy refusal"
+    pass "EXIT79-blocked-terminal" "the guard's BLOCKED_TERMINAL orchestration_unavailable line is a terminal policy refusal"
 else
     fail "EXIT79-blocked-terminal" "BLOCKED_TERMINAL not detected (terminal_refusal='${T}')"
 fi

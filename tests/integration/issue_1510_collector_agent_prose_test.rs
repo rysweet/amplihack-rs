@@ -205,6 +205,37 @@ fn issue_1510_indented_agent_prose_is_still_dropped() {
     assert_not_terminal(&ev, "indented agent prose");
 }
 
+#[test]
+fn issue_1510_runner_failure_tail_with_bare_token_is_not_terminal() {
+    // When an agent step fails, recipe-runner-rs reprints the agent's stdout
+    // WITHOUT the `[HH:MM:SS] [amplihack:...]` prefix, indented under
+    // `--- stdout (tail) ---`. The agent-line filter cannot see that it is
+    // agent output, so the token check must require the guard's full marker,
+    // as terminal_refusal() does.
+    let text = "    --- stdout (tail) ---\n    the loop only stops on BLOCKED_TERMINAL";
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", text)]);
+    assert_not_terminal(&ev, "runner failure tail, bare token");
+    assert!(
+        !reason(&ev).contains(REASON_BLOCKED),
+        "runner failure tail: reason must not cite BLOCKED_TERMINAL; got {:?}",
+        reason(&ev)
+    );
+}
+
+#[test]
+fn issue_1510_bare_token_without_marker_is_not_terminal() {
+    // Unprefixed text at column 0 that names the token but is not the guard's
+    // `BLOCKED_TERMINAL orchestration_unavailable` line.
+    for line in [
+        "BLOCKED_TERMINAL",
+        "child returned BLOCKED_TERMINAL at depth 4/3",
+        "BLOCKED_TERMINAL: something else",
+    ] {
+        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", line)]);
+        assert_not_terminal(&ev, line);
+    }
+}
+
 // --- Real refusals stay terminal (fail-closed) -----------------------------
 
 #[test]
@@ -342,7 +373,9 @@ fn issue_1510_agent_only_log_does_not_abort_the_step() {
 
 #[test]
 fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
-    // The two filters must not drift apart.
+    // The two detectors must not drift apart. terminal_refusal() is the
+    // reference, and its rule has two halves: drop agent lines (this ERE)
+    // and require the full marker (MARKER below). Both are pinned here.
     const ERE: &str = r"'^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:'";
     let root = workspace_root();
     let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
@@ -356,8 +389,13 @@ fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
         cmd.contains(&format!("grep -vE {ERE}")),
         "step-01 must drop agent output lines with the same ERE as terminal_refusal()"
     );
+    const MARKER: &str = "grep -qF 'BLOCKED_TERMINAL orchestration_unavailable'";
+    assert!(
+        loop_sh.contains(MARKER),
+        "autodrive_loop.sh terminal_refusal() marker changed; update this test and the collector together"
+    );
     for detector in [
-        "grep -qF 'BLOCKED_TERMINAL' \"$WORK/terminal_blob\"",
+        "grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' \"$WORK/terminal_blob\"",
         "79([^0-9]|$)' \"$WORK/terminal_blob\"",
     ] {
         assert!(
@@ -365,4 +403,79 @@ fn issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte() {
             "both terminal detectors must read $WORK/terminal_blob; missing {detector:?}"
         );
     }
+}
+
+// --- The byte tail handed to the collector ---------------------------------
+
+fn run_round_tail(log: &[u8]) -> Vec<u8> {
+    let scratch = ScratchDir::new();
+    let path = scratch.0.join("round.log");
+    std::fs::write(&path, log).expect("write round log");
+    let tool = workspace_root().join("amplifier-bundle/tools/autodrive_round_tail.sh");
+    let mut bash = Command::new("bash");
+    isolated(&mut bash, &scratch.0);
+    let out = bash.arg(&tool).arg(&path).output().expect("spawn bash");
+    assert!(
+        out.status.success(),
+        "autodrive_round_tail.sh exited {:?}",
+        out.status.code()
+    );
+    out.stdout
+}
+
+#[test]
+fn issue_1510_autodrive_loop_passes_autodrive_round_tail_not_a_raw_byte_tail() {
+    let loop_sh =
+        std::fs::read_to_string(workspace_root().join("amplifier-bundle/tools/autodrive_loop.sh"))
+            .expect("read autodrive_loop.sh");
+    assert!(
+        loop_sh.contains(
+            "-c \"loop_last_round_output=$(bash \"${LOOP_HOME}/autodrive_round_tail.sh\" \"$LOG\")\""
+        ),
+        "loop_last_round_output must come from autodrive_round_tail.sh, which drops the partial first line"
+    );
+    assert!(
+        !loop_sh.contains("loop_last_round_output=$(tail -c"),
+        "a raw byte tail leaves a prefix-less fragment as the first line"
+    );
+}
+
+#[test]
+fn issue_1510_round_tail_drops_the_partial_first_line_of_a_long_log() {
+    // The cut lands inside an agent line, leaving only its unprefixed end.
+    let agent = "[10:13:17] [amplihack:claude:3] the loop only stops on exit 79 or BLOCKED_TERMINAL orchestration_unavailable\n";
+    // Whole agent lines after it, sized so the cut falls mid-way through it.
+    let want = 20_000 - agent.len() / 2;
+    let mut rest = String::new();
+    while rest.len() + 200 < want {
+        rest.push_str("[10:13:18] [amplihack:claude:3] filler line of ordinary review prose\n");
+    }
+    let pad = want - rest.len() - "[10:13:19] [amplihack:claude:3] \n".len();
+    rest.push_str(&format!(
+        "[10:13:19] [amplihack:claude:3] {}\n",
+        "x".repeat(pad)
+    ));
+    assert_eq!(rest.len(), want);
+    let long = format!("{agent}{rest}").into_bytes();
+    let cut = long.len() - 20_000;
+    assert!(
+        cut > 0 && cut < agent.len(),
+        "the cut must fall inside the agent line"
+    );
+
+    let tail = run_round_tail(&long);
+    let text = String::from_utf8_lossy(&tail);
+    assert!(
+        text.lines().all(|l| l.starts_with("[10:13:")),
+        "every line autodrive_round_tail.sh prints must be whole; first line: {:?}",
+        text.lines().next()
+    );
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &text)]);
+    assert_not_terminal(&ev, "byte tail cut inside an agent line");
+}
+
+#[test]
+fn issue_1510_round_tail_keeps_a_short_log_whole() {
+    let log = format!("{GUARD_LINE}\nsecond line\n");
+    assert_eq!(run_round_tail(log.as_bytes()), log.as_bytes());
 }
