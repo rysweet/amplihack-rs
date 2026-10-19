@@ -135,6 +135,9 @@ jobs:
       - name: Terminal state — agentic adjudication, no rubber stamp (issue #1268)
         shell: bash
         run: bash tests/issue_1268_terminal_state_adjudication.sh
+      - name: Final status — resolves agent-opened branch PR (issue #1596)
+        shell: bash
+        run: bash tests/issue_1596_final_status_branch_pr_lookup.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -272,6 +275,11 @@ jobs:
       - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
+      - name: Recipes — re-run never destroys an existing worktree's work (issue #1565)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1565-rerun-preserves-dirty-worktree.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
