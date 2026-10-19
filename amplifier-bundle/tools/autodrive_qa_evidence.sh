@@ -160,19 +160,19 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       continue
     fi
     if [ "$kind" = "detected" ]; then
-      # A detected command must resolve to an absolute path outside the
-      # repository: a '.' or empty PATH entry, or a PATH entry inside the
-      # tree, never runs a cargo, pytest or npm planted in the branch.
+      # Installed means `command -v` finds it on PATH from qa_dir. Where it
+      # resolves is not checked, and this is not a sandbox: `npm test` runs
+      # the branch's scripts.test, pytest imports its conftest.py and cargo
+      # runs its build.rs, so a test suite always runs branch code. A
+      # project `.venv/bin/pytest` on PATH is therefore used as it is.
       # `./` (also for a configured dir) keeps `-` from meaning $OLDPWD.
-      p="$(cd -- "./$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
-      pd=""; case "$p" in /*) pd="$(cd -P -- "${p%/*}/" 2>/dev/null && pwd -P)" || pd="" ;; esac
-      case "$pd" in ""|"$ROOT"|"$ROOT"/*)
-        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed outside the repository; set AUTODRIVE_QA_COMMAND to run a repository copy"
-        continue ;;
-      esac
+      if ! ( cd -- "./$dir" 2>/dev/null && command -v -- "$first" >/dev/null 2>&1 ); then
+        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
+        continue
+      fi
       # No timeout: a test suite is never cut off mid-run.
       # shellcheck disable=SC2086
-      ( set -f; set -- $text; shift; cd -- "./$dir" && "$p" "$@" ) >>"$LOG" 2>&1 </dev/null
+      ( set -f; cd -- "./$dir" && $text ) >>"$LOG" 2>&1 </dev/null
       rc=$?
     else
       # A configured word may also be ./<first> inside AUTODRIVE_QA_DIR.

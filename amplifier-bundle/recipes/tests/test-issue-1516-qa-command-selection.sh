@@ -411,7 +411,7 @@ for d in 'has space' '$(touch PWNED)' 'q"uote' 'back\slash' "$(printf 'tab\tdir'
     else fail "sec-v1-sanitised:$(printf '%q' "$d")" "unsanitised candidate: $(printf '%q' "$cand")"; fi
 done
 
-echo "== #1516 SEC-V8: a planted ./cargo in the workspace does not pass the installed check =="
+echo "== #1516 SEC-V8: a ./cargo in the workspace, off PATH, does not pass the installed check =="
 if PATH="$SYSPATH" command -v cargo >/dev/null 2>&1; then
     echo "  SKIP[sec-v8]: a cargo exists in $SYSPATH on this host"
 else
@@ -453,54 +453,30 @@ else fail a5-san-summary "summary is $(printf '%q' "$sum")"; fi
 if [ ! -e "$REPO/PWNED" ]; then pass a5-san-exec "the directory name was never executed"
 else fail a5-san-exec "a command substitution in AUTODRIVE_QA_DIR ran"; fi
 
-echo "== #1516 R1: a detected command never resolves to a file inside the repository =="
-# PATH begins with an empty entry (= the current directory) and the stub PATH
-# holds no cargo, so the only cargo reachable is the one planted in x/y.
+echo "== #1516 R1: the installed check is a PATH lookup, not a sandbox =="
+# Branch code runs anyway (build.rs, conftest.py, scripts.test), so a program
+# found on PATH runs wherever it lives, including inside the repository.
 if PATH="$SYSPATH" command -v cargo >/dev/null 2>&1; then
     echo "  SKIP[r1]: a cargo exists in $SYSPATH on this host"
 else
-    for shape in empty dot; do
-        new_repo x/y/Cargo.toml
-        MARK="$WORK/r$N/planted-ran"
-        cat > "$REPO/x/y/cargo" <<EOF
-#!/usr/bin/env bash
-: > "$MARK"
-printf 'planted|%s\n' "\$*" >> "\${CALLS}"
-exit 0
-EOF
-        chmod +x "$REPO/x/y/cargo"
-        if [ "$shape" = empty ]; then STUBPATH=":$NOCARGO"; else STUBPATH=".:$NOCARGO"; fi
-        run_tool
-        STUBPATH="$STUBS"
-        expect "r1-$shape" "PATH with '${shape}' entry: planted ./cargo is not installed" \
-            qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=rust-cli qa_dir=x/y
-        expect_calls "r1-$shape-calls" "the planted cargo never runs" planted ""
-        if [ ! -e "$MARK" ]; then pass "r1-$shape-marker" "no marker from the planted cargo"
-        else fail "r1-$shape-marker" "the planted cargo ran"; fi
-    done
-    # A planted root-level cargo with an in-repo absolute PATH entry is refused too.
     new_repo Cargo.toml bin/
-    MARK="$WORK/r$N/planted-ran"
-    printf '#!/usr/bin/env bash\n: > "%s"\nexit 0\n' "$MARK" > "$REPO/bin/cargo"
-    chmod +x "$REPO/bin/cargo"
+    cp -p "$STUBS/cargo" "$REPO/bin/cargo"
     STUBPATH="$REPO/bin:$NOCARGO"
     run_tool
     STUBPATH="$STUBS"
-    expect r1-abs "a cargo under \$ROOT on an absolute PATH entry is not installed" \
-        qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=rust-cli qa_dir=.
-    if [ ! -e "$MARK" ]; then pass r1-abs-marker "the in-repo cargo never runs"
-    else fail r1-abs-marker "the in-repo cargo ran"; fi
+    expect r1-inrepo "a cargo under \$ROOT on PATH is installed" \
+        qa_status=PASS qa_repo_type=rust-cli qa_dir=.
+    expect_calls r1-inrepo-calls "the PATH cargo runs at the root" cargo "cargo|.|$CARGO_ARGS"
 fi
-# The resolved stub, outside the repository, still runs with its arguments.
 new_repo x/y/Cargo.toml
 STUBPATH=":$STUBS"
 run_tool
 STUBPATH="$STUBS"
-expect r1-ok "an out-of-repo cargo is still used when PATH holds an empty entry" \
+expect r1-ok "a cargo on PATH is used when PATH also holds an empty entry" \
     qa_status=PASS qa_dir=x/y
-expect_calls r1-ok-calls "the out-of-repo cargo runs in x/y with full argv" cargo "cargo|x/y|$CARGO_ARGS"
+expect_calls r1-ok-calls "cargo runs in x/y with full argv" cargo "cargo|x/y|$CARGO_ARGS"
 
-echo "== #1516 R2: a .venv pytest is refused when detected and runs when configured =="
+echo "== #1516 R2: a .venv pytest on PATH runs, detected or configured =="
 if PATH="$SYSPATH" command -v pytest >/dev/null 2>&1; then
     echo "  SKIP[r2]: a pytest exists in $SYSPATH on this host"
 else
@@ -508,17 +484,21 @@ else
     cp -p "$STUBS/pytest" "$REPO/.venv/bin/pytest"
     STUBPATH="$REPO/.venv/bin"
     run_tool
-    expect r2-detected "a detected pytest in .venv is not installed" \
-        qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=python qa_dir=.
-    sum="$(f qa_summary)"
-    if [[ "$sum" == *"set AUTODRIVE_QA_COMMAND"* ]]; then
-        pass r2-summary "the summary names the AUTODRIVE_QA_COMMAND workaround"
-    else fail r2-summary "summary is '$sum'"; fi
-    expect_calls r2-calls "the .venv pytest never runs when detected" pytest ""
+    expect r2-detected "a detected pytest in .venv on PATH runs" \
+        qa_status=PASS qa_repo_type=python qa_dir=.
+    expect_calls r2-calls "the .venv pytest runs at the root" pytest "pytest|.|"
+    : > "$CALLS"
     run_tool AUTODRIVE_QA_COMMAND=pytest
     STUBPATH="$STUBS"
     expect r2-configured "AUTODRIVE_QA_COMMAND=pytest runs the .venv pytest" qa_status=PASS qa_dir=.
     expect_calls r2-configured-calls "the .venv pytest runs at the root" pytest "pytest|.|"
+    # Without .venv/bin on PATH the detected pytest is not installed.
+    mkdir -p "$WORK/emptypath"
+    STUBPATH="$WORK/emptypath"
+    run_tool
+    STUBPATH="$STUBS"
+    expect r2-offpath "a .venv pytest off PATH is not installed" \
+        qa_status=BLOCKED qa_reason=qa-command-not-installed qa_repo_type=python qa_dir=.
 fi
 
 echo "== #1516 security review: cd never resolves outside the checked directory =="

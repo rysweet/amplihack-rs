@@ -796,25 +796,22 @@ With no command variable set, the
 
 `AUTODRIVE_QA_COMMAND` and detected commands run as
 `( cd -- "$QA_DIR" && <command> )`; `AUTODRIVE_QA_COMMANDS` entries run from
-the root. A detected command counts as installed only when `command -v`,
-run in `qa_dir`, resolves it to an absolute path outside the repository; the
-tool then runs that resolved path, not the bare name. So an executable
-`cargo` planted anywhere in the repository gives `qa-command-not-installed`,
-even when `PATH` contains `.` or an empty entry, and the planted file never
-runs. `AUTODRIVE_QA_COMMAND` also accepts a `./<first word>` executable
-relative to `AUTODRIVE_QA_DIR`, so
-`AUTODRIVE_QA_COMMAND=bin/check AUTODRIVE_QA_DIR=sub` runs `sub/bin/check`.
-That is the way to use a repository-local wrapper:
+the root. A detected command counts as installed when `command -v`, run in
+`qa_dir`, finds it on `PATH`; where it resolves is not checked. A project
+`.venv/bin/pytest` (uv, poetry with in-project virtualenvs,
+`python -m venv .venv`) is used when `.venv/bin` is on `PATH`.
+`AUTODRIVE_QA_COMMAND` also accepts a `./<first word>` executable relative to
+`AUTODRIVE_QA_DIR`, so `AUTODRIVE_QA_COMMAND=bin/check AUTODRIVE_QA_DIR=sub`
+runs `sub/bin/check`. That is the way to use a repository-local wrapper:
 `AUTODRIVE_QA_COMMAND='./scripts/cargo-wrapper test'`.
 
-The same rule refuses a tool installed in an in-repository virtualenv. A
-Python repository whose `pytest` is `.venv/bin/pytest` (uv, poetry with
-in-project virtualenvs, `python -m venv .venv`) gives `BLOCKED` with
-`qa-command-not-installed`, even with `.venv/bin` on `PATH`. The summary
-names the way out:
-`pytest not installed outside the repository; set AUTODRIVE_QA_COMMAND to run a repository copy`.
-Set `AUTODRIVE_QA_COMMAND=pytest` to run it: a configured command only has to
-be on `PATH`, so the operator, not the branch, chooses it.
+**This is not a sandbox, and the installed check is not a security control.**
+The suite runs code from the branch whichever binary starts it: `npm test`
+runs `package.json` `scripts.test`, pytest imports `conftest.py`, and
+`cargo test` compiles and runs `build.rs` and the tests. Refusing a `cargo`
+or `pytest` found inside the repository would contain nothing the suite does
+not already run, so the tool does not do it. Run auto-drive only on branches
+whose code you are willing to execute.
 
 When `AUTODRIVE_QA_DIR` names a directory that does not exist, the command
 does not run and is not reported as missing from `PATH`:
@@ -1177,14 +1174,12 @@ unreadable directory that could hide a second crate, the result is
 The candidate list then names the error as `(search-error)`.
 Checking the type at the merge base is tracked in
 [#1640](https://github.com/rysweet/amplihack-rs/issues/1640). Detected
-commands run in `qa_dir`, a directory the branch controls, so they are
-resolved through `PATH` first and must resolve to an absolute path outside the
-repository. A planted `cargo`, `pytest` or `npm` is refused even when `PATH`
-contains `.` or an empty entry. This check covers detected commands only:
-`AUTODRIVE_QA_COMMAND='cargo test'` with `.` in `PATH` and an in-repository
-`AUTODRIVE_QA_DIR` runs a planted `./cargo`, because the operator chose that
-command. Every suite command, detected or configured, inherits the operator's
-`PATH`, so a test that runs a bare tool name can still pick up a planted copy.
+commands run in `qa_dir` and are found through the operator's `PATH`; where
+the program resolves, inside or outside the repository, is not checked. That
+is deliberate: the suite runs the branch's code anyway (`build.rs`,
+`conftest.py`, `scripts.test`), so refusing an in-repository `cargo` or
+`pytest` would isolate nothing and would block a project `.venv`. Nothing here
+is a sandbox, and no part of the installed check should be cited as one.
 `cargo` also reads the branch's `.cargo/config.toml` and
 `rust-toolchain.toml`. Both are accepted limits: the suite is the branch's own
 code, and running it is the point of criterion 1. The tool unsets `CDPATH`, so
@@ -2283,7 +2278,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
-| QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, a planted `cargo` that never runs, even with an empty entry in `PATH`, a `.venv/bin/pytest` that is refused when detected and runs with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
+| QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
