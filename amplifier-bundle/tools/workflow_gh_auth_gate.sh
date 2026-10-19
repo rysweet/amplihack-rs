@@ -59,10 +59,6 @@ _gh_gate_settings() {
   max="$(_gh_gate_setting WORKFLOW_GH_AUTH_MAX_DELAY 60 0 600)"
 }
 
-_gh_gate_wait() {
-  if [ "$1" -gt 0 ]; then sleep "$1"; fi
-}
-
 gh_auth_gate() {
   local attempts base max attempt=1 delay
   _gh_gate_settings
@@ -75,7 +71,7 @@ gh_auth_gate() {
     fi
     delay="$(_gh_gate_delay "$base" "$max" "$attempt")"
     echo "WARNING: gh auth status failed (attempt $attempt/$attempts); retrying in ${delay}s" >&2
-    _gh_gate_wait "$delay"
+    [ "$delay" -eq 0 ] || sleep "$delay"
     attempt=$((attempt + 1))
   done
   echo "ERROR: gh CLI is unavailable or unauthenticated — cannot verify or mutate GitHub PR readiness" >&2
@@ -106,7 +102,7 @@ gh_push_permission_gate() {
     fi
     delay="$(_gh_gate_delay "$base" "$max" "$attempt")"
     echo "WARNING: gh reports push=false on $repo_id (attempt $attempt/$attempts); retrying in ${delay}s" >&2
-    _gh_gate_wait "$delay"
+    [ "$delay" -eq 0 ] || sleep "$delay"
     attempt=$((attempt + 1))
   done
   if ! login="$(timeout 30 gh api user --jq .login 2>/dev/null)" || ! [[ "$login" =~ ^[A-Za-z0-9-]{1,39}$ ]]; then

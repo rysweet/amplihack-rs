@@ -255,10 +255,8 @@ steps:
       fi
       # FIX (#978, #1575): one ancestry policy, shared with publish-sync-pr-head. The helper
       # fast-forwards with an explicit refspec and verifies, or fails closed on divergence.
-      sync_out=$(mktemp -t step15-sync-XXXXXX)
-      trap 'rm -f "$sync_out"; _emit_commit_result' EXIT
-      sync_rc=0; bash "$SYNC" --mode step15 >"$sync_out" || sync_rc=$?
-      sync_line=$(head -n 1 "$sync_out")
+      sync_rc=0; sync_line=$(bash "$SYNC" --mode step15) || sync_rc=$?
+      sync_line="${sync_line%%$'\n'*}"
       case "$sync_line" in pushed=*" sha="*" reason="*) ;; *) sync_line="pushed=false sha= reason=sync-no-result" ;; esac
       pushed="${sync_line#pushed=}"; pushed="${pushed%% *}"; [ "$pushed" = "true" ] || pushed="false"
       sha="${sync_line#* sha=}"; sha="${sha%% *}"; printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}([0-9a-f]{24})?$' || sha=""
