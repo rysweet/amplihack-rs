@@ -21,7 +21,8 @@
 # Second layer for anything this script starts (SR-4).
 builtin unset -f refuse classify classify_pr classify_api classify_alias_cmd \
   classify_alias_use is_merge_endpoint names_merge find_real_gh carries_marker \
-  parent_is_gate sys_tool realpath readlink stat test cd pwd 2>/dev/null
+  parent_is_gate parent_pid_matches parent_environ_clean sys_tool realpath \
+  readlink stat test cd pwd 2>/dev/null
 builtin unset BASH_ENV ENV
 set -uf
 
@@ -47,7 +48,7 @@ self="${BASH_SOURCE[0]}"
 SELF_DIR="$(builtin cd -P -- "${self%/*}" 2>/dev/null && builtin pwd -P)" || SELF_DIR=""
 
 refuse() { # refuse <label>: the fixed line, never argv (DP-1)
-  printf 'REFUSED (amplihack #1551): %s is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive'"'"'s merge gate merges after Crusty CLEAN and the merge-ready loop.\n' "$1" >&2
+  printf 'REFUSED (amplihack #1551): %s is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive'"'"'s merge gate merges after Crusty CLEAN and the merge-ready loop. Do not retry with another gh path, PATH, alias, API client or token.\n' "$1" >&2
   exit 3
 }
 
@@ -90,27 +91,55 @@ sys_tool() {
   return 1
 }
 
-# parent_is_gate: deny by default (AZ-1). The immediate parent must be bash,
-# root-owned and not writable by this user, running the trusted gate beside
-# this directory as its script: argv[1] and descriptor 255 both name it.
+# parent_pid_matches: /proc/self/stat field 4 (read after the last ')', since
+# comm may hold spaces or parentheses) must still be $PPID, so a shim whose
+# parent exited and whose pid was reused is never judged by a stranger (G12).
+parent_pid_matches() {
+  local line rest
+  local -a f=()
+  IFS= read -r line < /proc/self/stat 2>/dev/null || return 1
+  [[ "$line" == *')'* ]] || return 1
+  rest="${line##*)}"
+  read -r -a f <<< "$rest"
+  (( ${#f[@]} >= 2 )) || return 1
+  [[ "${f[1]}" =~ ^[0-9]+$ && "${f[1]}" == "$PPID" ]]
+}
+
+# parent_environ_clean <proc>: the parent was started with no exported
+# function and no non-empty BASH_ENV, ENV, SHELLOPTS, BASHOPTS or PS4, each of
+# which can run code or change behaviour inside a bash (G6). Unreadable:
+# refused.
+parent_environ_clean() {
+  local -a envs=()
+  local e
+  [[ -r "$1/environ" ]] || return 1
+  mapfile -d '' -t envs < "$1/environ" 2>/dev/null || return 1
+  for e in ${envs[@]+"${envs[@]}"}; do
+    case "$e" in
+      BASH_FUNC_*) return 1 ;;
+      BASH_ENV=?*|ENV=?*|SHELLOPTS=?*|BASHOPTS=?*|PS4=?*) return 1 ;;
+    esac
+  done
+  return 0
+}
+
+# parent_is_gate: deny by default (AZ-1). The immediate parent must be a
+# root-owned bash, not writable by this user, whose argv is exactly
+# [bash, -p, <physical path of the gate beside this directory>, ...], whose
+# descriptor 255 is that gate, and whose environment is clean (G6).
 parent_is_gate() {
-  local proc="/proc/$PPID" rp st gate gate_real a1 cwd exe meta
+  local proc="/proc/$PPID" rp st gate gate_real exe meta
   [[ -n "$SELF_DIR" && -d "$proc" ]] || return 1
+  parent_pid_matches || return 1
   rp="$(sys_tool realpath)" || return 1
   st="$(sys_tool stat)" || return 1
   gate="$SELF_DIR/../autodrive_merge_gate.sh"
   [[ -f "$gate" ]] || return 1
-  gate_real="$("$rp" -e -- "$gate" 2>/dev/null)" && [[ -n "$gate_real" ]] || return 1
+  gate_real="$("$rp" -e -- "$gate" 2>/dev/null)" && [[ "$gate_real" == /* ]] || return 1
   local -a pargv=()
   mapfile -d '' -t pargv < "$proc/cmdline" 2>/dev/null || return 1
-  (( ${#pargv[@]} >= 2 )) || return 1
-  a1="${pargv[1]}"
-  [[ -n "$a1" ]] || return 1
-  if [[ "$a1" != /* ]]; then
-    cwd="$("$rp" -e -- "$proc/cwd" 2>/dev/null)" && [[ -n "$cwd" ]] || return 1
-    a1="$cwd/$a1"
-  fi
-  [[ "$("$rp" -e -- "$a1" 2>/dev/null)" == "$gate_real" ]] || return 1
+  (( ${#pargv[@]} >= 3 )) || return 1
+  [[ "${pargv[1]}" == -p && "${pargv[2]}" == "$gate_real" ]] || return 1
   [[ "$proc/fd/255" -ef "$gate_real" ]] || return 1
   exe="$("$rp" -e -- "$proc/exe" 2>/dev/null)" && [[ -n "$exe" ]] || return 1
   [[ "${exe##*/}" == bash ]] || return 1
@@ -118,6 +147,9 @@ parent_is_gate() {
   [[ "$meta" =~ ^0\ ([0-7]{3,4})$ ]] || return 1
   (( (8#${BASH_REMATCH[1]} & 8#022) == 0 )) || return 1
   (( EUID == 0 )) || [[ ! -w "$exe" ]] || return 1
+  parent_environ_clean "$proc" || return 1
+  # The parent may have exited while it was being read.
+  parent_pid_matches || return 1
   return 0
 }
 

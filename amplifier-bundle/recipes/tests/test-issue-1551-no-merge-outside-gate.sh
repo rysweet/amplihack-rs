@@ -108,6 +108,7 @@ case "${1:-} ${2:-}" in
   "pr merge") printf 'MERGED' > "${GH_STATE}"; echo "stub: merged"; exit "${STUB_MERGE_RC:-0}" ;;
   "pr view")
     [ "${STUB_MODE:-}" = "unreadable" ] && exit 1
+    case " $* " in *" --jq .url "*) printf 'https://github.com/o/r/pull/%s\n' "${3:-0}"; exit 0 ;; esac
     printf '{"state":"%s"}\n' "$(cat "${GH_STATE}")"; exit "${STUB_RC:-0}" ;;
   "alias list")
     [ -n "${STUB_ALIAS_RC:-}" ] && exit "${STUB_ALIAS_RC}"
@@ -229,7 +230,7 @@ else
   fail "S-G6-no-env-p" "a '#!/usr/bin/env bash -p' shebang never reaches bash as -p"
 fi
 GATE_UNSET_LINE="$(grep -nE '^[[:space:]]*builtin unset -f( [a-z]+)* gh( [a-z]+)* git( [a-z]+)* jq' "${REAL_GATE}" | head -n 1 | cut -d: -f1)"
-GATE_FIRST_GH="$(grep -nE '(^|[^[:alnum:]_./-])gh ' "${REAL_GATE}" | grep -vE '^[0-9]+:[[:space:]]*#' | head -n 1 | cut -d: -f1)"
+GATE_FIRST_GH="$(grep -nE '(^|[^[:alnum:]_./-])gh ' "${REAL_GATE}" | grep -vE '^[0-9]+:[[:space:]]*(#|builtin unset )' | head -n 1 | cut -d: -f1)"
 if [ -n "${GATE_UNSET_LINE}" ] && { [ -z "${GATE_FIRST_GH}" ] || [ "${GATE_UNSET_LINE}" -lt "${GATE_FIRST_GH}" ]; }; then
   pass "S-G6-gate-unset" "the gate runs 'builtin unset -f gh git jq' before its first gh call"
 else
@@ -252,7 +253,7 @@ else
 fi
 # G6. No recipe or tool runs the gate as `bash "$GATE"`: without -p the shim
 # refuses its merge, so such a caller would never merge.
-BARE_CALLERS="$(grep -rnE '(^|[^-[:alnum:]_/])bash[[:space:]]+"?\$\{?GATE(_PHYS)?\}?"?' "${RECIPES}"/*.yaml "${TOOLS}"/*.sh 2>/dev/null || true)"
+BARE_CALLERS="$(grep -rnE '(^|[^-[:alnum:]_/])bash[[:space:]]+"?\$\{?GATE(_PHYS)?\}?"?([[:space:]]|$)' "${RECIPES}"/*.yaml "${TOOLS}"/*.sh 2>/dev/null || true)"
 if [ -z "${BARE_CALLERS}" ]; then
   pass "S-G6-no-bare-callers" "no recipe or tool runs the gate as bash \"\$GATE\" without -p"
 else

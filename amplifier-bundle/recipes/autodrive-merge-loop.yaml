@@ -255,8 +255,8 @@ steps:
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
       [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
-      # Issue #1551: an absolute, physical path, so the gh merge guard sees the gate as argv[1].
-      GATE="$(cd "$(dirname "$GATE")" && pwd -P)/$(basename "$GATE")"
+      # Issue #1551: the gh merge guard trusts only [<root bash>, -p, <physical gate path>, ...].
+      GATE_PHYS="$(cd "$(dirname "$GATE")" && pwd -P)/$(basename "$GATE")"
       g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
@@ -268,7 +268,7 @@ steps:
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
       [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)
-      bash "$GATE" "${ARGS[@]}"
+      /bin/bash -p "$GATE_PHYS" "${ARGS[@]}"
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal at the merge gate. Final — never retried." >&2

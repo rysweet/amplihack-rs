@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # autodrive_merge_gate.sh — the final, evidence-gated merge for
 # auto-drive-to-merge.
 #
@@ -20,6 +20,10 @@
 #   Exit 79 — terminal policy refusal from a child. Surfaced, never retried.
 
 set -uo pipefail
+# Issue #1551: privileged mode (-p, above) already ignores exported functions
+# and BASH_ENV; drop any gh, git or jq function anyway, so nothing but the
+# real tools (through the gh merge guard) answers the calls below.
+builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"
