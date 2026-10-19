@@ -249,7 +249,7 @@ FIELDS
   # Invalid authoritative metadata (status 3) is swallowed into "" above; it
   # must never feed a success path, so any such key disables this path.
   metadata_valid="true"
-  for metadata_key in pr_url pr_number prior_terminal_state publish_status branch_name remote_host_type; do
+  for metadata_key in worktree_path repo_path pr_url pr_number publish_state_reached prior_terminal_state publish_status branch_name remote_host_type; do
     metadata_status=0
     (workflow_finalization_metadata "$metadata_key" >/dev/null 2>&1) || metadata_status=$?
     [ "$metadata_status" != 3 ] || metadata_valid="false"

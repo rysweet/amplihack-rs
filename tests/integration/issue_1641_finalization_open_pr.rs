@@ -17,6 +17,8 @@ mod fail_closed;
 mod fixture;
 #[path = "issue_1641_finalization_open_pr/head_and_fallback.rs"]
 mod head_and_fallback;
+#[path = "issue_1641_finalization_open_pr/metadata.rs"]
+mod metadata;
 #[path = "issue_1641_finalization_open_pr/signal.rs"]
 mod signal;
 #[path = "issue_1641_finalization_open_pr/success.rs"]
