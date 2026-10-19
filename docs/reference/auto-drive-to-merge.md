@@ -547,7 +547,11 @@ like every other stop in the loop. The loop asks
 `A-Za-z0-9_` before they reach the evaluator's `-c` context arguments, the
 `loop_history` line, and the override `INFO` and `STUCK` messages above, so an
 agent-written verdict cannot forge a `done_overridden=1` marker or a fake
-history line. Other existing messages, such as the `DONE` line and the clean
+history line. A non-clean verdict that reduces to the clean token, such as
+`CLEAN!` or `**CLEAN**`, is passed on as `CLEAN_NONCANONICAL`: the evaluator
+is never told such a round is clean, and a STUCK message reads
+`the round verdict is 'CLEAN_NONCANONICAL', not 'CLEAN'` rather than
+contradicting itself. Other existing messages, such as the `DONE` line and the clean
 `CONTINUE` notice, still print the raw values.
 
 **Known limit:** a reviewer that rewrites its findings every round while

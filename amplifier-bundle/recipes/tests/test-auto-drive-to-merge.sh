@@ -5611,14 +5611,33 @@ fi
 
 # Cleanliness is decided on the RAW verdict: 'CLEAN!' sanitises to CLEAN but
 # is not clean, so round-1 is overridden and only round-2's CLEAN converges.
+# The evaluator is never told such a round is clean: it gets CLEAN_NONCANONICAL,
+# which cannot equal loop_clean_token, and so does the round's history line.
 SPEC="${WORK}/spec-1597-raw"; p1597_reset "${SPEC}"
 spec_round "${SPEC}" round-1 crusty_verdict '"CLEAN!"' $'C1: punctuation\n'
 spec_round "${SPEC}" default crusty_verdict '"CLEAN"' ''
 run_loop p1597-raw-clean; rc=$?; p1597_collect
-if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' && [ "$(rounds)" = "2" ]; then
-  pass "1597-raw-verdict-clean" "a verdict that only sanitises to the clean token never converges a round"
+if [ "$rc" -eq 0 ] && printf '%s' "${LOOP_OUT}" | grep -qF '"round_label":"round-2"' && [ "$(rounds)" = "2" ] \
+   && health_argv 1 | grep -qE 'loop_round_verdict=CLEAN_NONCANONICAL( |$)' \
+   && ! health_argv 1 | grep -qE 'loop_round_verdict=CLEAN( |$)' \
+   && history_of 1 | grep -qF 'crusty_verdict=CLEAN_NONCANONICAL' \
+   && health_argv 2 | grep -qE 'loop_round_verdict=CLEAN( |$)'; then
+  pass "1597-raw-verdict-clean" "a verdict that only sanitises to the clean token never converges a round and reaches the evaluator as CLEAN_NONCANONICAL"
 else
-  fail "1597-raw-verdict-clean" "rc=${rc}, rounds=$(rounds): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+  fail "1597-raw-verdict-clean" "rc=${rc}, rounds=$(rounds); health-1: $(health_argv 1 | grep -oE 'loop_round_verdict=[^ ]*'); health-2: $(health_argv 2 | grep -oE 'loop_round_verdict=[^ ]*'): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
+fi
+# The same 'CLEAN.' twice under DONE stops STUCK, and the escalation names the
+# non-canonical value instead of the self-contradictory "'CLEAN', not 'CLEAN'".
+SPEC="${WORK}/spec-1597-raw-repeat"; p1597_reset "${SPEC}"
+spec_round "${SPEC}" default crusty_verdict '"CLEAN."' $'C1: punctuation\n'
+run_loop p1597-raw-repeat; rc=$?; p1597_collect
+if [ "$rc" -eq 1 ] && [ "$(rounds)" = "2" ] && [ "$(info_count)" = "1" ] \
+   && grep -qF "the round verdict is 'CLEAN_NONCANONICAL', not 'CLEAN'" "${LOOP_LOGS}/err" \
+   && grep -qF "repeated DONE over non-clean 'CLEAN_NONCANONICAL' with no progress" "${LOOP_LOGS}/err" \
+   && ! grep -qF "'CLEAN', not 'CLEAN'" "${LOOP_LOGS}/err"; then
+  pass "1597-raw-verdict-repeat-message" "a repeated DONE over 'CLEAN.' stops STUCK and names CLEAN_NONCANONICAL, not 'CLEAN', not 'CLEAN'"
+else
+  fail "1597-raw-verdict-repeat-message" "rc=${rc}, rounds=$(rounds), overrides=$(info_count): ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
 fi
 
 # An agent-written verdict cannot forge the done_overridden marker or break

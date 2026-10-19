@@ -617,7 +617,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_test_signal` / `loop_test_signal_previous` | `""` | Test result summaries for the last two rounds. |
 | `loop_ci_signal` / `loop_ci_signal_previous` | `""` | CI result summaries for the last two rounds. |
 | `loop_clean_token` | `""` | The verdict that makes a round clean for this loop: `CLEAN` (crusty) or `MERGE_READY` (merge-ready). `DONE` is legal only when `loop_round_verdict` equals it. Empty means: use the reviewer verdict for this round in `loop_history` if there is one, otherwise decide as before. |
-| `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed. |
+| `loop_round_verdict` | `""` | The reviewer's verdict for the round just finished, for example `CONCERNS` or `MERGE_READY`, or `MISSING` when the round wrote no record. `autodrive_loop.sh` passes it with every character outside `A-Za-z0-9_` removed; a non-clean verdict that would then equal the clean token (`CLEAN!`) arrives as `CLEAN_NONCANONICAL`. |
 | `loop_health_enforce` | `"true"` | When `"false"`, `STUCK` is reported loudly but exits `0`, leaving the stop entirely to the caller's `condition:`. |
 
 ## Outputs

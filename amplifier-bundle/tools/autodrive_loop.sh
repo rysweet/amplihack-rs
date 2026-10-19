@@ -261,8 +261,8 @@ while :; do
       echo "WARNING: ${ROUND_LABEL} produced no parseable '${VERDICT_FIELD}'; treated as NOT clean." >&2 ;;
     *) ROUND_CLEAN="false" ;;
   esac
-  # Only A-Za-z0-9_ of the verdict reaches the evaluator, the history and the #1597 messages: no forged lines.
-  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"
+  # Only A-Za-z0-9_ of the verdict reaches the evaluator, history and #1597 messages; a non-clean one that sanitises to the token ('CLEAN!') is tagged _NONCANONICAL so none of them reads it as clean.
+  VERDICT_SAFE="$(printf '%s' "$ROUND_VERDICT" | LC_ALL=C tr -cd 'A-Za-z0-9_')"; [ "$ROUND_CLEAN" = "true" ] || [ "$VERDICT_SAFE" != "$TOKEN_SAFE" ] || VERDICT_SAFE="${VERDICT_SAFE}_NONCANONICAL"
   FINDINGS=""
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the most recent round record, so a later gate can bind its
