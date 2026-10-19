@@ -549,3 +549,25 @@ fn empty_override_falls_through_to_detection() {
 
     assert_eq!(active_agent_binary(), "copilot");
 }
+
+// ── Issue #1551: read back a value the builder will export ───────────────
+
+/// The launcher takes AMPLIHACK_HOME from the builder, so the merge guard and
+/// the gate that phase 3 runs come from the same bundle.
+#[test]
+fn var_reads_back_a_value_the_builder_will_export() {
+    let builder = EnvBuilder::new()
+        .set("AMPLIHACK_HOME", "/opt/amplihack-home")
+        .set("AMPLIHACK_NONINTERACTIVE", "1");
+    assert_eq!(builder.var("AMPLIHACK_HOME"), Some("/opt/amplihack-home"));
+    assert_eq!(builder.var("AMPLIHACK_NONINTERACTIVE"), Some("1"));
+    assert_eq!(builder.var("AMPLIHACK_NOT_SET_1551"), None);
+}
+
+#[test]
+fn var_reflects_the_last_set_and_an_unset() {
+    let builder = EnvBuilder::new().set("K_1551", "a").set("K_1551", "b");
+    assert_eq!(builder.var("K_1551"), Some("b"));
+    let builder = builder.unset("K_1551");
+    assert_eq!(builder.var("K_1551"), None);
+}

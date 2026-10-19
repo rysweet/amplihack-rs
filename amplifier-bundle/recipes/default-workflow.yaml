@@ -125,6 +125,8 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
+  # Issue #1551: "true" tells prep and finalize agents to stop at merge-ready.
+  no_merge: ""
   implementation_terminal_evidence: ""
   verification_terminal_evidence: ""
 

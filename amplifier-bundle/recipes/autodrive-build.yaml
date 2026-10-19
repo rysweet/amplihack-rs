@@ -91,13 +91,37 @@ steps:
         "$RUN" "$PR" "$PR_URL_OUT" "$STATE" "$BRANCH" "$DIR" "$WHY"
     output: "build_preflight"
 
+  - id: "step-01b-no-merge-directive"
+    type: "bash"
+    parse_json: true
+    command: |
+      set -uo pipefail
+      # Issue #1551: tell phase 1's agents not to merge. Advice only: the gh
+      # merge guard on PATH is the control. Values come from the environment
+      # and leave through jq, so no text is pasted into this script.
+      DIRECTIVE='[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive'"'"'s merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.'
+      NM="${NO_MERGE:-${RECIPE_VAR_no_merge:-}}"
+      with_directive() {
+        if [ "$NM" != "true" ]; then printf '%s' "$1"; return; fi
+        case "$1" in
+          *"$DIRECTIVE"*) printf '%s' "$1" ;;
+          '') printf '%s' "$DIRECTIVE" ;;
+          *) printf '%s\n\n%s' "$1" "$DIRECTIVE" ;;
+        esac
+      }
+      TD="$(with_directive "${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}"; printf x)"
+      RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
+      jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}'
+    output: "no_merge_directive"
+
   - id: "step-02-default-workflow"
     condition: "build_preflight.should_run == 'true'"
     type: "recipe"
     recipe: "default-workflow"
     context:
-      task_description: "{{task_description}}"
-      requirements: "{{requirements}}"
+      # Issue #1551: the copies that carry the no-merge directive.
+      task_description: "{{no_merge_directive.task_description}}"
+      requirements: "{{no_merge_directive.requirements}}"
       repo_path: "{{repo_path}}"
       branch_prefix: "{{branch_prefix}}"
       existing_branch: "{{existing_branch}}"

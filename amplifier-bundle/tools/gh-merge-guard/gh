@@ -1,0 +1,282 @@
+#!/bin/bash -p
+# amplihack-gh-merge-guard
+#
+# gh merge guard (amplihack issue #1551). `amplihack recipe run` puts this
+# directory first on PATH for every auto-drive run. A merge attempted anywhere
+# but ../autodrive_merge_gate.sh is refused with one fixed stderr line and
+# exit 3; every other call is handed to the real gh with `exec`, argv
+# unchanged.
+#
+# Refused: `gh pr merge`, the REST merge endpoints, GraphQL merge mutations,
+# GraphQL queries the guard cannot read, and aliases that merge. A merge form
+# is allowed only when this process's immediate parent is the trusted gate,
+# checked through /proc (no /proc: refused).
+#
+# Privileged mode (-p): bash neither sources BASH_ENV/ENV nor imports exported
+# functions, so neither can answer the identity checks below. This is a
+# guardrail for agents that follow instructions, not a sandbox: see
+# docs/reference/auto-drive-to-merge.md, "What this does not stop".
+# Exit codes: 3 = refused, 127 = no real gh or the re-entry cap was passed.
+
+# Second layer for anything this script starts (SR-4).
+builtin unset -f refuse classify classify_pr classify_api classify_alias_cmd \
+  classify_alias_use is_merge_endpoint names_merge find_real_gh carries_marker \
+  parent_is_gate sys_tool realpath readlink stat test cd pwd 2>/dev/null
+builtin unset BASH_ENV ENV
+set -uf
+
+MARKER='# amplihack-gh-merge-guard'
+DEPTH_CAP=4
+
+# The depth is matched against digits before any arithmetic: bash arithmetic
+# on an untrusted string can run commands through an array subscript (SR-5).
+depth="${AMPLIHACK_GH_GUARD_DEPTH:-0}"
+if ! [[ "$depth" =~ ^[0-9]{1,3}$ ]]; then
+  printf 'amplihack gh-merge-guard: invalid AMPLIHACK_GH_GUARD_DEPTH\n' >&2
+  exit 127
+fi
+depth=$((10#$depth + 1))
+if (( depth > DEPTH_CAP )); then
+  printf 'amplihack gh-merge-guard: re-entry cap passed; is another gh wrapper calling back into this one?\n' >&2
+  exit 127
+fi
+export AMPLIHACK_GH_GUARD_DEPTH="$depth"
+
+self="${BASH_SOURCE[0]}"
+[[ "$self" == */* ]] || self="./$self"
+SELF_DIR="$(builtin cd -P -- "${self%/*}" 2>/dev/null && builtin pwd -P)" || SELF_DIR=""
+
+refuse() { # refuse <label>: the fixed line, never argv (DP-1)
+  printf 'REFUSED (amplihack #1551): %s is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive'"'"'s merge gate merges after Crusty CLEAN and the merge-ready loop.\n' "$1" >&2
+  exit 3
+}
+
+# carries_marker <file>: a script holding the marker line is another copy of
+# this shim. A binary (no #!) never is.
+carries_marker() {
+  local head="" line
+  IFS= read -r -n 2 head < "$1" 2>/dev/null || return 1
+  [[ "$head" == '#!' ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == "$MARKER" ]] && return 0
+  done < "$1"
+  return 1
+}
+
+# find_real_gh: the first executable gh on PATH, considering absolute entries
+# only (SR-1), skipping this shim's directory and any copy of the shim.
+find_real_gh() {
+  local -a dirs=()
+  local d phys
+  IFS=: read -r -a dirs <<< "${PATH:-}"
+  for d in "${dirs[@]}"; do
+    [[ "$d" == /* ]] || continue
+    phys="$(builtin cd -P -- "$d" 2>/dev/null && builtin pwd -P)" || continue
+    [[ -n "$SELF_DIR" && "$phys" == "$SELF_DIR" ]] && continue
+    [[ -f "$d/gh" && -x "$d/gh" ]] || continue
+    carries_marker "$d/gh" && continue
+    REAL_GH="$d/gh"
+    return 0
+  done
+  return 1
+}
+
+# sys_tool <name>: a system tool by absolute path, never through PATH.
+sys_tool() {
+  local d
+  for d in /usr/bin /bin; do
+    [[ -x "$d/$1" ]] && { printf '%s' "$d/$1"; return 0; }
+  done
+  return 1
+}
+
+# parent_is_gate: deny by default (AZ-1). The immediate parent must be bash,
+# root-owned and not writable by this user, running the trusted gate beside
+# this directory as its script: argv[1] and descriptor 255 both name it.
+parent_is_gate() {
+  local proc="/proc/$PPID" rp st gate gate_real a1 cwd exe meta
+  [[ -n "$SELF_DIR" && -d "$proc" ]] || return 1
+  rp="$(sys_tool realpath)" || return 1
+  st="$(sys_tool stat)" || return 1
+  gate="$SELF_DIR/../autodrive_merge_gate.sh"
+  [[ -f "$gate" ]] || return 1
+  gate_real="$("$rp" -e -- "$gate" 2>/dev/null)" && [[ -n "$gate_real" ]] || return 1
+  local -a pargv=()
+  mapfile -d '' -t pargv < "$proc/cmdline" 2>/dev/null || return 1
+  (( ${#pargv[@]} >= 2 )) || return 1
+  a1="${pargv[1]}"
+  [[ -n "$a1" ]] || return 1
+  if [[ "$a1" != /* ]]; then
+    cwd="$("$rp" -e -- "$proc/cwd" 2>/dev/null)" && [[ -n "$cwd" ]] || return 1
+    a1="$cwd/$a1"
+  fi
+  [[ "$("$rp" -e -- "$a1" 2>/dev/null)" == "$gate_real" ]] || return 1
+  [[ "$proc/fd/255" -ef "$gate_real" ]] || return 1
+  exe="$("$rp" -e -- "$proc/exe" 2>/dev/null)" && [[ -n "$exe" ]] || return 1
+  [[ "${exe##*/}" == bash ]] || return 1
+  meta="$("$st" -L -c '%u %a' -- "$exe" 2>/dev/null)" || return 1
+  [[ "$meta" =~ ^0\ ([0-7]{3,4})$ ]] || return 1
+  (( (8#${BASH_REMATCH[1]} & 8#022) == 0 )) || return 1
+  (( EUID == 0 )) || [[ ! -w "$exe" ]] || return 1
+  return 0
+}
+
+# names_merge <text>: mentions merge or graphql, in any case.
+names_merge() {
+  local lc="${1,,}"
+  [[ "$lc" == *merge* || "$lc" == *graphql* ]]
+}
+
+# is_merge_endpoint <endpoint>: a REST merge endpoint, or an endpoint that
+# mentions pull or merge in a form the guard will not resolve (SR-3).
+is_merge_endpoint() {
+  local e="${1,,}" seg
+  local -a segs=()
+  if [[ "$e" == *pull* || "$e" == *merge* ]]; then
+    [[ "$e" == *%* ]] && return 0
+    [[ "$e" == *\\* ]] && return 0
+    [[ "$e" == *[[:space:][:cntrl:]]* ]] && return 0
+    IFS=/ read -r -a segs <<< "$e"
+    for seg in "${segs[@]}"; do
+      [[ "$seg" == . || "$seg" == .. ]] && return 0
+    done
+  fi
+  if [[ "$e" =~ ^[a-z][a-z0-9+.-]*://[^/]*(.*)$ ]]; then
+    e="${BASH_REMATCH[1]}"
+  fi
+  e="${e%%[?#]*}"
+  while [[ "$e" == *//* ]]; do e="${e//\/\//\/}"; done
+  e="${e#/}"
+  [[ "$e" == api/v3/* ]] && e="${e#api/v3/}"
+  e="${e%/}"
+  [[ "$e" =~ ^repos/[^/]+/[^/]+/pulls/[^/]+/merge$ || "$e" =~ ^repos/[^/]+/[^/]+/merges$ ]]
+}
+
+CLASS=""
+MUTATION_RE='(^|[^a-z0-9_])(mergepullrequest|enablepullrequestautomerge|enqueuepullrequest)([^a-z0-9_]|$)'
+
+classify_pr() {
+  while (( $# > 0 )); do
+    case "$1" in
+      -R|--repo) shift 2 || return 0 ;;
+      -*) shift ;;
+      merge) CLASS='gh pr merge'; return 0 ;;
+      *) return 0 ;;
+    esac
+  done
+}
+
+# classify_api: a flag consumes the next argument only when it is an exact
+# token that takes a value (SR-2). Order: mutation, unreadable, endpoint.
+classify_api() {
+  local -a pos=() all=("$@")
+  local t v lc has_input=0 at_file=0
+  while (( $# > 0 )); do
+    t="$1"; shift
+    case "$t" in
+      -X|--method|-H|--header|-f|--raw-field|-F|--field|--input|-q|--jq|-t|--template|--hostname|-p|--preview|--cache)
+        v="${1-}"; (( $# > 0 )) && shift
+        [[ "$t" == --input ]] && has_input=1
+        [[ ( "$t" == -F || "$t" == --field ) && "$v" == *=@* ]] && at_file=1 ;;
+      --input=*) has_input=1 ;;
+      --field=*=@*|-F*=@*) at_file=1 ;;
+      -*) ;;
+      *) pos+=("$t") ;;
+    esac
+  done
+  for t in ${all[@]+"${all[@]}"}; do
+    lc="${t,,}"
+    if [[ "$lc" =~ $MUTATION_RE ]]; then CLASS='gh api graphql merge mutation'; return 0; fi
+  done
+  for t in ${pos[@]+"${pos[@]}"}; do
+    lc="${t,,}"; lc="${lc#/}"
+    if [[ "$lc" == graphql && ( "$has_input" == 1 || "$at_file" == 1 ) ]]; then
+      CLASS='gh api graphql unreadable query'; return 0
+    fi
+  done
+  for t in ${pos[@]+"${pos[@]}"}; do
+    if is_merge_endpoint "$t"; then CLASS='gh api merge endpoint'; return 0; fi
+  done
+}
+
+# classify_alias_cmd: `alias set` or `alias import` that would define a merge.
+classify_alias_cmd() {
+  local sub="" t content
+  local -a pos=()
+  for t in "$@"; do
+    [[ "$t" == -* && "$t" != - ]] && continue
+    pos+=("$t")
+  done
+  (( ${#pos[@]} > 0 )) && sub="${pos[0]}"
+  case "$sub" in
+    set)
+      for t in "${pos[@]:2}"; do
+        if [[ "$t" == - ]] || names_merge "$t"; then CLASS='gh alias'; return 0; fi
+      done ;;
+    import)
+      t="${pos[1]-}"
+      if [[ -z "$t" || "$t" == - || ! -f "$t" ]]; then CLASS='gh alias'; return 0; fi
+      content="$(< "$t")" || { CLASS='gh alias'; return 0; }
+      names_merge "$content" && CLASS='gh alias' ;;
+  esac
+  return 0
+}
+
+# classify_alias_use <word> <args...>: a word that is not a built-in command
+# may be an alias. Its name is compared as a literal string, never a pattern.
+classify_alias_use() {
+  local cmd="$1" out line exp
+  shift
+  out="$("$REAL_GH" alias list 2>/dev/null)" || { CLASS='gh alias'; return 0; }
+  while IFS= read -r line; do
+    [[ "${line%%:*}" == "$cmd" ]] || continue
+    exp="${line#*:}"
+    exp="${exp#"${exp%%[![:space:]]*}"}"
+    if [[ "$exp" == \'*\' || "$exp" == \"*\" ]]; then exp="${exp:1:${#exp}-2}"; fi
+    if [[ "$exp" == '!'* ]]; then
+      names_merge "$exp" && CLASS='gh alias'
+      return 0
+    fi
+    local -a words=()
+    read -r -a words <<< "$exp"
+    classify 0 ${words[@]+"${words[@]}"} "$@"
+    return 0
+  done <<< "$out"
+  return 0
+}
+
+# classify <allow_alias> <gh args...>: sets CLASS to the refusal label of a
+# merge form, or leaves it empty.
+classify() {
+  local allow_alias="$1"
+  shift
+  while (( $# > 0 )); do
+    case "$1" in
+      -R|--repo|--hostname) shift 2 || return 0 ;;
+      -*) shift ;;
+      *) break ;;
+    esac
+  done
+  (( $# > 0 )) || return 0
+  local cmd="$1"
+  shift
+  case "$cmd" in
+    pr) classify_pr "$@" ;;
+    api) classify_api "$@" ;;
+    alias) classify_alias_cmd "$@" ;;
+    accessibility|agent-task|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|org|preview|project|release|repo|ruleset|run|search|secret|ssh-key|status|variable|version|workflow) ;;
+    *) [[ "$allow_alias" == 1 ]] && classify_alias_use "$cmd" "$@" ;;
+  esac
+  return 0
+}
+
+if ! find_real_gh; then
+  printf 'amplihack gh-merge-guard: real gh not found on PATH\n' >&2
+  exit 127
+fi
+
+classify 1 "$@"
+if [[ -n "$CLASS" ]] && ! parent_is_gate; then
+  refuse "$CLASS"
+fi
+exec "$REAL_GH" "$@"

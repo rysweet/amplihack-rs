@@ -293,10 +293,10 @@ steps:
     prompt: |
       # Clear every merge-ready blocker
 
-      **Round:** {{autodrive_round_label}} — **PR #{{platform_facts.pr}}**
-      **Blockers:** {{merge_ready_verdict.blocker_count}}
+      **Round:** {{autodrive_round_label}} — **PR #{{platform_facts.pr}}** — **Blockers:** {{merge_ready_verdict.blocker_count}}
       **Evidence disagreements forced by measurement:** {{merge_ready_verdict.downgrade_reason}}
 
+      [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
       ## The assessment to satisfy
 
       {{merge_ready_review}}

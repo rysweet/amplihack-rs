@@ -60,6 +60,12 @@ impl EnvBuilder {
         self
     }
 
+    /// The value this builder will export for `key`, if it sets one. A key
+    /// removed with [`EnvBuilder::unset`] reads as `None`.
+    pub fn var(&self, key: &str) -> Option<&str> {
+        self.vars.get(key).map(String::as_str)
+    }
+
     /// Prepend a directory to PATH (deduplicated).
     pub fn prepend_path(mut self, dir: impl Into<PathBuf>) -> Self {
         self.path_prepend.push(dir.into());

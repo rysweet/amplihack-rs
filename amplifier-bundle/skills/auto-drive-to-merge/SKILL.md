@@ -188,6 +188,17 @@ absent round record — each is a blocker. After the merge, the platform must
 confirm `MERGED`; a `gh` success that the platform does not confirm is
 reported as not merged.
 
+## Merges outside the gate are refused
+
+Only `autodrive_merge_gate.sh` merges. Auto-drive runs with a `gh` shim first
+on `PATH` that refuses `gh pr merge`, the merge API and the GraphQL merge
+mutations with exit `3`, unless its direct parent is the installed gate run as
+`/bin/bash -p` from a clean environment. Agents are told the same in an
+`[amplihack:no-merge]` line. Leave the PR open. A PR found `MERGED` after
+phase 1 or phase 2 ends the run with exit `1`. The shim is a guardrail, not a
+sandbox, and branch protection stays the real boundary
+([details](../../../docs/reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
+
 ## Exit code 79 is terminal
 
 Exit `79` (and `BLOCKED_TERMINAL`) is a final answer from a structural guard,

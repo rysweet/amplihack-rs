@@ -97,7 +97,7 @@ amplihack recipe run auto-drive-to-merge -c pr_number=1234 -c autodrive_dry_run=
 | `task_description` | `""` | What to build. Passed to `default-workflow`. |
 | `requirements` | `""` | Extra requirements, passed through. |
 | `repo_path` | `.` | Repository to work in. |
-| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../docs/reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
+| `existing_branch` / `pr_number` | `""` | Point the workflow at work that already exists. Whether the PR came from `pr_number` or from phase 1, every evidence step runs in the worktree that has the PR branch checked out, and the run refuses if no worktree, or more than one, has it checked out, or that worktree is not at the PR head (see [PR head and worktree resolution](../../../reference/auto-drive-to-merge.md#pr-head-and-worktree-resolution)). |
 | `autodrive_state_dir` | derived | Durable state root for resumability. |
 | `autodrive_dry_run` | `"false"` | Verify everything, merge nothing. |
 
@@ -132,7 +132,7 @@ untouched and is **never** raised; the loop driver aborts if it changes.
 No phase advances on a model's prose impression. Every gate reads a structured
 field through the repo's canonical pipeline
 (`extract-json --require-field … | extract-field --default …`, see
-[Structured Verdict & Intent Parsing](../../../docs/reference/structured-verdict-parsing.md)),
+[Structured Verdict & Intent Parsing](../../../reference/structured-verdict-parsing.md)),
 matched against an exact-token allow-list:
 
 | Signal | Field | Clean token | Fail-safe default |
@@ -187,6 +187,17 @@ reported checks, unreadable review threads, missing `qa-team` evidence, an
 absent round record — each is a blocker. After the merge, the platform must
 confirm `MERGED`; a `gh` success that the platform does not confirm is
 reported as not merged.
+
+## Merges outside the gate are refused
+
+Only `autodrive_merge_gate.sh` merges. Auto-drive runs with a `gh` shim first
+on `PATH` that refuses `gh pr merge`, the merge API and the GraphQL merge
+mutations with exit `3`, unless its direct parent is the installed gate run as
+`/bin/bash -p` from a clean environment. Agents are told the same in an
+`[amplihack:no-merge]` line. Leave the PR open. A PR found `MERGED` after
+phase 1 or phase 2 ends the run with exit `1`. The shim is a guardrail, not a
+sandbox, and branch protection stays the real boundary
+([details](../../../reference/auto-drive-to-merge.md#merges-outside-the-gate-are-refused-1551)).
 
 ## Exit code 79 is terminal
 
@@ -251,4 +262,4 @@ run to their natural end. A false timeout costs more than a slow run.
 | `amplifier-bundle/tools/autodrive_merge_gate.sh` | The evidence gate and the fixed merge argv. |
 | `amplifier-bundle/tools/autodrive_state.sh` | Resumable local state; platform truth for merged-ness. |
 
-Full reference: [Auto Drive To Merge](../../../docs/reference/auto-drive-to-merge.md).
+Full reference: [Auto Drive To Merge](../../../reference/auto-drive-to-merge.md).
