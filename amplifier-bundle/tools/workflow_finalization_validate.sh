@@ -11,13 +11,13 @@ validate_finalization() {
     exit 1
   fi
 
-  # Issue #969: terminal classification is derived EXCLUSIVELY from typed
-  # deterministic evidence (FINALIZATION_EVIDENCE) plus typed recipe state
-  # (implementation/verification completion + the finalizer reporting step
-  # status). The agentic finalizer emits a human-readable narrative only; that
-  # prose is NEVER read here and no jq/regex/fence-stripping is applied to any
-  # agent-generated text. Implementation failure is classified separately from
-  # reporting failure so durable evidence survives a failed reporting step.
+  # Issue #969: classification uses typed evidence (FINALIZATION_EVIDENCE) and
+  # typed recipe state (implementation/verification completion, reporter step
+  # status). Sole exception (#1641, step 5): after every blocker, a read-only
+  # `gh pr view` (preceded by `gh pr list` only when no PR ref is known; 60s
+  # timeout each, no retries) may turn FAILED_IMPLEMENTATION into
+  # EXISTING_OPEN_PR/BLOCKED_CI. Agent prose is NEVER read. Implementation and
+  # reporting failures stay separate so evidence survives a failed reporter.
 
   # Set only by the open-PR path (#1641) from gh-confirmed facts; cleared here
   # so an ambient environment variable can never spoof publication.
