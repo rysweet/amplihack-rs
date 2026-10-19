@@ -39,12 +39,11 @@ subject() {
   if [ ${#files[@]} -eq 1 ]; then
     s="${prefix}update ${files[0]}"
   else
-    for f in "${files[@]}"; do
+    mapfile -t dirs < <(for f in "${files[@]}"; do
       case "$f" in */*) d="${f%%/*}" ;; *) d="." ;; esac
       strip_controls "$d"
       printf '\n'
-    done | LC_ALL=C sort -u >"$scratch"
-    mapfile -t dirs <"$scratch"
+    done | LC_ALL=C sort -u)
     list="${dirs[0]}"
     [ ${#dirs[@]} -gt 1 ] && list+=", ${dirs[1]}"
     [ ${#dirs[@]} -gt 2 ] && list+=", ${dirs[2]}"
@@ -65,8 +64,6 @@ body() {
   return 0
 }
 
-scratch="$(mktemp -t commit-message-XXXXXX 2>/dev/null)" || exit 0
-trap 'rm -f "$scratch"' EXIT
 case "${1:-}" in
   subject) subject "${2:-}" ;;
   body) body ;;
