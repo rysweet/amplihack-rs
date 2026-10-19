@@ -137,21 +137,13 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's own
-# refusal line in the log. Two kinds of line are skipped first, because their
-# text comes from inputs, not from the guard (#1510):
-#   - agent output lines (`[HH:MM:SS] [amplihack:...]`): a review that QUOTES
-#     the refusal, as crusty's review of PR #1520 did, is not one, and reading
-#     it as one stopped the loop;
-#   - the runner's `amplihack.recipe.log_pointer {...}` lines (correlation.rs):
-#     they echo `task_description`, so a task that names the marker stopped
-#     round 1 of PR #1632. Their `exit_code` field is dropped with them on
-#     purpose: the exit code passed in $1 is the structural signal.
-# The ERE is shared byte for byte with step-01 of loop-evidence-collector.yaml;
-# tests/integration/issue_1510_collector_agent_prose_test.rs holds them together.
+# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's full marker
+# outside input echoes: run summary, agent and log_pointer lines (#1510). Same
+# awk+ERE as loop-evidence-collector.yaml; docs/reference/loop-health-evaluator.md.
 terminal_refusal() {
   [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' "$2" 2>/dev/null \
+  [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
+    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
     | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
   return 1
 }

@@ -8,10 +8,13 @@
 //! stopped as if the guard had refused.
 //!
 //! The fix applies the rule `terminal_refusal()` in
-//! `amplifier-bundle/tools/autodrive_loop.sh` uses: drop agent output lines,
-//! and the runner's `amplihack.recipe.log_pointer` lines that echo
-//! `task_description` (round 1 of PR #1632), before BOTH text detectors. Only those two detectors read the filtered
-//! text; the duration / still-running / failure-class checks keep the full blob.
+//! `amplifier-bundle/tools/autodrive_loop.sh` uses, before BOTH text
+//! detectors: cut the last round's output at the runner's run summary header,
+//! because the summary reprints step output unprefixed (round 3 of PR #1632);
+//! then drop agent output lines and the runner's
+//! `amplihack.recipe.log_pointer` lines that echo `task_description` (round 1
+//! of PR #1632). Only those two detectors read the filtered text; the
+//! duration / still-running / failure-class checks keep the full blob.
 //!
 //! These tests run the real step-01 command from the YAML through `bash`, in a
 //! cleared environment, and parse the single JSON line it prints. They need
@@ -687,4 +690,226 @@ fn issue_1510_round_tail_drops_the_partial_first_line_of_a_long_log() {
 fn issue_1510_round_tail_keeps_a_short_log_whole() {
     let log = format!("{GUARD_LINE}\nsecond line\n");
     assert_eq!(run_round_tail(log.as_bytes()), log.as_bytes());
+}
+
+// --- The runner's run summary echoes step output (round 3 of PR #1632) -----
+//
+// On success the runner prints a summary after the run: `Recipe:`, `Run ID:`,
+// `Status:`, `Log pointer:`, then `Steps:` with each step's first 200
+// characters under `    Output: `. An agent step's output is multi-line and
+// its first line is the `ℹ NODE_OPTIONS` notice, so the agent's own prose
+// follows at column 0 with no prefix. Both detectors cut the log at the
+// summary header, so nothing in the summary is read as guard output.
+
+/// The awk both detectors cut the runner summary with. Pinned byte for byte.
+const SUMMARY_CUT_AWK: &str = "awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }'";
+
+/// The tail of a real successful crusty round log (crusty-round-2.log of
+/// PR #1632, paths replaced), edited the way crusty asked: the review's
+/// first line quotes the full marker and "exit 79", and step-01 echoes
+/// resolved_concerns ids that contain "exit-79".
+fn real_round_tail() -> String {
+    let path = workspace_root().join("tests/integration/fixtures/issue_1510_crusty_round_tail.txt");
+    std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
+}
+
+#[test]
+fn issue_1510_fixture_carries_the_echo_at_column_zero_inside_the_summary() {
+    // Guards the fixture itself: if it stops carrying the shape, the tests
+    // below stop proving anything.
+    let log = real_round_tail();
+    let lines: Vec<&str> = log.lines().collect();
+    let header = lines
+        .iter()
+        .position(|l| l.starts_with("Recipe: "))
+        .expect("fixture must contain the runner summary header");
+    assert!(lines[header + 1].starts_with("Run ID: "));
+    for needle in [
+        "Steps:",
+        "    Output: ℹ NODE_OPTIONS",
+        "\"resolved_concerns\":\"exit-79-regex-reads-unprefixed-prose",
+        "Log pointer: status=success",
+    ] {
+        assert!(log.contains(needle), "fixture must contain {needle:?}");
+    }
+    let echo = lines
+        .iter()
+        .position(|l| {
+            l.starts_with("CLEAN: echoed BLOCKED_TERMINAL orchestration_unavailable and exit 79")
+        })
+        .expect("fixture must carry the agent's echo at column 0");
+    assert!(echo > header, "the echo must sit inside the summary");
+    // The echo is not hidden by the older rules: it has no agent prefix and
+    // no log_pointer key, so only the summary cut can drop it.
+    assert!(!lines[echo].starts_with('['));
+}
+
+#[test]
+fn issue_1510_collector_real_round_summary_echo_is_not_terminal() {
+    let log = real_round_tail();
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
+    assert_not_terminal(&ev, "real round summary quoting the marker and exit 79");
+    let ev = run_collector(&[
+        ("LOOP_LAST_ROUND_OUTPUT", &log),
+        ("LOOP_CHILD_EXIT_CODE", "0"),
+    ]);
+    assert_not_terminal(&ev, "real round summary, child exit 0");
+}
+
+#[test]
+fn issue_1510_terminal_refusal_real_round_summary_echo_is_not_terminal() {
+    assert!(
+        !terminal_refusal("0", &real_round_tail()),
+        "a clean round whose summary echoes the marker is not a refusal"
+    );
+}
+
+/// The fixture with `line` inserted just before the runner's final
+/// log_pointer line, i.e. before the summary.
+fn real_round_tail_with_line_before_summary(line: &str) -> String {
+    let log = real_round_tail();
+    let at = log
+        .find("amplihack.recipe.log_pointer {\"schema_version\":1,\"event\":\"final\"")
+        .expect("fixture must contain the final log_pointer line");
+    format!("{}{line}\n{}", &log[..at], &log[at..])
+}
+
+#[test]
+fn issue_1510_guard_line_before_the_summary_is_still_terminal() {
+    let log = real_round_tail_with_line_before_summary(GUARD_LINE);
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
+    assert_terminal_with(&ev, REASON_BLOCKED, "guard line before the summary");
+    assert!(
+        terminal_refusal("0", &log),
+        "terminal_refusal: guard line before the summary"
+    );
+
+    let log = real_round_tail_with_line_before_summary("child exit status 79");
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
+    assert_terminal_with(
+        &ev,
+        REASON_EXIT_TEXT,
+        "unprefixed exit 79 before the summary",
+    );
+}
+
+#[test]
+fn issue_1510_exit_79_still_stops_a_round_whose_summary_is_cut() {
+    let log = real_round_tail();
+    let ev = run_collector(&[
+        ("LOOP_LAST_ROUND_OUTPUT", &log),
+        ("LOOP_CHILD_EXIT_CODE", "79"),
+    ]);
+    assert_terminal_with(&ev, REASON_EXIT_CODE, "summary cut, child exit 79");
+    assert!(terminal_refusal("79", &log));
+}
+
+#[test]
+fn issue_1510_summary_cut_is_anchored_on_the_header_pair() {
+    // The cut needs `Recipe: ` at column 0 AND `Run ID: ` or `Status: ` at
+    // column 0 on the very next line. Anything less cuts nothing, so a guard
+    // line after it is still read.
+    for (case, before) in [
+        (
+            "Recipe: alone",
+            "Recipe: autodrive-crusty-round\nsomething else",
+        ),
+        ("indented header", "  Recipe: x\n  Status: ✓ Success"),
+        ("indented second line", "Recipe: x\n  Run ID: y"),
+        (
+            "pair split by a blank line",
+            "Recipe: x\n\nStatus: ✓ Success",
+        ),
+        ("other key", "Recipe: x\nSteps:"),
+        ("lower-case header", "recipe: x\nstatus: ✓ Success"),
+    ] {
+        let log = format!("{before}\n{GUARD_LINE}\n");
+        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
+        assert_terminal_with(&ev, REASON_BLOCKED, case);
+        assert!(terminal_refusal("0", &log), "terminal_refusal: {case}");
+    }
+    for (case, header) in [
+        ("Run ID form", "Recipe: x\nRun ID: 1"),
+        ("Status form (no run id)", "Recipe: x\nStatus: ✗ Failed"),
+    ] {
+        let log = format!("{header}\n{GUARD_LINE}\n");
+        let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &log)]);
+        assert_not_terminal(&ev, case);
+        assert!(!terminal_refusal("0", &log), "terminal_refusal: {case}");
+    }
+}
+
+#[test]
+fn issue_1510_history_is_not_cut_by_a_summary_header() {
+    // LOOP_HISTORY holds round records, never a runner summary. A header
+    // shape in it must not hide a guard line in the last round's output.
+    let ev = run_collector(&[
+        ("LOOP_HISTORY", "Recipe: x\nStatus: ✓ Success"),
+        ("LOOP_LAST_ROUND_OUTPUT", GUARD_LINE),
+    ]);
+    assert_terminal_with(
+        &ev,
+        REASON_BLOCKED,
+        "header in history, guard in last round",
+    );
+}
+
+#[test]
+fn issue_1510_summary_cut_awk_is_shared_byte_for_byte() {
+    let root = workspace_root();
+    let loop_sh = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_loop.sh"))
+        .expect("read autodrive_loop.sh");
+    assert!(
+        terminal_refusal_fn().contains(&format!("{SUMMARY_CUT_AWK} \"$2\"")),
+        "terminal_refusal() must cut the runner summary with the shared awk"
+    );
+    assert!(loop_sh.contains(SUMMARY_CUT_AWK));
+    let cmd = step01_command();
+    assert!(
+        cmd.contains(&format!("printf '%s\\n' \"$LAST\" | {SUMMARY_CUT_AWK}")),
+        "step-01 must cut the runner summary from the last round with the shared awk"
+    );
+    let tail = std::fs::read_to_string(root.join("amplifier-bundle/tools/autodrive_round_tail.sh"))
+        .expect("read autodrive_round_tail.sh");
+    assert!(
+        tail.contains("prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /"),
+        "autodrive_round_tail.sh must find the summary header with the detectors' pattern"
+    );
+}
+
+#[test]
+fn issue_1510_round_tail_keeps_the_summary_header_of_a_long_summary() {
+    // A summary longer than the 20000-byte window: the window starts inside
+    // the summary and would lose its header, leaving its body unanchored.
+    let mut log = String::from("[10:00:00] [amplihack:claude:3] review prose\n");
+    log.push_str("Recipe: autodrive-crusty-round\nRun ID: 1\nStatus: ✗ Failed\n\nSteps:\n");
+    log.push_str("  ✗ step-02-crusty-review: failed\n    Error: agent step failed\n");
+    while log.len() < 30_000 {
+        log.push_str("    stdout line of the failed agent step, reprinted by the runner\n");
+    }
+    log.push_str("BLOCKED_TERMINAL orchestration_unavailable quoted by the agent, exit 79\n");
+    log.push_str("  ⊘ step-03: skipped\n");
+
+    let tail = String::from_utf8(run_round_tail(log.as_bytes())).expect("utf-8 tail");
+    assert!(
+        tail.starts_with("Recipe: autodrive-crusty-round\nRun ID: 1\n"),
+        "the summary header must lead the tail; got {:?}",
+        tail.lines().next()
+    );
+    let ev = run_collector(&[("LOOP_LAST_ROUND_OUTPUT", &tail)]);
+    assert_not_terminal(&ev, "tail of a summary longer than the window");
+}
+
+#[test]
+fn issue_1510_round_tail_does_not_repeat_a_header_already_in_the_window() {
+    let mut log = String::new();
+    while log.len() < 25_000 {
+        log.push_str("[10:00:00] [amplihack:claude:3] filler review prose line\n");
+    }
+    let summary = "Recipe: r\nRun ID: 1\nStatus: ✓ Success\n\nSteps:\n  ✓ s: completed\n";
+    log.push_str(summary);
+    let tail = String::from_utf8(run_round_tail(log.as_bytes())).expect("utf-8 tail");
+    assert_eq!(tail.matches("Recipe: r\n").count(), 1);
+    assert!(tail.ends_with(summary));
+    assert!(tail.lines().next().unwrap().starts_with("[10:00:00]"));
 }

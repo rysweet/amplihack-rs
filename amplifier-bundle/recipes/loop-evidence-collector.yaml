@@ -93,22 +93,35 @@ steps:
         TERMINAL="true"; TERMINAL_WHY="child process exited 79 (policy refusal, #1327/#1332) ${SELF}"
       fi
       printf '%s\n%s\n' "$HIST" "$LAST" | grep -vF "$SELF" > "$WORK/blob" || true
-      # Both halves of terminal_refusal() in autodrive_loop.sh apply here, so
-      # the two detectors agree on which logs are refusals (#1510):
-      #   1. lines whose text comes from inputs are dropped, with the same ERE:
-      #      agent output lines ("[HH:MM:SS] [amplihack:...] ...") and the
-      #      runner's "amplihack.recipe.log_pointer {...}" lines, which echo
-      #      task_description (a task naming the marker stopped round 1 of
-      #      PR #1632). A log_pointer "exit_code":79 is dropped with its line
-      #      on purpose: LOOP_CHILD_EXIT_CODE above is the structural signal;
+      # terminal_refusal() in autodrive_loop.sh applies here in full, so the
+      # two detectors agree on which logs are refusals (#1510):
+      #   1. text that comes from inputs, not from the guard, is removed:
+      #      a. the runner's run summary in the last round, from its header
+      #         ("Recipe: <name>" then "Run ID:" or "Status:") to the end,
+      #         with the same awk. Its "Steps:" block reprints each step's
+      #         output, and an agent step's prose follows the first line at
+      #         column 0, unprefixed; step-01 of a crusty round also echoes
+      #         resolved_concerns ids there. A clean round whose review
+      #         quoted the marker or "exit 79" read as a refusal (round 3 of
+      #         PR #1632). The guard never writes into the summary: it
+      #         refuses before a run starts and that run exits 79 with no
+      #         summary. Cutting at the header, not line by line, cuts
+      #         whatever else the summary reprints (a failed step's Error and
+      #         Recent stdout/stderr lines) along with it;
+      #      b. agent output lines ("[HH:MM:SS] [amplihack:...] ...") and the
+      #         runner's "amplihack.recipe.log_pointer {...}" lines, which
+      #         echo task_description (round 1 of PR #1632), with the same
+      #         ERE. A log_pointer "exit_code":79 is dropped with its line on
+      #         purpose: LOOP_CHILD_EXIT_CODE above is the structural signal;
       #   2. the token check needs the guard's full marker,
       #      "BLOCKED_TERMINAL orchestration_unavailable", not the bare word.
-      # A review that merely quoted the token once stopped PR #1586 as a
-      # policy refusal. The runner also reprints a failed agent step's stdout
-      # unprefixed under "--- stdout (tail) ---", which rule 1 cannot catch
-      # and rule 2 does. $WORK/blob stays unfiltered for the duration,
+      #      A review that merely quoted the token stopped PR #1586.
+      # LOOP_HISTORY holds round records, never a runner summary, so it is
+      # not cut. $WORK/blob stays unfiltered for the duration,
       # still-running and failure_class checks below.
-      grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' "$WORK/blob" > "$WORK/terminal_blob" || true
+      { printf '%s\n' "$HIST"; printf '%s\n' "$LAST" | awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }'; } \
+        | grep -vF "$SELF" > "$WORK/terminal_input" || true
+      grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' "$WORK/terminal_input" > "$WORK/terminal_blob" || true
       if grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' "$WORK/terminal_blob" 2>/dev/null; then
         TERMINAL="true"
         TERMINAL_WHY="${TERMINAL_WHY:+$TERMINAL_WHY; }BLOCKED_TERMINAL reported by a child ${SELF}"
