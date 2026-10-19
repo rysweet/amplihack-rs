@@ -1157,7 +1157,9 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
 #   GATE_PATH_PREFIX  a directory put first on PATH (the git shim of section 5k)
 #   GATE_PRIV         1 = run the gate the way merge-loop step-03 does (#1551 G6):
 #                     `/bin/bash -p <physical gate path>`, the only shape the gh
-#                     merge guard trusts. Default: `bash <gate>`.
+#                     merge guard trusts, with the LD_* variables it refuses
+#                     stripped (cargo test sets LD_LIBRARY_PATH). Default:
+#                     `bash <gate>`.
 #   GATE_EXTRA_ENV    one NAME=VALUE the gate starts with, set through env(1),
 #                     for names bash cannot assign (BASH_FUNC_gh%%)
 #
@@ -1264,7 +1266,7 @@ gate_run() { # gate_run <mode> <extra-args...>
   local gate_file="${GATE_SCRIPT:-${GATE}}"
   local -a gate_cmd=(bash "${gate_file}")
   if [ "${GATE_PRIV:-}" = 1 ]; then
-    gate_cmd=(/bin/bash -p "$(cd "$(dirname "${gate_file}")" && pwd -P)/$(basename "${gate_file}")")
+    gate_cmd=(env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$(cd "$(dirname "${gate_file}")" && pwd -P)/$(basename "${gate_file}")")
   fi
   # env execs the gate's bash in place, so bash stays the gh shim's parent.
   [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")

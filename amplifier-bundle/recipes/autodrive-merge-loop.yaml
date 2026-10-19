@@ -268,7 +268,13 @@ steps:
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
       [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)
-      /bin/bash -p "$GATE_PHYS" "${ARGS[@]}"
+      # Issue #1551: the guard trusts the gate only with a clean environ: no
+      # exported functions, shell-option or loader variables. Cleared in a
+      # subshell; exec keeps the gate's argv [/bin/bash, -p, <gate>, ...].
+      ( unset -f $(compgen -A function) 2>/dev/null
+        export -n SHELLOPTS BASHOPTS 2>/dev/null
+        unset BASH_ENV ENV PS4
+        exec env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$GATE_PHYS" "${ARGS[@]}" )
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal at the merge gate. Final — never retried." >&2

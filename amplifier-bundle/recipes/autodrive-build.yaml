@@ -109,6 +109,7 @@ steps:
           *) printf '%s\n\n%s' "$1" "$DIRECTIVE" ;;
         esac
       }
+      # jq is a hard dependency: both branches emit their output through it.
       TD="$(with_directive "${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}"; printf x)"
       RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
       OUT="$(jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}')"
@@ -148,7 +149,7 @@ steps:
     parse_json: true
     command: |
       set -uo pipefail
-      cd "${REPO_PATH:-.}" 2>/dev/null || true
+      cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-build/step-03]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       g() { printf '%s' "${BUILD_PREFLIGHT:-${RECIPE_VAR_build_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
@@ -171,18 +172,17 @@ steps:
         echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
         exit 1
       fi
-      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+      # Issue #1551: only the installed bundle. REPO_PATH and cwd are the
+      # PR's own tree, which phase 1's agents could edit.
+      STATE_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_state.sh"
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
       HAVE_HELPER="false"
-      [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
+      [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
       # Issue #1551: a phase 1 that built under no_merge must leave its PR
       # unmerged. MERGED here means something merged around the gh merge guard.
       PRE_STATE="$(g pr_state)"
       if [ "$(g should_run)" = "true" ] && [ "${NO_MERGE:-${RECIPE_VAR_no_merge:-}}" = "true" ]; then
-        [ "$HAVE_HELPER" = "true" ] || { echo "ERROR: #1551: autodrive_state.sh not found; cannot check that phase 1 left PR #${PR} unmerged [autodrive-build/step-03]" >&2; exit 1; }
+        [ "$HAVE_HELPER" = "true" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check that phase 1 left PR #${PR} unmerged [autodrive-build/step-03]" >&2; exit 1; }
         autodrive_require_unmerged "$PR" "phase 1 (build)" || exit 1
       fi
       URL="$(gh pr view "$PR" --json url --jq .url 2>/dev/null || printf '')"

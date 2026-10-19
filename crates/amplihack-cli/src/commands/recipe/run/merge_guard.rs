@@ -4,7 +4,7 @@
 //! This module decides when the shim applies and finds it in the bundle. The
 //! shim itself is `amplifier-bundle/tools/gh-merge-guard/gh`.
 
-use anyhow::{Result, bail};
+use anyhow::{Result, anyhow, bail};
 use std::path::{Path, PathBuf};
 
 /// Set to `1` for a guarded run. Any non-empty inherited value keeps a nested
@@ -31,6 +31,16 @@ pub(crate) fn guard_applies(name: &str, path: &Path, inherited: Option<&str>) ->
             .is_some_and(is_auto_drive)
 }
 
+/// [`locate_guard_dir`] for the run's `AMPLIHACK_HOME`, which must be set.
+pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
+    let home = home.ok_or_else(|| {
+        anyhow!(
+            "AMPLIHACK_HOME is unset; refusing to run auto-drive without the merge guard (#1551)"
+        )
+    })?;
+    locate_guard_dir(Path::new(home))
+}
+
 /// The guard directory under `home`, provided it holds an executable `gh`
 /// file (symlinks followed). The directory is returned as given, never
 /// canonicalised, so `PATH` de-duplication still recognises it.
@@ -42,7 +52,14 @@ pub(crate) fn guard_applies(name: &str, path: &Path, inherited: Option<&str>) ->
 pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
     let dir = home.join(GUARD_REL);
     let shim = dir.join("gh");
-    if !home.is_absolute() || !is_executable_file(&shim) {
+    if !home.is_absolute() {
+        bail!(
+            "amplihack: AMPLIHACK_HOME is not absolute ({}); refusing to run auto-drive without \
+             the merge guard (#1551)",
+            home.display()
+        );
+    }
+    if !is_executable_file(&shim) {
         bail!(
             "amplihack: merge guard not found at {}; refusing to run auto-drive without it (#1551)",
             dir.display()

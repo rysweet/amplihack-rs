@@ -109,8 +109,9 @@ parent_pid_matches() {
 
 # parent_environ_clean <proc>: the parent was started with no exported
 # function and no non-empty BASH_ENV, ENV, SHELLOPTS, BASHOPTS or PS4, each of
-# which can run code or change behaviour inside a bash (G6). Unreadable:
-# refused.
+# which can run code or change behaviour inside a bash (G6), and no non-empty
+# LD_PRELOAD, LD_AUDIT or LD_LIBRARY_PATH, which load code into it before
+# bash runs (-p does not drop them). Unreadable: refused.
 parent_environ_clean() {
   local -a envs=()
   local e
@@ -120,6 +121,7 @@ parent_environ_clean() {
     case "$e" in
       BASH_FUNC_*) return 1 ;;
       BASH_ENV=?*|ENV=?*|SHELLOPTS=?*|BASHOPTS=?*|PS4=?*) return 1 ;;
+      LD_PRELOAD=?*|LD_AUDIT=?*|LD_LIBRARY_PATH=?*) return 1 ;;
     esac
   done
   return 0
@@ -187,7 +189,7 @@ is_merge_endpoint() {
 }
 
 CLASS=""
-MUTATION_RE='(^|[^a-z0-9_])(mergepullrequest|enablepullrequestautomerge|enqueuepullrequest)([^a-z0-9_]|$)'
+MUTATION_RE='(^|[^a-z0-9_])(mergepullrequest|enablepullrequestautomerge|enqueuepullrequest|mergebranch)([^a-z0-9_]|$)'
 
 classify_pr() {
   while (( $# > 0 )); do
@@ -298,6 +300,8 @@ classify() {
     pr) classify_pr "$@" ;;
     api) classify_api "$@" ;;
     alias) classify_alias_cmd "$@" ;;
+    # Built-in commands that cannot merge. Fails safe: a subcommand missing
+    # here is looked up as an alias below, never passed through unchecked.
     accessibility|agent-task|attestation|auth|browse|cache|codespace|completion|config|copilot|extension|gist|gpg-key|help|issue|label|org|preview|project|release|repo|ruleset|run|search|secret|ssh-key|status|variable|version|workflow) ;;
     *) [[ "$allow_alias" == 1 ]] && classify_alias_use "$cmd" "$@" ;;
   esac

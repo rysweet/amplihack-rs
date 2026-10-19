@@ -26,14 +26,16 @@
 #       through the depth variable, exported functions and BASH_ENV, alias
 #       names with pattern characters, and secrets kept out of the refusal;
 #       G6 a gate whose environ carries BASH_FUNC_*, BASH_ENV, ENV,
-#       SHELLOPTS, BASHOPTS or PS4 is refused; G9 the refusal tells the agent
+#       SHELLOPTS, BASHOPTS, PS4 or an LD_* loader variable is refused, and
+#       step-03's launch clears them so a legitimate session still merges; G9 the refusal tells the agent
 #       not to retry; G12 the shim re-checks its parent pid; IV-2 URL,
 #       prefix, query, placeholder and mixed-case REST forms are refused
 #   T6  the advisory directive: autodrive-build step-01b (G1: fails closed
 #       when jq fails or the directive is missing) and the prompt lines (G3:
 #       merge-round adds only the directive line)
 #   D   detection (G4, G7, G8): a PR found MERGED after phase 1 or phase 2
-#       ends the run with exit 1; an unreadable state is read twice, then exit 1
+#       ends the run with exit 1; an unreadable state is read twice, then exit
+#       1; the state helper comes from AMPLIHACK_HOME only, never REPO_PATH
 #   S   static: mode, shebang, marker, no /tmp, no eval, CI wiring; G6 gate
 #       shebang `#!/bin/bash -p`, `unset -f`, step-03's `/bin/bash -p`
 #
@@ -524,11 +526,11 @@ if printf '%s' "${STEP03}" | grep -qF 'pwd -P' \
 else
   fail "T3-step03-absolute" "merge-loop step-03 does not set GATE_PHYS=\"\$(cd \"\$(dirname \"\$GATE\")\" && pwd -P)/\$(basename \"\$GATE\")\""
 fi
-if printf '%s' "${STEP03}" | grep -qE '^[[:space:]]*/bin/bash -p "\$GATE_PHYS" "\$\{ARGS\[@\]\}"' \
+if printf '%s' "${STEP03}" | grep -qE '^[[:space:]]*exec env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "\$GATE_PHYS" "\$\{ARGS\[@\]\}" \)' \
    && ! printf '%s' "${STEP03}" | grep -qE '(^|[[:space:]])bash "\$GATE"'; then
-  pass "T3-G6-step03-privileged" "merge-loop step-03 runs /bin/bash -p \"\$GATE_PHYS\" \"\${ARGS[@]}\""
+  pass "T3-G6-step03-privileged" "merge-loop step-03 runs the gate as /bin/bash -p \"\$GATE_PHYS\" with the LD_* variables stripped"
 else
-  fail "T3-G6-step03-privileged" "merge-loop step-03 does not run '/bin/bash -p \"\$GATE_PHYS\" \"\${ARGS[@]}\"' (or still runs bash \"\$GATE\")"
+  fail "T3-G6-step03-privileged" "merge-loop step-03 does not run 'exec env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p \"\$GATE_PHYS\" \"\${ARGS[@]}\" )' (or still runs bash \"\$GATE\")"
 fi
 
 # ---------------------------------------------------------------------------
@@ -689,6 +691,10 @@ refused SEC2-newline "$L_API" api -X PUT $'repos/o/r/pulls/38/merge\nx'
 refused SEC2-gql-alias "$L_GQL" api graphql -f 'query=mutation{m:mergePullRequest(input:{pullRequestId:"PR_x"}){clientMutationId}}'
 refused SEC2-gql-F "$L_GQL" api graphql -F 'query=mutation($i:ID!){mergePullRequest(input:{pullRequestId:$i}){clientMutationId}}' -F i=PR_x
 refused SEC2-gql-lower "$L_GQL" api graphql -f 'query=mutation{ enqueuepullrequest(input:{pullRequestId:"PR_x"}){clientMutationId} }'
+# mergeBranch merges a head into a base; with the PR branch as head GitHub
+# marks the PR merged, like the REST merges endpoint.
+refused SEC2-gql-mergebranch "$L_GQL" api graphql -f 'query=mutation{mergeBranch(input:{repositoryId:"R_x",base:"main",head:"feat"}){clientMutationId}}'
+refused SEC2-gql-mergebranch-case "$L_GQL" api graphql -f 'query=mutation{ MERGEBRANCH(input:{repositoryId:"R_x",base:"main",head:"feat"}){clientMutationId} }'
 # The over-refusal stays narrow: no pull or merge, or not gh api, passes.
 parity SEC2-dotdot-no-merge api repos/o/r/contents/a/../b.md
 parity SEC2-gql-longer-name api graphql -f 'query=query { mergePullRequestX }'
@@ -827,6 +833,14 @@ gate_env_refused SEC5-G6-bashopts "the gate with BASHOPTS in its environ is refu
   "BASHOPTS=extdebug"
 gate_env_refused SEC5-G6-ps4 "the gate with PS4 in its environ is refused" \
   'PS4=$(touch '"${WORK}"'/pwned-ps4)'
+# The loader honours these despite -p: a preload can rewrite the gate's gh
+# call into a merge with --admin. Setting them is enough to be refused.
+gate_env_refused SEC5-G6-ld-preload "the gate with LD_PRELOAD in its environ is refused" \
+  "LD_PRELOAD=${WORK}/no-such-preload.so"
+gate_env_refused SEC5-G6-ld-audit "the gate with LD_AUDIT in its environ is refused" \
+  "LD_AUDIT=${WORK}/no-such-audit.so"
+gate_env_refused SEC5-G6-ld-library-path "the gate with LD_LIBRARY_PATH in its environ is refused" \
+  "LD_LIBRARY_PATH=${WORK}/no-such-libdir"
 if [ ! -e "${WORK}/pwned-ps4" ]; then
   pass "SEC5-G6-ps4-not-run" "a PS4 in the gate's environ never ran"
 else
@@ -866,6 +880,41 @@ ALLOWED_ENV=()
 ALLOWED_ENV=("NOTE=BASH_FUNC_gh%%=() { :; }")
 allowed SEC5-G6-value-mention-ok direct
 ALLOWED_ENV=()
+
+# G6. A legitimate session (Fedora's exported `which`, Lmod's `module`, an
+# exported SHELLOPTS, a CUDA LD_LIBRARY_PATH) still merges through step-03's
+# own launch, which clears them before the gate starts. The same session
+# launching the gate bare is refused, so the clearing is what makes it pass.
+LAUNCH="$(printf '%s\n' "${STEP03}" | awk '/^[[:space:]]*\( unset -f /{f=1} f{print} f&&/"\$\{ARGS\[@\]\}" \)[[:space:]]*$/{exit}')"
+LEGIT_ENV=("GATE_SHA=${SHA}" "GATE_MODE=direct" "GATE_PHYS=${TRUSTED_GATE}"
+           "BASH_FUNC_which%%=() { command which \"\$@\"; }" "BASH_FUNC_module%%=() { :; }"
+           "SHELLOPTS=braceexpand:hashall:interactive-comments:pipefail"
+           "LD_LIBRARY_PATH=${WORK}/no-such-cuda/lib64")
+legit_launch() { # legit_launch <launch-text>: run as a step body in that session
+  reset_stub
+  RUN_ENV=("${LEGIT_ENV[@]}")
+  run_in "${BUNDLE_PATH}" "${BASH_BIN}" -c 'set -uo pipefail; ARGS=(); '"$1"'
+RC=$?; exit "$RC"'; local rc=$?
+  RUN_ENV=()
+  return "$rc"
+}
+if [ -n "${LAUNCH}" ]; then
+  legit_launch "${LAUNCH}"; rc=$?
+  if [ "$rc" -eq 0 ] && grep -qxF "${MERGE_LINE}" "${GH_LOG}" && ! grep -qF 'REFUSED' "${ERR}" \
+     && [ "$(pr_state)" = "MERGED" ]; then
+    pass "SEC5-G6-legit-session-merges" "step-03's launch clears exported functions, SHELLOPTS and LD_LIBRARY_PATH; the gate merges"
+  else
+    fail "SEC5-G6-legit-session-merges" "rc=${rc}, state=$(pr_state), stub log: $(tr '\n' '|' < "${GH_LOG}"), stderr: $(head -c 300 "${ERR}")"
+  fi
+  legit_launch '/bin/bash -p "$GATE_PHYS" "${ARGS[@]}"'; rc=$?
+  if [ "$rc" -eq 3 ] && grep -qF "${REFUSED_PREFIX}${L_PR}${REFUSED_SUFFIX}" "${ERR}" && [ "$(pr_state)" = "OPEN" ]; then
+    pass "SEC5-G6-legit-session-bare-refused" "the same session launching the gate without step-03's clearing is refused"
+  else
+    fail "SEC5-G6-legit-session-bare-refused" "rc=${rc} (want 3), state=$(pr_state), stderr: $(head -c 300 "${ERR}")"
+  fi
+else
+  fail "SEC5-G6-legit-session-merges" "could not find step-03's '( unset -f … \"\${ARGS[@]}\" )' launch block"
+fi
 
 # SEC-6. Alias names are compared literally, never as patterns.
 RUN_ENV=("STUB_ALIASES=m.*: pr merge
@@ -1265,6 +1314,39 @@ else
   fail "D-G8-unreadable-phase1" "rc=${rc} (want 1), state reads=$(state_reads) (want 2), stderr: $(head -c 300 "${ERR}")"
 fi
 
+# S4: REPO_PATH is the PR's own tree. A helper planted there that always
+# passes is never sourced: without one under AMPLIHACK_HOME the check exits 1.
+PLANT_HOME="${WORK}/plant-home"; mkdir -p "${PLANT_HOME}"
+mkdir -p "${REPO_D}/amplifier-bundle/tools"
+cat > "${REPO_D}/amplifier-bundle/tools/autodrive_state.sh" <<PLANT
+autodrive_require_unmerged() { : > "${WORK}/planted-sourced"; return 0; }
+autodrive_mark_phase_done() { :; }
+PLANT
+# planted <id> <phase-fn> <AMPLIHACK_HOME value>: exit 1, the planted helper unused.
+planted() {
+  local id="$1" fn="$2"; rm -f "${WORK}/planted-sourced"; reset_stub; printf 'MERGED' > "${GH_STATE}"
+  D_ENV=("AMPLIHACK_HOME=$3")
+  "$fn" true true 38; local rc=$?
+  D_ENV=()
+  if [ "$rc" -eq 1 ] && [ ! -e "${WORK}/planted-sourced" ] && grep -qF 'not found under AMPLIHACK_HOME' "${ERR}"; then
+    pass "$id" "a helper planted in REPO_PATH is not sourced when AMPLIHACK_HOME (${3:-<empty>}) lacks it; exit 1"
+  else
+    fail "$id" "rc=${rc} (want 1), planted sourced: $([ -e "${WORK}/planted-sourced" ] && echo yes || echo no), stderr: $(head -c 300 "${ERR}")"
+  fi
+}
+planted D-S4-planted-phase1 phase1 "${PLANT_HOME}"
+planted D-S4-planted-phase1-empty-home phase1 ""
+# cd fails closed: PR state is never read from whatever repo cwd belongs to.
+reset_stub
+D_ENV=("REPO_PATH=${WORK}/no-such-repo")
+phase1 true true 38; rc=$?
+D_ENV=()
+if [ "$rc" -eq 1 ] && grep -qF 'cannot enter REPO_PATH' "${ERR}" && ! grep -q '^pr view' "${GH_LOG}"; then
+  pass "D-cd-phase1" "an unenterable REPO_PATH exits 1 before any PR state is read"
+else
+  fail "D-cd-phase1" "rc=${rc} (want 1), stub log: $(tr '\n' '|' < "${GH_LOG}"), stderr: $(head -c 300 "${ERR}")"
+fi
+
 # --- G7/G8: auto-drive-to-merge, after phase 2 and before phase 3 ---
 ADTM="${RECIPES}/auto-drive-to-merge.yaml"
 ADTM_IDS="$(grep -oE '^  - id: "[^"]+"' "${ADTM}" | sed -E 's/^  - id: "([^"]+)"/\1/')"
@@ -1315,6 +1397,20 @@ if [ -n "${P2}" ]; then
     pass "D-G8-unreadable-phase2" "an unreadable PR state after phase 2 is retried once, then exits 1"
   else
     fail "D-G8-unreadable-phase2" "rc=${rc} (want 1), state reads=$(state_reads) (want 2), stderr: $(head -c 300 "${ERR}")"
+  fi
+  # S4 and the fail-closed cd, as for phase 1. planted() calls
+  # `<fn> true true 38`; phase2 takes only the PR number.
+  phase2_as1() { phase2 "$3"; }
+  planted D-S4-planted-phase2 phase2_as1 "${PLANT_HOME}"
+  planted D-S4-planted-phase2-relative-home phase2_as1 "relative/home"
+  reset_stub
+  D_ENV=("REPO_PATH=${WORK}/no-such-repo")
+  phase2 38; rc=$?
+  D_ENV=()
+  if [ "$rc" -eq 1 ] && grep -qF 'cannot enter REPO_PATH' "${ERR}" && ! grep -q '^pr view' "${GH_LOG}"; then
+    pass "D-cd-phase2" "an unenterable REPO_PATH exits 1 before any PR state is read"
+  else
+    fail "D-cd-phase2" "rc=${rc} (want 1), stub log: $(tr '\n' '|' < "${GH_LOG}"), stderr: $(head -c 300 "${ERR}")"
   fi
   # G8: the PR number must be digits; anything else is never passed to gh.
   for bad in '38x' '38;touch '"${WORK}"'/pwned-pr' '' '-1' '$(id)'; do

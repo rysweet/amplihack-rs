@@ -1,6 +1,8 @@
 //! Issue #1551: when the `gh` merge guard applies, and where it is found.
 
-use super::merge_guard::{GUARD_REL, MERGE_GUARD_ENV, guard_applies, locate_guard_dir};
+use super::merge_guard::{
+    GUARD_REL, MERGE_GUARD_ENV, guard_applies, guard_dir_for_home, locate_guard_dir,
+};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -179,7 +181,31 @@ fn locate_guard_dir_refuses_a_relative_home() {
     let err = locate_guard_dir(home)
         .expect_err("a relative home must fail closed")
         .to_string();
-    assert!(err.contains("(#1551)"), "{err}");
+    assert_eq!(
+        err,
+        "amplihack: AMPLIHACK_HOME is not absolute (relative/amplihack-home); refusing to run \
+         auto-drive without the merge guard (#1551)"
+    );
+}
+
+#[test]
+fn an_unset_home_is_named_as_the_cause() {
+    let err = guard_dir_for_home(None)
+        .expect_err("an unset home must fail closed")
+        .to_string();
+    assert_eq!(
+        err,
+        "AMPLIHACK_HOME is unset; refusing to run auto-drive without the merge guard (#1551)"
+    );
+}
+
+/// An empty `AMPLIHACK_HOME` is not absolute either, and is named as such.
+#[test]
+fn locate_guard_dir_names_an_empty_home_as_not_absolute() {
+    let err = locate_guard_dir(Path::new(""))
+        .expect_err("an empty home must fail closed")
+        .to_string();
+    assert!(err.contains("AMPLIHACK_HOME is not absolute"), "{err}");
 }
 
 /// G11: a shim or guard directory that group or others can write is not
