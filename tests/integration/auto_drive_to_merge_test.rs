@@ -47,7 +47,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 12] = [
+const AUTODRIVE_TOOLS: [&str; 13] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
@@ -56,6 +56,7 @@ const AUTODRIVE_TOOLS: [&str; 12] = [
     "autodrive_platform_facts.sh",
     "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
+    "autodrive_refusal.sh",
     "autodrive_round_evidence.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
@@ -760,8 +761,8 @@ fn exit_79_is_terminal_and_never_retried_into() {
         "the loop driver must name exit 79 as the terminal policy refusal"
     );
     assert!(
-        driver.contains("BLOCKED_TERMINAL"),
-        "BLOCKED_TERMINAL must be recognised alongside exit 79"
+        read(&tool_path("autodrive_refusal.sh")).contains("structural_refusal"),
+        "the runner's structural_refusal marker must be recognised alongside exit 79 (#1437)"
     );
     assert!(
         driver.contains("never retried into") || driver.contains("NEVER retried"),
@@ -3493,24 +3494,62 @@ fn gadugi_test_is_checked_before_the_build() {
 
 #[test]
 fn a_round_log_that_quotes_the_refusal_is_not_a_refusal() {
-    // crusty's review of PR #1520 quoted the guard's refusal in its verdict.
-    // Agent output reaches the round log as `[HH:MM:SS] [amplihack:...]`
-    // lines, and reading any BLOCKED_TERMINAL there as a refusal ended the
-    // run with exit 79.
-    let driver = read(&tool_path("autodrive_loop.sh"));
-    let body = driver
+    // crusty's review of PR #1520 quoted the guard's refusal, and an agent in
+    // #1437 handled a descendant's refusal inline and then lost its session.
+    // Reading BLOCKED_TERMINAL anywhere in a transcript ended both runs with
+    // exit 79. Only the exit code and the runner's own failure_class marker
+    // decide, and every call site asks the same function.
+    let helper = read(&tool_path("autodrive_refusal.sh"));
+    let body = helper
         .split("terminal_refusal() {")
         .nth(1)
         .and_then(|rest| rest.split("\n}").next())
-        .expect("terminal_refusal() must be defined");
+        .expect("terminal_refusal() must be defined in autodrive_refusal.sh");
     assert!(
-        body.contains(r"\[amplihack:") && body.contains("grep -vE"),
-        "terminal_refusal must drop agent output lines before it looks for the refusal"
+        !body.contains("BLOCKED_TERMINAL"),
+        "terminal_refusal must not look for the refusal's text in the transcript"
+    );
+    assert!(body.contains("79"), "terminal_refusal must test exit 79");
+    assert!(
+        body.contains("structural_refusal"),
+        "terminal_refusal must read structural_refusal from the failure_class marker"
     );
     assert!(
-        body.contains("'BLOCKED_TERMINAL orchestration_unavailable'"),
-        "terminal_refusal must match the guard's own refusal text, not any BLOCKED_TERMINAL"
+        !helper.contains("eval "),
+        "autodrive_refusal.sh must not eval anything it read from a log"
     );
+
+    let driver = read(&tool_path("autodrive_loop.sh"));
+    let code: Vec<&str> = driver
+        .lines()
+        .filter(|line| !line.trim_start().starts_with('#'))
+        .collect();
+    assert!(
+        !code
+            .iter()
+            .any(|line| line.contains("terminal_refusal() {")),
+        "terminal_refusal is defined once, in autodrive_refusal.sh"
+    );
+    assert!(
+        code.iter()
+            .any(|line| line.contains(". \"${LOOP_HOME}/autodrive_refusal.sh\"")),
+        "autodrive_loop.sh must source autodrive_refusal.sh from beside itself"
+    );
+    assert!(
+        !code.iter().any(|line| line.contains("BLOCKED_TERMINAL")),
+        "autodrive_loop.sh must not match the refusal's text"
+    );
+    let calls: Vec<&&str> = code
+        .iter()
+        .filter(|line| line.contains("terminal_refusal \""))
+        .collect();
+    assert_eq!(calls.len(), 3, "three call sites: {calls:?}");
+    for log in ["\"$BEFORE_LOG\"", "\"$LOG\"", "\"$HEALTH_LOG\""] {
+        assert!(
+            calls.iter().any(|line| line.contains(log)),
+            "terminal_refusal must be called with {log}: {calls:?}"
+        );
+    }
 }
 
 #[test]

@@ -379,6 +379,8 @@ mod tests_execute;
 #[cfg(test)]
 mod tests_failure_class;
 #[cfg(test)]
+mod tests_failure_class_1437;
+#[cfg(test)]
 mod tests_format;
 #[cfg(test)]
 mod tests_root_sandbox;

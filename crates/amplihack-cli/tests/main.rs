@@ -60,6 +60,8 @@ mod issue_1348_documented_cli_commands_exist;
 mod issue_1356_release_tags_last;
 #[path = "issue_1358_sccache_installed_before_cargo.rs"]
 mod issue_1358_sccache_installed_before_cargo;
+#[path = "issue_1437_final_marker.rs"]
+mod issue_1437_final_marker;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
 #[path = "issue_1552_investigation_report_written.rs"]

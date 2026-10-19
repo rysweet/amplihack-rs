@@ -676,7 +676,7 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_worktree_guard.sh; do
+for t in autodrive_loop.sh autodrive_state.sh autodrive_refusal.sh autodrive_worktree_guard.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
@@ -823,7 +823,8 @@ fi
 # Crusty's review of PR #1520 quoted the guard's message in its verdict, and
 # agent output reaches the round log as `[HH:MM:SS] [amplihack:...]` lines.
 # Matching any BLOCKED_TERMINAL there read that review as an exit-79 refusal
-# and ended the run. The guard's own line still is one.
+# and ended the run. Since #1437 no transcript text decides: only exit 79 or
+# the runner's own failure_class marker with "structural_refusal":true.
 set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${S04}"$'\n''    Output: LOOP_HEALTH: STUCK — stop here' 0
 export STUB_ROUND_STDOUT='  [06:56:22] [amplihack:claude:2742505] {"crusty_verdict": "CONCERNS", "evidence": "-> '"'"'BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3'"'"', rc=79"}'
 run_loop quoted-refusal; rc=$?
@@ -832,13 +833,21 @@ if [ "$rc" -ne 79 ] && grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/d
 else
   fail "EXIT79-quoted-is-not-refusal" "rc=${rc}: a quoted refusal stopped the loop as exit 79"
 fi
-set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_CONTINUE}" 1
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${S04}"$'\n''    Output: LOOP_HEALTH: STUCK — stop here' 1
 export STUB_ROUND_STDOUT='BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3 (issue #964/#1326).'
 run_loop guard-line; rc=$?
-if [ "$rc" -eq 79 ] && ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
-  pass "EXIT79-guard-line" "the guard's own refusal line in a round log is terminal even when the exit code was lost"
+if [ "$rc" -ne 79 ] && grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-guard-line-text" "the refusal's text on a plain line with exit 1 is not a refusal; the evaluator decides (rc=${rc}, #1437)"
 else
-  fail "EXIT79-guard-line" "rc=${rc} out=${LOOP_OUT}"
+  fail "EXIT79-guard-line-text" "rc=${rc}: transcript text stopped the loop as exit 79"
+fi
+set_stub '{"crusty_verdict":"CONCERNS"}' 0 "${H_CONTINUE}" 1
+export STUB_ROUND_STDOUT='amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"work","signal":"blocked_terminal orchestration_unavailable","action":"terminal","attempt":1,"retryable":false,"structural_refusal":true}'
+run_loop guard-marker; rc=$?
+if [ "$rc" -eq 79 ] && ! grep -q 'loop-health-evaluator' "${LOOP_LOGS}/calls" 2>/dev/null; then
+  pass "EXIT79-guard-marker" "the runner's structural_refusal marker is terminal even when the exit code was lost"
+else
+  fail "EXIT79-guard-marker" "rc=${rc} out=${LOOP_OUT}"
 fi
 export STUB_ROUND_STDOUT="round ran"
 
