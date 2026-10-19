@@ -47,7 +47,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 12] = [
+const AUTODRIVE_TOOLS: [&str; 13] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_last_round.sh",
     "autodrive_loop.sh",
@@ -59,6 +59,7 @@ const AUTODRIVE_TOOLS: [&str; 12] = [
     "autodrive_round_evidence.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
+    "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
 ];
 
@@ -3371,6 +3372,22 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     let tmpdir = tmp.path().join("tmp");
     for d in [&trees, &home, &tmpdir] {
         fs::create_dir_all(d).expect("mkdir");
+    }
+    // An autodrive-* run needs the #1551 merge guard under AMPLIHACK_HOME
+    // ($HOME/.amplihack here) before the depth guard is reached.
+    let guard = home.join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
+    fs::create_dir_all(&guard).expect("mkdir the merge guard dir");
+    fs::copy(
+        workspace_root().join("amplifier-bundle/tools/gh-merge-guard/gh"),
+        guard.join("gh"),
+    )
+    .expect("install the merge guard");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        for p in [guard.clone(), guard.join("gh")] {
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod guard");
+        }
     }
     const TREE: &str = "autodrivedepthtest";
     // The ceiling a root run seals: the default, 3.

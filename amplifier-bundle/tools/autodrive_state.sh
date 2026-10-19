@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge
-# workflow.
+# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge workflow.
 #
 # A run that dies partway must be re-runnable WITHOUT redoing merged work and
 # WITHOUT reopening concerns a previous run already resolved and had confirmed
@@ -384,33 +383,8 @@ autodrive_pr_state() {
   fi
 }
 
-# autodrive_require_unmerged <pr> <phase> -> 0 when the PR is not merged.
-#
-# Issue #1551: only autodrive_merge_gate.sh merges, in phase 3. A PR found
-# MERGED after phase 1 or 2 was merged around the gh merge guard (an absolute
-# gh path, curl with a token), so the run stops with exit 1 rather than report
-# progress. A state that cannot be read is read once more, then also stops it:
-# "we do not know" is never "not merged".
-autodrive_require_unmerged() {
-  local pr="${1:-}" phase="${2:-}" state
-  case "$pr" in
-    ''|*[!0-9]*) echo "ERROR: #1551: no valid PR number to check after ${phase}; refusing to continue unverified." >&2; return 1 ;;
-  esac
-  state="$(autodrive_pr_state "$pr")"
-  if [ "$state" = "UNKNOWN" ]; then
-    sleep 2
-    state="$(autodrive_pr_state "$pr")"
-  fi
-  case "$state" in
-    MERGED)
-      echo "ERROR: #1551 merged outside autodrive_merge_gate.sh: PR #${pr} is already MERGED after ${phase}, before the crusty and merge-ready phases could clear it. Nothing in auto-drive merged it; the run stops here. Review what merged it and the merged change." >&2
-      return 1 ;;
-    UNKNOWN)
-      echo "ERROR: #1551: PR #${pr} state is unreadable after ${phase} (read twice); a merge outside autodrive_merge_gate.sh cannot be ruled out, so the run stops here. Resume it once gh can read the PR." >&2
-      return 1 ;;
-  esac
-  return 0
-}
+# shellcheck source=autodrive_unmerged.sh # autodrive_require_unmerged (#1551) lives there; absent, it fails closed.
+if _ad_u="$(dirname "${BASH_SOURCE[0]}")/autodrive_unmerged.sh" && [ -f "$_ad_u" ]; then . "$_ad_u"; else autodrive_require_unmerged() { echo "ERROR: #1551: autodrive_unmerged.sh is missing beside autodrive_state.sh; refusing to continue unverified." >&2; return 1; }; fi; unset _ad_u
 
 # autodrive_launch_recipe <name|path> -> the recipe in the tree beside this file
 # (#1543). The loops run with --working-dir in the PR worktree, whose own

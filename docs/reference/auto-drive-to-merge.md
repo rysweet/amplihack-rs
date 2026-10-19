@@ -1077,7 +1077,8 @@ The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
 `AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
 before. The exception is `AUTODRIVE_PR_INPUT`: the composer's
 `autodrive-pr-input` step produces it as a step output (#1543), so each loop
-preflight reads it once in the dual-name form. `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
+preflight reads it once in the dual-name form, and the composer's
+`autodrive-check-unmerged` step reads `build_result` (#1551). `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
 as a template in step-02's sub-recipe `context:`, never in a shell, so it adds
 no row here. Its name joins the checked output set, so a later shell read
 must use the dual-name form, and [check 3](#the-static-check) forbids
@@ -1088,11 +1089,11 @@ already used the dual-name form.
 A read is one `${<NAME>:-` occurrence, so a line that reads the same output
 twice counts twice. Reads made inside a bundled tool, such as the merge
 round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 34 in all:
+here; that file uses the same form. There are 35 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
-| `auto-drive-to-merge.yaml` | 3 |
+| `auto-drive-to-merge.yaml` | 4 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 8 |
@@ -1617,14 +1618,15 @@ still passes.
 After phase 1 (`autodrive-build.yaml` step-03, when it built under
 `no_merge`) and after the crusty loop (`auto-drive-to-merge.yaml`
 `autodrive-check-unmerged`, skipped when the PR was already merged when the
-run started), `autodrive_require_unmerged` re-reads the PR with
-`autodrive_pr_state`. Both checks load `autodrive_state.sh` from
+run started), `autodrive_require_unmerged` (in `autodrive_unmerged.sh`, which
+`autodrive_state.sh` sources from its own directory) re-reads the PR with
+`autodrive_pr_state`; without that file the check exits `1`. Both checks load `autodrive_state.sh` from
 `$AMPLIHACK_HOME` only, never from the PR's worktree, and exit `1` if it or
 `REPO_PATH` is unusable.
 The PR number arrives through an environment variable and must match
 `^[0-9]+$`. `MERGED` exits `1` with
-`#1551 merged outside autodrive_merge_gate.sh`. An unreadable state is retried
-once and then exits `1`; resume the run once GitHub answers.
+`#1551 merged outside autodrive_merge_gate.sh`. An unreadable state is re-read
+once, at once, and then exits `1`; resume the run once GitHub answers.
 
 ### What this does not stop
 
