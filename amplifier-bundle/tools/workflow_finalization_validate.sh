@@ -19,6 +19,9 @@ validate_finalization() {
   # agent-generated text. Implementation failure is classified separately from
   # reporting failure so durable evidence survives a failed reporting step.
 
+  # Set only by the open-PR path (#1641) from gh-confirmed facts; cleared here
+  # so an ambient environment variable can never spoof publication.
+  local publish_state_override=""
   evidence_status=0
   finalization_evidence="$(workflow_context_read finalization_evidence)" || evidence_status=$?
   evidence_invalid="false"
@@ -71,7 +74,7 @@ FIELDS
 
   emit_result() {
     local field separator publish_state_reached observed_phases missing_evidence
-    publish_state_reached="$(resolve_publish_state_reached)"
+    publish_state_reached="${publish_state_override:-$(resolve_publish_state_reached)}"
     observed_phases="workflow-prep,workflow-worktree,workflow-design,workflow-tdd,workflow-refactor-review,workflow-precommit-test,workflow-publish,workflow-pr-review,workflow-finalize"
     missing_evidence=""
     # File-backed metadata and diagnostics can exceed argv's per-value limit.
@@ -162,7 +165,8 @@ FIELDS
   fi
   target_dir="$(workflow_finalization_metadata worktree_path || :)"
   [ -n "$target_dir" ] || target_dir="$(workflow_finalization_metadata repo_path || :)"
-  [ -n "$target_dir" ] || target_dir="."
+  target_dir_explicit="true"
+  [ -n "$target_dir" ] || { target_dir="."; target_dir_explicit="false"; }
   # Fall back to a live worktree probe only when the deterministic evidence did
   # not already report a dirty-worktree signal; collected evidence is
   # authoritative (issue #969, requirement R2).
@@ -222,6 +226,66 @@ FIELDS
     classify_success "ALLOW_NO_OP" "explicit no-op task with durable allow_no_op evidence" "No action required." "allow_no_op=true,terminal_no_op=true"
   fi
 
-  # 5. Default: implementation/verification evidence absent.
+  # 5. Resumed runs (#1641): a run resuming an earlier attempt's work may carry
+  #    no implementation/verification outputs of its own. It succeeds only when
+  #    it was published, its branch has an OPEN same-repo PR confirmed live by
+  #    gh whose head commit is the local HEAD, and a verification signal passes (all checks green, or this run's
+  #    typed verification_completed). Runs after every blocker, so it can only
+  #    replace the default failure below; gh is never called without a publish
+  #    signal, an explicit target directory and a GitHub remote.
+  publish_signal="false"
+  [ -z "$pr_url$pr_number" ] || publish_signal="true"
+  [ "$(resolve_publish_state_reached)" != "true" ] || publish_signal="true"
+  publish_status="$(workflow_finalization_metadata publish_status || :)"
+  for published_state in "$publish_status" "$prior_terminal_state"; do
+    case "$published_state" in
+      EXISTING_OPEN_PR|existing-open-pr|FOLLOWUP_CREATED|MERGED|closed-after-merge) publish_signal="true" ;;
+    esac
+  done
+  remote_host_type="$(workflow_finalization_metadata remote_host_type || :)"
+  # An unset host type is allowed through: it cannot widen the check, because
+  # finalization_open_pr_signal still requires a github.com origin URL.
+  case "$remote_host_type" in ''|github|GitHub|GITHUB) remote_is_github="true" ;; *) remote_is_github="false" ;; esac
+  if [ "$publish_signal" = "true" ] && [ "$target_dir_explicit" = "true" ] && [ "$remote_is_github" = "true" ]; then
+    run_branch="$(workflow_finalization_metadata branch_name || :)"
+    [ -n "$run_branch" ] || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
+    # A malformed pr_url (trailing slash, /files suffix, ...) must not hide a
+    # valid pr_number: try the URL first, then the number. Both are re-checked
+    # live against the origin repo, so the fallback cannot widen the match.
+    open_pr_found="false"
+    if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "${pr_url:-$pr_number}")"; then
+      open_pr_found="true"
+    elif [ -n "$pr_url" ] && [ -n "$pr_number" ] \
+      && open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$pr_number")"; then
+      open_pr_found="true"
+    fi
+    if [ "$open_pr_found" = "true" ]; then
+      open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
+      open_pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number // empty')"
+      open_pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url // empty')"
+      open_pr_verification=""
+      if [ "$open_pr_checks" = "green" ]; then
+        open_pr_verification="required_checks=green"
+      elif [ "$verification_completed" = "true" ]; then
+        open_pr_verification="precommit_passed=true"
+      fi
+      if [ -n "$open_pr_verification" ] && [[ "$open_pr_number" =~ ^[1-9][0-9]{0,9}$ ]] && [ -n "$open_pr_url" ]; then
+        pr_number="$open_pr_number"
+        pr_url="$open_pr_url"
+        publish_state_override="true"
+        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR with a passing verification signal" "No action required." "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=$pr_number,$open_pr_verification"
+      fi
+      if [ -z "$open_pr_verification" ]; then
+        echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
+      else
+        echo "WARNING: open-PR signal returned an unusable PR number or URL; not classified as EXISTING_OPEN_PR" >&2
+      fi
+    else
+      # finalization_open_pr_signal already printed the specific reason.
+      echo "WARNING: publish signal present but the open-PR check failed (reason above); not classified as EXISTING_OPEN_PR" >&2
+    fi
+  fi
+
+  # 6. Default: implementation/verification evidence absent.
   fail_result "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
 }

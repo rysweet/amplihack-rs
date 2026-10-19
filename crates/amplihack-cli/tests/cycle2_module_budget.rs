@@ -37,6 +37,8 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "../../amplifier-bundle/tools/workflow_finalization_collect.sh",
         "../../amplifier-bundle/tools/workflow_finalization_validate.sh",
         "../../amplifier-bundle/tools/workflow_finalization_complete.sh",
+        "../../amplifier-bundle/tools/workflow_finalization_pr_signal.sh",
+        "../../tests/integration/issue_1641_finalization_open_pr.rs",
         "src/commands/install/tests/codex_plugin_tests.rs",
         "tests/codex_frontdoor_contract.rs",
         "../amplihack-launcher/tests/codex_invocation.rs",

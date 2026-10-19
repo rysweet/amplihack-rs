@@ -222,7 +222,16 @@ Evaluation order:
    state (`MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`,
    `SUPERSEDED`, `IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP`) using the required
    deterministic proof for that state.
-5. **Fallthrough.** If no more specific state applies, classify `INCOMPLETE`.
+5. **Resumed-run open-PR path.** If steps 1–4 produced no result, a run whose
+   PR is already published can still succeed as `EXISTING_OPEN_PR`. It needs an
+   open same-repo PR on the run's branch, plus either all-green checks or this
+   run's typed verification evidence. See
+   [Resumed Runs: Open-PR Success Path](#resumed-runs-open-pr-success-path-1641).
+   This step only replaces the step 6 default. It never overrides steps 1–4.
+6. **Fallthrough.** If no more specific state applies, the validator keeps its
+   initial default, `FAILED_IMPLEMENTATION`. The validator never sets
+   `INCOMPLETE`; that state reaches the result only through
+   `prior_terminal_state`.
 
 Malformed or contradictory `finalization_evidence` (for example, an object that
 fails schema validation) fails closed as `FAILED_INVALID_EVIDENCE`. There is no
@@ -240,6 +249,7 @@ way that matters because it is never parsed.
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run and durable metadata links the old run to the replacement. |
 | `IMPLEMENTED_VERIFIED` | Yes | Implementation and required verification completed on a path that does not require publish/merge evidence. |
 | `ALLOW_NO_OP` | Yes | Explicit no-op path was allowed and includes evidence-backed reason text. |
+| `EXISTING_OPEN_PR` | Yes | The run did not record implementation evidence itself (usually because it resumed an earlier attempt), but its branch has a published, open, same-repo PR with all-green checks or this run's typed verification evidence. See [Resumed Runs](#resumed-runs-open-pr-success-path-1641). |
 | `MANUAL_REQUIRED` | No | A provider action is intentionally manual and the final output names the required next action. |
 | `BLOCKED_MANUAL_PROVIDER` | No | Provider tooling, credentials, permissions, or APIs block required automation. |
 | `BLOCKED_CI` | No | Required checks are failing, pending beyond policy, or unavailable when required. |
@@ -253,7 +263,7 @@ way that matters because it is never parsed.
 | `FAILED_REPORTING` | No | Implementation succeeded but a reporting/finalization step failed. Durable evidence (`pr_url`, `pr_number`, implementation/verification markers) is preserved and reported. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | Development workflow stopped before implementation, verification, publish, or valid no-op evidence. |
 | `HOLLOW_SUCCESS` | No | The recipe appeared successful but agents produced empty/generic output or could not access the codebase. |
-| `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. |
+| `INCOMPLETE` | No | Work remains and no more specific terminal failure state applies. Reaches the result only via `prior_terminal_state`; the validator never originates it. |
 
 `terminal_failure=true` is derived for all non-success states. Failure states
 override success-looking implementation, verification, publish, and no-op
@@ -316,19 +326,221 @@ before persisting or reporting the result.
    needs local no-diff or obsolete proof, `FOLLOWUP_CREATED` needs a durable
    follow-up identifier, `SUPERSEDED` needs a durable replacement identifier plus
    a supersession reason, `IMPLEMENTED_VERIFIED` needs implementation and
-   verification evidence, and `ALLOW_NO_OP` needs explicit no-op authorization
-   plus reason text.
+   verification evidence, `ALLOW_NO_OP` needs explicit no-op authorization
+   plus reason text, and `EXISTING_OPEN_PR` needs a publish signal, a live
+   GitHub check that the PR is open, same-repo and on the run's branch, and
+   either all-green checks or `verification_completed=true`.
 7. The narrative artifact is never read for any of these decisions.
 8. The normalized result is persisted even for failure states so operators can
    diagnose the run from recipe JSON.
 
-The classifier is total: every input maps to exactly one terminal state. When no
-rule above matches an actionable state, the fallthrough default is
+The classifier is total: every input maps to exactly one terminal state. Inside
+`validate_finalization` the fallthrough is `FAILED_IMPLEMENTATION` (evaluation
+order step 6). When validation produces no result at all, the default is
 `FAILED_INVALID_EVIDENCE`, not the retired `FAILED_FINALIZER_OUTPUT`. The
 completion helper (`complete()` in `workflow_agentic_finalization.sh`) must
 initialize its `terminal_state` default to `FAILED_INVALID_EVIDENCE` so that an
 unclassifiable or empty-evidence run fails closed on a live state rather than a
 retired one.
+
+## Resumed Runs: Open-PR Success Path (#1641)
+
+A run that resumes an earlier attempt's work often has nothing left to
+implement. The PR already exists and CI is already green, so this run's
+implementation and verification steps never set `implementation_completed` or
+`verification_completed`. Before #1641, `validate-agentic-finalization` then
+fell through to the default `FAILED_IMPLEMENTATION`, even though step 22b
+(`workflow_final_status.sh`, since #1623) had already reported the same run as a
+success. PRs #1635 and #1639 hit this.
+
+Step 5 of the [evaluation order](#terminal-classification) closes that gap. It classifies
+`EXISTING_OPEN_PR` only when every condition below holds. If any one fails, the
+run stays `FAILED_IMPLEMENTATION`, exactly as before.
+
+### Conditions
+
+| # | Condition | Source |
+| --- | --- | --- |
+| 1 | Evaluation-order steps 1–4 returned no result: no invalid evidence, dirty worktree, missing tooling, prior blocker, hollow success, reporting-failure split, `IMPLEMENTED_VERIFIED` or `ALLOW_NO_OP`. | Classifier order |
+| 2 | **Publish signal.** A non-empty `pr_url` or `pr_number`, `publish_state_reached=true`, or a `publish_status` or `prior_terminal_state` of `EXISTING_OPEN_PR`, `existing-open-pr`, `FOLLOWUP_CREATED`, `MERGED` or `closed-after-merge`. | Typed context (`workflow_finalization_context.sh`) |
+| 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
+| 4 | **GitHub remote.** `remote_host_type` is empty or `github`, and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
+| 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and passes `git check-ref-format --branch`. | Metadata + live git |
+| 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` (fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
+| 7 | **Verification signal.** Either `checks=green` (see below) or `verification_completed=true` from this run's typed `verification_terminal_evidence`. | `statusCheckRollup` or typed evidence |
+
+Each kind of signal is insufficient on its own. A publish status without a live
+open PR fails. An open PR with no green checks and no verification evidence
+fails. A green rollup on another branch's PR fails. A green rollup on an older
+commit fails too: if the run committed locally but never pushed, the PR's
+`headRefOid` differs from local HEAD, so checks (and this run's precommit
+evidence) that never covered the PR's code cannot vouch for it.
+
+### How the PR is located
+
+The repo `R` (`owner/repo`) always comes from the target directory's
+`remote.origin.url`, and every `gh` call passes `--repo "$R"`. Without it, `gh`
+resolves the repo from the checkout's remotes and prefers `upstream` or a
+`gh repo set-default` choice, so a fork checkout would query the wrong repo and
+fail falsely.
+
+1. If the context carries `pr_number`, or a `pr_url` of the exact form
+   `https://github.com/<owner>/<repo>/pull/<n>` whose repo equals `R`, the
+   validator runs:
+
+   ```bash
+   gh pr view 1641 --repo rysweet/amplihack-rs \
+     --json number,url,state,headRefName,headRefOid,isCrossRepository,statusCheckRollup
+   ```
+
+   A `pr_url` that names any other repo, or is not in that exact form (trailing
+   slash, `/files` suffix, different letter case), is rejected without calling
+   `gh`. If the context also carries a valid `pr_number`, the validator retries
+   with the number alone, which is re-checked live like any other reference.
+   It never falls back to `gh pr list` from a rejected URL.
+
+2. Otherwise, when condition 2 holds through a publish status alone (for
+   example the GitHub publish path's lowercase `existing-open-pr`, which records
+   no URL), it runs a read-only search:
+
+   ```bash
+   gh pr list --repo rysweet/amplihack-rs \
+     --head feat/issue-1641-fix-issue-1641-read-it --state open \
+     --json number,url,isCrossRepository --limit 2
+   ```
+
+   The result must contain exactly one PR in total, and that PR must have
+   `isCrossRepository=false`. Zero results fail closed. Two results fail closed
+   even when only one of them is same-repo (for example, one same-repo PR plus
+   one fork PR with the same head branch name). The single match is then
+   checked with `gh pr view` as in step 1.
+
+3. With no publish signal, `gh` is never called.
+
+`gh` runs read-only with a fixed argv and literal `--json` field lists. Each run
+allows one transient retry, does not wait out rate limits and has no REST
+fallback, so the worst case is about two 60-second calls. A missing,
+unauthenticated or failing `gh`, or malformed JSON, means "no signal": the run
+stays `FAILED_IMPLEMENTATION` and no new failure state is introduced.
+
+### What "green" means
+
+`checks=green` requires a non-empty `statusCheckRollup` in which:
+
+- every `CheckRun` has `status=COMPLETED` and `conclusion` of `SUCCESS`,
+  `NEUTRAL` or `SKIPPED`;
+- every `StatusContext` has `state=SUCCESS`.
+
+A pending, failing or null entry, an unknown type, or an empty rollup is not
+green. This is stricter than "required checks pass", because `gh pr view` does
+not say which checks are required. When a stricter rule rejects a run, the
+typed `verification_completed=true` signal still lets it succeed.
+
+### Result
+
+On success the canonical result keeps its schema of 19 string keys and exits 0:
+
+```text
+terminal_success=true
+terminal_state=EXISTING_OPEN_PR
+terminal_reason=<illustrative: final wording is set by the implementation>
+required_next_action=No action required.
+publish_state_reached=true
+pr_number=1641
+pr_url=https://github.com/rysweet/amplihack-rs/pull/1641
+hollow_success_detected=false
+reporting_failure=false
+evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_number=1641,required_checks=green
+```
+
+The `terminal_reason` line above is a placeholder; its exact text is defined
+by the code, not by this page. Every other line is the specified output.
+
+When the checks are not green but this run's precommit verification passed, the
+last `evidence_used` entry is `precommit_passed=true` instead of
+`required_checks=green`. Those two strings are the only values that entry can
+take.
+
+`pr_number` and `pr_url` in the result are the values `gh` confirmed. They are
+not copied from the input context. `publish_state_reached=true` comes from an
+internal override that `validate_finalization` clears on entry, so it cannot be
+set from the environment.
+
+`workflow-complete` accepts `EXISTING_OPEN_PR` as success. It is listed in
+`terminal_vocabulary`, and `workflow_final_status.sh` already treats it as
+success.
+
+### Fail-closed cases kept
+
+| Situation | Terminal state | `gh` called? |
+| --- | --- | --- |
+| No PR, no publish state, no evidence | `FAILED_IMPLEMENTATION` | No |
+| Open PR, a check failing or pending, `verification_completed` unset | `FAILED_IMPLEMENTATION` | Yes |
+| PR `CLOSED` or `MERGED` | `FAILED_IMPLEMENTATION` | Yes |
+| PR head ≠ run branch, or cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
+| `pr_url` names a different repo than `origin` (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
+| `gh` missing, unauthenticated, non-zero exit or malformed JSON | `FAILED_IMPLEMENTATION` | Attempted |
+| `pr list` returns zero PRs, two PRs, or one cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
+| Target directory fell back to `.`, branch is `main`, or remote is AzDO | `FAILED_IMPLEMENTATION` | No |
+| Dirty worktree with an open green PR | `FAILED_DIRTY_WORKTREE` | No |
+| Hollow-success signals with an open green PR | `HOLLOW_SUCCESS` | No |
+| `prior_terminal_state=BLOCKED_CI` with an open green PR | `BLOCKED_CI` | No |
+| `reporting_failure=true` | `FAILED_REPORTING` / `FAILED_IMPLEMENTATION` (unchanged) | No |
+
+The path never reads `agentic_finalizer_narrative` or any other prose, and it
+does not add fields to the `workflow_finalization_field` allowlist.
+
+### Helper: `finalization_open_pr_signal`
+
+`amplifier-bundle/tools/workflow_finalization_pr_signal.sh` is sourced by
+`workflow_agentic_finalization.sh` together with `workflow_gh_retry.sh`. It
+reports facts and does not classify.
+
+```text
+finalization_open_pr_signal <target_dir> <branch> [<pr_ref>]
+```
+
+| Argument | Meaning |
+| --- | --- |
+| `target_dir` | Worktree or repo path. Its `remote.origin.url` sets the repo identity passed to every `gh` call as `--repo`. |
+| `branch` | The run branch from metadata. Must match the live branch when both are set. |
+| `pr_ref` | Optional PR number (`^[1-9][0-9]{0,9}$`) or exact GitHub PR URL. If omitted, the helper uses the `gh pr list --head` lookup. |
+
+Exit 0 prints one compact JSON line:
+
+```json
+{"pr_number":"1641","pr_url":"https://github.com/rysweet/amplihack-rs/pull/1641","checks":"green"}
+```
+
+`checks` is one of `green`, `failing`, `pending`, `none` or `unknown`. Exit 1
+prints nothing on stdout and means no usable open-PR signal; stderr gets one
+fixed line, `WARNING: no open-PR signal: <reason>`, naming the check that
+failed (for example `PR reference has an invalid PR number` or `local HEAD
+could not be resolved`). Reasons are literal strings: no URL, branch name or
+`gh` output is ever interpolated. The helper never prints
+`gh` stderr or the origin URL. It uses a private `mktemp -d` directory for retry
+scratch files and removes it on every return path. If `mktemp` fails, it
+returns 1 rather than writing into the working directory.
+
+### Known limitations
+
+- **Every reported check, not just the required ones.** A run with an
+  irrelevant failing check needs `verification_completed=true` to pass. The
+  merge gate still re-checks required CI.
+- **Point-in-time.** The PR can change after validation. Finalization reports
+  what it saw; it is not a merge gate.
+- **AzDO.** Resumed AzDO runs are not checked against provider CI. Without the
+  GitHub path they stay `FAILED_IMPLEMENTATION`.
+- **Local origin is trusted.** Repo identity comes from the worktree's
+  `remote.origin.url`.
+- **Detached HEAD.** With no live branch, only the context `branch_name` is
+  checked against the PR's `headRefName`. The PR must still be open, from the
+  same repo, have `headRefOid` equal to the detached HEAD, and pass
+  verification.
+- **Empty `remote_host_type`.** Treated as GitHub. This cannot widen the check:
+  the origin URL must still parse as a `github.com` repository, and userinfo
+  containing `/`, `?`, `#` or `\` is rejected so a foreign host cannot hide
+  behind `@github.com/`.
 
 ## Canonical Result Schema
 
@@ -488,6 +700,25 @@ required_next_action=Fix failing CI checks before merge.
 
 The recipe exits nonzero and persists `terminal_state=BLOCKED_CI`.
 
+### Resumed run with an already-published PR
+
+A run resumes after an earlier attempt opened PR #1641 and CI went green. This
+run's implementation and verification steps recorded nothing. The publish step
+reported `existing-open-pr`:
+
+```text
+publish_status=existing-open-pr
+implementation_completed=
+verification_completed=
+=> gh pr list --repo <origin repo> --head <branch> returns exactly one PR, same-repo
+=> gh pr view 1641 --repo <origin repo>: state=OPEN, head matches, all checks SUCCESS
+=> terminal_state=EXISTING_OPEN_PR, terminal_success=true, exit 0
+```
+
+If the same run had no publish signal at all, `gh` is never called and the
+result is `terminal_state=FAILED_IMPLEMENTATION` with
+`workflow finalization failed closed` on stderr.
+
 ### Hollow success after planning-only output
 
 ```text
@@ -545,6 +776,25 @@ git status --short
 git rev-parse HEAD
 git diff --stat origin/main...HEAD
 ```
+
+If a resumed run reports `FAILED_IMPLEMENTATION` although its PR is open, check
+each [open-PR condition](#conditions) in turn:
+
+```bash
+git -C "$WORKTREE" branch --show-current   # must equal branch_name and not be main
+git -C "$WORKTREE" config --get remote.origin.url
+R=rysweet/amplihack-rs   # owner/repo parsed from the origin URL above
+gh pr list --repo "$R" --head "$(git -C "$WORKTREE" branch --show-current)" \
+  --state open --json number,url,isCrossRepository
+git -C "$WORKTREE" rev-parse HEAD           # must equal the PR's headRefOid
+gh pr view 1641 --repo "$R" --json state,headRefName,headRefOid,isCrossRepository,statusCheckRollup \
+  --jq '.statusCheckRollup[] | {name, status, conclusion, state}'
+```
+
+A pending or failing entry in the rollup, a second open PR for the branch (even
+from a fork), a PR head that is not the local HEAD (unpushed commits), a
+`pr_url` for another repo, or a missing publish signal all keep
+the run failed by design.
 
 Do not override `BLOCKED_CI`, `FAILED_MEANINGFUL_DIFF`, `HOLLOW_SUCCESS`,
 `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `FAILED_INVALID_EVIDENCE` in CI
