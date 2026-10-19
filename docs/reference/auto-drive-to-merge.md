@@ -1852,11 +1852,21 @@ have the body read as commands. A `$(cat <<'EOF' … EOF)` is data only when
 the command it feeds is on the list too, so `ssh host "$(cat <<'EOF' … EOF)"`
 is code. A listed program reads a body as data only on its stdin or as a
 quoted option value, never as its own arguments (crusty round 6). Under
-`xargs` no program counts as a data consumer, and the text of the whole call
-(heredoc bodies, here-strings, what is piped in) is checked as words added
-to that program's arguments, so `xargs gh <<'EOF'` with `pr merge 38` in the
-body, `cat <<'EOF' | xargs gh` and `echo pr merge 38 | xargs gh` are
-refused. A `$(…)` or backtick that is the program word, or an argument of
+`xargs`, `gh` and `git` are not data consumers, and the text that reaches
+`xargs`'s stdin is checked as words added to the program's arguments, so
+`xargs gh <<'EOF'` with `pr merge 38` in the body, `cat <<'EOF' | xargs gh`
+and `echo pr merge 38 | xargs gh` are refused. Only stdin counts (crusty
+round 7): the commands piped into `xargs` (`a | b | xargs …`, `|&`, a
+`( … ) |` subshell), the heredocs of that pipeline, the here-strings of its
+own command and the `$(…)` in those. Commands joined by `;`, `&&`, `||` or a
+newline do not share its stdin and are not added. And only a program that
+can merge from its arguments is checked this way: `gh`, `git`, `curl`,
+`wget`, `http`, `https`, `xh` and the interpreters. So `find . -name '*.rs'
+| xargs grep -l 'gh pr merge'`, `ls | xargs wc -l` after an `echo 'never run
+gh pr merge' > notes.txt;`, and `git diff --name-only | xargs git add &&
+git commit -m '… gh pr merge …'` pass. The cost: `xargs -I{}` replacement
+and a program under `xargs` that reaches `gh` through `"$@"` are not
+modelled (see the limits table). A `$(…)` or backtick that is the program word, or an argument of
 `gh` or `git` other than a quoted option value (`--body "$(…)"`, `-m
 "$(…)"`, `--body="$(…)"`), is checked as the words it would put there, so
 `gh $(cat <<'EOF' … pr merge 38 … EOF)` and `gh "$(cat <<'EOF' … pr …
@@ -1871,7 +1881,10 @@ pass whatever merge text the body holds:
 )"` and `cat > docs/x.md <<'EOF' … EOF`. Apostrophes and parentheses in the
 body do not unbalance a surrounding `$(…)`. When the body is read as code
 (`bash <<'EOF'`, `python3 - <<'EOF'`, `cat <<'EOF' | bash`, the forms above),
-a merge form in it is refused. An unquoted delimiter (`<<EOF`) lets bash run the body's `$(…)` and
+a merge form in it is refused. A `git -c alias.<name>='!<command>'` on
+the command line is code too, since git runs a `!` alias through `sh`: its
+command is checked as a command, and the rest of the call is read as code,
+so `git -c alias.m='!gh pr merge 38' m` is refused (crusty round 7). An unquoted delimiter (`<<EOF`) lets bash run the body's `$(…)` and
 backticks, so those are checked as commands; a quoted one (`<<'EOF'`) does
 not. A body with no closing delimiter line, and a delimiter that does not
 start with a letter, `_`, a quote or a backslash (as in the shift
@@ -2016,8 +2029,8 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The shim is skipped. The [pre-tool-use hook check](#the-pre-tool-use-hook-check) still refuses the merge forms it can read in the command text of the agent's shell tool, since it reads the command, not `PATH`. The next rows list what it cannot read. |
 | `gh` by absolute path, `PATH=… gh`, `curl` to the merge endpoint | Refused by the hook check when typed into the agent's shell tool. |
 | A merge inside a script file the agent writes and then runs, through a real `gh` that `PATH` puts ahead of the shim | Not refused: neither layer sees it. The hook sees only `bash script.sh`, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. |
-| Variable indirection (`G=gh; $G pr merge 38`), a command built at run time from text that is not in the call (`$(printf g)h`, `xargs gh` reading a file the agent wrote earlier, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command whose words are not in the command text, and the shim is not on that path. When the words are there (`xargs gh` with the subcommand in a heredoc, here-string or pipe, `gh $(cat <<'EOF' … EOF)`), the hook reads them and refuses. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
-| A heredoc fed to a listed data consumer that runs it anyway (a `git` alias or `core.pager` set in config rather than on the command line, a wrapped `cat` earlier on `PATH`), through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook trusts the [data-consumer allowlist](#the-pre-tool-use-hook-check) by name. Every program off the list, `eval`, `source`, `.`, `parallel`, `at`, `ssh` and unknown ones included, has its heredoc read as code and is refused. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| Variable indirection (`G=gh; $G pr merge 38`), a command built at run time from text that is not in the call (`$(printf g)h`, `xargs gh` reading a file the agent wrote earlier, `xargs -I{} gh {} merge 38` with `pr` on stdin, `xargs sh -c 'gh "$@"' _` with the subcommand on stdin, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command whose words are not in the command text, and the shim is not on that path. When the words are there (`xargs gh` with the subcommand in a heredoc, here-string or pipe, `gh $(cat <<'EOF' … EOF)`), the hook reads them and refuses. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
+| A heredoc fed to a listed data consumer that runs it anyway (a `git` alias or `core.pager` set in config rather than on the command line, where `git -c alias.<name>='!…'` is read as code and refused, a wrapped `cat` earlier on `PATH`), through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook trusts the [data-consumer allowlist](#the-pre-tool-use-hook-check) by name. Every program off the list, `eval`, `source`, `.`, `parallel`, `at`, `ssh` and unknown ones included, has its heredoc read as code and is refused. Caught by the phase 1 and phase 2 `MERGED` checks. |
 | An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |

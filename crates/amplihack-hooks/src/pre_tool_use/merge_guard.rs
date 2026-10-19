@@ -51,11 +51,17 @@
 //!
 //! A listed program is a data consumer only for its stdin and its option
 //! values, not for its own argv (crusty round 6). Under `xargs`, stdin
-//! becomes the program's arguments, so no program there reads a body as
-//! data, and the text of the whole command (heredocs, here-strings, what is
-//! piped in) is checked as words appended to that program's argv:
-//! `xargs gh <<'EOF'\npr merge 38\nEOF` and `echo pr merge 38 | xargs gh`
-//! are refused. A `$(…)` or backtick in the program word, or in `gh`'s or
+//! becomes the program's arguments, so `gh` and `git` there do not read a
+//! body as data, and the text that reaches `xargs`'s stdin is checked as
+//! words appended to the program's argv: `xargs gh <<'EOF'\npr merge
+//! 38\nEOF` and `echo pr merge 38 | xargs gh` are refused. Only stdin counts
+//! (crusty round 7): the commands piped in and the heredocs and here-strings
+//! of that pipeline, not commands joined by `;`, `&&` or `||`. And only a
+//! program that can merge from its argv (`gh`, `git`, an HTTP client, an
+//! interpreter) is checked: `find . | xargs grep -l 'gh pr merge'` passes.
+//! `git -c alias.<name>='!<command>'` runs the command through `sh`, so it is
+//! code and the command is checked: `git -c alias.m='!gh pr merge 38' m` is
+//! refused. A `$(…)` or backtick in the program word, or in `gh`'s or
 //! `git`'s arguments other than as a quoted option value (`--body "$(…)"`,
 //! `-m "$(…)"`, `--body="$(…)"`), is checked the same way, as the words it
 //! puts there, and its heredocs are code: `gh $(cat <<'EOF'\npr merge
@@ -142,22 +148,26 @@ fn merge_form(
     if depth > MAX_NESTING {
         return None;
     }
+    let parsed = split(command);
     let Split {
         segments,
         nested,
         heredocs,
-    } = split(command);
+        ..
+    } = &parsed;
     let scripted = scripted
-        || segments
-            .iter()
-            .flat_map(|words| command_words(words))
-            .any(|i| is_interpreter(basename(&i.1)));
+        || segments.iter().any(|words| {
+            command_words(words).into_iter().any(|(i, name)| {
+                is_interpreter(basename(&name))
+                    || (basename(&name) == "git" && git_shell_alias(&words[i + 1..]).is_some())
+            })
+        });
     // Deny by default: a body is data only when every program here (and in
     // the command whose arguments this one's output becomes) is a known
     // data consumer and nothing runs code.
     let heredoc_data =
         heredoc_data && !scripted && segments.iter().all(|w| reads_heredoc_as_data(w));
-    for sub in &nested {
+    for sub in nested {
         // Output that becomes a program's argv (crusty round 6): the
         // substitution is checked as the words it puts there, and its
         // heredocs are code.
@@ -181,29 +191,36 @@ fn merge_form(
             return Some(label);
         }
     }
-    // `xargs P` turns its stdin into P's arguments (crusty round 6): any
-    // text in the command (a heredoc, a here-string, what is piped in) may
-    // end up there.
-    let mut level_tokens: Option<Vec<String>> = None;
-    for words in &segments {
-        for (i, _) in command_words(words) {
-            if !fed_by_xargs(words, i) {
+    // `xargs P` turns its stdin into P's arguments (crusty round 6). Only
+    // what reaches that stdin counts (crusty round 7): the commands piped
+    // into it and the heredocs and here-strings of its pipeline, not the
+    // `;`/`&&` commands around it. And only a program that can merge from
+    // its argv is checked: `xargs grep 'gh pr merge'` or `xargs wc -l`
+    // cannot merge whatever their arguments say.
+    for (s, words) in segments.iter().enumerate() {
+        for (i, name) in command_words(words) {
+            if !fed_by_xargs(words, i) || !merges_from_argv(basename(&name)) {
                 continue;
             }
-            let tokens = level_tokens.get_or_insert_with(|| text_tokens(command));
-            if let Some(label) = fed_argv_merge_form(&words[i..], tokens, &[], depth) {
+            let tokens = xargs_stdin_tokens(&parsed, s);
+            // A here-string is stdin, not one of the program's arguments.
+            let argv: Vec<String> = (i..words.len())
+                .filter(|w| !parsed.herestrings.contains(&(s, *w)))
+                .map(|w| words[w].clone())
+                .collect();
+            if let Some(label) = fed_argv_merge_form(&argv, &tokens, &[], depth) {
                 return Some(label);
             }
         }
     }
     if !heredoc_data {
-        for body in &heredocs {
+        for (_, body) in heredocs {
             if let Some(label) = merge_form(body, depth + 1, true, false) {
                 return Some(label);
             }
         }
     }
-    for words in &segments {
+    for words in segments {
         if let Some(label) = segment_merge_form(words, depth, scripted) {
             return Some(label);
         }
@@ -245,19 +262,89 @@ fn text_tokens(text: &str) -> Vec<String> {
         segments,
         nested,
         heredocs,
+        ..
     } = split(text);
     let words = segments.iter().flatten().map(String::as_str);
     let bodies = heredocs
         .iter()
-        .map(String::as_str)
+        .map(|(_, b)| b.as_str())
         .chain(nested.iter().map(|n| n.body.as_str()));
-    words
-        .chain(bodies)
+    tokens(words.chain(bodies))
+}
+
+/// `texts` split on whitespace, with quotes and shell punctuation trimmed
+/// off the ends of each word.
+fn tokens<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<String> {
+    texts
+        .into_iter()
         .flat_map(str::split_whitespace)
         .map(|t| t.trim_matches(|c: char| "'\"`$();|&<>".contains(c)))
         .filter(|t| !t.is_empty())
         .map(str::to_string)
         .collect()
+}
+
+/// The words that can reach the stdin of the `xargs` in segment `s` of
+/// `parsed`: the words of the commands piped into it (`a | b | xargs …`),
+/// the heredoc bodies of that pipeline, the here-strings of its own
+/// command, and the `$(…)` bodies in any of those. Commands joined by `;`,
+/// `&&`, `||` or a newline do not share its stdin and are left out.
+fn xargs_stdin_tokens(parsed: &Split, s: usize) -> Vec<String> {
+    let mut start = s;
+    while start > 0 && parsed.piped[start - 1] {
+        start -= 1;
+    }
+    let here_string = |seg: usize, w: usize| seg == s && parsed.herestrings.contains(&(seg, w));
+    let upstream = parsed.segments[start..s]
+        .iter()
+        .flatten()
+        .map(String::as_str);
+    let herestrings = parsed
+        .herestrings
+        .iter()
+        .filter(|(seg, _)| *seg == s)
+        .filter_map(|&(seg, w)| parsed.segments[seg].get(w))
+        .map(String::as_str);
+    let heredocs = parsed
+        .heredocs
+        .iter()
+        .filter(|(seg, _)| (start..=s).contains(seg))
+        .map(|(_, b)| b.as_str());
+    let mut found = tokens(upstream.chain(herestrings).chain(heredocs));
+    for sub in &parsed.nested {
+        if sub
+            .at
+            .is_some_and(|(seg, w)| (start..s).contains(&seg) || here_string(seg, w))
+        {
+            found.extend(text_tokens(&sub.body));
+        }
+    }
+    found
+}
+
+/// Programs that can merge when their arguments say so: `gh`, `git`
+/// (through a `!` alias), the HTTP clients and the interpreters. A text tool
+/// such as `grep`, `rg` or `wc` cannot, whatever words `xargs` hands it.
+fn merges_from_argv(name: &str) -> bool {
+    matches!(
+        name,
+        "gh" | "git" | "curl" | "wget" | "http" | "https" | "xh"
+    ) || is_interpreter(name)
+}
+
+/// The shell command of a `git -c alias.<name>='!<command>'` setting in
+/// `args` (the words after `git`): git runs a `!` alias through `sh`.
+fn git_shell_alias(args: &[String]) -> Option<&str> {
+    args.windows(2).find_map(|pair| {
+        if pair[0] != "-c" {
+            return None;
+        }
+        let (key, value) = pair[1].split_once('=')?;
+        let body = value.trim_start().strip_prefix('!')?;
+        key.to_ascii_lowercase()
+            .starts_with("alias.")
+            .then_some(body)
+    })
 }
 
 /// A merge form in the argv `prefix`, then `tokens` from some point on, then
@@ -337,8 +424,10 @@ fn reads_heredoc_as_data(words: &[String]) -> bool {
         && programs.iter().all(|(i, word)| {
             let args = &words[i + 1..];
             // `xargs` makes its stdin the program's arguments (crusty
-            // round 6), so no program under it reads the body as data.
-            if fed_by_xargs(words, *i) {
+            // round 6), so `gh` and `git` under it do not read the body as
+            // data; a text tool under it still cannot run or merge it
+            // (crusty round 7).
+            if fed_by_xargs(words, *i) && matches!(basename(word), "gh" | "git") {
                 return false;
             }
             match basename(word) {
@@ -542,6 +631,10 @@ fn segment_merge_form(words: &[String], depth: usize, scripted: bool) -> Option<
         }
         let found = match basename(word) {
             "gh" => gh_merge_form(rest),
+            // `git -c alias.m='!gh pr merge 38' m` (crusty round 7).
+            "git" => {
+                git_shell_alias(rest).and_then(|body| merge_form(body, depth + 1, true, false))
+            }
             // HTTP clients: an endpoint or mutation anywhere in the segment.
             "curl" | "wget" | "http" | "https" | "xh" => {
                 words.iter().find_map(|w| raw_merge_form(w))
@@ -642,11 +735,17 @@ fn skip_flags(mut args: &[String]) -> &[String] {
 struct Split {
     /// Simple commands, as word lists.
     segments: Vec<Vec<String>>,
+    /// Per segment: a `|` (or `|&`) follows it, so its output is the next
+    /// segment's stdin.
+    piped: Vec<bool>,
+    /// The segment and word index of each here-string (`<<<word`).
+    herestrings: Vec<(usize, usize)>,
     /// Bodies of `$(…)` and backticks, to be checked as commands.
     nested: Vec<Nested>,
     /// Heredoc bodies: code unless every program in the command is a known
-    /// data consumer (see [`reads_heredoc_as_data`]).
-    heredocs: Vec<String>,
+    /// data consumer (see [`reads_heredoc_as_data`]). Each with the index
+    /// of the segment whose redirection opened it.
+    heredocs: Vec<(usize, String)>,
 }
 
 /// A `$(…)` or backtick substitution.
@@ -665,6 +764,8 @@ struct Heredoc {
     strip_tabs: bool,
     /// An unquoted delimiter: bash expands `$(…)` and backticks in the body.
     expands: bool,
+    /// The segment whose redirection this is (set by [`split`]).
+    segment: usize,
 }
 
 /// The heredoc redirection whose `<<` starts at `i`, and the index after its
@@ -726,6 +827,7 @@ fn heredoc_at(chars: &[char], i: usize) -> Option<(Heredoc, usize)> {
             delimiter,
             strip_tabs,
             expands: !quoted,
+            segment: 0,
         },
         j,
     ))
@@ -813,6 +915,8 @@ fn heredoc_substitutions(body: &str) -> Vec<String> {
 fn split(command: &str) -> Split {
     let chars: Vec<char> = command.chars().collect();
     let mut segments = Vec::new();
+    let mut piped: Vec<bool> = Vec::new();
+    let mut herestrings = Vec::new();
     let mut nested = Vec::new();
     let mut heredocs = Vec::new();
     let mut pending: Vec<Heredoc> = Vec::new();
@@ -906,8 +1010,15 @@ fn split(command: &str) -> Split {
             }
             ';' | '&' | '|' | '\n' | '(' | ')' => {
                 end_word(&mut words, &mut word, &mut in_word);
+                // `|` and `|&` pipe; `||` does not.
+                let pipe =
+                    c == '|' && chars.get(i + 1) != Some(&'|') && (i == 0 || chars[i - 1] != '|');
                 if !words.is_empty() {
                     segments.push(std::mem::take(&mut words));
+                    piped.push(pipe);
+                } else if pipe && let Some(last) = piped.last_mut() {
+                    // `( … ) | xargs …`
+                    *last = true;
                 }
                 i += 1;
                 if c == '\n' && !pending.is_empty() {
@@ -921,14 +1032,20 @@ fn split(command: &str) -> Split {
                                 }
                             }));
                         }
-                        heredocs.push(body);
+                        heredocs.push((doc.segment, body));
                     });
                 }
             }
-            '<' if let Some((doc, end)) = heredoc_at(&chars, i) => {
+            '<' if let Some((mut doc, end)) = heredoc_at(&chars, i) => {
                 end_word(&mut words, &mut word, &mut in_word);
+                doc.segment = segments.len();
                 pending.push(doc);
                 i = end;
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => {
+                end_word(&mut words, &mut word, &mut in_word);
+                herestrings.push((segments.len(), words.len()));
+                i += 3;
             }
             '<' | '>' => {
                 end_word(&mut words, &mut word, &mut in_word);
@@ -948,9 +1065,12 @@ fn split(command: &str) -> Split {
     end_word(&mut words, &mut word, &mut in_word);
     if !words.is_empty() {
         segments.push(words);
+        piped.push(false);
     }
     Split {
         segments,
+        piped,
+        herestrings,
         nested,
         heredocs,
     }

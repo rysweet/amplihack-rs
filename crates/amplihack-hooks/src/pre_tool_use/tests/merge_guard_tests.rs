@@ -268,6 +268,14 @@ fn heredoc_bodies_are_data_when_no_interpreter_reads_them() {
         // `xargs` building a harmless argv, and a substitution naming a PR.
         "git diff --name-only | xargs rg -l merge",
         "gh pr view \"$(git branch --show-current)\"",
+        // Crusty round 7: only what reaches xargs's stdin is appended to
+        // its argv, and only a program that can merge is checked.
+        "find . -name '*.rs' | xargs grep -l 'gh pr merge'",
+        "git diff --name-only | xargs git add && git commit -m 'refuse gh pr merge outside gate'",
+        "echo 'never run gh pr merge' > notes.txt; ls | xargs wc -l",
+        "git ls-files | xargs gh pr view 38 || echo 'gh pr merge is the gate only'",
+        "git commit -F - <<'EOF'\nnever gh pr merge 38\nEOF\ngit ls-files | xargs wc -l",
+        "git -c alias.st=status st",
     ] {
         assert!(!blocked(cmd), "refused a heredoc of prose: {cmd:?}");
     }
@@ -339,6 +347,17 @@ fn heredoc_bodies_are_code_unless_a_known_data_consumer_reads_them() {
         "xargs gh api -X PUT <<'EOF'\nrepos/o/r/pulls/38/merge\nEOF",
         "$(cat <<'EOF'\ngh\nEOF\n) pr merge 38",
         "git commit -F - <<'EOF' | xargs gh\npr merge 38\nEOF",
+        // Crusty round 7: upstream of a pipe, `|&`, a subshell, and a
+        // `$(…)` piped in still reach xargs's stdin.
+        "echo pr merge 38 | tr a a | xargs gh",
+        "echo pr merge 38 |& xargs gh",
+        "(echo pr merge 38) | xargs gh",
+        "echo \"$(printf 'pr merge 38')\" | xargs gh",
+        "true; xargs gh <<<'pr merge 38'",
+        // An inline `!` alias runs through `sh`.
+        "git -c alias.m='!gh pr merge 38' m",
+        "git -c 'alias.m=! gh api -X PUT repos/o/r/pulls/38/merge' m",
+        "git -c alias.x='!sh' x <<<'gh pr merge 38'",
     ] {
         assert!(blocked(cmd), "not refused: {cmd:?}");
     }
