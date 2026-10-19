@@ -69,27 +69,16 @@ impl Watch {
             };
         }
         let home_dir = home.map(|h| h.join(".claude"));
-        match (config_dir, home) {
-            (Some(cfg), Some(home)) if home_dir.as_deref() == Some(cfg) => Self {
+        match home {
+            Some(home) if config_dir.is_none() || config_dir == home_dir.as_deref() => Self {
                 dir: home_dir,
                 kind: Kind::Home {
                     home: home.to_path_buf(),
                     root,
                 },
             },
-            (Some(cfg), _) => Self {
-                dir: Some(cfg.to_path_buf()),
-                kind: Kind::ConfigDir,
-            },
-            (None, Some(home)) => Self {
-                dir: home_dir,
-                kind: Kind::Home {
-                    home: home.to_path_buf(),
-                    root,
-                },
-            },
-            (None, None) => Self {
-                dir: None,
+            _ => Self {
+                dir: config_dir.map(Path::to_path_buf),
                 kind: Kind::ConfigDir,
             },
         }
