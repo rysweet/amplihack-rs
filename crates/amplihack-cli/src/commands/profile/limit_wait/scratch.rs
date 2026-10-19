@@ -109,8 +109,9 @@ impl StdinCopy {
         let copy = Self {
             file: Some(Copied { path, dev, ino }),
         };
+        // No fsync: attempts read the copy through the page cache, and the
+        // file is deleted when the supervisor ends, so durability buys nothing.
         io::copy(&mut reader, &mut file).map_err(CopyError::AfterRead)?;
-        file.sync_all().map_err(CopyError::AfterRead)?;
         Ok(copy)
     }
 
