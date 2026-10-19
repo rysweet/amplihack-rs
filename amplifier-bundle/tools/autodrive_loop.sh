@@ -25,8 +25,8 @@
 #   Exit 0  — the loop converged (DONE) and the round itself verified clean.
 #   Exit 1  — STUCK, a malformed/missing verdict, or an inconsistent round.
 #             Nothing advances. The escalation names what is not converging.
-#   Exit 79 — a child returned the terminal policy refusal. Surfaced, final,
-#             and NEVER retried into.
+#   Exit 79 — a child exited 79, or the runner's last failure_class marker said
+#             structural_refusal (#1437). Final; NEVER retried into.
 #
 # --before-round <script> (optional) runs `bash <script> --repo <repo> --review-dir
 # <dir> --state-dir <dir>` plus the round's -c and --context-from-file context
@@ -36,10 +36,10 @@
 # sends commits made after the clean crusty round back to the crusty loop: a
 # crusty loop started from inside a merge round would be one runner deeper,
 # and the recursion guard refuses it there with exit 79 (PR #1520 review).
-# Exit 0 runs the round; exit 79, or the guard's refusal line in its stderr,
-# is the terminal refusal; any other exit stops the loop with loop_result
-# BEFORE_ROUND_FAILED. The script's stdout may carry `before_round_result`,
-# which joins the round's line in the history the evaluator reads.
+# Exit 0 runs the round; a terminal refusal (autodrive_refusal.sh) exits 79;
+# any other exit stops the loop with loop_result BEFORE_ROUND_FAILED. The
+# script's stdout may carry `before_round_result`, which joins the round's line
+# in the history the evaluator reads.
 #
 # Policy: this workflow NEVER passes a hook-skipping commit flag or any branch-
 # protection bypass. See docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
@@ -85,6 +85,9 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
+# shellcheck source=/dev/null
+. "${LOOP_HOME}/autodrive_refusal.sh" 2>/dev/null \
+  || { echo "ERROR: autodrive_loop.sh: autodrive_refusal.sh is missing beside it (${LOOP_HOME:-<unknown>}); a refusal could not be told from a failure" >&2; exit 2; }
 autodrive_private_dir "$STATE_DIR" || exit 2
 CALLER_UMASK="$(umask)"
 umask 077
@@ -137,24 +140,13 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's own
-# refusal line in the log. Agent output lines (`[HH:MM:SS] [amplihack:...]`)
-# are skipped first: a review that QUOTES the refusal, as crusty's review of
-# PR #1520 did, is not one, and reading it as one stopped the loop.
-terminal_refusal() {
-  [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$2" 2>/dev/null \
-    | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
-  return 1
-}
-
 escalate() { # escalate <verdict> <why>
   echo "AUTO_DRIVE_LOOP: ${1} — loop '${LOOP_NAME}' stops at round label '${ROUND_LABEL:-?}'." >&2
   echo "  Reason: ${2}" >&2
   echo "  Round record: ${RECORD:-<none>}" >&2
   echo "  This is a judgement about absence of progress, not an attempt count." >&2
   printf '{"loop":"%s","loop_result":"%s","round_label":"%s","reason":"%s"}\n' \
-    "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr -d '"' | tr '\n' ' ')"
+    "$LOOP_NAME" "$1" "${ROUND_LABEL:-?}" "$(printf '%s' "$2" | tr '\n\t' '  ' | LC_ALL=C tr -d '"\\\000-\037\177')"
 }
 
 # #1528: the review dir (the main checkout) is stamped before each round and
@@ -226,12 +218,12 @@ while :; do
     BEFORE_RESULT="$(field "$(cat -- "${BEFORE_LOG}.out" 2>/dev/null)" before_round_result "" | LC_ALL=C tr -cd 'A-Za-z0-9_.:-')"
     assert_ceiling_untouched
     if terminal_refusal "$BEFORE_RC" "$BEFORE_LOG"; then
-      echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from the before-round step (#1327/#1332). Final: the guard is never retried into." >&2
-      escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+      echo "ERROR: terminal policy refusal from the before-round step (${TERMINAL_WHY}) (#1327/#1332). Final: the guard is never retried into." >&2
+      escalate "TERMINAL_POLICY_REFUSAL" "the before-round step returned a policy refusal (${TERMINAL_WHY})"
       exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
     fi
     if [ "$BEFORE_RC" -ne 0 ]; then
-      escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}); ${ROUND_LABEL} did not run"
+      escalate "BEFORE_ROUND_FAILED" "the before-round step ${BEFORE_ROUND##*/} exited ${BEFORE_RC} (${BEFORE_RESULT:-no before_round_result}; $(child_failure_summary "$BEFORE_RC" "$BEFORE_LOG")); ${ROUND_LABEL} did not run"
       exit 1
     fi
   fi
@@ -248,10 +240,16 @@ while :; do
   tail -n 200 "$LOG" >&2 || true
 
   if terminal_refusal "$ROUND_RC" "$LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from '${ROUND_RECIPE}' (#1327/#1332). Final: the guard is never retried into." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "child returned the exit-${AUTODRIVE_EXIT_POLICY_REFUSAL} policy refusal"
+    echo "ERROR: terminal policy refusal from ${ROUND_LABEL} (${TERMINAL_WHY}) (#1327/#1332). Final: the guard is never retried into." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "${ROUND_LABEL} of ${ROUND_RECIPE##*/} returned a policy refusal (${TERMINAL_WHY})"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  ROUND_CHILD="" # #1437: an ordinary failure is named and left to the evaluator.
+  case "$ROUND_RC" in
+    0) ;;
+    *) ROUND_CHILD="$(child_failure_summary "$ROUND_RC" "$LOG")"
+       echo "INFO: ${ROUND_LABEL} child failed: ${ROUND_CHILD}; not a policy refusal, continuing" >&2 ;;
+  esac
   check_review_dir "${ROUND_LABEL}${BEFORE_ROUND:+ or its before-round step}"
 
   # --- read the round's STRUCTURED record -----------------------------------
@@ -307,7 +305,7 @@ while :; do
   TEST_SIGNAL="$(field "$RAW" test_signal "")"
   CI_SIGNAL="$(field "$RAW" ci_signal "")"
   HISTORY="${HISTORY}
-${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}"
+${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(printf '%s' "$FINDINGS" | grep -c . || true)${BEFORE_RESULT:+ before=${BEFORE_RESULT}}${ROUND_CHILD:+ child=${ROUND_CHILD}}"
 
   # --- the agentic terminator ----------------------------------------------
   assert_ceiling_untouched
@@ -332,10 +330,11 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${ROUND_VERDICT} rc=${ROUND_RC} findings=$(prin
   tail -n 120 "$HEALTH_LOG" >&2 || true
 
   if terminal_refusal "$HEALTH_RC" "$HEALTH_LOG"; then
-    echo "ERROR: exit ${AUTODRIVE_EXIT_POLICY_REFUSAL} terminal policy refusal from loop-health-evaluator. Final; not retried." >&2
-    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned the policy refusal"
+    echo "ERROR: terminal policy refusal from loop-health-evaluator (${TERMINAL_WHY}) (#1327/#1332). Final; not retried." >&2
+    escalate "TERMINAL_POLICY_REFUSAL" "loop-health-evaluator returned a policy refusal (${TERMINAL_WHY})"
     exit "$AUTODRIVE_EXIT_POLICY_REFUSAL"
   fi
+  [ "$HEALTH_RC" = 0 ] || echo "INFO: loop-health-evaluator child failed: $(child_failure_summary "$HEALTH_RC" "$HEALTH_LOG"); not a policy refusal, reading its verdict" >&2
   check_review_dir loop-health-evaluator
 
   # The evaluator's step-04 (its last step) prints one LOOP_HEALTH: marker and
