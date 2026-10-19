@@ -11,7 +11,8 @@
 # every cause at once:
 #   1. the repository's suite commands: AUTODRIVE_QA_COMMAND (run in
 #      AUTODRIVE_QA_DIR), AUTODRIVE_QA_COMMANDS, or a command detected from the
-#      repository type (`cargo test`, `npm test`, `pytest`);
+#      repository type (`cargo test`, `npm test`, `pytest`), run in the
+#      directory autodrive_qa_target chose (a nested Cargo workspace, #1516);
 #   2. only where autodrive_gadugi_required (autodrive_trust.sh) says true,
 #      meaning a Node repository or an operator-set AUTODRIVE_QA_SCENARIO_DIR:
 #      the qa-team scenarios in the scenario directory, validated with
@@ -56,6 +57,23 @@ case "${KIND}:${GREQ}" in
   rust-cli:true|rust-cli:false|node:true|python:true|python:false|unknown:true|unknown:false) ;;
   *) echo "ERROR: autodrive-qa-helpers-not-found: autodrive_trust.sh beside autodrive_qa_evidence.sh gave no repository type (${KIND:-none}:${GREQ:-none})" >&2; exit 1 ;;
 esac
+# Where a detected command runs (#1516): `<type><TAB><dir>`, or
+# `ambiguous<TAB><candidates>`. Checked again here and never trusted blindly:
+# an odd token, an unsafe directory, or a type that disagrees with KIND leaves
+# no detected command, so the evidence is BLOCKED rather than run at the root.
+TARGET="$(. "$H/autodrive_trust.sh" && autodrive_qa_target "$ROOT")" || TARGET=""
+TKIND="${TARGET%%$'\t'*}"; TDIR="${TARGET#*$'\t'}"; AMBIG=""; TBAD=""
+case "$TARGET" in *$'\t'*) ;; *) TBAD="1" ;; esac
+case "$TKIND" in
+  ambiguous) AMBIG="$TDIR"; TDIR="."; [ "$KIND" = "unknown" ] || TBAD="1" ;;
+  rust-cli|node|python|unknown) [ "$TKIND" = "$KIND" ] || TBAD="1" ;;
+  *) TBAD="1" ;;
+esac
+case "$TDIR" in ''|/*|*//*|..|../*|*/..|*/../*|*[!A-Za-z0-9._/-]*) TBAD="1" ;; esac
+if [ -n "$TBAD" ]; then
+  echo "ERROR: autodrive_qa_target disagreed with autodrive_repo_type or gave an unsafe directory; no repository test command is detected." >&2
+  KIND="unknown"; TDIR="."; AMBIG=""
+fi
 # qa_status is PASS only when every measurement that applies passes;
 # qa_reason names the first failing check.
 # Free text is sanitised before it reaches the JSON below: no quotes,
@@ -92,12 +110,14 @@ res() { printf '%s\t%s\n' "${1##*/}" "$2" >> "$RES"; } # res <file> <PASS|FAIL|I
 #                          in AUTODRIVE_QA_DIR (the issue #1516 semantics)
 #   AUTODRIVE_QA_COMMANDS  one command per line (blank and # lines skipped),
 #                          each run alone with bash -c from the repo root
-# With neither set, the command comes from the repository type.
-QA_DIR="${AUTODRIVE_QA_DIR:-.}"
+# With neither set, the command comes from the repository type and runs in
+# the directory autodrive_qa_target chose. qa_dir records where the word or
+# detected command ran, else `.`.
+QA_DIR="$TDIR"; QD="."
 TYPE="unknown"; KINDS=(); TEXTS=()
 if [ -n "${AUTODRIVE_QA_COMMAND+x}" ] || [ -n "${AUTODRIVE_QA_COMMANDS+x}" ]; then
-  TYPE="configured"
-  if [ -n "${AUTODRIVE_QA_COMMAND:-}" ]; then KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); fi
+  TYPE="configured"; QA_DIR="${AUTODRIVE_QA_DIR:-.}"
+  if [ -n "${AUTODRIVE_QA_COMMAND:-}" ]; then KINDS+=(word); TEXTS+=("$AUTODRIVE_QA_COMMAND"); QD="$QA_DIR"; fi
   while IFS= read -r line || [ -n "$line" ]; do
     case "$(printf '%s' "$line" | sed 's/^[[:space:]]*//')" in ''|'#'*) continue ;; esac
     KINDS+=(entry); TEXTS+=("$line")
@@ -109,10 +129,16 @@ else
     node) KINDS+=(detected); TEXTS+=("npm test") ;;
     python) KINDS+=(detected); TEXTS+=("pytest") ;;
   esac
+  [ "${#TEXTS[@]}" -eq 0 ] || QD="$QA_DIR"
 fi
 LOG="$(mktemp -t autodrive-qa-XXXXXX)" || { echo "ERROR: cannot create a temporary log" >&2; exit 1; }
 CMDTEXT=""; RAN=0; FIRST_NZ=""; S_FAILED="false"; S_MISSING="false"; S_NOTINST="false"
-[ "${#TEXTS[@]}" -gt 0 ] || { S_MISSING="true"; cause "no repository test command for repository type ${TYPE}"; }
+if [ "${#TEXTS[@]}" -eq 0 ]; then
+  S_MISSING="true"
+  if [ "$TYPE" != "configured" ] && [ -n "$AMBIG" ]; then
+    cause "ambiguous nested Cargo workspace candidates: $(printf '%s' "$AMBIG" | san | ascii | cut -c1-1500)"
+  else cause "no repository test command for repository type ${TYPE}"; fi
+fi
 i=0
 while [ "$i" -lt "${#TEXTS[@]}" ]; do
   kind="${KINDS[$i]}"; text="${TEXTS[$i]}"; i=$((i + 1))
@@ -123,16 +149,38 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
     ( cd -- "$ROOT" && bash -c "$text" ) >>"$LOG" 2>&1 </dev/null
     rc=$?
   else
-    dir="."; [ "$kind" = "word" ] && dir="$QA_DIR"
+    dir="$QA_DIR"
     first="$(set -f; set -- $text; printf '%s' "${1:-}")"
-    if ! ( cd -- "$dir" 2>/dev/null && { command -v "$first" >/dev/null 2>&1 || [ -x "./${first}" ]; } ); then
-      S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
+    # A configured directory that is not there is named as such, never
+    # reported as "<cmd> not installed" (#1516).
+    if [ "$kind" = "word" ] && [ ! -d "$dir" ]; then
+      S_MISSING="true"; cause "AUTODRIVE_QA_DIR $(printf '%s' "$dir" | san | ascii | cut -c1-120) not found"
       continue
     fi
-    # No timeout: a test suite is never cut off mid-run.
-    # shellcheck disable=SC2086
-    ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
-    rc=$?
+    if [ "$kind" = "detected" ]; then
+      # A detected command must resolve to an absolute path outside the
+      # repository: a '.' or empty PATH entry, or a PATH entry inside the
+      # tree, never runs a cargo, pytest or npm planted in the branch.
+      p="$(cd -- "$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
+      pd=""; case "$p" in /*) pd="$(cd -P -- "${p%/*}/" 2>/dev/null && pwd -P)" || pd="" ;; esac
+      case "$pd" in ""|"$ROOT"|"$ROOT"/*)
+        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed outside the repository"
+        continue ;;
+      esac
+      # No timeout: a test suite is never cut off mid-run.
+      # shellcheck disable=SC2086
+      ( set -f; set -- $text; shift; cd -- "$dir" && "$p" "$@" ) >>"$LOG" 2>&1 </dev/null
+      rc=$?
+    else
+      # A configured word may also be ./<first> inside AUTODRIVE_QA_DIR.
+      if ! ( cd -- "$dir" 2>/dev/null && { command -v "$first" >/dev/null 2>&1 || [ -x "./${first}" ]; } ); then
+        S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed"
+        continue
+      fi
+      # shellcheck disable=SC2086
+      ( set -f; cd -- "$dir" && $text ) >>"$LOG" 2>&1 </dev/null
+      rc=$?
+    fi
   fi
   RAN=$((RAN + 1))
   echo "INFO: qa-team (${TYPE}) suite command exited ${rc}: $(printf '%s' "$text" | san | cut -c1-200)" >&2
@@ -159,12 +207,14 @@ if [ "$GREQ" = "true" ]; then
   [ "$SDIR_IN" = "/" ] || SDIR_IN="${SDIR_IN%/}"
   case "$SDIR_IN" in /*) SDIR="$SDIR_IN" ;; *) SDIR="${ROOT}/${SDIR_IN}" ;; esac
   case "$SDIR" in "${ROOT}/"*) SREL="${SDIR#"${ROOT}/"}" ;; *) SREL="$SDIR" ;; esac
-elif [ "$KIND" = "rust-cli" ] && [ -d "${ROOT}/tests/parity/scenarios" ]; then
-  # qa-team's Rust CLI parity fixtures, listed as main listed them; cargo
-  # test runs them. Informational: nothing decides a pass from the list.
+elif [ "$KIND" = "rust-cli" ] && [ -d "${ROOT}/${TDIR}/tests/parity/scenarios" ]; then
+  # qa-team's Rust CLI parity fixtures of the detected workspace, named from
+  # the repository root; cargo test runs them. Informational: nothing
+  # decides a pass from the list.
+  PFX="tests/parity/scenarios"; [ "$TDIR" = "." ] || PFX="${TDIR}/${PFX}"
   while IFS= read -r f; do
-    [ -n "$f" ] && SCEN="${SCEN}${SCEN:+ }tests/parity/scenarios/${f##*/}"
-  done < <(find "${ROOT}/tests/parity/scenarios" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
+    [ -n "$f" ] && SCEN="${SCEN}${SCEN:+ }${PFX}/${f##*/}"
+  done < <(find "${ROOT}/${TDIR}/tests/parity/scenarios" -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) 2>/dev/null | LC_ALL=C sort)
 fi
 # Top-level regular files only: gadugi-test validate -d does not read
 # subdirectories. A symlinked or non-regular *.yaml entry is never run, so
@@ -325,7 +375,7 @@ case "$REASON" in
 esac
 SUMMARY="$(printf '%s' "${CAUSES}${CAUSES:+${TAIL:+: }}${TAIL}" | san)"
 # The evidence format: every field a string, so a reader never has to guess a type.
-F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_command":"%s",'
+F='{"qa_status":"%s","qa_reason":"%s","qa_repo_type":"%s","qa_dir":"%s","qa_command":"%s",'
 F="${F}"'"qa_suite_commands_count":"%s","qa_scenarios":"%s","qa_exit_code":"%s",'
 F="${F}"'"qa_summary":"%s","qa_round":"%s","head_sha":"%s","gadugi_required":"%s","gadugi_status":"%s",'
 F="${F}"'"gadugi_validate_exit_code":"%s","gadugi_run_exit_code":"%s",'
@@ -335,7 +385,7 @@ F="${F}"'"gadugi_scenarios_passed":"%s","gadugi_scenarios_failed":"%s",'
 F="${F}"'"gadugi_failed_scenarios":"%s","gadugi_scenario_results":"%s"}\n'
 # shellcheck disable=SC2059 # F is the fixed format above, never input
 OUT="$(printf "$F" \
-  "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" "$RAN" \
+  "$STATUS" "$REASON" "$TYPE" "$(printf '%s' "$QD" | san | ascii | cut -c1-200)" "$(printf '%s' "$CMDTEXT" | san | ascii | cut -c1-500)" "$RAN" \
   "$(printf '%s' "$SCEN" | san)" "$RC" "$SUMMARY" "$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | san)" "$HEAD_SHA" \
   "$GREQ" "$G_STATUS" "$G_VRC" "$G_RRC" "$COUNT" "$(printf '%s' "$SREL" | san)" \
   "$VALIDATED" "$RUNS" "$PASSED" "$FAILED" \

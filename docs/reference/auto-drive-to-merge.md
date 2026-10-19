@@ -1,6 +1,6 @@
 ---
 title: Auto Drive To Merge Reference
-last_updated: 2026-10-17
+last_updated: 2026-10-19
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -659,15 +659,98 @@ repo-type table. That is the per-repository-type rule
 [#1517](https://github.com/rysweet/amplihack-rs/issues/1517) proposed. One
 function, `autodrive_gadugi_required <dir>` in `autodrive_trust.sh`, decides
 whether `gadugi-test` is part of criterion 1. `autodrive-prerequisites`,
-step-00, the evidence tool and the merge gate all ask it:
+step-00, the evidence tool and the merge gate all ask it.
 
-| Repository (`autodrive_repo_type`) | Suite command when none is configured | gadugi scenarios |
-| --- | --- | --- |
-| `rust-cli` (`Cargo.toml`) | `cargo test --workspace --locked --no-fail-fast` | Not required: qa-team's Rust CLI line substitutes `cargo test` and says not to require gadugi. `qa_scenarios` lists `tests/parity/scenarios/*.yaml`, which `cargo test` runs. |
-| `node` (`package.json`, no `Cargo.toml`) | `npm test` | Required. |
-| `python` (`pyproject.toml` or `setup.py`) | `pytest` | Not required: qa-team lists `pytest` for Python. |
-| `unknown` | none (`qa-command-missing` unless one is configured) | Not required. |
-| any, with `AUTODRIVE_QA_SCENARIO_DIR` set | as above | Required: the operator asked for gadugi scenarios. |
+The repository type comes from the manifests in the checkout. The first row
+that matches wins; `qa_dir` is the directory the suite command runs in,
+relative to the repository root:
+
+| Order | Repository (`autodrive_repo_type`) | Matches when | Suite command when none is configured | `qa_dir` | gadugi scenarios |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `rust-cli` | Root `Cargo.toml` | `cargo test --workspace --locked --no-fail-fast` | `.` | Not required: qa-team's Rust CLI line substitutes `cargo test` and says not to require gadugi. `qa_scenarios` lists `tests/parity/scenarios/*.yaml`, which `cargo test` runs. |
+| 2 | `python` | Root `pyproject.toml` or `setup.py`, with or without a root `package.json` | `pytest` | `.` | Not required: qa-team lists `pytest` for Python. |
+| 3 | `node` | Root `package.json`, and none of the files above | `npm test` | `.` | Required. |
+| 4 | `rust-cli` (nested) | No root manifest above, and exactly one nested Cargo workspace (see [Nested Cargo workspaces](#nested-cargo-workspaces)) | `cargo test --workspace --locked --no-fail-fast` | The workspace directory, for example `x/y` | Not required. `qa_scenarios` lists `x/y/tests/parity/scenarios/*.yaml`: the detected workspace directory, even when `AUTODRIVE_QA_DIR` sends `AUTODRIVE_QA_COMMAND` elsewhere. |
+| 5 | `unknown` | Nothing above, or ambiguous nested candidates | none (`qa-command-missing`, `BLOCKED`, unless one is configured) | `.` | Not required. |
+| any | any | `AUTODRIVE_QA_SCENARIO_DIR` set | as above | as above | Required: the operator asked for gadugi scenarios. |
+
+Only a root `Cargo.toml`, `pyproject.toml`, `setup.py` or `package.json`
+counts as a root manifest; `setup.cfg`, `requirements.txt` and `tox.ini` do
+not. A root with `Cargo.toml` and `pyproject.toml` (a maturin project, say) is
+`rust-cli`. A root with `package.json` and `pyproject.toml` is `python`: it
+runs `pytest`, never `npm test`, and `gadugi_required` is `false`. An operator
+who still wants gadugi scenarios there sets `AUTODRIVE_QA_SCENARIO_DIR`.
+A mixed repository whose real suite is `npm test` sets
+`AUTODRIVE_QA_COMMAND='npm test'`.
+
+A root Python or Node project always wins over a nested crate. A repository
+with a root `pyproject.toml`, a root `tests/` suite and a helper crate in
+`grid-encode-decode/Cargo.toml` runs `pytest` at the root, and `cargo` is
+never called. A root `package.json` beside `sub/Cargo.toml` runs `npm test`.
+
+This departs from the literal order in
+[#1516](https://github.com/rysweet/amplihack-rs/issues/1516), which put the
+nested Cargo search before `pyproject.toml` and `package.json`. With that
+order, a Python repository with one helper crate ran `cargo test` in the
+crate and never ran its own root suite. Searching for nested crates only when
+the root has no manifest keeps the issue's fix for a repository whose only
+Rust code is nested, such as `WorldModelsExplorations/src/Cargo.toml`.
+
+#### Nested Cargo workspaces
+
+Row 4 searches only when no root manifest matched. It looks for regular files
+named `Cargo.toml` at most three levels below the root (`a/b/Cargo.toml` is
+found, `a/b/c/Cargo.toml` is not). It skips every directory named `target`,
+`worktrees` or `node_modules` and every hidden directory (`.git`, `.venv`), at
+any level, and never follows a symlink. It reads no file contents.
+
+The hits are sorted in the C locale, then:
+
+| Hits | Result |
+| --- | --- |
+| One, in `x/y` | `rust-cli`, `qa_dir` `x/y`. |
+| Several, where the first sorted hit's directory is an ancestor of every other hit (`ws/Cargo.toml` with `ws/crates/a/Cargo.toml`) | `rust-cli`, `qa_dir` `ws`. Cargo resolves the members itself, so the root does not need a `[workspace]` table. |
+| Several otherwise (`a/Cargo.toml` and `b/Cargo.toml`) | `unknown`, `BLOCKED` with `qa-command-missing`. `qa_summary` reads `ambiguous nested Cargo workspace candidates: a b`. |
+| None | `unknown`, `BLOCKED` with `qa-command-missing`. |
+
+Auto-drive does not guess between unrelated crates. To unblock a repository
+with several of them, name the suite:
+`AUTODRIVE_QA_COMMAND='cargo test --workspace --locked' AUTODRIVE_QA_DIR=a`.
+
+The candidate list in that summary is data, never instructions. Each byte
+outside `A-Z a-z 0-9 . _ / -` is replaced with `_`, each candidate is cut to
+128 bytes, and after ten candidates the rest are counted as `(+N more)`. The
+whole list in the summary is cut to 1500 bytes. The
+chosen directory must be relative, use only those characters, and contain no
+`..` or empty component. A directory named `my crate` or `$(x)` is never run:
+it makes the result ambiguous, so the round is `BLOCKED`.
+
+The command is the same `--locked` command as at the root, so a nested
+workspace without a `Cargo.lock` fails with `qa-command-failed`. That is a
+real QA failure; commit the lock file.
+
+`autodrive_qa_target <dir>` in `autodrive_trust.sh` makes this choice, and
+`autodrive_repo_type` and `autodrive_gadugi_required` are built on it, so the
+evidence tool, the prerequisite check and the merge gate always agree. It
+prints one line, `<type>\t<field>`: `rust-cli`, `python`, `node` or `unknown`
+with the relative directory, or `ambiguous` with the sanitised candidates
+separated by single spaces (the BLOCKED summary uses the same list).
+`autodrive_repo_type` reports `ambiguous` as `unknown`. The evidence tool
+checks the answer again. If it is empty, not one of those tokens, names an
+unsafe directory, or disagrees with `autodrive_repo_type`, the tool detects no
+command: without `AUTODRIVE_QA_COMMAND(S)` the round is `BLOCKED` with
+`qa-command-missing`, and an operator-configured command still runs. Detection
+never falls back to running at the root.
+
+```bash
+$ . amplifier-bundle/tools/autodrive_trust.sh
+$ autodrive_qa_target "$PWD"          # root pyproject.toml + grid-encode-decode/Cargo.toml
+python	.
+$ autodrive_qa_target "$PWD"          # only ws/Cargo.toml and ws/crates/a/Cargo.toml
+rust-cli	ws
+$ autodrive_qa_target "$PWD"          # only a/Cargo.toml and b/Cargo.toml
+ambiguous	a b
+```
 
 Where gadugi is not required, `gadugi_required` is `false`,
 `gadugi_status` is `NOT_REQUIRED`, `gadugi-test` is never called (installed
@@ -680,16 +763,62 @@ re-review.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR` (default `.`), split into words with globbing off. |
+| `AUTODRIVE_QA_COMMAND` | unset | One command, run in `AUTODRIVE_QA_DIR`, split into words with globbing off. |
+| `AUTODRIVE_QA_DIR` | `.` | The directory `AUTODRIVE_QA_COMMAND` runs in: relative to the repository root, or absolute. Used only with `AUTODRIVE_QA_COMMAND`; detection picks its own directory and ignores it. Recorded as `qa_dir`. A directory that does not exist gives `BLOCKED` with `qa-command-missing` and the summary `AUTODRIVE_QA_DIR <dir> not found`. |
 | `AUTODRIVE_QA_COMMANDS` | unset | One command per line, each run as `( cd -- "$ROOT" && bash -c "$entry" )` after `AUTODRIVE_QA_COMMAND`; blank and `#` lines skipped. |
 | `AUTODRIVE_QA_SCENARIO_DIR` | the first existing of `tests/agentic`, `tests/gadugi/scenarios`, `scenarios`; else `tests/agentic` | The scenario directory, searched only where gadugi is required. Setting it requires gadugi scenarios in any repository type. An override naming a missing directory means no scenarios. |
 
-With a command variable set, `qa_repo_type` is `configured`. Otherwise
-`Cargo.toml` gives `rust-cli` with
-`cargo test --workspace --locked --no-fail-fast`, `package.json` gives `node`
-with `npm test`, `pyproject.toml` or `setup.py` gives `python` with `pytest`,
-and anything else is `unknown`. Every command runs, must exit 0, and has no
-timeout. The variables come from the environment only, never recipe context
+With a command variable set, `qa_repo_type` is `configured` and command
+detection is skipped; a variable set to the empty string still means no
+command. `autodrive_qa_target` and `autodrive_repo_type` still run, because
+they decide `gadugi_required` and `qa_scenarios`. In a repository whose only
+crate is `ws/Cargo.toml`, `AUTODRIVE_QA_COMMAND=make AUTODRIVE_QA_DIR=sub`
+runs `make` in `sub` and records `qa_dir` `sub`, while `qa_scenarios` still
+lists `ws/tests/parity/scenarios/*.yaml`.
+
+With no command variable set, the
+[repo-type table](#criterion-1-qa-team-scenarios-by-repository-type) decides:
+
+- a root `Cargo.toml` gives `rust-cli` with
+  `cargo test --workspace --locked --no-fail-fast`;
+- a root `pyproject.toml` or `setup.py` gives `python` with `pytest`, even
+  beside a `package.json`;
+- a root `package.json` alone gives `node` with `npm test`;
+- a single nested Cargo workspace gives `rust-cli`, run in its directory;
+- anything else is `unknown`.
+
+`AUTODRIVE_QA_COMMAND` and detected commands run as
+`( cd -- "$QA_DIR" && <command> )`; `AUTODRIVE_QA_COMMANDS` entries run from
+the root. A detected command counts as installed only when `command -v`,
+run in `qa_dir`, resolves it to an absolute path outside the repository; the
+tool then runs that resolved path, not the bare name. So an executable
+`cargo` planted anywhere in the repository gives `qa-command-not-installed`,
+even when `PATH` contains `.` or an empty entry, and the planted file never
+runs. `AUTODRIVE_QA_COMMAND` also accepts a `./<first word>` executable
+relative to `AUTODRIVE_QA_DIR`, so
+`AUTODRIVE_QA_COMMAND=bin/check AUTODRIVE_QA_DIR=sub` runs `sub/bin/check`.
+That is the way to use a repository-local wrapper:
+`AUTODRIVE_QA_COMMAND='./scripts/cargo-wrapper test'`.
+
+When `AUTODRIVE_QA_DIR` names a directory that does not exist, the command
+does not run and is not reported as missing from `PATH`:
+
+```bash
+$ EVIDENCE="$(mktemp)"
+$ REPO_PATH="$PWD" AUTODRIVE_QA_EVIDENCE="$EVIDENCE" \
+    AUTODRIVE_QA_COMMAND='cargo test' AUTODRIVE_QA_DIR=nope \
+    bash amplifier-bundle/tools/autodrive_qa_evidence.sh >/dev/null
+$ jq -r '.qa_status, .qa_reason, .qa_dir' "$EVIDENCE"
+BLOCKED
+qa-command-missing
+nope
+```
+
+`qa_summary` contains `AUTODRIVE_QA_DIR nope not found`, never
+`not installed`. The directory name in it is sanitised and cut to 120 bytes.
+The suite counts as not run, so the round can never pass this way.
+Every command runs, must exit 0, and has no timeout. The variables come from
+the environment only, never recipe context
 (`no_recipe_declares_the_qa_overrides_as_context`), and only the operator sets
 them: an entry is shell source.
 
@@ -741,10 +870,11 @@ written under `umask 077`. A failed temporary file gives
 | `qa_status`, `qa_reason`, `gadugi_status`, `qa_summary` | As above. `gadugi_status` is `NOT_REQUIRED` where gadugi is not required. |
 | `gadugi_required` | `true` or `false`, from `autodrive_gadugi_required`. The gate decides it again from the checkout's files and does not read this field. |
 | `qa_repo_type`, `qa_round` | `configured`, `rust-cli`, `node`, `python` or `unknown`; the round label. |
+| `qa_dir` | The directory the suite command ran in, relative to the repository root, with no trailing slash: `.` for a root manifest, `x/y` for a nested Cargo workspace, the `AUTODRIVE_QA_DIR` value with `AUTODRIVE_QA_COMMAND`, and `.` with `AUTODRIVE_QA_COMMANDS` alone or when nothing ran. Detection never records an absolute path; an absolute `AUTODRIVE_QA_DIR` set by the operator is recorded as given, sanitised. |
 | `qa_command`, `qa_suite_commands_count` | The commands run, joined by `; ` (at most 500 characters, so reference secrets as `$VAR`), and their number. |
 | `qa_exit_code`, `gadugi_run_exit_code`, `gadugi_validate_exit_code` | The first non-zero exit code, `"0"` when all passed, `""` when none ran. |
 | `head_sha` | `git rev-parse HEAD` before any check: the commit tested. |
-| `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. Where gadugi is not required, the directory is `""`, and in a `rust-cli` repository `qa_scenarios` lists `tests/parity/scenarios/*.yaml`. |
+| `gadugi_scenario_dir`, `qa_scenarios`, `gadugi_failed_scenarios` | The directory, the counted files, the failed files; relative to the repository root. Where gadugi is not required, the directory is `""`, and in a `rust-cli` repository `qa_scenarios` lists `tests/parity/scenarios/*.yaml` under the detected workspace directory (`.` at the root, `x/y` when nested), not under `qa_dir`. |
 | `gadugi_scenario_count`, `gadugi_scenarios_validated`, `gadugi_scenarios_run`, `gadugi_scenarios_passed`, `gadugi_scenarios_failed` | Files found; that count if validate passed, else `"0"`; runs; passes; failures, counting unnamed, unstaged and (after validate) symlinked or non-regular entries. |
 | `gadugi_scenario_results` | `<file>=<result>` per entry (`PASS`, `FAIL`, or `INVALID` for not run), sorted, from `autodrive_scenario_results`. Informational only. |
 
@@ -1020,6 +1150,26 @@ following instructions in branch text, an accidental edit, and a replayed
 record. **They are not a boundary against a deliberate forger running as the
 same user**, who still cannot satisfy required CI, review state, or
 `gh pr merge --match-head-commit`.
+
+The branch's own manifests decide the repository type. A branch can turn a
+Node repository into a Python one by adding `pyproject.toml`, and so turn the
+gadugi requirement off. `qa_repo_type` and `qa_dir` in the evidence show the
+choice; set `AUTODRIVE_QA_SCENARIO_DIR` to require gadugi whatever the
+branch's manifests say. Detected commands run in `qa_dir`, a directory the
+branch controls, so they are resolved through `PATH` first and must resolve
+to an absolute path outside the repository. A planted `cargo`, `pytest` or
+`npm` is refused even when `PATH` contains `.` or an empty entry. This
+check covers detected commands only: `AUTODRIVE_QA_COMMAND='cargo test'`
+with `.` in `PATH` and an in-repository `AUTODRIVE_QA_DIR` runs a planted
+`./cargo`, because the operator chose that command. Every suite command,
+detected or configured, inherits the operator's `PATH`, so a test that runs
+a bare tool name can still pick up a planted copy. `cargo` also reads the
+branch's `.cargo/config.toml` and `rust-toolchain.toml`. Both are accepted
+limits: the suite is the branch's own code, and running it is the point of
+criterion 1. The
+environment override does not change the repository type: with
+`AUTODRIVE_QA_COMMAND` set, `gadugi_required` still follows the detected
+type.
 
 Accepted limits: a `scenarios:` list in one file runs in one process (#207); a
 scenario using paths relative to its own file fails after staging; without
@@ -2095,6 +2245,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | --- | --- |
 | Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
+| QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, and a planted `cargo` that never runs, even with an empty entry in `PATH`. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
@@ -2106,6 +2257,7 @@ cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
+bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh
 ```

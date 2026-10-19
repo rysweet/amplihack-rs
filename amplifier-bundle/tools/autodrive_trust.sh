@@ -15,6 +15,8 @@
 # Every function prints only a fixed token, a hex SHA, or a JSON line built
 # from those. Commit subjects, paths and file contents are never printed, so
 # nothing from the branch under review reaches a log or a prompt through here.
+# The one exception is autodrive_qa_target: it prints a relative directory
+# limited to A-Z a-z 0-9 . _ / -, or candidates with every other byte as `_`.
 #
 # Callers source autodrive_state.sh first: autodrive_blob_hash,
 # autodrive_manifest_row, autodrive_crusty_final and autodrive_clear_phase live
@@ -318,20 +320,62 @@ autodrive_scenario_results() {
 # (amplifier-bundle/skills/qa-team/SKILL.md, "Repo-Type Detection"). Only a
 # Node repository runs its scenarios with gadugi-agentic-test. A Rust CLI
 # repository substitutes `cargo test` and does not require gadugi, and a
-# Python repository runs `pytest`. #1517 asked for this rule. Every auto-drive
-# step that decides whether gadugi-test is needed asks the two functions
-# below and nothing else: auto-drive's first step, merge round step-00, the
-# qa evidence tool and the merge gate. Neither needs autodrive_state.sh.
+# Python repository, including a root that also has package.json (#1516),
+# runs `pytest`. #1517 asked for this rule. Every auto-drive step that
+# decides whether gadugi-test is needed asks the functions below and nothing
+# else: auto-drive's first step, merge round step-00, the qa evidence tool
+# and the merge gate. None needs autodrive_state.sh.
 
-# autodrive_repo_type <dir> -> rust-cli, node, python or unknown, from the
-# files at the top of <dir>. Cargo.toml is read first, then package.json,
-# then pyproject.toml or setup.py.
+# _autodrive_cargo_dirs <dir> -> the directory, relative to <dir>, of each
+# Cargo.toml 1 to 3 levels down, sorted with LC_ALL=C. target, worktrees,
+# node_modules and hidden directories are pruned; symlinks are not followed.
+# No -mindepth: find skips -prune above the minimum depth, so target/ would
+# be searched. A line not ./<path>/Cargo.toml (a newline in a name) is `!`.
+_autodrive_cargo_dirs() {
+  ( cd -- "${1:-.}" 2>/dev/null && LC_ALL=C find . -maxdepth 3 \
+      \( -type d \( -name target -o -name worktrees -o -name node_modules -o -name '.?*' \) -prune \) \
+      -o \( -type f -name Cargo.toml -print \) 2>/dev/null ) | while IFS= read -r p; do
+    case "$p" in ./Cargo.toml) ;; ./?*/Cargo.toml) p="${p#./}"; printf '%s\n' "${p%/Cargo.toml}" ;; *) printf '!\n' ;; esac
+  done | LC_ALL=C sort
+}
+
+# autodrive_qa_target <dir> -> `<type><TAB><field>`, the one place the QA
+# target is chosen; the first rule that matches wins. At the top of <dir>:
+# Cargo.toml gives `rust-cli .`; pyproject.toml or setup.py `python .`, even
+# beside package.json; package.json `node .`. A root project always beats a
+# nested crate (mistt-repo/jamestown, #1516). Else one nested crate, or a
+# first sorted hit that is an ancestor of every other, gives `rust-cli <rel>`.
+# Several unrelated hits, or a path that is absolute, has a `..` or empty
+# component or a byte outside A-Z a-z 0-9 . _ / -, give `ambiguous <list>`:
+# space-separated, other bytes as `_`, each cut to 128 bytes, at most 10 and
+# then `(+N more)`. No manifest at all gives `unknown .`.
+autodrive_qa_target() {
+  local -x LC_ALL=C
+  local d="${1:-.}" list="" first="" h="" bad="" n=0 shown=""
+  if [ -f "$d/Cargo.toml" ]; then printf 'rust-cli\t.\n'; return 0; fi
+  if [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then printf 'python\t.\n'; return 0; fi
+  if [ -f "$d/package.json" ]; then printf 'node\t.\n'; return 0; fi
+  list="$(_autodrive_cargo_dirs "$d")"
+  if [ -z "$list" ]; then printf 'unknown\t.\n'; return 0; fi
+  while IFS= read -r h; do
+    case "$h" in ''|/*|*//*|*/|..|../*|*/..|*/../*|*[!A-Za-z0-9._/-]*) bad="1" ;; esac
+    if [ -z "$first" ]; then first="$h"; else case "$h" in "$first"/*) ;; *) bad="1" ;; esac; fi
+  done <<< "$list"
+  if [ -z "$bad" ]; then printf 'rust-cli\t%s\n' "$first"; return 0; fi
+  while IFS= read -r h; do
+    n=$((n + 1))
+    [ "$n" -gt 10 ] || shown="${shown}${shown:+ }$(printf '%s' "$h" | tr -c 'A-Za-z0-9._/-' '_' | cut -c1-128)"
+  done <<< "$list"
+  if [ "$n" -gt 10 ]; then shown="${shown} (+$((n - 10)) more)"; fi
+  printf 'ambiguous\t%s\n' "$shown"
+}
+
+# autodrive_repo_type <dir> -> rust-cli, node, python or unknown: the type
+# autodrive_qa_target chose, with ambiguous reported as unknown.
 autodrive_repo_type() {
-  local d="${1:-.}"
-  if [ -f "$d/Cargo.toml" ]; then printf 'rust-cli\n'
-  elif [ -f "$d/package.json" ]; then printf 'node\n'
-  elif [ -f "$d/pyproject.toml" ] || [ -f "$d/setup.py" ]; then printf 'python\n'
-  else printf 'unknown\n'; fi
+  local t=""
+  t="$(autodrive_qa_target "${1:-.}")"
+  case "${t%%$'\t'*}" in rust-cli|node|python) printf '%s\n' "${t%%$'\t'*}" ;; *) printf 'unknown\n' ;; esac
 }
 
 # autodrive_gadugi_required <dir> -> true or false. The result is true for a

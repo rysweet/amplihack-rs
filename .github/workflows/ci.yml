@@ -275,6 +275,9 @@ jobs:
       - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
+      - name: Recipes — auto-drive QA command selection, nested Cargo and mixed roots (issue #1516)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
