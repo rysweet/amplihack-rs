@@ -732,7 +732,8 @@ fn state_directory_never_appears_in_profile_list() {
     f.seed_usage(&[("X", 10.0)]);
     let list = f.stdout(&["profile", "list"]);
     assert!(!list.contains(".auto-switch"), "{list}");
-    assert_eq!(list.lines().count(), PROFILES.len(), "{list}");
+    let n = list.lines().filter(|l| !l.starts_with("root: ")).count();
+    assert_eq!(n, PROFILES.len(), "{list}");
 }
 
 // ---------------------------------------------------------------------------
