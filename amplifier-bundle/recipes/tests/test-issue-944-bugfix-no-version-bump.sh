@@ -24,8 +24,10 @@
 #       step-15 title logic references the classification signal and can emit
 #       both `fix:` and `feat!:` prefixes.
 #   R1 (safety) — Injection/word-splitting hardening from #469/#311 is
-#       preserved: the task description is consumed via env var, sanitized with
-#       `tr '\n\r'`, truncated with `%.72s`, and the block contains no `eval`.
+#       preserved: the task description is consumed via env var and the block
+#       contains no `eval`. Since #1575 the description only chooses the
+#       prefix; its text never reaches COMMIT_TITLE, which is built from the
+#       staged index by workflow_commit_message.sh.
 #   R2 (static) — step-14-bump-version's prompt instructs that PATCH is a
 #       NO-OP on the workspace version line (leave version unchanged /
 #       new_version == current_version), while MINOR/MAJOR still bump.
@@ -132,12 +134,19 @@ rc=$?
 # and report the resulting COMMIT_TITLE for a given classification / task desc.
 # Runs under `set -euo pipefail` to prove set-u safety (step-15's real shell).
 # ---------------------------------------------------------------------------
+# #1575: the slice calls the commit-message helper through $MSG. Run it from
+# the scratch dir (not a git repo), so the helper prints nothing and the slice
+# must fall back to '<prefix>update files' under `set -euo pipefail`.
+MSG_HELPER="${REPO_ROOT}/amplifier-bundle/tools/workflow_commit_message.sh"
+SLICE_PREAMBLE="$(printf 'cd %q\nexport MSG=%q\n' "$WORK" "$MSG_HELPER")"
+
 compute_title() {
     # $1 = classification (empty string = unset), $2 = task description
     local class="$1" desc="$2"
     local runner="${WORK}/runner.sh"
     {
         echo 'set -euo pipefail'
+        printf '%s\n' "$SLICE_PREAMBLE"
         printf 'export TASK_DESCRIPTION=%q\n' "$desc"
         printf 'export ISSUE_NUMBER=%q\n' "944"
         cat "$STEP15_TITLE_SLICE"
@@ -194,6 +203,7 @@ fi
 upper_title="$(
     {
         echo 'set -euo pipefail'
+        printf '%s\n' "$SLICE_PREAMBLE"
         printf 'export TASK_DESCRIPTION=%q\n' "$FEAT_TASK"
         printf 'export ISSUE_NUMBER=%q\n' "944"
         cat "$STEP15_TITLE_SLICE"
@@ -210,28 +220,35 @@ else
         "expected 'fix:' prefix from uppercase alias, got: '$upper_title'"
 fi
 
-# R1 safety — the `%.72s` truncation of the description is preserved. Assert
-# on the description payload directly (prefix-agnostic): at most 72 of the
-# repeated marker characters survive.
+# R1 safety (#1575) — the task description never supplies commit-title text.
+# A long marker description must leave no trace in the title.
 LONG_DESC="$(printf 'q%.0s' {1..200}) trailing"
 long_title="$(compute_title "PATCH" "$LONG_DESC")"
-q_count="$(printf '%s' "$long_title" | tr -cd 'q' | wc -c | tr -d ' ')"
-if [[ -n "$long_title" && "$q_count" -le 72 ]]; then
-    record_pass "R1-safety: description truncated to <=72 chars (%.72s preserved)"
+if [[ -n "$long_title" && "$long_title" != *qqqq* && "$long_title" != *trailing* ]]; then
+    record_pass "R1-safety: TASK_DESC text absent from COMMIT_TITLE (#1575)"
 else
-    record_fail "R1-safety: description truncated to <=72 chars (%.72s preserved)" \
-        "surviving payload chars=$q_count title='$long_title'"
+    record_fail "R1-safety: TASK_DESC text absent from COMMIT_TITLE (#1575)" \
+        "title='$long_title'"
 fi
 
-# R1 safety — raw newlines in the task description must be flattened so the
-# commit TITLE is a single physical line (injection hardening from #469/#311).
+# R1 safety (#1575) — outside a git repo the helper prints nothing and the
+# slice falls back to exactly '<prefix>update files'.
+if [[ "$long_title" == "fix: update files" ]]; then
+    record_pass "R1-safety: fallback title is '<prefix>update files' outside git (#1575)"
+else
+    record_fail "R1-safety: fallback title is '<prefix>update files' outside git (#1575)" \
+        "expected 'fix: update files', got: '$long_title'"
+fi
+
+# R1 safety — an injected second line in the description must not reach the
+# title, and the title stays a single physical line.
 MULTILINE_DESC=$'fix newline handling\nSECOND LINE INJECTED'
 ml_title="$(compute_title "PATCH" "$MULTILINE_DESC")"
-if [[ -n "$ml_title" && "$ml_title" != *$'\n'* ]]; then
-    record_pass "R1-safety: newlines flattened -> single-line commit title"
+if [[ -n "$ml_title" && "$ml_title" != *$'\n'* && "$ml_title" != *INJECTED* && "$ml_title" != *"newline handling"* ]]; then
+    record_pass "R1-safety: single-line commit title without description text"
 else
-    record_fail "R1-safety: newlines flattened -> single-line commit title" \
-        "title spans multiple lines: '$ml_title'"
+    record_fail "R1-safety: single-line commit title without description text" \
+        "title: '$ml_title'"
 fi
 
 # ---------------------------------------------------------------------------
@@ -262,14 +279,14 @@ else
         "missing fix: and/or feat!: mapping in step-15 command"
 fi
 
-# R1 safety static — env-var + sanitize + truncate preserved, no eval.
+# R1 safety static — env-var read preserved; no COMMIT_TITLE line uses TASK_DESC (#1575).
 if grep -qE 'TASK_DESC="\$\{?TASK_DESCRIPTION(:-\})?"?' "$STEP15_FULL" \
-   && grep -qE "tr '\\\\n\\\\r'" "$STEP15_FULL" \
-   && grep -qE '%\.72s' "$STEP15_FULL"; then
-    record_pass "R1-safety-static: env-var + tr sanitize + %.72s truncation preserved"
+   && ! grep -E 'COMMIT_TITLE=' "$STEP15_FULL" | grep -q 'TASK_DESC' \
+   && ! grep -qE '%\.72s' "$STEP15_FULL"; then
+    record_pass "R1-safety-static: TASK_DESC from env, absent from COMMIT_TITLE (#1575)"
 else
-    record_fail "R1-safety-static: env-var + tr sanitize + %.72s truncation preserved" \
-        "one of: TASK_DESC env assignment / tr '\\n\\r' / %.72s missing"
+    record_fail "R1-safety-static: TASK_DESC from env, absent from COMMIT_TITLE (#1575)" \
+        "TASK_DESC env assignment missing, or a COMMIT_TITLE line still uses TASK_DESC / %.72s"
 fi
 if grep -qE '(^|[^_[:alnum:]])eval([[:space:]]|$)' "$STEP15_FULL"; then
     record_fail "R1-safety-static: no eval in commit block" "eval found in step-15"

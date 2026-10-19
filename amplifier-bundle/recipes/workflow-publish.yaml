@@ -19,6 +19,7 @@ inputs:
 context:
   worktree_setup: ""
   allow_no_op: false
+  allow_version_bump: "false"
   terminal_success: "false"
   terminal_state: ""
   terminal_reason: ""
@@ -29,6 +30,19 @@ context:
   should_merge: "true"
 
 steps:
+  - id: "publish-sync-pr-head"
+    type: "bash"
+    command: |
+      set -euo pipefail
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      # Issue #1575: a run continuing an existing PR (resume_checkpoint, existing_branch,
+      # pr_number) reached the probe with unpushed commits. Fast-forward the PR head first;
+      # on divergence or a failed push the helper explains and the probe still fails closed.
+      if [ -z "$WORKTREE_SETUP_WORKTREE_PATH" ] || ! cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null; then echo "WARNING: publish-sync-pr-head: no usable worktree path; PR head not synced (#1575)" >&2; exit 0; fi
+      SYNC=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_sync_pr_head.sh" ] && { SYNC="$c/amplifier-bundle/tools/workflow_sync_pr_head.sh"; break; }; done
+      if [ -n "$SYNC" ]; then bash "$SYNC" --mode pre-probe; else echo "WARNING: workflow_sync_pr_head.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — PR head not synced; the terminal-state probe stays strict (#1575)" >&2; fi
+
   - id: "publish-terminal-state"
     type: "recipe"
     recipe: "workflow-terminal-state"
@@ -143,9 +157,6 @@ steps:
         echo "ERROR: jq is required by step-15 (commit_result emission)." >&2
         exit 2
       fi
-      redact_sensitive_file() {
-        sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g' "$1"
-      }
       pushed="false"; sha=""; branch=""; reason="aborted"
       _emit_commit_result() {
         jq -nc --arg pushed "$pushed" --arg sha "$sha" --arg branch "$branch" --arg reason "$reason" \
@@ -153,6 +164,16 @@ steps:
       }
       trap _emit_commit_result EXIT
       branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")
+      # Issue #1575: staging, the message and the push live in helpers. A missing helper
+      # fails closed before anything is staged; never fall back to a blanket `git add -A`.
+      _find_helper() {
+        HELPER=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/$1" ] && { HELPER="$c/amplifier-bundle/tools/$1"; return 0; }; done
+        echo "ERROR: step-15: $1 not found (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack); refusing to stage or commit (#1575)" >&2
+        reason="helper-missing:$1"; exit 2
+      }
+      _find_helper workflow_stage_task_changes.sh; STAGE="$HELPER"
+      _find_helper workflow_commit_message.sh; MSG="$HELPER"
+      _find_helper workflow_sync_pr_head.sh; SYNC="$HELPER"
       echo "--- Staging Changes ---" >&2
       RUNTIME_ARTIFACT_HELPER="${WORKFLOW_RUNTIME_ARTIFACT_HELPER:-${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh}"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -163,7 +184,9 @@ steps:
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      # Stages the worktree minus generated .github/hooks/ paths and version-only churn (#1575).
+      ALLOW_VERSION_BUMP="${RECIPE_VAR_allow_version_bump:-false}" bash "$STAGE" || { stage_rc=$?; reason="stage-failed"; exit "$stage_rc"; }
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
@@ -181,7 +204,9 @@ steps:
             *)                    COMMIT_PREFIX="feat: " ;;
           esac ;;
       esac
-      COMMIT_TITLE=$(printf '%s%.72s' "$COMMIT_PREFIX" "$(printf '%s' "$TASK_DESC" | tr '\n\r' ' ' | head -1)")
+      # FIX (#1575): the subject describes the staged index; TASK_DESC only picks the prefix.
+      COMMIT_TITLE=$(bash "$MSG" subject "$COMMIT_PREFIX") || COMMIT_TITLE=""
+      [ -n "$COMMIT_TITLE" ] || COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX")
       # FIX #684: Host-aware commit references.
       # FIX #1361: on GitHub the closing keyword is EARNED BY THE DIFF. PR #1283's
       # body said `Closes #1277` while its whole change was one added planning
@@ -194,11 +219,12 @@ steps:
       CLOSE_KW="Refs"; IR=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_reference.sh" ] && { IR="$c/amplifier-bundle/tools/workflow_issue_reference.sh"; break; }; done
       if [ -n "$IR" ]; then CLOSE_KW="$(git diff --cached --name-only | bash "$IR" --keyword)" || CLOSE_KW="Refs"; else echo "WARNING: workflow_issue_reference.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — using the non-closing 'Refs' keyword (#1361)" >&2; fi
       case "$HOST_TYPE" in
-        github) ISSUE_REF="${CLOSE_KW} #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
-        azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}"; ISSUE_IMPL="AB#${ISSUE_NUMBER}" ;;
-        *)      ISSUE_REF="Ref #${ISSUE_NUMBER}"; ISSUE_IMPL="issue #${ISSUE_NUMBER}" ;;
+        github) ISSUE_REF="${CLOSE_KW} #${ISSUE_NUMBER}" ;;
+        azdo)   ISSUE_REF="AB#${ISSUE_NUMBER}" ;;
+        *)      ISSUE_REF="Ref #${ISSUE_NUMBER}" ;;
       esac
-      COMMIT_MSG=$(printf '%s\n\nImplements %s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\n%s' "$COMMIT_TITLE" "$ISSUE_IMPL" "$ISSUE_REF")
+      # FIX (#1575): the body is the staged --stat, then the issue reference.
+      COMMIT_MSG=$(printf '%s\n\n%s\n\n%s' "$COMMIT_TITLE" "$(bash "$MSG" body)" "$ISSUE_REF")
       # PERF: --quiet short-circuits on the first staged change.
       if ! git diff --cached --quiet; then
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
@@ -227,71 +253,17 @@ steps:
         reason="no-upstream"
         exit 0
       fi
-      COMMITS_AHEAD=$(git rev-list --count @{u}..HEAD)
-      if [ "$COMMITS_AHEAD" -ne 0 ]; then
-        # FIX (#978): ancestry-aware integration — never blind `git pull --rebase`.
-        # Refresh upstream, then decide by ancestry: behind==0 -> fast-forward push
-        # (preserve tested commit identities); behind>0 -> fail closed with structured
-        # merge-base/ahead/behind evidence. Never auto-replay already-integrated history.
-        UPSTREAM_REF=$(git rev-parse --abbrev-ref '@{u}' 2>/dev/null || echo "unknown")
-        fetch_output_file=$(mktemp -t step15-fetch-XXXXXX)
-        if git fetch origin >"$fetch_output_file" 2>&1; then
-          redact_sensitive_file "$fetch_output_file" >&2
-        else
-          echo "WARNING: git fetch origin failed before ancestry check; using cached upstream state" >&2
-          redact_sensitive_file "$fetch_output_file" >&2
-        fi
-        rm -f "$fetch_output_file"
-        COMMITS_AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-        COMMITS_BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
-        if [ "$COMMITS_AHEAD" -eq 0 ]; then
-          echo "INFO: HEAD no longer ahead of upstream '$UPSTREAM_REF' after fetch — nothing to push" >&2
-          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
-          pushed="true"; reason="already-pushed"
-          echo "=== Commit and Push Complete ===" >&2
-          exit 0
-        fi
-        if [ "$COMMITS_BEHIND" -ne 0 ]; then
-          MERGE_BASE=$(git merge-base HEAD '@{u}' 2>/dev/null || echo "none")
-          HEAD_SHA=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-          echo "ERROR: step-15 refuses to rebase divergent history onto upstream '$UPSTREAM_REF' (issue #978)." >&2
-          echo "  ancestry: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE head=$HEAD_SHA upstream=$UPSTREAM_REF" >&2
-          echo "  Auto-rebasing would replay already-integrated commits and create add/add conflicts." >&2
-          echo "  Point the branch at its intended PR base and fast-forward, or make an explicit rebase decision." >&2
-          reason="diverged-upstream: ahead=$COMMITS_AHEAD behind=$COMMITS_BEHIND merge_base=$MERGE_BASE upstream=$UPSTREAM_REF"
-          exit 1
-        fi
-        echo "INFO: upstream '$UPSTREAM_REF' is an ancestor of HEAD — fast-forward push, no rebase (#978)" >&2
-        # FIX (#495): capture push stderr, redact tokens before reason emission.
-        push_stderr_file=$(mktemp -t step15-push-XXXXXX)
-        # shellcheck disable=SC2064
-        trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
-        if git push 2>"$push_stderr_file"; then
-          # FIX (#1269): confirm the published commit is the tested one. A missing
-          # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
-          V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
-          raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-          if [ -n "$V" ]; then bash "$V" origin "$(git rev-parse --abbrev-ref HEAD)" "$raw_sha" || { reason="push-verify-failed"; exit 1; }; else echo "WARNING: verify_pushed_ref.sh not reachable; published commit unverified (#1269)" >&2; fi
-          if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then sha="$raw_sha"; fi
-          pushed="true"; reason="pushed"  # step-16 gate: only after verification
-        else
-          push_rc=$?
-          sanitized=$(redact_sensitive_file "$push_stderr_file" | tr '\n' ' ' | head -c 500)
-          reason="push-failed: ${sanitized}"
-          echo "ERROR: git push failed (exit $push_rc)" >&2
-          redact_sensitive_file "$push_stderr_file" >&2
-          exit "$push_rc"
-        fi
-      else
-        echo "INFO: Nothing to push - branch is already up to date with remote" >&2
-        raw_sha=$(git rev-parse HEAD 2>/dev/null || echo "")
-        if printf '%s' "$raw_sha" | grep -qE '^[0-9a-f]{40}$'; then
-          sha="$raw_sha"
-        fi
-        pushed="true"
-        reason="already-pushed"
-      fi
+      # FIX (#978, #1575): one ancestry policy, shared with publish-sync-pr-head. The helper
+      # fast-forwards with an explicit refspec and verifies, or fails closed on divergence.
+      sync_out=$(mktemp -t step15-sync-XXXXXX)
+      trap 'rm -f "$sync_out"; _emit_commit_result' EXIT
+      sync_rc=0; bash "$SYNC" --mode step15 >"$sync_out" || sync_rc=$?
+      sync_line=$(head -n 1 "$sync_out")
+      case "$sync_line" in pushed=*" sha="*" reason="*) ;; *) sync_line="pushed=false sha= reason=sync-no-result" ;; esac
+      pushed="${sync_line#pushed=}"; pushed="${pushed%% *}"; [ "$pushed" = "true" ] || pushed="false"
+      sha="${sync_line#* sha=}"; sha="${sha%% *}"; printf '%s' "$sha" | grep -qE '^[0-9a-f]{40}([0-9a-f]{24})?$' || sha=""
+      reason="${sync_line#* reason=}"
+      [ "$sync_rc" -eq 0 ] || exit "$sync_rc"
       echo "=== Commit and Push Complete ===" >&2
     output: "commit_result"
     parse_json: true

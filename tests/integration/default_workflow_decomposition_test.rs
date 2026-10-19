@@ -255,7 +255,8 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "step-12-run-precommit",
     "step-13-local-testing",
     "verification-terminal-evidence",
-    // Phase 6: workflow-publish (terminal gate + steps 14-16b)
+    // Phase 6: workflow-publish (PR head sync + terminal gate + steps 14-16b)
+    "publish-sync-pr-head",
     "publish-terminal-state",
     "step-14-bump-version",
     "step-14b-sync-lockfile",

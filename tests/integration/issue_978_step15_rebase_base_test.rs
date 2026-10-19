@@ -101,6 +101,10 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         .env("TASK_DESCRIPTION", "publish workstream branch (issue #978)")
         .env("ISSUE_NUMBER", "978")
         .env("REMOTE_HOST_TYPE", "github")
+        // #1575: step 15 delegates staging, the message and the push to
+        // helpers found through the lookup ladder; point it at this checkout
+        // so a stale ~/.amplihack copy is never used.
+        .env("AMPLIHACK_HOME", workspace_root())
         .output()
         .expect("run step-15 commit-push command")
 }

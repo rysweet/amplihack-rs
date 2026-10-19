@@ -125,6 +125,11 @@ mod workflow_publish_resilience;
 #[path = "issue_978_step15_rebase_base_test.rs"]
 mod issue_978_step15_rebase_base;
 
+// Issue #1575: PR head sync before the terminal-state probe, task-scoped
+// step-15 staging and commit message, and the step-21 gh auth/permission gate.
+#[path = "issue_1575_publish_defects_test.rs"]
+mod issue_1575_publish_defects;
+
 #[path = "workflow_publish_azdo_contract_test.rs"]
 mod workflow_publish_azdo_contract;
 

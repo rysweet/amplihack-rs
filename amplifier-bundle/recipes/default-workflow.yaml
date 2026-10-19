@@ -92,6 +92,8 @@ context:
   # classification permits no working-tree edits.
   worktree_setup: ""
   allow_no_op: false
+  # Step 15 excludes version-only churn unless this is "true" and step 14 asked for a bump (#1575)
+  allow_version_bump: "false"
   # Skip pre-agent project validation (npm test, build) — default true to avoid blocking on large codebases (see #453)
   skip_pre_agent_validation: "true"
   # Auto-initialize a git repo when repo_path is not a work tree — default true so repo-creation tasks proceed; set "false" for a fail-closed opt-out (see #900)

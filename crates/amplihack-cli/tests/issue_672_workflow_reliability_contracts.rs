@@ -635,9 +635,10 @@ fn issue_780_lifecycle_recipes_preflight_runtime_artifacts_before_sensitive_oper
             "git add",
         ),
         (
+            // #1575: step 15 stages through workflow_stage_task_changes.sh.
             "amplifier-bundle/recipes/workflow-publish.yaml",
             "step-15-commit-push",
-            "git add",
+            "bash \"$STAGE\"",
         ),
         (
             "amplifier-bundle/recipes/workflow-publish.yaml",
