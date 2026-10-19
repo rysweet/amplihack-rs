@@ -1,29 +1,27 @@
-//! Usage-limit reruns for nested `-p` launches (recipe agent steps). A
-//! supervising amplihack runs the launch as a child, streams its stderr,
-//! buffers its stdout, and when the attempt fails with what the recipe
+//! Usage-limit reruns for nested `-p` launches that inherited a profile
+//! (recipe agent steps). A supervising amplihack runs the launch as a child
+//! (see `profile::attempt`), and when the attempt fails with what the recipe
 //! runner's own classifier calls a usage limit, reruns it under the next
-//! eligible profile. Only the final attempt's stdout is printed.
+//! eligible profile while auto-switch is on (#1569). When none is left, or
+//! auto-switch is off, the usage-limit wait may run the step once more under
+//! the inherited profile (#1618). Only the final attempt's stdout is printed.
 
-use super::SUPERVISED_ENV;
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
 use super::state::{Ledger, State};
-use super::usage::{self, Reading, ReadingSource, Window};
-use crate::commands::profile::PROFILE_ENV;
+use super::usage::{Reading, ReadingSource, Window};
+use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
+use crate::commands::profile::limit_wait::scratch::{self, CopyError, StdinCopy};
+use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
-use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::fs::OpenOptionsExt;
-use std::process::{Command, Stdio};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+use std::path::PathBuf;
 
-const TAIL: usize = 64 * 1024;
+#[cfg(test)]
+pub(super) use crate::commands::profile::attempt::limit_reset;
 
 /// An eligible profile for a nested launch: not excluded, not exhausted, not
 /// in `skip`, holding its own login at home, and not hosting another account.
@@ -147,50 +145,66 @@ fn record_limit(state: &State, account: &str, reset: i64) {
     }
 }
 
-struct Attempt {
-    code: i32,
-    signalled: bool,
-    stderr_tail: Vec<u8>,
-    stdout: fs::File,
-    stdout_path: std::path::PathBuf,
+/// The account the auto-switch ledger says is live in profile `name`, for
+/// the wait's login fingerprint (#1618). `None` without a trusted ledger.
+pub(crate) fn ledger_account(root: &std::path::Path, name: &str) -> Option<String> {
+    let state = State::new(root).ok()?;
+    fsx::check_private_dir(&state.dir).ok()?;
+    let ledger = state.load_ledger().ok()?;
+    Some(ledger.account_in(name).to_string())
 }
 
 /// Runs the launch under supervision and returns its final exit code.
 /// `Ok(None)` when the supervisor could not start, so the caller launches
 /// unsupervised; once an attempt has run, errors are returned instead, so a
-/// step is never run twice by accident.
+/// step is never run twice by accident. `None` too when neither auto-switch
+/// nor the wait applies.
 pub fn supervise(
     store: &ProfileStore,
-    state: &State,
-    cfg: &Config,
     inherited: ProfileName,
+    mut waiter: Waiter,
 ) -> Result<Option<i32>> {
-    let rerun_dir = state.dir.join("rerun");
-    let setup = state
-        .ensure()
-        .and_then(|()| state.ensure_sub(&rerun_dir))
-        .map_err(anyhow::Error::from)
-        .and_then(|()| std::env::current_exe().context("cannot find the amplihack binary"));
-    let exe = match setup {
-        Ok(exe) => exe,
-        Err(e) => {
-            eprintln!("warning: auto-switch cannot supervise this step ({e}); running it once");
-            return Ok(None);
+    let eff = config::effective(store.root());
+    if !eff.on && !waiter.enabled() {
+        return Ok(None);
+    }
+    // Auto-switch off creates nothing under the profile root (#1618).
+    let state = if eff.on {
+        Some(State::new(store.root())?)
+    } else {
+        None
+    };
+    let setup = scratch_dir(state.as_ref()).and_then(|dir| {
+        Ok((
+            dir,
+            std::env::current_exe().context("cannot find the amplihack binary")?,
+        ))
+    });
+    let (rerun_dir, exe) = match setup {
+        Ok(s) => s,
+        Err(e) => return unsupervised(&waiter, eff.on, &e),
+    };
+    super::sweep_rerun(&rerun_dir);
+    let signals = match Signals::register() {
+        Ok(s) => s,
+        Err(e) => return unsupervised(&waiter, eff.on, &format!("cannot catch stop signals: {e}")),
+    };
+    let stdin = match StdinCopy::take(&rerun_dir) {
+        Ok(c) => c,
+        Err(CopyError::BeforeRead(e)) => return unsupervised(&waiter, eff.on, &e),
+        Err(e @ CopyError::AfterRead(_)) => {
+            eprintln!(
+                "error: could not copy this step's input for its supervisor ({e}); not running it"
+            );
+            return Ok(Some(1));
         }
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let signals = match Signals::register() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!(
-                "warning: auto-switch cannot catch stop signals ({e}); running this step once"
-            );
-            return Ok(None);
-        }
-    };
 
     let mut profile = inherited.clone();
-    if let Some((c, reason)) = substitute(store, state, cfg, &inherited) {
+    if let Some(state) = &state
+        && let Some((c, reason)) = substitute(store, state, &eff.config, &inherited)
+    {
         eprintln!("{}", substitution_note(&inherited, &reason, &c));
         profile = c;
     }
@@ -198,290 +212,123 @@ pub fn supervise(
     let mut n = 0u32;
     loop {
         n += 1;
-        let attempt = match run_attempt(
-            &exe,
-            &args,
-            state,
-            &rerun_dir,
-            (profile != inherited).then_some(&profile),
-            n,
-            &signals,
-        ) {
+        let switch_dir = state
+            .as_ref()
+            .filter(|_| profile != inherited)
+            .map(|s| s.profile_dir(profile.as_str()));
+        let env = switch_dir.as_deref().map(|d| (&profile, d));
+        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, &stdin, n, &signals) {
             Ok(a) => a,
-            Err(e) if n == 1 && profile == inherited => {
-                eprintln!("warning: auto-switch cannot supervise this step ({e}); running it once");
-                return Ok(None);
+            // Only before any input was consumed can a plain launch follow.
+            Err(e) if n == 1 && profile == inherited && stdin.path().is_none() => {
+                return unsupervised(&waiter, eff.on, &e);
             }
             Err(e) => return Err(e),
         };
-        let account = state
-            .load_ledger()
-            .map(|l| l.account_in(profile.as_str()).to_string());
         tried.push(profile.to_string());
-        let limited = usage_limited(&attempt);
-        let eff = limited.map(|_| config::effective(&state.root));
-        if let (Some(reset), Some(eff)) = (limited, eff)
-            && eff.on
-        {
-            // Without the ledger the account is unknown: recording the limit
-            // under the profile name could mark the wrong account exhausted.
-            let account = match account {
-                Ok(a) => a,
-                Err(e) => {
-                    eprintln!("auto-switch: no rerun: {e}");
-                    return finish(attempt, None);
+        let Some(lim) = usage_limited(&attempt, waiter.now()) else {
+            return attempt.finish(None);
+        };
+        if let Some(state) = &state {
+            let eff = config::effective(&state.root);
+            if eff.on
+                && let Some(next) =
+                    next_profile(store, state, &eff.config, &profile, &tried, &lim, &waiter)
+            {
+                if let Some(sig) = signals.received() {
+                    eprintln!("auto-switch: no rerun: this step was told to stop");
+                    return attempt.finish(Some(128 + sig));
                 }
-            };
-            record_limit(state, &account, reset);
-            let cfg = eff.config;
-            let next = match state.load_ledger() {
-                Ok(ledger) => {
-                    let readings = state.load_usage_or_warn().accounts;
-                    nested_candidate(
-                        state,
-                        &ledger,
-                        &profile_names(store),
-                        &readings,
-                        &cfg,
-                        &account,
-                        &tried,
-                    )
-                }
-                Err(e) => {
-                    eprintln!("auto-switch: no rerun: {e}");
-                    None
-                }
-            };
-            if let (Some(_), Some(sig)) = (&next, signals.received()) {
-                eprintln!("auto-switch: no rerun: this step was told to stop");
-                return finish(attempt, Some(128 + sig));
-            }
-            if let Some(next) = next {
                 eprintln!(
                     "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
                     profile.as_str(),
                     next.as_str()
                 );
-                drop(attempt.stdout);
-                let _ = fs::remove_file(&attempt.stdout_path);
+                attempt.discard();
                 profile = next;
                 continue;
             }
         }
-        return finish(attempt, None);
-    }
-}
-
-/// Prints `attempt`'s buffered stdout and returns its exit code, or `code`
-/// when given.
-fn finish(attempt: Attempt, code: Option<i32>) -> Result<Option<i32>> {
-    let mut out = attempt.stdout;
-    out.seek(SeekFrom::Start(0))?;
-    let mut stdout = std::io::stdout().lock();
-    std::io::copy(&mut out, &mut stdout)?;
-    stdout.flush()?;
-    drop(out);
-    let _ = fs::remove_file(&attempt.stdout_path);
-    Ok(Some(code.unwrap_or(attempt.code)))
-}
-
-/// Stop signals, caught once for the whole supervised run. signal-hook does
-/// not restore the default action on unregister, so handlers registered per
-/// attempt would leave the supervisor deaf between attempts.
-struct Signals {
-    term: Arc<AtomicBool>,
-    hup: Arc<AtomicBool>,
-    /// SIGINT reaches the attempt through the terminal; catching it here
-    /// keeps the supervisor alive to pass the attempt's output back.
-    int: Arc<AtomicBool>,
-    /// The last stop signal seen, or 0.
-    seen: AtomicI32,
-    ids: Vec<signal_hook::SigId>,
-}
-
-impl Signals {
-    fn register() -> std::io::Result<Self> {
-        let mut s = Self {
-            term: Arc::new(AtomicBool::new(false)),
-            hup: Arc::new(AtomicBool::new(false)),
-            int: Arc::new(AtomicBool::new(false)),
-            seen: AtomicI32::new(0),
-            ids: Vec::new(),
-        };
-        for (sig, flag) in [
-            (libc::SIGTERM, Arc::clone(&s.term)),
-            (libc::SIGHUP, Arc::clone(&s.hup)),
-            (libc::SIGINT, Arc::clone(&s.int)),
-        ] {
-            s.ids.push(signal_hook::flag::register(sig, flag)?);
-        }
-        Ok(s)
-    }
-
-    /// Passes SIGTERM and SIGHUP on to `pid` and remembers every stop signal.
-    fn forward(&self, pid: libc::pid_t) {
-        for (flag, sig) in [(&self.term, libc::SIGTERM), (&self.hup, libc::SIGHUP)] {
-            if flag.swap(false, Ordering::Relaxed) {
-                self.seen.store(sig, Ordering::Relaxed);
-                // SAFETY: plain kill(2) on our own child's pid.
-                unsafe { libc::kill(pid, sig) };
+        match waiter.after_limit(&lim, n, &signals) {
+            AfterLimit::Finish(code) => return attempt.finish(code),
+            AfterLimit::Retry => {
+                attempt.discard();
+                profile = inherited.clone();
             }
         }
-        if self.int.swap(false, Ordering::Relaxed) {
-            self.seen.store(libc::SIGINT, Ordering::Relaxed);
-        }
     }
+}
 
-    /// The last stop signal received so far, including any not yet forwarded.
-    /// No attempt is running here, so nothing is forwarded.
-    fn received(&self) -> Option<i32> {
-        for (flag, sig) in [
-            (&self.term, libc::SIGTERM),
-            (&self.hup, libc::SIGHUP),
-            (&self.int, libc::SIGINT),
-        ] {
-            if flag.swap(false, Ordering::Relaxed) {
-                self.seen.store(sig, Ordering::Relaxed);
-            }
+/// `<root>/.auto-switch.d/rerun` with auto-switch on, else
+/// `$HOME/.amplihack/rerun`.
+fn scratch_dir(state: Option<&State>) -> Result<PathBuf> {
+    match state {
+        Some(state) => {
+            let dir = state.dir.join("rerun");
+            state.ensure().and_then(|()| state.ensure_sub(&dir))?;
+            Ok(dir)
         }
-        match self.seen.load(Ordering::Relaxed) {
-            0 => None,
-            sig => Some(sig),
+        None => {
+            let home = std::env::var_os("HOME")
+                .filter(|h| !h.is_empty())
+                .context("HOME is not set")?;
+            scratch::home_rerun_dir(std::path::Path::new(&home))
+                .context("no private scratch directory")
         }
     }
 }
 
-impl Drop for Signals {
-    fn drop(&mut self) {
-        for id in self.ids.drain(..) {
-            signal_hook::low_level::unregister(id);
-        }
-    }
+fn unsupervised(waiter: &Waiter, on: bool, why: &dyn std::fmt::Display) -> Result<Option<i32>> {
+    let who = if on {
+        "auto-switch"
+    } else {
+        "the usage-limit wait"
+    };
+    eprintln!("warning: {who} cannot supervise this step ({why}); running it once");
+    waiter.not_supervised();
+    Ok(None)
 }
 
-fn run_attempt(
-    exe: &std::path::Path,
-    args: &[std::ffi::OsString],
+/// Records the limit for the account live in `profile`, then the next
+/// eligible profile, unless the wait was already used for this step.
+fn next_profile(
+    store: &ProfileStore,
     state: &State,
-    rerun_dir: &std::path::Path,
-    switch_to: Option<&ProfileName>,
-    n: u32,
-    signals: &Signals,
-) -> Result<Attempt> {
-    let stdout_path = rerun_dir.join(format!("{}-{n}.out", std::process::id()));
-    let mut opts = fs::OpenOptions::new();
-    opts.read(true)
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-    let stdout = opts.open(&stdout_path)?;
-    let mut cmd = Command::new(exe);
-    cmd.args(args)
-        .env(SUPERVISED_ENV, "1")
-        .stdin(Stdio::inherit())
-        .stdout(stdout.try_clone()?)
-        .stderr(Stdio::piped());
-    if let Some(profile) = switch_to {
-        cmd.env(PROFILE_ENV, profile.as_str())
-            .env("CLAUDE_CONFIG_DIR", state.profile_dir(profile.as_str()));
-    }
-    let mut child = cmd
-        .spawn()
-        .context("failed to start the supervised launch")?;
-    let mut pipe = child.stderr.take().context("no stderr pipe")?;
-    let reader = std::thread::spawn(move || {
-        let mut tail: Vec<u8> = Vec::new();
-        let mut buf = [0u8; 8192];
-        let mut err = std::io::stderr();
-        while let Ok(k) = pipe.read(&mut buf) {
-            if k == 0 {
-                break;
-            }
-            let _ = err.write_all(&buf[..k]);
-            tail.extend_from_slice(&buf[..k]);
-            // Trim only once the buffer doubles, so each byte is moved at
-            // most once instead of 64 KiB being shifted on every read.
-            if tail.len() > 2 * TAIL {
-                tail.drain(..tail.len() - TAIL);
-            }
+    cfg: &Config,
+    profile: &ProfileName,
+    tried: &[String],
+    lim: &Limited,
+    waiter: &Waiter,
+) -> Option<ProfileName> {
+    // Without the ledger the account is unknown: recording the limit under
+    // the profile name could mark the wrong account exhausted.
+    let account = match state.load_ledger() {
+        Ok(l) => l.account_in(profile.as_str()).to_string(),
+        Err(e) => {
+            eprintln!("auto-switch: no rerun: {e}");
+            return None;
         }
-        if tail.len() > TAIL {
-            tail.drain(..tail.len() - TAIL);
-        }
-        tail
-    });
-
-    let status = loop {
-        signals.forward(child.id() as libc::pid_t);
-        if let Some(s) = child.try_wait()? {
-            break s;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    let stderr_tail = reader.join().unwrap_or_default();
-    use std::os::unix::process::ExitStatusExt;
-    let (code, signalled) = match (status.code(), status.signal()) {
-        (Some(c), _) => (c, false),
-        (None, Some(sig)) => (128 + sig, true),
-        (None, None) => (1, true),
-    };
-    Ok(Attempt {
-        code,
-        signalled,
-        stderr_tail,
-        stdout,
-        stdout_path,
-    })
-}
-
-/// The reset time to record when `attempt` hit its usage limit, else `None`.
-fn usage_limited(attempt: &Attempt) -> Option<i64> {
-    if attempt.signalled || attempt.code == 0 {
-        return None; // no need to read the output
-    }
-    let out_tail = tail(&attempt.stdout).unwrap_or_else(|e| {
-        eprintln!("auto-switch: could not read this step's buffered output: {e}");
-        Vec::new()
-    });
-    limit_reset(
-        attempt.signalled,
-        attempt.code,
-        &attempt.stderr_tail,
-        &out_tail,
-        fsx::now(),
-    )
-}
-
-/// An attempt hit its usage limit only when it was not killed by a signal,
-/// exited non-zero, and the recipe runner's classifier calls its stderr tail
-/// followed by its stdout tail `UsageLimit`. Work and environmental markers
-/// outrank a usage limit there, so a real failure that also mentions one is
-/// not rerun. Returns the reset time to record.
-pub fn limit_reset(
-    signalled: bool,
-    code: i32,
-    stderr: &[u8],
-    stdout: &[u8],
-    now: i64,
-) -> Option<i64> {
-    if signalled || code == 0 {
+    record_limit(state, &account, lim.ledger_reset);
+    if waiter.used() {
         return None;
     }
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(stderr),
-        String::from_utf8_lossy(stdout)
-    );
-    (classify_failure_text(&text).0 == FailureClass::UsageLimit)
-        .then(|| usage::reset_or_default(stderr, stdout, now))
-}
-
-/// The last 64 KiB of the buffered stdout, read through the attempt's own
-/// handle rather than by reopening its path.
-fn tail(file: &fs::File) -> std::io::Result<Vec<u8>> {
-    let mut f = file.try_clone()?;
-    let len = f.metadata()?.len();
-    f.seek(SeekFrom::Start(len.saturating_sub(TAIL as u64)))?;
-    fsx::read_bounded(f, TAIL as u64)
+    match state.load_ledger() {
+        Ok(ledger) => {
+            let readings = state.load_usage_or_warn().accounts;
+            nested_candidate(
+                state,
+                &ledger,
+                &profile_names(store),
+                &readings,
+                cfg,
+                &account,
+                tried,
+            )
+        }
+        Err(e) => {
+            eprintln!("auto-switch: no rerun: {e}");
+            None
+        }
+    }
 }

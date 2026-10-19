@@ -1,7 +1,6 @@
 //! Moving logins: the in-session swap, the return when a session ends, crash
 //! recovery, and the lease checks. A login file is only ever renamed with
-//! `RENAME_NOREPLACE`, never opened, so each account's login is in exactly
-//! one place: its home slot or the one directory where it is live.
+//! `RENAME_NOREPLACE`, never opened, so each login is in exactly one place.
 
 use super::candidate::{self, Pool};
 use super::config::Config;
@@ -12,9 +11,8 @@ use super::state::{
     State,
 };
 use super::usage::{self, Attribution, RateLimits};
-use crate::commands::profile::ProfileError;
-use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::rename_noreplace;
+use crate::commands::profile::{ProfileError, name::ProfileName};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -303,11 +301,10 @@ fn same_version(before: &fs::Metadata, now: &fs::Metadata) -> bool {
 // Recovery and return
 // ---------------------------------------------------------------------------
 
-/// Finishes or undoes an interrupted swap, returns every hosted directory
-/// that is no longer live, and removes stale rerun buffers. Call with the
-/// global lock held. Returns the `/proc` scan when it took one: it is
-/// skipped while no directory hosts a borrowed login, since that scan costs
-/// a read of every same-user process's environment.
+/// Finishes or undoes an interrupted swap, returns every hosted directory no
+/// longer live and sweeps `rerun/`. Call with the global lock held. Returns
+/// the `/proc` scan when taken; it is skipped while no login is borrowed,
+/// since it reads every same-user process's environment.
 pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
     recover_reporting(state).map(|(live, _)| live)
 }
@@ -351,8 +348,7 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
     Ok((Some(live), done))
 }
 
-/// Whether a swap journal is waiting for recovery. Looks only at whether
-/// the file exists, so `status` can report it without acting on it.
+/// Whether a swap journal awaits recovery: only an existence check, for `status`.
 pub fn pending_journal(state: &State) -> bool {
     fsx::exists(&state.dir.join("journal.json"))
 }
@@ -443,11 +439,14 @@ fn return_dir(
     Ok(())
 }
 
-/// Removes rerun buffers whose supervisor (`<pid>-<n>.out`) is no longer
-/// running, and any buffer older than 24 hours. Best effort: errors are
-/// ignored because every later `recover` retries the same sweep.
 fn cleanup_rerun(state: &State) {
-    let Ok(entries) = fs::read_dir(state.dir.join("rerun")) else {
+    sweep_rerun(&state.dir.join("rerun"));
+}
+
+/// Removes regular files in `dir` (no recursion) whose supervisor is gone or
+/// that are over 24 hours old. Best effort: every `recover` sweeps again.
+pub(crate) fn sweep_rerun(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
@@ -467,9 +466,10 @@ fn cleanup_rerun(state: &State) {
     }
 }
 
-/// The supervisor pid in a rerun buffer name `<pid>-<n>.out`.
+/// The supervisor pid in a rerun file name `<pid>-<n>.out` or `<pid>-<n>.in`.
 pub fn rerun_owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let name = name.to_str()?.strip_suffix(".out")?;
+    let name = name.to_str()?;
+    let name = name.strip_suffix(".out").or(name.strip_suffix(".in"))?;
     let (pid, n) = name.split_once('-')?;
     n.parse::<u32>().ok()?;
     pid.parse().ok().filter(|&p| p > 0)

@@ -30,6 +30,7 @@
 //! unbounded retry costs the whole budget and hides the real failure.
 
 use super::super::{RecipeRunResult, RecipeRunStepResult};
+use super::limit_patterns;
 use serde_json::{Value as JsonValue, json};
 use std::io::Write;
 
@@ -236,7 +237,8 @@ const ENVIRONMENTAL_MARKERS: &[&str] = &[
     "api error: 404",
     "404 not found",
     "not_found_error",
-    "credit balance is too low",
+    // Also a usage-limit marker; this tier is checked first and claims it.
+    limit_patterns::CREDIT_BALANCE_LOW,
     "command not found",
     "no such file or directory",
     "permission denied",
@@ -308,50 +310,11 @@ const WORK_MARKERS: &[&str] = &[
     "orchestration_unavailable",
 ];
 
-/// Markers for an account usage / session limit (issue #1390).
-///
-/// These are deliberately NOT in `TRANSIENT_MARKERS`. A 429 or an overload
-/// envelope clears in seconds and is worth retrying inside the budget. A usage
-/// limit clears when the stated reset time arrives, which is typically hours
-/// away -- retrying it inside a minutes-long budget cannot succeed.
-///
-/// Note what is absent: a bare "rate limit". That phrase belongs to the
-/// short-lived envelopes above and must keep its existing meaning.
-///
-/// Issue #1546: "weekly limit" and "spend limit" are listed explicitly,
-/// because "monthly limit" does not match "monthly spend limit". "daily
-/// limit" is deliberately absent too: provider and GitHub API daily request
-/// quotas use that phrase and clear on their own, so listing it would stop
-/// retrying them. List order does not pick the reported signal --
-/// `first_match` reports the marker that appears earliest in the text.
-const USAGE_LIMIT_MARKERS: &[&str] = &[
-    "session limit",
-    "usage limit",
-    "usage_limit_reached",
-    "quota exceeded",
-    "monthly limit",
-    "weekly limit",
-    "spend limit",
-    "credit balance is too low",
-];
-
-/// The reset time a usage-limit message carries, if it states one. Returned
-/// verbatim rather than parsed into a timestamp: the operator needs to read it,
-/// and inventing a timezone we were not given would be worse than quoting it.
+/// The reset time a usage-limit message carries, if it states one (#1390).
+/// Returned verbatim rather than parsed into a timestamp: the operator needs
+/// to read it. The anchor lives with the other patterns (#1618).
 pub(crate) fn usage_limit_reset_hint(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    let at = lower.find("resets ")?;
-    let rest = &text[at + "resets ".len()..];
-    let hint: String = rest
-        .chars()
-        .take_while(|c| *c != '\n' && *c != '\r')
-        .collect();
-    let hint = hint.trim();
-    if hint.is_empty() {
-        None
-    } else {
-        Some(hint.to_string())
-    }
+    limit_patterns::reset_hint(text)
 }
 
 /// The repository a repository-selection precondition refused, if it names one.
@@ -398,7 +361,7 @@ pub(crate) fn classify_failure_text(text: &str) -> (FailureClass, Option<&'stati
     // Before TRANSIENT_MARKERS: a usage-limit response frequently arrives
     // wrapped in a 429 envelope, and "retry in a moment" is the wrong reading
     // of it (#1390).
-    if let Some(marker) = first_match(&haystack, USAGE_LIMIT_MARKERS) {
+    if let Some(marker) = first_match(&haystack, &limit_patterns::all_markers()) {
         return (FailureClass::UsageLimit, Some(marker));
     }
     if let Some(marker) = first_match(&haystack, TRANSIENT_MARKERS) {

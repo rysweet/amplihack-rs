@@ -60,10 +60,17 @@ pub mod settings_manager;
 pub mod signals;
 #[cfg(test)]
 pub mod test_support;
+#[cfg(all(test, unix))]
+mod tests_wait_config;
+#[cfg(all(test, unix))]
+mod tests_wait_config_write;
 pub mod tool_update_check;
 pub mod uninstall;
 pub mod update;
 pub mod util;
+/// Issue #1618: settings for the usage-limit wait of recipe agent steps.
+#[cfg(unix)]
+pub mod wait_config;
 
 use clap::{
     Parser,

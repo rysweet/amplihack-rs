@@ -84,9 +84,9 @@ fn validate_gateway_auto_mode(tool: auto_mode::AutoModeTool, args: &[String]) ->
     Ok(())
 }
 
-/// Issue #1569: runs a nested `-p` step under the usage-limit rerun
-/// supervisor when auto-switch is on. `true` when the step has already run;
-/// a non-zero exit code ends the process with that code.
+/// Issues #1569 and #1618: runs a nested `-p` step under the usage-limit
+/// supervisor (auto-switch reruns, then the usage-limit wait). `true` when the
+/// step has already run; a non-zero exit code ends the process with that code.
 fn run_supervised(
     profile: Option<&str>,
     docker: bool,

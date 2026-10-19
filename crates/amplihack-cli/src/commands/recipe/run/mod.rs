@@ -8,6 +8,9 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 mod format;
+/// Issue #1618: the usage-limit patterns of every agent harness, in one place.
+pub(crate) mod limit_patterns;
+mod limit_reset;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 
@@ -376,6 +379,10 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_limit_patterns;
+#[cfg(test)]
+mod tests_limit_reset;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]

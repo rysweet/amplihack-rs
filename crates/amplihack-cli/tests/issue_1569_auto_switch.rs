@@ -209,6 +209,9 @@ impl Fixture {
             // A secret in the environment must not be echoed either.
             .env("ANTHROPIC_API_KEY", "SENTINEL-ENV-KEY")
             .env("AMPLIHACK_NONINTERACTIVE", "1")
+            // These tests cover auto-switch alone; the #1618 usage-limit wait
+            // (on by default for recipe steps) has its own tests.
+            .env("AMPLIHACK_USAGE_LIMIT_WAIT", "0")
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
@@ -2093,7 +2096,12 @@ fn each_candidate_is_tried_once_then_the_last_failure_is_passed_back() {
     assert_eq!(f.attempts(), vec!["X", "Y", "Z"]);
     assert_eq!(claude_stdout(&out), "partial output from Z\n");
     let stderr = text(&out.stderr);
-    let last = stderr.lines().rev().find(|l| !l.trim().is_empty()).unwrap();
+    // The wait, disabled here, writes one `skipped` line after the limit.
+    let last = stderr
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty() && !l.starts_with("amplihack.recipe.usage_limit_wait "))
+        .unwrap();
     assert!(
         last.starts_with(LIMIT_MARKER),
         "the runner's classifier must still see the limit: {stderr}"
