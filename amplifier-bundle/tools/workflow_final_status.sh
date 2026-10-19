@@ -321,7 +321,9 @@ adjudicate_terminal_state() {
 # main checkout, whose branch is main, detached, or something unrelated. When a
 # worktree path is given but is gone, or the observed branch disagrees with
 # WORKTREE_SETUP_BRANCH_NAME / BRANCH_NAME, the lookup does not run. cwd is used
-# only when the caller gives no worktree path at all.
+# only when the caller gives no worktree path at all AND cwd is not the REPO_PATH
+# checkout (same toplevel); a caller that runs in REPO_PATH without a worktree
+# path, such as step-22b's fallback, gets no lookup.
 #
 # Fail closed: every guard, gh error, malformed result or candidate that fails
 # validation leaves PR_URL, PR_NUMBER and PUBLISH_STATE untouched. stdout is
@@ -356,6 +358,15 @@ resolve_open_pr_for_current_branch() {
     run_dir="."
   fi
   git -C "$run_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # No worktree path and cwd is the REPO_PATH checkout: REPO_PATH's branch is
+  # not the run's branch (step-22b lands here on its unset-worktree fallback),
+  # so do not look it up.
+  if [ "$run_dir" = "." ] && [ -n "${REPO_PATH:-}" ]; then
+    local cwd_top repo_top
+    cwd_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    repo_top="$(git -C "$REPO_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -z "$repo_top" ] || [ "$cwd_top" != "$repo_top" ] || return 0
+  fi
 
   branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
   [ -n "$branch" ] || return 0

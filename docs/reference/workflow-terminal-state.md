@@ -368,11 +368,20 @@ gh pr list --repo "$repo" --head "$branch" --state open --json url,number,isCros
 
 **Which branch.** The branch is read from the run's worktree
 (`WORKTREE_SETUP_WORKTREE_PATH`, or `RECIPE_VAR_worktree_setup__worktree_path`).
-It is never read from `REPO_PATH`. `REPO_PATH` is the main checkout, and its
-branch is `main`, a detached `HEAD`, or something unrelated to the run.
+`REPO_PATH` is the main checkout, and its branch is `main`, a detached `HEAD`,
+or something unrelated to the run, so the lookup never uses it.
 `step-22b-final-status` enters the worktree before calling the helper, as
 `step-21-pr-ready` does, so the scoped PR check also sees the run's branch and
-HEAD. The current directory is used only when no worktree path is given at all.
+HEAD.
+
+When no worktree path is given, the helper falls back to the current
+directory's branch, with one exception: if `REPO_PATH` is set and the current
+directory is inside the same checkout (same `git rev-parse --show-toplevel`),
+the lookup does not run. That covers step-22b's own fallback, which `cd`s into
+`REPO_PATH` when the worktree path is unset or gone, and callers that do not
+`cd` at all, such as `strict-terminal-state`. The cwd fallback is kept on
+purpose for single-checkout callers that set neither `REPO_PATH` nor a worktree
+path; there the current directory is the run's checkout.
 
 **When it runs.** Only on the missing-evidence path. That means:
 
@@ -390,6 +399,8 @@ authority; this page does not repeat the list.
 did before, when any of the following is true:
 
 - the worktree path is set but missing
+- the worktree path is unset and the current directory is the `REPO_PATH`
+  checkout
 - the branch is detached, is the base branch, or differs from
   `WORKTREE_SETUP_BRANCH_NAME`
 - `gh` errors
@@ -416,7 +427,9 @@ specification. Section 15 runs step-22b's own command from
 - detached
 - on an unrelated branch that has its own open PR
 
-In each, the run's branch lives in a separate `git worktree`.
+In each, the run's branch lives in a separate `git worktree`. Section 15 also
+runs step-22b with the worktree path set-but-missing and unset; in both, an
+open PR on `REPO_PATH`'s unrelated branch is never looked up.
 
 ---
 
