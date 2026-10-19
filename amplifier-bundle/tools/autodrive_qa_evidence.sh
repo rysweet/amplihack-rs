@@ -45,6 +45,9 @@ set -uo pipefail
 # gadugi_scenario_results (#1517 D6, informational only) all come from
 # autodrive_trust.sh there. The helpers are required: without them the
 # tool cannot tell which measurements apply, so it produces no evidence.
+# An exported CDPATH would make a relative `cd` below resolve outside the
+# repository and run the suite there, silently (#1516 security review).
+unset CDPATH
 H="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 { [ -n "$H" ] && [ -f "$H/autodrive_state.sh" ] && [ -f "$H/autodrive_trust.sh" ]; } || {
   echo "ERROR: autodrive-qa-helpers-not-found: autodrive_state.sh and autodrive_trust.sh are not beside autodrive_qa_evidence.sh" >&2; exit 1; }
@@ -161,7 +164,8 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       # A detected command must resolve to an absolute path outside the
       # repository: a '.' or empty PATH entry, or a PATH entry inside the
       # tree, never runs a cargo, pytest or npm planted in the branch.
-      p="$(cd -- "$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
+      # `./` keeps a directory named `-` from meaning $OLDPWD to cd.
+      p="$(cd -- "./$dir" 2>/dev/null && command -v -- "$first" 2>/dev/null)" || p=""
       pd=""; case "$p" in /*) pd="$(cd -P -- "${p%/*}/" 2>/dev/null && pwd -P)" || pd="" ;; esac
       case "$pd" in ""|"$ROOT"|"$ROOT"/*)
         S_NOTINST="true"; cause "$(printf '%s' "$first" | san | cut -c1-80) not installed outside the repository"
@@ -169,7 +173,7 @@ while [ "$i" -lt "${#TEXTS[@]}" ]; do
       esac
       # No timeout: a test suite is never cut off mid-run.
       # shellcheck disable=SC2086
-      ( set -f; set -- $text; shift; cd -- "$dir" && "$p" "$@" ) >>"$LOG" 2>&1 </dev/null
+      ( set -f; set -- $text; shift; cd -- "./$dir" && "$p" "$@" ) >>"$LOG" 2>&1 </dev/null
       rc=$?
     else
       # A configured word may also be ./<first> inside AUTODRIVE_QA_DIR.

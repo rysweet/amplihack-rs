@@ -462,6 +462,27 @@ expect r1-ok "an out-of-repo cargo is still used when PATH holds an empty entry"
     qa_status=PASS qa_dir=x/y
 expect_calls r1-ok-calls "the out-of-repo cargo runs in x/y with full argv" cargo "cargo|x/y|$CARGO_ARGS"
 
+echo "== #1516 security review: cd never resolves outside the checked directory =="
+# A crate in a directory named `-`: `cd -- -` would mean $OLDPWD.
+new_repo -/Cargo.toml
+run_tool
+expect cd-dash "a crate in '-' runs there" qa_status=PASS qa_repo_type=rust-cli qa_dir=-
+expect_calls cd-dash-calls "cargo runs in '-', not \$OLDPWD" cargo "cargo|-|$CARGO_ARGS"
+# An exported CDPATH holding the same relative names must not redirect cd.
+mkdir -p "$WORK/cdpath/x/y" "$WORK/cdpath/sub"
+new_repo x/y/Cargo.toml sub/
+run_tool CDPATH="$WORK/cdpath"
+expect cdpath-detected "detected command ignores CDPATH" qa_status=PASS qa_dir=x/y
+expect_calls cdpath-detected-calls "cargo runs in the repository's x/y" cargo "cargo|x/y|$CARGO_ARGS"
+: > "$CALLS"
+run_tool CDPATH="$WORK/cdpath" AUTODRIVE_QA_COMMAND="cargo test" AUTODRIVE_QA_DIR=sub
+expect cdpath-word "configured command ignores CDPATH" qa_status=PASS qa_dir=sub
+expect_calls cdpath-word-calls "cargo runs in the repository's sub" cargo "cargo|sub|test"
+# shellcheck source=/dev/null
+got="$(cd "$REPO" && CDPATH="$WORK/cdpath" && export CDPATH && (. "$TRUST" && autodrive_qa_target x/y/..) 2>/dev/null)" || got=""
+if [ "$got" = $'rust-cli\ty' ]; then pass cdpath-target "autodrive_qa_target searches the given directory under CDPATH"
+else fail cdpath-target "autodrive_qa_target under CDPATH printed $(printf '%q' "$got")"; fi
+
 echo "== #1516: static constraints =="
 for t in "$TOOL" "$TRUST"; do
     n="$(wc -l < "$t" | tr -d ' ')"

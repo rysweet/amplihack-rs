@@ -331,8 +331,9 @@ autodrive_scenario_results() {
 # node_modules and hidden directories are pruned; symlinks are not followed.
 # No -mindepth: find skips -prune above the minimum depth, so target/ would
 # be searched. A line not ./<path>/Cargo.toml (a newline in a name) is `!`.
+# CDPATH is unset so a relative <dir> cannot resolve elsewhere.
 _autodrive_cargo_dirs() {
-  ( cd -- "${1:-.}" 2>/dev/null && LC_ALL=C find . -maxdepth 3 \
+  ( unset CDPATH; cd -- "${1:-.}" 2>/dev/null && LC_ALL=C find . -maxdepth 3 \
       \( -type d \( -name target -o -name worktrees -o -name node_modules -o -name '.?*' \) -prune \) \
       -o \( -type f -name Cargo.toml -print \) 2>/dev/null ) | while IFS= read -r p; do
     case "$p" in ./Cargo.toml) ;; ./?*/Cargo.toml) p="${p#./}"; printf '%s\n' "${p%/Cargo.toml}" ;; *) printf '!\n' ;; esac
