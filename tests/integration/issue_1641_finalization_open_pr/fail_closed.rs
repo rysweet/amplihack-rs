@@ -27,20 +27,14 @@ fn run_with_no_pr_and_no_evidence_is_still_failed_implementation() {
 }
 
 // An open PR is implementation proof only; it still needs green checks or
-// typed verification evidence.
+// typed verification evidence. Failing checks are BLOCKED_CI (blocked_ci.rs).
 #[test]
 fn open_pr_without_a_passing_verification_signal_fails_closed() {
     for rollup in [
-        json!([check_run("COMPLETED", json!("FAILURE"))]),
-        json!([
-            check_run("COMPLETED", json!("SUCCESS")),
-            check_run("COMPLETED", json!("CANCELLED"))
-        ]),
         json!([check_run("IN_PROGRESS", json!(null))]),
         json!([check_run("QUEUED", json!(null))]),
         json!([check_run("COMPLETED", json!(null))]),
         json!([status_context("PENDING")]),
-        json!([status_context("FAILURE")]),
         json!([{"__typename": "MysteryCheck", "state": "SUCCESS"}]),
         json!([]),
         Value::Null,

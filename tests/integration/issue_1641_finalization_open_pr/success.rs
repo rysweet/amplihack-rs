@@ -7,8 +7,8 @@ use serde_json::json;
 
 use super::fixture::*;
 
-const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,required_checks=green";
-const EVIDENCE_PRECOMMIT: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,precommit_passed=true";
+const EVIDENCE_GREEN: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,all_checks=green";
+const EVIDENCE_PRECOMMIT_PREFIX: &str = "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=7,precommit_passed=true,all_checks=";
 
 fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert!(
@@ -26,6 +26,16 @@ fn assert_existing_open_pr(outcome: &Outcome, evidence: &str) {
     assert_eq!(outcome.field("pr_number"), "7");
     assert_eq!(outcome.field("pr_url"), PR_URL);
     assert_eq!(outcome.field("evidence_used"), evidence);
+    // Only all-green CI is done; pre-commit-only success must hand CI on.
+    let next_action = outcome.field("required_next_action");
+    if evidence.contains("precommit_passed=true") {
+        assert!(
+            next_action.starts_with("Watch CI on PR #7:") && next_action.contains("BLOCKED_CI"),
+            "pre-commit-only success must tell the next step to watch CI: {next_action}"
+        );
+    } else {
+        assert_eq!(next_action, "No action required.");
+    }
     assert!(
         !outcome.stderr.contains("failed closed"),
         "success must not announce a fail-closed result\n{}",
@@ -118,13 +128,21 @@ fn lowercase_existing_open_pr_status_without_url_uses_pr_list_fallback() {
     }
 }
 
-// Checks not green, but this run's typed precommit verification passed.
+// CI has not reported yet (pending or no checks), but this run's typed
+// precommit verification passed. A failing check is never in this set: it is
+// BLOCKED_CI whatever verification_completed says (see blocked_ci.rs).
 #[test]
-fn non_green_checks_with_typed_verification_evidence_succeed_as_precommit_passed() {
-    for rollup in [
-        json!([check_run("IN_PROGRESS", json!(null))]),
-        json!([check_run("COMPLETED", json!("FAILURE"))]),
-        json!([]),
+fn pending_or_absent_checks_with_typed_verification_evidence_succeed_as_precommit_passed() {
+    for (rollup, checks) in [
+        (json!([check_run("IN_PROGRESS", json!(null))]), "pending"),
+        (
+            json!([
+                check_run("COMPLETED", json!("SUCCESS")),
+                status_context("PENDING")
+            ]),
+            "pending",
+        ),
+        (json!([]), "none"),
     ] {
         let fx = Fixture::new();
         fx.gh_view(&open_pr(rollup.clone()));
@@ -134,7 +152,7 @@ fn non_green_checks_with_typed_verification_evidence_succeed_as_precommit_passed
 
         let outcome = fx.validate(&as_refs(&envs));
         assert!(outcome.success(), "rollup {rollup}\n{}", outcome.describe());
-        assert_existing_open_pr(&outcome, EVIDENCE_PRECOMMIT);
+        assert_existing_open_pr(&outcome, &format!("{EVIDENCE_PRECOMMIT_PREFIX}{checks}"));
     }
 }
 

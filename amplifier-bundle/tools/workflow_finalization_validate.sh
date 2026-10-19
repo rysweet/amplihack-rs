@@ -229,10 +229,14 @@ FIELDS
   # 5. Resumed runs (#1641): a run resuming an earlier attempt's work may carry
   #    no implementation/verification outputs of its own. It succeeds only when
   #    it was published, its branch has an OPEN same-repo PR confirmed live by
-  #    gh whose head commit is the local HEAD, and a verification signal passes
-  #    (all checks green, or this run's typed verification_completed). Runs after every blocker, so it can only
-  #    replace the default failure below; gh is never called without a publish
-  #    signal, an explicit target directory and a GitHub remote.
+  #    gh whose head commit is the local HEAD, and a verification signal passes:
+  #    every statusCheckRollup entry green (all_checks=green; required status is
+  #    not queried, so any failing check counts), or CI not yet reporting
+  #    (pending/none) plus this run's typed verification_completed. A failing
+  #    check is a negative signal that local pre-commit evidence never
+  #    overrides: it fails closed as BLOCKED_CI. Runs after every blocker, so it
+  #    can only replace the default failure below; gh is never called without a
+  #    publish signal, an explicit target directory and a GitHub remote.
   publish_signal="false"
   [ -z "$pr_url$pr_number" ] || publish_signal="true"
   [ "$(resolve_publish_state_reached)" != "true" ] || publish_signal="true"
@@ -268,18 +272,20 @@ FIELDS
     if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$open_pr_ref")"; then
       # The helper emits only a validated number and the URL it built itself.
       open_pr_checks="$(printf '%s' "$open_pr_signal" | jq -r '.checks // empty')"
-      open_pr_verification=""
-      if [ "$open_pr_checks" = "green" ]; then
-        open_pr_verification="required_checks=green"
-      elif [ "$verification_completed" = "true" ]; then
-        open_pr_verification="precommit_passed=true"
-      fi
-      if [ -n "$open_pr_verification" ]; then
-        pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
-        pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
-        publish_state_override="true"
-        classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR with a passing verification signal" "No action required." "publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number,$open_pr_verification"
-      fi
+      run_pr_number="$pr_number"; run_pr_url="$pr_url"
+      pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
+      pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
+      publish_state_override="true"
+      open_pr_facts="publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number"
+      # A red check is a negative signal; pre-commit evidence never overrides it.
+      [ "$open_pr_checks" != "failing" ] || fail_result "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
+      [ "$open_pr_checks" != "green" ] || classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR whose checks are all green" "No action required." "$open_pr_facts,all_checks=green"
+      case "$verification_completed:$open_pr_checks" in
+        true:pending|true:none)
+          classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR; CI has not reported yet and this run's verification passed" "Watch CI on PR #$pr_number: checks are $open_pr_checks and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI." "$open_pr_facts,precommit_passed=true,all_checks=$open_pr_checks" ;;
+      esac
+      # No success: keep the run's own PR evidence, not the confirmed PR's.
+      pr_number="$run_pr_number"; pr_url="$run_pr_url"; publish_state_override=""
       echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
     else
       # finalization_open_pr_signal already printed the specific reason.

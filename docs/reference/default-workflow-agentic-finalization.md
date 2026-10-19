@@ -224,8 +224,9 @@ Evaluation order:
    deterministic proof for that state.
 5. **Resumed-run open-PR path.** If steps 1–4 produced no result, a run whose
    PR is already published can still succeed as `EXISTING_OPEN_PR`. It needs an
-   open same-repo PR on the run's branch, plus either all-green checks or this
-   run's typed verification evidence. See
+   open same-repo PR on the run's branch, plus either all-green checks or, while
+   CI has not reported (pending or no checks), this run's typed verification
+   evidence. A failing check on that PR fails closed as `BLOCKED_CI`. See
    [Resumed Runs: Open-PR Success Path](#resumed-runs-open-pr-success-path-1641).
    This step only replaces the step 6 default. It never overrides steps 1–4.
 6. **Fallthrough.** If no more specific state applies, the validator keeps its
@@ -249,10 +250,10 @@ way that matters because it is never parsed.
 | `SUPERSEDED` | Yes | A newer workflow-owned PR or issue explicitly supersedes this run and durable metadata links the old run to the replacement. |
 | `IMPLEMENTED_VERIFIED` | Yes | Implementation and required verification completed on a path that does not require publish/merge evidence. |
 | `ALLOW_NO_OP` | Yes | Explicit no-op path was allowed and includes evidence-backed reason text. |
-| `EXISTING_OPEN_PR` | Yes | The run did not record implementation evidence itself (usually because it resumed an earlier attempt), but its branch has a published, open, same-repo PR with all-green checks or this run's typed verification evidence. See [Resumed Runs](#resumed-runs-open-pr-success-path-1641). |
+| `EXISTING_OPEN_PR` | Yes | The run did not record implementation evidence itself (usually because it resumed an earlier attempt), but its branch has a published, open, same-repo PR whose checks are all green, or whose CI has not reported yet (pending or no checks) while this run's typed verification evidence passed. A failing check is `BLOCKED_CI` instead. See [Resumed Runs](#resumed-runs-open-pr-success-path-1641). |
 | `MANUAL_REQUIRED` | No | A provider action is intentionally manual and the final output names the required next action. |
 | `BLOCKED_MANUAL_PROVIDER` | No | Provider tooling, credentials, permissions, or APIs block required automation. |
-| `BLOCKED_CI` | No | Required checks are failing, pending beyond policy, or unavailable when required. |
+| `BLOCKED_CI` | No | Required checks are failing, pending beyond policy, or unavailable when required. On the resumed-run open-PR path, any failing check in the PR's `statusCheckRollup` (#1641). |
 | `FAILED_DIRTY_WORKTREE` | No | Uncommitted or untracked work prevents terminal success. |
 | `FAILED_MEANINGFUL_DIFF` | No | Meaningful branch changes remain but no validated publish, merge, follow-up, no-op, or implementation-plus-verification path proves closure. |
 | `FAILED_CLOSED_UNMERGED` | No | PR is closed without merge evidence and meaningful branch diff remains. |
@@ -355,7 +356,10 @@ success. PRs #1635 and #1639 hit this.
 
 Step 5 of the [evaluation order](#terminal-classification) closes that gap. It classifies
 `EXISTING_OPEN_PR` only when every condition below holds. If any one fails, the
-run stays `FAILED_IMPLEMENTATION`, exactly as before.
+run stays `FAILED_IMPLEMENTATION`, exactly as before, with one exception: when
+conditions 1–6 hold and the confirmed PR has a failing check, the result is
+`BLOCKED_CI`, because a red check is a negative signal and the run must not
+look like it only lacked evidence.
 
 ### Conditions
 
@@ -368,11 +372,12 @@ run stays `FAILED_IMPLEMENTATION`, exactly as before.
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
 | 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
 | 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` (fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
-| 7 | **Verification signal.** Either `checks=green` (see below) or `verification_completed=true` from this run's typed `verification_terminal_evidence`. | `statusCheckRollup` or typed evidence |
+| 7 | **Verification signal.** Either `checks=green` (every rollup entry passed, see below), or `checks` is `pending` or `none` (CI has not reported) and `verification_completed=true` from this run's typed `verification_terminal_evidence`. `checks=failing` never qualifies, whatever `verification_completed` says: it is `BLOCKED_CI`. `checks=unknown` never qualifies either. | `statusCheckRollup` or typed evidence |
 
 Each kind of signal is insufficient on its own. A publish status without a live
 open PR fails. An open PR with no green checks and no verification evidence
-fails. A green rollup on another branch's PR fails. A green rollup on an older
+fails. An open PR with a failing check is `BLOCKED_CI` even with verification
+evidence: this run's local pre-commit run does not override CI. A green rollup on another branch's PR fails. A green rollup on an older
 commit fails too: if the run committed locally but never pushed, the PR's
 `headRefOid` differs from local HEAD, so checks (and this run's precommit
 evidence) that never covered the PR's code cannot vouch for it.
@@ -437,9 +442,12 @@ stays `FAILED_IMPLEMENTATION` and no new failure state is introduced.
 - every `StatusContext` has `state=SUCCESS`.
 
 A pending, failing or null entry, an unknown type, or an empty rollup is not
-green. This is stricter than "required checks pass", because `gh pr view` does
-not say which checks are required. When a stricter rule rejects a run, the
-typed `verification_completed=true` signal still lets it succeed.
+green. Every entry counts, not only required checks: `gh pr view` does not say
+which checks are required, so the evidence is labelled `all_checks=green`, not
+`required_checks=green`. The typed `verification_completed=true` signal can
+stand in for CI only while CI has not reported (`pending` or `none`). It never
+overrides a `failing` entry, which classifies `BLOCKED_CI`, and never an
+`unknown` one, which stays `FAILED_IMPLEMENTATION`.
 
 ### Result
 
@@ -455,16 +463,38 @@ pr_number=1641
 pr_url=https://github.com/rysweet/amplihack-rs/pull/1641
 hollow_success_detected=false
 reporting_failure=false
-evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=1641,required_checks=green
+evidence_used=publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=1641,all_checks=green
 ```
 
 The `terminal_reason` line above is a placeholder; its exact text is defined
 by the code, not by this page. Every other line is the specified output.
 
-When the checks are not green but this run's precommit verification passed, the
-last `evidence_used` entry is `precommit_passed=true` instead of
-`required_checks=green`. Those two strings are the only values that entry can
-take.
+When CI has not reported yet (`checks` is `pending` or `none`) and this run's
+precommit verification passed, the run still succeeds, but the tail of
+`evidence_used` is `precommit_passed=true,all_checks=pending` (or
+`all_checks=none`) instead of `all_checks=green`, and `required_next_action` is
+not "No action required.". It tells the next step to watch CI on the PR and to
+treat any failing check as `BLOCKED_CI`:
+
+```text
+required_next_action=Watch CI on PR #1641: checks are pending and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI.
+evidence_used=...,pr_number=1641,precommit_passed=true,all_checks=pending
+```
+
+Those three tails (`all_checks=green`, `precommit_passed=true,all_checks=pending`
+and `precommit_passed=true,all_checks=none`) are the only ones a success can
+carry.
+
+When the confirmed PR has a failing check, the result is `BLOCKED_CI` and exits
+nonzero. `pr_number` and `pr_url` are still the confirmed values, so the next
+step knows which PR to fix:
+
+```text
+terminal_success=false
+terminal_state=BLOCKED_CI
+required_next_action=Fix the failing CI checks on PR #1641 before merge.
+evidence_used=...,pr_number=1641,all_checks=failing,verification_completed=<true|false>
+```
 
 `pr_number` and `pr_url` in the result are the values `gh` confirmed. They are
 not copied from the input context. `publish_state_reached=true` comes from an
@@ -480,7 +510,9 @@ success.
 | Situation | Terminal state | `gh` called? |
 | --- | --- | --- |
 | No PR, no publish state, no evidence | `FAILED_IMPLEMENTATION` | No |
-| Open PR, a check failing or pending, `verification_completed` unset | `FAILED_IMPLEMENTATION` | Yes |
+| Open PR, any check failing (with or without `verification_completed=true`) | `BLOCKED_CI` | Yes |
+| Open PR, a check pending, `verification_completed` unset | `FAILED_IMPLEMENTATION` | Yes |
+| Open PR, an unclassifiable check (unknown type or conclusion), with or without `verification_completed=true` | `FAILED_IMPLEMENTATION` | Yes |
 | PR `CLOSED` or `MERGED` | `FAILED_IMPLEMENTATION` | Yes |
 | PR head ≠ run branch, or cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
 | `pr_url` names a different repo than `origin` and no valid `pr_number` is set (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
@@ -529,9 +561,11 @@ returns 1 rather than writing into the working directory.
 
 ### Known limitations
 
-- **Every reported check, not just the required ones.** A run with an
-  irrelevant failing check needs `verification_completed=true` to pass. The
-  merge gate still re-checks required CI.
+- **Every reported check, not just the required ones.** A run whose PR has an
+  irrelevant (non-required) failing check is `BLOCKED_CI`, even with
+  `verification_completed=true`. That is deliberate: `gh pr view` cannot tell
+  which checks are required, and a classifier that cannot tell must not call a
+  red build done. Fix or remove the failing check, then re-run finalization.
 - **Point-in-time.** The PR can change after validation. Finalization reports
   what it saw; it is not a merge gate.
 - **AzDO.** Resumed AzDO runs are not checked against provider CI. Without the
@@ -796,7 +830,8 @@ gh pr view 1641 --repo "$R" --json state,headRefName,headRefOid,isCrossRepositor
   --jq '.statusCheckRollup[] | {name, status, conclusion, state}'
 ```
 
-A pending or failing entry in the rollup, a second open PR for the branch (even
+A failing entry in the rollup (reported as `BLOCKED_CI`), a pending entry
+without this run's verification evidence, a second open PR for the branch (even
 from a fork), a PR head that is not the local HEAD (unpushed commits), a
 `pr_url` for another repo, or a missing publish signal all keep
 the run failed by design.
