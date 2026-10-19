@@ -226,15 +226,41 @@ else
     fail "EXIT79-detect" "exit 79 not detected (terminal_refusal='${T}'): ${EV79}"
 fi
 
+# The guard's own line (execute.rs), not a paraphrase of it: the collector
+# needs the full marker, as terminal_refusal() in autodrive_loop.sh does (#1510).
 EVBT="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
-    LOOP_LAST_ROUND_OUTPUT="child returned BLOCKED_TERMINAL at depth 4/3" \
+    LOOP_LAST_ROUND_OUTPUT="BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3" \
     run_step "${COLLECT}" 2>/dev/null)"
 T="$(printf '%s' "${EVBT}" | amplihack orch helper extract-json \
     | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
 if [[ "${T}" == "true" ]]; then
-    pass "EXIT79-blocked-terminal" "BLOCKED_TERMINAL in round output is a terminal policy refusal"
+    pass "EXIT79-blocked-terminal" "the guard's BLOCKED_TERMINAL orchestration_unavailable line is a terminal policy refusal"
 else
     fail "EXIT79-blocked-terminal" "BLOCKED_TERMINAL not detected (terminal_refusal='${T}')"
+fi
+
+# The runner's log_pointer line echoes task_description. A task that names the
+# full marker and "exit 79" is not a refusal (round 1 of PR #1632, #1510); a
+# guard line after it still is.
+LP='amplihack.recipe.log_pointer {"schema_version":1,"event":"final","task_description":"a review quoting BLOCKED_TERMINAL orchestration_unavailable or exit 79 must not stop the loop","exit_code":79,"status":"failure"}'
+EVLP="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
+    LOOP_LAST_ROUND_OUTPUT="${LP}" run_step "${COLLECT}" 2>/dev/null)"
+T="$(printf '%s' "${EVLP}" | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+if [[ "${T}" == "false" ]]; then
+    pass "EXIT79-log-pointer-echo" "a log_pointer line echoing the marker in task_description is not a refusal"
+else
+    fail "EXIT79-log-pointer-echo" "log_pointer task_description read as a refusal (terminal_refusal='${T}')"
+fi
+EVLPG="$(LOOP_REPO_PATH="${REPO_ROOT}" LOOP_NAME="t" LOOP_HISTORY="" \
+    LOOP_LAST_ROUND_OUTPUT="${LP}"$'\n'"BLOCKED_TERMINAL orchestration_unavailable: depth 4 of max 3" \
+    run_step "${COLLECT}" 2>/dev/null)"
+T="$(printf '%s' "${EVLPG}" | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field terminal_refusal --default MISSING)"
+if [[ "${T}" == "true" ]]; then
+    pass "EXIT79-log-pointer-then-guard" "a guard line after a log_pointer line is still a refusal"
+else
+    fail "EXIT79-log-pointer-then-guard" "guard line after log_pointer not detected (terminal_refusal='${T}')"
 fi
 
 # A terminal refusal forces STUCK even when the model said CONTINUE.
