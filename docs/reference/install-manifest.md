@@ -42,7 +42,7 @@ During uninstall, each path is resolved as `~/.amplihack/.claude/<relative>`. Pa
 
 ### `dirs` — `Vec<String>`
 
-Relative paths (from `~/.amplihack/.claude/`) of every directory created by the installer. Uninstall removes them deepest-first to avoid `rmdir: Directory not empty` errors.
+Relative paths (from `~/.amplihack/.claude/`) of every directory created by the installer. Uninstall removes them deepest-first to avoid `rmdir: Directory not empty` errors. A reinstall carries forward the directories earlier installs recorded (as long as they still exist), so uninstall after a reinstall removes them too (issue #1507).
 
 ```json
 "dirs": [

@@ -48,20 +48,35 @@ jobs:
   check:
     name: Lint & Format
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     env:
-      # SPIKE (#1052 follow-up): compiled-artifact caching via sccache with the
-      # GitHub Actions cache backend. Unlike restoring the whole target/ dir
-      # (which exhausted runner disk, hence cache-targets: false), sccache stores
-      # compact per-compilation-unit outputs and fetches on demand, keeping peak
-      # disk low. Goal: cut the ~16 min from-scratch clippy compile on warm runs.
-      SCCACHE_GHA_ENABLED: "true"
+      # Compiled-artifact caching via sccache (#1052 follow-up). Unlike
+      # restoring the whole target/ dir (which exhausted runner disk, hence
+      # cache-targets: false), sccache stores compact per-compilation-unit
+      # outputs, keeping peak disk low.
+      #
+      # sccache uses its local disk cache, and the "Restore sccache disk cache"
+      # and "Save sccache disk cache" steps carry that directory between runs
+      # as one Actions cache entry per job. It used to talk to the Actions cache
+      # service directly (SCCACHE_GHA_ENABLED), one API call per object read
+      # and per object written. One CI run's seven jobs make thousands of those
+      # calls in the first minutes, and the service answers HTTP 429 "rate limit
+      # exceeded": 219 of 506 writes in one Test job failed that way, and 487
+      # reads did too, which sccache counts as plain misses and recompiles.
       RUSTC_WRAPPER: sccache
-      # 2G was below what this workspace already stores: the repository's
-      # active Actions cache measured 2.49 GB across 9111 entries, so the
-      # cap was evicting entries inside a single run. Pinning kani to its
-      # own nightly adds a second toolchain whose objects cannot share
-      # entries with the 1.97.0 build, roughly doubling what one job needs.
-      SCCACHE_CACHE_SIZE: "10G"
+      # Caps each job's local directory, and so its Actions cache entry. The
+      # budget: 11 key prefixes (7 here, 4 in release.yml), and the prune job
+      # keeps the newest 2 of each, so up to 22 entries, a 22 GB ceiling at
+      # the cap. At the measured cold sizes (270-665 MB per job here, similar
+      # for release) one generation is about 4 GB and two about 8 GB, before
+      # rust-cache's ~1.3 GB, which is close to the repository's 10 GB limit.
+      # Under pressure GitHub evicts least-recently-used entries first, which
+      # is the older entry of each pair: restores always take the newest.
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify cxx-build pin
@@ -72,6 +87,31 @@ jobs:
             echo "Run: cargo update -p cxx-build --precise 1.0.138"
             exit 1
           fi
+      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
+        with:
+          components: clippy, rustfmt
+      # sccache must be installed before the first cargo invocation in this
+      # job. RUSTC_WRAPPER is set job-wide at the top, so any cargo running
+      # before this step dies with "could not execute process `sccache`". So the
+      # toolchain, sccache and the registry cache come before the first gate that
+      # builds, after only the cxx-build pin check (which needs no toolchain and
+      # fails fast). The recipe gates below build the amplihack binary; when they
+      # ran before this step they had to build it with RUSTC_WRAPPER='' --
+      # uncached, about 17 minutes of this job on every run.
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
+      - name: Restore sccache disk cache
+        uses: ./.github/actions/sccache-restore
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+        with:
+          cache-targets: false
+          cache-on-failure: true
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Recipes — no bare python invocations (issue #248)
         run: scripts/check-recipes-no-python.sh
       - name: Repository — no tracked Python assets
@@ -98,12 +138,33 @@ jobs:
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
+      - name: Migrate skill — a default-guess agent binary is not an instruction (issue #1481)
+        shell: bash
+        run: bash tests/issue_1481_migrate_detect_cli_default_tag.sh
+      - name: Migrate skill — detect_cli agrees with the Rust resolver (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_migrate_detect_cli_parity.sh
+      - name: Shipped docs — a detached recipe run carries the agent-binary hand-off, double-quoted (issue #1525)
+        shell: bash
+        run: bash tests/issue_1525_detached_launch_docs_carry_hand_off.sh
       - name: Shipped shell — bash 3.2 portable, no bash-4-only constructs (issue #1423)
         shell: bash
         run: bash tests/issue_1423_bash4_constructs.sh
       - name: Workflows — PR runs must not cancel each other (issue #1372)
         shell: bash
         run: bash tests/issue_1372_pr_workflows_scope_concurrency.sh
+      - name: CI scripts — no early-exit pipeline stage (issue #1434)
+        shell: bash
+        run: bash tests/issue_1434_no_early_exit_pipelines.sh
+      - name: Recipe runner pin — ancestry check and its workflow (issue #1593)
+        shell: bash
+        run: bash tests/recipe_runner_pin_ancestry_test.sh
+      - name: Recipe runner installers — never downgrade an installed runner (issue #1593)
+        shell: bash
+        run: bash tests/install_pinned_runner_downgrade_guard_test.sh
+      - name: Recipe runner installers — install-runtime copy of the ancestry library (issue #1593)
+        shell: bash
+        run: bash tests/runner_ancestry_lib_parity_test.sh
       - name: Worktree — refuse a repo with no origin remote (issue #1323)
         shell: bash
         run: bash tests/issue_1323_multirepo_origin_precondition.sh
@@ -193,6 +254,9 @@ jobs:
       - name: Recipes — best-effort PR labels from WORKFLOW_PR_LABELS
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-labels-best-effort.sh
+      - name: Recipes — PR field arrays reload, not accumulate (issue #1423)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-pr-field-arrays-reload.sh
       - name: Recipes — static guard validation scope (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-static-guard-validation-scope.sh
@@ -208,6 +272,9 @@ jobs:
       - name: Recipes — leak-proof, self-healing worktree setup (issue #840)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-840-worktree-leak-proof.sh
+      - name: Recipes — cleanup never deletes other runs' or uncommitted worktrees (issues #1494, #1560)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1494-1560-worktree-safety.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh
@@ -217,6 +284,9 @@ jobs:
       - name: Recipes — canonical helper resolution ladders (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-runtime-artifact-ladders.sh
+      - name: Recipes — auto-drive QA evidence record is valid JSON (issue #1531)
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-issue-1531-qa-evidence-json.sh
       - name: Recipes — fatal allowlist preserved; bookkeeping gates degraded (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-fatal-allowlist-preserved.sh
@@ -257,17 +327,13 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
             shellcheck -S warning amplifier-bundle/tools/workflow_worktree_deconflict.sh
           fi
-      - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
-        with:
-          components: clippy, rustfmt
-      # sccache must be installed before the first cargo invocation in this
-      # job. RUSTC_WRAPPER is set job-wide at the top, so any cargo running
-      # before this step dies with "could not execute process `sccache`". The
-      # proof gate below was the first cargo call and was doing exactly that,
-      # turning Lint & Format red on main and on every PR branched from it.
-      - name: Setup sccache
-        uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
-
+      - name: Plugin — shellcheck claude-plugin/bin
+        shell: bash
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          fi
+          shellcheck -s sh -S style claude-plugin/bin/*
       - name: Proof gate — spawn-accounting decisions (issue #1329)
         run: |
           set -euo pipefail
@@ -300,11 +366,6 @@ jobs:
           echo "${TLA2TOOLS_SHA256}  /tmp/tla2tools.jar" | sha256sum -c -
           TLA2TOOLS_JAR=/tmp/tla2tools.jar ./scripts/check-spec.sh
 
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
-        with:
-          cache-targets: false
-          cache-on-failure: true
-          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --check
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
@@ -315,10 +376,20 @@ jobs:
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
+      - name: Save sccache disk cache
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
 
   test:
     name: Test
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — the lint/format job compiles the whole workspace for
     # clippy (~15 min under the no-artifact-cache policy), and gating the
     # expensive Test job behind it serialized the critical path to
@@ -328,19 +399,14 @@ jobs:
     # path to ~35 min. `concurrency: cancel-in-progress` still supersedes stale
     # runs; a lint failure only costs redundant Test compute, not correctness.
     env:
-      # Drop debug info from the workspace's large test-binary surface (60+
-      # integration [[test]] targets plus per-crate unit tests): smaller links
+      # Drop debug info from the workspace's large test-binary surface (the
+      # `integration` binary, per-crate integration and unit tests): smaller links
       # and lower peak disk. The suite asserts behavior, not backtraces (#744).
       CARGO_PROFILE_TEST_DEBUG: "0"
-      # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
-      SCCACHE_GHA_ENABLED: "true"
+      # sccache compiled-artifact caching (local disk, carried by actions/cache).
+      # See check job.
       RUSTC_WRAPPER: sccache
-      # 2G was below what this workspace already stores: the repository's
-      # active Actions cache measured 2.49 GB across 9111 entries, so the
-      # cap was evicting entries inside a single run. Pinning kani to its
-      # own nightly adds a second toolchain whose objects cannot share
-      # entries with the 1.97.0 build, roughly doubling what one job needs.
-      SCCACHE_CACHE_SIZE: "10G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Free disk space
@@ -363,6 +429,13 @@ jobs:
           tool: nextest
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
+      - name: Restore sccache disk cache
+        uses: ./.github/actions/sccache-restore
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # The full workspace test profile links large native artifacts. Restoring
@@ -370,6 +443,9 @@ jobs:
           cache-targets: false
           cache-on-failure: true
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Install pinned recipe runner
+        shell: bash
+        run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
       # nextest: better parallelism and lower peak disk than `cargo test`.
@@ -402,10 +478,20 @@ jobs:
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
+      - name: Save sccache disk cache
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
 
   install-smoke:
     name: Install Smoke Test
     runs-on: ubuntu-latest
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
     env:
       # This job only asserts that `cargo install` succeeds and the binary
@@ -417,20 +503,22 @@ jobs:
       # full optimization (#744).
       CARGO_PROFILE_RELEASE_LTO: "false"
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
-      # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
-      SCCACHE_GHA_ENABLED: "true"
+      # sccache compiled-artifact caching (local disk, carried by actions/cache).
+      # See check job.
       RUSTC_WRAPPER: sccache
-      # 2G was below what this workspace already stores: the repository's
-      # active Actions cache measured 2.49 GB across 9111 entries, so the
-      # cap was evicting entries inside a single run. Pinning kani to its
-      # own nightly adds a second toolchain whose objects cannot share
-      # entries with the 1.97.0 build, roughly doubling what one job needs.
-      SCCACHE_CACHE_SIZE: "10G"
+      SCCACHE_CACHE_SIZE: "1G"
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@35a842e360814583e976785eeda0bd0655cb8e83 # 1.97.0
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
+      - name: Restore sccache disk cache
+        uses: ./.github/actions/sccache-restore
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           # Reuse the dependency-source cache namespace the native x86_64-linux
@@ -443,15 +531,55 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install from local checkout
         run: cargo install --path bins/amplihack --locked
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+      - name: Save sccache disk cache
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-host-
       - name: Verify binary
         run: |
           amplihack --version
           amplihack --help
           amplihack recipe list || true
+      # Issue #1527: outside-in check of the --model that claude, copilot and
+      # codex receive from the binary installed above. Runs the gadugi
+      # scenario's driver directly, as Lint & Format does for the issue-820
+      # scenario; CI does not run gadugi-test itself.
+      - name: Outside-in — dotted Claude model ids (issue #1527)
+        shell: bash
+        run: AMPLIHACK_1527_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1527-model-scenario.sh
+      # Issues #1481 and #1525: the scenario below needs tmux for its detached
+      # launch cases and the pinned recipe runner for its recipe-run cases.
+      - name: Install tmux and the pinned recipe runner (issues #1481, #1525)
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v tmux >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q tmux; }
+          tmux -V
+          bash scripts/install-pinned-recipe-runner.sh
+      # Outside-in check of `amplihack agent-binary`, its --shell hand-off, the
+      # agent binary a recipe step is handed, and a real detached tmux launch,
+      # against the binary installed above. REQUIRE_ALL turns any case that
+      # could not run into a failure, so a missing tool cannot pass as green.
+      - name: Outside-in — agent binary resolution and hand-off (issues #1481, #1525)
+        shell: bash
+        run: AMPLIHACK_1481_QA_REQUIRE_ALL=1 AMPLIHACK_1481_QA_BIN="$(command -v amplihack)" bash tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+      - name: Install — npx shim does not abort install (issue #1480)
+        run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/issue_1480_npx_shim_install.sh
+      - name: Install — bootstraps Rust toolchain when cargo is missing
+        run: AMPLIHACK_BIN="$(command -v amplihack)" bash tests/rust_toolchain_bootstrap_install.sh
 
   cross-compile:
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    # actions: read lets the sccache composite actions list cache entries to
+    # tell a rate-limited restore or save from a real miss.
+    permissions:
+      contents: read
+      actions: read
     # No `needs: check` — parallelize with Lint & Format (see Test job note).
     env:
       # PR/branch runs only *verify* that each target compiles; the optimized
@@ -462,17 +590,12 @@ jobs:
       # shipped artifacts are unchanged.
       CARGO_PROFILE_RELEASE_LTO: ${{ startsWith(github.ref, 'refs/tags/v') && 'true' || 'false' }}
       CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ startsWith(github.ref, 'refs/tags/v') && '1' || '16' }}
-      # SPIKE: sccache compiled-artifact caching (GHA backend). See check job.
+      # sccache compiled-artifact caching (local disk, carried by actions/cache).
+      # See check job.
       # All matrix entries build natively (cross: false), so RUSTC_WRAPPER wraps
       # the host rustc directly; sccache keys already include the target triple.
-      SCCACHE_GHA_ENABLED: "true"
       RUSTC_WRAPPER: sccache
-      # 2G was below what this workspace already stores: the repository's
-      # active Actions cache measured 2.49 GB across 9111 entries, so the
-      # cap was evicting entries inside a single run. Pinning kani to its
-      # own nightly adds a second toolchain whose objects cannot share
-      # entries with the 1.97.0 build, roughly doubling what one job needs.
-      SCCACHE_CACHE_SIZE: "10G"
+      SCCACHE_CACHE_SIZE: "1G"
     strategy:
       fail-fast: false
       matrix:
@@ -500,6 +623,13 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Setup sccache
         uses: mozilla-actions/sccache-action@9e7fa8a12102821edf02ca5dbea1acd0f89a2696 # v0.0.10
+      # sccache's disk cache travels as one Actions cache entry per job (and
+      # target); see .github/actions/sccache-restore. Only main saves, so pull
+      # requests start from main's entry and add none of their own.
+      - name: Restore sccache disk cache
+        uses: ./.github/actions/sccache-restore
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
         with:
           key: ${{ matrix.target }}
@@ -535,6 +665,13 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      # Outside-in: drive the real hooks binary through session-stop and
+      # user-prompt-submit, as Claude Code does (issue #1483).
+      - name: Outside-in — memory injection via the real hooks binary (issue #1483)
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: bash tests/issue_1483_memory_injection_outside_in.sh "target/${{ matrix.target }}/release/amplihack-hooks"
+
       # Cross build (Linux ARM64)
       - name: Build (cross)
         if: matrix.cross
@@ -543,6 +680,14 @@ jobs:
           -p amplihack -p amplihack-hooks-bin
           --features amplihack-hooks-bin/signal
 
+      - name: sccache stats
+        if: always()
+        run: sccache --show-stats
+      - name: Save sccache disk cache
+        if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+        uses: ./.github/actions/sccache-save
+        with:
+          key-prefix: sccache-v1-${{ runner.os }}-${{ github.job }}-${{ matrix.target }}-
       - name: Upload binary artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -551,6 +696,31 @@ jobs:
             target/${{ matrix.target }}/release/amplihack
             target/${{ matrix.target }}/release/amplihack-hooks
           if-no-files-found: error
+
+
+  # Every main save adds one sccache entry per job; delete all but the newest
+  # two for each job and target so they do not pile up against the 10 GB cache
+  # limit. Only this job holds actions: write.
+  sccache-prune:
+    name: Prune sccache caches
+    needs: [check, test, install-smoke, cross-compile]
+    if: always() && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          sparse-checkout: .github/scripts
+      # The script finds every sccache-v1-<...>-<run>-<attempt> entry on main
+      # and groups by prefix itself, so a new job or build target is pruned
+      # without being listed here.
+      - name: Delete older sccache entries (keep newest 2 per job)
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash .github/scripts/prune-sccache-caches.sh refs/heads/main 2
 
   release:
     name: Release

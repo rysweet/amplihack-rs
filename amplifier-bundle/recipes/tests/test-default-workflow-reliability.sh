@@ -223,16 +223,22 @@ assert_runtime_artifact_helper_contracts() {
         || fail "workflow_runtime_artifacts.sh must define preflight_known_workflow_runtime_artifacts"
 
     local case_dir="${WORK}/runtime-artifacts"
-    local repo="${case_dir}/repo"
+    local main_repo="${case_dir}/main"
+    local repo="${case_dir}/task"
 
+    # The task worktree is a *linked* worktree of the main checkout, as
+    # workflow-worktree creates it. On the main checkout itself `worktrees/`
+    # holds other runs' task worktrees and is never removed (issue #1494; see
+    # test-issue-1494-1560-worktree-safety.sh).
     mkdir -p "${case_dir}"
-    git init -b main "${repo}" >/dev/null
-    configure_identity "${repo}"
-    printf 'base\n' > "${repo}/README.md"
-    mkdir -p "${repo}/.claude"
-    printf '{"user":"owned"}\n' > "${repo}/.claude/settings.json"
-    git -C "${repo}" add README.md .claude/settings.json
-    git -C "${repo}" commit -m "base" >/dev/null
+    git init -b main "${main_repo}" >/dev/null
+    configure_identity "${main_repo}"
+    printf 'base\n' > "${main_repo}/README.md"
+    mkdir -p "${main_repo}/.claude"
+    printf '{"user":"owned"}\n' > "${main_repo}/.claude/settings.json"
+    git -C "${main_repo}" add README.md .claude/settings.json
+    git -C "${main_repo}" commit -m "base" >/dev/null
+    git -C "${main_repo}" worktree add -b task "${repo}" >/dev/null 2>&1
 
     mkdir -p "${repo}/.claude/runtime/logs" "${repo}/worktrees/generated-agent"
     printf 'generated runtime\n' > "${repo}/.claude/runtime/logs/session.log"
@@ -281,6 +287,71 @@ assert_runtime_artifact_helper_contracts() {
     [[ -d "${nongit}/.claude/runtime" ]] \
         || { rm -rf "${nongit}"; fail "cleanup must not delete anything when the target is not a git worktree"; }
     rm -rf "${nongit}"
+}
+
+# Issue #1528 (SEC-D1): in a main checkout, `worktrees/` holds other runs' live
+# worktrees. The preflight keeps it, with a warning, while anything under it is
+# registered, and also when it cannot list worktrees. A kept directory does not
+# fail the preflight. The unregistered case above still removes it.
+assert_runtime_preflight_keeps_main_checkout_worktrees() {
+    # shellcheck source=/dev/null
+    source "${RUNTIME_ARTIFACT_HELPER}"
+
+    local case_dir="${WORK}/runtime-artifacts-1528"
+    local repo stderr_file real_git shim_dir
+    mkdir -p "${case_dir}"
+    git init -b main "${case_dir}/main" >/dev/null
+    repo="$(cd "${case_dir}/main" && pwd -P)"
+    configure_identity "${repo}"
+    printf 'base\n' > "${repo}/README.md"
+    git -C "${repo}" add README.md
+    git -C "${repo}" commit -m "base" >/dev/null
+    git -C "${repo}" worktree add -b feat/other "${repo}/worktrees/feat/other" >/dev/null 2>&1
+    printf 'uncommitted run work\n' > "${repo}/worktrees/feat/other/wip.txt"
+    mkdir -p "${repo}/.claude/runtime/logs"
+    printf 'generated runtime\n' > "${repo}/.claude/runtime/logs/session.log"
+    stderr_file="${case_dir}/stderr"
+
+    preflight_known_workflow_runtime_artifacts "${repo}" 2>"${stderr_file}" \
+        || fail "issue #1528: a kept worktrees/ must not fail the preflight: $(cat "${stderr_file}")"
+    [[ -f "${repo}/worktrees/feat/other/wip.txt" ]] \
+        || fail "issue #1528: preflight must never delete a main checkout's worktrees/ while it holds a registered worktree"
+    git -C "${repo}" worktree list --porcelain | grep -qxF "worktree ${repo}/worktrees/feat/other" \
+        || fail "issue #1528: the run worktree must stay registered"
+    grep -qxF "INFO: leaving ${repo}/worktrees in place: on the main checkout it holds other runs' worktrees (#1494)" "${stderr_file}" \
+        || fail "issue #1528: preflight must say why it kept worktrees/ (got: $(cat "${stderr_file}"))"
+    [[ ! -e "${repo}/.claude/runtime" ]] \
+        || fail "issue #1528: .claude/runtime is still cleaned when worktrees/ is kept"
+
+    # `git worktree list` fails: the preflight cannot prove the directory is
+    # safe to delete, so it keeps it. A PATH shim fails only that call.
+    real_git="$(command -v git)"
+    shim_dir="${case_dir}/shim"
+    mkdir -p "${shim_dir}"
+    cat > "${shim_dir}/git" <<SHIM
+#!/usr/bin/env bash
+prev=""
+for arg in "\$@"; do
+    if [ "\$prev" = worktree ] && [ "\$arg" = list ]; then
+        echo "fatal: shim refused worktree list" >&2
+        exit 128
+    fi
+    prev="\$arg"
+done
+exec "${real_git}" "\$@"
+SHIM
+    chmod +x "${shim_dir}/git"
+    mkdir -p "${repo}/.claude/runtime/logs"
+    printf 'generated runtime\n' > "${repo}/.claude/runtime/logs/session.log"
+
+    (PATH="${shim_dir}:${PATH}"; hash -r; preflight_known_workflow_runtime_artifacts "${repo}") 2>"${stderr_file}" \
+        || fail "issue #1528: a failed worktree list must keep worktrees/, not fail the preflight: $(cat "${stderr_file}")"
+    [[ -f "${repo}/worktrees/feat/other/wip.txt" ]] \
+        || fail "issue #1528: preflight must keep worktrees/ when git worktree list fails"
+    grep -qxF "WARNING: runtime cleanup kept ${repo}/worktrees: git worktree list failed (#1528)" "${stderr_file}" \
+        || fail "issue #1528: preflight must warn that the worktree list failed (got: $(cat "${stderr_file}"))"
+
+    echo "  PASS[runtime-preflight-1528]: a main checkout keeps worktrees/ while it holds a registered worktree or the list fails"
 }
 
 assert_terminal_recipe_uses_final_status_tool() {
@@ -392,16 +463,20 @@ create_commit_guard_repo() {
     local label="$1"
     local repo="$2"
     local origin="$3"
+    # Commit steps run in the task's LINKED worktree, and step-20b refuses to
+    # commit anywhere else (#1528). So the main checkout sits beside ${repo},
+    # and ${repo} is a linked worktree on the feature branch.
+    local main="${repo}.main"
 
     git init --bare -b main "${origin}" >/dev/null
-    git init -b main "${repo}" >/dev/null
-    configure_identity "${repo}"
-    printf 'base\n' > "${repo}/README.md"
-    git -C "${repo}" add README.md
-    git -C "${repo}" commit -m "seed ${label}" >/dev/null
-    git -C "${repo}" remote add origin "${origin}"
-    git -C "${repo}" push -u origin main >/dev/null 2>&1
-    git -C "${repo}" checkout -b "feat/issue-573-${label}" >/dev/null
+    git init -b main "${main}" >/dev/null
+    configure_identity "${main}"
+    printf 'base\n' > "${main}/README.md"
+    git -C "${main}" add README.md
+    git -C "${main}" commit -m "seed ${label}" >/dev/null
+    git -C "${main}" remote add origin "${origin}"
+    git -C "${main}" push -u origin main >/dev/null 2>&1
+    git -C "${main}" worktree add -b "feat/issue-573-${label}" "${repo}" >/dev/null 2>&1
     git -C "${repo}" push -u origin "feat/issue-573-${label}" >/dev/null 2>&1
 }
 
@@ -411,8 +486,13 @@ install_pre_commit_probe() {
     local hook_path
 
     hook_path="$(git -C "${repo}" rev-parse --git-path hooks/pre-commit)"
-    mkdir -p "$(dirname "${repo}/${hook_path}")"
-    cat > "${repo}/${hook_path}" <<'HOOK'
+    # Relative in a main checkout, absolute in a linked worktree.
+    case "${hook_path}" in
+        /*) ;;
+        *) hook_path="${repo}/${hook_path}" ;;
+    esac
+    mkdir -p "$(dirname "${hook_path}")"
+    cat > "${hook_path}" <<'HOOK'
 #!/usr/bin/env bash
 set -euo pipefail
 actual="${PRE_COMMIT_ALLOW_NO_CONFIG-__UNSET__}"
@@ -421,7 +501,7 @@ if [[ "${actual}" != "${EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG:?}" ]]; then
     exit 7
 fi
 HOOK
-    chmod +x "${repo}/${hook_path}"
+    chmod +x "${hook_path}"
     EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG="${expected}" git -C "${repo}" rev-parse --verify HEAD >/dev/null
 }
 
@@ -929,6 +1009,7 @@ assert_yaml_recipe_step_present "smart-orchestrator routing" "${SMART_ORCHESTRAT
 assert_yaml_step_not_fatal_false "smart-execute-routing development path" "${SMART_EXECUTE_RECIPE}" "execute-single-round-1-development"
 assert_yaml_step_not_fatal_false "smart-execute-routing adaptive development path" "${SMART_EXECUTE_RECIPE}" "adaptive-execute-development"
 assert_runtime_artifact_helper_contracts
+assert_runtime_preflight_keeps_main_checkout_worktrees
 
 # Integration coverage: non-main base branches and fallback behavior.
 extract_step_command "${WORKTREE_RECIPE}" "step-04-setup-worktree" "${STEP04}"

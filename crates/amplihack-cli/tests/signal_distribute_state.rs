@@ -1,6 +1,6 @@
 //! TDD contract — fleet distribute state model & resumability (#923).
 //!
-//! Run with: `cargo test -p amplihack-cli --features signal --test signal_distribute_state`
+//! Run with: `cargo test -p amplihack-cli --features signal --test cli_integration signal_distribute_state::`
 //!
 //! `commands::signal::distribute` tracks per-VM rollout state in an atomic JSON
 //! file (`~/.amplihack/signal-distribute-state.json`). Contract:

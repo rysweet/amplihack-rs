@@ -6,8 +6,9 @@ use tempfile::NamedTempFile;
 
 mod execute {
     pub(super) use super::super::execute::{
-        CONTEXT_ENV_BUDGET_OVERRIDE_ENV, ENV_ENTRY_OVERHEAD_BYTES, context_env_budget,
-        context_env_pairs, parse_recipe_output, pass_context, resolve_context_env_budget,
+        CONTEXT_ENV_BUDGET_OVERRIDE_ENV, ENV_ENTRY_OVERHEAD_BYTES, MAX_ARG_STRLEN_BYTES,
+        context_env_budget, context_env_pairs, parse_recipe_output, pass_context,
+        resolve_context_env_budget,
     };
     pub(super) use super::execute_recipe_via_rust_for_test as execute_recipe_via_rust;
 }
@@ -88,6 +89,7 @@ fn test_execute_recipe_via_rust_propagates_asset_resolver_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let resolver = temp.path().join("amplihack-asset-resolver");
@@ -199,6 +201,7 @@ fn test_execute_recipe_via_rust_sets_home_from_working_dir_bundle_root() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let repo = temp.path().join("repo");
@@ -264,6 +267,7 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -287,11 +291,12 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
     let prev_home = std::env::var_os("AMPLIHACK_HOME");
-    let prev_agent = std::env::var_os("AMPLIHACK_AGENT_BINARY");
+    // No inherited `default:<binary>` tag (issue #1481): a recipe step running
+    // this suite can carry one, and it would make the resolver skip the value.
+    let agent_env = crate::test_support::AgentBinaryEnv::set(Some("copilot"), None);
     unsafe {
         std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
         std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
-        std::env::set_var("AMPLIHACK_AGENT_BINARY", "copilot");
     }
 
     let result = execute::execute_recipe_via_rust(
@@ -313,10 +318,7 @@ fn test_execute_recipe_via_rust_propagates_agent_binary_env() {
         Some(value) => unsafe { std::env::set_var("AMPLIHACK_HOME", value) },
         None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
     }
-    match prev_agent {
-        Some(value) => unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", value) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_AGENT_BINARY") },
-    }
+    drop(agent_env);
 
     assert_eq!(
         result.context.get("agent_binary"),
@@ -330,6 +332,7 @@ fn test_execute_recipe_via_rust_sets_pager_safe_env() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -427,6 +430,7 @@ fn test_execute_recipe_via_rust_forces_noninteractive_and_strips_claudecode() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -502,6 +506,7 @@ fn test_execute_recipe_via_rust_reports_nonzero_exit_with_stderr() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     std::fs::write(&runner, "#!/bin/sh\necho \"runner exploded\" >&2\nexit 2\n")
@@ -553,6 +558,7 @@ fn test_execute_recipe_via_rust_reports_signal_kill_clearly() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     std::fs::write(&runner, "#!/bin/sh\nkill -TERM $$\n").expect("failed to write runner stub");
@@ -599,6 +605,7 @@ fn test_execute_recipe_via_rust_sets_stable_run_id_env_and_result_metadata() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -655,6 +662,7 @@ fn test_execute_recipe_via_rust_emits_early_and_final_success_log_pointers() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -761,6 +769,7 @@ fn test_execute_recipe_via_rust_nonzero_exit_emits_failure_pointer_and_result_su
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -824,6 +833,7 @@ fn test_execute_recipe_via_rust_parse_failure_emits_final_pointer() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -877,6 +887,7 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -926,6 +937,13 @@ fn test_execute_recipe_via_rust_spawn_failure_emits_final_pointer_without_child_
 // pass_context — unit tests for E2BIG mitigation (issues #209, #211)
 // -------------------------------------------------------------------------
 
+fn set_args(command: &Command) -> Vec<String> {
+    command
+        .get_args()
+        .map(|a| a.to_string_lossy().into_owned())
+        .collect()
+}
+
 #[test]
 fn test_pass_context_uses_args_for_small_payloads() {
     let mut context = BTreeMap::new();
@@ -933,74 +951,198 @@ fn test_pass_context_uses_args_for_small_payloads() {
     context.insert("key2".to_string(), "value2".to_string());
 
     let mut command = Command::new("echo");
-    let tmp = execute::pass_context(&mut command, &context).unwrap();
+    let bytes = execute::pass_context(&mut command, &context).unwrap();
 
-    // Small payloads should not produce a temp file.
-    assert!(
-        tmp.is_none(),
-        "small context should use CLI args, not a file"
+    assert_eq!(
+        set_args(&command),
+        ["--set", "key1=value1", "--set", "key2=value2"]
     );
+    assert!(bytes > "key1=value1key2=value2".len());
 }
 
+/// Issue #1570: recipe-runner-rs has no `--context-file`. A context whose
+/// pairs total over 128 KiB, each fitting in one argv string, is still
+/// passed as `--set` arguments.
 #[test]
-fn test_pass_context_uses_file_for_large_payloads() {
+fn test_pass_context_uses_set_args_for_large_totals() {
+    let medium = "x".repeat(100 * 1024);
     let mut context = BTreeMap::new();
-    // Create a payload well over the 128KB threshold.
-    let big_value = "x".repeat(200 * 1024);
-    context.insert("task_description".to_string(), big_value.clone());
+    context.insert("cycle_history".to_string(), medium.clone());
+    context.insert("task_description".to_string(), medium.clone());
 
     let mut command = Command::new("echo");
-    let tmp = execute::pass_context(&mut command, &context).unwrap();
+    let bytes = execute::pass_context(&mut command, &context).unwrap();
 
-    assert!(tmp.is_some(), "large context must use a temp file");
-
-    // Verify the temp file contains valid JSON with the context.
-    let file = tmp.unwrap();
-    let content = std::fs::read_to_string(file.path()).unwrap();
-    let parsed: BTreeMap<String, String> = serde_json::from_str(&content).unwrap();
-    assert_eq!(
-        parsed.get("task_description").map(String::as_str),
-        Some(big_value.as_str())
+    let args = set_args(&command);
+    assert!(
+        !args.iter().any(|a| a == "--context-file"),
+        "{:?}",
+        &args[..1]
     );
+    assert_eq!(args.len(), 4);
+    assert_eq!(args[1], format!("cycle_history={medium}"));
+    assert_eq!(args[3], format!("task_description={medium}"));
+    assert!(bytes >= 200 * 1024);
+}
+
+/// A single pair over `MAX_ARG_STRLEN` would fail `execve` with E2BIG; it is
+/// refused up front with the key and size, never the value.
+#[test]
+fn test_pass_context_refuses_a_value_over_max_arg_strlen() {
+    let big = "y".repeat(200 * 1024);
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), big.clone());
+
+    let mut command = Command::new("echo");
+    let msg = execute::pass_context(&mut command, &context)
+        .unwrap_err()
+        .to_string();
+    assert!(msg.contains("\"task_description\""), "{msg}");
+    assert!(msg.contains(&big.len().to_string()), "{msg}");
+    assert!(msg.contains("131072"), "{msg}");
+    assert!(!msg.contains("yyyy"), "value must not be printed");
+    assert_eq!(command.get_args().count(), 0);
 }
 
 #[test]
-fn test_pass_context_empty_returns_none() {
+fn test_pass_context_value_at_the_limit_is_accepted() {
+    let key = "k";
+    let value = "v".repeat(execute::MAX_ARG_STRLEN_BYTES - key.len() - 2);
+    let mut context = BTreeMap::new();
+    context.insert(key.to_string(), value);
+    let mut command = Command::new("echo");
+    execute::pass_context(&mut command, &context).unwrap();
+
+    context.insert(
+        key.to_string(),
+        "v".repeat(execute::MAX_ARG_STRLEN_BYTES - key.len() - 1),
+    );
+    let mut command = Command::new("echo");
+    assert!(execute::pass_context(&mut command, &context).is_err());
+}
+
+#[test]
+fn test_pass_context_empty_adds_nothing() {
     let context = BTreeMap::new();
     let mut command = Command::new("echo");
-    let tmp = execute::pass_context(&mut command, &context).unwrap();
-    assert!(tmp.is_none());
+    let bytes = execute::pass_context(&mut command, &context).unwrap();
+    assert_eq!(bytes, 0);
+    assert_eq!(command.get_args().count(), 0);
 }
 
+/// Issue #1567: a recipe context must not choose the pinned Claude profile.
+#[test]
+fn test_pass_context_refuses_amplihack_keys_on_the_set_path() {
+    let mut context = BTreeMap::new();
+    context.insert("task_description".to_string(), "fix".to_string());
+    context.insert(
+        "amplihack_claude_profile".to_string(),
+        "secret-work".to_string(),
+    );
+
+    let mut command = Command::new("echo");
+    let err = execute::pass_context(&mut command, &context).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("\"amplihack_claude_profile\""), "{msg}");
+    assert!(msg.contains("reserved"), "{msg}");
+    assert!(
+        !msg.contains("secret-work"),
+        "value must not be printed: {msg}"
+    );
+    assert_eq!(
+        command.get_args().count(),
+        0,
+        "nothing forwarded on refusal"
+    );
+}
+
+#[test]
+fn test_pass_context_refuses_amplihack_keys_with_large_values() {
+    let medium = "z".repeat(80 * 1024);
+    let mut context = BTreeMap::new();
+    context.insert("note_a".to_string(), medium.clone());
+    context.insert("AMPLIHACK_CLAUDE_PROFILE_ROOT".to_string(), medium.clone());
+
+    let mut command = Command::new("echo");
+    let err = execute::pass_context(&mut command, &context).unwrap_err();
+    let msg = err.to_string();
+    assert!(msg.contains("\"AMPLIHACK_CLAUDE_PROFILE_ROOT\""), "{msg}");
+    assert!(!msg.contains(&medium[..64]), "value must not be printed");
+    assert_eq!(
+        command.get_args().count(),
+        0,
+        "nothing forwarded on refusal"
+    );
+}
+
+/// The refused key is printed escaped, so a key carrying terminal control
+/// bytes cannot rewrite the error output.
+#[test]
+fn test_pass_context_refusal_escapes_the_key() {
+    let mut context = BTreeMap::new();
+    context.insert("amplihack_x\n\u{1b}[2J".to_string(), "v".to_string());
+
+    let mut command = Command::new("echo");
+    let msg = execute::pass_context(&mut command, &context)
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains('\u{1b}') && !msg.contains('\n'), "{msg:?}");
+    assert!(msg.contains(r#""amplihack_x\n\u{1b}[2J""#), "{msg}");
+}
+
+/// A long refused key is cut to 64 characters, like the profile error's value.
+#[test]
+fn test_pass_context_refusal_cuts_a_long_key() {
+    let key = format!("amplihack_{}", "k".repeat(200));
+    let mut context = BTreeMap::new();
+    context.insert(key.clone(), "v".to_string());
+
+    let mut command = Command::new("echo");
+    let msg = execute::pass_context(&mut command, &context)
+        .unwrap_err()
+        .to_string();
+    assert!(!msg.contains(&key), "full key must not be printed: {msg}");
+    assert!(msg.contains("\"amplihack_k"), "{msg}");
+    assert!(msg.contains("…"), "{msg}");
+}
+
+#[test]
+fn test_pass_context_allows_keys_that_only_contain_amplihack() {
+    let mut context = BTreeMap::new();
+    context.insert("use_amplihack".to_string(), "1".to_string());
+    context.insert("path".to_string(), "/tmp".to_string());
+    let mut command = Command::new("echo");
+    execute::pass_context(&mut command, &context).unwrap();
+    assert_eq!(command.get_args().count(), 4);
+}
+
+/// Issue #1570: a context totalling over 128 KiB, with each pair under
+/// `MAX_ARG_STRLEN`, reaches the runner as `--set` arguments. The runner has
+/// no `--context-file` option, so the old spill made every such run fail.
 #[test]
 #[cfg(unix)]
 fn test_large_context_does_not_hit_e2big() {
-    // End-to-end: run a stub binary with a context value larger than typical
-    // ARG_MAX. The binary reads --context-file and echoes success.
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
 
-    // Stub: if --context-file is present, cat it and report success.
-    // Otherwise report the --set args count.
+    // Stub: reject --context-file like the real runner, else report the
+    // number of --set arguments and their total size.
     std::fs::write(
         &runner,
         r#"#!/bin/sh
-CONTEXT_FILE=""
+sets=0; bytes=0; prev=""
 for arg in "$@"; do
-    if [ "$prev" = "--context-file" ]; then
-        CONTEXT_FILE="$arg"
+    if [ "$arg" = "--context-file" ]; then
+        echo "error: unexpected argument '--context-file' found" >&2; exit 2
     fi
+    if [ "$prev" = "--set" ]; then sets=$((sets+1)); bytes=$((bytes+${#arg})); fi
     prev="$arg"
 done
-if [ -n "$CONTEXT_FILE" ]; then
-    # Verify the file exists and is valid JSON
-    python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps({'recipe_name':'large-ctx','success':True,'step_results':[],'context':{'got_file':'true','keys':str(len(d))}}))" "$CONTEXT_FILE"
-else
-    echo '{"recipe_name":"large-ctx","success":true,"step_results":[],"context":{"got_file":"false"}}'
-fi
+echo "{\"recipe_name\":\"large-ctx\",\"success\":true,\"step_results\":[],\"context\":{\"sets\":\"$sets\",\"bytes\":\"$bytes\"}}"
 "#,
     )
     .expect("failed to write runner stub");
@@ -1017,38 +1159,34 @@ fi
     let amplihack_home = temp.path().join("amplihack-home");
     std::fs::create_dir_all(&amplihack_home).unwrap();
 
-    let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
-    let prev_home = std::env::var_os("AMPLIHACK_HOME");
     unsafe {
         std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
         std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
     }
 
-    // Context of ~256KB — would exceed ARG_MAX on many systems.
     let mut context = BTreeMap::new();
-    context.insert("task_description".to_string(), "x".repeat(256 * 1024));
-
-    let result =
-        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
-
-    match prev_runner {
-        Some(v) => unsafe { std::env::set_var("RECIPE_RUNNER_RS_PATH", v) },
-        None => unsafe { std::env::remove_var("RECIPE_RUNNER_RS_PATH") },
-    }
-    match prev_home {
-        Some(v) => unsafe { std::env::set_var("AMPLIHACK_HOME", v) },
-        None => unsafe { std::env::remove_var("AMPLIHACK_HOME") },
-    }
+    context.insert("task_description".to_string(), "x".repeat(100 * 1024));
+    context.insert("cycle_history".to_string(), "y".repeat(100 * 1024));
 
     let run_result =
-        result.expect("execute_recipe_via_rust must not fail with E2BIG for large context");
-    assert_eq!(run_result.recipe_name, "large-ctx");
+        execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None)
+            .expect("a 200 KiB context of argv-sized values must reach the runner");
     assert!(run_result.success);
     assert_eq!(
-        run_result.context.get("got_file"),
-        Some(&serde_json::json!("true")),
-        "large context must be passed via --context-file, not --set args"
+        run_result.context.get("sets"),
+        Some(&serde_json::json!("2")),
+        "{:?}",
+        run_result.context
     );
+
+    // One value over MAX_ARG_STRLEN is refused before spawning, by key.
+    let mut huge = BTreeMap::new();
+    huge.insert("task_description".to_string(), "z".repeat(256 * 1024));
+    let err = execute::execute_recipe_via_rust(&recipe, &huge, true, false, temp.path(), &[], None)
+        .unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("\"task_description\""), "{msg}");
+    assert!(!msg.contains("zzzz"), "value must not be printed");
 }
 
 // -------------------------------------------------------------------------
@@ -1063,6 +1201,7 @@ fn test_step_timeout_propagated_as_env_var() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -1135,6 +1274,7 @@ fn test_step_timeout_zero_disables_timeouts() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -1205,6 +1345,7 @@ fn test_step_timeout_none_does_not_set_env_var() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -1271,21 +1412,7 @@ fn test_step_timeout_none_does_not_set_env_var() {
 
 /// Returns true if recipe-runner-rs appears to be available on this system.
 fn which_recipe_runner_available() -> bool {
-    if let Ok(p) = std::env::var("RECIPE_RUNNER_RS_PATH")
-        && std::path::Path::new(&p).is_file()
-    {
-        return true;
-    }
-    for candidate in [
-        "recipe-runner-rs",
-        "~/.cargo/bin/recipe-runner-rs",
-        "~/.local/bin/recipe-runner-rs",
-    ] {
-        if binary::resolve_binary_path(candidate).is_some() {
-            return true;
-        }
-    }
-    false
+    crate::rust_toolchain::find_recipe_runner().is_some()
 }
 
 #[cfg(unix)]
@@ -1658,6 +1785,7 @@ fn test_execute_recipe_via_rust_sets_isolated_runtime_directories() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let repo = temp.path().join("repo");
     let runner = temp.path().join("recipe-runner-rs");
@@ -1734,6 +1862,7 @@ fn test_execute_recipe_via_rust_verbose_does_not_pass_progress_flag_to_child() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -1786,6 +1915,7 @@ fn test_execute_recipe_via_rust_non_verbose_does_not_pass_progress() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -1842,6 +1972,7 @@ fn test_execute_recipe_via_rust_verbose_survives_non_utf8_stderr() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     // The stub writes 0xFF (invalid UTF-8 start byte), then a valid line,
@@ -1907,6 +2038,7 @@ fn test_execute_recipe_via_rust_times_out_hung_runner() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     std::fs::write(&runner, "#!/bin/sh\n/bin/sleep 5\n").expect("failed to write runner stub");
@@ -1975,6 +2107,7 @@ fn test_execute_recipe_via_rust_timeout_kills_runner_process_tree() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let marker = temp.path().join("orphan-marker");
@@ -2056,6 +2189,7 @@ fn test_execute_recipe_via_rust_emits_dash_r_per_search_dir() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2120,6 +2254,7 @@ fn test_execute_recipe_via_rust_no_search_dirs_emits_no_dash_r() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2161,6 +2296,7 @@ fn test_execute_recipe_via_rust_skips_empty_path_strings() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2225,6 +2361,7 @@ fn test_execute_recipe_via_rust_dash_r_position_in_argv() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2337,6 +2474,7 @@ fn test_run_recipe_forwards_recipe_parent_as_dash_r() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let arg_log = temp.path().join("args.log");
@@ -2551,7 +2689,7 @@ fn test_context_env_pairs_drops_values_containing_nul() {
 fn test_context_env_pairs_drops_oversized_values() {
     // A single env string longer than the kernel's MAX_ARG_STRLEN causes
     // execve to fail with E2BIG. Oversized values must be skipped from the
-    // env mirror (they remain available via the context file), while
+    // env mirror (they are delivered to the runner as `--set` arguments), while
     // normal-sized values in the same context are still exported. This guards
     // the regression on `test_large_context_does_not_hit_e2big`.
     let huge = "x".repeat(256 * 1024);
@@ -2656,6 +2794,7 @@ fn test_execute_recipe_via_rust_exports_context_as_env_under_set_u() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -2730,6 +2869,7 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -2791,10 +2931,11 @@ fn test_execute_recipe_via_rust_exports_context_to_nested_subprocess() {
 // names must win, and untrusted context must never clobber PATH/AMPLIHACK_*.
 // -------------------------------------------------------------------------
 
-/// Even when an attacker-controlled recipe supplies `path`, `ld_preload`, and
-/// `amplihack_home` keys, the child must NOT see those values: PATH is left as
-/// inherited, LD_PRELOAD stays empty, and AMPLIHACK_HOME keeps the
-/// builder-managed value. Meanwhile an ordinary key (`task_description`) is
+/// Even when an attacker-controlled recipe supplies `path` and `ld_preload`
+/// keys, the child must NOT see those values: PATH is left as inherited,
+/// LD_PRELOAD stays empty, and AMPLIHACK_HOME keeps the builder-managed value.
+/// An `amplihack_home` key is refused before the runner starts (#1567).
+/// Meanwhile an ordinary key (`task_description`) is
 /// still exported — proving the export works without opening a clobber hole.
 #[test]
 #[cfg(unix)]
@@ -2802,6 +2943,7 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().expect("failed to create temp dir");
     let runner = temp.path().join("recipe-runner-rs");
     let amplihack_home = temp.path().join("amplihack-home");
@@ -2823,7 +2965,6 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
         ("task_description", "ok"),
         ("path", "/nonexistent/evil"),
         ("ld_preload", "/evil.so"),
-        ("amplihack_home", "/evil/home"),
     ]);
 
     let prev_runner = std::env::var_os("RECIPE_RUNNER_RS_PATH");
@@ -2839,6 +2980,15 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
 
     let result =
         execute::execute_recipe_via_rust(&recipe, &context, true, false, temp.path(), &[], None);
+    let refused = execute::execute_recipe_via_rust(
+        &recipe,
+        &ctx(&[("task_description", "ok"), ("amplihack_home", "/evil/home")]),
+        true,
+        false,
+        temp.path(),
+        &[],
+        None,
+    );
 
     restore_env_var("RECIPE_RUNNER_RS_PATH", prev_runner);
     restore_env_var("AMPLIHACK_HOME", prev_home);
@@ -2846,6 +2996,11 @@ fn test_execute_recipe_via_rust_context_cannot_clobber_reserved_or_builder_env()
     restore_env_var("LD_PRELOAD", prev_preload);
 
     let result = result.expect("recipe run must succeed");
+    let refused = refused.expect_err("an amplihack_home context key must be refused");
+    assert!(
+        format!("{refused:#}").contains("\"amplihack_home\" is reserved"),
+        "{refused:#}"
+    );
 
     assert_eq!(
         result.context.get("task"),
@@ -2960,6 +3115,7 @@ fn test_resolve_context_env_budget_honors_operator_override() {
     let _guard = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
 
     let name = execute::CONTEXT_ENV_BUDGET_OVERRIDE_ENV;
     let previous = std::env::var_os(name);
@@ -3172,24 +3328,21 @@ fn test_context_env_pairs_filters_run_before_budget() {
 
 // -------------------------------------------------------------------------
 // Escape hatch (#784): values dropped from the env MIRROR are STILL delivered
-// to the runner via pass_context (`--set` / `--context-file`) for
+// to the runner via pass_context (`--set`) for
 // {{placeholder}} substitution. Only the env mirror is skipped.
 // -------------------------------------------------------------------------
 
 #[test]
-fn test_budget_dropped_values_still_delivered_via_context_file() {
+fn test_budget_dropped_values_still_delivered_via_set_args() {
     // Two 80KB non-essential values: each is UNDER the 96KB per-value cap
     // (so the aggregate budget — not the per-value cap — is what drops them
-    // from the env mirror), but together they exceed the 128KB context-arg
-    // threshold, so pass_context spills the FULL context to a temp file.
+    // from the env mirror).
     let medium = "z".repeat(80 * 1024);
     let mut context = BTreeMap::new();
     context.insert("task_description".to_string(), "fix".to_string());
     context.insert("note_a".to_string(), medium.clone());
     context.insert("note_b".to_string(), medium.clone());
 
-    // Small budget: essentials fit, both 80KB non-essentials are dropped from
-    // the env mirror by the aggregate budget.
     let pairs = execute::context_env_pairs(&context, 1_000);
     let map: BTreeMap<String, String> = pairs.iter().cloned().collect();
     assert_eq!(map.get("TASK_DESCRIPTION"), Some(&"fix".to_string()));
@@ -3198,14 +3351,356 @@ fn test_budget_dropped_values_still_delivered_via_context_file() {
         "aggregate-budget-dropped values must be absent from the env mirror: {map:?}"
     );
 
-    // ...but the escape hatch still delivers them: pass_context spills the
-    // full context (all keys, values verbatim) to a temp file.
+    // ...but pass_context still delivers every key verbatim as `--set`.
     let mut command = Command::new("echo");
-    let tmp = execute::pass_context(&mut command, &context).unwrap();
-    let file = tmp.expect("large aggregate context must spill to a temp file");
-    let content = std::fs::read_to_string(file.path()).unwrap();
-    let parsed: BTreeMap<String, String> = serde_json::from_str(&content).unwrap();
-    assert_eq!(parsed.get("note_a"), Some(&medium));
-    assert_eq!(parsed.get("note_b"), Some(&medium));
-    assert_eq!(parsed.get("task_description"), Some(&"fix".to_string()));
+    execute::pass_context(&mut command, &context).unwrap();
+    let args = set_args(&command);
+    assert!(args.contains(&format!("note_a={medium}")));
+    assert!(args.contains(&format!("note_b={medium}")));
+    assert!(args.contains(&"task_description=fix".to_string()));
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_ASSET_RESOLVER",
+        "AMPLIHACK_GRAPH_DB_PATH",
+        "AMPLIHACK_HOME",
+        "AMPLIHACK_KUZU_DB_PATH",
+        "AMPLIHACK_NONINTERACTIVE",
+        "AMPLIHACK_RECIPE_RUNNER_TIMEOUT_SECS",
+        "AMPLIHACK_STEP_TIMEOUT",
+        "CLAUDECODE",
+        "GH_PAGER",
+        "GIT_PAGER",
+        "HOME",
+        "LD_PRELOAD",
+        "LESS",
+        "PAGER",
+        "PATH",
+        "RECIPE_RUNNER_RS_PATH",
+        "REPO_PATH",
+        "TASK_DESCRIPTION",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
+}
+
+// -------------------------------------------------------------------------
+// Issue #1570: a nested `amplihack recipe run` removes inherited recipe
+// context before adding its own (docs/reference/large-payload-delivery.md,
+// "Nested recipe environment").
+//
+// Contract assumed by these tests:
+//
+//   // execute.rs
+//   /// `true` when the inherited variable `name` is removed from the runner
+//   /// command. `inherited_names` is the set of every inherited variable name
+//   /// (needed to recognise the uppercase alias of an inherited
+//   /// `RECIPE_VAR_<key>`).
+//   pub(super) fn is_stripped_inherited_name(
+//       name: &str,
+//       inherited_names: &std::collections::BTreeSet<String>,
+//   ) -> bool;
+//   pub(super) fn inherited_env_bytes() -> usize; // skips stripped names
+//   pub(super) fn inherited_env_bytes_from(vars) -> usize; // same, given vars
+//
+// `build_command` is a closure inside `execute_recipe_via_rust`, so the
+// command's environment is observed through the runner stub (the same seam
+// as the step-timeout tests above), which reports each variable as
+// `${NAME-<unset>}`.
+// -------------------------------------------------------------------------
+
+mod issue_1570_nested_environment {
+    use super::super::execute::{inherited_env_bytes_from, is_stripped_inherited_name};
+    use std::collections::{BTreeMap, BTreeSet};
+    use std::ffi::OsString;
+
+    fn names(list: &[&str]) -> BTreeSet<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn predicate_strips_every_recipe_var() {
+        let inherited = names(&[
+            "RECIPE_VAR_task_description",
+            "RECIPE_VAR_a__b",
+            "RECIPE_VAR_x",
+        ]);
+        for name in &inherited {
+            assert!(is_stripped_inherited_name(name, &inherited), "{name}");
+        }
+    }
+
+    #[test]
+    fn predicate_strips_uppercase_alias_of_key_without_double_underscore() {
+        let inherited = names(&["RECIPE_VAR_cycle_history", "CYCLE_HISTORY"]);
+        assert!(is_stripped_inherited_name("CYCLE_HISTORY", &inherited));
+    }
+
+    #[test]
+    fn predicate_keeps_alias_when_key_contains_double_underscore() {
+        let inherited = names(&[
+            "RECIPE_VAR_final_requirements__goal",
+            "FINAL_REQUIREMENTS__GOAL",
+        ]);
+        assert!(!is_stripped_inherited_name(
+            "FINAL_REQUIREMENTS__GOAL",
+            &inherited
+        ));
+    }
+
+    #[test]
+    fn predicate_keeps_uppercase_name_without_matching_recipe_var() {
+        let inherited = names(&["TASK_DESCRIPTION", "RECIPE_VAR_other"]);
+        assert!(!is_stripped_inherited_name("TASK_DESCRIPTION", &inherited));
+    }
+
+    #[test]
+    fn predicate_strips_amplihack_context_file() {
+        let inherited = names(&["AMPLIHACK_CONTEXT_FILE"]);
+        assert!(is_stripped_inherited_name(
+            "AMPLIHACK_CONTEXT_FILE",
+            &inherited
+        ));
+    }
+
+    #[test]
+    fn predicate_never_strips_denylisted_names_even_with_matching_recipe_var() {
+        let inherited = names(&[
+            "RECIPE_VAR_path",
+            "RECIPE_VAR_home",
+            "RECIPE_VAR_ld_preload",
+            "RECIPE_VAR_ifs",
+            "PATH",
+            "HOME",
+            "LD_PRELOAD",
+            "IFS",
+        ]);
+        for name in ["PATH", "HOME", "LD_PRELOAD", "IFS"] {
+            assert!(
+                !is_stripped_inherited_name(name, &inherited),
+                "{name} must survive"
+            );
+        }
+        assert!(is_stripped_inherited_name("RECIPE_VAR_path", &inherited));
+        assert!(is_stripped_inherited_name("RECIPE_VAR_home", &inherited));
+    }
+
+    #[test]
+    fn predicate_never_strips_other_amplihack_names() {
+        let inherited = names(&[
+            "RECIPE_VAR_amplihack_home",
+            "AMPLIHACK_HOME",
+            "RECIPE_VAR_amplihack_tree_id",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_CLAUDE_PROFILE",
+        ]);
+        for name in [
+            "AMPLIHACK_HOME",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_CLAUDE_PROFILE",
+        ] {
+            assert!(
+                !is_stripped_inherited_name(name, &inherited),
+                "{name} must survive"
+            );
+        }
+    }
+
+    #[test]
+    fn predicate_never_strips_invalid_identifier_alias() {
+        // `RECIPE_VAR_my-key` uppercases to `MY-KEY`, which is not an
+        // environment identifier and is never removed.
+        let inherited = names(&["RECIPE_VAR_my-key", "MY-KEY"]);
+        assert!(is_stripped_inherited_name("RECIPE_VAR_my-key", &inherited));
+        assert!(!is_stripped_inherited_name("MY-KEY", &inherited));
+    }
+
+    /// Names this module sets in the process environment.
+    const TOUCHED: &[&str] = &[
+        "RECIPE_VAR_issue1570_parent",
+        "ISSUE1570_PARENT",
+        "RECIPE_VAR_issue1570__nested",
+        "ISSUE1570__NESTED",
+        "RECIPE_VAR_issue1570_own",
+        "ISSUE1570_OWN",
+        "RECIPE_VAR_path",
+        "RECIPE_VAR_home",
+        "AMPLIHACK_CONTEXT_FILE",
+        "AMPLIHACK_ISSUE1570_KEEP",
+    ];
+
+    #[test]
+    #[cfg(unix)]
+    fn nested_run_strips_inherited_context_but_keeps_reserved_names() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _fixture_environment = super::fixture_environment();
+        let _touched = crate::test_support::EnvGuard::capture(TOUCHED);
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let runner = temp.path().join("recipe-runner-rs");
+        let amplihack_home = temp.path().join("amplihack-home");
+        std::fs::create_dir_all(&amplihack_home).unwrap();
+
+        let probes = [
+            ("recipe_var_parent", "RECIPE_VAR_issue1570_parent"),
+            ("alias_parent", "ISSUE1570_PARENT"),
+            ("recipe_var_nested", "RECIPE_VAR_issue1570__nested"),
+            ("alias_nested", "ISSUE1570__NESTED"),
+            ("recipe_var_own", "RECIPE_VAR_issue1570_own"),
+            ("alias_own", "ISSUE1570_OWN"),
+            ("recipe_var_path", "RECIPE_VAR_path"),
+            ("recipe_var_home", "RECIPE_VAR_home"),
+            ("context_file", "AMPLIHACK_CONTEXT_FILE"),
+            ("amplihack_keep", "AMPLIHACK_ISSUE1570_KEEP"),
+            ("path", "PATH"),
+            ("home", "HOME"),
+        ];
+        let fields = probes
+            .iter()
+            .map(|(label, var)| format!("\"{label}\":\"${{{var}-<unset>}}\""))
+            .collect::<Vec<_>>()
+            .join(",");
+        std::fs::write(
+            &runner,
+            format!(
+                "#!/bin/sh\ncat <<EOF\n{{\"recipe_name\":\"nested-env\",\"success\":true,\"step_results\":[],\"context\":{{{fields}}}}}\nEOF\n"
+            ),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let recipe = temp.path().join("recipe.yaml");
+        std::fs::write(&recipe, "name: nested-env\nsteps: []\n").unwrap();
+
+        let parent_path = std::env::var("PATH").unwrap_or_default();
+        let parent_home = std::env::var("HOME").unwrap_or_default();
+        unsafe {
+            std::env::set_var("RECIPE_RUNNER_RS_PATH", &runner);
+            std::env::set_var("AMPLIHACK_HOME", &amplihack_home);
+            std::env::set_var("RECIPE_VAR_issue1570_parent", "parent");
+            std::env::set_var("ISSUE1570_PARENT", "parent");
+            std::env::set_var("RECIPE_VAR_issue1570__nested", "parent");
+            std::env::set_var("ISSUE1570__NESTED", "parent");
+            std::env::set_var("RECIPE_VAR_issue1570_own", "parent");
+            std::env::set_var("ISSUE1570_OWN", "parent");
+            std::env::set_var("RECIPE_VAR_path", "/x");
+            std::env::set_var("RECIPE_VAR_home", "/y");
+            std::env::set_var("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json");
+            std::env::set_var("AMPLIHACK_ISSUE1570_KEEP", "kept");
+        }
+
+        // This run's own context re-adds its alias after the strip.
+        let mut context = BTreeMap::new();
+        context.insert("issue1570_own".to_string(), "child".to_string());
+
+        let result = super::execute::execute_recipe_via_rust(
+            &recipe,
+            &context,
+            true,
+            false,
+            temp.path(),
+            &[],
+            None,
+        )
+        .expect("recipe run must succeed");
+
+        let got = |label: &str| {
+            result
+                .context
+                .get(label)
+                .and_then(|v| v.as_str())
+                .unwrap_or("<missing>")
+                .to_string()
+        };
+        assert_eq!(
+            got("recipe_var_parent"),
+            "<unset>",
+            "inherited RECIPE_VAR_* must be removed"
+        );
+        assert_eq!(
+            got("alias_parent"),
+            "<unset>",
+            "uppercase alias must be removed"
+        );
+        assert_eq!(
+            got("recipe_var_nested"),
+            "<unset>",
+            "inherited RECIPE_VAR_* must be removed"
+        );
+        assert_eq!(
+            got("alias_nested"),
+            "parent",
+            "an uppercase name for a key with `__` is not an alias and is kept"
+        );
+        assert_eq!(got("recipe_var_own"), "<unset>");
+        assert_eq!(got("alias_own"), "child", "this run's own context wins");
+        assert_eq!(got("recipe_var_path"), "<unset>");
+        assert_eq!(got("recipe_var_home"), "<unset>");
+        assert_eq!(
+            got("context_file"),
+            "<unset>",
+            "AMPLIHACK_CONTEXT_FILE must be removed"
+        );
+        assert_eq!(
+            got("amplihack_keep"),
+            "kept",
+            "other AMPLIHACK_* names are kept"
+        );
+        assert_eq!(
+            got("path"),
+            parent_path,
+            "PATH must survive RECIPE_VAR_path"
+        );
+        assert_eq!(
+            got("home"),
+            parent_home,
+            "HOME must survive RECIPE_VAR_home"
+        );
+    }
+
+    /// A synthetic environment, so these tests never put a 200 KiB value in
+    /// the shared process environment, where any concurrently spawned
+    /// process would inherit it and fail with E2BIG.
+    fn env(list: &[(&str, &str)]) -> Vec<(OsString, OsString)> {
+        list.iter()
+            .map(|(k, v)| (OsString::from(k), OsString::from(v)))
+            .collect()
+    }
+
+    #[test]
+    fn inherited_env_bytes_excludes_a_200_kib_inherited_recipe_var() {
+        let big = "x".repeat(200 * 1024);
+        let base = [("PATH", "/usr/bin:/bin"), ("HOME", "/home/u")];
+        let before = inherited_env_bytes_from(env(&base));
+        let mut list = base.to_vec();
+        list.push(("RECIPE_VAR_issue1570_big", big.as_str()));
+        let with_big = inherited_env_bytes_from(env(&list));
+        list.push(("AMPLIHACK_CONTEXT_FILE", "/tmp/parent-context.json"));
+        let with_context_file = inherited_env_bytes_from(env(&list));
+        assert_eq!(
+            with_big, before,
+            "a stripped RECIPE_VAR_* must not count against the env budget"
+        );
+        assert_eq!(
+            with_context_file, with_big,
+            "a stripped AMPLIHACK_CONTEXT_FILE must not count against the env budget"
+        );
+    }
+
+    #[test]
+    fn inherited_env_bytes_still_counts_kept_names() {
+        let base = [("PATH", "/usr/bin:/bin")];
+        let before = inherited_env_bytes_from(env(&base));
+        let kept = "x".repeat(1000);
+        let mut list = base.to_vec();
+        list.push(("AMPLIHACK_ISSUE1570_KEEP", kept.as_str()));
+        assert!(inherited_env_bytes_from(env(&list)) >= before + 1000);
+    }
 }

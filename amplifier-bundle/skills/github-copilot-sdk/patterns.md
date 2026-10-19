@@ -1,5 +1,7 @@
 # GitHub Copilot SDK - Production Patterns
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Pattern 1: Streaming UI Integration
 
 Real-time response display for better user experience.
@@ -21,7 +23,7 @@ class StreamingUI {
   async run(prompt: string) {
     const client = new CopilotClient();
     const session = await client.createSession({
-      model: "gpt-4.1",
+      model: "<configured-model>",
       streaming: true,
     });
 
@@ -129,7 +131,7 @@ const analyzeCode = defineTool("analyze_code", {
 
 // Copilot chains tools automatically
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   tools: [searchFiles, readFile, analyzeCode],
 });
 
@@ -172,7 +174,7 @@ class SessionManager {
   async getSession(purpose: string, config?: any) {
     if (!this.sessions.has(purpose)) {
       const session = await this.client.createSession({
-        model: "gpt-4.1",
+        model: "<configured-model>",
         ...config,
       });
       this.sessions.set(purpose, session);
@@ -249,7 +251,7 @@ async function withRetry<T>(
 
 // Usage
 const response = await withRetry(async () => {
-  const session = await client.createSession({ model: "gpt-4.1" });
+  const session = await client.createSession({ model: "<configured-model>" });
   return await session.sendAndWait({ prompt: "Hello" });
 });
 ```
@@ -367,7 +369,7 @@ class ConversationManager {
 
   async init() {
     this.client = new CopilotClient();
-    this.session = await this.client.createSession({ model: "gpt-4.1" });
+    this.session = await this.client.createSession({ model: "<configured-model>" });
   }
 
   async send(userMessage: string): Promise<string> {
@@ -435,7 +437,7 @@ Connect multiple MCP servers for comprehensive tool access.
 import { CopilotClient } from "@github/copilot-sdk";
 
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   mcpServers: {
     // GitHub repository access
     github: {
@@ -526,7 +528,7 @@ async function safeQuery(prompt: string) {
 
   try {
     const session = await client.createSession({
-      model: "gpt-4.1",
+      model: "<configured-model>",
       tools: [fetchDataTool],
     });
 
@@ -656,7 +658,7 @@ const extractEntities = defineTool("extract_entities", {
 
 // Force model to use the tool
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   tools: [extractEntities],
   systemMessage: {
     content: "Always use the extract_entities tool to return your analysis results.",
@@ -684,7 +686,7 @@ const response = await session.sendAndWait({
 
 ```typescript
 const client = new CopilotClient();
-const session = await client.createSession({ model: "gpt-4.1" });
+const session = await client.createSession({ model: "<configured-model>" });
 // No cleanup - resource leak!
 ```
 
@@ -693,7 +695,7 @@ const session = await client.createSession({ model: "gpt-4.1" });
 ```typescript
 const client = new CopilotClient();
 try {
-  const session = await client.createSession({ model: "gpt-4.1" });
+  const session = await client.createSession({ model: "<configured-model>" });
   // Use session
 } finally {
   await client.stop();

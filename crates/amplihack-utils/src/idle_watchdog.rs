@@ -186,15 +186,26 @@ where
     }
 }
 
+/// A drainer must not outlive a cancelled watchdog future. Otherwise a
+/// descendant that inherited a pipe can keep the detached task alive and
+/// growing its output buffer indefinitely.
+struct AbortOnDropDrainer(tokio::task::JoinHandle<()>);
+
+impl Drop for AbortOnDropDrainer {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 /// Await a drainer task, but never longer than [`DRAIN_GRACE`]. If the task is
 /// still blocked reading a pipe held open by a surviving descendant, abort it;
 /// the bytes it already buffered remain readable via the shared `Arc`.
-async fn join_drainer_async(mut handle: tokio::task::JoinHandle<()>) {
-    if tokio::time::timeout(DRAIN_GRACE, &mut handle)
+async fn join_drainer_async(mut handle: AbortOnDropDrainer) {
+    if tokio::time::timeout(DRAIN_GRACE, &mut handle.0)
         .await
         .is_err()
     {
-        handle.abort();
+        handle.0.abort();
     }
 }
 
@@ -218,18 +229,18 @@ pub async fn wait_with_idle_watchdog(
     let err_buf: Buffer = Arc::new(Mutex::new(Vec::new()));
 
     let out_handle = stdout.map(|r| {
-        tokio::spawn(drain_async(
+        AbortOnDropDrainer(tokio::spawn(drain_async(
             r,
             Arc::clone(&out_buf),
             Arc::clone(&last_progress),
-        ))
+        )))
     });
     let err_handle = stderr.map(|r| {
-        tokio::spawn(drain_async(
+        AbortOnDropDrainer(tokio::spawn(drain_async(
             r,
             Arc::clone(&err_buf),
             Arc::clone(&last_progress),
-        ))
+        )))
     });
 
     let mut killed_for_idle = false;
@@ -362,4 +373,29 @@ pub fn file_idle_since(path: &Path, idle_timeout: Duration) -> io::Result<bool> 
         .duration_since(mtime)
         .unwrap_or(Duration::ZERO);
     Ok(age >= idle_timeout)
+}
+
+#[cfg(test)]
+mod async_drainer_tests {
+    use super::{AbortOnDropDrainer, Buffer, Progress, drain_async};
+    use std::sync::{Arc, Mutex};
+    use std::time::Instant;
+    use tokio::io::AsyncWriteExt;
+
+    #[tokio::test]
+    async fn dropping_drainer_closes_its_pipe_reader() {
+        let (mut writer, reader) = tokio::io::duplex(16);
+        let buffer: Buffer = Arc::new(Mutex::new(Vec::new()));
+        let progress: Progress = Arc::new(Mutex::new(Instant::now()));
+        let drainer = AbortOnDropDrainer(tokio::spawn(drain_async(reader, buffer, progress)));
+        tokio::task::yield_now().await;
+        drop(drainer);
+
+        let payload = vec![b'x'; 1024];
+        let write = writer.write_all(&payload);
+        tokio::time::timeout(std::time::Duration::from_secs(1), write)
+            .await
+            .expect("cancelled drainer must not leave writes blocked")
+            .expect_err("cancelled drainer must close the pipe reader");
+    }
 }

@@ -95,8 +95,29 @@ action.
 | Preferred Rust binary in `~/.local/bin` | Accepted and made first for future shells. |
 | Stale Python wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
 | Stale uvx wrapper | Quarantined only when it shadows Rust, is clearly identified, and is in a safe location. |
+| `npx` / `pnpm dlx` / `bunx` launcher for this package (resolves to `npm/bin/amplihack.js`) | Left in place; it disappears from `PATH` when that command exits. |
+| Persistent launcher for this package (`npm install -g`, a project's `node_modules/.bin`) | Left in place; install continues and the `PATH` advisory says the npm launcher wins and how to change that. |
 | Unknown executable | Not modified; reported as a conflict. |
 | Inaccessible path | Not modified; reported with the filesystem error. |
+
+When you install with `npx … amplihack install` (or `pnpm dlx`, `bunx`), the
+package manager puts its own shim for this package first on `PATH` for as long
+as that command runs. Install recognizes it, leaves it alone, and prints:
+
+```text
+  ℹ️  Leaving transient package-manager launcher /home/alice/.npm/_npx/<hash>/node_modules/.bin/amplihack in place; it stops shadowing /home/alice/.local/bin/amplihack once the launching command exits.
+```
+
+No action is needed. Any other executable under such a cache is still treated
+as an unknown executable, and the post-install `PATH` advisory still reports
+any persistent executable behind the shim.
+
+If you installed the package globally (`npm install -g @rysweet/amplihack-rs`),
+its launcher stays ahead of `~/.local/bin` for good. Install still completes;
+the advisory then says that `amplihack` runs through the npm wrapper (its own
+cached release binary) and offers removing it with the package manager that
+installed it (`npm uninstall -g @rysweet/amplihack-rs` for a global npm install) or a
+`PATH` reorder if you want the `~/.local/bin` copy instead.
 
 ## Review quarantined wrappers
 

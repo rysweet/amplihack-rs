@@ -1,5 +1,7 @@
 # Agents - Deep Dive
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Agent Anatomy
 
 An agent in Microsoft Agent Framework is a stateful conversational entity that combines:
@@ -19,7 +21,7 @@ from agents_framework import Agent, ModelClient
 
 agent = Agent(
     name="assistant",                    # Agent identifier
-    model=ModelClient(model="gpt-4"),    # LLM connection
+    model=ModelClient(model="<configured-model>"),    # LLM connection
     instructions="You are helpful"       # System prompt
 )
 ```
@@ -30,7 +32,7 @@ agent = Agent(
 agent = Agent(
     name="code_reviewer",
     model=ModelClient(
-        model="gpt-4-turbo",
+        model="<configured-model>",
         temperature=0.7,
         max_tokens=2000,
         timeout=60.0
@@ -55,7 +57,7 @@ using Microsoft.Agents.AI;
 var agent = new Agent(
     name: "assistant",
     model: new ModelClient(
-        model: "gpt-4",
+        model: "<configured-model>",
         temperature: 0.7,
         maxTokens: 2000
     ),
@@ -240,13 +242,13 @@ print(f"Total tokens: {response.usage.total_tokens}")
 ```rust
 # Low temperature for deterministic outputs
 code_agent = Agent(
-    model=ModelClient(model="gpt-4", temperature=0.1),
+    model=ModelClient(model="<configured-model>", temperature=0.1),
     instructions="Generate code"
 )
 
 # Higher temperature for creative outputs
 creative_agent = Agent(
-    model=ModelClient(model="gpt-4", temperature=0.9),
+    model=ModelClient(model="<configured-model>", temperature=0.9),
     instructions="Write stories"
 )
 ```
@@ -256,7 +258,7 @@ creative_agent = Agent(
 ```rust
 agent = Agent(
     model=ModelClient(
-        model="gpt-4",
+        model="<configured-model>",
         max_tokens=500  # Limit response length
     ),
     instructions="Be concise"
@@ -268,7 +270,7 @@ agent = Agent(
 ```rust
 agent = Agent(
     model=ModelClient(
-        model="gpt-4",
+        model="<configured-model>",
         stop=["END", "DONE"]  # Stop generation at these sequences
     ),
     instructions="Generate text until END"

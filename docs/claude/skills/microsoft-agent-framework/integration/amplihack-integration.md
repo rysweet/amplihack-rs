@@ -1,5 +1,7 @@
 # Amplihack Integration Guide
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Overview
 
 Microsoft Agent Framework and amplihack are complementary systems that can work together effectively. This guide explains how to integrate them and when to use each.
@@ -40,7 +42,7 @@ orchestrator = ClaudeAgent("orchestrator.md")
 
 # Agent Framework for stateful dialogue
 conversational_agent = AFAgent(
-    model=ModelClient(model="gpt-4"),
+    model=ModelClient(model="<configured-model>"),
     instructions="Maintain multi-turn conversation context"
 )
 

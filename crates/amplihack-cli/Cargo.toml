@@ -4,6 +4,8 @@ description = "CLI command parsing, launcher, and process management for ampliha
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Every tests/*.rs file is a module of the one `cli_integration` target below.
+autotests = false
 
 [lib]
 doctest = false
@@ -26,6 +28,7 @@ signal = ["dep:amplihack-signal", "dep:qrcode"]
 test-support = ["amplihack-memory/test-support"]
 
 [dependencies]
+fs2 = "0.4"
 amplihack-git = { workspace = true }
 amplihack-hive = { path = "../amplihack-hive" }
 amplihack-launcher = { workspace = true }
@@ -45,6 +48,8 @@ clap = { workspace = true }
 clap_complete = "4"
 dialoguer = "0.11"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+# Issue #1578: `profile usage` resolves reset times printed with an IANA zone.
+chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 flate2 = "1"
 libc = { workspace = true }
 semver = "1"
@@ -81,6 +86,9 @@ uuid = { version = "1", features = ["v4"] }
 amplihack-signal = { path = "../amplihack-signal", features = ["signal"], optional = true }
 qrcode = { version = "0.14", default-features = false, optional = true }
 
+[target.'cfg(unix)'.dependencies]
+errno = "0.3"
+
 [dev-dependencies]
 tracing-subscriber = { workspace = true }
 tempfile = { workspace = true }
@@ -110,9 +118,16 @@ path = "../../tests/integration/lbug_ffi_test.rs"
 # an isolated `cargo test -p amplihack-cli` cleanly skips it instead of failing.
 required-features = ["test-support"]
 
+# This package's tests/*.rs files are modules of ONE test binary, rooted at
+# tests/main.rs (`autotests = false` above stops Cargo from also building each
+# file as its own target). One binary instead of ~66 cuts link work in the CI
+# Test job (sccache cannot cache test binaries). Add new files as `mod` lines
+# in tests/main.rs, not as new [[test]] entries here.
+# Run one former target with:
+#   cargo test -p amplihack-cli --test cli_integration <module_name>::
 [[test]]
-name = "cargo_cxx_pin_test"
-path = "tests/cargo_cxx_pin_test.rs"
+name = "cli_integration"
+path = "tests/main.rs"
 
 [lints.rust]
 # `kani` is set by the Kani verifier when it compiles this crate for proof checking

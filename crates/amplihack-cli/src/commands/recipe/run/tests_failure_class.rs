@@ -669,6 +669,176 @@ fn work_failures_still_beat_a_usage_limit_mention() {
     );
 }
 
+// Issue #1546 — Claude Code's weekly-limit and org spend-limit messages fell
+// through to `indeterminate`: no marker said "weekly limit", and "monthly
+// limit" does not match "monthly spend limit".
+
+/// The literal line that stopped eight concurrent runs on 2026-10-05.
+const OBSERVED_WEEKLY_LIMIT: &str =
+    "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
+
+// The trailing "..." is the reporter's own elision in #1546, kept verbatim on purpose.
+const OBSERVED_SPEND_LIMIT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 10, ...";
+
+#[test]
+fn the_observed_weekly_limit_message_classifies_as_a_usage_limit() {
+    let (class, signal) = classify_failure_text(OBSERVED_WEEKLY_LIMIT);
+    assert_eq!(
+        (class, signal),
+        (FailureClass::UsageLimit, Some("weekly limit")),
+        "the weekly-limit message must classify as a usage limit, not as \
+         `indeterminate`; issue #1546"
+    );
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_WEEKLY_LIMIT),
+        Some("Oct 8, 12am (America/Los_Angeles)".to_string()),
+        "the reset time stated in the message must be quoted back verbatim"
+    );
+}
+
+#[test]
+fn the_observed_spend_limit_message_classifies_as_a_usage_limit() {
+    let (class, signal) = classify_failure_text(OBSERVED_SPEND_LIMIT);
+    // The line also says "weekly limit"; the earliest match in the text wins,
+    // and "spend limit" comes first.
+    assert_eq!(
+        (class, signal),
+        (FailureClass::UsageLimit, Some("spend limit")),
+        "an org spend cap must classify as a usage limit, not as \
+         `indeterminate`; issue #1546"
+    );
+    assert_eq!(
+        usage_limit_reset_hint(OBSERVED_SPEND_LIMIT),
+        Some("Oct 10, ...".to_string()),
+        "the reset time stated in the message must be quoted back verbatim"
+    );
+}
+
+#[test]
+fn the_weekly_limit_verdict_tells_the_operator_when_to_come_back() {
+    let verdict = classify_error(&anyhow::anyhow!("{OBSERVED_WEEKLY_LIMIT}"));
+    let reasoning = verdict.reasoning();
+    assert!(
+        reasoning.contains("usage_limit"),
+        "the verdict must name the class. Got: {reasoning}"
+    );
+    assert!(
+        reasoning.contains("Oct 8, 12am (America/Los_Angeles)"),
+        "the reset time is stated in the message and must survive into the \
+         verdict. Got: {reasoning}"
+    );
+}
+
+#[test]
+fn a_bare_rate_limit_phrase_is_never_a_usage_limit() {
+    // Guard against the new markers over-reaching. The bare phrase matches no
+    // marker at all; the provider's own wording of it is a transient envelope.
+    assert_eq!(
+        classify_failure_text("rate limit"),
+        (FailureClass::Indeterminate, None),
+        "a bare \"rate limit\" is not a usage limit"
+    );
+    assert_eq!(
+        classify_failure_text("Error: rate limit exceeded, retry after 2s"),
+        (
+            FailureClass::TransientTransport,
+            Some("rate limit exceeded")
+        ),
+        "a provider rate limit stays retryable"
+    );
+}
+
+#[test]
+fn environmental_failures_still_beat_a_weekly_or_spend_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) = classify_failure_text(&format!("API Error: 401\n{line}"));
+        assert_eq!(
+            (class, signal),
+            (FailureClass::Environmental, Some("api error: 401")),
+            "environmental failures keep precedence over {line:?}"
+        );
+    }
+}
+
+#[test]
+fn a_daily_request_quota_is_never_a_usage_limit() {
+    // "daily limit" is deliberately not a marker (#1546): API daily request
+    // quotas use the same phrase and clear on their own, so filing them as
+    // `usage_limit` would stop retrying them.
+    let text = "You have reached your daily limit of 5000 API requests";
+    assert_eq!(
+        classify_failure_text(text),
+        (FailureClass::Indeterminate, None),
+        "a daily request quota is not a usage limit"
+    );
+}
+
+#[test]
+fn work_failures_still_beat_a_weekly_or_spend_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) =
+            classify_failure_text(&format!("test result: FAILED. 1 failed\n{line}"));
+        assert_eq!(
+            class,
+            FailureClass::Work,
+            "work failures keep top precedence over {line:?}. signal={signal:?}"
+        );
+    }
+}
+
+#[test]
+fn a_weekly_or_spend_limit_wrapped_in_a_429_is_still_a_usage_limit() {
+    for line in [OBSERVED_WEEKLY_LIMIT, OBSERVED_SPEND_LIMIT] {
+        let (class, signal) =
+            classify_failure_text(&format!("API Error: 429 too many requests — {line}"));
+        assert_eq!(
+            class,
+            FailureClass::UsageLimit,
+            "a usage limit wrapped in a 429 envelope must not be read as a \
+             short-lived transport fault: {line:?}. signal={signal:?}"
+        );
+        assert_eq!(
+            signal,
+            classify_failure_text(line).1,
+            "the envelope must not change the signal"
+        );
+    }
+}
+
+#[test]
+fn the_observed_weekly_limit_run_record_says_usage_limit() {
+    // The shape #1546 reported: an agent step exits 1 and its stdout repeats
+    // the weekly-limit line, 34 times in one run's log. The defect was the
+    // record the runner wrote, so assert on that record.
+    let stdout = vec![OBSERVED_WEEKLY_LIMIT; 34];
+    let result = RecipeRunResult {
+        success: false,
+        step_results: vec![
+            step("workflow-prep", "success"),
+            failed_step_with_stdout(
+                "step-08-implement",
+                "agent step failed: amplihack claude failed (exit 1)",
+                &stdout,
+            ),
+        ],
+        ..RecipeRunResult::default()
+    };
+    let payload = classify_run_failure(&result, "").to_json(1, "terminal");
+    assert_eq!(
+        payload["class"], "usage_limit",
+        "issue #1546 recorded this run as `indeterminate`: {payload}"
+    );
+    assert_eq!(payload["signal"], "weekly limit");
+    assert_eq!(payload["retryable"], false);
+    let reasoning = payload["reasoning"]
+        .as_str()
+        .expect("reasoning is a string");
+    assert!(
+        reasoning.contains("Oct 8, 12am (America/Los_Angeles)"),
+        "the operator message must quote the reset time. Got: {reasoning}"
+    );
+}
+
 // -------------------------------------------------------------------------
 // Issue #1435 — a repository-selection precondition failure is self-describing.
 // `workflow-worktree`'s #1323 precondition refuses a repository with no
@@ -860,144 +1030,4 @@ fn a_transient_fault_mentioning_a_repository_stays_transient() {
         "API Error: 529 Overloaded while fetching origin from the repository",
     );
     assert_eq!(class, FailureClass::TransientTransport);
-}
-
-// ---------------------------------------------------------------------------
-// Issue #1437 — an agent/API failure is not a structural refusal
-// ---------------------------------------------------------------------------
-
-/// The literal tail from the incident: the merge-ready builder agent did the
-/// work, committed and pushed `9d521815`, and only then lost its session.
-const ISSUE_1437_TAIL: &str = "\
-I completed the work, committed 9d521815 and pushed.
-amplihack copilot failed (exit 1)
-Execution failed: 400 The resource you requested was not found.";
-
-/// `Indeterminate` said \"no transport, environmental, or work marker found\"
-/// about a message that named its own cause. The class must name it.
-#[test]
-fn issue_1437_agent_api_rejection_is_named_not_indeterminate() {
-    let (class, signal) = classify_failure_text(ISSUE_1437_TAIL);
-    assert_ne!(
-        class,
-        FailureClass::Indeterminate,
-        "the endpoint stated its own cause; \"we know nothing\" is not an honest answer"
-    );
-    assert_eq!(class, FailureClass::AgentApi);
-    assert_eq!(signal, Some("execution failed: 400"));
-    assert!(
-        !class.is_mechanically_retryable(),
-        "the identical request gets the identical rejection"
-    );
-}
-
-#[test]
-fn issue_1437_agent_api_endpoint_rejections_are_all_named() {
-    for text in [
-        "Execution failed: 400 The resource you requested was not found.",
-        "API Error: 404 Not Found",
-        "{\"type\":\"invalid_request_error\",\"message\":\"model not available\"}",
-        "error: model_not_found",
-        "the agent reported: session not found",
-    ] {
-        let (class, _) = classify_failure_text(text);
-        assert_eq!(
-            class,
-            FailureClass::AgentApi,
-            "expected agent_api for {text:?}"
-        );
-    }
-}
-
-/// The class must be readable as a REASON, not just a label.
-#[test]
-fn issue_1437_agent_api_reasoning_names_the_cause_and_denies_terminality() {
-    let verdict = FailureVerdict {
-        class: FailureClass::AgentApi,
-        signal: Some("execution failed: 400"),
-        evidence: ISSUE_1437_TAIL.to_string(),
-        failed_steps: vec!["step-04-address-blockers".to_string()],
-        completed_steps: vec!["step-03-extract-merge-ready-verdict".to_string()],
-    };
-    let reasoning = verdict.reasoning();
-    assert!(reasoning.contains("agent_api"), "got: {reasoning}");
-    assert!(reasoning.contains("400"), "got: {reasoning}");
-    assert!(!verdict.is_structural_refusal());
-    let payload = verdict.to_json(1, "terminal");
-    assert_eq!(payload["class"], "agent_api");
-    assert_eq!(payload["retryable"], false);
-    assert_eq!(
-        payload["structural_refusal"], false,
-        "an agent/API rejection must never read as a guard refusal: {payload}"
-    );
-}
-
-/// The other direction: a REAL structural refusal is still a work-class,
-/// non-retryable, flagged terminal answer.
-#[test]
-fn issue_1437_a_real_structural_refusal_is_still_terminal() {
-    let evidence = "BLOCKED_TERMINAL orchestration_unavailable: depth 3 of max 3 \
-                    (issue #964/#1326).\nThis is a POLICY decision, not an \
-                    infrastructure fault.";
-    let (class, signal) = classify_failure_text(evidence);
-    assert_eq!(class, FailureClass::Work);
-    assert_eq!(signal, Some("blocked_terminal orchestration_unavailable"));
-    assert!(!class.is_mechanically_retryable());
-    let verdict = FailureVerdict {
-        class,
-        signal,
-        evidence: evidence.to_string(),
-        failed_steps: vec!["step-02".to_string()],
-        completed_steps: Vec::new(),
-    };
-    assert!(
-        verdict.is_structural_refusal(),
-        "a guard refusal must be flagged so a loop can stop and never retry into it"
-    );
-    assert_eq!(verdict.to_json(1, "terminal")["structural_refusal"], true);
-    assert!(
-        verdict.reasoning().contains("FINAL"),
-        "the refusal must say it is final: {}",
-        verdict.reasoning()
-    );
-}
-
-/// The self-poisoning case that caused the incident. An agent that READ the
-/// repository's own contract test — or handled a refusal aimed at a descendant
-/// — leaves the bare word in the evidence. That is history, not this run's
-/// terminating cause, and it must not be flagged as a structural refusal.
-#[test]
-fn issue_1437_a_quoted_bare_marker_is_not_a_structural_refusal() {
-    let evidence = "\
-grep BLOCKED_TERMINAL amplifier-bundle/recipes/tests/*.sh
-  test-issue-1337-loop-health-evaluator.sh:20:#   - exit 79 / BLOCKED_TERMINAL is TERMINAL
-a nested run was refused; I completed the step inline as instructed.
-Execution failed: 400 The resource you requested was not found.";
-    let (class, signal) = classify_failure_text(evidence);
-    let verdict = FailureVerdict {
-        class,
-        signal,
-        evidence: evidence.to_string(),
-        failed_steps: vec!["step-04-address-blockers".to_string()],
-        completed_steps: Vec::new(),
-    };
-    assert!(
-        !verdict.is_structural_refusal(),
-        "a transcript that merely quotes the word is not a refusal of this run"
-    );
-    assert_eq!(
-        class,
-        FailureClass::AgentApi,
-        "the run's real terminating cause is the endpoint rejection"
-    );
-}
-
-/// Precedence must not regress: a real work failure still outranks an agent
-/// endpoint rejection appearing in the same tail.
-#[test]
-fn issue_1437_work_failures_still_beat_an_agent_api_marker() {
-    let (class, _) = classify_failure_text(
-        "test result: FAILED. 1 failed\nlater: Execution failed: 400 not found",
-    );
-    assert_eq!(class, FailureClass::Work);
 }

@@ -11,21 +11,47 @@ use tracing::{debug, info, warn};
 /// Returns `true` if `gh copilot` is usable after this call (either it was
 /// already installed or auto-install succeeded).
 pub fn ensure_copilot_sdk_installed() -> bool {
-    if is_copilot_available() {
-        debug!("gh copilot is already available");
-        return true;
+    match probe("gh copilot", &["copilot", "--version"]) {
+        Availability::Usable => {
+            debug!("gh copilot is already available");
+            return true;
+        }
+        // Issue #1424: a probe that could not run says nothing about whether
+        // the extension is installed. Reporting "not found" and spending an
+        // install on it names a cause that was never established — and on a
+        // host that is out of processes, the install cannot run either.
+        Availability::Undetermined(reason) => {
+            warn!(
+                %reason,
+                "could not determine whether gh copilot is available; not \
+                 attempting an install"
+            );
+            return false;
+        }
+        Availability::Unusable => {}
     }
 
     info!("gh copilot not found, attempting auto-install");
 
-    if !is_gh_available() {
-        warn!("GitHub CLI (gh) is not installed — cannot auto-install copilot extension");
-        return false;
+    match probe("gh", &["--version"]) {
+        Availability::Usable => {}
+        Availability::Unusable => {
+            warn!("GitHub CLI (gh) is not installed — cannot auto-install copilot extension");
+            return false;
+        }
+        Availability::Undetermined(reason) => {
+            warn!(%reason, "could not run the GitHub CLI (gh) to check it; not \
+                 attempting an install");
+            return false;
+        }
     }
 
     if install_copilot_extension() {
         info!("gh copilot extension installed successfully");
-        is_copilot_available()
+        matches!(
+            probe("gh copilot", &["copilot", "--version"]),
+            Availability::Usable
+        )
     } else {
         warn!("Failed to install gh copilot extension");
         false
@@ -36,24 +62,39 @@ pub fn ensure_copilot_sdk_installed() -> bool {
 // Internal helpers
 // ---------------------------------------------------------------------------
 
-/// Check if `gh copilot` is available by running `gh copilot --version`.
-fn is_copilot_available() -> bool {
-    Command::new("gh")
-        .args(["copilot", "--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+/// What a `--version` probe actually established.
+///
+/// Three answers, not two (issue #1424). `status().is_ok_and(|s| s.success())`
+/// collapses "it answered no" with "it never ran", and only the first is
+/// evidence that something is not installed.
+#[derive(Debug)]
+enum Availability {
+    /// It ran and exited 0.
+    Usable,
+    /// It ran, or is genuinely absent, and the answer is no.
+    Unusable,
+    /// Nothing was established: the probe could not be run, or was killed.
+    Undetermined(String),
 }
 
-/// Check if the `gh` CLI itself is on PATH.
-fn is_gh_available() -> bool {
-    Command::new("gh")
-        .arg("--version")
+/// Run `gh <args> --version`-shaped probe and say what it established.
+fn probe(label: &str, args: &[&str]) -> Availability {
+    match Command::new("gh")
+        .args(args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .is_ok_and(|s| s.success())
+    {
+        Ok(status) if status.success() => Availability::Usable,
+        // A clean non-zero exit is an answer: `gh` ran and said no.
+        Ok(status) if status.code().is_some() => Availability::Unusable,
+        // Killed by a signal: it was there, it started, and something took it
+        // down. That is not "not installed".
+        Ok(status) => Availability::Undetermined(format!("{label} was killed ({status})")),
+        // Absence is the ONE spawn error that proves the tool is not there.
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Availability::Unusable,
+        Err(error) => Availability::Undetermined(format!("{label} could not be run: {error}")),
+    }
 }
 
 /// Attempt to install the copilot extension via `gh extension install`.
@@ -84,14 +125,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_copilot_available_returns_bool() {
-        // Should not panic regardless of environment
-        let _ = is_copilot_available();
+    fn probe_returns_an_answer_without_panicking() {
+        // Should not panic regardless of environment.
+        let _ = probe("gh copilot", &["copilot", "--version"]);
     }
 
     #[test]
-    fn is_gh_available_returns_bool() {
-        let _ = is_gh_available();
+    fn a_missing_gh_is_an_answer_not_an_unknown() {
+        // Absence is the one spawn error that establishes anything: a tool
+        // that is not on `$PATH` really is not installed.
+        assert!(matches!(
+            probe("nope", &["definitely-not-a-gh-subcommand-xyz"]),
+            Availability::Usable | Availability::Unusable
+        ));
     }
 
     #[test]
@@ -110,7 +156,7 @@ mod tests {
     #[test]
     fn functions_do_not_panic_without_gh() {
         // Smoke test: none of these should panic even if gh is absent
-        let _ = is_gh_available();
-        let _ = is_copilot_available();
+        let _ = probe("gh", &["--version"]);
+        let _ = probe("gh copilot", &["copilot", "--version"]);
     }
 }

@@ -41,7 +41,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "shipped lease + merge-gate contract green"
+      expected: "contains:shipped lease + merge-gate contract green"
 assertions:
   - name: all-cases-passed
     type: output_contains

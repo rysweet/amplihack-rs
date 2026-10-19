@@ -1,5 +1,7 @@
 # Workflows - Graph-Based Orchestration
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## What are Workflows?
 
 Workflows in Microsoft Agent Framework are graph-based orchestration systems that coordinate multiple agents and operations. They provide structured control flow with:
@@ -19,8 +21,8 @@ from agents_framework import GraphWorkflow, Agent, ModelClient
 workflow = GraphWorkflow()
 
 # Add agents as nodes
-agent1 = Agent(model=ModelClient(model="gpt-4"), instructions="Research")
-agent2 = Agent(model=ModelClient(model="gpt-4"), instructions="Summarize")
+agent1 = Agent(model=ModelClient(model="<configured-model>"), instructions="Research")
+agent2 = Agent(model=ModelClient(model="<configured-model>"), instructions="Summarize")
 
 workflow.add_node("researcher", agent1)
 workflow.add_node("summarizer", agent2)

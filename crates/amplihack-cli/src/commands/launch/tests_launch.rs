@@ -822,6 +822,35 @@ fn test_wait_for_child_returns_nonzero_on_normal_failure() {
     );
 }
 
+/// A `sh` that sends SIGINT to itself, started with SIGINT at its default
+/// disposition.
+///
+/// A disposition of `SIG_IGN` survives exec, and POSIX `sh` cannot reset a
+/// signal that was ignored on entry, so `kill -INT $$` would leave the shell
+/// alive to exit 0. The test binary inherits `SIG_IGN` whenever it is started
+/// as a background job of a non-interactive shell (as auto-drive's QA run
+/// is), and whether some other test has meanwhile installed a SIGINT handler,
+/// which exec resets to the default, depends on scheduling. Resetting the
+/// disposition in the child makes the result independent of both.
+#[cfg(unix)]
+fn sh_killing_itself_with_sigint() -> Command {
+    use std::os::unix::process::CommandExt;
+
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "kill -INT $$"]);
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // `signal`, which is async-signal-safe; it touches no memory of the parent.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::signal(libc::SIGINT, libc::SIG_DFL) == libc::SIG_ERR {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    cmd
+}
+
 /// Document the root cause: on Unix, a process killed by SIGINT has *no*
 /// numeric exit code — status.code() returns None.
 ///
@@ -833,8 +862,7 @@ fn test_sigint_killed_process_has_no_numeric_exit_code() {
     let _guard = home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let mut child = std::process::Command::new("sh")
-        .args(["-c", "kill -INT $$"])
+    let mut child = sh_killing_itself_with_sigint()
         .spawn()
         .expect("failed to spawn sh");
     let status = child.wait().expect("wait failed");
@@ -861,8 +889,7 @@ fn test_wait_for_child_returns_zero_when_killed_by_sigint() {
 
     // Spawn a shell that immediately sends SIGINT to itself.
     // This models a user pressing Ctrl+C while the claude binary is running.
-    let mut cmd = Command::new("sh");
-    cmd.args(["-c", "kill -INT $$"]);
+    let cmd = sh_killing_itself_with_sigint();
     let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
     let shutdown = Arc::new(AtomicBool::new(false));
 
@@ -909,4 +936,63 @@ fn test_wait_for_child_returns_zero_when_shutdown_flag_set() {
         "Shutdown-flag path must return exit code 0 (matching Python sys.exit(0)). \
          Got: {exit_code}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1424: a child that dies on a signal is reported, not silently zeroed.
+// ---------------------------------------------------------------------------
+
+/// A child killed by SIGABRT — the Copilot native binary in issue #1424, which
+/// panicked on a failed thread spawn and aborted — must NOT be reported as a
+/// clean exit. `status.code().unwrap_or(0)` said 0 for every signal death, so
+/// `amplihack copilot` exited 0 and claimed success.
+#[test]
+#[cfg(unix)]
+fn test_wait_for_child_reports_a_sigabrt_death_instead_of_success() {
+    let _guard = home_env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    use std::sync::Arc;
+    use std::sync::atomic::AtomicBool;
+
+    let mut cmd = Command::new("sh");
+    cmd.args(["-c", "ulimit -c 0 2>/dev/null; kill -ABRT $$"]);
+    let mut child = ManagedChild::spawn(cmd).expect("failed to spawn sh");
+    let shutdown = Arc::new(AtomicBool::new(false));
+
+    let exit_code = wait_for_child_or_signal(&mut child, &shutdown)
+        .expect("wait_for_child_or_signal returned an error");
+
+    assert_eq!(
+        exit_code,
+        128 + libc::SIGABRT,
+        "a SIGABRT death must be reported as 128+6, not as success. Got {exit_code}."
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn describe_child_signal_says_the_binary_ran() {
+    // The one sentence the misdiagnosis contradicted: it was there, and it ran.
+    let message = describe_child_signal(libc::SIGABRT);
+    assert!(message.contains("SIGABRT"), "{message}");
+    assert!(
+        !message.to_lowercase().contains("not installed")
+            && !message.to_lowercase().contains("no platform package"),
+        "must not blame the install: {message}"
+    );
+    assert!(
+        message.contains("ulimit -u") && message.contains("pids.max"),
+        "SIGABRT must point at the machine: {message}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn describe_child_signal_does_not_invent_a_cause_for_every_signal() {
+    // SIGSEGV is not resource exhaustion; naming a likely-but-unverified cause
+    // is the mistake this issue is about.
+    let message = describe_child_signal(libc::SIGSEGV);
+    assert!(message.contains("SIGSEGV"), "{message}");
+    assert!(!message.contains("ulimit -u"), "{message}");
 }

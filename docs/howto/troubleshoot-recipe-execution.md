@@ -8,6 +8,7 @@ Use this guide when a recipe step fails unexpectedly — a shell step hangs, an 
 - [Shell step fails with "TASK_DESCRIPTION: unbound variable"](#shell-step-fails-with-task_description-unbound-variable)
 - [Late shell step fails with "Argument list too long (os error 7)"](#late-shell-step-fails-with-argument-list-too-long-os-error-7)
 - [Agent step completes but changes nothing](#agent-step-completes-but-changes-nothing)
+- [Agent steps fail as root with "--dangerously-skip-permissions cannot be used with root"](#agent-steps-fail-as-root-with---dangerously-skip-permissions-cannot-be-used-with-root)
 - [Shell step fails with "python3 not found"](#shell-step-fails-with-python3-not-found)
 - [Workflow classification routes to the wrong type](#workflow-classification-routes-to-the-wrong-type)
 - [Workflow step requires a Git repository](#workflow-step-requires-a-git-repository)
@@ -122,7 +123,9 @@ amplihack recipe run /tmp/unbound-check.yaml \
 - **The name is reserved.** Names such as `PATH`, `HOME`, `IFS`, `BASH_ENV`,
   `LD_PRELOAD`, `PYTHONPATH`, and anything beginning with `AMPLIHACK_` are never
   exported from context (a `reason=reserved_name` warning is logged). Read those
-  values from their canonical source instead of from context.
+  values from their canonical source instead of from context. An `AMPLIHACK_*`
+  key passed to `amplihack recipe run` with `-c` or `--context-file` stops the
+  run with `recipe context key "…" is reserved`; remove the key.
 - **The context key is genuinely absent.** Confirm the value is supplied via the
   recipe's `context:` block or a `-c/--context` flag; an unset, un-inferred key
   produces no environment variable.
@@ -163,7 +166,7 @@ mirrors context only up to that budget. Essential keys
 (`task_description`, `repo_path`, `existing_branch`, `should_*`) are always
 exported; other keys are filled smallest-first and any that do not fit are
 dropped from the *environment mirror only* — they are still delivered to the
-runner via the context file for `{{placeholder}}` substitution. This keeps the
+runner as `--set` arguments for `{{placeholder}}` substitution. This keeps the
 inherited environment safely under `ARG_MAX`, so late steps no longer fail.
 
 **If a late step still fails with `os error 7`:**
@@ -193,6 +196,78 @@ inherited environment safely under `ARG_MAX`, so late steps no longer fail.
 See
 [Recipe Context Environment Export → Aggregate environment budget](../reference/recipe-context-environment.md#aggregate-environment-budget)
 and the [`AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES` reference](../reference/environment-variables.md#amplihack_context_env_budget_bytes).
+
+---
+
+## Agent steps fail as root with "--dangerously-skip-permissions cannot be used with root"
+
+**Symptom:** Running as root, `amplihack recipe run` stops before the first
+agent step with ``recipe pre-flight failed for '<recipe>': amplihack runs
+`claude --dangerously-skip-permissions`, which Claude Code refuses as root``,
+or an older amplihack fails inside the step with
+`--dangerously-skip-permissions cannot be used with root/sudo privileges`.
+
+**Cause:** amplihack passes `--dangerously-skip-permissions` to every
+non-interactive `claude` it starts. Claude Code refuses that flag as uid 0
+unless `IS_SANDBOX=1` is set (the exact value `1`) or it runs in its own
+bubblewrap sandbox.
+
+The pre-flight applies when the recipe's agent steps will run `claude`. That
+is decided once, from `--working-dir` (see
+[Resolving once for a whole recipe run](../reference/active-agent-binary.md#resolving-once-for-a-whole-recipe-run)),
+and the runner is handed the same answer.
+
+**What amplihack does as root** (for `claude` only):
+
+| Situation | Result |
+|---|---|
+| `IS_SANDBOX=1`, or a truthy `CLAUDE_CODE_BUBBLEWRAP` | Passed through unchanged |
+| `IS_SANDBOX=yes`/`true`/`on`/`y` | Passed to `claude` as `IS_SANDBOX=1` |
+| `IS_SANDBOX=0` or any other value | Never overridden; fails up front |
+| `IS_SANDBOX` unset, in a detected container | `IS_SANDBOX=1` set on the `claude` child only, with a one-line notice on stderr |
+| `IS_SANDBOX` unset, no container detected | Fails up front naming `IS_SANDBOX=1` |
+
+A container is detected from `CLAUDE_CODE_REMOTE=true` (Claude Code cloud
+sessions), `/.dockerenv`, `/run/.containerenv`, or a container runtime in the
+path of `/proc/1/cgroup`.
+
+The two marker files are part of the root filesystem, and any image extracted
+with `docker export` carries them, so they count only when:
+
+- the kernel is not WSL (`/proc/sys/kernel/osrelease` containing `microsoft` or
+  `WSL`, `WSL_DISTRO_NAME`/`WSL_INTEROP`, or the WSL interop entries). Docker
+  Desktop on Windows runs containers on the WSL kernel, and its private cgroup
+  namespace hides the runtime from `/proc/1/cgroup`, so a root container there
+  needs `export IS_SANDBOX=1`;
+- `/` is PID 1's root (same device and inode as `/proc/1/root`), so a `chroot`
+  into an extracted image does not count. If `/proc/1/root` cannot be read,
+  the markers do not count.
+
+When a marker exists but does not count, the error names it and says why.
+
+`amplihack recipe run` prints the notice once on stderr before the first step,
+because agent steps' own stderr is shown only when a step fails. The fleet
+commands print it on stderr, and the fleet TUI shows it in the reasoner status
+panel. The notice looks like this:
+
+```text
+amplihack: running as root in a container (/.dockerenv); passing IS_SANDBOX=1 to claude so --dangerously-skip-permissions is accepted. Set IS_SANDBOX=0 to refuse.
+```
+
+**Fix:**
+
+- On a disposable machine that was not detected (a root CI VM, for example),
+  opt in explicitly:
+
+  ```bash
+  export IS_SANDBOX=1
+  amplihack recipe run <recipe>
+  ```
+
+- On a machine that is not disposable, run amplihack as a non-root user.
+- To stop amplihack enabling it automatically in a container that is not
+  disposable (one with the host filesystem or `docker.sock` mounted, for
+  example), `export IS_SANDBOX=0`. Agent steps then fail up front instead.
 
 ---
 

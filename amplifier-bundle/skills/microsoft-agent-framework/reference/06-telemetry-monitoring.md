@@ -1,5 +1,7 @@
 # Telemetry & Monitoring
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## OpenTelemetry Integration
 
 Microsoft Agent Framework has built-in OpenTelemetry support for distributed tracing, metrics, and logging.
@@ -19,7 +21,7 @@ provider.add_span_processor(processor)
 trace.set_tracer_provider(provider)
 
 # Create agent (automatically instrumented)
-agent = Agent(model=ModelClient(model="gpt-4"))
+agent = Agent(model=ModelClient(model="<configured-model>"))
 
 # Agent operations are automatically traced
 response = await agent.run(message="Hello")

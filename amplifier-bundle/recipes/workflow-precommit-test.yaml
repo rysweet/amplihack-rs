@@ -53,8 +53,30 @@ steps:
          - Formatting issues
          - Type checking errors
 
-      Iterate until all checks pass. Report results.
+      Iterate until all checks pass. Report results, then return exactly one JSON
+      object with status (PASS or FAIL), exit_code (the actual aggregate exit),
+      precommit_exit_code and workspace_exit_code (actual numeric exits),
+      workspace_command ("cargo test --workspace --locked"),
+      validation_scope ("FULL_WORKSPACE"), test_threads ("DEFAULT"), and
+      evidence (a nonempty ARRAY containing actual retained reference entries
+      covering BOTH checks, each with log and exit_receipt references). Bind the
+      successful full `cargo test --workspace --locked` with DEFAULT test threads
+      and full real `pre-commit run --all-files` to current product source.
+      A subset, failed run or earlier source epoch cannot supply successful
+      full-workspace evidence. Report FAIL truthfully when checks fail.
+
+      Illustrative schema example ONLY; placeholder references and PASS/zero
+      values are not completed-check evidence. Actual values must come from
+      genuine completed checks and references must identify retained artifacts:
+      {"status":"PASS","exit_code":0,"precommit_exit_code":0,"workspace_exit_code":0,"workspace_command":"cargo test --workspace --locked","validation_scope":"FULL_WORKSPACE","test_threads":"DEFAULT","evidence":[{"log":"<actual retained raw log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+      Include retained references covering both workspace and precommit checks;
+      add entries if their logs/exit receipts are retained separately. Return a
+      genuine fresh native Object, never a converted historical Object or artifact
+      FILE receipt; do not fabricate references or inject success. Source-qualified
+      retained successful child outcomes may be referenced only where relevant
+      source, tool and runtime inputs remain unchanged.
     output: "precommit_results"
+    parse_json: true
 
   # ==========================================================================
   # STEP 13: MANDATORY OUTSIDE-IN TESTING
@@ -158,8 +180,24 @@ steps:
       - Assuming "documentation can't be tested"
 
       Report the full test output and confirm both scenarios passed (or document
-      any failures with root cause analysis).
+      any failures with root cause analysis). Return exactly one JSON object with
+      status (PASS or FAIL), exit_code (actual numeric aggregate exit), scenarios
+      (an array with at least two objects, each containing status and actual
+      numeric exit_code and name), and evidence (a nonempty ARRAY containing
+      actual retained reference entries with log and exit_receipt references).
+      Include at least two meaningful current-source outside-in scenario Objects
+      with actual numeric exits. Report FAIL truthfully when checks fail.
+
+      Illustrative schema example ONLY; placeholder references and PASS/zero
+      values are not completed-check evidence:
+      {"status":"PASS","exit_code":0,"scenarios":[{"status":"PASS","exit_code":0,"name":"<actual simple scenario>"},{"status":"PASS","exit_code":0,"name":"<actual complex scenario>"}],"evidence":[{"log":"<actual retained outside-in log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
+      Return a genuine fresh native Object with references covering the actual
+      scenarios. Never convert historical Objects, substitute artifact FILE
+      receipts, fabricate references or inject success. Source-qualified retained
+      successful child outcomes may be referenced only where relevant source,
+      tool and runtime inputs remain unchanged.
     output: "local_testing_gate"
+    parse_json: true
 
   - id: "verification-terminal-evidence"
     type: "bash"
@@ -184,16 +222,43 @@ steps:
           '{verification_completed:$verification_completed,terminal_no_op:$terminal_no_op,terminal_state:$terminal_state,terminal_reason:$terminal_reason}'
       }
 
-      allow_no_op="$(normalize_bool "${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}")"
+      # An explicit framework root is authoritative, including missing assets.
+      if [ -n "${AMPLIHACK_HOME:-}" ]; then
+        CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"
+      else
+        CONTEXT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_context.sh"
+        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_context.sh"
+      fi
+      [ -f "$CONTEXT_HELPER" ] || { echo "ERROR: workflow_context.sh not found at selected framework root" >&2; exit 2; }
+      . "$CONTEXT_HELPER"
+      WORKFLOW_CONTEXT_COHORT=verification
+      workflow_context_capture allow_no_op allow_no_op
+      allow_no_op="$(normalize_bool "$allow_no_op")"
+      workflow_context_capture precommit precommit_results
+      workflow_context_capture testing local_testing_gate
       if [ "$allow_no_op" = "true" ]; then
         emit_evidence "false" "true" "ALLOW_NO_OP" "allow_no_op was explicitly selected for a non-code-change path"
         exit 0
       fi
 
-      if [ -n "${PRECOMMIT_RESULTS:-}" ] && [ -n "${LOCAL_TESTING_GATE:-}" ]; then
-        emit_evidence "true" "false" "VERIFICATION_COMPLETED" "pre-commit and outside-in local testing phases produced validation output"
+      # Reports remain data. Only complete successful structured receipts count;
+      # failed/nonempty prose, missing members and subset runs stay unproven.
+      if printf '%s' "$precommit" | jq -se '
+          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
+          .precommit_exit_code == 0 and .workspace_exit_code == 0 and
+          .workspace_command == "cargo test --workspace --locked" and
+          .validation_scope == "FULL_WORKSPACE" and .test_threads == "DEFAULT" and
+          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1 &&
+        printf '%s' "$testing" | jq -se '
+          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
+          (.scenarios | type == "array" and length >= 2 and
+            all(.[]; type == "object" and .status == "PASS" and .exit_code == 0)) and
+          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1; then
+        emit_evidence "true" "false" "VERIFICATION_COMPLETED" "current full workspace, pre-commit and outside-in structured receipts report successful validation"
       else
-        emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "pre-commit and outside-in local testing evidence is missing"
+        emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "successful full workspace, pre-commit or outside-in structured evidence is missing or invalid"
       fi
     output: "verification_terminal_evidence"
 

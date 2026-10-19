@@ -156,7 +156,7 @@ permissions:
   statuses: write # Create commit statuses
 
 # REQUIRED: AI engine selection
-engine: copilot | claude-code | claude-sonnet-4-5 | codex
+engine: copilot | claude-code | codex
 
 # OPTIONAL: Tool configuration
 tools:
@@ -266,15 +266,13 @@ permissions:
 
 - `copilot`: GitHub Copilot (default, fastest)
 - `claude-code`: Claude Code (more stable for complex tasks)
-- `claude-sonnet-4-5`: Claude Sonnet 4.5 (highest quality)
 - `codex`: OpenAI Codex
 
 **Selection criteria**:
 
 - `copilot`: Fast iteration, simple tasks, GitHub-native
 - `claude-code`: Complex logic, multi-step workflows, better reasoning
-- `claude-sonnet-4-5`: Maximum quality, critical workflows
-- `codex`: OpenAI integration, specific model requirements
+- `codex`: OpenAI integration and runtime compatibility
 
 ---
 

@@ -18,7 +18,7 @@ pub mod run;
 pub mod show_validate;
 
 pub use list::run_list;
-pub use run::run_recipe;
+pub use run::{resolve_context_args, run_recipe};
 pub use show_validate::{run_show, run_validate};
 
 #[cfg(test)]

@@ -245,7 +245,7 @@ fn step_json(step: &RawStep) -> serde_json::Value {
     })
 }
 
-fn infer_step_type(step: &RawStep) -> &'static str {
+pub(crate) fn infer_step_type(step: &RawStep) -> &'static str {
     match step.step_type.as_deref() {
         Some("bash") | Some("BASH") => "bash",
         Some("agent") | Some("AGENT") => "agent",

@@ -86,6 +86,7 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous_home = crate::test_support::set_home(temp.path());
 
@@ -98,6 +99,7 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
     let prev_path = std::env::var_os("PATH");
     let prev_skip = std::env::var_os("AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL");
     let prev_rr_path = std::env::var_os("RECIPE_RUNNER_RS_PATH");
+    let prev_cargo_home = std::env::var_os("CARGO_HOME");
     // Locate /usr/bin/sh + /usr/bin (cargo-install needs basic tools); we
     // include them but deliberately exclude any directory that may already
     // contain a real recipe-runner-rs (~/.cargo/bin, ~/.local/bin) so the
@@ -117,6 +119,8 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
         // Make sure no leaked RECIPE_RUNNER_RS_PATH from a prior test
         // accidentally satisfies the present-check.
         std::env::remove_var("RECIPE_RUNNER_RS_PATH");
+        // $CARGO_HOME/bin is probed too; CI sets CARGO_HOME to a real one.
+        std::env::remove_var("CARGO_HOME");
     }
 
     let result = f(temp.path(), &bin_dir);
@@ -137,6 +141,9 @@ fn with_install_env<R>(f: impl FnOnce(&Path, &Path) -> R) -> R {
         }
         if let Some(v) = prev_rr_path {
             std::env::set_var("RECIPE_RUNNER_RS_PATH", v);
+        }
+        if let Some(v) = prev_cargo_home {
+            std::env::set_var("CARGO_HOME", v);
         }
     }
     crate::test_support::restore_home(previous_home);
@@ -318,5 +325,62 @@ fn install_bails_when_recipe_runner_missing_and_install_skipped() {
             "issue #527 BUG 2: error must include actionable remediation \
              (cargo install command or PATH guidance); got: {err}"
         );
+        // Issue #1491: the loud failure must not strand the staged assets.
+        let manifest = manifest::manifest_path().unwrap();
+        assert!(
+            manifest.is_file(),
+            "issue #1491: staged framework assets must have an uninstall manifest \
+             even when the recipe-runner phase fails; missing {}",
+            manifest.display()
+        );
+        assert!(
+            lower.contains("amplihack uninstall"),
+            "issue #1491: the error must say how to clean up or finish; got: {err}"
+        );
     });
+}
+
+/// Issue #1507: a reinstall must not forget the directories the first install
+/// created, or `amplihack uninstall` leaves them behind.
+#[test]
+fn reinstall_keeps_the_first_installs_directories_in_the_manifest() {
+    with_install_env(|home, bin_dir| {
+        stage_recipe_runner_stub(bin_dir);
+        let repo = home.join("repo");
+        fs::create_dir_all(&repo).unwrap();
+        create_bundle_only_repo_with_bundle_claude_md(&repo);
+
+        local_install(&repo, None).unwrap();
+        let path = manifest::manifest_path().unwrap();
+        let first = manifest::read_manifest(&path).unwrap();
+        assert!(
+            !first.dirs.is_empty(),
+            "the first install must record the directories it created"
+        );
+
+        local_install(&repo, None).unwrap();
+        let second = manifest::read_manifest(&path).unwrap();
+        for dir in &first.dirs {
+            assert!(
+                second.dirs.contains(dir),
+                "issue #1507: reinstall dropped {dir} from the manifest dirs"
+            );
+        }
+    });
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "AMPLIHACK_SKIP_RECIPE_RUNNER_INSTALL",
+        "CARGO_HOME",
+        "HOME",
+        "PATH",
+        "RECIPE_RUNNER_RS_PATH",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

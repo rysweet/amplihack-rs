@@ -1,5 +1,7 @@
 # GitHub Copilot SDK - Practical Examples
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Example 1: Hello World (All Languages)
 
 ### TypeScript
@@ -8,7 +10,7 @@
 import { CopilotClient } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
-const session = await client.createSession({ model: "gpt-4.1" });
+const session = await client.createSession({ model: "<configured-model>" });
 
 const response = await session.sendAndWait({ prompt: "What is 2 + 2?" });
 console.log(response?.data.content);
@@ -27,7 +29,7 @@ async def main():
     client = CopilotClient()
     await client.start()
 
-    session = await client.create_session({"model": "gpt-4.1"})
+    session = await client.create_session({"model": "<configured-model>"})
     response = await session.send_and_wait({"prompt": "What is 2 + 2?"})
     print(response.data.content)
 
@@ -56,7 +58,7 @@ func main() {
 	}
 	defer client.Stop()
 
-	session, err := client.CreateSession(&copilot.SessionConfig{Model: "gpt-4.1"})
+	session, err := client.CreateSession(&copilot.SessionConfig{Model: "<configured-model>"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -77,7 +79,7 @@ func main() {
 using GitHub.Copilot.SDK;
 
 await using var client = new CopilotClient();
-await using var session = await client.CreateSessionAsync(new SessionConfig { Model = "gpt-4.1" });
+await using var session = await client.CreateSessionAsync(new SessionConfig { Model = "<configured-model>" });
 
 var response = await session.SendAndWaitAsync(new MessageOptions { Prompt = "What is 2 + 2?" });
 Console.WriteLine(response?.Data.Content);
@@ -94,7 +96,7 @@ import { CopilotClient, SessionEvent } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   streaming: true,
 });
 
@@ -126,7 +128,7 @@ async def main():
     await client.start()
 
     session = await client.create_session({
-        "model": "gpt-4.1",
+        "model": "<configured-model>",
         "streaming": True,
     })
 
@@ -167,7 +169,7 @@ func main() {
 	defer client.Stop()
 
 	session, err := client.CreateSession(&copilot.SessionConfig{
-		Model:     "gpt-4.1",
+		Model:     "<configured-model>",
 		Streaming: true,
 	})
 	if err != nil {
@@ -199,7 +201,7 @@ using GitHub.Copilot.SDK;
 await using var client = new CopilotClient();
 await using var session = await client.CreateSessionAsync(new SessionConfig
 {
-    Model = "gpt-4.1",
+    Model = "<configured-model>",
     Streaming = true,
 });
 
@@ -246,7 +248,7 @@ const getWeather = defineTool("get_weather", {
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   streaming: true,
   tools: [getWeather],
 });
@@ -291,7 +293,7 @@ async def main():
     await client.start()
 
     session = await client.create_session({
-        "model": "gpt-4.1",
+        "model": "<configured-model>",
         "streaming": True,
         "tools": [get_weather],
     })
@@ -359,7 +361,7 @@ func main() {
 	defer client.Stop()
 
 	session, err := client.CreateSession(&copilot.SessionConfig{
-		Model:     "gpt-4.1",
+		Model:     "<configured-model>",
 		Streaming: true,
 		Tools:     []copilot.Tool{getWeather},
 	})
@@ -406,7 +408,7 @@ var getWeather = AIFunctionFactory.Create(
 
 await using var session = await client.CreateSessionAsync(new SessionConfig
 {
-    Model = "gpt-4.1",
+    Model = "<configured-model>",
     Streaming = true,
     Tools = [getWeather],
 });
@@ -453,7 +455,7 @@ const getWeather = defineTool("get_weather", {
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   streaming: true,
   tools: [getWeather],
 });
@@ -501,12 +503,12 @@ const client = new CopilotClient();
 
 // Create two independent sessions
 const codeReviewSession = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   systemMessage: { content: "You are a code reviewer." },
 });
 
 const documentationSession = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   systemMessage: { content: "You are a documentation writer." },
 });
 
@@ -536,12 +538,12 @@ async def main():
 
     # Create two independent sessions
     review_session = await client.create_session({
-        "model": "gpt-4.1",
+        "model": "<configured-model>",
         "systemMessage": {"content": "You are a code reviewer."},
     })
 
     docs_session = await client.create_session({
-        "model": "gpt-4.1",
+        "model": "<configured-model>",
         "systemMessage": {"content": "You are a documentation writer."},
     })
 
@@ -572,7 +574,7 @@ import { CopilotClient } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   systemMessage: {
     content: `You are a Python expert focused on writing clean, idiomatic code.
 Always follow PEP 8 guidelines.
@@ -601,7 +603,7 @@ async function main() {
   const client = new CopilotClient();
 
   try {
-    const session = await client.createSession({ model: "gpt-4.1" });
+    const session = await client.createSession({ model: "<configured-model>" });
 
     const response = await session.sendAndWait({
       prompt: "Explain async/await in JavaScript",
@@ -636,7 +638,7 @@ async def main():
 
     try:
         await client.start()
-        session = await client.create_session({"model": "gpt-4.1"})
+        session = await client.create_session({"model": "<configured-model>"})
 
         response = await session.send_and_wait({
             "prompt": "Explain async/await in Python"
@@ -666,7 +668,7 @@ import { CopilotClient } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   streaming: true,
   mcpServers: {
     github: {
@@ -700,7 +702,7 @@ import { CopilotClient } from "@github/copilot-sdk";
 
 const client = new CopilotClient();
 const session = await client.createSession({
-  model: "gpt-4.1",
+  model: "<configured-model>",
   customAgents: [
     {
       name: "security-reviewer",
@@ -743,7 +745,7 @@ const client = new CopilotClient({
   cliUrl: "localhost:4321",
 });
 
-const session = await client.createSession({ model: "gpt-4.1" });
+const session = await client.createSession({ model: "<configured-model>" });
 
 const response = await session.sendAndWait({
   prompt: "What is the capital of France?",
@@ -768,7 +770,7 @@ async def main():
     client = CopilotClient({"cli_url": "localhost:4321"})
     await client.start()
 
-    session = await client.create_session({"model": "gpt-4.1"})
+    session = await client.create_session({"model": "<configured-model>"})
     response = await session.send_and_wait({
         "prompt": "What is the capital of France?"
     })
@@ -802,7 +804,7 @@ func main() {
 	}
 	defer client.Stop()
 
-	session, err := client.CreateSession(&copilot.SessionConfig{Model: "gpt-4.1"})
+	session, err := client.CreateSession(&copilot.SessionConfig{Model: "<configured-model>"})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -832,7 +834,7 @@ await using var client = new CopilotClient(new CopilotClientOptions
 });
 
 await using var session = await client.CreateSessionAsync(
-    new SessionConfig { Model = "gpt-4.1" }
+    new SessionConfig { Model = "<configured-model>" }
 );
 
 var response = await session.SendAndWaitAsync(

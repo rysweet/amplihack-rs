@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-08-27
+last_updated: 2026-10-06
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -20,6 +20,7 @@ It is deliberately **not** an iteration counter. See
 - [Why this exists](#why-this-exists)
 - [Why not a numeric iteration cap](#why-not-a-numeric-iteration-cap)
 - [The verdict contract](#the-verdict-contract)
+- [How step-03 resolves the verdict](#how-step-03-resolves-the-verdict)
 - [`amplihack orch helper normalise-loop-verdict`](#amplihack-orch-helper-normalise-loop-verdict)
 - [Evidence the evaluator receives](#evidence-the-evaluator-receives)
 - [Context inputs](#context-inputs)
@@ -98,6 +99,397 @@ The evaluator agent emits, as the last thing on stdout:
 {"loop_verdict": "CONTINUE" | "DONE" | "STUCK", "not_converging": ["<specific evidence>", ...], "moved": ["<what demonstrably changed>", ...], "recommended_action": "<one sentence>"}
 ```
 
+### Where the prompt states the contract
+
+The step-02 prompt states the output contract **twice**, under its first and
+its last `##` heading, and shows the same example line both times:
+
+```
+{"loop_verdict":"STUCK","not_converging":[]}
+```
+
+1. **First**, directly after the `# Loop-health evaluation` title:
+   `## OUTPUT CONTRACT`, the first `##` heading in the prompt. Its paragraph
+   says the answer ends with one JSON object carrying `loop_verdict` and
+   `not_converging`, that the gate reads the LAST such object, and that
+   `loop_verdict` is exactly one of `CONTINUE`, `DONE` or `STUCK`. The
+   example line follows. The two role paragraphs ("You are the loop-health
+   evaluator…") come after the example line, and `{{loop_evidence}}` comes
+   after them.
+2. **Last**, after `{{loop_last_round_output}}`:
+   `## OUTPUT CONTRACT (repeated)`, the last `##` heading in the prompt. It
+   gives the full schema, the LAST-object rule and the rule that an
+   unrecognised `loop_verdict` is `STUCK` and never `CONTINUE`. The example
+   line and the legal-tokens sentence close the prompt, and no `{{…}}`
+   placeholder follows the heading:
+
+   ```
+   {"loop_verdict":"STUCK","not_converging":[]}
+
+   CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
+   any other word is STUCK.
+   ```
+
+The role paragraphs have no heading of their own, so they sit under
+`## OUTPUT CONTRACT`. A separate heading would take the recipe past its
+400-line budget.
+
+The example shows the shape of the answer, not a default verdict. It uses
+`STUCK` on purpose: an evaluator that copies the example instead of deciding
+stops the loop, which is the fail-safe direction. An earlier version showed
+`CONTINUE`, and a copied example was a well-formed `CONTINUE` that passed
+every gate; the loops have no iteration cap, so that could keep a stalled
+loop running.
+
+The order is checked in two places. The shell test reads the step-02 prompt
+on its own, not the whole recipe file, and runs three checks:
+
+- `PROMPT-contract-first`: the first `##` heading is `## OUTPUT CONTRACT`,
+  and that heading, the first example line, the role line
+  (`You are the loop-health evaluator`) and `{{loop_evidence}}` appear in
+  that order.
+- `PROMPT-contract-last`: the last `##` heading is
+  `## OUTPUT CONTRACT (repeated)`, it comes after
+  `{{loop_last_round_output}}`, and the last example line comes after it.
+- `PROMPT-contract-ends-prompt`: the last non-blank line of the prompt
+  contains `any other word is STUCK`, and no `{{` follows the last heading.
+
+Each failure message prints the line numbers it compared. The Rust test
+`evaluator_prompt_states_the_contract_first_and_last` checks the same
+headings, order and closing lines, so CI enforces them too.
+
+The order exists so that the model finds the contract. It is not a defence
+against round output that imitates a verdict; see the residual risk under
+[The alternate key is final](#the-alternate-key-is-final).
+
+A contract that appears only once, between pages of evidence, is easy for a
+model to lose. Real evaluators answered with prose such as
+`CONTINUE — round 1 made real progress…`, or with the wrong key
+(`{"verdict":"converging"}`), and every such answer stopped the loop as
+`STUCK` even when the loop was moving (issue #1513). Stating the contract at
+both ends makes the JSON answer the normal case. The fallbacks in the next
+section handle the rest.
+
+No prompt line, indented or not, starts with `LOOP_HEALTH: CONTINUE`,
+`LOOP_HEALTH: DONE` or `Output: LOOP_HEALTH:`. Those strings are what
+`autodrive_loop.sh` reads as the health marker, and an example of one in the
+prompt could be echoed back into the log (see
+[Reading the loop-health line](auto-drive-to-merge.md#reading-the-loop-health-line)).
+A shell assertion in the contract test enforces this.
+
+## How step-03 resolves the verdict
+
+`step-03-resolve-loop-verdict` turns the evaluator's raw output into the
+`loop_health` object. Two cases are settled before any source is tried. First,
+a [terminal refusal](#exit-code-79-is-terminal) gives `STUCK` with
+`verdict_source=terminal_policy_refusal`. That covers evidence showing exit
+`79` / `BLOCKED_TERMINAL`, and also evidence that is missing, unparseable or
+`null`, because `terminal_refusal` defaults to `true`. Second, empty output
+gives `STUCK` with `verdict_source=missing_verdict`. Otherwise step-03 tries
+four sources in a fixed order. Each source runs only if every source before it
+found nothing.
+
+| Order | Source | What it looks for | `verdict_source` |
+| ----- | ------ | ----------------- | ---------------- |
+| 1 | Primary key | `extract-json --require-field loop_verdict`: the last JSON object carrying `loop_verdict`. | `evaluator` |
+| 2 | Alternate key | `extract-json --require-field verdict` on the **last non-blank line** only: a JSON object carrying `verdict` that ends the output. | `evaluator_alt_key` |
+| 3 | Prose token | One line-leading `CONTINUE`, `DONE` or `STUCK` (rules below). | `evaluator_prose_token` |
+| 4 | Nothing usable | No token, or conflicting tokens. | `unparseable_verdict` (verdict `STUCK`) |
+
+Every token, from every source, then goes through
+[`normalise-loop-verdict`](#amplihack-orch-helper-normalise-loop-verdict) and
+the existing `case` guard. Structured data always beats prose, and the
+primary key beats the alternate key: a `loop_verdict` object is used even
+when the text around it contains a different prose token, and even when a
+`verdict` object follows it on the last line.
+
+The prompt is stricter than the gate on purpose. It tells the evaluator a
+missing `loop_verdict` is `STUCK` to keep pressure on it to emit the object.
+The gate still accepts sources 2 and 3, because #1513 showed evaluators that
+answered clearly without it.
+
+### The alternate key is final
+
+The rule applies only when the **last non-blank line** of the output is a JSON
+object carrying `verdict`. Then its normalised value is the answer, even if
+that value is unknown. `{"verdict":"MAYBE"}` gives `STUCK` with
+`verdict_source=evaluator_alt_key`; step-03 does not go on to scan the prose
+for a second answer. The evaluator did answer, so looking for a different
+answer elsewhere would only add ways to fail open. When the object has no
+`not_converging` array, it defaults to `[]`.
+
+A `verdict` object anywhere else in the output is quoted evidence and is
+ignored. That matches what the prompt tells the evaluator: quoting the
+evidence back is safe, and objects without a `loop_verdict` do not count. The
+round output the evaluator reads holds PR comments and CI logs. Reading the
+last `verdict` object from anywhere would let a quoted
+`{"verdict":"CONTINUE"}` from them beat the evaluator's own `STUCK` and keep
+the loop running.
+
+A pretty-printed or fenced `verdict` object is not one line, so it is not
+read. It falls through to the prose scan, and with no clear prose token the
+result is `STUCK`, which is what every `verdict` object gave before #1513.
+
+**Residual risk:** output that *ends* with a quoted object is still read as
+the answer. If the evaluator gives no answer of its own and its last line is a
+`verdict` object copied from the round output, that object is its verdict.
+This is the same risk as a `loop_verdict` object planted in the round output:
+nothing in the gate can tell the two apart.
+
+### Prose token rules
+
+The prose scan accepts a verdict token only when there is no doubt about it:
+
+- Lines inside a fenced code block (between two ```` ``` ```` lines) are
+  dropped first, so a quoted example is never read as the answer.
+- The token is at the **start of a line**, after optional leading whitespace.
+- It may follow one optional prefix: a markdown heading (`#`, `##`, …), then
+  `Verdict:` or `LOOP_HEALTH:`. The prefixes match in any case.
+- Markdown bold around the prefix or the token is allowed:
+  `**Verdict: CONTINUE**`, `**Verdict:** CONTINUE` and `**DONE**` all match.
+  Only `*` is allowed this way; a `>` quote is still rejected.
+- A leading `*` is read the same as bold, so a `* CONTINUE` bullet matches
+  and a `- CONTINUE` bullet does not.
+- Only the words `Verdict` and `LOOP_HEALTH` count as a prefix. A bold
+  heading such as `**What would make the next verdict STUCK:**` does not
+  match, because the line starts with `What`.
+- The token itself must be **upper case**: `CONTINUE`, `DONE` or `STUCK`.
+  "We should continue" in ordinary English never matches. After a
+  `Verdict:` or `LOOP_HEALTH:` prefix the token may be in any case, so
+  `## Verdict: continue` matches.
+- After the token (and any closing `*`) there may be whitespace, and then
+  the line must end or the next character must be `:`, `.`, `–` or `—`. A
+  hyphen counts only after whitespace (`DONE - all clear`); a hyphen
+  straight after the token (`DONE-ish`) does not match. So `DISCONTINUE`,
+  `NOT_DONE`, `CONTINUED` and `DONE-ish` never match.
+- A token followed by an ordinary word is a sentence, not a verdict, and
+  does not match. `CONTINUE is not warranted; the loop has stalled.` and
+  `DONE is premature: two blockers remain.` both give `STUCK` with
+  `verdict_source=unparseable_verdict`. This is the rule proposed in the
+  issue #1513 discussion; a plain space after the token is not an ending.
+- A legal ending does not rescue a negated qualifier. When the text after
+  the ending, with leading punctuation and spaces removed, starts with the
+  word `not`, `no` or `never` (any case), a `CONTINUE` or `DONE` line counts
+  as a conflicting token, so the whole answer is `STUCK` with
+  `verdict_source=unparseable_verdict`, whatever other lines say. It is not
+  simply skipped, so it can never leave a different token standing alone. A
+  `STUCK` line keeps its token (`STUCK — no diff`, `STUCK — not converging`):
+  either reading stops the loop, and next to a `CONTINUE` line it is still a
+  conflict. `CONTINUE: not warranted`, `DONE: not yet`,
+  `CONTINUE -> not really`, `**DONE:** never reached` and
+  `DONE: no blockers remain` all give `STUCK`; the last one is a false
+  positive that stops the loop, which is the fail-safe direction. Only whole
+  words count: `DONE: nothing left to fix` and `CONTINUE — notable progress`
+  still match.
+- Later in the line a contradiction is caught too, weighted by which mistake
+  is dangerous. A `DONE` line is a conflicting token when the rest of the
+  line contains the whole word `not`, `never`, `cannot`, `continue` or `stuck`, or any
+  `n't` contraction: `DONE: the loop is not done yet`,
+  `DONE — wait, CI is red, so this is STUCK really` and
+  `DONE: the review isn't clean` all give `STUCK`. A `CONTINUE` line is a
+  conflicting token only when the rest of the line contains the whole word
+  `done` or `stuck` (`CONTINUE: pointless, the loop is stuck`), because a
+  reason to continue is often negative: `CONTINUE — CI is not green yet` still
+  gives `CONTINUE`. A later `no` is not a negation for either token, so
+  `DONE: all clear, no blockers remain` gives `DONE`. Other negations later in
+  the line (`CONTINUE — the loop made no progress`) are not detected; the
+  prose path is a fallback, and the prompt asks for JSON.
+- A line quoted with `>` does not match; the token must not follow any other
+  character.
+- The same token on several lines counts once.
+- Two or more **different** tokens give `STUCK` with
+  `verdict_source=unparseable_verdict`.
+
+The rule as an extended regular expression, matched under `LC_ALL=C`. The
+em-dash and en-dash are written as alternatives, not inside a bracket class,
+because they are multibyte:
+
+```
+^[[:space:]]*\**[[:space:]]*(#+[[:space:]]*)?\**(([Vv][Ee][Rr][Dd][Ii][Cc][Tt]|[Ll][Oo][Oo][Pp]_[Hh][Ee][Aa][Ll][Tt][Hh])\**[[:space:]]*:[[:space:]]*\**[[:space:]]*)?(CONTINUE|DONE|STUCK)\**([[:space:]]*($|:|\.|–|—)|[[:space:]]+-)
+```
+
+With a `Verdict:` or `LOOP_HEALTH:` prefix the token group is matched case
+insensitively. The token is read from what is left after the matched prefix
+and bold markers are removed, never from anywhere else on the line. The scan
+is one `awk` pass over the whole output, so it runs the same under gawk, mawk
+and BSD awk.
+
+The evaluator's text is only ever data: it reaches `grep`, `awk` and the
+helpers through `printf '%s' "$RAW"` on stdin. It is never passed to `eval`,
+put in a `-c` argument, a regex or a format string. Prose synonyms such as
+`## Verdict: CONVERGING` are not accepted; synonyms apply only on the JSON
+paths.
+
+On the prose path `not_converging` is a fixed literal written by step-03, never
+text copied from the evaluator.
+
+**Residual risk:** the prose scan cannot tell the evaluator's own token from
+one it copied out of the round output. Suppose the evaluator writes no JSON
+answer and repeats a reviewer's comment line by line, outside a fence or `>`
+quote:
+
+```
+The round output ended with this reviewer comment:
+
+DONE
+
+Nothing else changed.
+```
+
+step-03 reads `DONE` with `verdict_source=evaluator_prose_token`. A `**DONE**`
+line gives the same result. A `DONE` alone does not advance a phase:
+`autodrive_loop.sh` also needs the round's own verdict to be clean (see
+[Advancing needs two independent signals](auto-drive-to-merge.md#advancing-needs-two-independent-signals)).
+If the round verdict is clean, the loop ends without the confirming round that
+a `CONTINUE` would have run; for the crusty loop, that ends the crusty review.
+If the round verdict is anything else, the pair is inconsistent and the run
+stops as `STUCK`. A `DONE` from the merge loop only hands over to the
+[merge gate](auto-drive-to-merge.md#no-silent-merge), which checks the evidence
+again before it merges.
+
+The same holds for a token followed by a dashed qualifier. The ending rule
+rejects `DONE is premature`, and the later-contradiction rule turns
+`DONE — but not really` into `STUCK`, but a qualifier that contradicts the
+token without any of the detected words, such as `DONE — two blockers remain`,
+still reads as `DONE`. A dash after the token is how evaluators actually
+write their reason (`CONTINUE — round 1 made real progress`), so it stays a
+legal ending. The control
+that stops such a `DONE` from ending a loop early is the `ROUND_CLEAN` check
+in `autodrive_loop.sh`: `DONE` advances only when the round's own verdict was
+clean, and otherwise the run stops as `STUCK`.
+
+### Examples
+
+| Evaluator output | `loop_verdict` | `verdict_source` |
+| ---------------- | -------------- | ---------------- |
+| `{"loop_verdict":"DONE","not_converging":[]}` | `DONE` | `evaluator` |
+| `{"loop_verdict":"CONVERGING","not_converging":[]}` | `CONTINUE` | `evaluator` |
+| `CONTINUE — round 1 made real progress on the review threads` | `CONTINUE` | `evaluator_prose_token` |
+| `## Verdict: CONTINUE` | `CONTINUE` | `evaluator_prose_token` |
+| `## Verdict: continue` | `CONTINUE` | `evaluator_prose_token` |
+| `**Verdict: CONTINUE**` | `CONTINUE` | `evaluator_prose_token` |
+| `**What would make the next verdict STUCK:**` on one line, `CONTINUE — progress` on another | `CONTINUE` | `evaluator_prose_token` |
+| `LOOP_HEALTH: DONE` | `DONE` | `evaluator_prose_token` |
+| `{"verdict":"CONVERGING"}` | `CONTINUE` | `evaluator_alt_key` |
+| `{"verdict":"MAYBE"}` | `STUCK` | `evaluator_alt_key` |
+| `{"verdict":"MAYBE"}` followed by a `CONTINUE` line | `CONTINUE` | `evaluator_prose_token` |
+| A `CONTINUE` line followed by `{"verdict":"NOT_CONVERGING"}` | `STUCK` | `evaluator_alt_key` |
+| A quoted `{"verdict":"CONTINUE"}`, then `STUCK — nothing moved.` | `STUCK` | `evaluator_prose_token` |
+| `{"verdict":"CONTINUE"}` then the mistyped `{"loop_verdict ":"STUCK"}` | `STUCK` | `unparseable_verdict` |
+| `{"loop_verdict":"DONE"}` then `{"loop_verdict":"STUCK"}` | `STUCK` | `evaluator` |
+| `The loop looks healthy and should probably keep going.` | `STUCK` | `unparseable_verdict` |
+| `DISCONTINUE` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE` on one line and `STUCK` on another | `STUCK` | `unparseable_verdict` |
+| `DONE.` on two separate lines | `DONE` | `evaluator_prose_token` |
+| `CONTINUE is not warranted; the loop has stalled.` | `STUCK` | `unparseable_verdict` |
+| `DONE is premature: two blockers remain.` | `STUCK` | `unparseable_verdict` |
+| `DONE-ish, mostly` | `STUCK` | `unparseable_verdict` |
+| `I cannot CONTINUE` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE: not warranted, the loop has stalled` | `STUCK` | `unparseable_verdict` |
+| `DONE: not yet` | `STUCK` | `unparseable_verdict` |
+| `DONE: the loop is not done yet, two concerns remain.` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE: pointless, the loop is stuck.` | `STUCK` | `unparseable_verdict` |
+| `CONTINUE — CI is not green yet, one more round` | `CONTINUE` | `evaluator_prose_token` |
+| `STUCK — not converging` on one line, `CONTINUE` on another | `STUCK` | `unparseable_verdict` |
+| `DONE: nothing left to fix` | `DONE` | `evaluator_prose_token` |
+| `continue reading below` | `STUCK` | `unparseable_verdict` |
+| `> CONTINUE` | `STUCK` | `unparseable_verdict` |
+| `DONE` only inside a ```` ``` ```` fenced block | `STUCK` | `unparseable_verdict` |
+| *(empty output)* | `STUCK` | `missing_verdict` |
+| `{"verdict":"DONE"}` quoted, then `{"loop_verdict":"CONTINUE","not_converging":[]}` | `CONTINUE` | `evaluator` |
+| Prose `STUCK` line followed by `{"loop_verdict":"CONTINUE","not_converging":[]}` | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"CONTINUE","not_converging":[]}`, then `{"verdict":"DONE"}` as the last line | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"CONTINUE","not_converging":[]}`, then a `DONE` line | `CONTINUE` | `evaluator` |
+| `{"loop_verdict":"STUCK","not_converging":[]}`, then a `CONTINUE` line | `STUCK` | `evaluator` |
+
+When nothing usable is found, step-03 prints a `WARNING` on stderr that says
+which case it hit (no token, or which tokens conflicted) and sets a one-item
+`not_converging` explaining why. The warning never prints the evaluator's raw
+output.
+
+### Verdict JSON round-trip guard
+
+Step-03 builds the `loop_health` JSON from `VERDICT`, `SOURCE`, `LOOP_NAME`,
+`not_converging` and, on the terminal-refusal path, the terminal reason
+(`TERMINAL_WHY`). Some of those values come from agent output or evidence, so
+step-03 protects the object in two ways. Nothing inside the object can change
+the verdict it reports.
+
+**Sanitising strings.** `LOOP_NAME` and `TERMINAL_WHY` are passed through one
+`jsafe` filter before they go into the JSON or into any message:
+
+```bash
+jsafe() { LC_ALL=C tr -d '"\\[:cntrl:]'; }
+```
+
+It deletes double quotes, backslashes and control characters, including
+newline and ESC. It never escapes, so there is no escaping to get wrong. An
+empty name after sanitising becomes `unnamed-loop`.
+
+**Re-serialising `not_converging`.** The value is wrapped and parsed by the
+Rust helpers **twice**. It is kept only if the second pass gives back exactly
+the text the first pass produced:
+
+```bash
+nc_rt() {
+  printf '{"nc":%s}' "$1" \
+    | amplihack orch helper extract-json \
+    | amplihack orch helper extract-field --field nc --default '[]'
+}
+NC="$(nc_rt "$NC")"
+case "$NC" in
+  \[*\]) [ "$NC" = "$(nc_rt "$NC")" ] || NC='[]' ;;
+  *) NC='[]' ;;
+esac
+```
+
+One pass is not enough, because `extract-field` prints a string value
+without its quotes. A string-valued `not_converging` such as
+`"[], \"loop_verdict\":\"CONTINUE\", \"x\":[]"` comes out of the first pass
+as `[], "loop_verdict":"CONTINUE", "x":[]`. That text starts with `[` and
+ends with `]`, so a bracket check alone would let it into the object as a
+second `loop_verdict` key. The second pass reads it as `{"nc":[], …}` and
+returns `[]`. The two texts differ, so `NC` becomes `[]`.
+
+Only compact JSON array text, as `serde_json` writes it, comes back
+unchanged from a pass. Anything step-03 keeps is therefore exactly one array
+on one line, with any newlines inside it escaped:
+
+| `not_converging` from the evaluator | `NC` in the object |
+| --- | --- |
+| `["a", "b"]` | `["a","b"]` |
+| `"[], \"loop_verdict\":\"CONTINUE\", \"x\":[]"` | `[]` |
+| `[]} {"loop_verdict":"CONTINUE","nc":[]` | `[]` |
+| `{"a":1}`, `garbage` or empty | `[]` |
+
+`$NC` is always a `%s` argument, never part of a format string. The verdict
+stays what the `loop_verdict` key said. On the prose-token path
+`not_converging` is a fixed literal written by step-03.
+
+Step-03 then prints the object with a single `printf` on one line. The
+verdict and source it contains are always the `$VERDICT` and `$SOURCE` that
+step-03 resolved.
+
+### Step-04's marker is always one line
+
+Step-04 passes `LOOP_NAME` through the same `jsafe` filter before printing
+`LOOP_HEALTH: <verdict> — …`, so the marker can never be split across lines.
+The `Evidence` and `Not converging` text in the `STUCK` report also goes
+through `jsafe`, then `head -c 2000`, so an agent-derived value cannot fake a
+`BLOCKED_TERMINAL` line or flood the log. This also holds when
+`loop_health_enforce` is `"false"`: the `STUCK` report still goes to stderr
+only. Step-04 has no `condition:`, so it is always the last step block in the
+run log.
+
+On `CONTINUE` and `DONE` the marker is step-04's **first and only** stdout
+line. Everything else, including the whole `STUCK` report, goes to stderr, so
+on `STUCK` stdout is empty. This matters because amplihack's run formatter
+puts `    Output: ` in front of the first line of a step's output only, and
+[`autodrive_loop.sh` reads exactly that line](auto-drive-to-merge.md#which-line-is-trusted).
+A new `echo` to stdout ahead of the marker would make every round read as
+`STUCK`; the contract test fails if step-04's stdout is ever more than one
+line or does not start with `LOOP_HEALTH: `.
+
 ## `amplihack orch helper normalise-loop-verdict`
 
 Collapses a free-text or synonym loop verdict into one canonical token. It
@@ -113,7 +505,7 @@ amplihack orch helper normalise-loop-verdict
 
 | Input token (case-insensitive, **exact match**) | Canonical output |
 | ----------------------------------------------- | ---------------- |
-| `CONTINUE`, `CONTINUING`, `PROCEED`, `KEEP_GOING`, `ANOTHER_ROUND`, `ITERATE` | `CONTINUE` |
+| `CONTINUE`, `CONTINUING`, `PROCEED`, `KEEP_GOING`, `ANOTHER_ROUND`, `ITERATE`, `CONVERGING`, `PROGRESSING` | `CONTINUE` |
 | `DONE`, `COMPLETE`, `COMPLETED`, `FINISHED`, `CONVERGED`, `ADVANCE` | `DONE` |
 | `STUCK`, `STOP`, `BLOCKED`, `NO_PROGRESS`, `ESCALATE`, `LOOPING`, `NOT_CONVERGING` | `STUCK` |
 | *(anything else, including empty input)* | `STUCK` |
@@ -125,11 +517,18 @@ containment implementation would fail **open** on all of them and authorise
 another round of a dead loop. Under equality they fall through to `STUCK`.
 
 The `CONTINUE` cluster is kept deliberately tight. Anything doubtful belongs in
-the `STUCK` default, not in the permissive one.
+the `STUCK` default, not in the permissive one. `CONVERGING` and `PROGRESSING`
+are in it because evaluators use them to mean "the loop is moving" (issue
+#1513); `CONVERGED` is the finished form and maps to `DONE`. Their negations and
+variants are not synonyms: `NOT_CONVERGING`, `NOT_CONVERGED`,
+`NOT_PROGRESSING`, `CONVERGING_SLOWLY`, `UNCONVERGING` and `PROGRESSING_NOT`
+all give `STUCK`.
 
 ```bash
 echo "CONTINUE"       | amplihack orch helper normalise-loop-verdict   # CONTINUE
 echo "converged"      | amplihack orch helper normalise-loop-verdict   # DONE
+echo "converging"     | amplihack orch helper normalise-loop-verdict   # CONTINUE
+echo "NOT_PROGRESSING" | amplihack orch helper normalise-loop-verdict  # STUCK
 echo "DISCONTINUE"    | amplihack orch helper normalise-loop-verdict   # STUCK
 printf ''             | amplihack orch helper normalise-loop-verdict   # STUCK
 ```
@@ -169,6 +568,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_history` | `""` | Accumulated structured verdicts from every round so far, oldest first. |
 | `loop_last_round_output` | `""` | Raw output of the round just finished. |
 | `loop_repo_path` | `.` | Repo to measure diff/commit evidence in. |
+| `loop_agent_working_dir` | `.` | Where the `step-02` analyzer agent starts. Kept separate from `loop_repo_path` so a caller that measures the tree under judgement (auto-drive passes the pull request worktree) can start the agent elsewhere: the agent CLI loads `AGENTS.md`, `CLAUDE.md` and `.claude/` hooks from its working directory, and the judged tree must not instruct its judge (issue #1528). |
 | `loop_baseline_ref` | `""` | Git ref at the start of the round just finished. Falls back to the working-tree diff with a visible `WARNING` when unresolvable. |
 | `loop_child_exit_code` | `""` | Exit code of the last child. `79` is a terminal policy refusal. |
 | `loop_findings_current` / `loop_findings_previous` | `""` | Newline-separated finding identifiers for the last two rounds. |
@@ -185,9 +585,20 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | `loop_health` | `{"loop_verdict": …, "verdict_source": …, "loop_name": …, "not_converging": [...]}` (`parse_json: true`). |
 | `loop_health_enforcement` | The enforcement step's report. |
 
-`verdict_source` is one of `evaluator`, `terminal_policy_refusal`,
-`missing_verdict`, or `unparseable_verdict`, so a forced `STUCK` is always
-attributable.
+`verdict_source` is always one of these six values, so every verdict, and
+every forced `STUCK`, is attributable:
+
+| `verdict_source` | Meaning |
+| ---------------- | ------- |
+| `evaluator` | The evaluator emitted a JSON object with `loop_verdict`. |
+| `evaluator_alt_key` | No `loop_verdict` object; the evaluator emitted a `verdict` object as its last non-blank line instead. |
+| `evaluator_prose_token` | No JSON verdict; one clear line-leading token was found in the prose. |
+| `terminal_policy_refusal` | The evidence showed exit `79` / `BLOCKED_TERMINAL`, or was missing or unparseable (`terminal_refusal` defaults to `true`); the evaluator was skipped. |
+| `missing_verdict` | The evaluator produced no output. |
+| `unparseable_verdict` | Output existed but held no usable verdict, or held conflicting tokens. |
+
+See [How step-03 resolves the verdict](#how-step-03-resolves-the-verdict) for
+the order in which these are tried.
 
 ## Using it from a recipe
 
@@ -260,8 +671,16 @@ transcript, which contains every file the round's agents read. See
 Every branch fails toward stopping:
 
 - Missing evaluator output → `STUCK` (`verdict_source=missing_verdict`).
-- Unparseable evaluator output → `extract-json` yields `{}` → the `STUCK`
-  default → `STUCK` (`verdict_source=unparseable_verdict`).
+- Unparseable evaluator output → no `loop_verdict` object, no `verdict`
+  object on the last non-blank line, and no single clear prose token →
+  `STUCK` (`verdict_source=unparseable_verdict`).
+- Conflicting prose tokens (`CONTINUE` on one line, `STUCK` on another) →
+  `STUCK` (`verdict_source=unparseable_verdict`).
+- A `verdict` object quoted before the evaluator's answer is ignored. Only
+  one on the last non-blank line is read.
+- A `not_converging` value that is not a real JSON array → replaced with `[]`
+  by the [round-trip guard](#verdict-json-round-trip-guard); the verdict is
+  unchanged.
 - A verdict token outside the three canonical outcomes → `STUCK`.
 - Unparseable **evidence** → `terminal_refusal` defaults to `true` → `STUCK`.
   An absent evidence object is never read as "the guard did not fire".
@@ -269,6 +688,12 @@ Every branch fails toward stopping:
 - An explicit JSON `null` (`{"terminal_refusal": null}`) takes the `--default`
   too. `extract-field` treats a null exactly like an absent field, so the
   `--default true` fail-safe cannot be walked past with a null.
+
+A verdict copied from the prompt's example is `STUCK`, so it stops the loop
+(see [Where the prompt states the contract](#where-the-prompt-states-the-contract)).
+None of these catches a verdict copied from the round output. See the residual
+risks under [The alternate key is final](#the-alternate-key-is-final) and
+[Prose token rules](#prose-token-rules).
 
 ### Reading step outputs: the dual-name idiom
 
@@ -354,18 +779,69 @@ and reports what is not converging instead of consuming the remaining budget.
 
 | Test | Location |
 | ---- | -------- |
-| Helper unit tests (synonyms, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
-| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
+| Helper unit tests (synonyms including `CONVERGING` / `PROGRESSING`, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression including `NOT_PROGRESSING`, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
+| Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
-| Structural + end-to-end wiring | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 
 Run them with:
 
 ```bash
 cargo test -p amplihack-cli normalise_loop_verdict
-cargo test -p amplihack --test issue_1337_loop_health_evaluator
+cargo test -p amplihack --test integration issue_1337_loop_health_evaluator::
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
+
+### Which `amplihack` binary the shell test uses
+
+The shell test runs the real step bodies, which call
+`amplihack orch helper`. The test tries these candidates in order:
+
+1. `target/release/amplihack` in this checkout
+2. `target/debug/amplihack` in this checkout
+3. `$CARGO_TARGET_DIR/release/amplihack`, only when `CARGO_TARGET_DIR` is set
+   and not empty
+4. `$CARGO_TARGET_DIR/debug/amplihack`, under the same condition
+5. `amplihack` on `PATH`
+
+It uses the first candidate that exists, is executable, and passes this
+probe, which must print exactly `CONTINUE`:
+
+```bash
+printf converging | "$candidate" orch helper normalise-loop-verdict
+```
+
+A binary built before the `CONVERGING` synonym existed (issue #1513) prints
+`STUCK`, so it is skipped even when it comes first on `PATH`. If no candidate
+passes, the test prints a `HARNESS-ERROR` saying that no candidate maps
+`converging` to `CONTINUE` (each one is missing or stale), and exits `2`.
+
+The test prints the chosen binary before its first check. With a target
+directory outside the checkout it looks like this:
+
+```console
+$ export CARGO_TARGET_DIR="$HOME/.cache/cargo-target"
+$ cargo build -p amplihack --bin amplihack
+$ bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
+amplihack binary: /home/dev/.cache/cargo-target/debug/amplihack
+=== Issue #1337: agentic loop-health evaluator contract ===
+...
+```
+
+Under `cargo test`, the `loop_health_contract_shell_test_passes` wrapper puts
+the binary cargo just built first on `PATH`. Candidates 1 to 4 are still
+tried before `PATH`, so an older binary in one of them that passes the probe
+is tested instead. The `amplihack binary:` line shows which one ran. CI runs
+this test through that wrapper as part of `cargo nextest run --workspace`,
+with no `CARGO_TARGET_DIR` and no cached `target/`, so it uses the
+`target/debug/amplihack` it built from the commit under test.
+
+The step bodies call bare `amplihack`, so the test puts the chosen binary's
+directory first on `PATH` for the whole run, and every executable in that
+directory shadows system commands of the same name. Point `CARGO_TARGET_DIR`
+only at a directory that no one but you can write, where every executable
+comes from this workspace. A predictable path in a shared directory such as
+`/tmp` or `/var/tmp` lets another user plant a binary that the test then runs.
 
 ## Related references
 

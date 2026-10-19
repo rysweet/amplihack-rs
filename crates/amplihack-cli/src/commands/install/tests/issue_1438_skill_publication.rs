@@ -73,6 +73,7 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
     let _guard = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _fixture_environment = fixture_environment();
     let temp = tempfile::tempdir().unwrap();
     let previous = crate::test_support::set_home(temp.path());
 
@@ -99,6 +100,10 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
     for name in NEW_BUNDLE_SKILLS {
         write_skill(&bundle_skills, name);
     }
+    write_skill(
+        &bundle_skills.join("container"),
+        "nested-publication-fixture",
+    );
 
     let result = local_install(temp.path(), None);
 
@@ -116,6 +121,12 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
 
     let staged = skill_names(&temp.path().join(".amplihack/.claude/skills"));
     let published = skill_names(&temp.path().join(".claude/skills"));
+    assert!(staged.contains("nested-publication-fixture"));
+    assert!(
+        temp.path()
+            .join(".claude/skills/nested-publication-fixture/SKILL.md")
+            .is_file()
+    );
 
     assert!(
         staged.is_superset(&NEW_BUNDLE_SKILLS.iter().map(|s| (*s).to_owned()).collect()),
@@ -129,4 +140,17 @@ fn local_install_publishes_every_staged_skill_into_the_claude_skills_dir() {
          missing from ~/.claude/skills: {:?}",
         staged.difference(&published).collect::<Vec<_>>()
     );
+}
+
+/// The caller holds the shared environment lock through restoration.
+fn fixture_environment() -> crate::test_support::EnvGuard {
+    let saved = crate::test_support::EnvGuard::capture(&[
+        "AMPLIHACK_AGENT_BINARY",
+        "AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH",
+        "HOME",
+        "PATH",
+    ]);
+    // These assertions exercise generic runner/Claude staging, without a Codex stub.
+    unsafe { std::env::set_var("AMPLIHACK_AGENT_BINARY", "claude") };
+    saved
 }

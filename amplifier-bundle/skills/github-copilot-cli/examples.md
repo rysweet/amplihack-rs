@@ -189,8 +189,7 @@ copilot
 /model
 
 # Select specific model
-/model claude-sonnet-4.5
-/model gpt-5
+/model <model-id-from-current-list>
 ```
 
 ### Session Management

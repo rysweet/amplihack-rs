@@ -79,8 +79,9 @@ pub struct HygieneArtifactGuardArgs {
     #[arg(long)]
     pub repo: Option<PathBuf>,
 
-    /// Scan mode.
-    #[arg(long, default_value = "pre-commit", value_parser = ["pre-commit", "pre-publish", "all", "staged", "worktree"])]
+    /// Scan mode: pre-commit, pre-publish, all, staged or worktree. Validated
+    /// by the guard, so an unknown value exits 2 with the value escaped.
+    #[arg(long, default_value = "pre-commit")]
     pub mode: String,
 
     /// Optional repo-controlled allowlist file.
@@ -89,7 +90,7 @@ pub struct HygieneArtifactGuardArgs {
 
     /// Revision the change under review is measured against when deciding
     /// whether a tracked artifact is pre-existing. Defaults to the first of
-    /// @{upstream}, origin/HEAD, origin/main, origin/master, main, master that
+    /// origin/HEAD, origin/main, origin/master, main, master, @{upstream} that
     /// shares a merge base with HEAD. Env: AMPLIHACK_ARTIFACT_GUARD_BASELINE.
     #[arg(long)]
     pub baseline: Option<String>,
@@ -511,6 +512,14 @@ pub enum RecipeCommands {
         /// Set context variable (key=value)
         #[arg(short = 'c', long = "context")]
         context: Vec<String>,
+        /// Read context from a file holding one JSON object; non-string
+        /// values become text. Overridden by --context-from-file and -c.
+        #[arg(long = "context-file", value_name = "PATH")]
+        context_file: Option<String>,
+        /// Set KEY to the raw UTF-8 contents of PATH (repeatable).
+        /// Overrides --context-file; overridden by -c.
+        #[arg(long = "context-from-file", value_name = "KEY=PATH")]
+        context_from_file: Vec<String>,
         /// Show what would be executed
         #[arg(long)]
         dry_run: bool,

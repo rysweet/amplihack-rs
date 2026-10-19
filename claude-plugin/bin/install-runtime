@@ -1,0 +1,466 @@
+#!/bin/sh
+# Install the native amplihack runtime for the Claude Code plugin.
+#
+#   * amplihack + amplihack-hooks: the latest release's prebuilt binaries,
+#     fetched with the downloader the npm wrapper uses (npm/lib/bootstrap.js),
+#     which checks each archive against the release's sha256 file and falls
+#     back to a cargo build from this checkout. Copied into ~/.local/bin.
+#   * recipe-runner-rs: cargo install from rysweet/amplihack-recipe-runner at
+#     the exact commit pinned in claude-plugin/recipe-runner.rev, so what a
+#     plugin commit runs is reviewable in that commit. Rust installation and
+#     launcher freshness use this same immutable revision with --locked.
+#     Compatible user-owned overrides are validated separately and preserved.
+#
+# It only ever replaces binaries it placed itself. Their sha256 sums are kept
+# in owned-binaries; an amplihack the user installed (`amplihack install`, a
+# source build, a package) is left exactly as it is, whatever its version.
+#
+# Deliberately does NOT run `amplihack install`: that publishes a second copy
+# of every skill into ~/.claude/skills and hook registrations into
+# settings.json, duplicating what the plugin already provides.
+#
+# On success it records the plugin version in runtime.stamp, so bootstrap
+# knows the runtime matches this plugin. On failure it records install.failed,
+# which bootstrap uses to back off. Idempotent and safe to run by hand; a
+# manual run takes the same lock as a background one.
+
+bin_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd) || exit 1
+root="${CLAUDE_PLUGIN_ROOT:-$(CDPATH='' cd -- "$bin_dir/../.." && pwd)}"
+# The directory Claude Code gives this plugin. Commands Claude runs through the
+# Bash tool, and setup scripts, do not get CLAUDE_PLUGIN_DATA, so fall back to
+# the same path rather than splitting state between two directories.
+data="${CLAUDE_PLUGIN_DATA:-${CLAUDE_CODE_PLUGIN_CACHE_DIR:-${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins}/data/amplihack-amplihack}"
+plugin_id=$(basename -- "$root")
+dest="$HOME/.local/bin"
+owned="$data/owned-binaries"
+runner_url=https://github.com/rysweet/amplihack-recipe-runner
+
+runner_home=${CARGO_HOME:-$HOME/.cargo}
+PATH="$dest:$runner_home/bin:$HOME/.cargo/bin:$PATH"
+export PATH
+
+log() {
+  printf '[amplihack-plugin %s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*"
+}
+
+have() {
+  command -v "$1" >/dev/null 2>&1
+}
+
+sha() {
+  { sha256sum "$1" 2>/dev/null || shasum -a 256 "$1" 2>/dev/null; } | cut -d' ' -f1
+}
+
+# Runner ancestry primitives (issue #1593). This is a copy of the block in
+# scripts/lib/runner-ancestry.sh, which the plugin does not ship;
+# tests/runner_ancestry_lib_parity_test.sh keeps the two identical.
+# BEGIN runner-ancestry
+runner_is_sha() {
+  case $1 in
+    *[!0123456789abcdef]*) return 1 ;;
+  esac
+  [ "${#1}" -eq 40 ]
+}
+
+# A git command that cannot prompt, run hooks or fsmonitor, use stored
+# credentials, follow an inherited repository, or reach a transport other
+# than https and local files.
+runner_git() {
+  (
+    unset GIT_ASKPASS SSH_ASKPASS GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE \
+      GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR \
+      GIT_NAMESPACE GIT_CONFIG_PARAMETERS GIT_CONFIG_COUNT
+    GIT_TERMINAL_PROMPT=0
+    export GIT_TERMINAL_PROMPT
+    git -c protocol.allow=never -c protocol.https.allow=always \
+      -c protocol.file.allow=always -c credential.helper= \
+      -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+      -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 "$@"
+  )
+}
+
+# runner_receipt_revision FILE URL: print the revision of the one
+# recipe-runner-rs entry installed from exactly URL (followed by '?' or '#')
+# that lists the recipe-runner-rs binary. Prints nothing for a missing,
+# oversize or ambiguous receipt. Always exits 0.
+runner_receipt_revision() {
+  [ -f "$1" ] || return 0
+  _rrr_size=$(wc -c <"$1" 2>/dev/null) || return 0
+  _rrr_size=$(printf '%s' "$_rrr_size" | tr -d ' ')
+  case $_rrr_size in
+    '' | *[!0123456789]*) return 0 ;;
+  esac
+  [ "$_rrr_size" -le 1048576 ] || return 0
+  RUNNER_RECEIPT_URL=$2 LC_ALL=C awk '
+    { text = text $0 "\n" }
+    END {
+      url = ENVIRON["RUNNER_RECEIPT_URL"]
+      prefix = "\"recipe-runner-rs "
+      count = 0
+      s = text
+      while ((i = index(s, prefix)) > 0) {
+        s = substr(s, i + length(prefix))
+        j = index(s, "\"")
+        if (j == 0) break
+        key = substr(s, 1, j - 1)
+        record = substr(s, j + 1)
+        k = index(key, " (git+")
+        if (k < 2 || substr(key, length(key), 1) != ")") continue
+        origin = substr(key, k + 6, length(key) - k - 6)
+        if (url == "" || index(origin, url) != 1) continue
+        next_char = substr(origin, length(url) + 1, 1)
+        if (next_char != "?" && next_char != "#") continue
+        sha = origin
+        while ((h = index(sha, "#")) > 0) sha = substr(sha, h + 1)
+        if (sha == origin) continue
+        e = index(record, "}")
+        if (e > 0) record = substr(record, 1, e)
+        b = index(record, "\"bins\":[")
+        if (b == 0) continue
+        bins = substr(record, b + 8)
+        e = index(bins, "]")
+        if (e == 0) continue
+        if (index(substr(bins, 1, e), "\"recipe-runner-rs\"") == 0) continue
+        if (!(sha in seen)) {
+          seen[sha] = 1
+          count++
+          found = sha
+        }
+      }
+      if (count == 1 && length(found) == 40 && found !~ /[^0-9a-f]/) print found
+    }
+  ' "$1" 2>/dev/null
+  return 0
+}
+
+# runner_relation GITDIR NEW OLD: how NEW relates to OLD in the repository at
+# GITDIR (bare, or a work tree). Prints missing when either commit is absent
+# or the repository cannot be read; prints nothing and returns 2 for invalid
+# arguments.
+runner_relation() {
+  runner_is_sha "$2" && runner_is_sha "$3" || return 2
+  case $1 in
+    '' | -*) return 2 ;;
+  esac
+  _rl_dir=$1
+  [ -d "$_rl_dir/.git" ] && _rl_dir=$_rl_dir/.git
+  for _rl_sha in "$2" "$3"; do
+    if ! runner_git --git-dir="$_rl_dir" cat-file -e "$_rl_sha^{commit}" >/dev/null 2>&1; then
+      echo missing
+      return 0
+    fi
+  done
+  if [ "$2" = "$3" ]; then
+    echo equal
+    return 0
+  fi
+  runner_git --git-dir="$_rl_dir" merge-base --is-ancestor "$2" "$3" >/dev/null 2>&1
+  _rl_status=$?
+  if [ "$_rl_status" -eq 0 ]; then
+    echo ancestor
+    return 0
+  fi
+  if [ "$_rl_status" -ne 1 ]; then
+    echo missing
+    return 0
+  fi
+  runner_git --git-dir="$_rl_dir" merge-base --is-ancestor "$3" "$2" >/dev/null 2>&1
+  _rl_status=$?
+  if [ "$_rl_status" -eq 0 ]; then
+    echo descendant
+  elif [ "$_rl_status" -eq 1 ]; then
+    echo diverged
+  else
+    echo missing
+  fi
+  return 0
+}
+
+# runner_relation_from SOURCE NEW OLD: runner_relation against a local
+# repository directory, or against an https:// or file:// URL whose two
+# commits are fetched into a temporary bare repository.
+runner_relation_from() {
+  case $1 in
+    '' | -*) return 2 ;;
+  esac
+  if [ -d "$1" ]; then
+    runner_relation "$1" "$2" "$3"
+    return $?
+  fi
+  case $1 in
+    https://* | file://*) ;;
+    *) return 2 ;;
+  esac
+  runner_is_sha "$2" && runner_is_sha "$3" || return 2
+  _rf_tmp=$(mktemp -d 2>/dev/null) || return 2
+  if runner_git init --quiet --bare "$_rf_tmp" >/dev/null 2>&1 &&
+    runner_git --git-dir="$_rf_tmp" fetch --quiet --no-tags \
+      --filter=blob:none -- "$1" "$2" "$3" >/dev/null 2>&1; then
+    runner_relation "$_rf_tmp" "$2" "$3"
+  fi
+  rm -rf "$_rf_tmp"
+  return 0
+}
+
+# runner_classify INSTALLED PIN URL CARGO_HOME: print the class of the
+# installed revision against the pin. RECIPE_RUNNER_ANCESTRY_REPO (tests)
+# replaces both ancestry sources; otherwise Cargo's git databases are read
+# first and URL is fetched only when they cannot answer.
+runner_classify() {
+  if [ -z "$1" ]; then
+    echo Unknown
+    return 0
+  fi
+  if ! runner_is_sha "$1" || ! runner_is_sha "$2"; then
+    echo Unverifiable
+    return 0
+  fi
+  if [ "$1" = "$2" ]; then
+    echo Equal
+    return 0
+  fi
+  _rc_relation=
+  if [ -n "${RECIPE_RUNNER_ANCESTRY_REPO:-}" ]; then
+    _rc_relation=$(runner_relation_from "$RECIPE_RUNNER_ANCESTRY_REPO" "$1" "$2")
+  else
+    for _rc_db in "$4"/git/db/amplihack-recipe-runner-*; do
+      [ -d "$_rc_db" ] || continue
+      _rc_relation=$(runner_relation "$_rc_db" "$1" "$2")
+      case $_rc_relation in
+        ancestor | descendant | diverged) break ;;
+      esac
+      _rc_relation=
+    done
+    if [ -z "$_rc_relation" ]; then
+      _rc_relation=$(runner_relation_from "$3" "$1" "$2")
+    fi
+  fi
+  case $_rc_relation in
+    ancestor) echo Older ;;
+    descendant) echo Newer ;;
+    diverged) echo Diverged ;;
+    *) echo Unverifiable ;;
+  esac
+  return 0
+}
+
+# runner_skip_message INSTALLED PIN CLASS: the warning for a kept runner.
+runner_skip_message() {
+  case $3 in
+    Newer)
+      printf 'kept recipe-runner-rs %s (newer than pinned %s); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to downgrade\n' "$1" "$2"
+      ;;
+    Diverged)
+      printf 'kept recipe-runner-rs %s (diverged from pinned %s); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to replace it\n' "$1" "$2"
+      ;;
+    *)
+      printf 'kept recipe-runner-rs %s (could not verify order against pinned %s); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to replace it\n' "$1" "$2"
+      ;;
+  esac
+}
+# END runner-ancestry
+
+mkdir -p "$dest" "$data" || exit 1
+
+# Take the install lock unless bootstrap already handed us one.
+if [ -z "${AMPLIHACK_PLUGIN_INSTALL_LOCK:-}" ]; then
+  # A missing file makes `.` fatal in POSIX sh, so check before sourcing.
+  [ -f "$bin_dir/plugin-lock.sh" ] || exit 1
+  # shellcheck source=SCRIPTDIR/plugin-lock.sh
+  . "$bin_dir/plugin-lock.sh"
+  lock="$data/install.lock"
+  if ! lock_acquire "$lock"; then
+    log "another install is running; see $data/install-runtime.log"
+    exit 0
+  fi
+  AMPLIHACK_PLUGIN_INSTALL_LOCK="$lock"
+fi
+printf '%s\n' "$$" >"$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null
+# Remove the lock only while it is still ours: a lock bootstrap reclaimed and
+# handed to another installer must survive this one exiting.
+trap 'if [ "$(cat "$AMPLIHACK_PLUGIN_INSTALL_LOCK/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$AMPLIHACK_PLUGIN_INSTALL_LOCK"; fi' EXIT
+trap 'exit 1' HUP INT TERM
+
+# is_ours <name>: the binary PATH resolves is the copy this script placed.
+# Without a checksum there is no evidence either way, so nothing is ours.
+is_ours() {
+  _sum=$(sha "$dest/$1")
+  [ -n "$_sum" ] && [ "$(command -v "$1")" = "$dest/$1" ] &&
+    grep -qxF "$1 $_sum" "$owned" 2>/dev/null
+}
+
+place() {
+  # place <source> <name>: atomic copy into $dest, recorded as ours when a
+  # checksum can be taken (unrecorded, it is later treated as the user's)
+  cp "$1" "$dest/.$2.tmp.$$" && chmod 755 "$dest/.$2.tmp.$$" && mv -f "$dest/.$2.tmp.$$" "$dest/$2" || return 1
+  _sum=$(sha "$dest/$2")
+  { grep -v "^$2 " "$owned" 2>/dev/null; [ -z "$_sum" ] || printf '%s %s\n' "$2" "$_sum"; } >"$owned.tmp.$$" &&
+    mv -f "$owned.tmp.$$" "$owned"
+}
+
+log "plugin root: $root ($plugin_id)"
+
+# The release to install: an explicit AMPLIHACK_NPM_VERSION wins; otherwise
+# the latest tag, from the github.com releases/latest redirect. The npm
+# downloader's own lookup uses the unauthenticated GitHub API, and when a
+# shared egress IP is rate limited it silently falls back to package.json,
+# which stays at the workspace base version while releases advance by tag.
+if [ -z "${AMPLIHACK_NPM_VERSION:-}" ] && have curl; then
+  tag=$(curl -fsSI https://github.com/rysweet/amplihack-rs/releases/latest 2>/dev/null |
+    tr -d '\r' | grep -i '^location:' | sed 's#.*/tag/v##')
+  case "$tag" in
+    [0-9]*.[0-9]*.[0-9]*) AMPLIHACK_NPM_VERSION="$tag" && export AMPLIHACK_NPM_VERSION ;;
+  esac
+fi
+want="${AMPLIHACK_NPM_VERSION:-}"
+
+version_of() {
+  amplihack --version 2>/dev/null | sed -n 's/^amplihack //p'
+}
+
+current=""
+if have amplihack && have amplihack-hooks; then
+  current=$(version_of)
+fi
+# Any amplihack or amplihack-hooks on PATH that the plugin did not place makes
+# the runtime the user's, even when only one of the two is there: installing
+# the other into ~/.local/bin would shadow theirs.
+managed=1
+for tool in amplihack amplihack-hooks; do
+  if have "$tool" && ! is_ours "$tool"; then managed=0; fi
+done
+# Source builds report the workspace version unless told the release they
+# stand for (the release workflow does the same), and both build paths (the
+# cargo fallback here, and the npm downloader's) inherit this.
+if [ -n "$want" ]; then
+  AMPLIHACK_RELEASE_VERSION="$want"
+  export AMPLIHACK_RELEASE_VERSION
+fi
+
+if [ "$managed" = 0 ]; then
+  log "amplihack at $(command -v amplihack || command -v amplihack-hooks) was not installed by the plugin; leaving it as is"
+elif [ -n "$current" ] && [ -n "$want" ] && [ "$current" = "$want" ]; then
+  log "amplihack $current already installed"
+elif have node; then
+  log "fetching amplihack release binaries (${want:-latest}; installed: ${current:-none})"
+  paths=$(AMPLIHACK_PLUGIN_ROOT="$root" node -e '
+    const path = require("node:path");
+    const root = process.env.AMPLIHACK_PLUGIN_ROOT;
+    const { ensureNativeBinaries } = require(path.join(root, "npm", "lib", "bootstrap.js"));
+    const { version } = require(path.join(root, "package.json"));
+    ensureNativeBinaries({ root, version })
+      .then((r) => console.log(r.mainBinary + "\n" + r.hooksBinary))
+      .catch((e) => { console.error(e.message); process.exit(1); });
+  ') || log "binary download failed"
+  main=$(printf '%s\n' "$paths" | sed -n 1p)
+  hooks=$(printf '%s\n' "$paths" | sed -n 2p)
+  if [ -f "$main" ] && [ -f "$hooks" ]; then
+    place "$main" amplihack && place "$hooks" amplihack-hooks && log "installed amplihack binaries into $dest"
+  fi
+elif have cargo; then
+  log "node not found; building amplihack from source (installed: ${current:-none})"
+  # Build outside the plugin root: it is replaced on every plugin update.
+  target="$data/target"
+  if (cd "$root" && CARGO_TARGET_DIR="$target" cargo build --release --locked --bin amplihack --bin amplihack-hooks); then
+    place "$target/release/amplihack" amplihack && place "$target/release/amplihack-hooks" amplihack-hooks
+  fi
+else
+  log "neither node nor cargo is available; cannot install amplihack binaries"
+fi
+
+runner_status=0
+rev=$(sed -n 1p "$root/claude-plugin/recipe-runner.rev" 2>/dev/null)
+if [ -n "${RECIPE_RUNNER_RS_PATH:-}" ] && [ -e "$RECIPE_RUNNER_RS_PATH" ]; then
+  if [ -x "$RECIPE_RUNNER_RS_PATH" ]; then
+    log "explicit recipe runner preserved"
+  else
+    log "explicit recipe runner is not executable"
+    runner_status=1
+  fi
+elif have cargo && [ -n "$rev" ]; then
+  # A runner newer than the pin, diverged from it, or not comparable with it
+  # is kept rather than downgraded unless
+  # AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1.
+  installed_rev=
+  if [ -x "$runner_home/bin/recipe-runner-rs" ]; then
+    installed_rev=$(runner_receipt_revision "$runner_home/.crates2.json" "$runner_url")
+  fi
+  runner_class=$(runner_classify "$installed_rev" "$rev" "$runner_url" "$runner_home")
+  runner_force=
+  keep_runner=0
+  case $runner_class in
+    Newer | Diverged | Unverifiable)
+      if [ "${AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE:-}" = 1 ]; then
+        log "downgrade forced: replacing recipe-runner-rs $installed_rev ($runner_class) with pinned $rev" >&2
+        runner_force=--force
+      else
+        keep_runner=1
+      fi
+      ;;
+  esac
+  if [ "$keep_runner" = 1 ]; then
+    log "$(runner_skip_message "$installed_rev" "$rev" "$runner_class")" >&2
+    # The kept runner is not the pin, so it is validated as a compatible
+    # runner without the pinned-revision provenance check.
+    selected_runner=$(command -v recipe-runner-rs)
+    if ! root="$root" data="$data" sh "$bin_dir/check-runner-capabilities" "$selected_runner"; then
+      log "kept recipe-runner-rs failed validation; cannot stamp success"
+      runner_status=1
+    fi
+  else
+    # cargo skips the build when this exact revision is already installed.
+    log "ensuring recipe-runner-rs at $rev"
+    set --
+    [ -n "$runner_force" ] && set -- "$runner_force"
+    if ! cargo install --git "$runner_url" --rev "$rev" --locked \
+      "$@"; then
+      log "recipe-runner-rs build failed"
+      runner_status=1
+    fi
+    if [ "$runner_status" = 0 ]; then
+      selected_runner=$(command -v recipe-runner-rs)
+      if ! root="$root" data="$data" sh "$bin_dir/check-runner-capabilities" "$selected_runner" \
+          --cargo-home "$runner_home" --repository "$runner_url" --revision "$rev"; then
+        log "managed runner validation failed; cannot stamp success"
+        runner_status=1
+      fi
+    fi
+  fi
+
+elif have recipe-runner-rs; then
+  log "recipe-runner-rs already installed (cannot pin: cargo or recipe-runner.rev missing)"
+else
+  log "cargo not found; install Rust (https://rustup.rs) to build recipe-runner-rs"
+fi
+
+# Success means the runtime is usable AND, where the plugin manages it, at the
+# release it asked for; binaries that merely exist do not count as reconciled.
+status=$runner_status
+for tool in amplihack amplihack-hooks recipe-runner-rs; do
+  if [ "$tool" = recipe-runner-rs ] && [ -n "${RECIPE_RUNNER_RS_PATH:-}" ] && [ -x "$RECIPE_RUNNER_RS_PATH" ]; then log "ok: explicit recipe runner"; elif have "$tool"; then log "ok: $tool -> $(command -v "$tool")"; else log "MISSING: $tool"; status=1; fi
+done
+if [ "$status" = 0 ] && [ "$managed" = 1 ] && [ -n "$want" ] && [ "$(version_of)" != "$want" ]; then
+  log "amplihack is $(version_of), not the wanted $want"
+  status=1
+fi
+if [ "$status" != 0 ] && [ "$runner_status" = 0 ] && [ "$managed" = 0 ] && have recipe-runner-rs; then
+  # The user owns part of the amplihack pair and the plugin will not install
+  # the rest beside it. That is a settled state, not a failure to retry.
+  printf '%s\n' "$plugin_id" >"$data/user-managed"
+  rm -f "$data/install.failed"
+  log "amplihack is user-managed and incomplete; install the missing binary the same way the other was installed"
+  exit 0
+fi
+rm -f "$data/user-managed"
+if [ "$status" != 0 ]; then
+  rm -f "$data/runtime.stamp"
+  printf '%s\n' "$plugin_id" >"$data/install.failed"
+elif [ -z "$want" ] && [ "$managed" = 1 ]; then
+  # Usable, but whether it is current is unknown; leave the stamp unwritten so
+  # the next session start checks again.
+  log "could not resolve the latest release; runtime usable but not stamped"
+else
+  printf '%s\n' "$plugin_id" >"$data/runtime.stamp"
+  rm -f "$data/install.failed"
+fi
+exit "$status"

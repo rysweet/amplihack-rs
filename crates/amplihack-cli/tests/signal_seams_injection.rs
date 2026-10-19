@@ -11,7 +11,6 @@
 
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::Duration;
 
 use amplihack_cli::commands::signal::error::SignalOpError;
@@ -19,7 +18,7 @@ use amplihack_cli::commands::signal::seams::{Clock, LinkSession, SignalCliInvoke
 use amplihack_cli::commands::signal::{run_distribute_with, run_setup_with};
 use amplihack_cli::{SignalDistributeArgs, SignalSetupArgs};
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+use crate::support::quiet_process::{child_set_var, in_quiet_process};
 
 // --- Fakes: injected only in tests; never touch the network/process/device. --
 
@@ -154,47 +153,38 @@ fn run_setup_with_uses_injected_cli_and_fails_before_linking_when_cli_missing() 
 
 #[test]
 fn run_distribute_with_uses_injected_vm_lister_for_empty_fleet_without_external_az() {
-    let _guard = ENV_LOCK.lock().unwrap();
-    let home = std::env::current_dir()
-        .unwrap()
-        .join("target")
-        .join("signal-seams-injection-home");
-    let _ = std::fs::remove_dir_all(&home);
-    std::fs::create_dir_all(&home).unwrap();
-    let old_home = std::env::var_os("HOME");
-    let old_azlin = std::env::var_os("AZLIN_PATH");
-    unsafe {
-        std::env::set_var("HOME", &home);
-        std::env::set_var("AZLIN_PATH", home.join("fake-azlin-not-used"));
-    }
+    in_quiet_process(
+        module_path!(),
+        "run_distribute_with_uses_injected_vm_lister_for_empty_fleet_without_external_az",
+        || {
+            let home = std::env::current_dir()
+                .unwrap()
+                .join("target")
+                .join("signal-seams-injection-home");
+            let _ = std::fs::remove_dir_all(&home);
+            std::fs::create_dir_all(&home).unwrap();
+            child_set_var("HOME", &home);
+            child_set_var("AZLIN_PATH", home.join("fake-azlin-not-used"));
 
-    let lister = FakeVmLister {
-        names: Vec::new(),
-        calls: Cell::new(0),
-    };
-    let args = SignalDistributeArgs {
-        resource_group: "rg-test".into(),
-        vms: None,
-        endpoint: Some("127.0.0.1:7583".into()),
-        port: None,
-        concurrency: None,
-        force: false,
-    };
+            let lister = FakeVmLister {
+                names: Vec::new(),
+                calls: Cell::new(0),
+            };
+            let args = SignalDistributeArgs {
+                resource_group: "rg-test".into(),
+                vms: None,
+                endpoint: Some("127.0.0.1:7583".into()),
+                port: None,
+                concurrency: None,
+                force: false,
+            };
 
-    let result = run_distribute_with(&lister, args);
+            let result = run_distribute_with(&lister, args);
 
-    unsafe {
-        match old_home {
-            Some(v) => std::env::set_var("HOME", v),
-            None => std::env::remove_var("HOME"),
-        }
-        match old_azlin {
-            Some(v) => std::env::set_var("AZLIN_PATH", v),
-            None => std::env::remove_var("AZLIN_PATH"),
-        }
-    }
-    let _ = std::fs::remove_dir_all(&home);
+            let _ = std::fs::remove_dir_all(&home);
 
-    result.unwrap();
-    assert_eq!(lister.calls.get(), 1);
+            result.unwrap();
+            assert_eq!(lister.calls.get(), 1);
+        },
+    );
 }

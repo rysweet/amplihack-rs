@@ -208,7 +208,10 @@ fn direct_git_recipe_steps_are_guarded_or_visibly_skipped() {
             let loud = command.contains("requires a git repo")
                 && command.contains("git init")
                 && command.contains("rerun from a checkout");
-            let visible_skip = command.contains("[skip] not a git repo");
+            // `skip "not a git repo …"` routes through a step's own warning
+            // helper, which exits 0 (workflow-finalize step-20a/20b, #1528).
+            let visible_skip = command.contains("[skip] not a git repo")
+                || command.contains("|| skip \"not a git repo");
 
             if !(guarded && (loud || visible_skip)) {
                 violations.push(format!(

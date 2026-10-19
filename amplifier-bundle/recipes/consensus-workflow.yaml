@@ -36,7 +36,6 @@ context:
   issue_number: ""
   branch_name: ""
   worktree_dir: "./worktrees"
-  output_dir: "./ai_working/consensus"
   requirements_debate: ""
   n_version_implementations: ""
   refined_implementation: ""

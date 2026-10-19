@@ -718,7 +718,7 @@ cargo fmt --all
 cargo clippy -p amplihack-signal --features signal --all-targets -- -D warnings
 cargo clippy -p amplihack-cli --features amplihack-cli/signal --all-targets -- -D warnings
 cargo test  -p amplihack-signal --features signal            # incl. transport_cancel_safe_it
-cargo test  -p amplihack-cli --test signal_chat_it --test signal_validator_parity
+cargo test  -p amplihack-cli --features signal --test cli_integration -- signal_chat_it:: signal_validator_parity::
 cargo build -p amplihack-signal            # feature-off compile check
 ```
 

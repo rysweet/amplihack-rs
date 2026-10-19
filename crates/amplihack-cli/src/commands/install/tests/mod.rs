@@ -10,6 +10,9 @@ mod install_flow;
 mod issue_1266_restage_loop;
 mod issue_1438_skill_publication;
 mod issue_1449_partial_registration;
+mod issue_1526_implicit_downgrade;
+mod issue_1526_implicit_mode;
+mod issue_1526_launch_bootstrap;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
 mod mermaid_cli_tests;
@@ -23,3 +26,16 @@ mod uninstall_tests;
 mod wrapper_tests;
 
 mod interactive_tests;
+
+#[cfg(unix)]
+mod codex_alias_paths;
+#[cfg(unix)]
+mod codex_disabled_rollback;
+#[cfg(unix)]
+mod codex_failure_recovery;
+#[cfg(unix)]
+mod codex_plugin_tests;
+#[cfg(unix)]
+mod codex_runner_delivery;
+#[cfg(unix)]
+mod native_registration_fixture;

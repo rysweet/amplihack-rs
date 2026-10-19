@@ -17,7 +17,7 @@ Use tmux **only** when:
 LOG_FILE=$(mktemp /tmp/recipe-runner-output.XXXXXX.log)
 chmod 600 "$LOG_FILE"
 tmux new-session -d -s recipe-runner \
-  "cd /path/to/repo && env -u CLAUDECODE \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) \
    AMPLIHACK_HOME=/path/to/amplihack \
    amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml \
      -c task_description='TASK_DESCRIPTION_HERE' \
@@ -27,6 +27,33 @@ echo "Recipe runner log: $LOG_FILE"
 ```
 
 - `chmod 600 "$LOG_FILE"` — keeps the log file private
+- `$(amplihack agent-binary --shell -w /path/to/repo)` — hands the agent CLI
+  you are in to the detached run. Copy it as is; do not replace it with a
+  name, and keep the command around it in double quotes. In single quotes it
+  expands in the new session instead of your shell, reads the tmux server's
+  markers, and hands over the server's CLI; the run then names that marker in
+  its log (`AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker>`) but still runs
+  under it. In double quotes it expands in *your* shell, before tmux starts
+  anything, to
+  `env -u <each session marker> AMPLIHACK_AGENT_BINARY=<cli>
+  AMPLIHACK_AGENT_BINARY_SOURCE=<tag>`, which runs `amplihack recipe run`
+  with your answer and without any session marker. It is required:
+  `tmux new-session` gives the command the tmux server's environment, not
+  yours, and tmux copied that from whatever process started the server. Your
+  markers are missing there, and the starter's are present. If another
+  agent's Copilot session started the server, the run sees `COPILOT_CLI=1`,
+  and from an `amplihack copilot` session also
+  `AMPLIHACK_AGENT_BINARY=copilot` tagged `session:copilot`, and runs every
+  step under copilot, though you launched it from Claude Code; if a plain
+  shell started it, the run takes the default. It works whenever
+  your own CLI happened to start the server, so it can work for weeks and
+  then stop (#1335, #1525). The `env -u` part removes the server's markers;
+  the assignments carry yours. When nothing identifies your CLI, the value is
+  handed on tagged as a guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<cli>`),
+  so nothing downstream persists it, and a notice on your terminal says so.
+  To choose a CLI yourself, export `AMPLIHACK_AGENT_BINARY` before running
+  this. The inline form works on every tmux version; `tmux new-session -e`
+  needs 3.2 and cannot remove a variable.
 - `tmux new-session -d` — detached session, no timeout, survives disconnects
 - Monitor with: `tail -f "$LOG_FILE"` or `tmux attach -t recipe-runner`
 
@@ -35,8 +62,10 @@ echo "Recipe runner log: $LOG_FILE"
 shell-policy-safe alternatives instead:
 
 ```bash
-# Option A (preferred): use a unique session name per run to avoid collisions
-tmux new-session -d -s "recipe-$(date +%s)" "..."
+# Option A (preferred): use a unique session name per run to avoid collisions.
+# The command is the one from the template above, hand-off included.
+tmux new-session -d -s "recipe-$(date +%s)" \
+  "cd /path/to/repo && $(amplihack agent-binary --shell -w /path/to/repo) amplihack recipe run ..."
 
 # Option B: locate the tmux server PID and terminate with numeric kill
 tmux list-sessions -F '#{pid}' 2>/dev/null | xargs -I{} kill {}
@@ -67,7 +96,12 @@ The invariant is enforced in the native orchestration helper when workstream con
   containing `amplifier-bundle/`.
 - Preserve `AMPLIHACK_AGENT_BINARY` — nested workflow agents read this env var
   to stay on the caller's active binary (for example, Copilot in Copilot CLI).
-- Unset `CLAUDECODE` — required so nested Claude Code sessions can launch.
+- Leave `CLAUDECODE` alone — `amplihack recipe run` removes it from the recipe
+  runner's environment so nested Claude Code sessions can launch, but only
+  after reading it (with the other session markers) to pick the agent CLI and
+  export `AMPLIHACK_AGENT_BINARY` to every step. Unsetting it yourself can leave
+  nothing that says which CLI you are in, and the steps then fall back to the
+  `copilot` default (#1481). When that happens recipe run says so on stderr.
 
 **Fallback: Direct recipe invocation when smart-orchestrator fails.**
 

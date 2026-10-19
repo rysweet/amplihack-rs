@@ -38,7 +38,7 @@ steps:
     agent: cli-agent
     action: validate_output
     params:
-      expected: "no jq 'Bad JSON' on mixed output"
+      expected: "contains:no jq 'Bad JSON' on mixed output"
 assertions:
   - name: all-cases-passed
     type: output_contains

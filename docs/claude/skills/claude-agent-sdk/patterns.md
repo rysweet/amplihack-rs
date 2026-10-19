@@ -1,5 +1,7 @@
 # Claude Agent SDK - Production Patterns
 
+Model IDs in these examples are configuration placeholders. Replace `<configured-model>` (and any primary/fallback variants) with models available to the selected provider and runtime; use the user’s configuration rather than a skill-defined default.
+
 ## Agent Loop Patterns
 
 ### Gather Pattern (Agentic Search)
@@ -18,7 +20,7 @@ The Gather pattern enables agents to iteratively collect information from multip
 from claude_agents import Agent
 
 gather_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[search_tool, read_tool, api_tool],
     system="""When gathering information:
     1. Identify key information gaps
@@ -71,7 +73,7 @@ The Act pattern focuses on choosing and executing the right tools for a task.
 
 ```rust
 action_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[file_tools, data_tools, notification_tools],
     system="""You are an automation agent. Given a task:
     1. Identify required actions
@@ -111,7 +113,7 @@ The Verify pattern enables agents to check their own work for accuracy.
 
 ```rust
 verify_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[calculator_tool, code_exec_tool, test_tool],
     system="""For any important calculation or generation:
     1. Perform the primary task
@@ -149,7 +151,7 @@ The Iterate pattern enables progressive refinement of outputs.
 
 ```rust
 iterate_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[generate_tool, analyze_tool, improve_tool],
     max_turns=20,
     system="""Iteratively improve outputs:
@@ -240,7 +242,7 @@ with main_agent.subagent(
 
 ```rust
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     max_context_tokens=100000  # Start compaction at 100K
 )
 ```
@@ -284,7 +286,7 @@ class MemoryHook(PostToolUseHook):
 **Pattern 1: Agent State Dictionary**
 
 ```rust
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 agent.state = {
     "processed_files": [],
     "errors_encountered": [],
@@ -307,7 +309,7 @@ from pathlib import Path
 class StatefulAgent:
     def __init__(self, state_file="agent_state.json"):
         self.state_file = Path(state_file)
-        self.agent = Agent(model="claude-sonnet-4-5-20250929")
+        self.agent = Agent(model="<configured-model>")
         self.load_state()
 
     def load_state(self):
@@ -340,7 +342,7 @@ def get_tool_when_needed(tool_name: str):
 
 # Agent starts lightweight
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[basic_tools]
 )
 
@@ -360,7 +362,7 @@ def streaming_analysis_tool(data_path: str):
 
 # Process results without holding all in memory
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[streaming_tool]
 )
 ```
@@ -593,7 +595,7 @@ class RoleBasedPermissionHook(PreToolUseHook):
 
 # Usage
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=all_tools,
     hooks=[RoleBasedPermissionHook(user_role="analyst")]
 )
@@ -702,7 +704,7 @@ optional_tools = {
 }
 
 agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[tool_registry[t] for t in essential_tools]
 )
 
@@ -795,7 +797,7 @@ class CachePreHook(PreToolUseHook):
 ```rust
 # Don't: Single agent trying to do everything
 god_agent = Agent(
-    model="claude-sonnet-4-5-20250929",
+    model="<configured-model>",
     tools=[all_possible_tools],  # 50+ tools
     system="You can do anything..."  # Vague
 )
@@ -816,7 +818,7 @@ api_agent = Agent(tools=[api_tools], system="API specialist")
 
 ```rust
 # Don't: Let irrelevant context accumulate
-agent = Agent(model="claude-sonnet-4-5-20250929")
+agent = Agent(model="<configured-model>")
 for task in many_unrelated_tasks:
     result = agent.run(task)  # Context keeps growing
 ```

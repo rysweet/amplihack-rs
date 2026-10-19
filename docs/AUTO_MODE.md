@@ -87,6 +87,26 @@ amplihack copilot --auto -- -p "add logging to all services"
 amplihack copilot --auto --max-turns 15 -- -p "implement feature X"
 ```
 
+### Long Prompts
+
+Read the initial prompt from a file with `--prompt-file`. It is an option of
+the launch subcommand, so it goes before any `--`, and it requires `--auto`.
+The file takes precedence over a `-p` after `--`, and the prompt never appears
+in a command-line argument:
+
+```bash
+gh issue view 1570 --json body --jq .body > /tmp/issue-1570.md
+amplihack claude --auto --max-turns 20 --prompt-file /tmp/issue-1570.md
+amplihack copilot --auto --prompt-file=/tmp/issue-1570.md
+```
+
+Each turn prompt above 4096 bytes is delivered on stdin for Claude and by a
+reference to a private temporary file for Copilot and Amplifier. The objective,
+plan and latest evaluation carried between turns are each capped at 32 KiB,
+keeping the most recent output. See
+[Large Payload Delivery Reference](reference/large-payload-delivery.md#auto-mode)
+for the rules and error cases.
+
 ## How It Works
 
 ### Turn 1: Objective Clarification

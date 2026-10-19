@@ -539,10 +539,15 @@ This allows local overrides of bundled recipes.
 `amplihack recipe run` delegates actual execution to a separate
 `recipe-runner-rs` binary. The binary is located using these sources in order:
 
-1. `RECIPE_RUNNER_RS_PATH` environment variable
+1. `RECIPE_RUNNER_RS_PATH` environment variable (a `~/` prefix expands to
+   `$HOME`; a bare name is looked up on `$PATH`)
 2. `recipe-runner-rs` on `$PATH`
-3. `~/.cargo/bin/recipe-runner-rs`
-4. `~/.local/bin/recipe-runner-rs`
+3. `$CARGO_HOME/bin/recipe-runner-rs` (where `cargo install` puts it)
+4. `~/.cargo/bin/recipe-runner-rs`
+5. `~/.local/bin/recipe-runner-rs`
+
+The same lookup is used by `amplihack install` and the launch-time freshness
+refresh, so all three agree on which binary is in use.
 
 If no binary is found, `recipe run` fails with:
 

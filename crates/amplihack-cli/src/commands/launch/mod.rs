@@ -21,6 +21,12 @@ mod tests_env;
 #[cfg(test)]
 mod tests_launch;
 #[cfg(test)]
+mod tests_model;
+#[cfg(test)]
+mod tests_profile;
+#[cfg(test)]
+mod tests_root_sandbox;
+#[cfg(test)]
 mod tests_subprocess_safe;
 #[cfg(test)]
 mod tests_system_prompt_append;
@@ -28,7 +34,8 @@ mod tests_system_prompt_append;
 // Re-exports — public API of the launch module.
 pub(crate) use checkout::resolve_checkout_repo;
 pub(crate) use command::{
-    resolve_no_reflection, resolve_subprocess_safe, validate_routed_copilot_workspace,
+    pin_profile_for_descendants, resolve_no_reflection, resolve_subprocess_safe,
+    validate_routed_copilot_workspace,
 };
 pub(crate) use power_steering::maybe_prompt_re_enable_power_steering;
 
@@ -53,7 +60,7 @@ use checkout::{parse_github_repo_uri, resolve_checkout_repo_in};
 #[cfg(test)]
 use command::{COPILOT_HOME_ENV, build_command};
 #[cfg(test)]
-use context::render_launcher_command;
+use context::{persist_launcher_context_with, render_launcher_command};
 #[cfg(test)]
 use power_steering::maybe_prompt_re_enable_power_steering_with;
 
@@ -94,11 +101,41 @@ fn apply_launch_environment(
         &amplihack_utils::litellm_proxy::ProxyConfig,
         amplihack_utils::litellm_proxy::CliTarget,
     )>,
-) {
+    root_sandbox: Option<&amplihack_utils::root_sandbox::SkipPermissionsEnv>,
+) -> Result<()> {
     env_builder.apply_to_command(command);
     if let Some((config, target)) = proxy {
         config.apply_to_command(command, target);
     }
+    // Issue #1482: IS_SANDBOX=1 goes on this child only, never on amplihack,
+    // and last, so nothing applied above can undo it.
+    if let Some(decision) = root_sandbox {
+        decision.apply(command)?;
+    }
+    Ok(())
+}
+
+/// Issue #1482: what a `claude` launch needs for `--dangerously-skip-permissions`
+/// as root, or `None` when this launch does not pass the flag to claude.
+///
+/// Claude Code refuses the flag as root unless IS_SANDBOX=1 is set. `Err` when
+/// it would refuse, so the launch stops before anything is spawned; the caller
+/// applies the returned decision to the child command only. `detect` is
+/// injected so tests can stand in for root and sandbox states.
+pub(super) fn root_sandbox_for_launch(
+    tool: &str,
+    skip_permissions: bool,
+    extra_args: &[String],
+    detect: impl FnOnce() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<Option<amplihack_utils::root_sandbox::SkipPermissionsEnv>> {
+    let passes_flag =
+        skip_permissions || amplihack_utils::root_sandbox::args_skip_permissions(extra_args);
+    if tool != "claude" || !passes_flag {
+        return Ok(None);
+    }
+    let decision = detect();
+    decision.check()?;
+    Ok(Some(decision))
 }
 
 /// Launch a tool binary (claude, copilot, codex, amplifier).
@@ -117,6 +154,119 @@ pub fn run_launch(
     extra_args: Vec<String>,
     override_origin: OverrideOrigin,
     proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+) -> Result<()> {
+    run_launch_profiled(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        None,
+    )
+}
+
+/// [`run_launch`] with an optional Claude login-profile directory, exported to
+/// the child as `CLAUDE_CONFIG_DIR` (Claude-compatible tools only).
+#[allow(clippy::too_many_arguments)]
+pub fn run_launch_profiled(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        claude_config_dir,
+        amplihack_utils::root_sandbox::detect,
+    )
+}
+
+/// [`run_launch`] with the issue #1482 root-sandbox decision injected, so
+/// tests reach the call in the launch whatever uid they run as.
+#[allow(clippy::too_many_arguments)]
+#[cfg(test)]
+pub(crate) fn run_launch_with(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+) -> Result<()> {
+    run_launch_core(
+        tool,
+        launcher_command,
+        docker,
+        resume,
+        continue_session,
+        skip_permissions,
+        skip_update_check,
+        no_reflection,
+        subprocess_safe,
+        checkout_repo,
+        extra_args,
+        override_origin,
+        proxy_target,
+        None,
+        root_sandbox_decision,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_launch_core(
+    tool: &str,
+    launcher_command: &str,
+    docker: bool,
+    resume: bool,
+    continue_session: bool,
+    skip_permissions: bool,
+    skip_update_check: bool,
+    no_reflection: bool,
+    subprocess_safe: bool,
+    checkout_repo: Option<String>,
+    extra_args: Vec<String>,
+    override_origin: OverrideOrigin,
+    proxy_target: Option<amplihack_utils::litellm_proxy::CliTarget>,
+    claude_config_dir: Option<PathBuf>,
+    root_sandbox_decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
 ) -> Result<()> {
     validate_launch_prompt_delivery(tool)?;
     let proxy_config = amplihack_utils::litellm_proxy::ProxyConfig::from_env()
@@ -185,13 +335,36 @@ pub fn run_launch(
         return Ok(());
     }
 
+    // Issue #1482: decide now, after the Docker hand-off (the container launch
+    // decides for itself), so a root host outside a sandbox fails here with a
+    // message naming IS_SANDBOX=1 instead of inside claude.
+    let root_sandbox =
+        root_sandbox_for_launch(tool, skip_permissions, &extra_args, root_sandbox_decision)?;
+
     // Check for npm updates before doing anything else.
     // This is a no-op if skip_update_check is true, AMPLIHACK_NONINTERACTIVE is set,
     // or the tool has no npm package mapping.
     maybe_print_npm_update_notice(tool, skip_update_check, override_origin);
 
+    let codex_binary = if tool == "codex" && prevalidated_binary.is_none() {
+        Some(
+            bootstrap::ensure_tool_available(tool, override_origin)
+                .with_context(|| missing_binary_context(tool))?,
+        )
+    } else {
+        None
+    };
     if !subprocess_safe {
-        bootstrap::prepare_launcher(tool)?;
+        if tool == "codex" {
+            let selected = prevalidated_binary
+                .as_ref()
+                .map(|p| &p.binary)
+                .or(codex_binary.as_ref())
+                .context("resolved Codex executable missing")?;
+            bootstrap::prepare_codex_launcher(&selected.path)?;
+        } else {
+            bootstrap::prepare_launcher(tool)?;
+        }
     }
 
     // Check nesting
@@ -216,8 +389,11 @@ pub fn run_launch(
     let (binary, preflight_identity) = match prevalidated_binary {
         Some(preflight) => (preflight.binary, Some(preflight.identity)),
         None => (
-            bootstrap::ensure_tool_available(tool, override_origin)
-                .with_context(|| missing_binary_context(tool))?,
+            match codex_binary {
+                Some(binary) => Ok(binary),
+                None => bootstrap::ensure_tool_available(tool, override_origin),
+            }
+            .with_context(|| missing_binary_context(tool))?,
             None,
         ),
     };
@@ -267,7 +443,8 @@ pub fn run_launch(
             .with_amplihack_session_id() // AMPLIHACK_SESSION_ID, AMPLIHACK_DEPTH
             .with_session_tree_context() // preserve orchestration tree vars if present
             .with_amplihack_vars_with_node_options(Some(node_options.as_str())) // AMPLIHACK_RUST_RUNTIME, AMPLIHACK_VERSION, NODE_OPTIONS
-            .with_agent_binary(tool) // WS1: AMPLIHACK_AGENT_BINARY
+            // WS1: AMPLIHACK_AGENT_BINARY, still tagged if it was a guess (#1481)
+            .with_launched_agent_binary(tool)
             .with_amplihack_home() // WS3: AMPLIHACK_HOME
             .with_asset_resolver(); // Rust-native bundle asset resolver
         env_builder = env_builder.with_project_graph_db(&execution_dir)?;
@@ -296,6 +473,7 @@ pub fn run_launch(
             &extra_args,
             Some(&execution_dir),
             subprocess_safe,
+            claude_config_dir.as_deref(),
         );
         cmd.current_dir(&execution_dir);
         let routed_copilot = proxy_config.is_some()
@@ -307,7 +485,10 @@ pub fn run_launch(
             &mut cmd,
             env_builder,
             proxy_config.as_ref().zip(proxy_target),
-        );
+            root_sandbox.as_ref(),
+        )?;
+        // Issue #1569: only the supervising amplihack sees this marker.
+        cmd.env_remove(crate::commands::profile::AUTO_SWITCH_SUPERVISED_ENV);
 
         // Spawn child in its own process group.
         //
@@ -316,7 +497,15 @@ pub fn run_launch(
         // which named nothing real and sent the user hunting for a CPU
         // problem that did not exist. Resolution already knows what it tried
         // and why each candidate was rejected — say that instead.
-        let mut child = match ManagedChild::spawn(cmd) {
+        // Issue #1569: the hold keeps auto-switch swaps out of the profile
+        // until the child exists and liveness scans can see it.
+        let launch_hold = claude_config_dir
+            .as_deref()
+            .map(crate::commands::profile::verify_launch_profile_dir)
+            .transpose()?;
+        let spawned = ManagedChild::spawn(cmd);
+        drop(launch_hold);
+        let mut child = match spawned {
             Ok(child) => child,
             Err(err) => {
                 let raw_os_error = err
@@ -339,7 +528,13 @@ pub fn run_launch(
         };
 
         // Wait for child or signal
-        let exit_code = wait_for_child_or_signal(&mut child, &shutdown)?;
+        let exit_code = wait_for_child_or_signal(&mut child, &shutdown);
+        // Issue #1569: hand back logins the session borrowed, on success and
+        // on error, before this process exits.
+        if let Some(dir) = claude_config_dir.as_deref() {
+            crate::commands::profile::return_after_session(dir);
+        }
+        let exit_code = exit_code?;
         tracker.complete_session(&session_id)?;
         if exit_code != 0 {
             std::process::exit(exit_code);
@@ -709,13 +904,77 @@ fn wait_for_child_or_signal(
         // Check if child has exited
         match child.try_wait()? {
             Some(status) => {
-                return Ok(status.code().unwrap_or(0)); // SIGINT-killed: no numeric code → 0 (parity with Python signal_handler → sys.exit(0))
+                return Ok(exit_code_for_status(&status));
             }
             None => {
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     }
+}
+
+/// The exit code amplihack reports for a child that has finished, and the one
+/// place a child's death by signal is put into words.
+///
+/// Issue #1424. This used to be `status.code().unwrap_or(0)`, which is 0 for
+/// **every** signal death, not just the one it was written for. So the exact
+/// failure that issue reports — a Copilot binary that started and then aborted
+/// on `SIGABRT` — made `amplihack copilot` exit 0 and report success, and the
+/// only account of what happened was whatever the child had already printed.
+///
+/// `SIGINT` keeps its 0: the user pressed Ctrl+C, that is not a failure, and
+/// the parity with Python's `signal_handler → sys.exit(0)` is deliberate. Every
+/// other signal is a death — reported by name, and exited `128 + N` the way a
+/// shell reports it.
+#[cfg(unix)]
+fn exit_code_for_status(status: &std::process::ExitStatus) -> i32 {
+    use std::os::unix::process::ExitStatusExt;
+    if let Some(code) = status.code() {
+        return code;
+    }
+    let Some(signal) = status.signal() else {
+        return 0;
+    };
+    if signal == libc::SIGINT {
+        return 0;
+    }
+    eprintln!("{}", describe_child_signal(signal));
+    128 + signal
+}
+
+#[cfg(not(unix))]
+fn exit_code_for_status(status: &std::process::ExitStatus) -> i32 {
+    status.code().unwrap_or(0)
+}
+
+/// What to tell the user about a child that was killed by a signal.
+///
+/// Pure, so the words can be tested without killing a process. Two rules:
+/// it says the binary **ran** — that is the fact "no platform package found"
+/// contradicted — and for the two signals that resource exhaustion actually
+/// produces it points at the machine WITHOUT asserting the cause. Naming a
+/// cause that is merely likely is the mistake this issue is about; naming what
+/// to look at is not.
+#[cfg(unix)]
+fn describe_child_signal(signal: i32) -> String {
+    let name = amplihack_utils::launch_target::signal_name(signal);
+    let mut message = format!(
+        "amplihack: the child process was killed by {name} (signal {signal}). \
+         It was found and executed, so this is not a missing or incomplete \
+         install."
+    );
+    if signal == libc::SIGABRT || signal == libc::SIGKILL {
+        message.push_str(
+            " A death by SIGABRT or SIGKILL on a loaded host is commonly \
+             resource exhaustion: if the output above mentions \"Resource \
+             temporarily unavailable\" or \"failed to spawn thread\", or the \
+             kernel OOM-killed it, check the per-user process/thread limit \
+             (`ulimit -u`), the cgroup limit (/sys/fs/cgroup/pids.max), load \
+             and free memory before assuming anything is wrong with the \
+             install.",
+        );
+    }
+    message
 }
 
 /// Error context for "the tool could not be found", with the one explanation
@@ -754,6 +1013,7 @@ fn missing_binary_context(tool: &str) -> String {
 /// only claimed when its file name is actually the tool. Matching loosely here
 /// would put a confident, wrong sentence into an error message — worse than the
 /// bare "not found" it replaces.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // /proc/<pid>/exe is Linux only
 fn deleted_target_for_tool(raw: &str, tool: &str) -> Option<std::path::PathBuf> {
     let stripped = raw.strip_suffix(" (deleted)")?;
     let path = std::path::PathBuf::from(stripped);

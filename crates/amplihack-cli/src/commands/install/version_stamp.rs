@@ -7,23 +7,32 @@
 //!
 //! The stamp file lives at `~/.amplihack/.installed-version` and contains
 //! a single line — the value of [`crate::VERSION`] — with no trailing
-//! newline. Writes are atomic via a sibling tempfile + `rename` (the same
+//! newline. When an implicit re-stage kept installed binaries (#1526), a
+//! second line `binaries: <version|unknown>` records their version, which
+//! then differs from the framework version on line one. Writes are atomic via a sibling tempfile + `rename` (the same
 //! pattern used by `write_layout_marker` in this crate).
 
 use anyhow::{Context, Result, bail};
 use regex::Regex;
+use std::cmp::Ordering;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
-use super::paths::home_dir;
+use super::paths::{home_dir, sanitize_path};
 
 /// Filename of the stamp inside `~/.amplihack/`.
 const STAMP_FILE: &str = ".installed-version";
 
 /// Sibling tempfile used for atomic writes.
 const STAMP_TMP: &str = ".installed-version.tmp";
+
+/// Prefix of the optional second stamp line (#1526).
+const BINARIES_PREFIX: &str = "binaries: ";
+
+/// Second-line value when the installed binaries' version is not known.
+const BINARIES_UNKNOWN: &str = "unknown";
 
 /// Permitted stamp content per issue #502 R3: `MAJOR.MINOR.PATCH` with an
 /// optional `-PRERELEASE` tag. Build metadata (`+...`) is intentionally
@@ -59,6 +68,23 @@ pub(crate) fn installed_version_path() -> Result<PathBuf> {
 ///   permissions propagates as `Err` (Zero-BS — we do not silently leave a
 ///   world-readable file behind).
 pub(crate) fn write_installed_version(version: &str) -> Result<()> {
+    write_stamp(version)
+}
+
+/// Issue #1526: record the framework as staged at `framework` while the
+/// binaries kept in `~/.local/bin` stay at `binaries` (`None`: unknown). Equal
+/// versions write the plain one-line stamp.
+pub(crate) fn write_installed_versions(framework: &str, binaries: Option<&str>) -> Result<()> {
+    match binaries {
+        Some(binaries) if binaries == framework => write_stamp(framework),
+        binaries => write_stamp(&format!(
+            "{framework}\n{BINARIES_PREFIX}{}",
+            binaries.unwrap_or(BINARIES_UNKNOWN)
+        )),
+    }
+}
+
+fn write_stamp(contents: &str) -> Result<()> {
     let final_path = installed_version_path()?;
     let parent = final_path.parent().with_context(|| {
         format!(
@@ -85,7 +111,7 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
     }
 
     let tmp_path = parent.join(STAMP_TMP);
-    fs::write(&tmp_path, version.as_bytes())
+    fs::write(&tmp_path, contents.as_bytes())
         .with_context(|| format!("failed to write {}", tmp_path.display()))?;
     fs::rename(&tmp_path, &final_path).with_context(|| {
         format!(
@@ -111,14 +137,42 @@ pub(crate) fn write_installed_version(version: &str) -> Result<()> {
     Ok(())
 }
 
-/// Read the stamp file, returning `Ok(None)` when it does not exist OR when
-/// its contents fail the strict semver validation (issue #502 R3/R4).
+/// Read the framework version from the stamp, returning `Ok(None)` when the
+/// file does not exist OR when its contents fail the strict validation
+/// (issue #502 R3/R4).
 ///
 /// On malformed contents we emit a one-line stderr warning and return
 /// `Ok(None)`. Treating malformed-as-missing forces a re-stage on next
 /// startup, which is the desired self-heal behaviour. Returns `Err` for any
 /// IO error other than `NotFound` so corruption fails loud.
 pub(crate) fn read_installed_version() -> Result<Option<String>> {
+    Ok(read_stamp(true)?.map(|stamp| stamp.framework))
+}
+
+/// [`read_installed_version`] without the malformed-stamp warning, for the
+/// launch bootstrap and the re-read under the install lock: startup self-heal
+/// has already reported it this process.
+pub(crate) fn read_installed_version_quiet() -> Result<Option<String>> {
+    Ok(read_stamp(false)?.map(|stamp| stamp.framework))
+}
+
+/// Issue #1526: the version of the binaries an implicit re-stage kept in
+/// `~/.local/bin`, or `None` when there is no stamp or it records them as
+/// unknown. Binaries that re-stage replaced are at the framework version, so
+/// this is not the version of any one named binary. The implicit
+/// replacement guard compares against this, never the framework version.
+/// Quiet: only an implicit re-stage reads it, after self-heal has already
+/// reported a malformed stamp this process.
+pub(crate) fn read_binaries_version() -> Result<Option<String>> {
+    Ok(read_stamp(false)?.and_then(|stamp| stamp.binaries))
+}
+
+struct Stamp {
+    framework: String,
+    binaries: Option<String>,
+}
+
+fn read_stamp(warn_malformed: bool) -> Result<Option<Stamp>> {
     let path = installed_version_path()?;
     let raw = match fs::read_to_string(&path) {
         Ok(contents) => contents,
@@ -127,19 +181,65 @@ pub(crate) fn read_installed_version() -> Result<Option<String>> {
             return Err(err).with_context(|| format!("failed to read {}", path.display()));
         }
     };
-    let trimmed = raw.trim();
-    if !semver_regex().is_match(trimmed) {
+    let stamp = parse_stamp(&raw);
+    if stamp.is_none() && warn_malformed {
         // R4: one-line warning so operators see the rejection in CI logs.
-        // Use `{:?}` so embedded newlines / control chars cannot forge a
-        // second log line or inject terminal escapes.
+        // Path and contents are escaped so embedded newlines / control
+        // chars cannot forge a second log line or inject terminal escapes.
         eprintln!(
             "amplihack: ignoring malformed install stamp at {} (contents={:?}); will re-stage",
-            path.display(),
-            trimmed
+            sanitize_path(&path),
+            raw.trim()
         );
-        return Ok(None);
     }
-    Ok(Some(trimmed.to_string()))
+    Ok(stamp)
+}
+
+/// Line one is the framework version; an optional line two is
+/// `binaries: <version|unknown>`. Anything else is malformed.
+fn parse_stamp(raw: &str) -> Option<Stamp> {
+    let mut lines = raw.trim().lines();
+    let framework = lines.next().filter(|v| semver_regex().is_match(v))?;
+    let binaries = match lines.next() {
+        None => Some(framework),
+        Some(line) => match line.strip_prefix(BINARIES_PREFIX)? {
+            BINARIES_UNKNOWN => None,
+            v if semver_regex().is_match(v) => Some(v),
+            _ => return None,
+        },
+    };
+    if lines.next().is_some() {
+        return None;
+    }
+    Some(Stamp {
+        framework: framework.to_string(),
+        binaries: binaries.map(str::to_string),
+    })
+}
+
+/// Issue #1526: a running version against an installed one, by semver
+/// precedence (build metadata ignored). Each caller decides what `Unknown`,
+/// an unparseable side, means for it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VersionRelation {
+    Older,
+    Equal,
+    Newer,
+    Unknown,
+}
+
+pub(crate) fn relation(running: &str, installed: &str) -> VersionRelation {
+    match (
+        semver::Version::parse(running),
+        semver::Version::parse(installed),
+    ) {
+        (Ok(running), Ok(installed)) => match running.cmp_precedence(&installed) {
+            Ordering::Less => VersionRelation::Older,
+            Ordering::Equal => VersionRelation::Equal,
+            Ordering::Greater => VersionRelation::Newer,
+        },
+        _ => VersionRelation::Unknown,
+    }
 }
 
 #[cfg(test)]
@@ -398,5 +498,112 @@ mod tests {
             read_installed_version().expect("read").as_deref(),
             Some("1.2.3")
         );
+    }
+
+    /// Issue #1526: the optional `binaries:` line round-trips, leaves the
+    /// framework version readable, and equal versions write one line.
+    #[test]
+    fn binaries_line_round_trips() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+        let path = installed_version_path().unwrap();
+
+        write_installed_versions("1.2.3", None).expect("write");
+        assert_eq!(read_installed_version().unwrap().as_deref(), Some("1.2.3"));
+        assert_eq!(read_binaries_version().unwrap(), None);
+
+        write_installed_versions("1.2.3", Some("1.1.0")).expect("write");
+        assert_eq!(read_installed_version().unwrap().as_deref(), Some("1.2.3"));
+        assert_eq!(read_binaries_version().unwrap().as_deref(), Some("1.1.0"));
+
+        write_installed_versions("1.2.3", Some("1.2.3")).expect("write");
+        assert_eq!(fs::read_to_string(&path).unwrap(), "1.2.3");
+        assert_eq!(read_binaries_version().unwrap().as_deref(), Some("1.2.3"));
+    }
+
+    /// Issue #1526: any other second line, or a third line, is malformed.
+    #[test]
+    fn malformed_binaries_line_is_rejected() {
+        for raw in [
+            "1.2.3\nbinaries: 1.2",
+            "1.2.3\nbinaries:unknown",
+            "1.2.3\nsomething: unknown",
+            "1.2.3\nbinaries: unknown\nextra",
+        ] {
+            assert!(parse_stamp(raw).is_none(), "accepted {raw:?}");
+        }
+    }
+
+    /// Issue #1526: precedence, not string or `Ord` order.
+    #[test]
+    fn relation_follows_semver_precedence() {
+        use VersionRelation::*;
+        // (running, installed, relation)
+        let mut table: Vec<(&str, &str, VersionRelation)> = vec![
+            ("1.0.0", "1.0.1", Older),
+            ("1.0.1", "1.0.0", Newer),
+            ("1.0.0", "1.0.0", Equal),
+            ("1.0.0+snapshot.abc", "1.0.0", Equal),
+            ("1.0.0-rc.1", "1.0.0", Older),
+            // The #1526 reporter's pair: a main build under a v0.18.39 stamp.
+            ("0.18.0", "0.18.39", Older),
+            // Numeric, not lexical: "9" sorts after "39" as a string.
+            ("0.18.9", "0.18.39", Older),
+            ("0.18.39", "0.18.9", Newer),
+            ("0.18.9", "0.18.10", Older),
+            ("0.18.10", "0.18.9", Newer),
+            ("1.0.0-rc.2", "1.0.0-rc.10", Older),
+            ("1.0.0-rc.10", "1.0.0-rc.2", Newer),
+            ("1.0.0", "1.0.0-rc.1", Newer),
+            // Build metadata never decides.
+            ("1.0.0+zzz", "1.0.0+aaa", Equal),
+            ("1.0.0+snapshot.8a9647a", "1.0.1", Older),
+            ("1.9.99", "2.0.0", Older),
+            ("2.0.0", "1.99.99", Newer),
+        ];
+        for bad in [
+            "",
+            "not-a-version",
+            "v1.0.0",
+            "1.0",
+            "01.2.3",    // leading zero: passes the stamp regex, fails semver
+            "1.2.3-a_b", // underscore: passes the stamp regex, fails semver
+            "١.2.3",     // Arabic-Indic digit: `\d` accepts it, semver does not
+            "99999999999999999999999.0.0", // overflows u64
+        ] {
+            table.push((bad, "9999.0.0", Unknown));
+            table.push(("0.0.1", bad, Unknown));
+        }
+        let wrong: Vec<String> = table
+            .iter()
+            .filter_map(|&(running, installed, want)| {
+                let got = relation(running, installed);
+                (got != want)
+                    .then(|| format!("{running:?} vs {installed:?}: want {want:?}, got {got:?}"))
+            })
+            .collect();
+        assert!(
+            wrong.is_empty(),
+            "precedence violations:\n{}",
+            wrong.join("\n")
+        );
+    }
+
+    /// The quiet reader agrees with the loud one, including on a malformed
+    /// stamp, which reads as missing.
+    #[test]
+    fn quiet_read_matches_read() {
+        let tmp = TempDir::new().expect("tempdir");
+        let _g = HomeGuard::set(tmp.path());
+        assert_eq!(read_installed_version_quiet().unwrap(), None);
+
+        write_installed_version("1.2.3").expect("write");
+        assert_eq!(
+            read_installed_version_quiet().unwrap().as_deref(),
+            Some("1.2.3")
+        );
+
+        fs::write(installed_version_path().unwrap(), b"garbage\n").unwrap();
+        assert_eq!(read_installed_version_quiet().unwrap(), None);
     }
 }

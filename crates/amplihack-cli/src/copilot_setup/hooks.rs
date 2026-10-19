@@ -104,7 +104,19 @@ fn is_amplihack_workspace_root(path: &Path) -> bool {
 /// non-amplihack hook entries are preserved; amplihack-owned entries (those
 /// whose `bash` path resolves under `~/.amplihack` or whose `_amplihack`
 /// marker is set) are replaced atomically.
+#[cfg(test)]
 pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
+    write_user_level_hooks_with(copilot_home, super::UserConfig::Merge)
+}
+
+/// [`write_user_level_hooks`] under a [`super::UserConfig`] policy. With
+/// `KeepExisting` only the wrapper scripts are refreshed and `config.json` is
+/// not touched (issue #1526). With `Merge`, a merge that would not change the
+/// parsed file does not rewrite it.
+pub(super) fn write_user_level_hooks_with(
+    copilot_home: &Path,
+    user_config: super::UserConfig,
+) -> Result<()> {
     // We point the user-level hooks at the staged framework directory so the
     // hook wrappers work irrespective of which repo Copilot opens. The
     // wrappers themselves resolve `amplihack-hooks` from PATH or the standard
@@ -119,6 +131,10 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
         let script = build_wrapper_script(spec);
         write_executable_script(&dest, &script)?;
         set_executable(&dest)?;
+    }
+
+    if user_config == super::UserConfig::KeepExisting {
+        return Ok(());
     }
 
     let config_path = copilot_home.join("config.json");
@@ -141,6 +157,7 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
     } else {
         (serde_json::json!({}), String::new())
     };
+    let original = root.clone();
 
     let manifest = build_copilot_hooks_manifest(&hooks_dir);
     let amplihack_hooks = match manifest {
@@ -177,11 +194,28 @@ pub(super) fn write_user_level_hooks(copilot_home: &Path) -> Result<()> {
         }
         hooks_obj.insert(event, serde_json::Value::Array(merged));
     }
+    if root == original && config_path.is_file() {
+        return Ok(());
+    }
 
     let body = serde_json::to_string_pretty(&root)? + "\n";
     fs::write(&config_path, jsonc::apply_prefix(&prefix, body))
         .with_context(|| format!("write {}", config_path.display()))?;
     Ok(())
+}
+
+/// Whether a parsed `config.json` holds an amplihack-owned hook entry.
+pub(super) fn has_amplihack_owned_hook(config: &serde_json::Value) -> bool {
+    config
+        .get("hooks")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|hooks| {
+            hooks
+                .values()
+                .filter_map(serde_json::Value::as_array)
+                .flatten()
+                .any(is_amplihack_owned)
+        })
 }
 
 fn is_amplihack_owned(entry: &serde_json::Value) -> bool {

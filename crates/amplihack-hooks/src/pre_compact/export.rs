@@ -96,10 +96,9 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let tmp = tempfile::tempdir().unwrap();
-        let original = std::env::current_dir().unwrap();
-        std::env::set_current_dir(tmp.path()).unwrap();
+        let cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
         let result = f(tmp.path());
-        let _ = std::env::set_current_dir(original);
+        drop(cwd);
         result
     }
 

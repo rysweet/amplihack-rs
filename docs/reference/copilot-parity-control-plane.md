@@ -200,7 +200,6 @@ re-introducing `--allow-all-tools` behind the caller's back.
 | `AMPLIHACK_AGENT_BINARY`        | launcher and nested runner | `claude`    | Selects the agent binary for nested recipe execution  |
 | `AMPLIHACK_HOOK_ENGINE`         | launcher                   | auto-detect | Selects `rust` or `python` for amplihack hook staging |
 | `RECIPE_RUNNER_RS_PATH`         | Rust runner bridge         | unset       | Explicit path to `recipe-runner-rs`                   |
-| `RECIPE_RUNNER_INSTALL_TIMEOUT` | Rust runner install helper | `300`       | Timeout, in seconds, for auto-install attempts        |
 
 ## Context Spillover Rules
 

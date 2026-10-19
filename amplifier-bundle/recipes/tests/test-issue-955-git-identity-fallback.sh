@@ -112,8 +112,13 @@ install_stub "${HOME_COPILOT}/.copilot/amplifier-bundle/tools"
 # chain (the one that ends in the terminal `exit 2`), leading whitespace removed.
 extract_gitid_chain() {
     local recipe="$1" line
-    line="$(grep -E 'GIT_IDENTITY_HELPER="[^"]*git rev-parse --show-toplevel' "${recipe}" \
-            | grep -F 'exit 2' | head -1)"
+    # A single awk that applies both conditions and reads the recipe to EOF. The
+    # `head`-terminated pipeline it replaces left the first `grep` writing into a
+    # closed pipe; under `pipefail` the chain then resolves to "" and every case
+    # below reports HARNESS: no git-identity chain found (issue #1434).
+    line="$(awk 'n == 0 \
+                 && /GIT_IDENTITY_HELPER="[^"]*git rev-parse --show-toplevel/ \
+                 && index($0, "exit 2") { print; n = 1 }' "${recipe}")"
     line="${line#"${line%%[![:space:]]*}"}"
     printf '%s' "${line}"
 }
