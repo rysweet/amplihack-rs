@@ -22,7 +22,20 @@
 use super::helpers::philosophy_context;
 use super::*;
 use amplihack_turn::{Channel, ChannelError, ChannelId, ChannelResult, NextPrompt, TurnOutput};
+use amplihack_utils::payload_delivery::truncate_tail_with_marker;
 use async_trait::async_trait;
+
+/// Cap on the objective carried from turn 1 into later prompts (#1570).
+pub(super) const MAX_OBJECTIVE_BYTES: usize = 32 * 1024;
+/// Cap on the plan carried from turn 2 (or an Adjust turn) into later prompts.
+pub(super) const MAX_PLAN_BYTES: usize = 32 * 1024;
+/// Cap on the latest evaluation carried into the Adjust prompt.
+pub(super) const MAX_EVALUATION_BYTES: usize = 32 * 1024;
+
+/// Keep the most recent `max` bytes of a turn output, marking any cut.
+fn cap(text: &str, max: usize) -> String {
+    truncate_tail_with_marker(text, max).into_owned()
+}
 
 /// Which phase prompt [`AutoModeChannel::next_prompt`] will emit next.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -236,7 +249,7 @@ impl AutoModeChannel {
                 if exit_code != 0 {
                     self.fail_required("Clarify Objective", exit_code);
                 } else {
-                    self.objective = text.to_string();
+                    self.objective = cap(text, MAX_OBJECTIVE_BYTES);
                     self.phase = Phase::Plan;
                 }
             }
@@ -245,7 +258,7 @@ impl AutoModeChannel {
                 if exit_code != 0 {
                     self.fail_required("Create Plan", exit_code);
                 } else {
-                    self.plan = text.to_string();
+                    self.plan = cap(text, MAX_PLAN_BYTES);
                     self.turn = 3;
                     self.enter_execute_or_stop()?;
                 }
@@ -271,7 +284,7 @@ impl AutoModeChannel {
                     self.exit_code = 0;
                     self.phase = Phase::Closed;
                 } else if text.to_ascii_lowercase().contains("needs adjustment") {
-                    self.last_evaluation = text.to_string();
+                    self.last_evaluation = cap(text, MAX_EVALUATION_BYTES);
                     self.phase = Phase::Adjust;
                 } else {
                     self.turn += 1;
@@ -283,7 +296,7 @@ impl AutoModeChannel {
                 if exit_code != 0 {
                     self.fail_required("Adjust Plan", exit_code);
                 } else {
-                    self.plan = text.to_string();
+                    self.plan = cap(text, MAX_PLAN_BYTES);
                     self.turn += 1;
                     self.enter_execute_or_stop()?;
                 }

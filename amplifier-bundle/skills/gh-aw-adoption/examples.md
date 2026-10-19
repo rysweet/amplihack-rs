@@ -301,7 +301,7 @@ Implements automated {description}.
 - Safe-outputs: {limits}
 - Error resilience: Comprehensive retry and logging
 
-Co-Authored-By: Claude Sonnet 4.5 (1M context) <noreply@anthropic.com>"
+Co-Authored-By: <actual-contributor-name> <actual-contributor-email>"
 
 git push origin feat/{WORKFLOW_NAME}-workflow
 ```
@@ -1198,7 +1198,7 @@ Implements automated {workflow_name}.
 - Added comprehensive error resilience
 - Configured safe-outputs and permissions
 
-Co-Authored-By: Claude Sonnet 4.5 (1M context) <noreply@anthropic.com>"""
+Co-Authored-By: <actual-contributor-name> <actual-contributor-email>"""
 
         subprocess.run(["git", "commit", "-m", commit_msg], check=True)
 

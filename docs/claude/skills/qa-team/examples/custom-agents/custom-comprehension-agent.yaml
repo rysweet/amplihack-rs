@@ -15,11 +15,11 @@ scenario:
   prerequisites:
     - "Financial dashboard running at http://localhost:3000"
     - "Dashboard has sample financial data loaded"
-    - "OpenAI API key available for custom agent"
+    - "Credentials for the configured agent provider available"
 
   # Define custom comprehension agent behavior
   comprehension_agent:
-    model: "gpt-4"
+    # Inherit the runtime model configuration.
     temperature: 0.1 # Low temperature for consistent validation
 
     # System prompt defines validation rules
@@ -233,7 +233,7 @@ scenario:
 # ✗ Performance-critical tests (AI calls add latency)
 
 # Custom Agent Configuration:
-# - model: Choose appropriate AI model (GPT-4 for complex logic)
+# - model: Optional override only when explicitly requested by the user
 # - temperature: Low (0-0.3) for consistent validation
 # - system_prompt: Define validation rules clearly
 # - examples: Provide representative pass/fail cases

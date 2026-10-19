@@ -345,6 +345,150 @@ fn exit_79_is_terminal_and_never_retried_into() {
     );
 }
 
+fn reference_doc() -> String {
+    read(&workspace_root().join("docs/reference/loop-health-evaluator.md"))
+}
+
+/// Every `SOURCE="<literal>"` assignment in step-03, in source order.
+fn step03_sources(resolve: &str) -> Vec<String> {
+    let needle = "SOURCE=\"";
+    resolve
+        .match_indices(needle)
+        .filter(|(at, _)| {
+            // `SOURCE=` only, not e.g. `VERDICT_SOURCE=`.
+            *at == 0 || !resolve.as_bytes()[at - 1].is_ascii_alphanumeric()
+        })
+        .filter_map(|(at, _)| {
+            let rest = &resolve[at + needle.len()..];
+            let end = rest.find('"')?;
+            Some(rest[..end].to_string())
+        })
+        .collect()
+}
+
+/// The first-column values of the `verdict_source` table in the reference
+/// doc (the table introduced by "`verdict_source` is always one of these").
+fn documented_verdict_sources(doc: &str) -> Vec<(String, String)> {
+    let start = doc
+        .find("`verdict_source` is always one of these")
+        .expect("the reference doc must introduce the verdict_source table");
+    let mut rows = Vec::new();
+    let mut in_table = false;
+    for line in doc[start..].lines().skip(1) {
+        let line = line.trim();
+        if !line.starts_with('|') {
+            if in_table {
+                break;
+            }
+            continue;
+        }
+        in_table = true;
+        let first = line.trim_start_matches('|').split('|').next().unwrap_or("");
+        let value = first.trim().trim_matches('`');
+        if value == "verdict_source" || value.starts_with('-') {
+            continue;
+        }
+        rows.push((value.to_string(), line.to_string()));
+    }
+    rows
+}
+
+/// Issue #1513 — the `verdict_source` table in the reference doc and the
+/// sources step-03 can actually emit are the same six values. A source added
+/// to the code without a doc row (or a doc row for a source the code never
+/// writes) breaks attribution of a forced STUCK.
+#[test]
+fn verdict_source_table_in_the_docs_matches_what_step_03_emits() {
+    let recipe = recipe_yaml();
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    let code: std::collections::BTreeSet<String> = step03_sources(resolve).into_iter().collect();
+    let doc = reference_doc();
+    let documented: Vec<String> = documented_verdict_sources(&doc)
+        .into_iter()
+        .map(|(s, _)| s)
+        .collect();
+    let documented_set: std::collections::BTreeSet<String> = documented.iter().cloned().collect();
+
+    assert_eq!(
+        documented.len(),
+        documented_set.len(),
+        "the verdict_source table lists a value twice: {documented:?}"
+    );
+    assert_eq!(
+        code, documented_set,
+        "step-03's SOURCE= assignments and the docs' verdict_source table disagree"
+    );
+    assert_eq!(
+        code.len(),
+        6,
+        "the docs promise exactly six verdict_source values; step-03 emits {code:?}"
+    );
+}
+
+/// Issue #1513 / #1337 fail-safe, as documented under "How step-03 resolves
+/// the verdict": evidence that is missing, unparseable or `null` is a
+/// terminal refusal, because `terminal_refusal` defaults to `true`. The
+/// refusal is settled first, then empty output, then the four sources in
+/// their documented order. Behaviour is exercised by section 6f of the bundle
+/// shell test; this pins the wiring and the doc row to the same contract.
+#[test]
+fn missing_or_unparseable_evidence_is_a_terminal_refusal() {
+    let recipe = recipe_yaml();
+    let resolve = field(step(&recipe, "step-03-resolve-loop-verdict"), "command");
+    assert!(
+        resolve.contains("extract-field --field terminal_refusal --default true"),
+        "step-03 must read terminal_refusal with `--default true`: absent evidence \
+         must never read as \"the guard did not fire\""
+    );
+    assert!(
+        resolve
+            .contains("extract-field --field terminal_reason --default \"evidence unavailable\""),
+        "a refusal caused by missing evidence must be logged as \"evidence unavailable\""
+    );
+
+    // First appearance of each source, in source order.
+    let mut order: Vec<String> = Vec::new();
+    for s in step03_sources(resolve) {
+        if !order.contains(&s) {
+            order.push(s);
+        }
+    }
+    let expected_prefix = [
+        "terminal_policy_refusal",
+        "missing_verdict",
+        "evaluator",
+        "evaluator_alt_key",
+        "evaluator_prose_token",
+    ];
+    assert!(
+        order.len() >= expected_prefix.len()
+            && order[..expected_prefix.len()]
+                .iter()
+                .zip(expected_prefix)
+                .all(|(got, want)| got == want),
+        "step-03 must settle a terminal refusal first, then empty output, then try \
+         evaluator -> evaluator_alt_key -> evaluator_prose_token in that order; \
+         first appearances are {order:?}"
+    );
+    assert_eq!(
+        order.last().map(String::as_str),
+        Some("unparseable_verdict"),
+        "unparseable_verdict must be the last resort; first appearances are {order:?}"
+    );
+
+    let doc = reference_doc();
+    let row = documented_verdict_sources(&doc)
+        .into_iter()
+        .find(|(s, _)| s == "terminal_policy_refusal")
+        .map(|(_, row)| row)
+        .expect("the verdict_source table must have a terminal_policy_refusal row");
+    assert!(
+        row.contains("missing"),
+        "the terminal_policy_refusal row must say missing evidence lands here too \
+         (terminal_refusal defaults to true), not only exit 79: {row}"
+    );
+}
+
 #[test]
 fn verdict_resolution_uses_the_canonical_orch_helper_pipeline() {
     // The verdict contract must fit docs/reference/structured-verdict-parsing.md,
@@ -458,6 +602,143 @@ fn verdict_selection_is_last_object_carrying_the_field_and_the_prompt_says_so() 
         prompt.contains("LAST JSON object"),
         "the prompt must tell the model the same selection rule the gate applies"
     );
+}
+
+/// Issue #1513(a) — the prompt states its contract FIRST and LAST, and shows
+/// the same example verdict line both times.
+///
+/// The first block is what the evaluator reads before any evidence. The
+/// repeated block comes after `{{loop_last_round_output}}`, so the untrusted
+/// round output is never the last thing in the prompt and text planted in it
+/// is never the final instruction. The bundle shell test checks the same
+/// order; this keeps it enforced by a plain `cargo test` as well.
+#[test]
+fn evaluator_prompt_states_the_contract_first_and_last() {
+    // STUCK, so a copied example stops the loop rather than buying a round.
+    const EXAMPLE: &str = r#"{"loop_verdict":"STUCK","not_converging":[]}"#;
+    let recipe = recipe_yaml();
+    let prompt = field(step(&recipe, "step-02-evaluate-loop-health"), "prompt");
+    let lines: Vec<&str> = prompt.lines().collect();
+    let first = |needle: &str| lines.iter().position(|l| l.contains(needle));
+    let last = |needle: &str| lines.iter().rposition(|l| l.contains(needle));
+
+    let contract =
+        first("OUTPUT CONTRACT").expect("the prompt must open with an OUTPUT CONTRACT block");
+    let evidence = first("{{loop_evidence}}").expect("the prompt must carry {{loop_evidence}}");
+    let last_round = first("{{loop_last_round_output}}")
+        .expect("the prompt must carry {{loop_last_round_output}}");
+    let example_first = first(EXAMPLE).expect("the prompt must show the example verdict line");
+    let example_last = last(EXAMPLE).expect("the prompt must show the example verdict line");
+
+    assert_eq!(
+        lines.iter().filter(|l| l.trim() == EXAMPLE).count(),
+        2,
+        "the example verdict line appears once in each contract block, on its own line"
+    );
+
+    // One contract heading per block. A second closing heading splits the
+    // repeated contract in two, and the 400-line budget has no room for it.
+    let headings: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| {
+            let t = l.trim_start();
+            t.starts_with('#') && t.to_ascii_uppercase().contains("OUTPUT CONTRACT")
+        })
+        .map(|(i, _)| i)
+        .collect();
+    assert!(
+        headings.len() == 2 && headings[0] < evidence && headings[1] > last_round,
+        "expected exactly two OUTPUT CONTRACT headings, one before the evidence and one after \
+         the round output; found them at prompt lines {headings:?} (evidence {evidence}, \
+         last-round {last_round})"
+    );
+
+    // The contract is the first and the last `## ` section, and the role
+    // paragraphs come after the first one: nothing but the title is read
+    // before the contract, and nothing but the contract after the evidence.
+    let section_headings: Vec<(usize, &str)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| l.starts_with("## "))
+        .map(|(i, l)| (i, *l))
+        .collect();
+    let (h_first, first_heading) = *section_headings
+        .first()
+        .expect("the prompt must have `## ` sections");
+    let (h_last, last_heading) = *section_headings
+        .last()
+        .expect("the prompt must have `## ` sections");
+    assert_eq!(
+        first_heading, "## OUTPUT CONTRACT",
+        "the first `## ` heading (prompt line {h_first}) must be the OUTPUT CONTRACT"
+    );
+    assert_eq!(
+        last_heading, "## OUTPUT CONTRACT (repeated)",
+        "the last `## ` heading (prompt line {h_last}) must be the repeated OUTPUT CONTRACT"
+    );
+    let role = first("You are the loop-health evaluator")
+        .expect("the prompt must carry the role line 'You are the loop-health evaluator'");
+    assert!(
+        h_first < example_first && example_first < role && role < evidence,
+        "expected heading < first example < role line < {{{{loop_evidence}}}}; got prompt \
+         lines heading {h_first}, first example {example_first}, role {role}, evidence {evidence}"
+    );
+    assert!(
+        h_last > last_round && example_last > h_last,
+        "expected {{{{loop_last_round_output}}}} < last heading < last example; got prompt \
+         lines last-round {last_round}, last heading {h_last}, last example {example_last}"
+    );
+    let last_non_blank = lines
+        .iter()
+        .rposition(|l| !l.trim().is_empty())
+        .expect("the prompt must not be blank");
+    assert!(
+        lines[last_non_blank].contains("any other word is STUCK"),
+        "the last non-blank prompt line ({last_non_blank}) must say 'any other word is STUCK'; \
+         it is {:?}",
+        lines[last_non_blank]
+    );
+    if let Some(at) = lines[h_last..].iter().position(|l| l.contains("{{")) {
+        panic!(
+            "no placeholder may follow the last heading (prompt line {h_last}); prompt line {} \
+             has one: {:?}",
+            h_last + at,
+            lines[h_last + at]
+        );
+    }
+
+    // Merging the closing blocks must not drop a rule or reorder them.
+    let normalise = |block: &[&str]| {
+        block
+            .join(" ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    };
+    let opening = normalise(&lines[contract..evidence]);
+    assert!(
+        opening.contains("LAST JSON object") && opening.contains("not_converging"),
+        "the first block must name `not_converging` and the LAST-object rule: {opening}"
+    );
+    let closing = normalise(&lines[last_round..]);
+    let mut from = 0;
+    for rule in [
+        "If you are not sure, answer `STUCK`",
+        r#"{"loop_verdict": "CONTINUE" | "DONE" | "STUCK", "not_converging""#,
+        "LAST JSON object",
+        "never as `CONTINUE`",
+        EXAMPLE,
+        "any other word is STUCK",
+    ] {
+        let at = closing[from..].find(rule).unwrap_or_else(|| {
+            panic!(
+                "after the round output, the prompt must still say {rule:?}, \
+                 after the rules listed before it"
+            )
+        });
+        from += at + rule.len();
+    }
 }
 
 /// The `--require-field` selection, exercised through the real binary against
@@ -647,4 +928,174 @@ fn loop_health_contract_shell_test_passes() {
         String::from_utf8_lossy(&out.stdout),
         String::from_utf8_lossy(&out.stderr),
     );
+}
+
+// ── Which `amplihack` the shell test runs ────────────────────────────────────
+
+/// How a candidate answers the shell test's probe,
+/// `printf converging | "$candidate" orch helper normalise-loop-verdict`.
+#[cfg(unix)]
+#[derive(Clone, Copy)]
+enum Fake {
+    /// Built after #1513: maps `converging` to `CONTINUE`.
+    Current,
+    /// Built before #1513: has the helper but answers `STUCK`, and exits 0,
+    /// so a presence-only probe would accept it.
+    Stale,
+}
+
+#[cfg(unix)]
+fn write_fake_amplihack(path: &Path, fake: Fake) {
+    use std::os::unix::fs::PermissionsExt;
+    let answer = match fake {
+        Fake::Current => r#"case "$(cat)" in converging) echo CONTINUE ;; *) echo STUCK ;; esac"#,
+        Fake::Stale => "cat >/dev/null; echo STUCK",
+    };
+    fs::create_dir_all(path.parent().expect("fake parent dir")).expect("create fake dir");
+    fs::write(
+        path,
+        format!(
+            "#!/usr/bin/env bash\n[ \"$*\" = \"orch helper normalise-loop-verdict\" ] || exit 1\n{answer}\n"
+        ),
+    )
+    .expect("write fake amplihack");
+    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).expect("chmod fake amplihack");
+}
+
+/// Runs a copy of the shell test from a scratch tree whose two recipes are
+/// empty files. The copy picks its binary exactly as the shipped test does;
+/// the scratch tree has no `target/`, so only the `CARGO_TARGET_DIR` and
+/// `PATH` candidates exist. It then stops with a HARNESS-ERROR, because an
+/// empty recipe has no step body to extract, so the fakes only ever answer
+/// the probe.
+#[cfg(unix)]
+fn run_shell_test_copy(
+    scratch: &Path,
+    cargo_target_dir: Option<&str>,
+    path_dir: &Path,
+) -> (Option<i32>, String, String) {
+    let recipes = scratch.join("amplifier-bundle/recipes");
+    fs::create_dir_all(recipes.join("tests")).expect("create scratch recipes");
+    for name in ["loop-health-evaluator.yaml", "loop-evidence-collector.yaml"] {
+        fs::write(recipes.join(name), "").expect("write empty recipe");
+    }
+    let script = recipes.join("tests/test-issue-1337-loop-health-evaluator.sh");
+    fs::copy(
+        workspace_root()
+            .join("amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh"),
+        &script,
+    )
+    .expect("copy the shell test");
+
+    let path = match std::env::var("PATH") {
+        Ok(p) => format!("{}:{p}", path_dir.display()),
+        Err(_) => path_dir.display().to_string(),
+    };
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script)
+        .current_dir(scratch)
+        .env("PATH", path)
+        .env("TMPDIR", scratch)
+        .env_remove("RECIPE_RUNNER_RS_PATH")
+        .stdin(std::process::Stdio::null());
+    match cargo_target_dir {
+        Some(dir) => cmd.env("CARGO_TARGET_DIR", dir),
+        None => cmd.env_remove("CARGO_TARGET_DIR"),
+    };
+    let out = cmd
+        .output()
+        .expect("run a copy of the loop-health shell test");
+    (
+        out.status.code(),
+        String::from_utf8_lossy(&out.stdout).into_owned(),
+        String::from_utf8_lossy(&out.stderr).into_owned(),
+    )
+}
+
+/// A binary built before #1513 has the helper but maps `converging` to
+/// `STUCK`. Testing the shipped step bodies against it would test the old
+/// verdict mapping, so the shell test must refuse it wherever it sits, and
+/// say why, instead of quietly running.
+#[cfg(unix)]
+#[test]
+fn shell_test_refuses_a_binary_from_before_1513() {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let target = scratch.path().join("cargo-target");
+    let on_path = scratch.path().join("on-path");
+    write_fake_amplihack(&target.join("debug/amplihack"), Fake::Stale);
+    write_fake_amplihack(&on_path.join("amplihack"), Fake::Stale);
+
+    let (code, stdout, stderr) = run_shell_test_copy(
+        scratch.path(),
+        Some(&target.display().to_string()),
+        &on_path,
+    );
+
+    assert_eq!(
+        code,
+        Some(2),
+        "no candidate passes the probe, so the harness must stop with exit 2\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("amplihack binary:"),
+        "a stale binary was chosen:\n{stdout}"
+    );
+    assert!(
+        stderr.contains("HARNESS-ERROR")
+            && stderr.contains("converging")
+            && stderr.contains("CONTINUE"),
+        "the HARNESS-ERROR must say no candidate maps `converging` to `CONTINUE`:\n{stderr}"
+    );
+}
+
+/// With `CARGO_TARGET_DIR` set, `cargo build` puts the branch build outside
+/// the checkout. The shell test must find it there ahead of `PATH`, skip a
+/// stale `release/` build that sorts ahead of it, and print the binary it
+/// chose as its first line.
+#[cfg(unix)]
+#[test]
+fn shell_test_picks_and_prints_a_current_build_under_cargo_target_dir() {
+    let scratch = tempfile::tempdir().expect("scratch dir");
+    let target = scratch.path().join("cargo-target");
+    let on_path = scratch.path().join("on-path");
+    write_fake_amplihack(&target.join("release/amplihack"), Fake::Stale);
+    write_fake_amplihack(&target.join("debug/amplihack"), Fake::Current);
+    write_fake_amplihack(&on_path.join("amplihack"), Fake::Current);
+
+    let (code, stdout, stderr) = run_shell_test_copy(
+        scratch.path(),
+        Some(&target.display().to_string()),
+        &on_path,
+    );
+
+    let want = format!("amplihack binary: {}/debug/amplihack", target.display());
+    assert_eq!(
+        stdout.lines().next(),
+        Some(want.as_str()),
+        "the first stdout line must name the chosen binary (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+    );
+}
+
+/// CI sets no `CARGO_TARGET_DIR`, and the shell test runs under `set -u`, so
+/// a bare `$CARGO_TARGET_DIR` would abort it before its first check. Unset and
+/// empty must both fall through to the binary on `PATH`.
+#[cfg(unix)]
+#[test]
+fn shell_test_without_cargo_target_dir_uses_the_binary_on_path() {
+    for cargo_target_dir in [None, Some("")] {
+        let scratch = tempfile::tempdir().expect("scratch dir");
+        let on_path = scratch.path().join("on-path");
+        write_fake_amplihack(&on_path.join("amplihack"), Fake::Current);
+
+        let (code, stdout, stderr) =
+            run_shell_test_copy(scratch.path(), cargo_target_dir, &on_path);
+
+        let want = format!("amplihack binary: {}/amplihack", on_path.display());
+        assert_eq!(
+            stdout.lines().next(),
+            Some(want.as_str()),
+            "CARGO_TARGET_DIR={cargo_target_dir:?}: the first stdout line must name the binary on \
+             PATH (exit {code:?})\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+    }
 }

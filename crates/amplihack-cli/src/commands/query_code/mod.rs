@@ -266,10 +266,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let previous_graph = std::env::var_os("AMPLIHACK_GRAPH_DB_PATH");
         let previous_kuzu = std::env::var_os("AMPLIHACK_KUZU_DB_PATH");
-        let original_cwd = std::env::current_dir().unwrap();
         let legacy_store = dir.path().join(".amplihack").join("kuzu_db");
         std::fs::create_dir_all(&legacy_store).unwrap();
-        std::env::set_current_dir(dir.path()).unwrap();
+        let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
         unsafe {
             std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH");
             std::env::remove_var("AMPLIHACK_KUZU_DB_PATH");
@@ -278,7 +277,7 @@ mod tests {
         let notice = code_graph_compatibility_notice_for_project(dir.path(), None)
             .expect("legacy store notice lookup must work");
 
-        std::env::set_current_dir(original_cwd).unwrap();
+        drop(cwd);
         match previous_graph {
             Some(value) => unsafe { std::env::set_var("AMPLIHACK_GRAPH_DB_PATH", value) },
             None => unsafe { std::env::remove_var("AMPLIHACK_GRAPH_DB_PATH") },

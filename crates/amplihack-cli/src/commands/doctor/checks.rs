@@ -158,11 +158,32 @@ pub fn check_recipe_runner_available() -> (bool, String) {
             (
                 false,
                 format!(
-                    "recipe-runner-rs not found on PATH: {}",
+                    "{}: {}",
+                    probe_failure_headline("recipe-runner-rs", &e),
                     truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
                 ),
             )
         }
+    }
+}
+
+/// The headline for a `--version` probe that never produced an exit status.
+///
+/// Issue #1424. This `Err` arm covers three unrelated events — the file is not
+/// there, the probe timed out, and the host would not give amplihack a process
+/// to run it in — and it used to print "not found on PATH" over all three.
+/// `doctor` exists to tell the user what is wrong; a check that names absence
+/// when the machine is merely out of processes sends them to reinstall
+/// something that is sitting right there.
+fn probe_failure_headline(tool: &str, error: &anyhow::Error) -> String {
+    let absent = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .is_some_and(|io| io.kind() == std::io::ErrorKind::NotFound);
+    if absent {
+        format!("{tool} not found on PATH")
+    } else {
+        format!("{tool} could not be run")
     }
 }
 
@@ -196,7 +217,8 @@ pub fn check_tmux_installed() -> (bool, String) {
             (
                 false,
                 format!(
-                    "tmux not found: {}",
+                    "{}: {}",
+                    probe_failure_headline("tmux", &e),
                     truncate_chars_with_notice(&msg, MAX_ERROR_LEN)
                 ),
             )
@@ -247,5 +269,40 @@ mod tests {
             matches!(settings_has_amplihack_hooks(&dir_at_path), Some(Err(_))),
             "a present-but-unreadable path must map to Some(Err(_))"
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Issue #1424: a probe that could not run is not proof of absence.
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn a_missing_file_is_reported_as_not_on_path() {
+        let error = anyhow::Error::new(std::io::Error::from(std::io::ErrorKind::NotFound))
+            .context("spawning the probe");
+        assert_eq!(
+            probe_failure_headline("recipe-runner-rs", &error),
+            "recipe-runner-rs not found on PATH"
+        );
+    }
+
+    #[test]
+    fn a_host_out_of_processes_is_not_reported_as_not_on_path() {
+        // EAGAIN from fork: the file may be perfectly present. Saying it is
+        // not on `$PATH` sends the reader after an install problem that does
+        // not exist -- issue #1424.
+        let error = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::EAGAIN))
+            .context("spawning the probe");
+        let headline = probe_failure_headline("recipe-runner-rs", &error);
+        assert!(
+            !headline.contains("not found"),
+            "must not claim absence: {headline}"
+        );
+        assert_eq!(headline, "recipe-runner-rs could not be run");
+    }
+
+    #[test]
+    fn a_timeout_is_not_reported_as_not_on_path() {
+        let error = anyhow::anyhow!("command timed out after 2s");
+        assert!(!probe_failure_headline("tmux", &error).contains("not found"));
     }
 }

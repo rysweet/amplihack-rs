@@ -248,15 +248,15 @@ steps:
       SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
-      # step-03's provider-metadata helpers (derive_local_tracking_id, emit_local_metadata,
-      # sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
+      # step-03's provider-metadata helpers (select_github_tracking_issue, derive_local_tracking_id,
+      # emit_local_metadata, sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
       # They were extracted, not trimmed: this brick is at its 400-line budget and the rule's
       # remedy for a full brick is extraction (scripts/check-brick-budget.sh), which is how the
       # room for the #1361 claim check below was bought.
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_tracking.sh" ] && { T="$c/amplifier-bundle/tools/workflow_issue_tracking.sh"; break; }; done
       [ -n "$T" ] || { echo "ERROR: issue tracking helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/workflow_issue_tracking.sh" >&2; exit 2; }
-      . "$T"
-      REF_ISSUE_NUM=""
+      . "$T"; . "$(dirname "$T")/workflow_body_file.sh"  # write_body_file: body to a file for --body-file (#1570)
+      REF_ISSUE_NUM=""  # AzDO only; GitHub: select_github_tracking_issue (#1595)
       if [[ "$TASK_DESC" =~ AB#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"
       elif [[ "$TASK_DESC" =~ \#([0-9]+) ]]; then REF_ISSUE_NUM="${BASH_REMATCH[1]}"; fi
       [ -n "$REF_ISSUE_NUM" ] && ! [[ "$REF_ISSUE_NUM" =~ ^[0-9]+$ ]] && REF_ISSUE_NUM=""
@@ -268,24 +268,13 @@ steps:
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "[skip] not a git repo — using local tracking" >&2; emit_local_metadata; exit 0; fi
       case "$HOST_TYPE" in
       github)
-        if [ -n "$REF_ISSUE_NUM" ]; then EXISTING_URL=$(timeout 60 gh issue view "$REF_ISSUE_NUM" --json url --jq '.url // ""' 2>/dev/null || echo ''); [ -n "$EXISTING_URL" ] && { printf '%s\n' "$EXISTING_URL"; exit 0; }; fi
-        # DE-DUPLICATION GUARD (#1420). The previous guard asked GitHub's SEARCH INDEX for
-        # `${ISSUE_TITLE:0:100}` restricted to `--state open`. For a title that begins with a
-        # filesystem path that prefix is cut mid-token, carries an unbalanced `(` and contains
-        # slashes the index tokenises differently from the stored title, so it silently matched
-        # nothing and a SECOND issue was created for the same task 27 minutes after the first —
-        # followed by a second worktree, branch and PR. The decision now lives in
-        # amplifier-bundle/tools/workflow_issue_dedup_check.sh, which lists issues directly (no
-        # index), matches on the deterministic task key written into ISSUE_BODY below, falls back
-        # to normalised-title comparison for issues predating the key, covers ALL states, and logs
-        # its outcome in BOTH directions. Extraction, not compression: this brick is at budget.
-        D=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_dedup_check.sh" ] && { D="$c/amplifier-bundle/tools/workflow_issue_dedup_check.sh"; break; }; done
-        TASK_KEY=""
-        if [ -n "$D" ]; then FOUND_URL=$(bash "$D" --task-description "$TASK_DESC" --title "$ISSUE_TITLE" --repo-path "$REPO_PATH") || true; [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; TASK_KEY=$(bash "$D" --print-key --task-description "$TASK_DESC" 2>/dev/null || echo ''); else echo "WARNING: issue de-duplication helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — creating a tracking issue without a duplicate check (issue #1420)" >&2; fi
-        ISSUE_BODY=$(printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n%s\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" "${TASK_KEY:+<!-- amplihack-task-key: ${TASK_KEY} -->}")
+        GH_TRACKING=$(select_github_tracking_issue) && { printf '%s\n' "$GH_TRACKING"; exit 0; }
+        SEARCH_Q="${ISSUE_TITLE:0:100}"; if [ -n "$SEARCH_Q" ]; then FOUND_URL=$(timeout 60 gh issue list --state open --search "$SEARCH_Q" --json url --jq '.[0].url // ""' 2>/dev/null || echo ''); [ -n "$FOUND_URL" ] && { printf '%s\n' "$FOUND_URL"; exit 0; }; fi
+        ISSUE_BODY_FILE=$(umask 077; mktemp); trap 'rm -f -- "$ISSUE_BODY_FILE"' EXIT
+        printf '## Task Description\n%s\n\n## Requirements\n%s\n\n## Acceptance Criteria\n- [ ] All explicit requirements met\n- [ ] Tests passing\n- [ ] Philosophy compliant\n- [ ] Documentation updated\n\n## Classification\nGenerated via default-workflow recipe\n' "$TASK_DESC" "$SANITIZED_ISSUE_REQS" | write_body_file "$ISSUE_BODY_FILE"
         LABEL_NAME="workflow:default"
         timeout 30 gh label create "$LABEL_NAME" --color "0366d6" --description "Created by default-workflow recipe" 2>/dev/null || true
-        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body "$ISSUE_BODY" "$@" 2>&1; }
+        gh_create_issue() { timeout 60 gh issue create --title "$ISSUE_TITLE" --body-file "$ISSUE_BODY_FILE" "$@" 2>&1; }
         try_gh_create() { GH_ISSUE_RC=0; GH_ISSUE_OUTPUT=$(gh_create_issue --label "$LABEL_NAME") || GH_ISSUE_OUTPUT=$(gh_create_issue) || GH_ISSUE_RC=$?; }
         # Rate-limit-aware issue creation: a temporarily-exhausted GraphQL quota must not abort the run. On a
         # rate limit (not auth error) wait for the AUTHORITATIVE `gh api rate_limit` reset (adaptive, no fixed cap), then retry; 401s never retried.

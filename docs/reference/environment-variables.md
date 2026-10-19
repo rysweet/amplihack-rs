@@ -43,14 +43,17 @@ All environment variables read or written by `amplihack` during a launch (`ampli
   - [AMPLIHACK_BLARIFY_MODE](#amplihack_blarify_mode)
   - [AMPLIHACK_NO_UPDATE_CHECK](#amplihack_no_update_check)
   - [AMPLIHACK_PARITY_TEST](#amplihack_parity_test)
+  - [AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE](#amplihack_force_recipe_runner_downgrade)
   - [AMPLIHACK_SKIP_AUTO_INSTALL](#amplihack_skip_auto_install)
   - [AMPLIHACK_SKIP_MMDC](#amplihack_skip_mmdc)
   - [AMPLIHACK_TEST_FAKE_LATEST_VERSION](#amplihack_test_fake_latest_version)
+  - [RECIPE_RUNNER_ANCESTRY_REPO](#recipe_runner_ancestry_repo)
   - [External LiteLLM gateway variables](#external-litellm-gateway-variables)
   - [AMPLIHACK_TOPIC_NAME](#amplihack_topic_name)
   - [AMPLIHACK_PROJECT_ID](#amplihack_project_id)
   - [CI](#ci)
   - [UV_TOOL_BIN_DIR](#uv_tool_bin_dir)
+  - [IS_SANDBOX](#is_sandbox)
 - [Signal channel variables](#signal-channel-variables)
   - [AMPLIHACK_SIGNAL_REUSE_ROLLING_GROUP](#amplihack_signal_reuse_rolling_group)
   - [AMPLIHACK_SIGNAL_ROLLING_GROUP_ID](#amplihack_signal_rolling_group_id)
@@ -68,52 +71,90 @@ These variables are injected into every child process launched by `amplihack`. T
 **Type:** string
 **Allowed values:** `claude` | `copilot` | `codex` | `amplifier` (case-insensitive, exact match after trim)
 **Default:** `copilot`
-**Set by:** `EnvBuilder::with_agent_binary()` (as a back-compat read-through cache)
+**Set by:** `EnvBuilder::with_launched_agent_binary()` (a launcher, tagged `session:<cli>`) and `EnvBuilder::with_resolved_agent_binary()` (`recipe run`, tagged by where its answer came from); `EnvBuilder` has no method that exports a bare name
 **Read by:** `amplihack_utils::agent_binary::resolve()` (precedence step 1)
 
 Identifies which CLI binary the current session should use when spawning new AI sessions. As of the workflow runtime-isolation contract, this variable is an explicit override and read-through cache, not the only routing source. The shared resolver consults:
 
-1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat)
-2. `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field (canonical workflow runtime state)
-3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (legacy fallback only)
+1. `AMPLIHACK_AGENT_BINARY` env var (explicit override; CI/testing/back-compat), unless tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>`. It wins over a session marker naming a different CLI, and `amplihack recipe run` / `amplihack agent-binary` print one stderr line naming the marker it overrode.
+2. A session marker exported by the hosting CLI (`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`, ...). A value tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may be the server's copy of whatever started the server; `recipe run` says so when the server holds it.
+3. `<repo>/.claude/runtime/launcher_context.json` `launcher` field (persisted, possibly by another session)
 4. Built-in default: **`copilot`**
+
+`amplihack recipe run` resolves once at entry and exports the result to the
+recipe runner. Only a result from layer 1 is exported untagged, as an
+instruction. A result from the built-in default is exported with
+`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`, and one from a session
+marker or a launcher context with `AMPLIHACK_AGENT_BINARY_SOURCE=session:<binary>`;
+see
+[Active Agent Binary](./active-agent-binary.md#resolving-once-for-a-whole-recipe-run).
+A command started with `tmux new-session` does not see the caller's session
+markers: tmux gives it the server's global environment, which holds the
+markers of whatever started the server. `setsid` and `nohup` keep the
+caller's environment, so they need no hand-off.
+`$(amplihack agent-binary --shell)` prints an inline `env` prefix that removes
+every session marker and sets both variables (#1525). It belongs inside the
+double-quoted tmux command; in single quotes it expands in the new session and
+reads the server's markers. An answer read from a marker the tmux server holds
+is tagged `AMPLIHACK_AGENT_BINARY_SOURCE=tmux_server:<marker variable>`. That
+tag is not a guess: the value is honoured, and the run receiving it names the
+marker on stderr. An answer read from a launcher context crosses with an empty
+tag, as an explicit value: only `agent-binary`'s own stderr, on the caller's
+terminal, names the file, and the receiving run's log does not. See
+[Handing the binary to a detached launch](./active-agent-binary.md#handing-the-binary-to-a-detached-launch).
 
 The launcher continues to write this variable to subprocess environments so that external consumers (notably `rysweet/amplihack-recipe-runner`) that have not yet migrated to the file-based resolver continue to work. New code inside `amplihack-rs` should call `amplihack_utils::agent_binary::resolve(&cwd)` instead of reading the env var directly.
 
 #### Validation
 
-Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `..`, null bytes, whitespace, control characters, or exceed 32 bytes are **rejected**. On rejection the resolver emits a structured `tracing::warn!` and falls through to the next precedence source.
+Values are normalized (trim, lowercase) and matched against the allowlist `{claude, copilot, codex, amplifier}`. Values that contain `/`, `\`, `.`, `;`, null bytes, internal whitespace, control characters, or exceed 32 bytes are **rejected**. A rejected value is ignored, never coerced, and the next precedence source answers. The resolver logs no line of its own for it:
+
+- If the launcher context or the default then answers, the resolver's generic fallback WARN covers it (`no usable AMPLIHACK_AGENT_BINARY (unset, rejected, or a parent's default guess) …`), hidden at the default tracing filter (`RUST_LOG=warn` shows it).
+- If a session marker answers, the resolver logs only its DEBUG `agent binary resolved` line, which does not mention the variable.
+
+Whichever layer answers, `amplihack agent-binary` and `amplihack recipe run` print a notice on stderr. It names the variable and what answered in its place, and lists the allowed names. You set a CLI and got a different one, and the notice says why, as in the examples below. Neither a log line nor the notice ever contains the rejected value.
+
+Commands that launch one CLI by name, such as `amplihack copilot`, do not ask the resolver. They set the variable to the CLI they launch, for their children, tagged `AMPLIHACK_AGENT_BINARY_SOURCE=session:<cli>`, and remove every other CLI's session markers from the child. The tag matters because a tmux server copies the environment of whatever starts it: untagged, the launcher's value outranked every session marker, so a Claude Code session in a pane of a server started from a Copilot session ran its recipe steps under copilot. See [Active Agent Binary](./active-agent-binary.md#what-amplihack-exports-is-tagged).
 
 ```sh
 # Start a Copilot session (the new default)
 amplihack copilot
 
 # Inside hooks, recipe steps, sub-agents:
-echo $AMPLIHACK_AGENT_BINARY
-# copilot
+echo $AMPLIHACK_AGENT_BINARY $AMPLIHACK_AGENT_BINARY_SOURCE
+# copilot session:copilot
 
 # Explicit override (CI, testing, manual selection)
 AMPLIHACK_AGENT_BINARY=claude amplihack recipe run smart-orchestrator -c task_description="..."
 
-# Invalid values are rejected and the resolver falls through
-AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack copilot
-# warn: rejected AMPLIHACK_AGENT_BINARY (failed allowlist); falling back to runtime launcher context
+# An invalid value is ignored and the next layer answers. Here, with no
+# session marker and no launcher context, that is the default, and the
+# notice on stderr says why:
+AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot, and no agent session marker was found). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (default)
+
+# The same value inside a Copilot CLI session: its session marker answers,
+# and the notice names the marker:
+COPILOT_CLI=1 AMPLIHACK_AGENT_BINARY="../bin/evil" amplihack agent-binary
+# amplihack: resolved the agent binary to 'copilot' (AMPLIHACK_AGENT_BINARY is set but is not one of amplifier, claude, codex or copilot; COPILOT_CLI, the copilot session marker in this environment, answered). Set AMPLIHACK_AGENT_BINARY to one of amplifier, claude, codex or copilot to choose an agent CLI.
+# copilot (session_marker)
 ```
 
 #### Why the precedence order
 
-- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged.
-- **Runtime-root launcher context second** keeps durable workflow state outside the task worktree while preserving routing for descendants that inherit `AMPLIHACK_RUNTIME_ROOT`.
-- **Legacy `.claude/runtime` fallback third** preserves older repositories long enough to migrate without treating task-worktree runtime state as canonical.
+- **Env var first** preserves the established escape hatch for CI/testing and lets external recipe-runner builds keep working unchanged. A value amplihack exported itself is not an instruction, and is skipped while its tag still describes it: a default-layer guess (`AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`), or a description of a session (`session:<binary>`), which ranks with the session markers instead.
+- **Session marker second** names the CLI actually hosting the process, so it outranks any file on disk (#1342).
+- **`.claude/runtime/launcher_context.json` third** is persisted, per-directory, last-writer-wins state that may describe a different session. It is consulted only while fresh and never in or above a world-writable or foreign-owned directory (#1335). A file in such a directory is not read, but `recipe run` and `agent-binary` name it when the answer was inferred.
 - **`copilot` default last** matches the project's current preferred runtime and removes the prior implicit `claude` assumption.
 
 **Why it exists:** Recipe runner, hooks, and sub-agents are agent-agnostic and must call back into whatever tool the user actually launched. See [Active Agent Binary](./active-agent-binary.md) for the full algorithm and [Agent Binary Routing](../concepts/agent-binary-routing.md) for the architectural rationale.
 
-**Python parity:** Python skill scripts (`amplifier-bundle/skills/pm-architect/scripts/agent_query.py`, `delegate_response.py`) implement the **same** precedence and **same** allowlist; `agent_query.py::detect_runtime()` is the canonical Python entry point and is reused by `delegate_response.py`. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` re-implements the same algorithm with a `case` statement allowlist. The active binary is therefore consistent across Rust, Python, and shell code paths.
+**Other implementations:** there is no Python implementation in this repository. The shell helper at `amplifier-bundle/skills/migrate/scripts/migrate.sh` (`detect_cli`) checks the env var (with its default-guess tag) and the session markers itself, then a parent-process-chain check, and asks `amplihack agent-binary` for the launcher context and the default (#1525). The Rust resolver is authoritative where they differ.
 
-**Existing `claude` users:** repos that already have `.claude/runtime/launcher_context.json` with `"launcher": "claude"` continue to resolve to `claude` during migration — the legacy fallback wins over the new `copilot` default when runtime-root state and the env override are absent. New workflow code must write launcher context under `AMPLIHACK_RUNTIME_ROOT`, not under the task worktree.
+**Existing `claude` users:** a fresh `.claude/runtime/launcher_context.json` with `"launcher": "claude"` resolves to `claude` when no env override or session marker answers first.
 
-**Effect on startup self-update prompt:** A non-empty `AMPLIHACK_AGENT_BINARY` is also recognised by the startup self-update prompt as a subprocess-safe signal — when the variable is set, the prompt is skipped and the skip-line `amplihack: skipping update check (subprocess-safe / no TTY)` is emitted to stderr. This means delegated agent invocations never block on the prompt, even at an interactive TTY. See [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
+**No effect on interactivity ([#1525](https://github.com/rysweet/amplihack-rs/issues/1525)):** the variable names an agent CLI and nothing else. It does not turn on `amplihack copilot`'s subprocess-safe defaults (reflection off, no launcher staging, no power-steering prompt, `--allow-all-tools --allow-all-paths`), and it does not skip the startup self-update prompt. Both used to treat any non-empty value as "a delegated subprocess", so anyone who exported it to choose a CLI had every interactive launch degraded. A delegated caller marks itself with `AMPLIHACK_NONINTERACTIVE=1` or `--subprocess-safe`; `amplihack recipe run` sets the former for every step, and the steps' stdio is piped as well. See [`COPILOT_SUBPROCESS_SAFE.md`](../COPILOT_SUBPROCESS_SAFE.md) and [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md).
 
 ---
 
@@ -561,6 +602,12 @@ Amplifier.
 Use `AMPLIHACK_AGENT_BINARY` for runtime routing. It is validated, propagated,
 and documented as the active agent selector.
 
+Do not unset `CLAUDECODE` before calling `amplihack recipe run`. Recipe run
+reads it, with the other session markers, to decide which agent CLI every step
+uses, and only then removes it from the runner's environment. Stripping it
+first could leave no marker at all, and the steps then ran under the `copilot`
+default from inside a Claude Code session (issue #1481).
+
 ```sh
 # The parent value is ignored for the recipe-runner child.
 CLAUDECODE=1 amplihack recipe run smart-orchestrator \
@@ -803,7 +850,7 @@ inherited environment and a reservation; this variable pins it explicitly.
 
 Essential keys are always exported regardless of the budget. Non-essential keys
 are filled smallest-first until the budget is exhausted; any key dropped from the
-mirror is still delivered to the runner via the `--context-file` path for
+mirror is still delivered to the runner as a `--set` argument for
 `{{placeholder}}` substitution.
 
 ```sh
@@ -914,44 +961,166 @@ Standard Unix home directory. Used to resolve `~/.amplihack`, `~/.npm-global`, a
 ### AMPLIHACK_DEFAULT_MODEL
 
 **Type:** string
-**Default:** unset — amplihack passes **no** `--model` at all
-**Used by:** `build_command()` in `launch.rs`
+**Default:** `claude-opus-5[1m]` (a concrete model id, not an alias; issue #1421). An empty or whitespace-only value passes no `--model`.
+**Used by:** `configured_default_model()` in `commands/launch/command.rs`
 
-Pins the `--model` flag passed to Claude-compatible tools. When it is unset (or
-set to an empty / whitespace-only value), amplihack puts no model on the command
-line and the tool applies its own current default — which also lets the `"model"`
-in your `~/.claude/settings.json` take effect.
+Sets the `--model` amplihack passes to Claude-compatible tools: `claude`,
+`rusty`, `rustyclawd` and `amplifier`. `amplihack copilot` and `amplihack codex`
+ignore it.
 
-There is deliberately no built-in default (issue #1421). A model alias hardcoded
-by amplihack is resolved by the tool, whose version amplihack does not control;
-one such alias resolved to a retired model id and every agent step failed with a
-404 naming a model the user had never chosen.
+| `AMPLIHACK_DEFAULT_MODEL` | What amplihack adds |
+|---|---|
+| unset, or not valid UTF-8 | `--model claude-opus-5[1m]` |
+| a model id | `--model` with that id, trimmed of surrounding whitespace; a dotted Claude id is [rewritten to hyphens](#dotted-claude-model-ids) |
+| empty or whitespace-only | nothing; the tool picks its own default |
+
+Because amplihack passes `--model` unless this variable is empty, the `"model"`
+in `~/.claude/settings.json` only takes effect when you set
+`AMPLIHACK_DEFAULT_MODEL=` (empty).
+
+When any [External LiteLLM gateway variable](#external-litellm-gateway-variables)
+is set, this variable is not read: the model is the required
+`AMPLIHACK_LITELLM_MODEL`, passed unchanged. It is never normalised, because the
+gateway routes on the exact name.
+
+**Why the default is a concrete id:** an alias such as `opus[1m]` is resolved by
+the tool, and amplihack does not control the tool's version. On one install that
+alias resolved to the retired `claude-opus-4-1-20250805`, and every agent step
+failed with a 404 naming a model the user had never chosen. A concrete id either
+works or fails naming the exact string amplihack sent.
 
 ```sh
-AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude
-# Passes: claude --model sonnet --dangerously-skip-permissions
+# Pin a model for every Claude launch
+AMPLIHACK_DEFAULT_MODEL=claude-sonnet-4-5 amplihack claude
+# amplihack adds: --model claude-sonnet-4-5
+
+# Let Claude Code (and ~/.claude/settings.json) choose
+AMPLIHACK_DEFAULT_MODEL= amplihack claude
+# amplihack adds no --model
 ```
 
-When amplihack injects the flag it says so on stderr, naming the model and this
-variable as its source, so a later "model not found" is traceable:
+Whenever amplihack adds `--model`, it prints one line to stderr naming the model
+and where it came from, so a later "model not found" error can be traced back to
+it:
 
-```
-amplihack: passing `--model sonnet` to `claude` (from AMPLIHACK_DEFAULT_MODEL).
-Unset AMPLIHACK_DEFAULT_MODEL to let claude choose its own default model.
+```text
+amplihack: passing `--model claude-sonnet-4-5` to `claude` (from AMPLIHACK_DEFAULT_MODEL). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
 ```
 
-If the user supplies `--model` explicitly on the command line, this variable is
-ignored entirely — the user-supplied value is used as-is.
+With the variable unset or not valid UTF-8, the source reads
+`amplihack's built-in default`.
+
+On the LiteLLM gateway path the line names `AMPLIHACK_LITELLM_MODEL`, both as
+the source and as the variable to change, because this variable is not read
+there:
+
+```text
+amplihack: passing `--model gateway-model` to `claude` (from AMPLIHACK_LITELLM_MODEL). Set AMPLIHACK_LITELLM_MODEL to change it. AMPLIHACK_DEFAULT_MODEL is not read while a LiteLLM gateway variable is set.
+```
+
+#### Dotted Claude model ids
+
+GitHub Copilot CLI writes Claude model ids with a dot (`claude-opus-5.5`).
+Claude model ids use hyphens (`claude-opus-5-5`; see Anthropic's
+[models overview](https://docs.anthropic.com/en/docs/about-claude/models/overview)),
+and the variable is only read for Claude-compatible launches. So amplihack
+rewrites a dotted Claude id before passing it. Issue #1527 records what Claude
+Code did with the dotted form when it was reported; this page does not repeat
+it, because it depends on the Claude Code version.
 
 ```sh
-# User-supplied --model takes priority; AMPLIHACK_DEFAULT_MODEL is ignored
-AMPLIHACK_DEFAULT_MODEL=sonnet amplihack claude --model haiku
-# Passes: claude --model haiku --dangerously-skip-permissions
+AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude
+# amplihack adds: --model claude-opus-5-5[1m]
 ```
 
-See [Launch Flag Injection](./launch-flag-injection.md) for the complete rules
-governing how `--model` and other flags are injected into the subprocess
-command line.
+The stderr line names both spellings:
+
+```text
+amplihack: passing `--model claude-opus-5-5[1m]` to `claude` (from AMPLIHACK_DEFAULT_MODEL, normalised from `claude-opus-5.5[1m]`: Claude model ids use hyphens, not dots). Set AMPLIHACK_DEFAULT_MODEL to override it, or to an empty value to let claude choose its own default model.
+```
+
+The rewrite applies only to a value (after trimming) of exactly the form
+`claude-<family>-<major>.<minor><suffix>`, where:
+
+- `<family>` is one or more lowercase ASCII letters
+- `<major>` and `<minor>` are one or more ASCII digits
+- `<suffix>` is empty or starts with `[` or `-`
+
+Only the dot between `<major>` and `<minor>` changes, to a hyphen. The suffix is
+copied as typed. Matching is case-sensitive and exact, with no aliases and no
+fuzzy matching, so the result always names the same model you set.
+
+| Rewritten | What amplihack adds |
+|---|---|
+| `claude-opus-5.5` | `--model claude-opus-5-5` |
+| `claude-sonnet-4.5` | `--model claude-sonnet-4-5` |
+| `claude-opus-5.5[1m]` | `--model claude-opus-5-5[1m]` |
+| `claude-opus-4.1-20250805` | `--model claude-opus-4-1-20250805` |
+
+Any other value is passed as-is:
+
+| Passed as-is | Why |
+|---|---|
+| `claude-opus-5-5`, `claude-opus-5-5[1m]` | already hyphenated |
+| `claude-opus-5[1m]` | no minor version (this is the built-in default) |
+| `opus[1m]`, `sonnet` | aliases, not full ids |
+| `gpt-5.1`, `gemini-2.5-pro` | not Claude ids |
+| `claude-3.5-sonnet` | the version comes before the family |
+| `claude-opus-5.5.1` | the suffix starts with `.`, not `[` or `-` |
+| `Claude-Opus-5.5` | not lowercase |
+
+Only the `--model` argument is rewritten. The launched tool inherits
+`AMPLIHACK_DEFAULT_MODEL` exactly as you set it. A nested amplihack launch reads
+it again and produces the same rewrite, unless that launch has an explicit
+`--model` or uses the LiteLLM gateway.
+
+#### Explicit `--model`
+
+A `--model <id>` or `--model=<id>` on the `amplihack` command line overrides
+this variable. It is forwarded exactly as typed and is never rewritten, even
+when dotted.
+
+When an explicit value is a dotted Claude id of the form described above,
+amplihack forwards it unchanged and prints one warning to stderr naming the
+hyphenated spelling. The launched tool may not report the problem itself
+(issue #1527), so without this line the launch could give no sign of it:
+
+```text
+amplihack: warning: passing `--model claude-opus-5.5` to `claude` as typed, but Claude model ids use hyphens, not dots. Use `--model claude-opus-5-5`.
+```
+
+The warning gives only the spelling, which amplihack can vouch for. It does not
+describe what the launched tool does with the dotted id, because that depends on
+the tool and its version.
+
+There is no warning for any other explicit value, and none in these cases:
+
+- `amplihack copilot` and `amplihack codex`. The dotted spelling is GitHub
+  Copilot CLI's own, so `amplihack copilot --model claude-opus-4.5` is correct
+  as typed.
+- The LiteLLM gateway path, because the gateway routes on the exact name and a
+  dot in it may be correct.
+
+Neither the rewrite nor the warning looks at `ANTHROPIC_BASE_URL`, so both
+apply whatever endpoint the launched tool talks to. If yours is a proxy that
+serves the dotted spelling, pass it as an explicit `--model`. amplihack
+forwards that as typed, and you can ignore the warning.
+
+```sh
+# The explicit --model wins over the variable and reaches claude unchanged
+AMPLIHACK_DEFAULT_MODEL='claude-opus-5.5[1m]' amplihack claude --model claude-sonnet-4-5
+# claude receives: --model claude-sonnet-4-5
+
+# Forwarded unchanged, with the warning above
+amplihack claude --model claude-opus-5.5
+
+# Works
+amplihack claude --model 'claude-opus-5-5[1m]'
+```
+
+For the other flags amplihack adds to the launch command, such as
+`--dangerously-skip-permissions`, and the order of the assembled command line,
+see [Launch Flag Injection](./launch-flag-injection.md).
 
 ---
 
@@ -1058,8 +1227,8 @@ Permanently disables the update-check paths for every `amplihack` invocation:
 
 Unlike `AMPLIHACK_NONINTERACTIVE`, this variable suppresses only the update
 checks and has no effect on bootstrap prompts or interactive behaviour. Unlike
-the subprocess-safe skip signals (`CI`, `AMPLIHACK_AGENT_BINARY`,
-`AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, non-TTY stdin), this variable
+the subprocess-safe skip signals (`CI`, `AMPLIHACK_NONINTERACTIVE`,
+`--subprocess-safe`, non-TTY stdin), this variable
 **does not** emit the `amplihack: skipping update check (subprocess-safe / no
 TTY)` skip-line on stderr — the suppression is silent. Use this when you want
 the pre-#625 silent-skip experience.
@@ -1114,6 +1283,27 @@ expected="local"
 **Isolation contract:** `AMPLIHACK_PARITY_TEST=1` suppresses exactly one
 behaviour: the update check. It does not propagate into the child tool process,
 does not affect bootstrap logic, and does not change exit codes or stdout output.
+
+---
+
+### AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE
+
+**Type:** flag
+**Values:** exactly `1` enables it; any other value, including `01`, `true`, `yes`, ` 1` and an empty value, is ignored
+**Used by:** launcher freshness, `amplihack install`, `scripts/install-pinned-recipe-runner.sh`, `claude-plugin/bin/install-runtime`
+
+Allows the recipe-runner installers to replace an installed `recipe-runner-rs`
+that is newer than, diverged from, or not comparable with the pinned revision.
+Without it they keep the installed runner and warn with both revisions. A
+forced install logs both SHAs and "downgrade forced", and clears the launcher's
+skip record. The shell installer also accepts `--force`. No other variable
+name is recognised as an override.
+
+```sh
+AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 amplihack install
+```
+
+See: [Installer downgrade guard](recipe-runner-validation.md#installer-downgrade-guard).
 
 ---
 
@@ -1244,6 +1434,29 @@ See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-u
 
 ---
 
+### RECIPE_RUNNER_ANCESTRY_REPO
+
+**Type:** repository URL or path (test-only)
+**Values:** a local repository path, or an `https://` or `file://` URL; any
+other value, including one starting with `-`, is rejected
+**Used by:** `scripts/install-pinned-recipe-runner.sh` and
+`claude-plugin/bin/install-runtime`
+
+Replaces both ancestry sources of the shell installers' downgrade guard,
+Cargo's git database and the fetch from
+`https://github.com/rysweet/amplihack-recipe-runner`, so that the test suite
+can order revisions against a local fixture repository. A rejected value is
+never passed to Git; the guard classifies the installed runner as
+`Unverifiable` and keeps it. It does not change where the runner is installed
+from. The Rust installers do not read it; their tests pass the fixture
+directly.
+
+**Production deployments should not set this variable.**
+
+See: [Installer downgrade guard](recipe-runner-validation.md#installer-downgrade-guard).
+
+---
+
 ### CI
 
 **Type:** flag (presence-based)
@@ -1290,6 +1503,33 @@ See: [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-u
 **Used by:** `bootstrap.rs` when installing `amplifier`
 
 Override the directory where `uv tool install` places the `amplifier` binary. Defaults to `~/.local/bin`.
+
+---
+
+### IS_SANDBOX
+
+**Type:** `1` to allow; `0` to refuse
+**Used by:** every `claude --dangerously-skip-permissions` amplihack starts
+(`amplihack claude`, recipe agent steps, the orchestration runner, the fleet
+reasoner)
+
+Claude Code refuses `--dangerously-skip-permissions` as root unless
+`IS_SANDBOX=1` is set. It accepts only the exact value `1`. When amplihack runs
+as root:
+
+- `IS_SANDBOX=1`, or a truthy `CLAUDE_CODE_BUBBLEWRAP`, is passed through.
+- `yes`, `true`, `on` and `y` are passed to `claude` as `1`.
+- `0` or any other value is never overridden, and amplihack fails before
+  starting `claude`.
+- Unset in a detected container (`CLAUDE_CODE_REMOTE=true`, `/.dockerenv`,
+  `/run/.containerenv`, or a container runtime in `/proc/1/cgroup`; the marker
+  files count only outside WSL, which includes Docker Desktop containers on
+  Windows, and only when `/` is PID 1's root, so not in a `chroot`): amplihack sets `IS_SANDBOX=1` on the `claude`
+  child only and prints a one-line notice on stderr.
+- Unset with no container detected: amplihack fails before starting `claude`.
+
+Not root: ignored. See
+[Agent steps fail as root](../howto/troubleshoot-recipe-execution.md#agent-steps-fail-as-root-with---dangerously-skip-permissions-cannot-be-used-with-root).
 
 ---
 
@@ -1384,5 +1624,5 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration
 - [amplihack install](./install-command.md) — Variables read during installation
-- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_AGENT_BINARY`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt
+- [Startup Self-Update Prompt — Subprocess-Safe Skip](../features/startup-update-prompt-subprocess-safe.md) — How `CI`, `AMPLIHACK_NONINTERACTIVE`, `--subprocess-safe`, and non-TTY stdin each suppress the `Update now? [y/N] (5s timeout):` prompt, and why `AMPLIHACK_AGENT_BINARY` does not (#1525)
 - [Manage Tool Update Notifications](../howto/manage-tool-update-checks.md) — npm pre-launch tool update notice (separate code path)

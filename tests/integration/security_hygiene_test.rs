@@ -26,7 +26,7 @@
 //!
 //! ```bash
 //! cargo build                                  # compile the binary first
-//! cargo test --test security_hygiene           # run only these tests
+//! cargo test -p amplihack --test integration security_hygiene::           # run only these tests
 //! ```
 
 use std::fs;
@@ -900,6 +900,12 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         "dangerously-skip-permissions",
         // Public git revision pin for the authoritative RustyClawd build.
         "e03613a731ec2243590ccbb2b50db4dcf83ca69b",
+        // Public recipe-runner revision pin (recipe-runner.rev), used as a
+        // test fixture by runner_validation and runner_ancestry.
+        "4d5187eaf95836a549e6e68725f8f853d0dc7034",
+        // Made-up, obviously non-secret commit ids used by runner pin tests.
+        "0123456789abcdef0123456789abcdef01234567",
+        "b4a82e7000000000000000000000000000000000",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.
@@ -981,8 +987,18 @@ fn tc_sec_21_fleet_status_error_does_not_expose_home_path() {
     let bin = amplihack_bin();
     require_binary!(bin);
 
+    // A throwaway HOME under /tmp (not $TMPDIR, which may itself live under
+    // /home): the developer's real ~/.amplihack and AMPLIHACK_HOME (an
+    // install stamp from some other build, say) must not leak their
+    // diagnostics, and their paths, into what this test inspects.
+    let home = tempfile::Builder::new()
+        .tempdir_in("/tmp")
+        .expect("tempdir for HOME under /tmp");
+
     // Point AZLIN_PATH to a non-existent file to trigger an error.
     let output = Command::new(&bin)
+        .env("HOME", home.path())
+        .env_remove("AMPLIHACK_HOME")
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "status"])
         .env(

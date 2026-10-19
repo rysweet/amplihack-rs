@@ -3,11 +3,11 @@
 //! These tests define the helper-path and runtime asset-resolution parity
 //! contract that the Rust port must preserve after PR #641 / v0.9.80.
 
-use std::ffi::OsString;
 use std::path::Path;
-use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use amplihack_cli::{Cli, Commands, resolve_bundle_asset, runtime_assets};
+
+use crate::support::quiet_process::{child_set_var, in_quiet_process};
 
 #[derive(Clone, Copy)]
 enum ExpectedKind {
@@ -45,23 +45,16 @@ const ISSUE_634_ASSETS: &[AssetCase] = &[
     },
 ];
 
-fn env_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
+/// A temp runtime root that HOME and AMPLIHACK_HOME point at. The variables
+/// are set in-process because the code under test reads them there, so every
+/// test that builds one runs in its own process (`in_quiet_process`) and the
+/// shared `cli_integration` process never changes its environment.
 struct IsolatedRuntimeRoot {
-    _lock: MutexGuard<'static, ()>,
     temp: tempfile::TempDir,
-    prev_home: Option<OsString>,
-    prev_amplihack_home: Option<OsString>,
 }
 
 impl IsolatedRuntimeRoot {
     fn new() -> Self {
-        let lock = env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().expect("create isolated runtime root");
         for case in ISSUE_634_ASSETS {
             let path = temp.path().join(case.rel_path);
@@ -77,19 +70,9 @@ impl IsolatedRuntimeRoot {
             }
         }
 
-        let prev_home = std::env::var_os("HOME");
-        let prev_amplihack_home = std::env::var_os("AMPLIHACK_HOME");
-        unsafe {
-            std::env::set_var("HOME", temp.path());
-            std::env::set_var("AMPLIHACK_HOME", temp.path());
-        }
-
-        Self {
-            _lock: lock,
-            temp,
-            prev_home,
-            prev_amplihack_home,
-        }
+        child_set_var("HOME", temp.path());
+        child_set_var("AMPLIHACK_HOME", temp.path());
+        Self { temp }
     }
 
     fn expected_path(&self, rel_path: &str) -> std::path::PathBuf {
@@ -101,89 +84,92 @@ impl IsolatedRuntimeRoot {
     }
 }
 
-impl Drop for IsolatedRuntimeRoot {
-    fn drop(&mut self) {
-        unsafe {
-            match &self.prev_home {
-                Some(value) => std::env::set_var("HOME", value),
-                None => std::env::remove_var("HOME"),
-            }
-            match &self.prev_amplihack_home {
-                Some(value) => std::env::set_var("AMPLIHACK_HOME", value),
-                None => std::env::remove_var("AMPLIHACK_HOME"),
-            }
-        }
-    }
-}
-
 #[test]
 fn issue_634_named_assets_resolve_to_expected_runtime_paths() {
-    let runtime = IsolatedRuntimeRoot::new();
+    in_quiet_process(
+        module_path!(),
+        "issue_634_named_assets_resolve_to_expected_runtime_paths",
+        || {
+            let runtime = IsolatedRuntimeRoot::new();
 
-    for case in ISSUE_634_ASSETS {
-        let resolved = resolve_bundle_asset::resolve_named_asset(case.name)
-            .unwrap_or_else(|err| panic!("resolve {}: {err:#}", case.name));
-        let expected = runtime.expected_path(case.rel_path);
+            for case in ISSUE_634_ASSETS {
+                let resolved = resolve_bundle_asset::resolve_named_asset(case.name)
+                    .unwrap_or_else(|err| panic!("resolve {}: {err:#}", case.name));
+                let expected = runtime.expected_path(case.rel_path);
 
-        assert_eq!(
-            resolved, expected,
-            "{} must resolve to {}",
-            case.name, case.rel_path
-        );
-        match case.kind {
-            ExpectedKind::File => assert!(
-                resolved.is_file(),
-                "{} must resolve to a file: {}",
-                case.name,
-                resolved.display()
-            ),
-            ExpectedKind::Dir => assert!(
-                resolved.is_dir(),
-                "{} must resolve to a directory: {}",
-                case.name,
-                resolved.display()
-            ),
-        }
-    }
+                assert_eq!(
+                    resolved, expected,
+                    "{} must resolve to {}",
+                    case.name, case.rel_path
+                );
+                match case.kind {
+                    ExpectedKind::File => assert!(
+                        resolved.is_file(),
+                        "{} must resolve to a file: {}",
+                        case.name,
+                        resolved.display()
+                    ),
+                    ExpectedKind::Dir => assert!(
+                        resolved.is_dir(),
+                        "{} must resolve to a directory: {}",
+                        case.name,
+                        resolved.display()
+                    ),
+                }
+            }
+        },
+    );
 }
 
 #[test]
 fn issue_634_legacy_runtime_assets_module_matches_named_asset_contract() {
-    let runtime = IsolatedRuntimeRoot::new();
-    let roots = vec![runtime.temp.path().to_path_buf()];
-    let asset_map = runtime_assets::asset_relative_paths();
+    in_quiet_process(
+        module_path!(),
+        "issue_634_legacy_runtime_assets_module_matches_named_asset_contract",
+        || {
+            let runtime = IsolatedRuntimeRoot::new();
+            let roots = vec![runtime.temp.path().to_path_buf()];
+            let asset_map = runtime_assets::asset_relative_paths();
 
-    for case in ISSUE_634_ASSETS {
-        assert_eq!(
-            asset_map.get(case.name).map(Vec::as_slice),
-            Some([case.rel_path].as_slice()),
-            "runtime_assets mapping for {} must match resolve-bundle-asset",
-            case.name
-        );
+            for case in ISSUE_634_ASSETS {
+                assert_eq!(
+                    asset_map.get(case.name).map(Vec::as_slice),
+                    Some([case.rel_path].as_slice()),
+                    "runtime_assets mapping for {} must match resolve-bundle-asset",
+                    case.name
+                );
 
-        let resolved = runtime_assets::resolve_asset_path(case.name, &roots)
-            .unwrap_or_else(|err| panic!("runtime_assets resolve {}: {err:#}", case.name));
-        assert_eq!(
-            resolved,
-            runtime.expected_path(case.rel_path),
-            "runtime_assets {} must resolve to the same compatibility path",
-            case.name
-        );
-    }
+                let resolved = runtime_assets::resolve_asset_path(case.name, &roots)
+                    .unwrap_or_else(|err| panic!("runtime_assets resolve {}: {err:#}", case.name));
+                assert_eq!(
+                    resolved,
+                    runtime.expected_path(case.rel_path),
+                    "runtime_assets {} must resolve to the same compatibility path",
+                    case.name
+                );
+            }
+        },
+    );
 }
 
 #[test]
 fn issue_634_resolve_bundle_asset_cli_accepts_all_parity_asset_names() {
-    let _runtime = IsolatedRuntimeRoot::new();
+    in_quiet_process(
+        module_path!(),
+        "issue_634_resolve_bundle_asset_cli_accepts_all_parity_asset_names",
+        || {
+            let _runtime = IsolatedRuntimeRoot::new();
 
-    for case in ISSUE_634_ASSETS {
-        assert_eq!(
-            resolve_bundle_asset::run_cli(case.name),
-            0,
-            "resolve-bundle-asset {} must succeed from AMPLIHACK_HOME",
-            case.name
-        );
-    }
+            for case in ISSUE_634_ASSETS {
+                assert_eq!(
+                    resolve_bundle_asset::run_cli(case.name),
+                    0,
+                    "resolve-bundle-asset {} must succeed from AMPLIHACK_HOME",
+                    case.name
+                );
+            }
+        },
+    );
 }
 
 #[test]
@@ -219,17 +205,23 @@ fn issue_634_unknown_asset_error_lists_supported_parity_asset_names() {
 
 #[test]
 fn issue_634_helper_path_does_not_resolve_to_removed_python_helper() {
-    let runtime = IsolatedRuntimeRoot::new();
-    let resolved = resolve_bundle_asset::resolve_named_asset("helper-path")
-        .expect("helper-path must resolve from isolated runtime root");
+    in_quiet_process(
+        module_path!(),
+        "issue_634_helper_path_does_not_resolve_to_removed_python_helper",
+        || {
+            let runtime = IsolatedRuntimeRoot::new();
+            let resolved = resolve_bundle_asset::resolve_named_asset("helper-path")
+                .expect("helper-path must resolve from isolated runtime root");
 
-    assert_eq!(
-        resolved,
-        runtime.expected_path("amplifier-bundle/bin/multitask-orchestrator.sh")
-    );
-    assert!(
-        !path_contains_component(&resolved, "orch_helper.py"),
-        "helper-path must not regress to the removed Python orch_helper.py path"
+            assert_eq!(
+                resolved,
+                runtime.expected_path("amplifier-bundle/bin/multitask-orchestrator.sh")
+            );
+            assert!(
+                !path_contains_component(&resolved, "orch_helper.py"),
+                "helper-path must not regress to the removed Python orch_helper.py path"
+            );
+        },
     );
 }
 

@@ -40,6 +40,7 @@ const LAUNCH_PATH_MODULES: &[&str] = &[
     "commands/rustyclawd.rs",
     "bootstrap.rs",
     "freshness.rs",
+    "rust_toolchain.rs",
 ];
 
 fn src(relative: &str) -> PathBuf {

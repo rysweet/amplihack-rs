@@ -26,8 +26,9 @@ bash: line 3: cd: /tmp/worktrees/feat-auth-1234: No such file or directory
 
 ## Solution: Resilient `cd` Fallback Chain
 
-Steps 19c, 20b, and 21 use a three-tier directory resolution instead of a
-hard-fail `cd`:
+Steps 19c and 21 use a three-tier directory resolution instead of a hard-fail
+`cd`. Step 20b, which commits, skips instead; see
+[Steps that commit never fall back](#steps-that-commit-never-fall-back-issue-1528).
 
 ```
 WORKTREE_SETUP_WORKTREE_PATH  (preferred — run in the worktree)
@@ -53,12 +54,57 @@ WARNING: WORKTREE_SETUP_WORKTREE_PATH=/tmp/worktrees/feat-auth-1234 not found, f
 | 16 (review) | workflow-pr-review | **Hard-fail** | Needs worktree files to review |
 | 18c (enforce-verdict) | workflow-pr-review | **Hard-fail** | Verifies work artifacts in worktree |
 | **19c (zero-BS)** | workflow-pr-review | **Resilient** | Read-only checks; can use repo root |
-| **20b (push-cleanup)** | workflow-finalize | **Resilient** | Push and cleanup; branch is remote |
+| checkpoint-after-implementation | workflow-tdd | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
+| checkpoint-after-review-feedback | workflow-refactor-review | **Hard-fail** | Stages and commits; only at the top of the linked task worktree (issue #1528) |
+| 15 (commit-push) | workflow-publish | **Hard-fail** | Stages, commits and pushes; only at the top of the linked task worktree (issue #1528) |
+| **20a (artifact-guard)** | workflow-finalize | **Skips** | Runs the runtime preflight; never in `REPO_PATH` (issue #1528) |
+| **20b (push-cleanup)** | workflow-finalize | **Skips** | Stages, commits and pushes; never in `REPO_PATH` (issue #1528) |
 | **21 (pr-ready)** | workflow-finalize | **Resilient** | Final status check; reads git remote |
 
 Early-stage steps (15, 16, 18c) retain their `${WORKTREE_SETUP_WORKTREE_PATH:?}`
 hard-fail guards. These steps genuinely require the worktree to be present — the
 files under review live there.
+
+### Steps that commit never fall back (issue #1528)
+
+`REPO_PATH` is the checkout the run was launched from, often a repository's
+main checkout. A step that stages or commits there can stage the run worktrees
+under its `worktrees/` directory. Steps 20a and 20b therefore run only in the
+task worktree. When `WORKTREE_SETUP_WORKTREE_PATH` is empty or not a directory,
+or is a directory that is not the top of a linked worktree (for example the
+main checkout), each prints one warning on stderr and exits `0`:
+
+```
+WARNING: step-20a worktree path gone; skipping the artifact guard — never runs in REPO_PATH (#1528)
+WARNING: step-20a worktree path is not a linked worktree; skipping the artifact guard — never runs in REPO_PATH (#1528)
+WARNING: step-20b worktree path gone; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
+WARNING: step-20b worktree path is not a linked worktree; skipping cleanup commit/push — never commits in REPO_PATH (#1528)
+```
+
+The recipe still completes, as #647 requires. See
+[Workflow Runtime Artifacts: lifecycle integration](../reference/workflow-runtime-artifacts.md#lifecycle-integration).
+
+The phase-1 commit sites apply the same check but stop the recipe instead of
+skipping, because a skipped checkpoint or publish commit would lose work
+without notice. These are `checkpoint-after-implementation` in
+`workflow-tdd.yaml`, `checkpoint-after-review-feedback` in
+`workflow-refactor-review.yaml` and `step-15-commit-push` in
+`workflow-publish.yaml`. None of them falls back to `REPO_PATH`. When
+`WORKTREE_SETUP_WORKTREE_PATH` is empty the `${WORKTREE_SETUP_WORKTREE_PATH:?}`
+expansion stops the step; when the `cd` fails the step stops; and when the
+directory is not the top of a linked worktree (the main checkout, or a
+subdirectory of a worktree) the step prints one error and exits `1` before it
+stages anything:
+
+```
+ERROR: checkpoint-after-implementation: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+ERROR: checkpoint-after-review-feedback: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+ERROR: step-15-commit-push: <dir> is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)
+```
+
+`workflow-worktree` always produces a linked worktree (issue #858), so a
+correctly propagated worktree path passes the check. Step 15 additionally keeps
+its refusal to commit on `main` or `master`.
 
 ### Fallback Pattern
 
@@ -68,7 +114,7 @@ files under review live there.
 if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: WORKTREE_SETUP_WORKTREE_PATH=${WORKTREE_SETUP_WORKTREE_PATH:-unset} not found, falling back to cwd ($(pwd))" >&2; fi
 ```
 
-**Multi-line form** (used in `workflow-finalize.yaml` where LOC headroom exists):
+**Multi-line form** (for recipes with line headroom):
 
 ```bash
 if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then
@@ -82,14 +128,16 @@ fi
 ```
 
 Both forms are semantically identical. The compact form is required because
-`workflow-pr-review.yaml` is at 399 of its 400-line brick limit; the multi-line
-form is used in `workflow-finalize.yaml` where LOC headroom exists.
+`workflow-pr-review.yaml` is at 399 of its 400-line brick limit. Neither form
+belongs in a step that stages or commits; see
+[Steps that commit never fall back](#steps-that-commit-never-fall-back-issue-1528).
 
 ## Configuration
 
 No configuration required. The resilient fallback is always active for steps
-19c, 20b, and 21. There is no way to force a hard-fail on these steps — the
-old behavior was a bug, not a feature.
+19c and 21, and steps 20a and 20b always skip when the worktree is gone. There
+is no way to force a hard-fail on these steps — the old behavior was a bug, not
+a feature.
 
 ## Security
 

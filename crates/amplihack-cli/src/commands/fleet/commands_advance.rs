@@ -20,8 +20,11 @@ pub(super) fn run_advance(
     };
 
     println!("\nPhase 2: Reasoning and executing actions...");
-    let backend = NativeReasonerBackend::detect("auto")?;
-    let mut reasoner = FleetSessionReasoner::new(azlin, backend);
+    let mut reasoner = cli_reasoner(
+        azlin,
+        NativeReasonerBackend::detect("auto")?,
+        &mut std::io::stderr(),
+    )?;
     let mut decisions = Vec::<SessionDecisionRecord>::new();
     let mut executed = Vec::<SessionExecutionRecord>::new();
 

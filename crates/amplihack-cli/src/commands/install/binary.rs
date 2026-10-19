@@ -1,6 +1,8 @@
 //! Binary resolution and deployment for amplihack-hooks.
 
+use super::InstallMode;
 use super::paths::{find_binary, home_dir, is_executable};
+use super::version_stamp::{VersionRelation, relation};
 use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,23 +15,8 @@ use std::path::{Path, PathBuf};
 /// 4. `~/.local/bin/amplihack-hooks`
 /// 5. `~/.cargo/bin/amplihack-hooks`
 pub(super) fn find_hooks_binary() -> Result<PathBuf> {
-    // Step 1: env var override
-    if let Some(val) = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") {
-        let p = PathBuf::from(&val);
-        if p.exists() {
-            return Ok(p);
-        }
-        bail!("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH is set to {p:?} but that path does not exist");
-    }
-
-    // Step 2: sibling of current exe
-    if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent()
-    {
-        let candidate = dir.join("amplihack-hooks");
-        if is_executable(&candidate) {
-            return Ok(candidate);
-        }
+    if let Some(found) = hooks_override_or_sibling()? {
+        return Ok(found);
     }
 
     // Step 3: PATH lookup — finds system-wide installs (e.g. /usr/local/bin) even
@@ -53,6 +40,22 @@ pub(super) fn find_hooks_binary() -> Result<PathBuf> {
          cargo install --git https://github.com/rysweet/amplihack-rs amplihack-hooks\n  \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to its location."
     )
+}
+
+/// Steps 1-2 of [`find_hooks_binary`]: the operator's override, else the
+/// hooks binary shipped next to this executable (whose version is ours).
+fn hooks_override_or_sibling() -> Result<Option<PathBuf>> {
+    if let Some(val) = std::env::var_os("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH") {
+        let p = PathBuf::from(&val);
+        if p.exists() {
+            return Ok(Some(p));
+        }
+        bail!("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH is set to {p:?} but that path does not exist");
+    }
+    Ok(std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(HOOKS_BIN)))
+        .filter(|candidate| is_executable(candidate)))
 }
 
 /// Validate that a binary path contains no shell metacharacters that could cause
@@ -88,10 +91,59 @@ pub(super) fn validate_hook_command_string(cmd: &str) -> Result<()> {
     Ok(())
 }
 
+/// Issue #1526: an implicit re-stage fills an empty slot, and replaces an
+/// occupied one only when `running` is strictly newer than the install stamp.
+pub(super) fn implicit_deploy_allowed(
+    dst_exists: bool,
+    running: &str,
+    stamp: Option<&str>,
+) -> bool {
+    !dst_exists || stamp.is_some_and(|s| relation(running, s) == VersionRelation::Newer)
+}
+
+/// Whether this install may write `src` to `dst`.
+fn may_deploy(mode: InstallMode, stamp: Option<&str>, src: &Path, dst: &Path) -> bool {
+    // Cheapest first. symlink_metadata: a dangling symlink still occupies
+    // `dst`. A source that already is the destination is a no-op copy.
+    mode == InstallMode::Explicit
+        || implicit_deploy_allowed(dst.symlink_metadata().is_ok(), crate::VERSION, stamp)
+        || same_file(src, dst)
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    matches!((a.canonicalize(), b.canonicalize()), (Ok(a), Ok(b)) if a == b)
+}
+
+/// Issue #1526: an implicit copy that failed left the installed binary in
+/// place, so the stamp must not record it at this build's version.
+fn kept_after_failed_copy(mode: InstallMode, dst: &Path) -> bool {
+    mode == InstallMode::Implicit && dst.symlink_metadata().is_ok()
+}
+
+const HOOKS_BIN: &str = "amplihack-hooks";
+const SELF_BIN: &str = "amplihack";
+const RESOLVER_BIN: &str = "amplihack-asset-resolver";
+
+/// Whether `path` is one of the binaries [`deploy_binaries`] writes into
+/// `bin_dir`.
+pub(super) fn is_deployed_binary(path: &Path, bin_dir: &Path) -> bool {
+    path.parent() == Some(bin_dir)
+        && path.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+            [HOOKS_BIN, SELF_BIN, RESOLVER_BIN]
+                .iter()
+                .any(|b| n == crate::path_conflicts::binary_filename(b))
+        })
+}
+
 /// Copy the Rust binaries to `~/.local/bin` with 0o755 perms.
 /// Emits a PATH advisory if `~/.local/bin` is not in `$PATH`.
-/// Returns the list of deployed paths for the manifest.
-pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
+/// Returns the paths for the manifest, the hooks binary always first (even
+/// when an implicit re-stage kept the installed one), and the installed
+/// binaries an implicit re-stage kept.
+pub(super) fn deploy_binaries(
+    mode: InstallMode,
+    stamp: Option<&str>,
+) -> Result<(Vec<PathBuf>, Vec<PathBuf>)> {
     use super::filesystem::deploy_binary;
 
     let home = home_dir()?;
@@ -99,15 +151,31 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     fs::create_dir_all(&local_bin)
         .with_context(|| format!("failed to create {}", local_bin.display()))?;
 
-    let hooks_src = find_hooks_binary()?;
-    let hooks_dst = local_bin.join("amplihack-hooks");
-    deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
-        format!(
-            "failed to deploy {} to {}",
-            hooks_src.display(),
-            hooks_dst.display()
-        )
-    })?;
+    let hooks_dst = local_bin.join(HOOKS_BIN);
+    // Issue #1526: the stamp check vouches only for binaries at this build's
+    // version. An implicit re-stage therefore replaces an installed hooks
+    // binary only with the override or the sibling of this executable; one
+    // found elsewhere on PATH may only fill an empty slot.
+    let hooks_src = match mode {
+        InstallMode::Explicit => Some(find_hooks_binary()?),
+        InstallMode::Implicit => match hooks_override_or_sibling()? {
+            None if hooks_dst.symlink_metadata().is_err() => Some(find_hooks_binary()?),
+            found => found,
+        },
+    };
+    let mut kept = Vec::new();
+    match hooks_src {
+        Some(hooks_src) if may_deploy(mode, stamp, &hooks_src, &hooks_dst) => {
+            deploy_binary(&hooks_src, &hooks_dst).with_context(|| {
+                format!(
+                    "failed to deploy {} to {}",
+                    hooks_src.display(),
+                    hooks_dst.display()
+                )
+            })?;
+        }
+        _ => kept.push(hooks_dst.clone()),
+    }
 
     let mut deployed = vec![hooks_dst.clone()];
 
@@ -119,21 +187,38 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
     // is recoverable — but aborting before the asset restage leaves the
     // framework stale, which is the regression we must avoid.
     if let Ok(self_exe) = std::env::current_exe() {
-        if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
+        let self_src = resolve_running_binary_source(&self_exe);
+        let self_dst = local_bin.join(SELF_BIN);
+        if !may_deploy(mode, stamp, &self_src, &self_dst) {
+            kept.push(self_dst);
+        } else if let Some(self_dst) = deploy_self_binary(&local_bin, &self_exe) {
             deployed.push(self_dst);
+        } else if !same_file(&self_src, &self_dst) && kept_after_failed_copy(mode, &self_dst) {
+            kept.push(self_dst);
         }
 
-        // Resolve the real source so the asset-resolver is looked up next to
-        // the freshly-installed binary, not the deleted-marker path.
-        let self_src = resolve_running_binary_source(&self_exe);
+        // The real source (`self_src`) is used so the asset-resolver is looked
+        // up next to the freshly-installed binary, not the deleted-marker path.
+        // Issue #1526: as for hooks, a PATH copy may only fill an empty slot
+        // during an implicit re-stage.
+        let resolver_dst = local_bin.join(RESOLVER_BIN);
+        let path_lookup_allowed =
+            mode == InstallMode::Explicit || resolver_dst.symlink_metadata().is_err();
         let resolver_src = self_src
             .parent()
-            .map(|dir| dir.join("amplihack-asset-resolver"))
+            .map(|dir| dir.join(RESOLVER_BIN))
             .filter(|candidate| is_executable(candidate))
-            .or_else(|| find_binary("amplihack-asset-resolver"));
+            .or_else(|| {
+                path_lookup_allowed
+                    .then(|| find_binary(RESOLVER_BIN))
+                    .flatten()
+            });
         if let Some(resolver_src) = resolver_src {
-            let resolver_dst = local_bin.join("amplihack-asset-resolver");
-            if resolver_src != resolver_dst {
+            if resolver_src == resolver_dst {
+                // Already in place.
+            } else if !may_deploy(mode, stamp, &resolver_src, &resolver_dst) {
+                kept.push(resolver_dst);
+            } else {
                 match deploy_binary(&resolver_src, &resolver_dst) {
                     Ok(()) => deployed.push(resolver_dst),
                     Err(e) => {
@@ -142,6 +227,9 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
                             resolver_dst.display()
                         );
                         tracing::warn!("amplihack-asset-resolver deploy skipped: {e:#}");
+                        if kept_after_failed_copy(mode, &resolver_dst) {
+                            kept.push(resolver_dst);
+                        }
                     }
                 }
             }
@@ -171,7 +259,7 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
         println!("{warning}");
     }
 
-    Ok(deployed)
+    Ok((deployed, kept))
 }
 
 /// Resolve the on-disk path to copy the running amplihack binary FROM.
@@ -188,7 +276,7 @@ pub(super) fn deploy_binaries() -> Result<Vec<PathBuf>> {
 /// return that path. Otherwise return `current_exe` unchanged so the caller's
 /// deleted-source handling in [`super::filesystem::deploy_binary`] still applies
 /// (it treats a missing source with an already-present destination as a no-op).
-pub(super) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
+pub(crate) fn resolve_running_binary_source(current_exe: &Path) -> PathBuf {
     const DELETED_MARKER: &str = " (deleted)";
     let raw = current_exe.to_string_lossy();
     if let Some(stripped) = raw.strip_suffix(DELETED_MARKER) {
@@ -215,7 +303,7 @@ pub(super) fn deploy_self_binary(local_bin: &Path, current_exe: &Path) -> Option
     use super::filesystem::deploy_binary;
 
     let self_src = resolve_running_binary_source(current_exe);
-    let self_dst = local_bin.join("amplihack");
+    let self_dst = local_bin.join(SELF_BIN);
     // Same-file no-op: the binary is already deployed at the destination.
     if self_src == self_dst {
         return None;
@@ -241,6 +329,26 @@ pub(super) fn path_conflict_warning_after_install(
         let Some(resolution) = report.resolution(binary_name) else {
             continue;
         };
+        // The npx / pnpm dlx / bunx shim running this install shadows
+        // ~/.local/bin only until that command exits, and the install already
+        // says so (#1480). Judge the PATH the user is left with instead:
+        // whatever remains once it is gone.
+        let is_transient = |path: &std::path::Path| {
+            super::stale_wrappers::npm_launcher_path(path)
+                == Some(super::stale_wrappers::NpmLauncherKind::Transient)
+        };
+        let without_shims;
+        let resolution = if is_transient(&resolution.resolved.path) {
+            let Some(remaining) =
+                resolution.without_candidates(|candidate| is_transient(&candidate.path))
+            else {
+                continue;
+            };
+            without_shims = remaining;
+            &without_shims
+        } else {
+            resolution
+        };
 
         if resolution.is_shadowed_by_earlier_path_entry {
             let Some(preferred) = resolution.preferred_user_candidate.as_ref() else {
@@ -265,6 +373,19 @@ fn append_shadow_warning(
     resolution: &crate::path_conflicts::BinaryResolution,
     preferred_path: &std::path::Path,
 ) {
+    // Issue #1496: a persistent launcher for our own npm wrapper (`npm
+    // install -g`, a project dependency) is not a stale or unknown program,
+    // but it does decide which binary `amplihack` runs. Say so plainly.
+    if binary_name == "amplihack" && is_persistent_npm_launcher(&resolution.resolved.path) {
+        warning.push_str(&format!(
+            "  ⚠️  `amplihack` at {} is the npm launcher for this package (e.g. `npm install -g @rysweet/amplihack-rs`) and comes before {} on PATH.\n",
+            resolution.resolved.path.display(),
+            preferred_path.display()
+        ));
+        append_npm_launcher_guidance(warning);
+        return;
+    }
+
     if binary_name == "amplihack" && is_python_script(&resolution.resolved.path) {
         warning.push_str(&format!(
             "  ⚠️  A Python `amplihack` script at {} shadows the Rust binary at {}.\n",
@@ -301,6 +422,28 @@ fn append_shadow_warning(
     ));
 }
 
+fn is_persistent_npm_launcher(path: &std::path::Path) -> bool {
+    super::stale_wrappers::npm_launcher_path(path)
+        == Some(super::stale_wrappers::NpmLauncherKind::Persistent)
+}
+
+/// What a persistent launcher for our own npm wrapper means and how to prefer
+/// the `~/.local/bin` copy instead (issue #1496). Shared by the shadow and the
+/// ambiguity branches: `amplihack update` re-runs install with `~/.local/bin`
+/// moved first, so the same launcher shows up as an ambiguity there.
+fn append_npm_launcher_guidance(warning: &mut String) {
+    warning.push_str(
+        "     Through that launcher `amplihack` runs the npm wrapper and its own cached release binary, not the copy `amplihack update` maintains in ~/.local/bin.\n",
+    );
+    warning.push_str("     To use ~/.local/bin/amplihack directly, do one of the following:\n");
+    warning.push_str(
+        "       1. Remove the launcher with the package manager that installed it, e.g.  npm uninstall -g @rysweet/amplihack-rs  (a project's node_modules/.bin: remove the dependency there)\n",
+    );
+    warning.push_str(
+        "       2. Reorder PATH so ~/.local/bin comes first:  export PATH=\"$HOME/.local/bin:$PATH\"\n",
+    );
+}
+
 fn append_ambiguity_warning(
     warning: &mut String,
     binary_name: &str,
@@ -309,12 +452,35 @@ fn append_ambiguity_warning(
     warning.push_str(&format!(
         "  ⚠️  Multiple distinct `{binary_name}` binaries are on PATH:\n"
     ));
+    let mut launcher = None;
+    let mut others = false;
+    let preferred = resolution
+        .preferred_user_candidate
+        .as_ref()
+        .map(|candidate| candidate.path.as_path());
     for candidate in &resolution.canonical_candidates {
-        warning.push_str(&format!("     - {}\n", candidate.path.display()));
+        if binary_name == "amplihack" && is_persistent_npm_launcher(&candidate.path) {
+            launcher = Some(candidate.path.as_path());
+            warning.push_str(&format!(
+                "     - {}  (this package's npm launcher, e.g. `npm install -g`; not stale)\n",
+                candidate.path.display()
+            ));
+        } else {
+            others |= Some(candidate.path.as_path()) != preferred;
+            warning.push_str(&format!("     - {}\n", candidate.path.display()));
+        }
     }
-    warning.push_str(
-        "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
-    );
+    if launcher.is_some() {
+        warning.push_str("     Whichever comes first on PATH in your shell wins.\n");
+        append_npm_launcher_guidance(warning);
+    }
+    // Any other candidate may really be stale; the launcher note must not
+    // swallow that advice.
+    if launcher.is_none() || others {
+        warning.push_str(
+            "     Remove stale candidates or reorder PATH so the intended user-level install resolves first.\n",
+        );
+    }
 }
 
 /// Check whether a file is a Python script (shebang or .py extension).

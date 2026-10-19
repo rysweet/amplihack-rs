@@ -7,7 +7,52 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ## [Unreleased] — Recipe Execution Hardening
 
+### Added
+
+- **Claude login profiles (#1555)** — `amplihack profile <add|list|show|switch|remove|login|run>` and `--profile <name>` on `launch`/`claude` manage named, isolated Claude Code logins via `CLAUDE_CONFIG_DIR`. Manual only: no token vault, refresh, usage probing or auto-rotation. See `docs/howto/claude-profiles.md`.
+
+### Changed
+
+- **Saved Claude profile root (#1592)**: `amplihack profile root [<dir>]` shows or saves the profile root in `~/.amplihack/profile-root`, so cron, `tmux -d` and `env -i` find profiles without `~/.bashrc`; the first `profile add` records the root it used. An empty `AMPLIHACK_CLAUDE_PROFILE_ROOT` now counts as unset, and a non-empty value with a control character or a `..` component is now refused with `InvalidRoot`. `profile list` and `profile rotate status` now print a `root:` line first, and `profile root <dir>` refuses a value with leading or trailing whitespace. See `docs/reference/profile-command.md#profile-root`.
+
 ### Fixed
+
+- **Workflow cleanup deleted other runs' worktrees and uncommitted work
+  (#1494, #1560)** — when a run started from the main checkout, the runtime
+  artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent
+  run's task worktree; and the orphan sweep removed stale worktrees that had no
+  commits ahead of the base without checking `git status`, deleting uncommitted
+  and untracked work. On the main checkout `worktrees/` is now left in place
+  and added to `info/exclude`, and nested-worktree cleanup and its branch
+  deletion run only on a linked task worktree. The sweep and
+  `cleanup_on_failure` keep any worktree whose status is not clean, probe it
+  without taking its index lock, and treat a branch whose changes are already in
+  the base (squash or rebase merge, detected by `git merge-tree` or by patch-id) as
+  merged; archiving never recreates a branch the remote has deleted, and adding
+  `/worktrees/` never merges into an unterminated last line of `info/exclude`.
+
+- **A recipe run downgraded the install and rewrote settings (#1526)** — a
+  `cargo install --git` build of v0.18.39 reported `0.18.0`, re-staged over
+  `~/.local/bin` and rewrote `~/.claude/settings.json` with no explicit
+  install. Automatic re-stages (startup self-heal and the launch bootstrap)
+  now run in implicit mode. They never write `settings.json` (except the #202
+  repair when no amplihack hooks are registered), never replace an installed
+  binary unless the running version is newer by semver, and do nothing when
+  the running binary is older than `~/.amplihack/.installed-version`. In that
+  case they print one stderr warning naming both paths and versions.
+  `amplihack install` can still downgrade. Release tags now point at a
+  `chore(release): stamp vX` commit, or at the released commit itself for a
+  `vMAJOR.MINOR.0` release whose manifests already say X, so
+  `cargo install --tag vX` reports X. A `--rev` build of a `main` commit still
+  reports the base version; the guard covers it.
+  **Upgrade note:** automatic re-stages (self-heal, the launch bootstrap and
+  `amplihack copilot`) now also leave an existing amplihack entry in
+  `~/.copilot/config.json` alone; they no longer refresh it on a version
+  change (a selected Codex plugin is still reconciled, per #1538). Run
+  `amplihack install` to refresh it.
+  The same applies to hook events a new release adds to `settings.json`; a
+  re-stage prints a one-line warning naming the missing ones.
+  See [Self-Heal Asset Re-Stage](docs/features/self-heal-asset-restage.md#never-an-implicit-downgrade-1526).
 
 - **Artifact Guard blocked verified work over a pre-existing repository
   condition (#1422)** — the guard now distinguishes artifacts the change under

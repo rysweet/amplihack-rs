@@ -22,7 +22,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
-use toml_edit::DocumentMut;
 
 /// Timeout for tool installation commands (npm install, uv tool install).
 /// These involve network downloads and can be legitimately slow, so we allow
@@ -31,6 +30,14 @@ const INSTALL_TIMEOUT: Duration = Duration::from_secs(300);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 
 pub fn prepare_launcher(tool: &str) -> Result<()> {
+    freshness::with_provider(tool, || prepare_selected_launcher(tool))
+}
+
+pub(crate) fn prepare_codex_launcher(binary: &Path) -> Result<()> {
+    install::with_codex_binary(binary, || prepare_launcher("codex"))
+}
+
+fn prepare_selected_launcher(tool: &str) -> Result<()> {
     // SEC-WS2-02: Non-interactive mode (CI, pipes, AMPLIHACK_NONINTERACTIVE=1)
     // skips all interactive setup. The environment is assumed pre-provisioned.
     // This matches Python launcher behavior and prevents hangs in sandboxes.
@@ -45,8 +52,8 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
     check_required_tools()?;
     install::ensure_framework_installed()?;
 
-    // Best-effort: bring the recipe runner up to date with upstream HEAD.
-    // Runs on a 24h cooldown and can be disabled via
+    // Best-effort: reconcile the managed recipe runner with the bundled pin.
+    // Can be disabled via
     // AMPLIHACK_NO_FRESHNESS_CHECK=1 or the standard non-interactive guards.
     // Network failures are logged and swallowed — launch must not depend on
     // reaching GitHub.
@@ -61,7 +68,15 @@ pub fn prepare_launcher(tool: &str) -> Result<()> {
                 prepend_path(&managed_bin_dir)?;
                 persist_path_hint(&managed_bin_dir)?;
             }
-            copilot_setup::ensure_copilot_home_staged()?;
+            // Issue #1526: launching is not installing. Staging from a binary
+            // older than the install would write its older hook wrappers over
+            // the newer install's, and the user's config.json is never
+            // rewritten from here, only filled in when amplihack is absent.
+            if install::newer_install_stamp()?.is_none() {
+                copilot_setup::ensure_copilot_home_staged(
+                    copilot_setup::UserConfig::for_implicit_install(),
+                )?;
+            }
         }
         "claude" => {
             // Register amplihack as a Claude Code plugin so the agents,
@@ -356,6 +371,20 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
             // the per-candidate one sends the reader looking at the wrong
             // number.
             log_rejected_candidates(tool, &resolution);
+            // Issue #1424: `Abstain` has two shapes now, and quoting the probe
+            // budgets at a user whose binary was killed by SIGABRT names the
+            // wrong number as confidently as the old "no platform package
+            // found" named the wrong cause.
+            if let Some(detail) = resolution.resource_failure() {
+                bail!(
+                    "'{tool}' is installed and amplihack reached it — and this \
+                     host could not carry a run of it through, so nothing was \
+                     learned about the binary. This is NOT a missing or broken \
+                     install, and reinstalling will not change it.\n\n\
+                     What happened: {detail}\n\n{report}",
+                    report = resolution.rejection_report(tool, package.unwrap_or(tool)),
+                );
+            }
             bail!(
                 "Could not verify a working '{tool}' — resolution ended without a \
                  conclusive answer: a candidate did not respond within {per:?}, or \
@@ -423,6 +452,17 @@ pub fn ensure_tool_available(tool: &str, override_origin: OverrideOrigin) -> Res
         let prefix_hint = npm_prefix_dir()
             .map(|p| p.join("bin").display().to_string())
             .unwrap_or_else(|_| "~/.npm-global/bin".to_string());
+        // Issue #1424: only tell the user to install or to fix their `$PATH`
+        // when the evidence is that something is missing. If a candidate ran
+        // and died, `rejection_report` has already said so and said what to
+        // check; adding a `$PATH` and an `npm install -g` here would put the
+        // wrong instruction last, where it is read first.
+        if !resolution.install_would_help() {
+            bail!(
+                "{report}",
+                report = resolution.rejection_report(tool, package.unwrap_or(tool)),
+            );
+        }
         bail!(
             "{report}\n\
              If '{tool}' is installed somewhere amplihack did not look, add it to \
@@ -531,7 +571,7 @@ fn log_rejected_candidates(tool: &str, resolution: &Resolution) {
         tracing::info!(
             tool,
             path = %launch_target::display_untrusted_path(path),
-            reason = rejection.explain(),
+            reason = %rejection.explain(),
             "candidate rejected before install"
         );
     }
@@ -1037,19 +1077,6 @@ fn codex_home() -> Result<PathBuf> {
     Ok(home_dir()?.join(".codex"))
 }
 
-/// The one key Codex reads for approval behaviour. Issue #1453 — amplihack
-/// used to write `approval_mode`, which Codex treats exactly like a key that
-/// does not exist: accepted and ignored, with no error even for a nonsense
-/// value. `approval_policy` is validated.
-const CODEX_APPROVAL_POLICY_KEY: &str = "approval_policy";
-
-/// Codex accepts exactly `untrusted`, `on-failure`, `on-request`, `granular`,
-/// and `never` here, and rejects anything else by name. amplihack's intent for
-/// this file has always been autonomous operation with no approval prompts,
-/// and `never` is the only one of the five that means that. The old value,
-/// `"auto"`, is not one of them.
-const CODEX_APPROVAL_POLICY: &str = "never";
-
 /// Point Codex at autonomous operation by setting `approval_policy` in
 /// `$CODEX_HOME/config.toml`.
 ///
@@ -1060,47 +1087,11 @@ const CODEX_APPROVAL_POLICY: &str = "never";
 /// than a string. (TOML documents are tables at the root, so the "not a table"
 /// refusal this function used to make against JSON has no separate shape here:
 /// text that is not a table does not parse, and the parse arm refuses it.)
+#[cfg(test)]
+use toml_edit::DocumentMut;
+
 fn configure_codex() -> Result<()> {
-    let config_dir = codex_home()?;
-    fs::create_dir_all(&config_dir)
-        .with_context(|| format!("failed to create {}", config_dir.display()))?;
-    let config_path = config_dir.join("config.toml");
-
-    let mut document = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path).with_context(|| {
-            format!(
-                "refusing to overwrite unreadable existing Codex config {}",
-                config_path.display()
-            )
-        })?;
-        raw.parse::<DocumentMut>().with_context(|| {
-            format!(
-                "refusing to overwrite malformed existing Codex config {}",
-                config_path.display()
-            )
-        })?
-    } else {
-        DocumentMut::new()
-    };
-
-    match document.get(CODEX_APPROVAL_POLICY_KEY) {
-        Some(item) if item.as_str() == Some(CODEX_APPROVAL_POLICY) => return Ok(()),
-        Some(item) if item.as_str().is_none() => {
-            bail!(
-                "refusing to overwrite existing Codex config {} because its `{}` is a {}, not a string",
-                config_path.display(),
-                CODEX_APPROVAL_POLICY_KEY,
-                item.type_name()
-            );
-        }
-        _ => {}
-    }
-
-    document[CODEX_APPROVAL_POLICY_KEY] = toml_edit::value(CODEX_APPROVAL_POLICY);
-    fs::write(&config_path, document.to_string())
-        .with_context(|| format!("failed to write {}", config_path.display()))?;
-
-    Ok(())
+    amplihack_launcher::codex_config::configure(&codex_home()?, true)
 }
 
 /// Retire the file amplihack wrote to `~/.openai/codex/config.json` before
@@ -1253,14 +1244,14 @@ mod tests {
     /// for that reason.
     #[test]
     fn codex_reads_the_config_amplihack_writes() {
+        let _guard = crate::test_support::home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let Some(codex) = which("codex") else {
             eprintln!("skipping codex_reads_the_config_amplihack_writes: codex is not installed");
             return;
         };
 
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
         let previous_home = crate::test_support::set_home(temp.path());
         let previous_codex_home = std::env::var_os("CODEX_HOME");
@@ -1383,8 +1374,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         fs::write(
@@ -1404,8 +1397,6 @@ mod tests {
             raw.contains("# chosen by hand, keep it"),
             "a merge must not throw away the user's comments; got {raw}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
@@ -1414,8 +1405,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         // Not a table, and not parseable as one: TOML documents have no
@@ -1432,8 +1425,6 @@ mod tests {
                 || error.to_string().contains("refusing to overwrite"),
             "error should clearly explain malformed config preservation; got {error:#}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
@@ -1442,8 +1433,10 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         let temp = tempfile::tempdir().unwrap();
-        let previous_home = crate::test_support::set_home(temp.path());
+        let _home = crate::test_support::HomeGuard::set(temp.path());
         let config_dir = temp.path().join(".codex");
+        let _codex_home =
+            crate::test_support::EnvGuard::set([("CODEX_HOME", config_dir.to_str().unwrap())]);
         fs::create_dir_all(&config_dir).unwrap();
         let config_path = config_dir.join("config.toml");
         let original = "[approval_policy]\nsomething = \"else\"\n";
@@ -1457,8 +1450,6 @@ mod tests {
                 || error.to_string().contains("refusing to overwrite"),
             "error should clearly explain what it refused to overwrite; got {error:#}"
         );
-
-        crate::test_support::restore_home(previous_home);
     }
 
     #[test]
@@ -1907,6 +1898,62 @@ mod tests {
         assert!(
             logged.contains("/usr/local/bin/claude"),
             "an ordinary path must survive verbatim: {logged:?}"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+mod codex_preservation_contract_tests {
+    use super::*;
+    use crate::test_support::{EnvGuard, home_env_lock};
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn codex_bootstrap_preserves_explicit_scalar_and_granular_approval_policies() {
+        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("chosen-codex");
+        fs::create_dir(&target).unwrap();
+        let _env = EnvGuard::set([
+            ("HOME", dir.path().to_str().unwrap()),
+            ("CODEX_HOME", target.to_str().unwrap()),
+        ]);
+        let config = target.join("config.toml");
+        for policy in [
+            "\"on-request\"",
+            "{ reject = { sandbox_approval = true, rules = true, mcp_elicitations = true } }",
+        ] {
+            let bytes = format!(
+                "# keep my approvals\napproval_policy = {policy}\nsandbox_mode = \"read-only\"\n[profiles.mine]\nmodel = \"caller-choice\"\n[plugins.foreign]\nenabled = true\n"
+            );
+            fs::write(&config, &bytes).unwrap();
+            fs::set_permissions(&config, fs::Permissions::from_mode(0o600)).unwrap();
+            configure_codex().unwrap();
+            assert_eq!(fs::read_to_string(&config).unwrap(), bytes);
+            assert_eq!(
+                fs::metadata(&config).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+            assert!(!dir.path().join(".codex").exists());
+        }
+    }
+    #[test]
+    fn codex_bootstrap_refuses_symlink_even_when_default_is_absent() {
+        let _lock = home_env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("config.toml");
+        let outside = dir.path().join("outside.toml");
+        fs::write(&outside, "# unrelated file\n").unwrap();
+        std::os::unix::fs::symlink(&outside, &target).unwrap();
+        let _env = EnvGuard::set([("CODEX_HOME", dir.path().to_str().unwrap())]);
+        let result = configure_codex();
+        assert_eq!(fs::read_to_string(outside).unwrap(), "# unrelated file\n");
+        assert!(result.is_err());
+        assert!(
+            fs::symlink_metadata(target)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 }

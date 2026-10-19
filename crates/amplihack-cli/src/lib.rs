@@ -4,6 +4,7 @@
 //! binary discovery, environment construction, process management with signal
 //! handling, and nesting detection.
 
+pub(crate) mod agent_binary_notice;
 pub mod auto_mode_append;
 pub mod auto_mode_completion_signals;
 pub mod auto_mode_completion_verifier;
@@ -36,6 +37,10 @@ pub mod env_builder;
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
 pub mod freshness;
+mod runner_ancestry;
+mod runner_probe;
+mod runner_validation;
+pub use runner_validation::InternalCommands;
 pub mod health_check;
 pub mod install_output_contract;
 pub mod launcher;
@@ -47,6 +52,7 @@ pub(crate) mod path_conflicts;
 mod remote_cli_tests;
 pub mod resolve_bundle_asset;
 pub mod runtime_assets;
+pub(crate) mod rust_toolchain;
 pub mod rust_trial;
 pub mod self_heal;
 pub(crate) mod session_log;

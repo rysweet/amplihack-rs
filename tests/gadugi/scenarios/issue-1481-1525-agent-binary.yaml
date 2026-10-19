@@ -1,0 +1,95 @@
+name: issue-1481-1525-agent-binary
+description: >
+  Outside-in QA for issues #1481 and #1525: which agent CLI amplihack resolves,
+  what it says about the answer, and how the answer crosses a detached launch.
+  The scenario runs the real amplihack binary (via
+  tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh) under env -i with
+  a fresh HOME, from a fresh git project directory per case, with stub claude,
+  copilot and codex on PATH. It checks `amplihack agent-binary` for every layer
+  (default guess, session marker including CLAUDE_CODE_ENTRYPOINT alone,
+  AMPLIHACK_AGENT_BINARY, launcher_context.json, -w) and the stderr notice for
+  each inferred answer, including an unusable launcher_context.json and a
+  rejected value that is never echoed; the `--shell` hand-off prefix; the
+  hand-off delivering the caller's answer into an environment holding another
+  session's marker; what a `recipe run` bash step is handed; and, when tmux is
+  installed, a real detached `tmux new-session` launch into a server started
+  from a Copilot session, with and without the hand-off. The recipe-run cases
+  need recipe-runner-rs (RECIPE_RUNNER_RS_PATH or on PATH) and the detached
+  cases need tmux. The step runs the script with AMPLIHACK_1481_QA_REQUIRE_ALL=1,
+  so a case that could not run fails the scenario through the exit code (the
+  output_contains assertions document the cases; gadugi-test does not gate on
+  them). CI's
+  Install Smoke Test job installs both and runs the runner script directly,
+  with AMPLIHACK_1481_QA_REQUIRE_ALL=1, against the binary it installs; CI
+  does not run gadugi-test itself.
+version: "1.0"
+config:
+  timeout: 900000
+environment:
+  requires: []
+agents:
+  - name: cli-agent
+    type: cli
+    config: {}
+metadata:
+  tags: [cli, qa-team, agent-binary, recipe-run, tmux, regression]
+  priority: high
+  issues: ["1481", "1525"]
+steps:
+  - name: run-agent-binary-cases
+    agent: cli-agent
+    action: execute
+    params:
+      command: env AMPLIHACK_1481_QA_REQUIRE_ALL=1 tests/gadugi/run-issue-1481-1525-agent-binary-scenario.sh
+    timeout: 880000
+  - name: all-agent-binary-cases-pass
+    agent: cli-agent
+    action: validate_exit_code
+    params:
+      expected: 0
+  - name: contract-green
+    agent: cli-agent
+    action: validate_output
+    params:
+      expected: "issue 1481 1525 agent binary contract green"
+assertions:
+  - name: all-cases-passed
+    type: output_contains
+    params:
+      target: stdout
+      expected: ALL_CASES_PASSED
+  - name: default-guess-announced
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: default "
+  - name: entrypoint-marker-alone-is-claude
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: entrypoint-only-marker "
+  - name: unusable-context-named
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: malformed-context "
+  - name: hand-off-carries-the-callers-answer
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: hand-off "
+  - name: default-guess-crosses-tagged
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: hand-off-default "
+  - name: recipe-step-handed-the-guess-tagged
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: recipe-run-default "
+  - name: tmux-hand-off-delivers-the-callers-cli
+    type: output_contains
+    params:
+      target: stdout
+      expected: "PASS: tmux-with-hand-off "

@@ -123,13 +123,16 @@ steps:
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
-      cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      # Issue #1528: stage and commit only at the top of the linked task worktree; no REPO_PATH fallback.
+      # Hard-fail rather than skip: a skipped commit here would lose work silently.
+      cd -P "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: step-15-commit-push requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
         exit 1
       fi
-      # Security: refuse to commit/push on protected branches (guards REPO_PATH fallback)
+      { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: step-15-commit-push: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
+      # Security: refuse to commit/push on protected branches, even inside a linked worktree.
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
       if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-15 landed on protected branch '$_CURRENT_BRANCH' — refusing to commit. Worktree setup likely failed." >&2; exit 1; fi
       echo "=== Step 15: Commit and Push ===" >&2
@@ -160,7 +163,7 @@ steps:
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A
+      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
@@ -355,7 +358,7 @@ steps:
           ```bash
           GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"
           . "$GIT_IDENTITY_HELPER"
-          amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A
+          amplihack hygiene artifact-guard --repo . --mode pre-publish && git add -A && amplihack hygiene artifact-guard --repo . --mode pre-publish || { echo "STOP: artifact guard refused; do not commit" >&2; exit 1; }
           amplihack_prepare_git_commit_identity
           git commit -m "fix: <describe the fix found during outside-in testing>"
           git pull --rebase && git push

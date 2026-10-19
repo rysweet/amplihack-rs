@@ -1,6 +1,8 @@
 use super::*;
 
 mod binary;
+/// Issue #1570: `--context-file` and `--context-from-file`.
+pub(crate) mod context_sources;
 mod correlation;
 pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
@@ -8,6 +10,11 @@ mod failure_class;
 mod format;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+
+pub use context_sources::resolve_context_args;
+/// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
+/// it and the runner never disagree about what a usage limit is.
+pub(crate) use failure_class::{FailureClass, classify_failure_text};
 
 use execute::execute_recipe_via_rust;
 use format::format_recipe_run_result;
@@ -74,6 +81,7 @@ fn execute_recipe_via_rust_for_test(
         working_dir,
         search_dirs,
         step_timeout,
+        crate::env_builder::resolve_agent_binary_in(working_dir),
     )
 }
 
@@ -110,6 +118,53 @@ pub fn run_recipe(
     working_dir: Option<&str>,
     step_timeout: Option<u64>,
 ) -> Result<()> {
+    run_recipe_with(
+        recipe_path,
+        context_args,
+        dry_run,
+        verbose,
+        format,
+        working_dir,
+        step_timeout,
+        &RootSandboxPreflight::live(),
+        &mut io::stderr(),
+    )
+}
+
+/// Where the issue #1482 pre-flight gets the agent binary and the
+/// root-sandbox decision; injected so tests reach the call in
+/// [`run_recipe_with`] whatever uid and configuration they run under.
+pub(crate) struct RootSandboxPreflight {
+    /// Resolves the run's agent binary, with its source and the launcher
+    /// context evidence, from the working dir. Called once; the pre-flight,
+    /// the stderr notice and every step use that one answer.
+    pub(crate) agent_binary: fn(&Path) -> amplihack_utils::agent_binary::Resolution,
+    pub(crate) decision: fn() -> amplihack_utils::root_sandbox::SkipPermissionsEnv,
+}
+
+impl RootSandboxPreflight {
+    fn live() -> Self {
+        Self {
+            agent_binary: crate::env_builder::resolve_agent_binary_in,
+            decision: amplihack_utils::root_sandbox::detect,
+        }
+    }
+}
+
+/// [`run_recipe`] with the root-sandbox pre-flight's inputs injected and its
+/// output (the notice, or the refusal) written to `preflight_out`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_recipe_with(
+    recipe_path: &str,
+    context_args: &[String],
+    dry_run: bool,
+    verbose: bool,
+    format: &str,
+    working_dir: Option<&str>,
+    step_timeout: Option<u64>,
+    preflight: &RootSandboxPreflight,
+    preflight_out: &mut dyn Write,
+) -> Result<()> {
     let format = OutputFormat::parse(format)?;
     let (context, errors) = parse_context_args(context_args);
     if !errors.is_empty() {
@@ -138,6 +193,23 @@ pub fn run_recipe(
             )?;
         }
     }
+    // Issue #1481: resolve the agent binary once, from the directory the steps
+    // run in, and hand that one answer to both the #1482 pre-flight and the
+    // runner. Resolving the pre-flight's copy from the process cwd let the two
+    // disagree: it could wave through a run whose steps then launched claude
+    // as root, or refuse a run that would never have launched claude.
+    let agent_binary = (preflight.agent_binary)(&abs_working_dir);
+    if !dry_run
+        && let Err(error) = preflight_root_sandbox(
+            &recipe,
+            &agent_binary.binary,
+            &(preflight.decision)(),
+            preflight_out,
+        )
+    {
+        writeln!(preflight_out, "Error: {error}")?;
+        return Err(exit_error(1));
+    }
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     let result = match execute_recipe_via_rust(
         &validated_path,
@@ -147,6 +219,7 @@ pub fn run_recipe(
         &abs_working_dir,
         &search_dirs,
         step_timeout,
+        agent_binary,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -171,6 +244,43 @@ pub fn run_recipe(
     } else {
         Err(exit_error(1))
     }
+}
+
+/// Issue #1482: fail before the runner starts, rather than inside the first
+/// agent step, when agent steps would launch `claude
+/// --dangerously-skip-permissions` as root and Claude Code would refuse it.
+///
+/// Sub-recipe steps count as agent steps: what they run is not known here.
+///
+/// When amplihack sets `IS_SANDBOX=1` by itself, the notice is written to
+/// `notices` (stderr) once, here. The nested `amplihack claude` processes
+/// print it too, but the recipe runner keeps their stderr in temp files and
+/// shows it only when a step fails, so this is the copy the user sees.
+fn preflight_root_sandbox(
+    recipe: &RecipeDoc,
+    agent_binary: &str,
+    decision: &amplihack_utils::root_sandbox::SkipPermissionsEnv,
+    notices: &mut dyn Write,
+) -> Result<()> {
+    if agent_binary != "claude" {
+        return Ok(());
+    }
+    let launches_agents = recipe.steps.iter().any(|step| {
+        matches!(
+            super::show_validate::infer_step_type(step),
+            "agent" | "recipe"
+        )
+    });
+    if !launches_agents {
+        return Ok(());
+    }
+    decision.check().map_err(|error| {
+        anyhow::anyhow!("recipe pre-flight failed for '{}': {error}", recipe.name)
+    })?;
+    if let Some(notice) = decision.notice() {
+        writeln!(notices, "{notice}")?;
+    }
+    Ok(())
 }
 
 fn parse_context_args(context_args: &[String]) -> (BTreeMap<String, String>, Vec<String>) {
@@ -257,6 +367,8 @@ fn scalar_to_context_value(value: &Value) -> String {
 }
 
 #[cfg(test)]
+mod tests_autodrive_health_log;
+#[cfg(test)]
 mod tests_context;
 #[cfg(test)]
 mod tests_execute;
@@ -264,6 +376,8 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_root_sandbox;
 #[cfg(test)]
 mod tests_teardown;
 #[cfg(test)]

@@ -45,12 +45,14 @@
 //!   filter that stops amplihack executing its own broken install. Anyone who
 //!   can plant a binary on your `$PATH` can already run code as you.
 
-use crate::binary_finder::{PROBE_CAPTURE_LIMIT, run_capped_output_with_timeout, strip_ansi};
+use crate::binary_finder::{
+    PROBE_CAPTURE_LIMIT, run_capped_output_with_timeout, strip_ansi, truncate_chars_with_notice,
+};
 use crate::claude_native::has_placeholder_shape;
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
@@ -90,7 +92,13 @@ pub enum TargetSource {
 }
 
 /// Why a candidate is not a launch target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Deliberately **not** `Copy`: the two machine-shaped variants carry the
+/// child's own words. A verdict that says "the binary ran and was killed by
+/// SIGABRT, and here is what it printed" cannot be a bare tag, and the whole
+/// point of issue #1424 is that the bare tag was read as "nothing is
+/// installed".
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Rejection {
     /// A relative path, which no candidate may ever be.
     ///
@@ -132,6 +140,39 @@ pub enum Rejection {
     ProbeTimedOut,
     /// `--version` exited 0 but emitted no parseable semver.
     UnparseableVersion,
+    /// The binary was found, executed, and the process was killed by a signal.
+    ///
+    /// Issue #1424. This is evidence about the **run**, never about the file:
+    /// something that dies on `SIGABRT` was, by definition, present and
+    /// executable a moment earlier. Folding it into [`Self::ProbeFailed`] is
+    /// how a Copilot binary that launched and then aborted came to be reported
+    /// as a missing platform package, sending the reader after an installation
+    /// problem that did not exist.
+    ///
+    /// `stderr_tail` carries the child's own last words, sanitised — the one
+    /// piece of evidence that says *why* it died, and the piece that used to be
+    /// captured and then thrown away.
+    KilledBySignal {
+        /// The terminating signal number, as `WTERMSIG` reports it.
+        signal: i32,
+        /// The child's final stderr, ANSI- and control-stripped, folded to one
+        /// line so it cannot forge rows in the rejection report (SEC-3).
+        stderr_tail: String,
+    },
+    /// The host would not give amplihack the resources to run the probe, or
+    /// took the probe down for want of them.
+    ///
+    /// `EAGAIN` on `fork`/`clone` (the per-user process or thread limit,
+    /// `pids.max` in a cgroup), `ENOMEM`, or a child that aborted after failing
+    /// to spawn a thread and said so on stderr. Nothing was learned about the
+    /// file, so this must never buy an install: it is the same class of
+    /// evidence as [`Self::ProbeTimedOut`] and answers
+    /// [`InstallDecision::Abstain`] for the same reason.
+    ResourceExhausted {
+        /// What the host said, sanitised, including the child's stderr when
+        /// there was a child.
+        detail: String,
+    },
 }
 
 impl Rejection {
@@ -140,32 +181,121 @@ impl Rejection {
     /// Deliberately never mentions CPU architecture or platform mismatch. The
     /// failure this replaces — `Exec format error (os error 8)` — named nothing
     /// real and sent the user hunting for a hardware problem that did not exist.
-    pub fn explain(&self) -> &'static str {
+    ///
+    /// Returns an owned string because two of these verdicts quote the child
+    /// (issue #1424): a signal death is only diagnosable with the signal name
+    /// and the child's own stderr in the sentence.
+    pub fn explain(&self) -> String {
         match self {
-            Self::NotAbsolute => "not an absolute path — name the binary by full path",
-            Self::Missing => "not found (no such file, or a broken symlink)",
-            Self::NotAFile => "not a regular file",
-            Self::NotExecutable => "present but not executable by you",
-            Self::PlaceholderStub => {
-                "incomplete install — `--version` failed and the file is the \
+            Self::NotAbsolute => "not an absolute path — name the binary by full path".to_string(),
+            Self::Missing => "not found (no such file, or a broken symlink)".to_string(),
+            Self::NotAFile => "not a regular file".to_string(),
+            Self::NotExecutable => "present but not executable by you".to_string(),
+            Self::PlaceholderStub => "incomplete install — `--version` failed and the file is the \
                  small placeholder the npm package ships, not the native \
                  binary it is supposed to be replaced by"
+                .to_string(),
+            Self::Unreadable => {
+                "`--version` failed and the file could not be read to diagnose it".to_string()
             }
-            Self::Unreadable => "`--version` failed and the file could not be read to diagnose it",
-            Self::ProbeFailed => {
-                "`--version` failed — the install is incomplete or the file \
+            Self::ProbeFailed => "`--version` failed — the install is incomplete or the file \
                  cannot be executed"
-            }
-            Self::NotProbed => {
-                "not examined — resolution stopped at the probe cap or the \
+                .to_string(),
+            Self::NotProbed => "not examined — resolution stopped at the probe cap or the \
                  total probe budget before reaching it"
-            }
-            Self::ProbeTimedOut => "`--version` did not answer within the probe budget",
-            Self::UnparseableVersion => {
-                "`--version` reported no usable version, which means the \
+                .to_string(),
+            Self::ProbeTimedOut => "`--version` did not answer within the probe budget".to_string(),
+            Self::UnparseableVersion => "`--version` reported no usable version, which means the \
                  install cannot be verified"
+                .to_string(),
+            // The two sentences issue #1424 exists for. Both open by saying the
+            // binary RAN, because the reader's next move depends entirely on
+            // that: a file that executed is not a file that is missing, and no
+            // reinstall changes what happened to it.
+            Self::KilledBySignal {
+                signal,
+                stderr_tail,
+            } => {
+                let mut line = format!(
+                    "ran and was killed by {name} (signal {signal}) — it is \
+                     installed and executable, so this is NOT a missing or \
+                     incomplete install",
+                    name = signal_name(*signal),
+                );
+                if !stderr_tail.is_empty() {
+                    line.push_str(&format!("; its last stderr was: {stderr_tail}"));
+                }
+                line
             }
+            Self::ResourceExhausted { detail } => format!(
+                "the host ran out of resources, so nothing was learned about \
+                 the file — this is resource exhaustion, NOT a missing or \
+                 incomplete install: {detail}"
+            ),
         }
+    }
+
+    /// Is this verdict evidence that the install is absent or broken — the one
+    /// thing an install repairs?
+    ///
+    /// Issue #1424: the answer used to be "everything that is not a timeout",
+    /// which quietly swept in every way a *present* binary can fail to
+    /// complete a run. A candidate that executed, or that was never given the
+    /// chance to, says nothing about installation.
+    pub fn indicates_broken_install(&self) -> bool {
+        !self.is_about_the_machine()
+    }
+
+    /// Is this verdict about the host rather than the file?
+    ///
+    /// Inconclusive evidence, in the sense [`decide_install`] already uses for
+    /// [`Self::ProbeTimedOut`] and [`Self::NotProbed`]: amplihack does not know
+    /// whether a working binary is there, so it must not spend an install
+    /// deciding that it is not.
+    pub fn is_about_the_machine(&self) -> bool {
+        matches!(
+            self,
+            Self::ProbeTimedOut
+                | Self::NotProbed
+                | Self::KilledBySignal { .. }
+                | Self::ResourceExhausted { .. }
+        )
+    }
+
+    /// Is this verdict about the host's *resources* — the case where an
+    /// install is not merely unproven but provably beside the point?
+    ///
+    /// Narrower than [`Self::is_about_the_machine`], which also covers a slow
+    /// probe. These two say the binary was reached: either it ran and died, or
+    /// the host would not give it a process. Neither is repaired by installing.
+    pub fn is_resource_failure(&self) -> bool {
+        matches!(
+            self,
+            Self::KilledBySignal { .. } | Self::ResourceExhausted { .. }
+        )
+    }
+}
+
+/// The POSIX name for a terminating signal, for messages that must not print a
+/// bare number at a reader who is already stuck.
+///
+/// Public because the launch path reports child deaths too, and two spellings
+/// of "signal 6" in one product is one too many.
+pub fn signal_name(signal: i32) -> &'static str {
+    match signal {
+        1 => "SIGHUP",
+        2 => "SIGINT",
+        3 => "SIGQUIT",
+        4 => "SIGILL",
+        6 => "SIGABRT",
+        8 => "SIGFPE",
+        9 => "SIGKILL",
+        11 => "SIGSEGV",
+        13 => "SIGPIPE",
+        15 => "SIGTERM",
+        24 => "SIGXCPU",
+        25 => "SIGXFSZ",
+        _ => "unknown signal",
     }
 }
 
@@ -342,11 +472,13 @@ pub fn decide_install(
     amplihack_bin: Option<&Path>,
 ) -> InstallDecision {
     let Some(target) = resolution.target.as_ref() else {
-        // Neither a timeout nor an unexamined candidate is evidence of
+        // Neither a timeout, nor an unexamined candidate, nor a candidate that
+        // RAN and died, nor one the host refused to start is evidence of
         // absence. Everything else in the list is: Missing, NotAFile,
         // NotExecutable, NotAbsolute, PlaceholderStub, Unreadable,
         // UnparseableVersion and a non-zero probe all say "there is no working
-        // binary here", which is what an install fixes.
+        // binary here", which is what an install fixes. See
+        // [`Rejection::is_about_the_machine`].
         // Resolution stopped on the user's own override. Conclusive, but an
         // install only rewrites `amplihack_bin` — so it repairs an override
         // that points there and is pure waste for one that does not. Deciding
@@ -366,9 +498,17 @@ pub fn decide_install(
                 return InstallDecision::BrokenOverride;
             }
         }
-        if resolution.rejected.iter().any(|(_, rejection)| {
-            matches!(rejection, Rejection::ProbeTimedOut | Rejection::NotProbed)
-        }) {
+        // Issue #1424 widened this test from a two-variant `matches!` to the
+        // predicate itself. A probe that was killed by a signal, or that the
+        // host would not let run at all, is exactly as inconclusive as one that
+        // timed out — and reading it as absence is what bought an install (and
+        // printed a missing-package diagnosis) for a binary that had just
+        // executed.
+        if resolution
+            .rejected
+            .iter()
+            .any(|(_, rejection)| rejection.is_about_the_machine())
+        {
             return InstallDecision::Abstain;
         }
         return InstallDecision::InstallMissing;
@@ -565,7 +705,10 @@ pub fn resolve_from_candidates(tool: &str, candidates: &[(PathBuf, TargetSource)
             ?source,
             "candidate rejected"
         );
-        resolution.rejected.push((path.clone(), rejection));
+        // Cloned rather than moved: the two `tracing` sites below report the
+        // verdict, and since issue #1424 a verdict can carry the child's own
+        // stderr rather than being a bare tag.
+        resolution.rejected.push((path.clone(), rejection.clone()));
 
         // A user who names a specific binary and gets a broken one is told so.
         // Silently launching a different binary than the one they asked for is
@@ -735,12 +878,16 @@ fn probe_version(path: &Path, timeout: Duration) -> Result<String, Rejection> {
             extract_version(&String::from_utf8_lossy(&output.stdout))
                 .ok_or(Rejection::UnparseableVersion)
         }
-        Ok(Some(_)) => Err(label_failed_probe(path)),
+        Ok(Some(output)) => Err(label_failed_run(path, &output)),
         Ok(None) => Err(Rejection::ProbeTimedOut),
         // A spawn failure is the ENOEXEC case among others: the file is there
         // and executable but the kernel will not run it. That is a failed
-        // install, not a launch target.
-        Err(_) => Err(label_failed_probe(path)),
+        // install, not a launch target — *unless* the kernel's answer was
+        // "not right now" (issue #1424), which is a fact about the host.
+        Err(error) => Err(match resource_exhaustion_from_error(&error) {
+            Some(detail) => Rejection::ResourceExhausted { detail },
+            None => label_failed_probe(path),
+        }),
     }
 }
 
@@ -760,6 +907,144 @@ fn is_sensitive_env_name(name: &str) -> bool {
     ]
     .iter()
     .any(|marker| name.contains(marker))
+}
+
+/// Put the right words on a candidate that RAN and did not answer with a
+/// version — issue #1424.
+///
+/// The distinction this draws is the whole fix. `output.status.success()` is
+/// false for three quite different events, and the old code collapsed them
+/// into "the install is incomplete":
+///
+/// * a non-zero exit — the placeholder saying it is a placeholder, and the
+///   only one of the three an install repairs;
+/// * a death by signal — a real binary that started and was taken down;
+/// * either of those with the host's out-of-resources fingerprint on stderr.
+///
+/// A binary that executed is not a binary that is missing. Saying otherwise is
+/// what sent the reporter of #1424 hunting for a platform package that was
+/// installed the whole time.
+fn label_failed_run(path: &Path, output: &Output) -> Rejection {
+    let stderr_tail = sanitize_child_stderr(&output.stderr);
+    let exhausted = stderr_shows_resource_exhaustion(&stderr_tail);
+    match terminating_signal(&output.status) {
+        Some(signal) if exhausted => Rejection::ResourceExhausted {
+            detail: format!(
+                "`--version` was killed by {name} (signal {signal}) after the \
+                 host refused it a thread or process; its stderr said: \
+                 {stderr_tail}",
+                name = signal_name(signal),
+            ),
+        },
+        Some(signal) => Rejection::KilledBySignal {
+            signal,
+            stderr_tail,
+        },
+        // No signal: an ordinary non-zero exit. The host's fingerprint can
+        // still be on it — a launcher shim that cannot fork prints EAGAIN and
+        // exits 1 — and that is not an install problem either.
+        None if exhausted => Rejection::ResourceExhausted {
+            detail: format!("`--version` exited non-zero saying: {stderr_tail}"),
+        },
+        None => label_failed_probe(path),
+    }
+}
+
+/// The signal that killed a process, if one did.
+#[cfg(unix)]
+fn terminating_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    use std::os::unix::process::ExitStatusExt;
+    status.signal()
+}
+
+/// Windows has no terminating signals; `status.code()` always answers.
+#[cfg(not(unix))]
+fn terminating_signal(_status: &std::process::ExitStatus) -> Option<i32> {
+    None
+}
+
+/// `EAGAIN` / `ENOMEM` anywhere in a spawn failure's cause chain.
+///
+/// `EAGAIN` from `fork`/`clone` is the per-user process limit (`ulimit -u`),
+/// the cgroup `pids.max`, or `threads-max` — never a statement about the file
+/// being started. `ENOMEM` is the same shape on the memory axis. The kind check
+/// carries the platforms whose numeric `EAGAIN` is not 11 (it is 35 on the
+/// BSDs, and this module ships on macOS).
+fn resource_exhaustion_from_error(error: &anyhow::Error) -> Option<String> {
+    let io = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<std::io::Error>())?;
+    let exhausted = matches!(io.raw_os_error(), Some(libc::EAGAIN) | Some(libc::ENOMEM))
+        || matches!(
+            io.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::OutOfMemory
+        );
+    exhausted.then(|| format!("the host would not start the process: {io}"))
+}
+
+/// Does this child's stderr carry the host's out-of-resources fingerprint?
+///
+/// The reproduction in issue #1424: the Copilot native binary panicked with
+/// `failed to spawn thread: Os { code: 11, kind: WouldBlock, message:
+/// "Resource temporarily unavailable" }` and aborted, so the only evidence of
+/// `EAGAIN` reached amplihack as text on the child's stderr — which amplihack
+/// captured and threw away, then reported the run as a missing package.
+///
+/// Matching text is a weaker signal than an errno and is treated as one: it can
+/// only ever move a verdict from "the install is broken" to "the host is out of
+/// resources" for a candidate that has *already* failed, and both verdicts
+/// refuse to launch. It cannot reject a candidate that would have been
+/// accepted.
+fn stderr_shows_resource_exhaustion(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    [
+        "resource temporarily unavailable",
+        "failed to spawn thread",
+        "cannot allocate memory",
+        "os error 11",
+        "eagain",
+        "enomem",
+        "out of memory",
+        "cannot fork",
+        "fork failed",
+        "retry: resource",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+/// How many trailing stderr lines a rejected candidate is quoted with.
+const CHILD_STDERR_TAIL_LINES: usize = 4;
+/// Hard cap on the quoted stderr, in characters.
+const CHILD_STDERR_TAIL_CHARS: usize = 400;
+
+/// Fold a child's stderr into one safe, quotable line.
+///
+/// SEC-3, and the same rule as [`display_untrusted_path`]: this text is written
+/// by an arbitrary binary and lands in amplihack's own diagnosis, in
+/// amplihack's voice, at the moment the reader is deciding what to do. So
+/// escapes are stripped, every control character (newlines included) is
+/// dropped, and the result is joined with a visible separator — a child cannot
+/// forge a row in the rejection report, and cannot drive the terminal.
+///
+/// The *tail* rather than the head: a panic prints its cause last.
+fn sanitize_child_stderr(raw: &[u8]) -> String {
+    let text = String::from_utf8_lossy(raw);
+    let cleaned = strip_ansi(&text);
+    let lines: Vec<String> = cleaned
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|c| !c.is_control())
+                .collect::<String>()
+                .trim()
+                .to_string()
+        })
+        .filter(|line| !line.is_empty())
+        .collect();
+    let start = lines.len().saturating_sub(CHILD_STDERR_TAIL_LINES);
+    let tail = lines[start..].join(" | ");
+    truncate_chars_with_notice(&tail, CHILD_STDERR_TAIL_CHARS)
 }
 
 /// Who set `AMPLIHACK_{TOOL}_BINARY_PATH`, and therefore what a failing
@@ -1202,6 +1487,13 @@ impl Resolution {
                 path = display_untrusted_path(&target.path),
                 version = strip_ansi(&target.version),
             ),
+            // Issue #1424: "was found" is the word that misled, and it is only
+            // false in one case — a candidate that ran. Say what happened
+            // instead of implying absence.
+            None if self.resource_failure().is_some() => format!(
+                "amplihack found {tool} and could not get a working answer out \
+                 of it on this host. Every candidate below was considered:\n"
+            ),
             None => format!(
                 "No usable {tool} binary was found. Every candidate below was \
                  considered:\n"
@@ -1235,15 +1527,65 @@ impl Resolution {
                  budget.)\n"
             ));
         }
-        out.push_str(&format!(
-            "\nRemedy: install a complete copy of {tool}, then run amplihack \
-             again:\n  \
-             npm install -g {package}\n\
-             A package whose postinstall step was skipped leaves a small \
-             placeholder behind instead of the binary it is supposed to \
-             install.\n"
-        ));
+        // Issue #1424: the remedy must follow the evidence.
+        //
+        // A candidate that RAN and died is proof the install exists, and
+        // `npm install -g` under that verdict is a confident instruction to fix
+        // something that is not broken — the "no platform package found" this
+        // issue is about. So the install remedy is printed only when at least
+        // one candidate actually failed in a way an install repairs (or when
+        // there were no candidates at all, which is absence itself), and the
+        // machine remedy is printed whenever something failed for the host's
+        // reasons.
+        if self.resource_failure().is_some() {
+            out.push_str(&format!(
+                "\nThat is a resource problem on this host, not an install \
+                 problem: amplihack found {tool} and the host could not carry a \
+                 run of it through. Reinstalling cannot change that. Check the \
+                 machine instead:\n  \
+                 ulimit -u                        # per-user process/thread limit\n  \
+                 cat /proc/sys/kernel/threads-max # system-wide thread limit\n  \
+                 cat /sys/fs/cgroup/pids.max      # cgroup/container process limit\n  \
+                 uptime; free -m                  # load, and memory still available\n\
+                 Then re-run amplihack once the host has room.\n"
+            ));
+        }
+        if self.install_would_help() {
+            out.push_str(&format!(
+                "\nRemedy: install a complete copy of {tool}, then run amplihack \
+                 again:\n  \
+                 npm install -g {package}\n\
+                 A package whose postinstall step was skipped leaves a small \
+                 placeholder behind instead of the binary it is supposed to \
+                 install.\n"
+            ));
+        }
         out
+    }
+
+    /// The host-shaped failure this resolution hit, if it hit one.
+    ///
+    /// Issue #1424. Callers above the module — the bootstrap's `Abstain` arm —
+    /// need to tell "a candidate was slow" from "a candidate was killed", and
+    /// the two want different words at the user.
+    pub fn resource_failure(&self) -> Option<String> {
+        self.rejected
+            .iter()
+            .find(|(_, rejection)| rejection.is_resource_failure())
+            .map(|(_, rejection)| rejection.explain())
+    }
+
+    /// Would installing change anything?
+    ///
+    /// Only if some candidate failed in a way an install repairs. An empty
+    /// rejection list with no target is absence itself — nothing was even a
+    /// candidate — and keeps the install remedy.
+    pub fn install_would_help(&self) -> bool {
+        self.rejected.is_empty()
+            || self
+                .rejected
+                .iter()
+                .any(|(_, rejection)| rejection.indicates_broken_install())
     }
 }
 
@@ -1541,7 +1883,7 @@ mod tests {
             rejected: rejected
                 .iter()
                 .enumerate()
-                .map(|(i, r)| (PathBuf::from(format!("/candidate/{i}/claude")), *r))
+                .map(|(i, r)| (PathBuf::from(format!("/candidate/{i}/claude")), r.clone()))
                 .collect(),
             halted_on_user_override: None,
         }

@@ -168,9 +168,7 @@ export GITHUB_TOKEN=ghp_xxxxxxxxxxxx
 
 **Available Models** (use `/model` to see current list):
 
-- Claude Sonnet 4.5 (default)
-- Claude Sonnet 4
-- GPT-5
+Use the runtime’s current model list and configured default; availability depends on the account and installation.
 
 ### Tools & Extensions
 

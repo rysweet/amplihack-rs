@@ -1,0 +1,62 @@
+name: Restore sccache disk cache
+description: >-
+  Point sccache at a local disk cache under RUNNER_TEMP and restore it from the
+  newest Actions cache entry with the given prefix. Retries up to three times
+  with jitter when entries exist but the restore found none, which is how a
+  rate-limited (HTTP 429) restore reports, and warns when the job ends up
+  compiling cold. Needs `actions: read` on the job.
+inputs:
+  key-prefix:
+    description: Entry key prefix, ending in "-"; the save key is this plus run id and attempt.
+    required: true
+outputs:
+  cache-matched-key:
+    description: Key of the restored entry, or empty when the job builds cold.
+    value: ${{ steps.r1.outputs.cache-matched-key || steps.r2.outputs.cache-matched-key || steps.r3.outputs.cache-matched-key }}
+runs:
+  using: composite
+  steps:
+    - name: Point sccache at its disk cache
+      shell: bash
+      run: echo "SCCACHE_DIR=${{ runner.temp }}/sccache" >> "$GITHUB_ENV"
+    - id: r1
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ inputs.key-prefix }}
+    - id: g1
+      if: steps.r1.outputs.cache-matched-key == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" restore-gap "${{ inputs.key-prefix }}" 1 3
+    - id: r2
+      if: steps.g1.outputs.retry == 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ inputs.key-prefix }}
+    - id: g2
+      if: steps.g1.outputs.retry == 'true' && steps.r2.outputs.cache-matched-key == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" restore-gap "${{ inputs.key-prefix }}" 2 3
+    - id: r3
+      if: steps.g2.outputs.retry == 'true'
+      uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+      with:
+        path: ${{ runner.temp }}/sccache
+        key: ${{ inputs.key-prefix }}${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: ${{ inputs.key-prefix }}
+    - id: g3
+      if: steps.g2.outputs.retry == 'true' && steps.r3.outputs.cache-matched-key == ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: bash "${{ github.action_path }}/../../scripts/sccache-cache.sh" restore-gap "${{ inputs.key-prefix }}" 3 3

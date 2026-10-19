@@ -6,6 +6,7 @@ pub(crate) mod bundle_compat_cache;
 mod claude_commands;
 mod claude_publication;
 mod clone;
+mod codex_plugin;
 mod command_staging;
 mod copilot_plugin;
 mod directories;
@@ -23,9 +24,13 @@ mod uninstall;
 mod verification;
 pub(crate) mod version_stamp;
 
+#[cfg(all(test, unix))]
+#[path = "tests/codex_alias_fixture.rs"]
+mod codex_alias_fixture;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use binary::resolve_running_binary_source;
 use binary::{deploy_binaries, find_hooks_binary, stable_hooks_binary};
 use bundle_compat::validate_framework_bundle_compatibility;
 use clone::{download_and_extract_framework_repo, find_bundled_framework_root};
@@ -60,7 +65,47 @@ use anyhow::{Context, Result, bail};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Who asked for an install (issue #1526).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallMode {
+    /// `amplihack install` or `amplihack update`: replaces the binaries in
+    /// `~/.local/bin` whatever their version, and merges hooks into
+    /// settings.json. A deliberate downgrade goes through here.
+    Explicit,
+    /// A re-stage started by startup self-heal or the launch bootstrap. It
+    /// never writes settings.json, and replaces an installed binary only when
+    /// this build is strictly newer than the install stamp.
+    Implicit,
+}
+
 pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: bool) -> Result<()> {
+    run_install_scoped(
+        local,
+        interactive,
+        force_refresh,
+        true,
+        InstallMode::Explicit,
+    )
+}
+
+/// Repair generic assets without reconciling an unrelated optional provider.
+pub(crate) fn repair_framework_assets() -> Result<()> {
+    run_install_scoped(
+        None,
+        false,
+        false,
+        crate::freshness::codex_selected(),
+        InstallMode::Implicit,
+    )
+}
+
+fn run_install_scoped(
+    local: Option<PathBuf>,
+    interactive: bool,
+    force_refresh: bool,
+    reconcile_codex: bool,
+    mode: InstallMode,
+) -> Result<()> {
     // Run the interactive wizard if --interactive was passed.
     // The wizard produces an optional config; if None, we proceed with defaults.
     let wizard_config = interactive::maybe_run_wizard(interactive)?;
@@ -76,7 +121,7 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
         if !canonical.is_dir() {
             bail!("--local path is not a directory: {}", canonical.display());
         }
-        return local_install(&canonical, wizard_config.as_ref());
+        return local_install_scoped(&canonical, wizard_config.as_ref(), reconcile_codex, mode);
     }
 
     // Issue #675: when triggered by `amplihack update`, force_refresh=true
@@ -97,7 +142,12 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
                 bundled.root.display(),
                 bundled.origin.describe()
             );
-            return local_install(&bundled.root, wizard_config.as_ref());
+            return local_install_scoped(
+                &bundled.root,
+                wizard_config.as_ref(),
+                reconcile_codex,
+                mode,
+            );
         }
     } else {
         println!("📦 Forcing fresh framework download from upstream...");
@@ -106,7 +156,12 @@ pub fn run_install(local: Option<PathBuf>, interactive: bool, force_refresh: boo
     println!("⚠️  Bundled framework source not found, falling back to network download...");
     let temp_dir = tempfile::tempdir().context("failed to create temp dir for install")?;
     let extracted_root = download_and_extract_framework_repo(temp_dir.path())?;
-    local_install(&extracted_root, wizard_config.as_ref())?;
+    local_install_scoped(
+        &extracted_root,
+        wizard_config.as_ref(),
+        reconcile_codex,
+        mode,
+    )?;
 
     // Network-fallback hard-error: every entry in the active layout's
     // destination set must have been staged. Read the .layout marker the
@@ -245,7 +300,41 @@ fn report_preserved_entries(preserved: &[String], target: &Path) {
     );
 }
 
+/// Issue #1526: the install stamp's version when this binary is older than
+/// it (by semver), else `None`. Every implicit installer checks this first.
+pub(crate) fn newer_install_stamp() -> Result<Option<String>> {
+    Ok(version_stamp::read_installed_version_quiet()
+        .context("reading install version stamp")?
+        .filter(|installed| {
+            version_stamp::relation(crate::VERSION, installed)
+                == version_stamp::VersionRelation::Older
+        }))
+}
+
 pub(crate) fn ensure_framework_installed() -> Result<()> {
+    ensure_framework_installed_with(&mut std::io::stderr())
+}
+
+/// [`ensure_framework_installed`], writing the #1526 refusal warning to
+/// `notice` (stderr in the binary).
+pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W) -> Result<()> {
+    // Issue #1526: this bootstrap is an implicit installer too. A binary older
+    // than the installed stamp must not stage, top up commands or repair
+    // settings.json over the newer install.
+    if let Some(installed) = newer_install_stamp()? {
+        // debug: tracing writes to stdout. The user-facing warning goes to
+        // `notice`, once per process: startup self-heal has usually printed it.
+        tracing::debug!(
+            "binary {} is older than install stamp {installed}; skipping launch bootstrap",
+            crate::VERSION
+        );
+        // This calls back into `self_heal`, which depends on `install`. The
+        // cycle is deliberate: the warning shares self_heal's once-per-process
+        // flag and its AMPLIHACK_SKIP_AUTO_INSTALL check.
+        crate::self_heal::warn_implicit_downgrade_once(notice, &installed);
+        return Ok(());
+    }
+
     let staging_dir = staging_claude_dir()?;
     let staging_exists = staging_dir.exists();
     let missing = if staging_exists {
@@ -258,7 +347,7 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
     // framework updates are delivered via amplihack-rs binary updates instead.
     if framework_restage_needed(staging_exists, &missing) {
         println!("🔧 Bootstrapping amplihack framework assets...");
-        run_install(None, false, false)?;
+        repair_framework_assets()?;
     }
 
     // Issue #1344: `~/.claude/commands/amplihack/` lives outside `claude_dir`,
@@ -278,64 +367,101 @@ pub(crate) fn ensure_framework_installed() -> Result<()> {
         "amplihack-hooks binary not found. Run `amplihack install` to set up hooks, \
          or set AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH to the binary location.",
     )?;
-    let settings_path = global_settings_path()?;
-    if !hooks_registered_in_settings(&settings_path)? {
-        tracing::warn!("hooks not registered in settings.json — auto-repairing");
-        let timestamp = unix_timestamp();
-        let (settings_ok, _events) =
-            ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin)?;
-        if !settings_ok {
-            bail!(
-                "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
-                 Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
-            );
-        }
-        // Verify the repair actually worked
-        if !hooks_registered_in_settings(&settings_path)? {
-            bail!(
-                "hooks still not registered after auto-repair.\n\
-                 Run `amplihack install` manually to fix hook wiring."
-            );
-        }
-        println!("✅ Auto-repaired missing hook registrations in settings.json");
+    // Issue #1538: a selected Codex is reconciled strictly, installed or not.
+    // The Codex transaction is a no-op when current and preserves every byte
+    // on failure; an older binary never gets here (#1526 refuses it first).
+    if crate::freshness::codex_selected() {
+        let source = find_bundled_framework_root()
+            .context("bundled source required to reconcile native Codex resources")?;
+        codex_plugin::install(&source.root, &hooks_bin)
+            .context("failed native Codex reconciliation")?;
     }
+    let settings_path = global_settings_path()?;
+    match hooks_registered_in_settings(&settings_path)? {
+        HookRegistration::Registered => return Ok(()),
+        HookRegistration::Missing => {}
+        HookRegistration::Unparseable => {
+            // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
+            tracing::warn!("settings.json is not valid JSON; skipping hook auto-repair");
+            eprintln!(
+                "amplihack: warning: {} is not valid JSON; hook registrations were not \
+                 checked or repaired. Fix the file, then run `amplihack install`.",
+                paths::sanitize_path(&settings_path)
+            );
+            return Ok(());
+        }
+    }
+    tracing::warn!("hooks not registered in settings.json — auto-repairing");
+    let timestamp = unix_timestamp();
+    let (settings_ok, _events) =
+        ensure_settings_json(&settings_path, &staging_dir, timestamp, &hooks_bin)?;
+    if !settings_ok {
+        bail!(
+            "failed to configure ~/.claude/settings.json for amplihack hooks.\n\
+             Run `amplihack install` to repair, or `amplihack doctor` to diagnose."
+        );
+    }
+    // Verify the repair actually worked
+    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered {
+        bail!(
+            "hooks still not registered after auto-repair.\n\
+             Run `amplihack install` manually to fix hook wiring."
+        );
+    }
+    println!("✅ Auto-repaired missing hook registrations in settings.json");
     Ok(())
 }
 
-/// Check whether amplihack hooks are registered in `~/.claude/settings.json`.
-///
-/// Returns `true` if the settings file exists and its `hooks` section contains
-/// at least one entry referencing `amplihack-hooks` (the native binary).
-///
-/// The absent case is read off the failed read rather than a preceding
-/// `exists()` probe, matching the four sites collapsed in issue #1123. Two
-/// reasons, and the second is the one that matters: it drops a `stat` from a
-/// path that runs on every `amplihack claude` launch, and it closes the TOCTOU
-/// window where the file is created or removed between the probe and the read
-/// (a probe-then-read reports the state of the file at probe time, which is not
-/// the state it then reads). `NotFound` maps to the same `Ok(false)` the probe
-/// produced; every other error keeps the existing context message, so a
-/// present-but-unreadable settings file is still a hard error and is not
-/// silently reported as "no hooks registered".
-///
-/// One behaviour change is deliberate: `EACCES` while traversing a parent
-/// directory used to reach `exists() == false` and so `Ok(false)`, and now
-/// returns `Err`, which `ensure_framework_installed`'s `?` propagates and which
-/// fails the launch. Fail-closed is the right default for a security-relevant
-/// config we cannot read — "unreadable" is not evidence that no hooks are
-/// registered — but it is a real delta, so it is written down rather than
-/// discovered.
-fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
+/// Issue #1526: an implicit re-stage does not write `settings_path`, so an
+/// upgrade that adds a hook event leaves it out. Name what is missing on
+/// `notice` (stderr in the binary), and say nothing when nothing is. A file
+/// that is absent, unreadable or not JSON is not reported here: the launch
+/// bootstrap repairs the first and warns about the last.
+pub(super) fn warn_implicit_hook_drift<W: std::io::Write>(notice: &mut W, settings_path: &Path) {
+    let Ok(raw) = fs::read_to_string(settings_path) else {
+        return;
+    };
+    let Ok(settings) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return;
+    };
+    let missing = missing_hook_registrations(&settings);
+    if missing.is_empty() {
+        return;
+    }
+    let _ = writeln!(
+        notice,
+        "amplihack: warning: {} lacks hook registrations this version ({}) adds: {}. \
+         An automatic re-stage never edits settings.json; run `amplihack install` to add them.",
+        paths::sanitize_path(settings_path),
+        crate::VERSION,
+        missing.join(", ")
+    );
+}
+
+/// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HookRegistration {
+    Registered,
+    /// The file is absent, or parses with no amplihack hook.
+    Missing,
+    Unparseable,
+}
+
+/// Classify the settings file. Absence is read off the failed read (no
+/// `exists()` probe, issue #1123); any other read error, such as EACCES, is
+/// an `Err`, because an unreadable file is not evidence that hooks are missing.
+pub(super) fn hooks_registered_in_settings(settings_path: &Path) -> Result<HookRegistration> {
     let raw = match fs::read_to_string(settings_path) {
         Ok(raw) => raw,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(HookRegistration::Missing);
+        }
         Err(e) => {
             return Err(e).with_context(|| format!("failed to read {}", settings_path.display()));
         }
     };
-    let json: serde_json::Value = match serde_json::from_str(&raw) {
-        Ok(v) => v,
-        Err(_) => return Ok(false),
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return Ok(HookRegistration::Unparseable);
     };
     let has_hooks = json
         .get("hooks")
@@ -360,12 +486,26 @@ fn hooks_registered_in_settings(settings_path: &Path) -> Result<bool> {
             })
         })
         .unwrap_or(false);
-    Ok(has_hooks)
+    Ok(if has_hooks {
+        HookRegistration::Registered
+    } else {
+        HookRegistration::Missing
+    })
 }
 
+#[cfg(test)]
 fn local_install(
     repo_root: &Path,
     wizard_config: Option<&interactive::InteractiveConfig>,
+) -> Result<()> {
+    local_install_scoped(repo_root, wizard_config, true, InstallMode::Explicit)
+}
+
+fn local_install_scoped(
+    repo_root: &Path,
+    wizard_config: Option<&interactive::InteractiveConfig>,
+    reconcile_codex: bool,
+    mode: InstallMode,
 ) -> Result<()> {
     let claude_dir = staging_claude_dir()?;
     let timestamp = unix_timestamp();
@@ -377,9 +517,28 @@ fn local_install(
     // Phase 0: deploy binaries
     println!();
     println!("🦀 Deploying binaries:");
-    let deployed_binaries = deploy_binaries()?;
+    // Issue #1526: read before anything below rewrites it. An implicit
+    // re-stage compares each installed binary against the binaries' version.
+    let stamp = match mode {
+        InstallMode::Explicit => None,
+        // Safe: `None` makes `implicit_deploy_allowed` refuse every occupied
+        // slot, so an unreadable stamp only costs a warning.
+        InstallMode::Implicit => version_stamp::read_binaries_version()
+            .inspect_err(|e| {
+                eprintln!(
+                    "amplihack: warning: cannot read the install stamp; keeping installed \
+                     binaries: {}",
+                    paths::sanitize_text(&format!("{e:#}"))
+                )
+            })
+            .unwrap_or_default(),
+    };
+    let (deployed_binaries, kept_binaries) = deploy_binaries(mode, stamp.as_deref())?;
     let hooks_bin = find_hooks_binary()?;
-    for p in &deployed_binaries {
+    for p in deployed_binaries
+        .iter()
+        .filter(|p| !kept_binaries.contains(p))
+    {
         println!("  ✅ Deployed {}", p.display());
     }
     let preferred_amplihack =
@@ -395,12 +554,30 @@ fn local_install(
                 home_dir: paths::home_dir()?,
                 current_exe: std::env::current_exe()
                     .unwrap_or_else(|_| preferred_amplihack.to_path_buf()),
-                preferred_rust_binary: preferred_amplihack,
+                preferred_rust_binary: preferred_amplihack.clone(),
                 path_dirs,
                 binary_name: crate::path_conflicts::binary_filename("amplihack"),
             },
         )
         .context("failed to neutralize stale Python/uvx amplihack PATH wrappers")?;
+        for shim in &repair.skipped_transient_shims {
+            println!(
+                "  ℹ️  Leaving transient package-manager launcher {} in place; it stops shadowing {} once the launching command exits.",
+                shim.display(),
+                preferred_amplihack.display()
+            );
+        }
+        for launcher in &repair.persistent_npm_launchers {
+            println!(
+                "  ℹ️  Leaving this package's npm launcher {} in place. It comes before {} on PATH, so `amplihack` runs through the npm wrapper (its own cached release binary).",
+                launcher.display(),
+                preferred_amplihack.display()
+            );
+            println!(
+                "     To use {} instead: remove it with the package manager that installed it (e.g. npm uninstall -g @rysweet/amplihack-rs), or export PATH=\"$HOME/.local/bin:$PATH\"",
+                preferred_amplihack.display()
+            );
+        }
         if !repair.neutralized.is_empty() {
             let manifest_path = repair
                 .manifest_path
@@ -477,8 +654,6 @@ fn local_install(
         }
     }
 
-    println!();
-    println!("⚙️  Configuring settings.json:");
     // Honor the interactive hook-scope choice (issue #1119). Repo-local scope
     // resolves against the current working directory — where `amplihack install`
     // runs — and falls back to global if that directory is not a git repo.
@@ -488,11 +663,6 @@ fn local_install(
     let cwd = std::env::current_dir().context("failed to determine current directory")?;
     let effective_scope = interactive::resolve_hook_scope(requested_scope, &cwd);
     let settings_target = effective_scope.settings_path_for(&cwd);
-    println!(
-        "   Scope: {} → {}",
-        effective_scope.display_name(),
-        settings_target.display()
-    );
     // Issue #911: every DURABLE consumer -- settings.json and the Copilot
     // plugin manifest -- records this path, so it must be the DEPLOYED binary,
     // never `hooks_bin` (the `find_hooks_binary()` source path).
@@ -506,8 +676,26 @@ fn local_install(
         .first()
         .cloned()
         .unwrap_or_else(|| hooks_bin.clone());
-    let (settings_ok, registered_events) =
-        ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?;
+    // Issue #1526: an implicit re-stage never writes (or backs up) the
+    // user's settings.json; only `amplihack install` does. Its one output is
+    // a stderr warning when settings.json lacks hooks this build registers,
+    // so an upgrade that adds a hook event is not silently half-installed.
+    let (settings_ok, registered_events) = match mode {
+        InstallMode::Explicit => {
+            println!();
+            println!("⚙️  Configuring settings.json:");
+            println!(
+                "   Scope: {} → {}",
+                effective_scope.display_name(),
+                settings_target.display()
+            );
+            ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?
+        }
+        InstallMode::Implicit => {
+            warn_implicit_hook_drift(&mut std::io::stderr(), &settings_target);
+            (true, Vec::new())
+        }
+    };
 
     println!();
     println!("🐙 Configuring GitHub Copilot CLI plugin (if installed):");
@@ -528,13 +716,33 @@ fn local_install(
     // target/debug/amplihack-hooks). The source path lives in a build/worktree
     // dir that gets cleaned, making every hook exit 127; Copilot CLI fails
     // closed on hook errors, denying every tool call in nested sessions (#911).
-    match copilot_plugin::register_copilot_plugin(repo_root, &durable_hooks_bin)
+    // Issue #1526: decided once, before either Copilot writer runs below.
+    let copilot_config = match mode {
+        InstallMode::Explicit => crate::copilot_setup::UserConfig::Merge,
+        InstallMode::Implicit => crate::copilot_setup::UserConfig::for_implicit_install(),
+    };
+    match copilot_plugin::register_copilot_plugin(repo_root, &durable_hooks_bin, copilot_config)
         .context("failed to register Copilot CLI plugin")?
     {
-        true => {
+        copilot_plugin::CopilotRegistration::Registered => {
             println!("  ✅ Copilot CLI plugin amplihack@local refreshed");
         }
-        false => {
+        copilot_plugin::CopilotRegistration::ConfigPreserved { foreign_cache_path } => {
+            // Issue #1526: ~/.copilot/config.json is the user's; an implicit
+            // re-stage refreshed only the plugin directory amplihack owns.
+            println!(
+                "  ✅ Copilot CLI plugin files refreshed; ~/.copilot/config.json not modified"
+            );
+            if let Some(path) = foreign_cache_path {
+                eprintln!(
+                    "amplihack: warning: ~/.copilot/config.json registers amplihack from {}, \
+                     not this install's plugin directory; an automatic re-stage leaves it \
+                     unchanged. Run `amplihack install` to point it here.",
+                    paths::sanitize_text(&path)
+                );
+            }
+        }
+        copilot_plugin::CopilotRegistration::NotDetected => {
             println!("  ↩️  Copilot CLI not detected (~/.copilot missing) — skipping");
         }
     }
@@ -578,11 +786,15 @@ fn local_install(
     verify_framework_assets(&claude_dir)?;
     verify_install_completeness(&source_root, layout, &claude_dir)?;
 
-    println!();
-    println!("🦀 Ensuring Rust recipe runner:");
-    recipe_runner::ensure_recipe_runner()?;
+    if reconcile_codex {
+        println!();
+        // Issue #1538: reconcile_codex is only set when Codex is the selected
+        // client, so an implicit re-stage reconciles it as strictly as
+        // `amplihack install`. Issue #1526's downgrade refusal runs earlier.
+        codex_plugin::install(repo_root, &durable_hooks_bin)
+            .context("failed native Codex installation")?;
+    }
 
-    println!();
     println!("📝 Generating uninstall manifest:");
     let manifest_path = manifest_path()?;
     let mut tracked_roots = Vec::new();
@@ -599,19 +811,50 @@ fn local_install(
         }
     }
     let (files, post_dirs) = get_all_files_and_dirs(&claude_dir, &tracked_roots)?;
-    let new_dirs = post_dirs
+    let mut new_dirs = post_dirs
         .into_iter()
         .filter(|dir| !pre_dirs.contains(dir))
         .collect::<Vec<_>>();
+    // Issue #1507: `new_dirs` is "created by this run". On a reinstall every
+    // directory already exists, so it would be empty and uninstall would
+    // leave the earlier run's directories behind. Carry forward what previous
+    // manifests recorded, as long as it still exists.
+    let previous = manifest::read_manifest(&manifest_path)
+        .inspect_err(|error| tracing::warn!("ignoring previous install manifest: {error:#}"))
+        .unwrap_or_default();
+    for dir in previous.dirs {
+        if !new_dirs.contains(&dir) && claude_dir.join(&dir).is_dir() {
+            new_dirs.push(dir);
+        }
+    }
+    let mut binaries: Vec<String> = deployed_binaries
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    let mut hook_registrations = registered_events;
+    // Issue #1526: an implicit re-stage may keep binaries and settings.json
+    // as an earlier install left them. That install's manifest entries still
+    // describe them, so uninstall must keep finding them. Only binaries we
+    // deploy, in the directory we deploy them to, are carried forward.
+    if mode == InstallMode::Implicit {
+        let bin_dir = paths::preferred_user_bin_dir()?;
+        for previous_bin in previous.binaries {
+            let path = Path::new(&previous_bin);
+            if binary::is_deployed_binary(path, &bin_dir)
+                && path.symlink_metadata().is_ok()
+                && !binaries.contains(&previous_bin)
+            {
+                binaries.push(previous_bin);
+            }
+        }
+        hook_registrations = previous.hook_registrations;
+    }
 
     let mut manifest = InstallManifest {
         files,
         dirs: new_dirs,
-        binaries: deployed_binaries
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect(),
-        hook_registrations: registered_events,
+        binaries,
+        hook_registrations,
         ..InstallManifest::default()
     };
 
@@ -631,6 +874,22 @@ fn local_install(
 
     write_manifest(&manifest_path, &manifest)?;
     println!("   Manifest written to {}", manifest_path.display());
+
+    // Issue #1491: this phase can fail on an air-gapped host (no network for
+    // `cargo install`) or a host that cannot bootstrap a toolchain. It stays
+    // a loud failure (issue #527 install-completeness), but it runs only
+    // AFTER the manifest above is written, so the staged assets are never
+    // left behind without an `amplihack uninstall` path.
+    println!();
+    println!("🦀 Ensuring Rust recipe runner:");
+    recipe_runner::ensure_recipe_runner().with_context(|| {
+        format!(
+            "framework assets are staged at {} and the uninstall manifest is written; \
+             provision recipe-runner-rs and re-run `amplihack install` to finish, or run \
+             `amplihack uninstall` to remove the staged assets",
+            claude_dir.display()
+        )
+    })?;
 
     println!();
     println!("============================================================");
@@ -671,14 +930,38 @@ fn local_install(
     println!("============================================================");
     println!();
 
-    version_stamp::write_installed_version(crate::VERSION)
-        .context("writing installed-version stamp")?;
+    // Issue #1526: the framework is now current, but kept binaries are still
+    // at the version the old stamp recorded (or unknown). Record both, so the
+    // next launch does not re-stage and the guard keeps failing safe. The
+    // `binaries:` line is the kept binaries' version only: binaries this run
+    // replaced (often `amplihack` itself) are at `crate::VERSION`, so readers
+    // must not attach it to any one path (see `format_downgrade_warning`).
+    if kept_binaries.is_empty() {
+        version_stamp::write_installed_version(crate::VERSION)
+    } else if stamp.as_deref() == Some(crate::VERSION) {
+        // Kept binaries already at this version: nothing to replace, no warning.
+        version_stamp::write_installed_version(crate::VERSION)
+    } else {
+        let kept: Vec<String> = kept_binaries
+            .iter()
+            .map(|p| paths::sanitize_path(p))
+            .collect();
+        eprintln!(
+            "amplihack: warning: kept {} (installed version: {}) during an implicit re-stage \
+             for v{}; run `amplihack install` to replace them.",
+            kept.join(", "),
+            stamp.as_deref().unwrap_or("unknown"),
+            crate::VERSION,
+        );
+        version_stamp::write_installed_versions(crate::VERSION, stamp.as_deref())
+    }
+    .context("writing installed-version stamp")?;
 
     // Stage assets to ~/.copilot/skills/ so Copilot CLI picks them up
     // without requiring a separate `amplihack copilot` launch. Best-effort
     // and intentionally AFTER the version stamp: a failure here must not
     // block the install or leave the version stamp unwritten.
-    match crate::copilot_setup::ensure_copilot_home_staged() {
+    match crate::copilot_setup::ensure_copilot_home_staged(copilot_config) {
         Ok(()) => println!("  ✅ Copilot home staged (~/.copilot/)"),
         Err(err) => {
             tracing::warn!(%err, "failed to stage copilot home during install");
@@ -724,4 +1007,8 @@ fn local_install(
     }
 
     Ok(())
+}
+
+pub(crate) fn with_codex_binary<T>(binary: &Path, action: impl FnOnce() -> T) -> T {
+    codex_plugin::with_binary(binary, action)
 }

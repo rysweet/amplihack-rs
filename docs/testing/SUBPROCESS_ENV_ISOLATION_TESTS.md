@@ -124,9 +124,9 @@ following resolution precedence and is the subject under test:
 
 | Priority | Source | Notes |
 |----------|--------|-------|
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values are silently discarded |
-| 2 | `$AMPLIHACK_RUNTIME_ROOT/launcher_context.json` `launcher` field | Canonical workflow runtime state for nested agent sessions |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Legacy fallback only |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Allowlist-validated; invalid values fall through. Skipped while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>` |
+| 2 | Live session marker (`agent_binary::SESSION_MARKERS`) | e.g. `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `COPILOT_CLI`. A `session:<binary>`-tagged value ranks after the markers of the CLI it names (`agent_binary::rank_session_markers`) |
+| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Used only while fresh and trusted |
 | 4 | Built-in default | Always `"copilot"` |
 
 ### Allowlisted binary names
@@ -152,7 +152,7 @@ falls through to the next priority level:
 ## Running the tests
 
 ```bash
-cargo test -p amplihack-cli --test active_agent_binary_default_test --locked
+cargo test -p amplihack-cli --test cli_integration active_agent_binary_default:: --locked
 ```
 
 All six tests (three probes + three contract tests) must pass.  The probes are
@@ -161,8 +161,8 @@ also runnable individually for debugging:
 ```bash
 # Run a single probe in isolation with an explicit env:
 AMPLIHACK_AGENT_BINARY=claude \
-  cargo test -p amplihack-cli --test active_agent_binary_default_test \
-  -- probe_claude_override --exact --nocapture
+  cargo test -p amplihack-cli --test cli_integration \
+  -- active_agent_binary_default::probe_claude_override --exact --nocapture
 ```
 
 ---

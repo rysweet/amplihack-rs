@@ -214,8 +214,7 @@ fn shell_profile_path_unknown() {
 fn ensure_local_bin_on_shell_path_creates_export() {
     use crate::commands::install::paths::ensure_local_bin_on_shell_path;
     let tmp = tempfile::TempDir::new().unwrap();
-    // Use home_env_lock so we serialize with HOME-reading tests like
-    // test_resolve_binary_path_expands_tilde_to_home_dir.
+    // Use home_env_lock so we serialize with other HOME-mutating tests.
     let _lock = crate::test_support::home_env_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -244,25 +243,24 @@ fn ensure_local_bin_on_shell_path_creates_export() {
     }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Issue #334: Windows x86_64 release support.
+// Native Windows is not a published release target (owner decision: no
+// Windows builds). WSL resolves to the linux targets.
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]
-fn release_target_table_covers_windows_x86_64() {
-    // The supported_release_target() function in mod.rs is hard-coded with
-    // cfg!() arms, so we can only directly observe the host's mapping. To
-    // assert the Windows arm exists without conditionally compiling the test
-    // away, we read the source and check the literal arm is present. This is
-    // a static guard — it fails any commit that drops the windows arm.
+fn release_target_table_excludes_native_windows() {
+    // supported_release_target() is hard-coded with cfg!() arms, so only the
+    // host's mapping is directly observable. Read the source to guarantee no
+    // Windows arm (and no reference to the dropped msvc asset) creeps back in
+    // while the release workflow publishes no Windows archive.
     let src = include_str!("../mod.rs");
     assert!(
-        src.contains(r#"target_os = "windows", target_arch = "x86_64""#),
-        "supported_release_target() must include a windows/x86_64 arm",
+        !src.contains(r#"target_os = "windows""#),
+        "supported_release_target() must not map native Windows to a release target",
     );
     assert!(
-        src.contains(r#"x86_64-pc-windows-msvc"#),
-        "supported_release_target() must map windows/x86_64 to x86_64-pc-windows-msvc",
+        !src.contains("pc-windows-msvc"),
+        "no x86_64-pc-windows-msvc release asset is published",
     );
 }
 
@@ -281,15 +279,11 @@ fn binary_filename_appends_exe_on_windows() {
     );
 }
 
-#[cfg(all(target_os = "windows", target_arch = "x86_64"))]
+#[cfg(target_os = "windows")]
 #[test]
-fn windows_host_resolves_msvc_target() {
-    assert_eq!(supported_release_target(), Some("x86_64-pc-windows-msvc"));
-    assert_eq!(
-        expected_archive_name().unwrap(),
-        "amplihack-x86_64-pc-windows-msvc.tar.gz"
-    );
-    assert_eq!(binary_filename("amplihack"), "amplihack.exe");
+fn native_windows_host_is_unsupported_for_self_update() {
+    assert_eq!(supported_release_target(), None);
+    assert!(expected_archive_name().is_err());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -297,10 +291,10 @@ fn windows_host_resolves_msvc_target() {
 //
 // `should_skip_update_check(args) -> bool` (the back-compat wrapper that
 // delegates to the new `classify_skip_reason`) MUST treat ANY non-empty value
-// of CI / AMPLIHACK_AGENT_BINARY, OR the literal `--subprocess-safe` token in
+// of CI / AMPLIHACK_NONINTERACTIVE, OR the literal `--subprocess-safe` token in
 // argv, as a reason to skip the update check for an otherwise-recognized
-// launch subcommand. These tests are FAILING by design until check.rs is
-// refactored per the issue #625 design spec.
+// launch subcommand. (#625 also listed AMPLIHACK_AGENT_BINARY; issue #1525
+// removed it, because it names an agent CLI, not a non-interactive caller.)
 // ─────────────────────────────────────────────────────────────────────────────
 
 #[test]

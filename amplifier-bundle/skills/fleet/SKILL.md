@@ -105,8 +105,8 @@ fleet start   [--interval 300] [--max-cycles 10]
 
 ## Admiral Configuration
 
-- **Model**: Claude Opus 4.6 (`claude-opus-4-6`)
-- **Max output tokens**: 128,000 (reasoning JSON)
+- **Model**: Use the model configured for the selected backend; this skill does not require a particular model.
+- **Max output tokens**: Respect the configured model/backend output limit (reasoning JSON).
 - **Context gathered per session**: full tmux scrollback + first 50 & last 200 transcript messages
 - **Safety**: 57 dangerous-input patterns blocked (with safe allow-list), confidence thresholds (60% send_input, 80% restart), --confirm default on advance
 - **Docs**: `docs/fleet-orchestration/ADMIRAL_REASONING.md`

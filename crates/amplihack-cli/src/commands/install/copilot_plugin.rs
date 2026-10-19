@@ -19,6 +19,16 @@
 //! 3. Idempotently registers the plugin in `~/.copilot/config.json` under
 //!    `installedPlugins`.
 //!
+//! Issue #1526: steps 1 and 2 write only under `amplihack@local/`, a
+//! directory amplihack owns, so every install refreshes them. That is how a
+//! newer build's hooks reach Copilot. `config.json` is the user's Copilot
+//! configuration, and step 3 runs only under
+//! [`crate::copilot_setup::UserConfig::Merge`]. An implicit re-stage gets
+//! `Merge` only when `config.json` has no amplihack entry at all (a first
+//! install); otherwise the file stays byte-identical, whatever the entry
+//! says (a user who disabled the plugin stays disabled). Only
+//! `amplihack install` rewrites an existing entry.
+//!
 //! When `~/.copilot/` does not exist (Copilot CLI not installed on this
 //! host), the module is a no-op and returns `Ok(false)`.
 
@@ -28,6 +38,8 @@ use std::fs;
 use std::path::Path;
 
 use crate::copilot_setup::jsonc as jsonc_utils;
+
+use crate::copilot_setup::UserConfig;
 
 use super::{
     binary::{validate_binary_path, validate_hook_command_string},
@@ -45,21 +57,55 @@ use super::{
 ///
 /// Returns `Ok(true)` if the plugin was created/refreshed, `Ok(false)` if
 /// Copilot CLI isn't present on this host (no `~/.copilot/`).
-pub(super) fn register_copilot_plugin(repo_root: &Path, hooks_bin: &Path) -> Result<bool> {
-    register_copilot_plugin_in(&home_dir()?.join(".copilot"), repo_root, hooks_bin)
+pub(super) fn register_copilot_plugin(
+    repo_root: &Path,
+    hooks_bin: &Path,
+    user_config: UserConfig,
+) -> Result<CopilotRegistration> {
+    register_copilot_plugin_scoped_in(
+        &home_dir()?.join(".copilot"),
+        repo_root,
+        hooks_bin,
+        user_config,
+    )
+}
+
+/// What [`register_copilot_plugin`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum CopilotRegistration {
+    /// No `~/.copilot/`: Copilot CLI is not installed.
+    NotDetected,
+    /// The plugin directory was refreshed and `config.json` was written.
+    Registered,
+    /// `UserConfig::KeepExisting`: the plugin directory was refreshed and
+    /// `config.json` was not touched. `foreign_cache_path` is that entry's `cache_path`, when it differs
+    /// from the directory this install refreshed.
+    ConfigPreserved { foreign_cache_path: Option<String> },
 }
 
 /// Test-friendly variant: registers the plugin under an explicit `copilot_home`
 /// directory instead of resolving `~/.copilot` from the environment. This avoids
 /// mutating the global `HOME` env var inside parallel unit tests.
+#[cfg(test)]
 pub(super) fn register_copilot_plugin_in(
     copilot_home: &Path,
     repo_root: &Path,
     hooks_bin: &Path,
 ) -> Result<bool> {
+    register_copilot_plugin_scoped_in(copilot_home, repo_root, hooks_bin, UserConfig::Merge)
+        .map(|outcome| outcome != CopilotRegistration::NotDetected)
+}
+
+/// [`register_copilot_plugin`] against an explicit `copilot_home`.
+pub(super) fn register_copilot_plugin_scoped_in(
+    copilot_home: &Path,
+    repo_root: &Path,
+    hooks_bin: &Path,
+    user_config: UserConfig,
+) -> Result<CopilotRegistration> {
     if !copilot_home.exists() {
         // Copilot CLI not installed — nothing to do.
-        return Ok(false);
+        return Ok(CopilotRegistration::NotDetected);
     }
     validate_copilot_hooks_bin(hooks_bin)?;
 
@@ -75,9 +121,60 @@ pub(super) fn register_copilot_plugin_in(
 
     write_plugin_manifest(&plugin_dir, commands_staged)?;
     write_hooks_json(&plugin_dir, hooks_bin)?;
+    if user_config == UserConfig::KeepExisting {
+        // A file that cannot be parsed is reported as not pointing here only
+        // if it can be read; either way it is not written.
+        let foreign_cache_path = existing_amplihack_entry(copilot_home)
+            .ok()
+            .flatten()
+            .and_then(|entry| {
+                entry
+                    .get("cache_path")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
+            .filter(|path| Path::new(path) != plugin_dir);
+        return Ok(CopilotRegistration::ConfigPreserved { foreign_cache_path });
+    }
     register_in_config(copilot_home, &plugin_dir)?;
 
-    Ok(true)
+    Ok(CopilotRegistration::Registered)
+}
+
+/// Read `config.json` and parse it as JSONC. `None` when the file is absent.
+fn read_config(config_path: &Path) -> Result<Option<(Value, String)>> {
+    let raw = match fs::read_to_string(config_path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => {
+            return Err(e).with_context(|| format!("failed to read {}", config_path.display()));
+        }
+    };
+    let prefix = jsonc_utils::leading_comment_prefix(&raw).to_string();
+    let stripped = jsonc_utils::strip_jsonc_comments(&raw);
+    let value = if stripped.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&stripped)
+            .with_context(|| format!("failed to parse {} as JSONC", config_path.display()))?
+    };
+    Ok(Some((value, prefix)))
+}
+
+/// The `amplihack` entry under `installedPlugins` in `config.json`, if any.
+fn existing_amplihack_entry(copilot_home: &Path) -> Result<Option<Value>> {
+    let Some((config, _)) = read_config(&copilot_home.join("config.json"))? else {
+        return Ok(None);
+    };
+    Ok(config
+        .get("installedPlugins")
+        .and_then(Value::as_array)
+        .and_then(|plugins| {
+            plugins
+                .iter()
+                .find(|p| p.get("name").and_then(Value::as_str) == Some("amplihack"))
+        })
+        .cloned())
 }
 
 /// Write the plugin manifest. Always declares hooks; declares commands
@@ -316,21 +413,8 @@ fn validate_copilot_command_name(name: &str) -> Result<()> {
 /// cannot silently degrade into a success-shaped install without the plugin.
 fn register_in_config(copilot_home: &Path, plugin_dir: &Path) -> Result<()> {
     let config_path = copilot_home.join("config.json");
-    let (mut config, prefix): (Value, String) = if config_path.exists() {
-        let raw = fs::read_to_string(&config_path)
-            .with_context(|| format!("failed to read {}", config_path.display()))?;
-        let prefix = jsonc_utils::leading_comment_prefix(&raw).to_string();
-        let stripped = jsonc_utils::strip_jsonc_comments(&raw);
-        let value = if stripped.trim().is_empty() {
-            json!({})
-        } else {
-            serde_json::from_str(&stripped)
-                .with_context(|| format!("failed to parse {} as JSONC", config_path.display()))?
-        };
-        (value, prefix)
-    } else {
-        (json!({}), String::new())
-    };
+    let (mut config, prefix) =
+        read_config(&config_path)?.unwrap_or_else(|| (json!({}), String::new()));
 
     let now = chrono::Utc::now().to_rfc3339();
 

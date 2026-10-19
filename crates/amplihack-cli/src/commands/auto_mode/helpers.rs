@@ -12,33 +12,69 @@ pub(super) fn philosophy_context() -> &'static str {
     "AUTONOMOUS MODE: You are in auto mode. Do NOT ask questions. Make decisions using:\n1. Explicit user requirements (highest priority)\n2. @.claude/context/USER_PREFERENCES.md guidance\n3. @.claude/context/PHILOSOPHY.md principles\n4. The `default-workflow` skill/recipe routed through `dev-orchestrator` and `amplihack recipe run smart-orchestrator`\n5. @.claude/context/USER_REQUIREMENT_PRIORITY.md for conflicts\n\nDecision Authority:\n- YOU DECIDE implementation details and architecture\n- YOU PRESERVE explicit user requirements and hard constraints\n- WHEN AMBIGUOUS choose the simplest modular option"
 }
 
-pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {
+/// Splits the passthrough args into the auto-mode prompt and the args for the
+/// agent.
+///
+/// With `prompt_file`, the file's contents are the prompt, unchanged, and any
+/// `-p`/`--prompt` in `args` is consumed and ignored with a warning (#1570).
+/// A missing, unreadable or blank prompt file is an error naming the path.
+/// Without it, `Ok(None)` means no prompt was given.
+pub(super) fn extract_prompt_args(
+    args: &[String],
+    prompt_file: Option<&Path>,
+) -> Result<Option<ParsedPromptArgs>> {
+    let file_prompt = prompt_file.map(read_prompt_file).transpose()?;
     let mut passthrough_args = Vec::new();
     let mut prompt = None;
+    let mut ignored_flags = Vec::new();
     let mut index = 0;
 
     while index < args.len() {
         let arg = &args[index];
-        if arg == "-p" || arg == "--prompt" {
+        let (flag, value, consumed) = if arg == "-p" || arg == "--prompt" {
             if index + 1 >= args.len() {
-                return None;
+                if file_prompt.is_none() {
+                    return Ok(None);
+                }
+                (arg.as_str(), None, 1)
+            } else {
+                (arg.as_str(), Some(args[index + 1].clone()), 2)
             }
-            prompt = Some(args[index + 1].clone());
-            index += 2;
-            continue;
-        }
-        if let Some(value) = arg.strip_prefix("-p=") {
-            prompt = Some(value.to_string());
+        } else if let Some(value) = arg.strip_prefix("-p=") {
+            ("-p", Some(value.to_string()), 1)
+        } else if let Some(value) = arg.strip_prefix("--prompt=") {
+            ("--prompt", Some(value.to_string()), 1)
+        } else {
+            passthrough_args.push(arg.clone());
             index += 1;
             continue;
+        };
+        if file_prompt.is_some() {
+            ignored_flags.push(flag);
+        } else {
+            prompt = value;
         }
-        if let Some(value) = arg.strip_prefix("--prompt=") {
-            prompt = Some(value.to_string());
-            index += 1;
-            continue;
+        index += consumed;
+    }
+
+    if let (Some(prompt), Some(path)) = (file_prompt, prompt_file) {
+        if !ignored_flags.is_empty() {
+            eprintln!(
+                "warning: ignoring {} after -- because --prompt-file {} takes precedence",
+                ignored_flags.join(", "),
+                path.display()
+            );
         }
-        passthrough_args.push(arg.clone());
-        index += 1;
+        if lone_positional_arg(&passthrough_args).is_some() {
+            eprintln!(
+                "warning: --prompt-file {} takes precedence over a positional prompt argument",
+                path.display()
+            );
+        }
+        return Ok(Some(ParsedPromptArgs {
+            prompt,
+            passthrough_args,
+        }));
     }
 
     // If no explicit -p/--prompt was given, treat the last non-flag passthrough
@@ -46,27 +82,40 @@ pub(super) fn extract_prompt_args(args: &[String]) -> Option<ParsedPromptArgs> {
     // `amplihack copilot --auto -- "do X"` instead of `-- -p "do X"`.
     // We only do this when there's exactly one non-flag arg to avoid ambiguity
     // (e.g. `--model sonnet "prompt"` has two non-flag args: "sonnet" and "prompt").
-    if prompt.is_none() {
-        let mut non_flag_index = None;
-        let mut non_flag_count = 0;
-        for (index, arg) in passthrough_args.iter().enumerate() {
-            if !arg.starts_with('-') {
-                non_flag_index = Some(index);
-                non_flag_count += 1;
-                if non_flag_count > 1 {
-                    break;
-                }
-            }
-        }
-        if let (1, Some(index)) = (non_flag_count, non_flag_index) {
-            prompt = Some(passthrough_args.remove(index));
-        }
+    if prompt.is_none()
+        && let Some(index) = lone_positional_arg(&passthrough_args)
+    {
+        prompt = Some(passthrough_args.remove(index));
     }
 
-    Some(ParsedPromptArgs {
-        prompt: prompt?,
+    Ok(prompt.map(|prompt| ParsedPromptArgs {
+        prompt,
         passthrough_args,
-    })
+    }))
+}
+
+/// Index of the only argument that is not a flag, if there is exactly one.
+fn lone_positional_arg(args: &[String]) -> Option<usize> {
+    let mut positional = args
+        .iter()
+        .enumerate()
+        .filter(|(_, arg)| !arg.starts_with('-'));
+    let (index, _) = positional.next()?;
+    positional.next().is_none().then_some(index)
+}
+
+/// Reads a `--prompt-file`; the contents are returned unchanged, but a file
+/// that is empty after trimming is rejected.
+fn read_prompt_file(path: &Path) -> Result<String> {
+    // Bounded like the recipe context files (16 MiB), with the same errors.
+    let prompt = crate::commands::recipe::run::context_sources::read_source("--prompt-file", path)?;
+    if prompt.trim().is_empty() {
+        bail!(
+            "--prompt-file {} is empty after trimming whitespace",
+            path.display()
+        );
+    }
+    Ok(prompt)
 }
 
 #[cfg(test)]
@@ -139,7 +188,8 @@ pub fn build_auto_command_with_prompt_delivery(
         .with_amplihack_session_id()
         .with_incremented_session_tree_context()
         .with_amplihack_vars_with_node_options(options.node_options.as_deref())
-        .with_agent_binary(options.tool.slug())
+        // Issue #1481: an inherited default guess naming this tool stays tagged.
+        .with_launched_agent_binary(options.tool.slug())
         .with_amplihack_home()
         .with_asset_resolver()
         .with_project_graph_db(&options.project_dir)?;
@@ -151,7 +201,16 @@ pub fn build_auto_command_with_prompt_delivery(
     } else {
         env_builder
     };
-    let env_builder = env_builder.set("AMPLIHACK_AUTO_MODE", "1");
+    // Whenever the prompt is a payload (stdin or a file reference) the
+    // session is non-interactive; the flag describes the session, not the
+    // transport (#1570).
+    let payload_present = delivered.stdin_payload.is_some()
+        || delivered.selected_mode == amplihack_utils::prompt_delivery::DeliveryMode::FileReference;
+    let env_builder = env_builder.set("AMPLIHACK_AUTO_MODE", "1").set_if(
+        payload_present,
+        "AMPLIHACK_NONINTERACTIVE",
+        "1",
+    );
     env_builder.apply_to_command(&mut delivered.command);
     Ok(delivered)
 }
@@ -283,6 +342,8 @@ fn build_tool_passthrough_prefix_args(
     let mut args = passthrough_args.to_vec();
     match tool {
         AutoModeTool::Claude | AutoModeTool::RustyClawd => {
+            // These args go to a nested `amplihack claude`, whose launcher sets
+            // IS_SANDBOX=1 for a root sandbox or fails naming it (issue #1482).
             if !args
                 .iter()
                 .any(|arg| arg == "--dangerously-skip-permissions")

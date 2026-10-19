@@ -145,7 +145,7 @@ than silently dropping the skill from Copilot's list.
 Focused checks:
 
 ```sh
-cargo test -p amplihack-cli --test issue_860_pr_guide_present
+cargo test -p amplihack-cli --test cli_integration issue_860_pr_guide_present::
 cargo test -p amplihack-cli --lib stage_skills
 ```
 

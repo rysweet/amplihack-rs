@@ -1,0 +1,160 @@
+//! Rotate settings: the flag, then its `AMPLIHACK_ROTATE_*` variable, then
+//! the default (D4). Values are unsigned decimal integers in range; an error
+//! names the flag or variable and shows the value escaped and cut.
+
+use super::TuneFlags;
+use crate::commands::profile::ProfileError;
+use std::ffi::OsString;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Settings {
+    pub session_at: u8,
+    pub week_at: u8,
+    pub margin: u8,
+    pub upgrade_margin: u8,
+    /// Seconds; 0 disables the hold.
+    pub hold: u64,
+    /// Seconds between `watch` cycles.
+    pub interval: u64,
+}
+
+/// One setting: its flag, its variable, its default and its range.
+struct Spec {
+    flag: &'static str,
+    var: &'static str,
+    default: u64,
+    min: u64,
+    max: Option<u64>,
+}
+
+const SESSION_AT: Spec = Spec {
+    flag: "--session-at",
+    var: "AMPLIHACK_ROTATE_SESSION_AT",
+    default: 85,
+    min: 1,
+    max: Some(100),
+};
+const WEEK_AT: Spec = Spec {
+    flag: "--week-at",
+    var: "AMPLIHACK_ROTATE_WEEK_AT",
+    default: 90,
+    min: 1,
+    max: Some(100),
+};
+const MARGIN: Spec = Spec {
+    flag: "--margin",
+    var: "AMPLIHACK_ROTATE_MARGIN",
+    default: 5,
+    min: 0,
+    max: Some(100),
+};
+const UPGRADE_MARGIN: Spec = Spec {
+    flag: "--upgrade-margin",
+    var: "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
+    default: 30,
+    min: 0,
+    max: Some(100),
+};
+const HOLD: Spec = Spec {
+    flag: "--hold",
+    var: "AMPLIHACK_ROTATE_HOLD",
+    default: 3600,
+    min: 0,
+    max: None,
+};
+const INTERVAL: Spec = Spec {
+    flag: "--interval",
+    var: "AMPLIHACK_ROTATE_INTERVAL",
+    default: 600,
+    min: 1,
+    max: Some(86_400),
+};
+
+/// Shown value: the first 32 characters, escaped.
+fn shown(raw: &str) -> String {
+    let head: String = raw.chars().take(32).collect();
+    format!("{head:?}")
+}
+
+impl Spec {
+    fn expected(&self) -> String {
+        match self.max {
+            Some(max) => format!("expected a whole number from {} to {max}", self.min),
+            None => format!("expected a whole number from {} up", self.min),
+        }
+    }
+
+    fn parse(&self, name: &str, raw: &str) -> Result<u64, ProfileError> {
+        let fail = || {
+            ProfileError::RotateConfig(format!(
+                "invalid rotate setting {name} {}: {}",
+                shown(raw),
+                self.expected()
+            ))
+        };
+        if raw.is_empty() || !raw.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(fail());
+        }
+        let v: u64 = raw.parse().map_err(|_| fail())?;
+        if v < self.min || self.max.is_some_and(|max| v > max) {
+            return Err(fail());
+        }
+        Ok(v)
+    }
+
+    fn resolve(
+        &self,
+        flag: Option<&str>,
+        env: &dyn Fn(&str) -> Option<OsString>,
+    ) -> Result<u64, ProfileError> {
+        if let Some(raw) = flag {
+            return self.parse(self.flag, raw);
+        }
+        match env(self.var).filter(|v| !v.is_empty()) {
+            Some(v) => self.parse(self.var, &v.to_string_lossy()),
+            None => Ok(self.default),
+        }
+    }
+}
+
+/// The settings for this run. `interval` is the `--interval` flag of `start`
+/// and `watch`; the one-shot form has none and gets the default.
+pub fn resolve(
+    tune: &TuneFlags,
+    interval: Option<&str>,
+    env: &dyn Fn(&str) -> Option<OsString>,
+) -> Result<Settings, ProfileError> {
+    // Percentages and margins are at most 100, so they fit in a u8.
+    let pct =
+        |spec: &Spec, flag: &Option<String>| spec.resolve(flag.as_deref(), env).map(|v| v as u8);
+    Ok(Settings {
+        session_at: pct(&SESSION_AT, &tune.session_at)?,
+        week_at: pct(&WEEK_AT, &tune.week_at)?,
+        margin: pct(&MARGIN, &tune.margin)?,
+        upgrade_margin: pct(&UPGRADE_MARGIN, &tune.upgrade_margin)?,
+        hold: HOLD.resolve(tune.hold.as_deref(), env)?,
+        interval: INTERVAL.resolve(interval, env)?,
+    })
+}
+
+impl Settings {
+    /// Explicit flags for the background process, so it reads no variable.
+    pub fn to_args(self, with_interval: bool) -> Vec<String> {
+        let mut args = Vec::new();
+        for (flag, v) in [
+            (SESSION_AT.flag, u64::from(self.session_at)),
+            (WEEK_AT.flag, u64::from(self.week_at)),
+            (MARGIN.flag, u64::from(self.margin)),
+            (UPGRADE_MARGIN.flag, u64::from(self.upgrade_margin)),
+            (HOLD.flag, self.hold),
+        ] {
+            args.push(flag.to_string());
+            args.push(v.to_string());
+        }
+        if with_interval {
+            args.push(INTERVAL.flag.to_string());
+            args.push(self.interval.to_string());
+        }
+        args
+    }
+}
