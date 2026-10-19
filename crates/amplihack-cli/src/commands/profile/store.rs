@@ -60,6 +60,7 @@ impl ProfileStore {
         self
     }
 
+    #[cfg(test)]
     pub fn from_root_str(raw: &str) -> Result<Self, ProfileError> {
         let path = PathBuf::from(raw);
         if raw.is_empty() || !path.is_absolute() {
@@ -68,27 +69,9 @@ impl ProfileStore {
         Ok(Self::new(path))
     }
 
+    /// The store for this process's environment; see `root_config`.
     pub fn from_env() -> Result<Self, ProfileError> {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from);
-        let root = if let Some(raw) = std::env::var_os(ROOT_ENV) {
-            let raw = raw
-                .into_string()
-                .map_err(|_| ProfileError::InvalidRoot("non-UTF-8 path".into()))?;
-            Self::from_root_str(&raw)?.root
-        } else {
-            home.as_ref()
-                .ok_or_else(|| ProfileError::InvalidRoot("HOME is not set".into()))?
-                .join(".amplihack")
-                .join("claude-profiles")
-        };
-        let store = Self::new(root);
-        Ok(match home {
-            Some(home) => store.with_shared_assets(home.join(".claude")),
-            None => store,
-        })
+        super::root_config::store_from_env().map(|(store, _)| store)
     }
 
     pub fn root(&self) -> &Path {
@@ -332,7 +315,7 @@ fn discard_staging(path: &Path, seed_error: ProfileError) -> ProfileError {
     }
 }
 
-fn reject_root_inside_source(root: &Path, source: &Path) -> Result<(), ProfileError> {
+pub(super) fn reject_root_inside_source(root: &Path, source: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(ProfileError::SymlinkRefused(source.display().to_string()));

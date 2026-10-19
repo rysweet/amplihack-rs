@@ -252,8 +252,8 @@ pub(super) fn build_command_for_dir(
 /// `dir` is always `store.resolve(name)`, i.e. `<root>/<name>` (the same
 /// assumption `verify_launch_profile_dir` makes), so its file name is the
 /// profile name and its parent is the root. The root is passed on only when
-/// the parent itself was given one; otherwise the child uses the default root
-/// just as the parent did.
+/// the parent itself was given a non-empty one; otherwise the child resolves
+/// the saved or default root just as the parent did (issue #1592).
 pub(crate) fn pin_profile_for_descendants(cmd: &mut Command, dir: &Path) {
     use crate::commands::profile::{PROFILE_ENV, ROOT_ENV};
     // A verified `<root>/<name>` always has both; without them the pin would be
@@ -265,7 +265,7 @@ pub(crate) fn pin_profile_for_descendants(cmd: &mut Command, dir: &Path) {
     if let Some(name) = dir.file_name() {
         cmd.env(PROFILE_ENV, name);
     }
-    if std::env::var_os(ROOT_ENV).is_some()
+    if std::env::var_os(ROOT_ENV).is_some_and(|v| !v.is_empty())
         && let Some(root) = dir.parent()
     {
         cmd.env(ROOT_ENV, root);

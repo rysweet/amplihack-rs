@@ -11,6 +11,10 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 - **Claude login profiles (#1555)** — `amplihack profile <add|list|show|switch|remove|login|run>` and `--profile <name>` on `launch`/`claude` manage named, isolated Claude Code logins via `CLAUDE_CONFIG_DIR`. Manual only: no token vault, refresh, usage probing or auto-rotation. See `docs/howto/claude-profiles.md`.
 
+### Changed
+
+- **Saved Claude profile root (#1592)**: `amplihack profile root [<dir>]` shows or saves the profile root in `~/.amplihack/profile-root`, so cron, `tmux -d` and `env -i` find profiles without `~/.bashrc`; the first `profile add` records the root it used. An empty `AMPLIHACK_CLAUDE_PROFILE_ROOT` now counts as unset, and a non-empty value with a control character or a `..` component is now refused with `InvalidRoot`. `profile list` and `profile rotate status` now print a `root:` line first, and `profile root <dir>` refuses a value with leading or trailing whitespace. See `docs/reference/profile-command.md#profile-root`.
+
 ### Fixed
 
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
