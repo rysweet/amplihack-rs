@@ -32,13 +32,22 @@
 //! readable from the command text and are left to the shim and the `MERGED`
 //! checks.
 //!
-//! A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`) is data, not commands
-//! (crusty round 4): `git commit -F - <<'EOF'`, `git commit -m "$(cat
-//! <<'EOF' … EOF)"` and `gh pr create --body "$(cat <<'EOF' … EOF)"` pass
-//! whatever prose the body holds. The body is read as code only when the
-//! command runs an interpreter (`bash <<'EOF'`, `python3 - <<'EOF'`, `cat
-//! <<'EOF' | bash`), and the `$(…)`/backtick substitutions of an unquoted
-//! body, which bash runs, are checked as commands.
+//! A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`) is code unless every
+//! program that can receive it is a known data consumer (crusty round 5):
+//! `cat`, `tee`, `git` (without an `alias.` setting), `gh` (except `gh
+//! api`), `jq`, `wc`, `paste` and the other text tools in
+//! [`reads_heredoc_as_data`], with nothing in the command that runs code.
+//! So `git commit -F - <<'EOF'`, `git commit -m "$(cat <<'EOF' … EOF)"` and
+//! `gh pr create --body "$(cat <<'EOF' … EOF)"` pass whatever prose the body
+//! holds (crusty round 4), while `bash <<'EOF'`, `cat <<'EOF' | bash`,
+//! `source /dev/stdin <<'EOF'`, `eval "$(cat <<'EOF' … EOF)"`, `parallel`,
+//! `at`, `ssh` and any program not on the list read it as commands. The rule
+//! is deny by default: a program added to a toolchain later is code until it
+//! is listed. The check is per command (every simple command at that level,
+//! and every command whose arguments a `$(…)` feeds), not per pipeline, so
+//! prose sent to `git` in the same tool call as `cargo test` is read as code;
+//! the refusal says to split the call. The `$(…)`/backtick substitutions of
+//! an unquoted body, which bash runs, are always checked as commands.
 
 use regex::Regex;
 use serde_json::Value;
@@ -66,8 +75,9 @@ This check reads the command itself, so it applies whichever gh your shell's\n\
 PATH finds. Do not retry with another gh path, PATH, alias, API client or token.\n\
 \n\
 If the match is prose (a commit message, PR body or doc) and you meant no merge:\n\
-the command also runs an interpreter, so its text was read as code. Write the\n\
-prose in a separate tool call that runs no interpreter (git commit -F - <<'EOF'\n\
+the command also runs an interpreter, or a heredoc reaches a program not known\n\
+to treat it as data, so its text was read as code. Write the prose in a separate\n\
+tool call whose only programs are git, gh, cat or tee (git commit -F - <<'EOF'\n\
 … EOF passes); keep the prose as it is.";
 
 /// GraphQL mutations that merge, as whole names in any case (same list as
@@ -97,7 +107,7 @@ pub(super) fn guard_active(value: Option<&str>) -> bool {
 
 /// The block response for a Bash `command` that merges, or `None`.
 pub(super) fn check(command: &str) -> Option<Value> {
-    let label = merge_form(command, 0, false)?;
+    let label = merge_form(command, 0, false, true)?;
     Some(serde_json::json!({
         "block": true,
         "message": BLOCK_MESSAGE.replace("{label}", label),
@@ -109,7 +119,14 @@ pub(super) fn check(command: &str) -> Option<Value> {
 ///
 /// `scripted` is set once any level of the command runs an interpreter; from
 /// then on every word is also read as code (see the module doc).
-fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static str> {
+/// `heredoc_data` is cleared once any level runs a program that is not a
+/// known data consumer; from then on heredoc bodies are read as code.
+fn merge_form(
+    command: &str,
+    depth: usize,
+    scripted: bool,
+    heredoc_data: bool,
+) -> Option<&'static str> {
     if depth > MAX_NESTING {
         return None;
     }
@@ -123,16 +140,19 @@ fn merge_form(command: &str, depth: usize, scripted: bool) -> Option<&'static st
             .iter()
             .flat_map(|words| command_words(words))
             .any(|i| is_interpreter(basename(&i.1)));
+    // Deny by default: a body is data only when every program here (and in
+    // the command whose arguments this one's output becomes) is a known
+    // data consumer and nothing runs code.
+    let heredoc_data =
+        heredoc_data && !scripted && segments.iter().all(|w| reads_heredoc_as_data(w));
     for nested_cmd in &nested {
-        if let Some(label) = merge_form(nested_cmd, depth + 1, scripted) {
+        if let Some(label) = merge_form(nested_cmd, depth + 1, scripted, heredoc_data) {
             return Some(label);
         }
     }
-    // A heredoc body is the stdin of its command: code when an interpreter
-    // runs in this command, data (a commit message, a PR body) otherwise.
-    if scripted {
+    if !heredoc_data {
         for body in &heredocs {
-            if let Some(label) = merge_form(body, depth + 1, true) {
+            if let Some(label) = merge_form(body, depth + 1, true, false) {
                 return Some(label);
             }
         }
@@ -150,11 +170,15 @@ fn basename(word: &str) -> &str {
 }
 
 /// Programs that run code given as text: a `-c`/`-e` argument, a here-string
-/// or a pipe on stdin.
+/// or a pipe on stdin. `eval`, `source` and `.` run their input as shell code
+/// too (crusty round 5).
 fn is_interpreter(name: &str) -> bool {
     matches!(
         name,
-        "bash"
+        "eval"
+            | "source"
+            | "."
+            | "bash"
             | "sh"
             | "zsh"
             | "dash"
@@ -178,6 +202,61 @@ fn is_interpreter(name: &str) -> bool {
             | "osascript"
     ) || name.starts_with("python")
         || name.starts_with("pypy")
+}
+
+/// Whether the simple command `words` treats a heredoc on its stdin, or the
+/// output of a `$(…)` in its arguments, as data: a bare assignment, or every
+/// program it runs is on this allowlist. Anything else (an unknown program,
+/// `parallel`, `at`, `ssh`, `script`, `expect`, a wrapper with no command
+/// left to find, as in `env -S '…'`) is code. `sed` and `awk` are left off:
+/// GNU sed's `e` command and any awk script run shell commands.
+fn reads_heredoc_as_data(words: &[String]) -> bool {
+    if words.iter().all(|w| is_assignment(w)) {
+        return true;
+    }
+    let programs = command_words(words);
+    !programs.is_empty()
+        && programs.iter().all(|(i, word)| {
+            let args = &words[i + 1..];
+            match basename(word) {
+                // `gh api --input -` sends the body as a request.
+                "gh" => skip_flags(args).first().map(String::as_str) != Some("api"),
+                // A `!` alias runs a shell command.
+                "git" => !args.iter().any(|a| a.contains("alias.")),
+                name => matches!(
+                    name,
+                    "cat"
+                        | "tee"
+                        | "jq"
+                        | "wc"
+                        | "head"
+                        | "tail"
+                        | "grep"
+                        | "rg"
+                        | "diff"
+                        | "cmp"
+                        | "sort"
+                        | "uniq"
+                        | "tr"
+                        | "cut"
+                        | "paste"
+                        | "fold"
+                        | "fmt"
+                        | "nl"
+                        | "base64"
+                        | "sha256sum"
+                        | "md5sum"
+                        | "echo"
+                        | "printf"
+                        | "cd"
+                        | "mkdir"
+                        | "ls"
+                        | "pwd"
+                        | "true"
+                        | "false"
+                ),
+            }
+        })
 }
 
 /// The words of `words` that run as programs, with their indices: the first
@@ -345,9 +424,9 @@ fn segment_merge_form(words: &[String], depth: usize, scripted: bool) -> Option<
                 words.iter().find_map(|w| raw_merge_form(w))
             }
             "bash" | "sh" | "zsh" | "dash" | "ksh" => {
-                shell_c_body(rest).and_then(|body| merge_form(body, depth + 1, scripted))
+                shell_c_body(rest).and_then(|body| merge_form(body, depth + 1, scripted, false))
             }
-            "eval" => merge_form(&rest.join(" "), depth + 1, scripted),
+            "eval" => merge_form(&rest.join(" "), depth + 1, scripted, false),
             _ => None,
         };
         if found.is_some() {
@@ -372,7 +451,7 @@ fn code_merge_form(word: &str, depth: usize) -> Option<&'static str> {
         })
         .collect();
     if code.chars().any(char::is_whitespace)
-        && let Some(label) = merge_form(&code, depth + 1, true)
+        && let Some(label) = merge_form(&code, depth + 1, true, false)
     {
         return Some(label);
     }
@@ -442,7 +521,8 @@ struct Split {
     segments: Vec<Vec<String>>,
     /// Bodies of `$(…)` and backticks, to be checked as commands.
     nested: Vec<String>,
-    /// Heredoc bodies: data unless an interpreter runs in the command.
+    /// Heredoc bodies: code unless every program in the command is a known
+    /// data consumer (see [`reads_heredoc_as_data`]).
     heredocs: Vec<String>,
 }
 
@@ -593,8 +673,8 @@ fn heredoc_substitutions(body: &str) -> Vec<String> {
 /// `|`, newlines, parentheses and redirections, honouring quotes and
 /// backslashes. Bodies of `$(…)` and backticks, quoted or not, are returned
 /// separately to be checked as commands of their own. Heredoc bodies are
-/// returned separately too, as data (crusty round 4): a line of a commit
-/// message is not a command.
+/// returned separately too; [`merge_form`] reads them as data only when
+/// every program that can receive them is a known data consumer.
 ///
 /// This is a reader for the commands agents write, not a shell: anything it
 /// misreads still meets the `gh` shim, and branch protection after that.

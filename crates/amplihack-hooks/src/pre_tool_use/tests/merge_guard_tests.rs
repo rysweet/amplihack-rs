@@ -281,6 +281,42 @@ fn heredoc_bodies_are_code_when_an_interpreter_reads_them() {
 }
 
 #[test]
+fn heredoc_bodies_are_code_unless_a_known_data_consumer_reads_them() {
+    // Crusty round 5: d21721f3 read a body as data unless `is_interpreter`
+    // named its program, so every one of these passed. The rule is now deny
+    // by default; each carve-out above has its refused neighbour here.
+    for cmd in [
+        "source /dev/stdin <<'EOF'\ngh pr merge 38\nEOF",
+        ". /dev/stdin <<'EOF'\ngh pr merge 38\nEOF",
+        "eval \"$(cat <<'EOF'\ngh pr merge 38\nEOF\n)\"",
+        "parallel <<'EOF'\ngh pr merge 38\nEOF",
+        "at now <<'EOF'\ngh pr merge 38\nEOF",
+        "batch <<'EOF'\ngh pr merge 38\nEOF",
+        "ssh localhost <<'EOF'\ngh pr merge 38\nEOF",
+        "bash -c \"$(cat <<'EOF'\ngh pr merge 38\nEOF\n)\"",
+        // A program nobody listed, and one added to a toolchain later.
+        "some-new-runner <<'EOF'\ngh pr merge 38\nEOF",
+        "script -q /dev/null <<'EOF'\ngh pr merge 38\nEOF",
+        "expect <<'EOF'\nspawn gh pr merge 38\nEOF",
+        // A wrapper that leaves no command to find.
+        "env -S 'sh' <<'EOF'\ngh pr merge 38\nEOF",
+        // `$(cat <<…)` feeding a program that runs its argument.
+        "ssh localhost \"$(cat <<'EOF'\ngh pr merge 38\nEOF\n)\"",
+        "parallel ::: \"$(cat <<'EOF'\ngh pr merge 38\nEOF\n)\"",
+        // Listed consumers in a mode that runs or sends the body.
+        "gh api graphql -F query=@- <<'EOF'\nmutation { mergePullRequest(input: {}) { clientMutationId } }\nEOF",
+        "git -c alias.m='!sh' m <<'EOF'\ngh pr merge 38\nEOF",
+        "sed -f - x <<'EOF'\ne gh pr merge 38\nEOF",
+        // A data consumer in the same call as a program off the list.
+        "cargo fmt && git commit -F - <<'EOF'\nfix: gh pr merge 38\nEOF",
+        // Here-strings to `source`/`eval` run too.
+        "source /dev/stdin <<<'gh pr merge 38'",
+    ] {
+        assert!(blocked(cmd), "not refused: {cmd:?}");
+    }
+}
+
+#[test]
 fn heredocs_hide_neither_substitutions_nor_the_commands_after_them() {
     for cmd in [
         // An unquoted body runs its `$(…)` and backticks.

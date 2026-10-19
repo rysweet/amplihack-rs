@@ -1801,7 +1801,8 @@ redirections. It follows `bash -c`/`sh -c` (also `-lc`, `-ic`), `eval`, and
   `--input` or `=@`;
 - `curl`, `wget`, `http`/`https` (HTTPie) or `xh` has a merge endpoint or
   mutation in any argument;
-- the command runs an interpreter (`bash`, `sh` and other shells, `python*`,
+- the command runs an interpreter (`bash`, `sh` and other shells, `eval`,
+  `source`, `.`, `python*`,
   `pypy*`, `perl`, `ruby`, `node`, `deno`, `bun`, `php`, `lua`, `tclsh`, `awk`
   and its variants, `osascript`) as a program, and any word, quoted or not,
   reads as one of the forms above, an endpoint, a mutation or the gate's file
@@ -1838,15 +1839,29 @@ word, so `git commit -m 'gh pr merge'`, `grep mergePullRequest`, `rg 'gh pr
 merge' --type sh` and `gh pr create --body …` pass.
 
 A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`) is
-data, the stdin of its command, not commands. So the usual ways to write a
-commit message or PR body pass whatever merge text the body holds:
+read as code unless every program in the command is a known data consumer:
+`cat`, `tee`, `git` (with no `alias.` setting on the line), `gh` (except
+`gh api`), `jq`, `wc`, `head`, `tail`, `grep`, `rg`, `diff`, `cmp`, `sort`,
+`uniq`, `tr`, `cut`, `paste`, `fold`, `fmt`, `nl`, `base64`, `sha256sum`,
+`md5sum`, `echo`, `printf`, `cd`, `mkdir`, `ls`, `pwd`, `true` and `false`,
+and no interpreter runs. This is deny by default (crusty round 5): `source
+/dev/stdin <<'EOF'`, `. /dev/stdin <<'EOF'`, `eval "$(cat <<'EOF' … EOF)"`,
+`parallel <<'EOF'`, `at now <<'EOF'`, `batch`, `ssh host <<'EOF'`, `env -S …`,
+and any program not on the list, including one added to a toolchain later,
+have the body read as commands. A `$(cat <<'EOF' … EOF)` is data only when
+the command it feeds is on the list too, so `ssh host "$(cat <<'EOF' … EOF)"`
+is code. `sed` and `awk` are left off: GNU sed's `e` command and awk scripts
+run shell commands. The check covers every simple command at that level of
+the tool call, not just the pipeline holding the heredoc, so `cargo test &&
+git commit -F - <<'EOF' … gh pr merge … EOF` is refused; split it. So the
+usual ways to write a commit message or PR body, each in a call of its own,
+pass whatever merge text the body holds:
 `git commit -F - <<'EOF' … EOF`, `git commit -m "$(cat <<'EOF' … EOF
 )"`, `gh pr create --body "$(cat <<'EOF' … EOF
 )"` and `cat > docs/x.md <<'EOF' … EOF`. Apostrophes and parentheses in the
-body do not unbalance a surrounding `$(…)`. The body is read as code only
-when the command runs an interpreter as a program (`bash <<'EOF'`,
-`python3 - <<'EOF'`, `cat <<'EOF' | bash`); then a merge form in it is
-refused. An unquoted delimiter (`<<EOF`) lets bash run the body's `$(…)` and
+body do not unbalance a surrounding `$(…)`. When the body is read as code
+(`bash <<'EOF'`, `python3 - <<'EOF'`, `cat <<'EOF' | bash`, the forms above),
+a merge form in it is refused. An unquoted delimiter (`<<EOF`) lets bash run the body's `$(…)` and
 backticks, so those are checked as commands; a quoted one (`<<'EOF'`) does
 not. A body with no closing delimiter line, and a delimiter that does not
 start with a letter, `_`, a quote or a backslash (as in the shift
@@ -1858,9 +1873,11 @@ What this check still costs: a command that runs an interpreter as a program
 and also quotes merge text or names the gate, such as `bash test.sh && git
 commit -m '… gh pr merge …'`, `bash test.sh && git commit -F - <<'EOF' … gh pr
 merge … EOF` or `bash test.sh && git add …/autodrive_merge_gate.sh`, is
-refused; split it into two tool calls. The refusal says so: when the match is
-prose, it tells the agent to write the prose in a call that runs no
-interpreter rather than drop or reword it. `gh pr view --json mergeable` passes. The hook blocks
+refused, and so is a heredoc of merge prose in a call that also runs a
+program off the data-consumer list (`cargo fmt && git commit -F - <<'EOF'`);
+split it into two tool calls. The refusal says so: when the match is
+prose, it tells the agent to write the prose in a call whose only programs
+are `git`, `gh`, `cat` or `tee` rather than drop or reword it. `gh pr view --json mergeable` passes. The hook blocks
 with a message naming the form and the gate, never the command.
 
 The hook reads command text, so it does not see what that text only names:
@@ -1990,6 +2007,7 @@ The shim is a guardrail; branch protection on the base branch is the boundary.
 | `gh` by absolute path, `PATH=… gh`, `curl` to the merge endpoint | Refused by the hook check when typed into the agent's shell tool. |
 | A merge inside a script file the agent writes and then runs, through a real `gh` that `PATH` puts ahead of the shim | Not refused: neither layer sees it. The hook sees only `bash script.sh`, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. |
 | Variable indirection (`G=gh; $G pr merge 38`), a command built at run time (`$(printf g)h`, `xargs gh` with the subcommand on stdin, base64-decoded text), or an interpreter the hook does not list, through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook cannot read a command that does not exist until the shell builds it, and the shim is not on that path. Caught by the phase 1 and phase 2 `MERGED` checks. Merge text piped or passed inline to a listed interpreter is refused by the hook check. |
+| A heredoc fed to a listed data consumer that runs it anyway (a `git` alias or `core.pager` set in config rather than on the command line, a wrapped `cat` earlier on `PATH`), through a real `gh` that `PATH` puts ahead of the shim | Not refused: the hook trusts the [data-consumer allowlist](#the-pre-tool-use-hook-check) by name. Every program off the list, `eval`, `source`, `.`, `parallel`, `at`, `ssh` and unknown ones included, has its heredoc read as code and is refused. Caught by the phase 1 and phase 2 `MERGED` checks. |
 | An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
