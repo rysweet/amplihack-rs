@@ -15,10 +15,10 @@
 # STUCK when the round record is missing, or when the previous round's DONE
 # was overridden too (<prev-overridden> 1) and this round moved nothing: the
 # same <verdict>, the same findings once whitespace is collapsed and trimmed,
-# and <head> equal to the round's <baseline>. An empty <baseline> or <head>
-# (git could not read HEAD) counts as moved. There is no counter here; the
-# stop comes from the absence of progress. <verdict> and <prev-verdict> are
-# the loop's A-Za-z0-9_ copies; the raw verdict is only compared to MISSING.
+# and <head> equal to the round's <baseline>. An empty <head> (git could not
+# read HEAD) counts as not moved, so the guard fails safe. No counter: the stop
+# comes from the absence of progress. <verdict> and <prev-verdict> are the
+# loop's A-Za-z0-9_ copies; the raw verdict is only compared to MISSING.
 #
 # Executed, never sourced. It reads its arguments and writes nothing.
 
@@ -38,7 +38,7 @@ trim_ws() { tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//'; }
 
 if [ "$PREV_OVERRIDDEN" = "1" ] && [ "$VERDICT" = "$PREV_VERDICT" ] \
    && [ "$(printf '%s' "$FINDINGS" | trim_ws)" = "$(printf '%s' "$PREV_FINDINGS" | trim_ws)" ] \
-   && [ -n "$BASELINE" ] && [ "$HEAD" = "$BASELINE" ]; then
+   && { [ -z "$HEAD" ] || [ "$HEAD" = "$BASELINE" ]; }; then
   printf "repeated DONE over non-clean '%s' with no progress (same verdict, same findings, HEAD unchanged)\n" "$VERDICT"
   exit 1
 fi

@@ -5547,6 +5547,34 @@ else
   fail "1597-progress-verdict" "rc=${rc}: ${LOOP_OUT}; $(tail -n4 "${LOOP_LOGS}/err")"
 fi
 
+# The helper on its own, for a repeated DONE over the same CONCERNS pair: an
+# unreadable HEAD (empty <head>) is "not moved", so the guard fails safe.
+p1597_helper() { bash "${TOOLS}/autodrive_done_override.sh" "$@" > "${WORK}/p1597-helper.out" 2>&1; }
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x "" ""; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'no progress' "${WORK}/p1597-helper.out"; then
+  pass "1597-helper-empty-head-stuck" "an empty baseline and an empty HEAD on a repeated DONE are no progress: STUCK"
+else
+  fail "1597-helper-empty-head-stuck" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x abc ""; rc=$?
+if [ "$rc" -eq 1 ] && grep -qF 'no progress' "${WORK}/p1597-helper.out"; then
+  pass "1597-helper-head-unreadable-after" "HEAD unreadable after the round is no progress, not a move away from the baseline: STUCK"
+else
+  fail "1597-helper-head-unreadable-after" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x "" abc; rc=$?
+if [ "$rc" -eq 0 ]; then
+  pass "1597-helper-empty-baseline-moved" "an empty baseline with a readable HEAD counts as moved: another round"
+else
+  fail "1597-helper-empty-baseline-moved" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+p1597_helper CONCERNS CONCERNS 1 CONCERNS x x abc; rc=$?
+if [ "$rc" -eq 2 ]; then
+  pass "1597-helper-usage" "seven arguments are a usage error (exit 2), which the loop reads as STUCK"
+else
+  fail "1597-helper-usage" "rc=${rc}: $(cat "${WORK}/p1597-helper.out")"
+fi
+
 # A CONTINUE in between resets the override: DONE, CONTINUE, DONE over three
 # identical CONCERNS rounds is two first-time overrides, then round-4 is CLEAN.
 SPEC="${WORK}/spec-1597-reset"; p1597_reset "${SPEC}"

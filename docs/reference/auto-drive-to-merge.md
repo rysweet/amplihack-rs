@@ -516,9 +516,9 @@ through `loop_clean_token` and `loop_round_verdict` (see
 - `HEAD` after the round equals the round's baseline, so nothing was
   committed. A commit made by the merge-ready loop's `--before-round` re-review
   counts as progress, because the baseline is taken before that step runs. If
-  `git rev-parse HEAD` fails before or after the round, `HEAD` counts as
-  changed: the loop runs another round, which never advances a phase on its
-  own.
+  `git rev-parse HEAD` fails after the round, `HEAD` counts as unchanged, so a
+  repeated `DONE` stops as STUCK and fails safe. An unreadable baseline with a
+  readable `HEAD` afterwards counts as changed.
 
 If any one differs, the loop keeps going, exactly as for `CONTINUE`. A
 `CONTINUE` or a clean round in between resets the override, so a `DONE` over

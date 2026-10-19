@@ -84,9 +84,8 @@ steps:
     recipe: "loop-evidence-collector"
 
   # ---------------------------------------------------------------------------
-  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit
-  # 79 is already a final answer from a structural guard, and asking a model
-  # whether to re-enter it is the "retry into the guard" #1327 was written to stop.
+  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit 79 is a
+  # guard's final answer, and asking a model to re-enter it is what #1327 stops.
   # ---------------------------------------------------------------------------
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
@@ -173,11 +172,12 @@ steps:
         (new diff, resolved findings, changed test/CI signal) and a plausible
         next step. Say what specifically moved.
       - `DONE` — the loop's objective is met; the next phase should advance.
-        Legal only when this round's own verdict `{{loop_round_verdict}}` equals the clean token `{{loop_clean_token}}`.
-        A non-clean round (CONCERNS, NOT_MERGE_READY and the like) is never `DONE`, even when every finding looks
-        addressed by a commit or a pull request description edit: only another review round can confirm a fix,
-        so answer `CONTINUE` if the round moved something and `STUCK` if nothing moved.
-        If `loop_clean_token` is empty, apply this rule to this round's reviewer verdict in the history above, if any.
+        If `loop_clean_token` is empty, judge by this round's reviewer verdict
+        in the history above, if any. Otherwise DONE is legal only when this
+        round's own verdict `{{loop_round_verdict}}` equals `{{loop_clean_token}}`.
+        A non-clean round (CONCERNS, NOT_MERGE_READY, ...) is never `DONE`, even
+        if a commit or PR edit seems to address every finding: only another
+        review confirms a fix. `CONTINUE` if the round moved, else `STUCK`.
       - `STUCK` — no progress is being made. Say precisely WHAT is not
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
