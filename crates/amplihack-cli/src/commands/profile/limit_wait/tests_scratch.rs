@@ -15,6 +15,7 @@ use std::io::{self, Read};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 fn mode(p: &Path) -> u32 {
     fs::symlink_metadata(p).unwrap().permissions().mode() & 0o777
@@ -289,4 +290,28 @@ fn the_sweep_removes_orphaned_in_files_and_nothing_it_cannot_parse() {
         "symlinks are not followed"
     );
     assert!(subdir.join(format!("{dead}-4.in")).exists(), "no recursion");
+}
+
+#[test]
+fn the_age_rule_applies_only_to_names_that_parse() {
+    let (_t, dir) = rerun();
+    let me = std::process::id();
+    let old_live = dir.join(format!("{me}-0.in"));
+    let old_unknown = dir.join("notes.txt");
+    let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
+    for p in [&old_live, &old_unknown] {
+        let f = fs::File::create(p).unwrap();
+        f.set_modified(two_days_ago).unwrap();
+    }
+
+    sweep_rerun(&dir);
+
+    assert!(
+        !old_live.exists(),
+        "a parseable name over 24 h old is removed"
+    );
+    assert!(
+        old_unknown.exists(),
+        "an unparseable name is kept at any age"
+    );
 }

@@ -1382,7 +1382,8 @@ step and deleted when the supervisor exits, on every path including a
 signal. Attempts receive it as an open file descriptor, never as a path. If
 the supervisor is killed first, recovery deletes both kinds of file once no
 process with that `<pid>` is running, and any of them older than 24 hours
-regardless. Recovery runs at every supervisor start as well as at the
+regardless. Files whose names do not match `<pid>-<n>.out` or `<pid>-<n>.in`
+are never deleted, whatever their age. Recovery runs at every supervisor start as well as at the
 points listed in [Session end and recovery](#session-end-and-recovery).
 Until then each file holds whatever the step read or printed, at mode
 `0600` in a `0700` directory.
@@ -1698,7 +1699,7 @@ of:
 | `reset reached` | The deadline came from `reset+margin` or `default` and has passed. |
 | `max reached` | The deadline came from `max_wait` and has passed. |
 | `step timeout` | The deadline came from `step_timeout` and has passed. |
-| `login changed` | The login fingerprint differs from the one taken when the wait began. |
+| `login changed` | Two probes in a row, 30 seconds apart, both differ from the fingerprint taken when the wait began. |
 | `signal` | `SIGINT`, `SIGTERM` or `SIGHUP` was received. |
 
 The **login fingerprint** describes which account the retry would use. It
@@ -1717,12 +1718,16 @@ The fingerprint has three parts:
 | Part | Source |
 |------|--------|
 | Ledger account | For a profile directory, the account the auto-switch ledger (`<root>/.auto-switch.d/ledger.json`) records for it. For `$HOME/.claude`, the `live` field of the rotator ledger (`<root>/.rotator/ledger.json`), read with the existing rotator-ledger trust checks. |
-| Account identity | `oauthAccount.accountUuid` from the directory's `.claude.json`, or `oauthAccount.emailAddress` when there is no UUID. For `$HOME/.claude` the file is `$HOME/.claude.json`. It is read without following symlinks, with the 32 MiB cap auto-switch already uses. |
+| Account identity | `oauthAccount.accountUuid` from the directory's `.claude.json`, or `oauthAccount.emailAddress` when there is no UUID. For `$HOME/.claude` the file is `$HOME/.claude.json` when `$CLAUDE_CONFIG_DIR` is not set; when `$CLAUDE_CONFIG_DIR` is set to `$HOME/.claude`, it is `$HOME/.claude/.claude.json`, the file Claude reads. It is read without following symlinks, with the 32 MiB cap auto-switch already uses. |
 | Credentials present | Whether `.credentials.json` exists in the directory, checked with `lstat` only. |
 
-The wait ends with `login changed` when any part differs from the value
-taken when the wait began. A part that appears or disappears counts as a
-change.
+The wait ends with `login changed` when two probes in a row, 30 seconds
+apart, both differ from the value taken when the wait began. A part that
+appears or disappears counts as a change. The two probes need not agree
+with each other, so a logout followed by a new login still ends the wait.
+One differing probe followed by a matching one is ignored: a read that
+fails, for example because another Claude session was rewriting
+`.claude.json`, counts as absent and would otherwise end the wait early.
 
 The credentials file is **never opened**: its bytes, size, modification
 time and digest are not part of the fingerprint. Claude rewrites that file

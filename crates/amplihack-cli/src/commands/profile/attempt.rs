@@ -198,7 +198,10 @@ pub(crate) fn run_attempt(
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
-    let stderr_tail = reader.join().unwrap_or_default();
+    let stderr_tail = reader.join().unwrap_or_else(|_| {
+        eprintln!("amplihack: this step's stderr reader thread panicked");
+        Vec::new()
+    });
     use std::os::unix::process::ExitStatusExt;
     let (code, signalled) = match (status.code(), status.signal()) {
         (Some(c), _) => (c, false),
@@ -233,13 +236,10 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
         Vec::new()
     });
     let (err, out) = (&attempt.stderr_tail, &out_tail);
-    let ledger_reset = limit_reset(attempt.signalled, attempt.code, err, out, fsx::now())?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(err),
-        String::from_utf8_lossy(out)
-    );
+    let text = joined(err, out);
+    let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
     Some(Limited {
+        // `UsageLimit` means a marker matched, so `detect` is `Some` here.
         harness: limit_patterns::detect(&text).unwrap_or(Harness::Claude),
         ledger_reset,
         wait_reset: limit_patterns::read_reset(err, out, now),
@@ -250,7 +250,9 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
 /// exited non-zero, and the recipe runner's classifier calls its stderr tail
 /// followed by its stdout tail `UsageLimit`. Work and environmental markers
 /// outrank a usage limit there, so a real failure that also mentions one is
-/// not rerun. Returns the reset time to record.
+/// not rerun. Returns the reset time to record. `usage_limited` is the
+/// production path; this is its test entry point.
+#[cfg(test)]
 pub fn limit_reset(
     signalled: bool,
     code: i32,
@@ -261,12 +263,21 @@ pub fn limit_reset(
     if signalled || code == 0 {
         return None;
     }
-    let text = format!(
+    classified_reset(&joined(stderr, stdout), stderr, stdout, now)
+}
+
+/// The stderr tail followed by the stdout tail, as the classifier reads it.
+fn joined(stderr: &[u8], stdout: &[u8]) -> String {
+    format!(
         "{}\n{}",
         String::from_utf8_lossy(stderr),
         String::from_utf8_lossy(stdout)
-    );
-    (classify_failure_text(&text).0 == FailureClass::UsageLimit)
+    )
+}
+
+/// The reset to record when `text`, built by `joined`, is a usage limit.
+fn classified_reset(text: &str, stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> {
+    (classify_failure_text(text).0 == FailureClass::UsageLimit)
         .then(|| super::auto_switch::reset_or_default(stderr, stdout, now))
 }
 

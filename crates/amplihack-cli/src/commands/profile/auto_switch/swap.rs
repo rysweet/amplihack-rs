@@ -443,24 +443,24 @@ fn cleanup_rerun(state: &State) {
     sweep_rerun(&state.dir.join("rerun"));
 }
 
-/// Removes regular files in `dir` (no recursion) whose supervisor is gone or
-/// that are over 24 hours old. Best effort: every `recover` sweeps again.
+/// Removes regular `<pid>-<n>.{out,in}` files in `dir` (no recursion) whose
+/// supervisor is gone or that are over 24 h old. Other names are left.
 pub(crate) fn sweep_rerun(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
-        if !e.file_type().is_ok_and(|t| t.is_file()) {
+        let file = e.file_type().is_ok_and(|t| t.is_file());
+        let Some(pid) = rerun_owner(&e.file_name()).filter(|_| file) else {
             continue;
-        }
+        };
         let old = e
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > RERUN_MAX_AGE_SECS);
-        let orphan = rerun_owner(&e.file_name()).is_some_and(|pid| !pid_running(pid));
-        if old || orphan {
+        if old || !pid_running(pid) {
             let _ = fs::remove_file(e.path());
         }
     }

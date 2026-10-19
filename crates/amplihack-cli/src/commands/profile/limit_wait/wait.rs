@@ -1,7 +1,9 @@
 //! The wait itself (issue #1618), over a `WaitDeps` so tests drive it with
 //! their own clock. Each pass checks, in order: a stop signal, the deadline,
 //! the login fingerprint (every 30 s) and the progress line (every 60 s),
-//! then sleeps at most one second.
+//! then sleeps at most one second. A login change needs two probes in a row
+//! that both differ from the first one, so one torn or failed read of
+//! `.claude.json` does not end the wait.
 
 use super::plan::{Bound, Plan};
 use super::{Event, line};
@@ -61,6 +63,7 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
     let first = deps.fingerprint();
     let mut next_poll = start.saturating_add(POLL_SECS);
+    let mut changed_once = false;
     let mut next_progress = start.saturating_add(PROGRESS_SECS);
     loop {
         if let Some(sig) = deps.signal() {
@@ -71,9 +74,11 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             return End::at_deadline(plan.bound);
         }
         if now >= next_poll {
-            if deps.fingerprint() != first {
+            let changed = deps.fingerprint() != first;
+            if changed && changed_once {
                 return End::LoginChanged;
             }
+            changed_once = changed;
             next_poll = now.saturating_add(POLL_SECS);
         }
         if now >= next_progress {

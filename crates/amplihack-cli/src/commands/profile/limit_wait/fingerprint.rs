@@ -38,10 +38,11 @@ enum Kind {
     Profile { root: PathBuf, name: String },
     /// `$CLAUDE_CONFIG_DIR`, with no ledger.
     ConfigDir,
-    /// `$HOME/.claude`: `.claude.json` is `$HOME/.claude.json`, and the
-    /// rotator ledger under `root` names the account live there.
+    /// `$HOME/.claude`, with the rotator ledger under `root` naming the
+    /// account live there. `json` holds the `.claude.json` Claude reads:
+    /// `$HOME` by default, `$CLAUDE_CONFIG_DIR` when that is set to it.
     Home {
-        home: PathBuf,
+        json: PathBuf,
         root: Option<PathBuf>,
     },
 }
@@ -73,7 +74,7 @@ impl Watch {
             Some(home) if config_dir.is_none() || config_dir == home_dir.as_deref() => Self {
                 dir: home_dir,
                 kind: Kind::Home {
-                    home: home.to_path_buf(),
+                    json: config_dir.unwrap_or(home).to_path_buf(),
                     root,
                 },
             },
@@ -95,7 +96,7 @@ impl Watch {
         let (ledger, json_dir) = match &self.kind {
             Kind::Profile { root, name } => (auto_switch::rerun::ledger_account(root, name), dir),
             Kind::ConfigDir => (None, dir),
-            Kind::Home { home, root } => (root.as_deref().and_then(rotator_live), home.as_path()),
+            Kind::Home { json, root } => (root.as_deref().and_then(rotator_live), json.as_path()),
         };
         Some(Fingerprint {
             ledger,

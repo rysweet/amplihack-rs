@@ -180,14 +180,43 @@ fn the_fingerprint_is_taken_at_the_start_and_every_thirty_seconds() {
 }
 
 #[test]
-fn a_changed_login_ends_the_wait_at_the_next_poll() {
+fn a_changed_login_ends_the_wait_at_the_second_differing_poll() {
     let mut f = Fake::new();
     f.prints = vec![(0, Some(1)), (45, Some(2))];
     assert_eq!(
         wait(&plan_in(1800, Bound::Default), &mut f),
         End::LoginChanged
     );
-    assert_eq!(f.elapsed(), 60);
+    assert_eq!(f.elapsed(), 90);
+}
+
+#[test]
+fn one_differing_poll_followed_by_a_matching_one_keeps_waiting() {
+    let mut f = Fake::new();
+    f.prints = vec![
+        (0, Some(1)),
+        (45, None),
+        (75, Some(1)),
+        (105, None),
+        (135, Some(1)),
+    ];
+    assert_eq!(
+        wait(&plan_in(200, Bound::Default), &mut f),
+        End::ResetReached
+    );
+    assert!(f.elapsed() >= 200, "ended early at {}", f.elapsed());
+}
+
+#[test]
+fn two_differing_polls_need_not_agree_with_each_other() {
+    // A logout seen at 60 s and a new login seen at 90 s still end the wait.
+    let mut f = Fake::new();
+    f.prints = vec![(0, Some(1)), (45, None), (75, Some(3))];
+    assert_eq!(
+        wait(&plan_in(1800, Bound::Default), &mut f),
+        End::LoginChanged
+    );
+    assert_eq!(f.elapsed(), 90);
 }
 
 #[test]
@@ -203,7 +232,7 @@ fn a_part_that_appears_or_disappears_counts_as_a_change() {
             End::LoginChanged,
             "{prints:?}"
         );
-        assert_eq!(f.elapsed(), 30);
+        assert_eq!(f.elapsed(), 60);
     }
 }
 

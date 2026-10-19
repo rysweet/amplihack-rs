@@ -312,7 +312,10 @@ fn env_path(name: &str) -> Option<PathBuf> {
 pub(crate) fn supervise_unprofiled(settings: WaitSettings) -> Result<Option<i32>> {
     let home = env_path("HOME");
     let config_dir = env_path("CLAUDE_CONFIG_DIR");
-    let store = super::store::ProfileStore::from_env().ok();
+    // The error can quote the profile root, so only a fixed reason is shown.
+    let store = super::store::ProfileStore::from_env()
+        .map_err(|_| eprintln!("amplihack: usage-limit wait: profile store unavailable"))
+        .ok();
     let watch = Watch::new(store.as_ref(), None, config_dir.as_deref(), home.as_deref());
     let mut waiter = Waiter::new(Some(settings), watch);
     let unsupervised = |waiter: &Waiter, why: &dyn Display| {

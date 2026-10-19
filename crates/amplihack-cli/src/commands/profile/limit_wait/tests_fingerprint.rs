@@ -271,6 +271,34 @@ fn home_reads_home_claude_json_not_one_inside_dot_claude() {
 }
 
 #[test]
+fn an_explicit_config_dir_of_home_claude_reads_its_own_claude_json() {
+    // Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` whenever the variable
+    // is set, even to `$HOME/.claude`; the rotator ledger is still watched.
+    let e = env();
+    e.rotator("a");
+    let cfg = e.home.join(".claude");
+    private(
+        &cfg.join(".claude.json"),
+        &account(Some("uuid-inner"), "i@example.invalid", 0),
+    );
+    let w = Watch::new(Some(&e.store), None, Some(&cfg), Some(&e.home));
+    let before = probe(&w);
+    private(
+        &e.home.join(".claude.json"),
+        &account(Some("uuid-new"), "me@example.invalid", 0),
+    );
+    assert!(before == probe(&w), "$HOME/.claude.json is not read");
+    private(
+        &cfg.join(".claude.json"),
+        &account(Some("uuid-inner-2"), "i@example.invalid", 0),
+    );
+    let after = probe(&w);
+    assert!(before != after, "$HOME/.claude/.claude.json is read");
+    e.rotator("b");
+    assert!(after != probe(&w), "the rotator ledger is still watched");
+}
+
+#[test]
 fn a_rotation_into_home_claude_is_a_change_for_home() {
     let e = env();
     e.rotator("a");

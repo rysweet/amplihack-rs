@@ -795,7 +795,7 @@ at once.
    - the reset time plus two minutes;
    - the login for the step changing, for example because a rotator or
      auto-switch moved an account with quota into `~/.claude` or into the
-     inherited profile (checked every 30 seconds);
+     inherited profile (two checks in a row, 30 seconds apart);
    - the configured maximum, if one is set;
    - one minute before the step's timeout, when the run was started with
      `--step-timeout`.
