@@ -111,7 +111,21 @@ steps:
       }
       TD="$(with_directive "${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}"; printf x)"
       RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
-      jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}'
+      OUT="$(jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}')"
+      RC=$?
+      # Fail closed: step-02 must never start with the directive silently
+      # missing. Both fields carry the marker, so it appears at least twice.
+      MARKER='[amplihack:no-merge]'
+      REST="${OUT#*"$MARKER"}"
+      if [ "$NM" = "true" ] && { [ "$RC" -ne 0 ] || [ "$REST" = "$OUT" ] || [[ "$REST" != *"$MARKER"* ]]; }; then
+        echo "ERROR: #1551: could not add the no-merge directive to phase 1's task and requirements (jq exit ${RC}); refusing to start default-workflow without it [autodrive-build/step-01b]" >&2
+        exit 1
+      fi
+      if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
+        echo "ERROR: jq could not encode phase 1's task and requirements (exit ${RC}) [autodrive-build/step-01b]" >&2
+        exit 1
+      fi
+      printf '%s\n' "$OUT"
     output: "no_merge_directive"
 
   - id: "step-02-default-workflow"
@@ -157,22 +171,33 @@ steps:
         echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
         exit 1
       fi
+      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
+      HAVE_HELPER="false"
+      [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
+      # Issue #1551: a phase 1 that built under no_merge must leave its PR
+      # unmerged. MERGED here means something merged around the gh merge guard.
+      PRE_STATE="$(g pr_state)"
+      if [ "$(g should_run)" = "true" ] && [ "${NO_MERGE:-${RECIPE_VAR_no_merge:-}}" = "true" ]; then
+        [ "$HAVE_HELPER" = "true" ] || { echo "ERROR: #1551: autodrive_state.sh not found; cannot check that phase 1 left PR #${PR} unmerged [autodrive-build/step-03]" >&2; exit 1; }
+        autodrive_require_unmerged "$PR" "phase 1 (build)" || exit 1
+      fi
       URL="$(gh pr view "$PR" --json url --jq .url 2>/dev/null || printf '')"
       if [ -n "$DIR" ]; then
-        STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
-        [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
-        [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
-        [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
-        [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
-        if [ -f "$STATE_HELPER" ]; then
-          . "$STATE_HELPER"
+        if [ "$HAVE_HELPER" = "true" ]; then
           autodrive_mark_phase_done "$DIR" "build"
         else
           echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will re-probe phase 1." >&2
         fi
       fi
+      # merged_before_run: the PR was already MERGED when this run started (a
+      # resumed run), so the phase-2 check in auto-drive-to-merge skips it.
+      MBR="false"; [ "$PRE_STATE" = "MERGED" ] && MBR="true"
       echo "INFO: phase 1 complete: PR #${PR} ${URL}" >&2
-      printf '{"pr":"%s","pr_url":"%s","state_dir":"%s"}\n' "$PR" "$URL" "$DIR"
+      printf '{"pr":"%s","pr_url":"%s","state_dir":"%s","merged_before_run":"%s"}\n' "$PR" "$URL" "$DIR" "$MBR"
     output: "build_result"
 
 output:
