@@ -34,13 +34,19 @@ strip_controls() {
 
 subject() {
   local prefix="${1:-}" files=() dirs=() f d s list
+  local -A seen=()
   mapfile -d '' -t files < <(git -c core.quotePath=false diff --cached --name-only -z --no-renames 2>/dev/null)
   [ ${#files[@]} -gt 0 ] || return 0
   if [ ${#files[@]} -eq 1 ]; then
     s="${prefix}update ${files[0]}"
   else
-    mapfile -t dirs < <(for f in "${files[@]}"; do
+    # De-duplicate in-process first: strip_controls forks, so call it once per
+    # distinct top-level directory, not once per file.
+    for f in "${files[@]}"; do
       case "$f" in */*) d="${f%%/*}" ;; *) d="." ;; esac
+      seen["$d"]=1
+    done
+    mapfile -t dirs < <(for d in "${!seen[@]}"; do
       strip_controls "$d"
       printf '\n'
     done | LC_ALL=C sort -u)
