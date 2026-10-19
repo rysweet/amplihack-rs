@@ -1,6 +1,6 @@
 ---
 title: Loop-Health Evaluator Reference
-last_updated: 2026-10-06
+last_updated: 2026-10-18
 review_schedule: quarterly
 owner: workflow-team
 ---
@@ -653,11 +653,69 @@ retried into, and the agentic step is skipped entirely on a terminal refusal
 (`condition: "loop_evidence.terminal_refusal == 'false'"`) — not even a model
 call is spent deciding whether to re-enter a sealed guard. A terminal refusal
 forces `STUCK` even if an evaluator verdict from an earlier round said
-`CONTINUE`.
+`CONTINUE`. Only the guard's own output counts: an agent that quotes the token
+or the exit code is not refusing anything (see
+[Agent output lines are not refusals](#agent-output-lines-are-not-refusals)).
 
 Historically, agents read a `79` refusal as an infrastructure fault and retried
 one level deeper with a raised ceiling. That is what #1327 sealed, and it is
 what this branch refuses to re-open.
+
+### Agent output lines are not refusals
+
+A line that only quotes the refusal is not one. Agent output reaches the
+round log as `[HH:MM:SS] [amplihack:...]` lines, and a crusty review of
+PR #1586 that explained the stop rule ("the loop only stops for good on the
+policy-refusal exit code or BLOCKED_TERMINAL") once stopped the loop as a
+terminal policy refusal (#1510).
+
+`step-01-collect-loop-evidence` therefore applies the same rule as
+`terminal_refusal()` in `amplifier-bundle/tools/autodrive_loop.sh`. Before
+either text detector runs, it drops every line matching this ERE (the bytes
+are identical in both files):
+
+```bash
+grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$WORK/blob" > "$WORK/terminal_blob" || true
+```
+
+Both the `BLOCKED_TERMINAL` check and the `(exit|status|code)…79` check read
+`$WORK/terminal_blob`. The duration, still-running and failure-class checks
+keep reading the unfiltered `$WORK/blob`, so an agent line reporting
+`step took 10m 0s` still counts toward `repeated_duration_count`.
+
+| Round text | `terminal_refusal` | `terminal_reason` contains |
+| ---------- | ------------------ | -------------------------- |
+| `[10:13:17] [amplihack:claude:3] … or BLOCKED_TERMINAL (see terminal_refusal in autodrive_loop.sh)` | `"false"` | — |
+| `[10:13:18] [amplihack:claude:3] the guard returns exit 79 on refusal`, in `loop_last_round_output` or `loop_history` | `"false"` | — |
+| `BLOCKED_TERMINAL orchestration_unavailable: nested orchestration refused`, at column 0, after spaces, or after a tab | `"true"` | `BLOCKED_TERMINAL reported by a child` |
+| `child exited with status 79` (no prefix) | `"true"` | `exit code 79 present in round output` |
+| `loop_child_exit_code` = `79`, with any text or none | `"true"` | `child process exited 79` |
+| `[loop-health-evaluator] child process exited 79` | `"false"` | — ([self-poisoning](#the-brick-does-not-poison-itself)) |
+
+Rules that keep this fail-closed:
+
+- `loop_child_exit_code` = `79` is checked first and reads no text. It is the
+  guard's structural signal, and no filter can hide it.
+- The filter matches only that exact prefix: no case folding, no partial
+  timestamps, no other tags. An unprefixed guard line is always seen.
+- The collector still matches the bare `BLOCKED_TERMINAL` token on the lines
+  that remain. `autodrive_loop.sh` requires the full
+  `BLOCKED_TERMINAL orchestration_unavailable` marker, so the collector stops
+  on more text than the loop driver does. That is deliberate: when the two
+  disagree, the collector errs toward stopping.
+- `|| true` is there for a log made only of agent lines. In that case
+  `grep -v` leaves nothing and exits with status 1. `|| true` keeps that
+  status 1 from counting as a failure, so `terminal_blob` is just empty and no
+  refusal is reported.
+
+Known limits, accepted rather than patched with heuristics:
+
+- A real guard refusal that reaches the log **only** through an agent's
+  prefixed stream is not seen by the text check. The exit-code check still
+  catches it, and `autodrive_loop.sh` makes the same trade-off.
+- A multi-line agent message whose continuation lines lack the prefix can
+  still match. That is a false positive: it stops the loop, which is the safe
+  direction.
 
 ## Fail-safe guarantees
 
@@ -776,12 +834,14 @@ and reports what is not converging instead of consuming the remaining budget.
 | Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
 | Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Collector terminal detectors ignore agent output lines: the real step-01 command run through `bash` in an isolated environment, one test per row of the [agent output table](#agent-output-lines-are-not-refusals), each checking both `terminal_refusal` and, where the table lists one, the `terminal_reason` substring, plus the unfiltered duration count and an agent line followed by a real guard line. Two tests guard the filter itself: `issue_1510_near_miss_prefixes_are_not_filtered` checks that a short timestamp, another tag or a different case is not dropped, and `issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte` fails if the collector's pattern and the one in `autodrive_loop.sh` drift apart | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
 
 Run them with:
 
 ```bash
 cargo test -p amplihack-cli normalise_loop_verdict
 cargo test -p amplihack --test integration issue_1337_loop_health_evaluator::
+cargo test -p amplihack --test integration issue_1510
 bash amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh
 ```
 
