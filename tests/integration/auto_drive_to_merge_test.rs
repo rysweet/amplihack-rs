@@ -1559,11 +1559,31 @@ fn autodrive_gadugi_required_follows_the_qa_team_table() {
         (&[], Some("x"), "unknown", "true"),
         // Set but empty is not set.
         (&["Cargo.toml"], Some(""), "rust-cli", "false"),
+        // #1516: a root Python project wins over package.json, so a mixed
+        // root no longer requires gadugi.
+        (&["package.json", "pyproject.toml"], None, "python", "false"),
+        (&["setup.py", "package.json"], None, "python", "false"),
+        // #1516: a single nested Cargo workspace within depth 3 is Rust;
+        // unrelated nested crates, or one only under a pruned directory,
+        // decide nothing.
+        (&["a/Cargo.toml"], None, "rust-cli", "false"),
+        (&["a/Cargo.toml", "b/Cargo.toml"], None, "unknown", "false"),
+        (&["target/Cargo.toml"], None, "unknown", "false"),
+        // #1516: a root manifest wins over a nested crate (jamestown shape).
+        (
+            &["pyproject.toml", "grid-encode-decode/Cargo.toml"],
+            None,
+            "python",
+            "false",
+        ),
+        (&["package.json", "sub/Cargo.toml"], None, "node", "true"),
     ];
     for (files, scen, want_type, want_req) in cases {
         let tmp = tempfile::tempdir().expect("tempdir");
         for f in *files {
-            fs::write(tmp.path().join(f), "").expect("write marker");
+            let p = tmp.path().join(f);
+            fs::create_dir_all(p.parent().expect("marker parent")).expect("marker dir");
+            fs::write(p, "").expect("write marker");
         }
         let mut cmd = Command::new("bash");
         cmd.arg("-c")
@@ -2161,6 +2181,7 @@ fn qa_evidence_runs_one_gadugi_process_per_scenario() {
         "qa_status",
         "qa_reason",
         "qa_repo_type",
+        "qa_dir",
         "qa_command",
         "qa_suite_commands_count",
         "qa_exit_code",
