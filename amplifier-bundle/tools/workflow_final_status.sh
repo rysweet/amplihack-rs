@@ -308,6 +308,124 @@ adjudicate_terminal_state() {
   return 0
 }
 
+# --- branch PR lookup (issue #1596) -----------------------------------------
+#
+# A development run can open its PR from an agent step instead of the publish
+# step. pr_publish_result.pr_url is then empty and the run used to close with
+# FAILED_MISSING_TERMINAL_EVIDENCE while its PR sat open. Before deciding that
+# publish evidence is missing, ask GitHub (read-only) whether the run's branch
+# already has an open, same-repository PR.
+#
+# The run's branch is read from the run's worktree (WORKTREE_SETUP_WORKTREE_PATH),
+# never blindly from cwd: the finalize step historically ran from REPO_PATH, the
+# main checkout, whose branch is main, detached, or something unrelated. When a
+# worktree path is given but is gone, or the observed branch disagrees with
+# WORKTREE_SETUP_BRANCH_NAME / BRANCH_NAME, the lookup does not run. cwd is used
+# only when the caller gives no worktree path at all AND cwd is not the REPO_PATH
+# checkout (same toplevel); a caller that runs in REPO_PATH without a worktree
+# path, such as step-22b's fallback, gets no lookup.
+#
+# Fail closed: every guard, gh error, malformed result or candidate that fails
+# validation leaves PR_URL, PR_NUMBER and PUBLISH_STATE untouched. stdout is
+# never written; at most one fixed-phrase line goes to stderr. Always returns
+# 0 and never exits, so it is safe under `set -euo pipefail`.
+branch_pr_lookup_warn() {
+  echo "WARNING: branch PR lookup failed (#1596): $1" >&2
+}
+
+resolve_open_pr_for_current_branch() {
+  local branch base repo json pick cand_url cand_number url_number previous run_dir expected_branch
+  [ "$HOST_TYPE" = "github" ] || return 0
+  [ -z "$PR_URL" ] || return 0
+  [ "$publish_state_reached" != "true" ] || return 0
+  case "$PUBLISH_STATE" in
+    FOLLOWUP_CREATED|EXISTING_OPEN_PR|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS) return 0 ;;
+  esac
+  [ -z "$invalid_evidence" ] || return 0
+  [ "$terminal_failure" != "true" ] || return 0
+  [ "$terminal_no_op" != "true" ] || return 0
+  # Implementation+verification evidence already closes the run; the lookup
+  # only exists for the missing-evidence branch.
+  if [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
+    return 0
+  fi
+  command -v gh >/dev/null 2>&1 || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  run_dir="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+  if [ -n "$run_dir" ]; then
+    [ -d "$run_dir" ] || return 0
+  else
+    run_dir="."
+  fi
+  git -C "$run_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  # No worktree path and cwd is the REPO_PATH checkout: REPO_PATH's branch is
+  # not the run's branch (step-22b lands here on its unset-worktree fallback),
+  # so do not look it up.
+  if [ "$run_dir" = "." ] && [ -n "${REPO_PATH:-}" ]; then
+    local cwd_top repo_top
+    cwd_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    repo_top="$(git -C "$REPO_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -z "$repo_top" ] || [ "$cwd_top" != "$repo_top" ] || return 0
+  fi
+
+  branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
+  [ -n "$branch" ] || return 0
+  expected_branch="${WORKTREE_SETUP_BRANCH_NAME:-${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}"
+  [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || return 0
+  case "$branch" in -*|main|master) return 0 ;; esac
+  git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
+  base="$(cd "$run_dir" && resolve_expected_base_branch 2>/dev/null || true)"
+  [ -z "$base" ] || [ "$branch" != "$base" ] || return 0
+
+  # Never log the raw origin URL: it may embed credentials.
+  repo="$(parse_github_repo_identity "$(git -C "$run_dir" config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
+  [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 0
+
+  # Raw gh/retry stderr is dropped: it is untrusted and may carry PR content.
+  if ! json="$(GH_RETRY_MAX_RL_WINDOWS=0 GH_RETRY_REST_FALLBACK="" _gh_retry_core "final status branch PR lookup" \
+      pr list --repo "$repo" --head "$branch" --state open \
+      --json url,number,isCrossRepository 2>/dev/null)"; then
+    branch_pr_lookup_warn "gh failed"
+    return 0
+  fi
+  # First same-repository entry with a non-empty url; fork PRs never count.
+  # Anything other than a JSON array is malformed.
+  if ! pick="$(printf '%s' "$json" | jq -c 'if type != "array" then error("not an array") else
+      [.[] | objects
+      | select((.isCrossRepository // false) == false)
+      | select((.url // "") != "")][0] // empty end' 2>/dev/null)"; then
+    branch_pr_lookup_warn "malformed JSON"
+    return 0
+  fi
+  [ -n "$pick" ] || return 0
+
+  # The trailing sentinel stops $(...) from stripping a trailing newline, so a
+  # URL carrying one fails the anchored regex below instead of slipping past.
+  cand_url="$(printf '%s' "$pick" | jq -j '.url | tostring' 2>/dev/null && printf '.')" || cand_url=""
+  cand_url="${cand_url%.}"
+  cand_number="$(printf '%s' "$pick" | jq -r '(.number // "") | tostring' 2>/dev/null || true)"
+
+  if [[ ! "$cand_url" =~ ^https://github\.com/([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)/pull/([1-9][0-9]*)$ ]] \
+      || [ "$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:upper:]' '[:lower:]')" != "$(printf '%s' "$repo" | tr '[:upper:]' '[:lower:]')" ]; then
+    branch_pr_lookup_warn "URL failed validation"
+    return 0
+  fi
+  url_number="${BASH_REMATCH[2]}"
+  if [[ ! "$cand_number" =~ ^[1-9][0-9]*$ ]] || [ "$cand_number" != "$url_number" ]; then
+    branch_pr_lookup_warn "PR number mismatch"
+    return 0
+  fi
+
+  previous="${PUBLISH_STATE//[^A-Za-z0-9_-]/}"
+  PR_URL="$cand_url"
+  PR_NUMBER="$cand_number"
+  PUBLISH_STATE="EXISTING_OPEN_PR"
+  echo "INFO: resolved open PR $PR_URL for branch $branch (previous publish state: '$previous'); treating as EXISTING_OPEN_PR (#1596)" >&2
+  return 0
+}
+
+resolve_open_pr_for_current_branch
+
 case "$PUBLISH_STATE" in
   FOLLOWUP_CREATED|EXISTING_OPEN_PR|MERGED|CLOSED_OBSOLETE|NO_DIFF_SUCCESS)
     publish_state_reached="true"
