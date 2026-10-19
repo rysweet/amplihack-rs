@@ -97,10 +97,16 @@ legal only when the two are equal.
 A non-clean round (`CONCERNS`, `NOT_MERGE_READY` and the like) is never
 `DONE`, even when every finding looks addressed — by a commit or by an edit
 to the pull request description. Only another review round can confirm a
-fix, so the evaluator answers `CONTINUE` if the round moved something and
-`STUCK` if nothing moved. Issue #1597 is the case this rule closes: a crusty
-round said `CONCERNS`, the concerns were fixed by a description edit with no
-commit, and the evaluator answered `DONE`.
+fix, so the evaluator answers `CONTINUE` if the round acted on its findings
+and `STUCK` only if it neither changed the code nor acted on a finding. A fix
+made outside the diff counts as movement **even with zero commits**: a pull
+request description edit or a reply on a review thread that the round output
+shows is `CONTINUE`, and the re-review is the next step. Issue #1597 is the
+case this rule closes: a crusty round said `CONCERNS`, the concerns were fixed
+by a description edit with no commit, and the evaluator answered `DONE`.
+Without the zero-commit clause, the measured `commits_since_baseline = 0` and
+the "if you are not sure, answer `STUCK`" fallback would steer the same round
+to `STUCK`, which the loop honours, and the run would end one round short.
 
 The prompt also defines the `done_overridden=1` marker. When `autodrive_loop.sh`
 refuses a `DONE` because the round's verdict was not clean, it appends that
@@ -586,7 +592,7 @@ caller that wants the numbers alone can invoke the collector directly. Its
 | Field | Signal |
 | ----- | ------ |
 | `terminal_refusal`, `terminal_reason` | A child returned exit `79` / `BLOCKED_TERMINAL`. Terminal — see below. |
-| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means it produced nothing, whatever the round's prose claims. |
+| `commits_since_baseline`, `diff_lines`, `diff_stat` | What the last round **actually** produced, from `git rev-list` / `git diff --numstat` against `loop_baseline_ref`. Zero and zero means no code moved, whatever the round's prose claims. A non-clean round that acted on its findings outside the diff (a PR-description edit, a thread reply) is still `CONTINUE`; see the `DONE` rule. |
 | `repeated_duration_count`, `repeated_duration_value` | How many steps reported the *same* duration. Identical durations repeating are a cap, not work. |
 | `repeated_output` | Whether the last round's output is textually a repeat of something already in the history (compared after normalising away digits, punctuation and whitespace). |
 | `findings_new`, `findings_recurring`, `findings_resolved` | Set difference over `loop_findings_current` / `loop_findings_previous`. A round that resolves nothing and re-raises the same findings has not moved. |

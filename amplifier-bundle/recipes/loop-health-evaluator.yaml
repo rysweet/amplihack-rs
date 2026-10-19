@@ -37,18 +37,16 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 # so every step-output read below uses the dual-name idiom; drop it and the
 # recipe goes silently inert.
 #
-# No step in this file declares a timeout. Per issue #439 the recipe runner
-# owns the ceiling; there is deliberately no seconds-scale or single-digit-
-# minute bound on any step here.
+# No step here declares a timeout: per issue #439 the recipe runner owns the
+# ceiling, so no step has a seconds-scale or single-digit-minute bound.
 
 recursion:
   max_depth: 6
   max_total_steps: 20
 
 context:
-  # Identity / reporting only. `loop_round_label` is a LABEL printed in the
-  # escalation report — it is never compared against a limit and nothing in
-  # this recipe branches on it.
+  # Identity / reporting only. `loop_round_label` is a LABEL in the escalation
+  # report: never compared against a limit, and nothing here branches on it.
   loop_name: "unnamed-loop"
   loop_round_label: ""
   # Accumulated structured verdicts from every round so far (concatenated JSON
@@ -68,15 +66,13 @@ context:
   loop_ci_signal_previous: ""
   loop_clean_token: ""    # #1597: the verdict that makes a round clean (CLEAN, MERGE_READY)
   loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
-  # When "false", step-04 reports STUCK loudly but exits 0, leaving the stop
-  # decision entirely to the caller's `condition:`. Default is to enforce.
+  # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop.
   loop_health_enforce: "true"
 
 steps:
   # ---------------------------------------------------------------------------
-  # Step 1 — collect the evidence deterministically, in its own brick
-  # (`loop-evidence-collector.yaml`, testable without a model): measured, not
-  # impressed. Step-02 gets it AS DATA beside the raw material; the `loop_evidence`
+  # Step 1 — collect the evidence deterministically in its own brick (`loop-evidence-collector.yaml`,
+  # testable without a model). Step-02 gets it AS DATA beside the raw material; the `loop_evidence`
   # output lands in this context, so step-02's `condition:` reads it as local.
   # ---------------------------------------------------------------------------
   - id: "step-01-collect-loop-evidence"
@@ -84,8 +80,7 @@ steps:
     recipe: "loop-evidence-collector"
 
   # ---------------------------------------------------------------------------
-  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit 79 is a
-  # guard's final answer, and asking a model to re-enter it is what #1327 stops.
+  # Step 2 — the agentic judgement. Skipped on a terminal policy refusal: exit 79 is a guard's final answer.
   # ---------------------------------------------------------------------------
   - id: "step-02-evaluate-loop-health"
     condition: "loop_evidence.terminal_refusal == 'false'"
@@ -124,8 +119,8 @@ steps:
       Read those fields literally:
 
       - `commits_since_baseline` / `diff_lines` / `diff_stat` — what the last
-        round ACTUALLY produced. Zero and zero means it produced nothing,
-        whatever the round's prose claims.
+        round ACTUALLY changed in the tree. Zero and zero means no code moved,
+        whatever the prose claims; acting on findings outside the diff: DONE rule.
       - `repeated_duration_count` / `repeated_duration_value` — how many steps
         reported the *same* duration. Identical durations repeating are a
         ceiling being hit, not work being done.
@@ -177,14 +172,19 @@ steps:
         round's own verdict `{{loop_round_verdict}}` equals `{{loop_clean_token}}`.
         A non-clean round (CONCERNS, NOT_MERGE_READY, ...) is never `DONE`, even
         if a commit or PR edit seems to address every finding: only another
-        review confirms a fix. `CONTINUE` if the round moved, else `STUCK`. A
-        history line ending `done_overridden=1` is a DONE refused as non-clean.
+        review confirms a fix. Such a round is `CONTINUE` if it acted on its
+        findings, EVEN WITH ZERO COMMITS: a PR-description edit or a thread reply
+        the round output shows counts as moved, and the re-review is the next
+        step (#1597). `STUCK` only if it neither changed code nor acted on a
+        finding. A history line ending `done_overridden=1` is a DONE refused as
+        non-clean.
       - `STUCK` — no progress is being made. Say precisely WHAT is not
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
 
-      If you are not sure, answer `STUCK`. Stopping and escalating costs one
-      round; looping on a dead loop costs the whole budget.
+      If you are not sure, answer `STUCK`; a round that visibly acted on its
+      findings is not in doubt. Stopping and escalating costs one round;
+      looping on a dead loop costs the whole budget.
 
       ## OUTPUT CONTRACT (repeated)
 
