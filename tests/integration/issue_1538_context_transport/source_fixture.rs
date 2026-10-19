@@ -204,7 +204,9 @@ impl NativeFixture {
         fs::write(&recipe_file, serde_yaml::to_string(&fixture).unwrap()).unwrap();
         let observer = case.join("observer.sh");
         let child_stderr = case.join("child.stderr");
-        fs::write(&observer, "printf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\nexec 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
+        // Observe only the step shell: a nested bash (e.g. a `git` wrapper script
+        // on PATH) would otherwise re-source this and truncate the evidence files.
+        fs::write(&observer, "unset BASH_ENV\nprintf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\nexec 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
         let output = Command::new(&self.runner)
             .arg(&recipe_file)
             .arg("--no-auto-stage")
