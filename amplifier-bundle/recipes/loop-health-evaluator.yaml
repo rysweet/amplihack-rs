@@ -177,7 +177,8 @@ steps:
         round's own verdict `{{loop_round_verdict}}` equals `{{loop_clean_token}}`.
         A non-clean round (CONCERNS, NOT_MERGE_READY, ...) is never `DONE`, even
         if a commit or PR edit seems to address every finding: only another
-        review confirms a fix. `CONTINUE` if the round moved, else `STUCK`.
+        review confirms a fix. `CONTINUE` if the round moved, else `STUCK`. A
+        history line ending `done_overridden=1` is a DONE refused as non-clean.
       - `STUCK` — no progress is being made. Say precisely WHAT is not
         converging, with the specific evidence, so a human or a parent workflow
         can act on it instead of burning the rest of the budget.
@@ -205,8 +206,7 @@ steps:
 
       {"loop_verdict":"STUCK","not_converging":[]}
 
-      CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
-      any other word is STUCK.
+      Only CONTINUE, DONE and STUCK are legal; any other word is STUCK.
     output: "loop_health_assessment"
 
   # ---------------------------------------------------------------------------

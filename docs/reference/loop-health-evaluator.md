@@ -102,6 +102,12 @@ fix, so the evaluator answers `CONTINUE` if the round moved something and
 round said `CONCERNS`, the concerns were fixed by a description edit with no
 commit, and the evaluator answered `DONE`.
 
+The prompt also defines the `done_overridden=1` marker. When `autodrive_loop.sh`
+refuses a `DONE` because the round's verdict was not clean, it appends that
+marker to the round's line in `loop_history`. The `## Decide` rule tells the
+evaluator that a history line ending in `done_overridden=1` is a `DONE` that was
+refused as non-clean, so the model does not have to guess what the marker means.
+
 When `loop_clean_token` is empty, the evaluator applies the same rule to the
 reviewer verdict shown for this round in `loop_history`, if there is one;
 otherwise it decides as before. The quality, self-improvement and
@@ -153,8 +159,7 @@ its last `##` heading, and shows the same example line both times:
    ```
    {"loop_verdict":"STUCK","not_converging":[]}
 
-   CONTINUE, DONE and STUCK are the only legal `loop_verdict` values;
-   any other word is STUCK.
+   Only CONTINUE, DONE and STUCK are legal; any other word is STUCK.
    ```
 
 The role paragraphs have no heading of their own, so they sit under
