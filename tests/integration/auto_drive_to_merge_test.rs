@@ -47,7 +47,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 13] = [
+const AUTODRIVE_TOOLS: [&str; 14] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_last_round.sh",
@@ -58,6 +58,7 @@ const AUTODRIVE_TOOLS: [&str; 13] = [
     "autodrive_pr_head.sh",
     "autodrive_qa_evidence.sh",
     "autodrive_round_evidence.sh",
+    "autodrive_round_tail.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
     "autodrive_worktree_guard.sh",

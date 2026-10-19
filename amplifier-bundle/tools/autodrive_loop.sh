@@ -130,12 +130,13 @@ copy_private() {
   { rm -f -- "$2" && cp -- "$1" "$2"; } || echo "WARNING: could not copy $1 to $2." >&2
 }
 
-# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's own refusal line in
-# the log. Agent output lines (`[HH:MM:SS] [amplihack:...]`) are skipped first: a review
-# that QUOTES the refusal, as crusty's review of PR #1520 did, is not one.
+# terminal_refusal <exit_code> <log_file>: exit 79, or the guard's full marker
+# outside input echoes: run summary, agent and log_pointer lines (#1510). Same
+# awk+ERE as loop-evidence-collector.yaml; docs/reference/loop-health-evaluator.md.
 terminal_refusal() {
   [ "${1:-0}" = "$AUTODRIVE_EXIT_POLICY_REFUSAL" ] && return 0
-  [ -f "${2:-}" ] && grep -vE '^[[:space:]]*\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:' "$2" 2>/dev/null \
+  [ -f "${2:-}" ] && awk 'NR > 1 { if (prev ~ /^Recipe: / && $0 ~ /^(Run ID|Status): /) { cut = 1; exit } print prev } { prev = $0 } END { if (NR > 0 && !cut) print prev }' "$2" 2>/dev/null \
+    | grep -vE '^[[:space:]]*(\[[0-9]{2}:[0-9]{2}:[0-9]{2}\] \[amplihack:|amplihack\.recipe\.log_pointer \{)' \
     | grep -qF 'BLOCKED_TERMINAL orchestration_unavailable' && return 0
   return 1
 }
@@ -268,13 +269,12 @@ while :; do
   # evidence to the round that actually produced it without guessing a name.
   copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
   copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
-  # Manifest of the round records THIS loop wrote (issue #1517): one row per round
-  # in <loop>-records.tsv (label, record file name, git blob hash), written before
-  # the evaluator or any later agent runs, so no agent gets a row for a record it
-  # wrote. autodrive_crusty_final (autodrive_state.sh) and autodrive_qa_trusted
-  # (autodrive_trust.sh) trust a record only when the last row names it and the
-  # hash still matches; git runs from the state dir with GIT_DIR/GIT_WORK_TREE
-  # unset, as autodrive_blob_hash does. A failed check writes a WARNING, no row.
+  # Manifest of the round records THIS loop wrote (#1517): one row per round in
+  # <loop>-records.tsv (label, record name, git blob hash), written before any later
+  # agent runs, so no agent gets a row for a record it wrote. autodrive_crusty_final
+  # (autodrive_state.sh) and autodrive_qa_trusted (autodrive_trust.sh) trust a record
+  # only when the last row names it and the hash matches; git runs from the state dir,
+  # GIT_DIR/GIT_WORK_TREE unset, as autodrive_blob_hash does. A failed check: WARNING, no row.
   if [ -f "$RECORD" ]; then
     MANIFEST_FILE="${RECORD##*/}"; MANIFEST_HASH=""
     case "$MANIFEST_FILE" in
@@ -310,7 +310,7 @@ ${ROUND_LABEL}: ${VERDICT_FIELD}=${VERDICT_SAFE} rc=${ROUND_RC} findings=$(print
       -c "loop_name=auto-drive:${LOOP_NAME}" \
       -c "loop_round_label=${ROUND_LABEL}" \
       -c "loop_history=${HISTORY}" \
-      -c "loop_last_round_output=$(tail -c 20000 "$LOG" 2>/dev/null || true)" \
+      -c "loop_last_round_output=$(bash "${LOOP_HOME}/autodrive_round_tail.sh" "$LOG")" \
       -c "loop_repo_path=${REPO}" -c "loop_agent_working_dir=${REVIEW_REAL}" \
       -c "loop_baseline_ref=${BASELINE}" \
       -c "loop_child_exit_code=${ROUND_RC}" \
