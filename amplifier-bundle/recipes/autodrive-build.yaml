@@ -113,16 +113,16 @@ steps:
       RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
       OUT="$(jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}')"
       RC=$?
+      if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
+        echo "ERROR: jq could not encode phase 1's task and requirements (exit ${RC}) [autodrive-build/step-01b]" >&2
+        exit 1
+      fi
       # Fail closed: step-02 must never start with the directive silently
       # missing. Both fields carry the marker, so it appears at least twice.
       MARKER='[amplihack:no-merge]'
       REST="${OUT#*"$MARKER"}"
-      if [ "$NM" = "true" ] && { [ "$RC" -ne 0 ] || [ "$REST" = "$OUT" ] || [[ "$REST" != *"$MARKER"* ]]; }; then
-        echo "ERROR: #1551: could not add the no-merge directive to phase 1's task and requirements (jq exit ${RC}); refusing to start default-workflow without it [autodrive-build/step-01b]" >&2
-        exit 1
-      fi
-      if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
-        echo "ERROR: jq could not encode phase 1's task and requirements (exit ${RC}) [autodrive-build/step-01b]" >&2
+      if [ "$NM" = "true" ] && { [ "$REST" = "$OUT" ] || [[ "$REST" != *"$MARKER"* ]]; }; then
+        echo "ERROR: #1551: phase 1's task and requirements lack the no-merge directive; refusing to start default-workflow without it [autodrive-build/step-01b]" >&2
         exit 1
       fi
       printf '%s\n' "$OUT"
