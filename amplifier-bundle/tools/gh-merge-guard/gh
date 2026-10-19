@@ -72,9 +72,11 @@ find_real_gh() {
   IFS=: read -r -a dirs <<< "${PATH:-}"
   for d in "${dirs[@]}"; do
     [[ "$d" == /* ]] || continue
+    # Cheap test first: resolving the physical path forks a subshell, so only
+    # do it for entries that actually hold an executable gh.
+    [[ -f "$d/gh" && -x "$d/gh" ]] || continue
     phys="$(builtin cd -P -- "$d" 2>/dev/null && builtin pwd -P)" || continue
     [[ -n "$SELF_DIR" && "$phys" == "$SELF_DIR" ]] && continue
-    [[ -f "$d/gh" && -x "$d/gh" ]] || continue
     carries_marker "$d/gh" && continue
     REAL_GH="$d/gh"
     return 0
