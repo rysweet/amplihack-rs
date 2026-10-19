@@ -1656,8 +1656,8 @@ is no fallback for other storage.
 
 ## Rotate
 
-`profile rotate` keeps the login in `~/.claude` on the account with the most
-capacity left by moving logins between `~/.claude` and the profiles. The
+`profile rotate` keeps the login in `~/.claude` on an account with capacity,
+preferring weekly capacity that expires soonest, by moving logins between `~/.claude` and the profiles. The
 [how-to](../howto/claude-profile-rotation.md) walks through using it; this
 section defines its behaviour. It is separate from [auto-switch](#auto-switch),
 which swaps logins inside profiled sessions, but shares its toggle, its
@@ -1666,9 +1666,9 @@ exclusion list and its state lock.
 ### Rotate commands
 
 ```
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
-amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--min-headroom N]
+amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--min-headroom N] [--interval SECS] [--fast-at N] [--fast-interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--min-headroom N] [--interval SECS] [--fast-at N] [--fast-interval SECS]
 amplihack profile rotate stop
 amplihack profile rotate status
 ```
@@ -1676,9 +1676,9 @@ amplihack profile rotate status
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate --dry-run` | Measures and decides, then prints the `cycle` line, one [candidate line](#rotate-candidate-lines) per measured candidate, and the `would ...` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
-| `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
+| `rotate watch` | Runs a cycle every `--interval` seconds, or every `--fast-interval` seconds while the live login is near its limit (see [Rotate pacing](#rotate-pacing)), in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
 
@@ -1701,7 +1701,10 @@ files atomically, the swap is refused with `RotateRefused`; see
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | `0`-`100` (points) |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | `0`-`100` (points) |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | `0` or more (seconds); `0` disables the hold |
+| `--min-headroom N` | `AMPLIHACK_ROTATE_MIN_HEADROOM` | `50` | `0`-`100` (points of session headroom); `0` turns the floor off |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
+| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | `1`-`100` (%); `start` and `watch` only |
+| `--fast-interval SECS` | `AMPLIHACK_ROTATE_FAST_INTERVAL` | `60` | `1`-`86400` (seconds); `start` and `watch` only. A value above `--interval` is lowered to `--interval` without an error. |
 
 A flag beats its variable, and the variable beats the default. An empty
 variable counts as unset. Values are unsigned decimal integers: a sign,
@@ -1720,6 +1723,13 @@ the `claude` processes it starts.
 
 The thresholds and margins are independent of the auto-switch `threshold`.
 The auto-switch `exclude` list applies to rotation.
+
+The [rotation that `amplihack recipe run` starts after a usage limit](#rotate-on-a-usage-limit)
+runs in the recipe process, not in the background rotator. It reads its
+settings from the `AMPLIHACK_ROTATE_*` variables in that process and the
+defaults above. Flags given to `start` or `watch` do not reach it. Only
+`--min-headroom` and `--margin` (through their variables) change its
+decision; the thresholds and the hold do not apply to it.
 
 ### Rotate cycle
 
@@ -1753,7 +1763,14 @@ Every non-dry-run cycle runs these steps in order:
    and end the cycle. Otherwise run the [swap](#rotate-swap).
 7. **Record.** Write the log lines and the ledger's `last_cycle`. When the
    cycle stays or raises the no-capacity ALERT and the live profile is known,
-   also record it as `live`, with its `account`.
+   also record it as `live`, with its `account`. The
+   [candidate lines](#rotate-candidate-lines) are written before the `swap`,
+   `ALERT` or stay outcome on every swap, every no-capacity ALERT and every
+   [on-limit](#rotate-on-a-usage-limit) cycle. On a cycle that stays they are
+   written only when they differ from the previous cycle's, so `watch` does
+   not repeat the same block every minute while it polls fast.
+
+`watch` then sleeps for the delay [Rotate pacing](#rotate-pacing) gives.
 
 ### Rotate decision rule
 
@@ -1768,20 +1785,219 @@ point.
 | `session_exhausted` or `weekly_exhausted` | | | `0` |
 | any other [state](#states) | | | probe failed |
 
-A candidate whose probe failed, or that is exhausted, is never chosen. The *best* candidate has the
-highest headroom; ties go to the name that sorts first by byte value.
+A candidate's *gain* is its headroom minus the live login's headroom. A
+failed live probe counts as headroom `0`.
 
-| Condition (all comparisons inclusive) | Outcome |
-|---------------------------------------|---------|
-| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`. |
-| As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
-| No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
-| Otherwise | Stay. |
+The decision first sets the mode:
+
+- **Threshold mode** when the live probe failed, the live login is
+  exhausted, `session_used >= session-at`, or `week_used >= week-at`.
+- **Upgrade mode** otherwise.
+
+#### Eligibility
+
+Each candidate is checked in this order. The first check it fails is its
+verdict; a candidate that passes all of them is *eligible*.
+
+| Check | Verdict when it fails |
+|-------|-----------------------|
+| It is not `session_exhausted` or `weekly_exhausted`. | `rejected: exhausted` |
+| Its probe did not fail. | `rejected: probe failed` |
+| Its session headroom is at least `min-headroom`. | `rejected: session headroom <h> < min <m>` |
+| Threshold mode: `gain >= margin`. Upgrade mode: `gain > 0` and `gain >= upgrade-margin`. | `rejected: gain <g> < margin <m>` or `rejected: gain <g> < upgrade margin <m>` |
+| Upgrade mode only: `now - swapped_at >= hold`, or there is no earlier swap. | `rejected: held until <time>` |
+
+The gain is checked for each candidate on its own. A candidate with a lower
+score that passes every check is still chosen when a higher-scoring one
+fails the gain check.
+
+#### Score
+
+Among the eligible candidates the one with the highest *score* wins. Ties go
+to the name that sorts first by byte value. Every other eligible candidate
+gets the verdict `rejected: lower score than <winner>`, and the winner gets
+`chosen: highest expiry-weighted score`.
+
+| Value | Definition |
+|-------|------------|
+| `session_headroom` | `100 - session_used`, rounded down, kept in `0`-`100`. |
+| `week_left` | `100 - week_used`, kept in `0`-`100`. |
+| `days_to_reset` | Days until the week window resets: `(resets_at - now) / 86400`, but never less than `1/24` (one hour). When the probe gave no weekly reset time, `7.0`, marked `(assumed)`. |
+| `score` | `min(week_left / days_to_reset, session_headroom)`. |
+
+The score prefers weekly capacity that will be lost soonest if it is not
+used, as long as the session has room for it. Its two sides have different
+units (points per day against points); the session side is a cap, not a
+conversion. With no weekly reset time a score is at most about `14.3`
+(`100 / 7`).
+
+Example, with the live login at `s=92% w=41%` (headroom `8`) in threshold
+mode and the default settings:
+
+| Candidate | Session used | Week used | Week resets in | `session_headroom` | `week_left` | `score` | Gain |
+|-----------|--------------|-----------|----------------|--------------------|-------------|---------|------|
+| `personal` | `5%` | `60%` | 1 day | `95` | `40` | `40.0` | `40 - 8 = 32` |
+| `spare` | `0%` | `20%` | 6 days | `100` | `80` | `13.3` | `80 - 8 = 72` |
+
+Both are eligible, and `personal` wins with `40.0`. `spare` has more
+headroom, but its weekly capacity will still be there in six days;
+`personal`'s is gone tomorrow.
+
+#### Outcome
+
+| Mode | An eligible candidate exists | Outcome |
+|------|------------------------------|---------|
+| Threshold | yes | Swap to the winner, `reason=threshold`. |
+| Threshold | no, or there are no candidates | ALERT `no-capacity`. No swap. |
+| Upgrade | yes | Swap to the winner, `reason=upgrade`. |
+| Upgrade | no | Stay. |
 
 `swapped_at` and `previous` (the profile swapped out) come from the
 [ledger](#rotate-state-directory). During the hold no upgrade happens at
 all, so `previous` cannot come straight back by upgrade. Threshold swaps are
 never held.
+
+The `min-headroom` floor stops a swap to a profile whose session is nearly
+used up, such as one at `77%` or `86%` session use. It applies in both
+modes. `--min-headroom 0` turns it off and restores ordering by gain and
+score alone.
+
+### Rotate candidate lines
+
+The cycle explains its choice with one line per measured candidate, sorted by
+name. The log and `--dry-run` use the same text:
+
+```
+candidate <name>: score=<n.n|-> session_headroom=<n|-> week_left=<n|-> days_to_reset=<n.n>[ (assumed)] -> <verdict>
+```
+
+A value the probe could not give, as for an exhausted or failed candidate,
+is shown as `-`. `days_to_reset` is always shown; the one-hour floor prints
+as `0.0`. The verdict is one of:
+
+| Verdict | Meaning |
+|---------|---------|
+| `chosen: highest expiry-weighted score` | The swap target. |
+| `rejected: exhausted` | The candidate is `session_exhausted` or `weekly_exhausted`. |
+| `rejected: probe failed` | The candidate could not be measured. |
+| `rejected: session headroom <h> < min <m>` | Below the `min-headroom` floor. |
+| `rejected: gain <g> < margin <m>` | Threshold mode: not enough better than the live login. |
+| `rejected: gain <g> < upgrade margin <m>` | Upgrade mode: not enough better than the live login. |
+| `rejected: held until <time>` | Upgrade mode: inside the hold after the last swap. `<time>` is `YYYY-MM-DDTHH:MM:SSZ`. |
+| `rejected: lower score than <name>` | Eligible, but `<name>` scored higher. |
+
+The dry run for the example above prints:
+
+```
+cycle live=work work:s=92%,w=41% personal:s=5%,w=60% spare:s=0%,w=20%
+candidate personal: score=40.0 session_headroom=95 week_left=40 days_to_reset=1.0 -> chosen: highest expiry-weighted score
+candidate spare: score=13.3 session_headroom=100 week_left=80 days_to_reset=6.0 -> rejected: lower score than personal
+would swap work->personal live s=92% w=41% target s=5% w=60% reason=threshold
+```
+
+A profile skipped before measurement, such as one with a running session, has
+no candidate line; its `skip:` line gives the reason.
+
+### Rotate pacing
+
+After each cycle `watch` sleeps for:
+
+| Live reading after the cycle | Delay |
+|------------------------------|-------|
+| `session_exhausted` or `weekly_exhausted` | `--fast-interval` |
+| Measured with `session_used >= fast-at` | `--fast-interval` |
+| Anything else, including a failed probe or a cycle that measured nothing | `--interval` |
+
+After a swap, the live reading is the new live login's reading from that
+cycle, usually low, so `watch` returns to `--interval`. With the defaults,
+`watch` checks every 60 seconds once the live session reaches `70%` and
+every 600 seconds below it. `--fast-interval` is never longer than
+`--interval`: a larger value is lowered to `--interval` without an error.
+
+### Rotate on a usage limit
+
+When an agent step of `amplihack recipe run` fails on a login session or
+weekly limit, the recipe process runs one rotate cycle at once instead of
+waiting for the next poll, and retries the run once if the login changed.
+[Retry after rotating the login](transient-failure-retry.md#retry-after-rotating-the-login)
+describes the recipe side. This section describes the cycle.
+
+#### When it is enabled
+
+| `AMPLIHACK_ROTATE_ON_LIMIT` | Enabled |
+|-----------------------------|---------|
+| `1` | Yes. |
+| `0` | No. |
+| unset or empty | Only when `rotate status` would show `rotate: running`. `stale` and `unverifiable` count as not running. |
+| any other value | As if unset, after one warning on stderr: `warning: ignoring AMPLIHACK_ROTATE_ON_LIMIT="<value>": expected 1 or 0`. The value is escaped and cut to 32 characters. |
+
+The variable is read only from the process environment. A recipe context key
+cannot set it; see [Recipe context cannot set the profile](#recipe-context-cannot-set-the-profile).
+On platforms without Unix file semantics it is never enabled.
+
+Even when enabled, nothing is swapped and the run is not retried when:
+
+- auto-switch is turned off (`auto-switch off` or
+  `AMPLIHACK_CLAUDE_AUTO_SWITCH=0`), or its settings file is damaged;
+- the [prototype rotator](#rotate-prototype-coexistence) holds its lock;
+- the profile root has no profiles.
+
+#### What the cycle does
+
+1. **Already swapped.** Read the ledger. If its `swapped_at` is at or after
+   the time the failed attempt started, another run or the background
+   rotator has already moved off the login that failed. Return
+   `already swapped` with no probe and no swap. The same check runs again
+   under the lock, after recovery, and writes
+   `skip: already swapped since the failed attempt started (live=<name>)`.
+   A ledger that cannot be read gives `no swap`, never a swap.
+2. **Settings.** Resolve the [settings](#rotate-settings) from the
+   variables and defaults. An invalid value gives
+   `no swap` with reason `invalid rotate settings: <error>`.
+3. **Cycle.** Run the [cycle](#rotate-cycle) with the live login treated as
+   exhausted, which puts the decision in threshold mode. Probes are still run.
+   The live probe decides whether the forced exhaustion stands:
+
+   | Live probe | Result |
+   |------------|--------|
+   | Exhausted, failed, or `max(session_used, week_used) >= fast-at` | The live reading is replaced by exhausted (headroom `0`) and the cycle decides as usual. |
+   | Measured with both windows below `fast-at` | No swap. The cycle writes `skip: live login is not near a limit (s=<n>% w=<n>%); no forced swap`. |
+
+   The second row stops a step's error text from forcing a swap away from a
+   login that is not near its limit.
+4. **Busy.** If the lock is busy or the state changed during measurement,
+   wait 2 seconds and try again, for at most 30 seconds in total. Each try
+   rereads the ledger as in step 1. When time runs out, return `no swap`
+   with reason `rotator busy`.
+
+The hold does not apply, because the decision is in threshold mode. Only
+`min-headroom` and `margin` decide which candidates are eligible.
+
+#### Results
+
+| Result | Recipe retries the run | Meaning |
+|--------|------------------------|---------|
+| `swapped` | Yes | This cycle swapped `<from>-><to>`. |
+| `already swapped` | Yes | The ledger shows a swap since the failed attempt started. |
+| `no swap` | No | One of the reasons below. |
+| `disabled` | No | Not enabled; the recipe prints exactly what it printed before this feature. |
+
+| `no swap` reason | When |
+|------------------|------|
+| `auto-switch is off` | Auto-switch is turned off or its settings file is damaged. |
+| `the external rotator is running` | The prototype holds its lock. |
+| `no profiles are configured` | `AMPLIHACK_ROTATE_ON_LIMIT=1`, but the root has no profiles. |
+| `the rotate ledger cannot be read` | The ledger fails the hardened read. |
+| `invalid rotate settings: <error>` | A variable is out of range. |
+| `live login not near a limit` | Step 3, second row. |
+| `no profile has capacity` | No candidate is eligible. |
+| `rotator busy` | Step 4 ran out of time. |
+| `<ALERT text>` | Any other ALERT, such as `no login in ~/.claude; no swap`, without the `ALERT: ` prefix. |
+| `<error>` | Any other cycle error, such as `swap refused: <reason>`. |
+
+The cycle writes to the [log](#rotate-log) as a `watch` cycle does, and never
+to stdout, which is reserved for the recipe's result JSON. Its results and
+reasons hold profile names only, never account IDs or e-mail addresses.
 
 ### Rotate live profile
 
@@ -1983,6 +2199,7 @@ stdout only, without the time.
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
+| `candidate <name>: score=... -> <verdict>` | One per measured candidate, explaining the choice; see [Rotate candidate lines](#rotate-candidate-lines) for the format and when they are written. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
@@ -1994,6 +2211,8 @@ stdout only, without the time.
 | `recovery: rolled back an interrupted swap <from>-><to>` / `recovery: finished an interrupted swap <from>-><to>` | Recovery acted. |
 | `skip: state lock busy` / `skip: state changed during measurement` / `skip: <name> (<reason>)` / `skip: cannot see running sessions; no candidates` | The cycle or a candidate was skipped. |
 | `skip: the external rotator is running` / `skip: <error>` | `watch` only: the cycle failed with that error and the rotator carries on. |
+| `skip: already swapped since the failed attempt started (live=<name>)` | [On-limit](#rotate-on-a-usage-limit) cycle: another run or the background rotator swapped after the failed attempt started. Nothing is probed or moved. |
+| `skip: live login is not near a limit (s=<n>% w=<n>%); no forced swap` | On-limit cycle: the live login measured below `--fast-at` in both windows, so the failure was not taken as a reason to swap. |
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
@@ -2015,7 +2234,7 @@ readable or writable by group or others is not written to; a warning goes to
 stderr and its mode is not changed.
 
 Log lines and stdout contain only profile names (with control characters
-removed), percentages, times, phases and fixed text. They never contain
+removed), percentages, scores, times, phases and fixed text. They never contain
 account IDs, e-mail addresses, tokens, environment values or Claude's output.
 
 ### Rotate daemon

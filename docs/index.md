@@ -156,7 +156,7 @@ amplihack copilot
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
 - [Claude Profiles How-To](howto/claude-profiles.md) - Isolated Claude logins per profile and what a new profile inherits
-- [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`
+- [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account whose capacity expires soonest with `amplihack profile rotate`, and rescue recipe runs that hit a limit
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
@@ -350,6 +350,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Quality Audit Cycle Recipe](reference/quality-audit-cycle-recipe.md) - Context variables, step reference, bash step safety patterns
 - [Token Sanitizer](reference/token-sanitizer.md) - Pattern ordering, audit labels, and custom patterns for secret redaction
 - [RecipeResult](reference/recipe-result.md) - `RecipeResult` and `StepResult` dataclasses, `str()` format, JSON serialisation
+- [Transient Failure Retry](reference/transient-failure-retry.md) - Failure classes, the bounded transport retry, and the single retry after rotating the Claude login on a usage limit
 - [AppendHandler](reference/append-handler.md) - `AppendResult` class, timestamp filename format, atomic file writes
 - [Rust Runner Execution Reference](reference/rust-runner-execution.md) - Wrapper contract, stderr/stdout streams, JSONL events, environment variables, and security model
 - [Rust Runner Execution Architecture](concepts/rust-runner-execution-architecture.md) - CLI/runner responsibility split, stream ownership, progress events, and additive JSON preservation

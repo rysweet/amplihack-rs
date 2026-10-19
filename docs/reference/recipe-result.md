@@ -10,6 +10,7 @@
 - [Step Results](#step-results)
 - [Progress and Failure Context](#progress-and-failure-context)
 - [Terminal-state failures](#terminal-state-failures)
+- [Rotate retry](#rotate-retry)
 - [Usage Examples](#usage-examples)
 - [Integration with Recipe Runner](#integration-with-recipe-runner)
 
@@ -244,6 +245,46 @@ When `workflow-terminal-state` fails, the overall `RecipeResult.status` is
 terminal evidence as a successful planning run. See
 [Workflow Terminal-State Reference](./workflow-terminal-state.md) for the full
 field contract.
+
+---
+
+## Rotate retry
+
+When a step failed on a login session or weekly limit and the runner swapped
+to another Claude login and ran the recipe once more, the result carries a
+top-level `rotate_retry` object. It is present whether the retried run
+succeeded or failed, and absent when no swap was made.
+
+```json
+{
+  "success": true,
+  "rotate_retry": {
+    "schema_version": 1,
+    "issue": 1608,
+    "from": "work",
+    "to": "personal",
+    "outcome": "swapped",
+    "signal": "session limit",
+    "failed_attempt": 1
+  }
+}
+```
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `schema_version` | `int` | `1` |
+| `issue` | `int` | `1608` |
+| `from` | `str` or `null` | Profile swapped away from; `null` for `already_swapped` |
+| `to` | `str` | Profile live for the retry |
+| `outcome` | `str` | `swapped` or `already_swapped` |
+| `signal` | `str` | The usage-limit marker that matched |
+| `failed_attempt` | `int` | Attempt number that hit the limit |
+
+If the retried run also fails, `failure_classification` describes that
+second failure with `action: "terminal"`. The field is additive; consumers
+that do not know it ignore it. See
+[Retry after rotating the login](./transient-failure-retry.md#retry-after-rotating-the-login)
+for when the retry happens.
 
 ---
 

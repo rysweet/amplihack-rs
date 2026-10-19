@@ -1,7 +1,8 @@
 # How to Rotate Claude Logins Automatically
 
 `amplihack profile rotate` keeps the default Claude login in `~/.claude` on
-the account with the most capacity left. It measures every
+an account with capacity, spending first the weekly capacity that expires
+soonest. It measures every
 [login profile](claude-profiles.md) with
 [`profile usage`](claude-profiles.md#check-usage-across-profiles), and when the
 account in `~/.claude` is close to its session or weekly limit it moves a
@@ -27,6 +28,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
 - [Which profiles can take over](#which-profiles-can-take-over)
+- [Rescue recipe runs that hit a limit](#rescue-recipe-runs-that-hit-a-limit)
 - [Read the log](#read-the-log)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
@@ -69,10 +71,13 @@ amplihack profile rotate --dry-run
 
 ```
 cycle live=work work:s=88%,w=41% personal:s=20%,w=35% spare:s=0%,w=12%
+candidate personal: score=9.3 session_headroom=80 week_left=65 days_to_reset=7.0 (assumed) -> rejected: lower score than spare
+candidate spare: score=12.6 session_headroom=100 week_left=88 days_to_reset=7.0 (assumed) -> chosen: highest expiry-weighted score
 would swap work->spare live s=88% w=41% target s=0% w=12% reason=threshold
 ```
 
-A dry run probes every profile and prints what it would do. It takes no lock,
+A dry run probes every profile and prints what it would do, with one
+`candidate` line per profile saying why it was chosen or rejected. It takes no lock,
 writes nothing, moves nothing and logs nothing. It also does not finish an
 interrupted swap: if one is pending it prints
 `would recover an interrupted swap (phase <phase>)` and leaves it for the next
@@ -221,7 +226,10 @@ the exact rules.
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
+| `--min-headroom N` | `AMPLIHACK_ROTATE_MIN_HEADROOM` | `50` | Never swap to a profile with less than N points of session left. `0` turns the floor off. |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
+| `--fast-at N` | `AMPLIHACK_ROTATE_FAST_AT` | `70` | Check every `--fast-interval` seconds instead once the live session use reaches N%. `start` and `watch` only. |
+| `--fast-interval SECS` | `AMPLIHACK_ROTATE_FAST_INTERVAL` | `60` | Time between cycles while the live login is near its limit. Never longer than `--interval`. `start` and `watch` only. |
 
 A flag beats the variable, and the variable beats the default. For example, to
 rotate earlier and check every five minutes:
@@ -242,18 +250,44 @@ Each profile's *headroom* is `100 - max(session %, week %)`. A profile with no
 session window yet counts as 0% session use. A profile that is
 `session_exhausted` or `weekly_exhausted` has headroom 0.
 
-On each cycle the rotator compares the live account with the candidate that
-has the most headroom (ties go to the name that sorts first):
+On each cycle the rotator first rules out candidates, then picks the best of
+the rest:
 
-1. **Threshold swap.** If the live session use is at or above `--session-at`,
+1. **Rule out.** A candidate is rejected when it is exhausted, could not be
+   measured, has less than `--min-headroom` points of session left, or does
+   not have enough more headroom than the live account (`--margin` for a
+   threshold swap, `--upgrade-margin` for an upgrade). During the hold, every
+   candidate is rejected for an upgrade.
+2. **Pick.** Of the candidates left, the one with the highest *score* wins.
+   The score is the weekly capacity left divided by the days until that
+   week resets, capped at the session headroom. Weekly capacity on a profile
+   that resets tomorrow is lost if unused, so it is spent first.
+3. **Threshold swap.** If the live session use is at or above `--session-at`,
    the weekly use is at or above `--week-at`, or the live account could not be
-   measured, it swaps when the candidate has at least `--margin` more headroom.
-   A live account that could not be measured counts as headroom 0.
-2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
-   it writes one `ALERT` line and leaves `~/.claude` alone.
-3. **Upgrade.** If no threshold is reached, it swaps when the candidate has at
-   least `--upgrade-margin` more headroom, unless the last swap was less than
-   `--hold` seconds ago.
+   measured, it swaps to the winner. A live account that could not be
+   measured counts as headroom 0.
+4. **ALERT.** If a threshold swap is needed but no candidate is left, it
+   writes one `ALERT` line and leaves `~/.claude` alone.
+5. **Upgrade.** If no threshold is reached, it swaps to the winner, if there
+   is one.
+
+The `candidate` lines in the log and the dry run show each profile's score
+and the reason it was chosen or rejected. The
+[decision rule](../reference/profile-command.md#rotate-decision-rule) has the
+exact formula and a worked example.
+
+`--min-headroom` stops a swap to a profile whose session is already mostly
+used: with the default of 50, a target at `77%` or `86%` session use is
+rejected. To go back to choosing by headroom over the live account alone:
+
+```bash
+amplihack profile rotate start --min-headroom 0
+```
+
+While the live session is at or above `--fast-at` (70% by default), the
+background rotator checks every `--fast-interval` seconds (60 by default)
+instead of every `--interval`, so a session that fills quickly is caught
+before it hits 100%.
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
@@ -279,6 +313,44 @@ To keep a profile out of rotation for good, exclude it:
 amplihack profile auto-switch exclude review
 ```
 
+## Rescue recipe runs that hit a limit
+
+A session can fill between two checks when many agents share one login.
+When a step of `amplihack recipe run` then fails with a session or weekly
+limit, the recipe swaps to a profile with capacity at once and runs the
+recipe once more:
+
+```
+amplihack.recipe.failure_class {"schema_version":1,"issue":1267,"class":"usage_limit","signal":"session limit",...,"action":"retry_after_rotate","attempt":1,...}
+WARNING: recipe run attempt 1 hit a usage limit — rotated work->personal; retrying once. [issue #1608]
+```
+
+This is on whenever the background rotator is running. To control it
+directly, set the variable in the shell that runs the recipe:
+
+```bash
+AMPLIHACK_ROTATE_ON_LIMIT=1 amplihack recipe run default-workflow   # always try
+AMPLIHACK_ROTATE_ON_LIMIT=0 amplihack recipe run default-workflow   # never
+```
+
+When five runs fail on the same limit at once, only the first swaps; the
+others see the swap in the ledger and retry on the new login. Spend, monthly
+and credit limits are never rescued, because a different login does not
+clear them. Each run is retried at most once.
+
+This rotation reads only the `AMPLIHACK_ROTATE_*` variables in the recipe's
+shell, not the flags you gave `start`. To set the floor for both, use the
+variable:
+
+```bash
+export AMPLIHACK_ROTATE_MIN_HEADROOM=60
+```
+
+See [Retry after rotating the login](../reference/transient-failure-retry.md#retry-after-rotating-the-login)
+for the markers and result fields, and
+[Rotate on a usage limit](../reference/profile-command.md#rotate-on-a-usage-limit)
+for every reason a swap is not made.
+
 ## Read the log
 
 The log is `<root>/.auto-switch.d/rotate/rotate.log`. Each line is a UTC time
@@ -287,6 +359,8 @@ the previous one.
 
 ```
 2026-10-18T13:00:05Z cycle live=spare spare:s=4%,w=13% personal:s=20%,w=35% work:s=88%,w=41%
+2026-10-18T17:10:05Z candidate personal: score=21.3 session_headroom=100 week_left=64 days_to_reset=3.0 -> chosen: highest expiry-weighted score
+2026-10-18T17:10:05Z candidate work: score=12.0 session_headroom=12 week_left=59 days_to_reset=2.5 -> rejected: session headroom 12 < min 50
 2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% target s=0% w=36% reason=threshold
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
@@ -297,6 +371,15 @@ To see only swaps and alerts:
 ```bash
 grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
+
+To see why each target was chosen or rejected:
+
+```bash
+grep ' candidate ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | tail -20
+```
+
+`candidate` lines are written on every swap and ALERT. On a cycle that stays
+they are written only when they change.
 
 The same ALERT is written to the log once. It is written again only after
 something changes: a swap succeeds, a cycle needs no swap, or the reason
