@@ -100,17 +100,6 @@ gh pr list --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
 | `gh pr list` returns `[]`, or only fork PRs | No same-repository open PR on the branch. | Publish the PR from the origin repository. |
 | `stderr` shows `WARNING: branch PR lookup failed (#1596): <reason>` | `gh` failed, or returned data the helper will not trust. | Run `gh auth status`; check `origin` points at the PR's repository. |
 | `terminal_state=EXISTING_OPEN_PR` but exit `1` or `terminal_verdict=UNCERTAIN` | The PR was found and then failed the scope check. | See [Scoped-PR Signal and Agentic Adjudication](../reference/workflow-terminal-state.md#scoped-pr-signal-and-agentic-adjudication). |
-
-See [Branch PR Lookup](../reference/workflow-terminal-state.md#branch-pr-lookup).
-
---- | --- | --- |
-| Branch is empty | Detached `HEAD`; the lookup has nothing to query. | Check out the run's branch and re-run finalize. |
-| Branch is `main`, `master`, or the `origin/HEAD` target | Base branches are never looked up. | Work happens on a feature branch; re-run on it. |
-| `gh pr list` returns `[]` | No open PR on this branch. | Publish the PR, or re-run the publish phase. |
-| Only `isCrossRepository: true` entries | Fork PRs never count. | Open the PR from a branch in the origin repository. |
-| `stderr` shows `WARNING: branch PR lookup failed (#1596): gh failed` | `gh` auth, rate limit, or network error. | Run `gh auth status`, then re-run finalize. |
-| `stderr` shows `... (#1596): malformed JSON`, `URL failed validation`, or `PR number mismatch` | `gh` returned something the helper will not trust, such as a PR URL on a different repository than `origin`. | Check that `origin` points at the repository holding the PR. |
-| `terminal_state=EXISTING_OPEN_PR` but exit `1` or `terminal_verdict=UNCERTAIN` | The lookup worked; the PR then failed the scope check. | See [Scoped-PR Signal and Agentic Adjudication](../reference/workflow-terminal-state.md#scoped-pr-signal-and-agentic-adjudication). |
 | `REMOTE_HOST_TYPE` is not `github` | The lookup is GitHub-only. | Pass `pr_url` explicitly for Azure DevOps runs. |
 
 See [Branch PR Lookup](../reference/workflow-terminal-state.md#branch-pr-lookup)
