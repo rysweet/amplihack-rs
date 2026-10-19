@@ -134,9 +134,11 @@ done <"$scratch/modified"
 [ $((${#churn[@]} + ${#mixed[@]})) -gt 0 ] || exit 0
 
 allow="${ALLOW_VERSION_BUMP:-}"
+allow="${allow,,}"
 new_version="${VERSION_BUMP_NEW_VERSION:-${RECIPE_VAR_version_bump__new_version:-}}"
 current_version="${VERSION_BUMP_CURRENT_VERSION:-${RECIPE_VAR_version_bump__current_version:-}}"
-clean() { printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177'; }
+# Version strings only reach log lines; anything outside the allow-list is not echoed.
+clean() { [[ $1 =~ ^[0-9A-Za-z.+-]{1,64}$ ]] && printf '%s' "$1" || printf '<invalid>'; }
 requested=false
 [ -n "$new_version" ] && [ -n "$current_version" ] && [ "$new_version" != "$current_version" ] && requested=true
 case "$allow" in true | 1 | yes) allowed=true ;; *) allowed=false ;; esac
@@ -171,7 +173,7 @@ if [ ! -s "$tmp_patch" ] || ! git apply --check -R --cached "$tmp_patch" 2>/dev/
 fi
 [ -L "$patch" ] && { rm -f -- "$patch" || rollback "cannot replace the symlink at $patch"; }
 [ -d "$patch" ] && { rm -f -- "$tmp_patch"; rollback "$patch is a directory"; }
-mv -f -- "$tmp_patch" "$patch" || { rm -f -- "$tmp_patch"; rollback "cannot move the patch to $patch"; }
+mv -fT -- "$tmp_patch" "$patch" || { rm -f -- "$tmp_patch"; rollback "cannot move the patch to $patch"; }
 git restore --staged --worktree -- "${churn[@]}" || rollback "cannot restore ${churn[*]}"
 for path in "${churn[@]}"; do
   echo "WARNING: step-15 excluded version-only change in $path ($why); saved to $patch" >&2

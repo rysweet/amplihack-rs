@@ -264,3 +264,98 @@ fn pre_probe_refuses_divergence_loudly_and_leaves_the_probe_to_fail_closed() {
         probe.stderr
     );
 }
+
+// ---------------------------------------------------------------------------
+// The recipe step itself: never pushes from REPO_PATH, the caller's checkout
+// (#1528), and never fails the recipe.
+// ---------------------------------------------------------------------------
+
+fn sync_step_command() -> String {
+    let text = read(&recipe_path("workflow-publish"));
+    let recipe: Value = serde_yaml::from_str(&text).expect("parse workflow-publish");
+    recipe["steps"]
+        .as_sequence()
+        .expect("steps")
+        .iter()
+        .find(|s| s.get("id").and_then(Value::as_str) == Some("publish-sync-pr-head"))
+        .and_then(|s| s.get("command").and_then(Value::as_str))
+        .expect("publish-sync-pr-head command")
+        .to_string()
+}
+
+fn run_sync_step(sb: &Sandbox, repo_path: &Path, worktree_path: &str) -> std::process::Output {
+    sb.command("bash", sb.root())
+        .arg("-c")
+        .arg(sync_step_command())
+        .env("REPO_PATH", repo_path)
+        .env("RECIPE_VAR_worktree_setup__worktree_path", worktree_path)
+        .output()
+        .expect("run publish-sync-pr-head")
+}
+
+#[test]
+fn sync_step_never_pushes_from_repo_path_without_a_worktree_path() {
+    let sb = Sandbox::new();
+    let fx = sb.remote_fixture();
+    let before = sb.bare_ref(&fx.origin, "feature");
+    commit_ahead(&sb, &fx.repo, "unpushed work in the caller's checkout");
+
+    let output = run_sync_step(&sb, &fx.repo, "");
+    assert_eq!(output.status.code(), Some(0), "{}", dump(&output));
+    assert_line(
+        &text(&output.stderr),
+        "WARNING: publish-sync-pr-head: no usable worktree path; PR head not synced (#1575)",
+        "empty worktree path",
+    );
+    assert_eq!(
+        sb.bare_ref(&fx.origin, "feature"),
+        before,
+        "the caller's unpushed commits must not be pushed\n{}",
+        dump(&output)
+    );
+}
+
+#[test]
+fn sync_step_refuses_a_path_that_is_not_a_linked_worktree() {
+    let sb = Sandbox::new();
+    let fx = sb.remote_fixture();
+    let before = sb.bare_ref(&fx.origin, "feature");
+    commit_ahead(&sb, &fx.repo, "unpushed work in the main checkout");
+
+    let output = run_sync_step(&sb, &fx.repo, fx.repo.to_str().unwrap());
+    assert_eq!(output.status.code(), Some(0), "{}", dump(&output));
+    let stderr = text(&output.stderr);
+    assert!(
+        stderr.contains("is not a linked task worktree; PR head not synced (#1528/#1575)"),
+        "{stderr}"
+    );
+    assert_eq!(sb.bare_ref(&fx.origin, "feature"), before);
+}
+
+#[test]
+fn sync_step_pushes_from_a_linked_task_worktree() {
+    let sb = Sandbox::new();
+    let fx = sb.remote_fixture();
+    sb.git(&fx.repo, &["switch", "-q", "main"]);
+    let worktree = sb.root().join("worktree");
+    sb.git(
+        &fx.repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            worktree.to_str().unwrap(),
+            "feature",
+        ],
+    );
+    let head = commit_ahead(&sb, &worktree, "resumed work");
+
+    let output = run_sync_step(&sb, &fx.repo, worktree.to_str().unwrap());
+    assert_eq!(output.status.code(), Some(0), "{}", dump(&output));
+    assert_eq!(
+        sb.bare_ref(&fx.origin, "feature").as_deref(),
+        Some(head.as_str()),
+        "{}",
+        dump(&output)
+    );
+}

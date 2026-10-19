@@ -58,7 +58,10 @@ pushed them, so the probe refused, and the commits had to be pushed by hand.
 
 `workflow-publish.yaml` runs a new bash step, `publish-sync-pr-head`, as its
 first step, immediately before `publish-terminal-state`. It runs
-`workflow_sync_pr_head.sh --mode pre-probe` in the task worktree.
+`workflow_sync_pr_head.sh --mode pre-probe` in the task worktree. It runs only
+at the top of the linked task worktree from `worktree_setup.worktree_path`.
+There is no `REPO_PATH` fallback, so it never pushes from the caller's own
+checkout (#1528).
 
 The step runs on every publish. It acts only when the branch's remote
 counterpart is a strict ancestor of `HEAD`, so the same rule covers
@@ -96,13 +99,15 @@ with `stale PR metadata`, and the helper's message has already explained why.
 |---|---|---|
 | Remote branch is an ancestor of `HEAD` (`ahead > 0`, `behind == 0`) | Push, then verify | Passes |
 | Nothing to push (`ahead == 0`) | One `INFO` line | Passes if the PR head is current |
-| No remote branch yet (fresh run) | One `INFO` line | Unchanged; step 15 publishes the branch |
+| No remote branch yet (fresh run) | One `INFO` line | Unchanged; the branch is created by worktree setup (step 15 does not create remote branches) |
+| Remote branch deleted (for example, auto-deleted after a merge) but `refs/remotes/<remote>/<branch>` remains | `WARNING`, no push; the branch is not recreated | Fails closed if the head is stale |
 | Detached `HEAD`, or `branch.<branch>.remote` is `.` | One `INFO` line | Unchanged |
 | `git fetch` fails | `WARNING`, no push | Fails closed if the head is stale |
 | Diverged (`ahead > 0`, `behind > 0`) | `ERROR` block with recovery commands, no push | Fails closed with `stale PR metadata` |
 | Push rejected or verification mismatch | `ERROR` with redacted git output | Fails closed |
 | Protected branch | `ERROR`, no fetch or push | Unchanged |
 | Helper not found | The step prints a `WARNING` | Unchanged |
+| `worktree_setup.worktree_path` empty, or not a linked task worktree | The step prints a `WARNING` and never runs the helper; it never pushes from `REPO_PATH` (#1528) | Unchanged |
 
 On divergence the helper prints the same evidence as step 15 (see
 [Step-15 push](#step-15-push)), so the operator sees both commit IDs, the merge
@@ -257,7 +262,7 @@ staged index:
 | Several, in up to three top-level directories | `fix: update 7 files in amplifier-bundle, docs, tests` |
 | Several, in more than three | `feat: update 12 files in amplifier-bundle, crates, docs, …` |
 | Files at the repository root | the root is listed as `.`, for example `fix: update 2 files in .` |
-| git unavailable | `fix: update files` |
+| git unavailable | `fix: update files`, with a `WARNING` from step 15 when files are staged |
 
 Control characters are removed, and the subject is cut to 72 characters (not
 bytes), prefix included.
@@ -316,10 +321,18 @@ pushed=true sha=7cd9cd6e0b6d0d3f4c2b8f6a1a2e5c9d4b3a7f10 reason=pushed
 | `HEAD` is detached | `detached-head` | `0` |
 | `branch.<branch>.remote` is `.` | `local-tracking` | `0` |
 | No remote branch and no tracking ref | `no-remote-branch` | `0` |
+| Remote branch deleted but its tracking ref remains (for example, auto-deleted after a merge) | `remote-branch-deleted` | `1` |
 | Branch or remote name fails validation | `invalid-ref` | `1` |
 
 In step15 mode a failed fetch falls back to the tracking ref
 `refs/remotes/<remote>/<branch>`, as step 15 did before.
+
+Step 15 never creates a remote branch; worktree setup does. When the remote
+branch was deleted but the tracking ref was never pruned, step 15 fails with
+`remote-branch-deleted` instead of skipping PR creation quietly, and prints
+the recovery commands: `git push -u -- <remote> HEAD:refs/heads/<branch>` to
+republish the branch, or `git fetch --prune <remote>` if it was merged and is
+finished.
 
 On divergence both modes print the #978 evidence, a hint about amended
 commits, and the recovery commands:

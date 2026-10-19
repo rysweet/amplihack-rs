@@ -35,11 +35,13 @@ steps:
     command: |
       set -euo pipefail
       export GIT_PAGER=cat PAGER=cat LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       # Issue #1575: a run continuing an existing PR (resume_checkpoint, existing_branch,
       # pr_number) reached the probe with unpushed commits. Fast-forward the PR head first;
       # on divergence or a failed push the helper explains and the probe still fails closed.
-      if [ -z "$WORKTREE_SETUP_WORKTREE_PATH" ] || ! cd "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null; then echo "WARNING: publish-sync-pr-head: no usable worktree path; PR head not synced (#1575)" >&2; exit 0; fi
+      # Never fails the recipe and never pushes from REPO_PATH, the caller's checkout (#1528).
+      if [ -z "$WORKTREE_SETUP_WORKTREE_PATH" ] || ! cd -P "$WORKTREE_SETUP_WORKTREE_PATH" 2>/dev/null; then echo "WARNING: publish-sync-pr-head: no usable worktree path; PR head not synced (#1575)" >&2; exit 0; fi
+      { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "WARNING: publish-sync-pr-head: $(pwd -P) is not a linked task worktree; PR head not synced (#1528/#1575)" >&2; exit 0; }
       SYNC=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_sync_pr_head.sh" ] && { SYNC="$c/amplifier-bundle/tools/workflow_sync_pr_head.sh"; break; }; done
       if [ -n "$SYNC" ]; then bash "$SYNC" --mode pre-probe; else echo "WARNING: workflow_sync_pr_head.sh not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — PR head not synced; the terminal-state probe stays strict (#1575)" >&2; fi
 
@@ -206,7 +208,7 @@ steps:
       esac
       # FIX (#1575): the subject describes the staged index; TASK_DESC only picks the prefix.
       COMMIT_TITLE=$(bash "$MSG" subject "$COMMIT_PREFIX") || COMMIT_TITLE=""
-      [ -n "$COMMIT_TITLE" ] || COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX")
+      [ -n "$COMMIT_TITLE" ] || { COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX"); git diff --cached --quiet || echo "WARNING: step-15: commit message helper returned no subject; using '$COMMIT_TITLE'" >&2; }
       # FIX #684: Host-aware commit references.
       # FIX #1361: on GitHub the closing keyword is EARNED BY THE DIFF. PR #1283's
       # body said `Closes #1277` while its whole change was one added planning

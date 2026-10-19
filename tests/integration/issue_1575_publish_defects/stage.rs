@@ -210,6 +210,53 @@ fn requested_and_allowed_bump_is_kept_under_both_variable_names() {
 }
 
 #[test]
+fn allow_version_bump_is_case_insensitive() {
+    for allow in ["TRUE", "Yes"] {
+        assert_bump_kept(
+            &[
+                ("ALLOW_VERSION_BUMP", allow),
+                ("VERSION_BUMP_NEW_VERSION", "0.6.0"),
+                ("VERSION_BUMP_CURRENT_VERSION", "0.5.0"),
+            ],
+            &allow.to_lowercase(),
+        );
+    }
+}
+
+#[test]
+fn version_strings_outside_the_allow_list_are_logged_as_invalid() {
+    let long = "1".repeat(65);
+    for bad in [
+        "0.6.0$(touch pwned)",
+        "0.6.0\u{1b}[31mred",
+        "0.6.0 extra",
+        long.as_str(),
+    ] {
+        let sb = Sandbox::new();
+        let repo = repo(&sb);
+        bump_own_versions(&repo);
+        let stderr = assert_ok(&stage(
+            &sb,
+            &repo,
+            &[
+                ("ALLOW_VERSION_BUMP", "true"),
+                ("VERSION_BUMP_NEW_VERSION", bad),
+                ("VERSION_BUMP_CURRENT_VERSION", "0.5.0"),
+            ],
+        ));
+        assert_line(
+            &stderr,
+            "INFO: step-15 keeping version change 0.5.0 -> <invalid> (allow_version_bump=true)",
+            &format!("version string {bad:?}"),
+        );
+        assert!(
+            !repo.join("pwned").exists(),
+            "a version string must never run"
+        );
+    }
+}
+
+#[test]
 fn mixed_version_file_keeps_every_version_file_staged() {
     let sb = Sandbox::new();
     let repo = repo(&sb);

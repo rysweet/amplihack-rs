@@ -248,3 +248,27 @@ fn step15_fails_closed_without_staging_when_a_helper_is_missing() {
         "nothing staged"
     );
 }
+
+#[test]
+fn step15_fails_with_remote_branch_deleted_when_the_pr_branch_is_gone() {
+    let sb = Sandbox::new();
+    let fx = fixture(&sb);
+    let wt = &fx.worktree;
+    sb.git(&fx.origin, &["update-ref", "-d", "refs/heads/feature"]);
+    write_file(&wt.join("src/lib.rs"), "pub fn a() {}\npub fn c() {}\n");
+
+    let (output, json) = run_step15(&sb, wt, &[]);
+    assert_eq!(output.status.code(), Some(1), "{}", dump(&output));
+    assert_eq!(json["pushed"], "false", "{json}\n{}", dump(&output));
+    assert_eq!(
+        json["reason"],
+        "remote-branch-deleted",
+        "{json}\n{}",
+        dump(&output)
+    );
+    assert_eq!(
+        sb.bare_ref(&fx.origin, "feature"),
+        None,
+        "step 15 must not recreate a deleted remote branch"
+    );
+}

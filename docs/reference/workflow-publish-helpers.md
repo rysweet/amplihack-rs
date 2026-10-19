@@ -63,7 +63,10 @@ Runs on the repository in the current directory. Any other argument exits
    pre-probe mode stops with a `WARNING`; step15 mode uses
    `refs/remotes/<remote>/<branch>` instead. A fetch that fails because the
    remote branch does not exist yet is the `no-remote-branch` no-op in both
-   modes.
+   modes, unless `refs/remotes/<remote>/<branch>` still exists. Then the
+   branch was deleted on the remote: pre-probe mode prints a `WARNING` and
+   exits `0`, and step15 mode prints an `ERROR` with recovery commands and
+   fails with `remote-branch-deleted`. Neither mode recreates the branch.
 5. Count `ahead` and `behind`. Every commit ID and count is checked against a
    pattern before it is used.
 6. When `ahead > 0` and `behind == 0`, run
@@ -72,7 +75,8 @@ Runs on the repository in the current directory. Any other argument exits
 
 `verify_pushed_ref.sh` is looked up next to the helper first, then through the
 [five-tier ladder](#helper-lookup). If it is missing, the helper prints a
-`WARNING` and the push result stands (#1268).
+`WARNING` and the push result stands (#1268). Its stdout is discarded and its
+stderr is redacted, so it cannot change the step15 result line.
 
 ### Exit codes and output
 
@@ -90,6 +94,7 @@ Step15 mode results:
 | Detached `HEAD` | `pushed=false sha= reason=detached-head` | `0` |
 | `branch.<branch>.remote` is `.` | `pushed=false sha= reason=local-tracking` | `0` |
 | No remote branch and no tracking ref | `pushed=false sha= reason=no-remote-branch` | `0` |
+| Remote branch deleted but its tracking ref remains | `pushed=false sha= reason=remote-branch-deleted` | `1` |
 | Diverged | `pushed=false sha= reason=diverged-upstream: ahead=<n> behind=<n> merge_base=<oid> upstream=<remote>/<branch>` | `1` |
 | Push failed | `pushed=false sha= reason=push-failed: <redacted git stderr>` | the push's exit code |
 | Remote ref differs from `HEAD` after push | `pushed=false sha= reason=push-verify-failed` | `1` |
@@ -156,7 +161,7 @@ Runs on the repository in the current directory. Takes no arguments.
 
 | Variable | Meaning |
 |---|---|
-| `ALLOW_VERSION_BUMP` | `true`, `1` or `yes` permits version churn. Anything else, or unset, does not. Step 15 sets it from the `allow_version_bump` context variable. |
+| `ALLOW_VERSION_BUMP` | `true`, `1` or `yes`, in any case, permits version churn. Anything else, or unset, does not. Step 15 sets it from the `allow_version_bump` context variable. |
 | `VERSION_BUMP_NEW_VERSION`, or `RECIPE_VAR_version_bump__new_version` | Step 14's `version_bump.new_version`. The first name wins when both are set. |
 | `VERSION_BUMP_CURRENT_VERSION`, or `RECIPE_VAR_version_bump__current_version` | Step 14's `version_bump.current_version`. The first name wins when both are set. |
 
@@ -230,6 +235,9 @@ WARNING: step-15 kept version files staged: <file> mixes a version change with o
 INFO: step-15 keeping version change <current> -> <new> (allow_version_bump=<value>)
 ```
 
+A version string or `allow_version_bump` value that does not match
+`^[0-9A-Za-z.+-]{1,64}$` is printed as `<invalid>`.
+
 ---
 
 ## workflow_commit_message.sh
@@ -244,7 +252,8 @@ bash workflow_commit_message.sh subject "fix: "
 bash workflow_commit_message.sh body
 ```
 
-Always exits `0`, so it is safe under `set -euo pipefail`.
+Always exits `0`, so it is safe under `set -euo pipefail`. Inside a
+repository, git errors are printed on stderr rather than discarded.
 
 ### `subject <prefix>`
 
@@ -252,7 +261,7 @@ Always exits `0`, so it is safe under `set -euo pipefail`.
 |---|---|
 | One file | `<prefix>update <path>` |
 | Several files | `<prefix>update <N> files in <d1>[, <d2>[, <d3>]]`, adding `, …` when there are more than three top-level directories. Root files appear as `.`. |
-| Empty index, or git unavailable | nothing; step 15 falls back to `<prefix>update files` |
+| Empty index, or git unavailable | nothing; step 15 falls back to `<prefix>update files`, and prints `WARNING: step-15: commit message helper returned no subject; using '<subject>'` when the index is not empty |
 
 Control characters are removed and the result is cut to 72 characters.
 
@@ -265,7 +274,7 @@ at most 30 lines, then `… (stat truncated)` if the stat was longer.
 
 ```bash
 COMMIT_TITLE=$(bash "$MSG" subject "$COMMIT_PREFIX") || COMMIT_TITLE=""
-[ -n "$COMMIT_TITLE" ] || COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX")
+[ -n "$COMMIT_TITLE" ] || { COMMIT_TITLE=$(printf '%supdate files' "$COMMIT_PREFIX"); git diff --cached --quiet || echo "WARNING: step-15: commit message helper returned no subject; using '$COMMIT_TITLE'" >&2; }
 COMMIT_MSG=$(printf '%s\n\n%s\n\n%s' "$COMMIT_TITLE" "$(bash "$MSG" body)" "$ISSUE_REF")
 ```
 
@@ -386,11 +395,14 @@ The first match wins. Helpers are run with `bash`, never sourced.
 `amplifier-bundle/recipes/tests/test-issue-962-runtime-artifact-ladders.sh`
 checks the tier order. Because tier 3 is the task worktree, a repository can
 supply its own copy of a helper; this trust model is the same as for the
-existing publish helpers.
+existing publish helpers. `workflow_sync_pr_head.sh` looks for
+`verify_pushed_ref.sh` in its own bundle (`$SCRIPT_DIR/..`) before the ladder,
+so it prefers the bundled copy over the user repository's copy.
 
 | Helper not found | Result |
 |---|---|
 | `workflow_sync_pr_head.sh` in `publish-sync-pr-head` | `WARNING`; the step exits `0` and the probe stays strict |
+| `worktree_setup.worktree_path` empty, or not a linked task worktree, in `publish-sync-pr-head` | `WARNING`; the step exits `0` without running the helper. It never falls back to `REPO_PATH` (#1528) |
 | Any of the three in step 15 | `ERROR` naming the helper and the searched locations; `reason: "helper-missing:<name>"`; exit `2` before staging |
 
 `workflow_gh_auth_gate.sh` is not found through the ladder. It comes from
@@ -432,7 +444,7 @@ a substring of it:
 | Helper | Checked |
 |---|---|
 | `workflow_sync_pr_head.sh` | Every `reason` in the step15 table, with its exit code. Pre-probe mode exits `0` in every case, and its divergence `ERROR` names `publish-sync-pr-head` where step15 mode names `step-15`. |
-| `workflow_stage_task_changes.sh` | Every `WARNING` and `INFO` line above. Churn kept only when `ALLOW_VERSION_BUMP=true` and the two versions differ; excluded when they are equal, empty or unset, using both the `VERSION_BUMP_*` and the `RECIPE_VAR_version_bump__*` names. A `[dependencies.foo]` `version` change in `Cargo.toml`, a registry entry's `version` change in `Cargo.lock`, and a nested `"version"` in `package.json` stay staged. Exit `2` restores the index. |
+| `workflow_stage_task_changes.sh` | Every `WARNING` and `INFO` line above. Churn kept only when `ALLOW_VERSION_BUMP` is `true`, `1` or `yes` (any case) and the two versions differ; out-of-pattern version strings are logged as `<invalid>`; excluded when they are equal, empty or unset, using both the `VERSION_BUMP_*` and the `RECIPE_VAR_version_bump__*` names. A `[dependencies.foo]` `version` change in `Cargo.toml`, a registry entry's `version` change in `Cargo.lock`, and a nested `"version"` in `package.json` stay staged. Exit `2` restores the index. |
 | `workflow_commit_message.sh` | The subject and body for each documented example. |
 | `workflow_gh_auth_gate.sh` | Each permission-gate and auth-gate `WARNING` and `ERROR`, with `WORKFLOW_GH_AUTH_BASE_DELAY=0`. |
 

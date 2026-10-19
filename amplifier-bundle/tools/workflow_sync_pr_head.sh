@@ -14,7 +14,8 @@
 #   --mode step15     step-15-commit-push. Prints exactly one stdout line,
 #                     `pushed=<true|false> sha=<oid|> reason=<text>`, and exits
 #                     non-zero on divergence, a protected branch, an invalid
-#                     ref, a failed push or a failed verification.
+#                     ref, a remote branch deleted while its tracking ref
+#                     remains, a failed push or a failed verification.
 #
 # Never rebases, never force-pushes, never pushes anything but
 # HEAD:refs/heads/<current branch>. Remote URLs are never printed and git
@@ -115,8 +116,22 @@ remote_oid=""
 if net_git fetch --no-tags -- "$remote" "refs/heads/$branch" >/dev/null 2>"$fetch_err"; then
   remote_oid="$(git rev-parse -q --verify 'FETCH_HEAD^{commit}' 2>/dev/null || true)"
 elif grep -q "couldn't find remote ref" "$fetch_err"; then
-  echo "INFO: $label: '$upstream' does not exist yet; nothing to sync" >&2
-  finish false "" no-remote-branch 0
+  if ! git rev-parse -q --verify "refs/remotes/$upstream^{commit}" >/dev/null 2>&1; then
+    echo "INFO: $label: '$upstream' does not exist yet; nothing to sync" >&2
+    finish false "" no-remote-branch 0
+  fi
+  # The branch existed (a tracking ref remains) and was deleted on the remote,
+  # often auto-deleted after a merge. Never recreate it: this helper only
+  # fast-forwards existing remote branches.
+  if [ "$mode" = pre-probe ]; then
+    echo "WARNING: $label: '$upstream' was deleted on $remote but refs/remotes/$upstream remains; not recreating it" >&2
+    exit 0
+  fi
+  echo "ERROR: $label: '$upstream' was deleted on $remote (possibly auto-deleted after a merge) but refs/remotes/$upstream remains; committed work was not pushed" >&2
+  echo "  This helper never creates remote branches. Recovery, run by hand:" >&2
+  echo "    to republish the branch: git push -u -- $remote HEAD:refs/heads/$branch" >&2
+  echo "    or, if it was merged and is finished: git fetch --prune $remote" >&2
+  finish false "" remote-branch-deleted 1
 else
   echo "WARNING: $label: git fetch $remote $branch failed:" >&2
   scrub <"$fetch_err" >&2
@@ -192,7 +207,7 @@ if [ -z "$verify" ]; then
 fi
 verify_err="$(mktemp -t sync-pr-head-verify-XXXXXX)" || { echo "ERROR: $label: mktemp failed" >&2; finish false "" push-verify-failed 1; }
 if LC_ALL=C GIT_TERMINAL_PROMPT=0 GCM_INTERACTIVE=never GIT_ASKPASS='' SSH_ASKPASS='' timeout 120 \
-  bash "$verify" "$remote" "$branch" "$head_oid" 2>"$verify_err"; then
+  bash "$verify" "$remote" "$branch" "$head_oid" >/dev/null 2>"$verify_err"; then
   scrub <"$verify_err" >&2
   finish true "$head_oid" pushed 0
 fi

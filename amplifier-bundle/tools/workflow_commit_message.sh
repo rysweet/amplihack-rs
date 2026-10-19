@@ -14,7 +14,8 @@
 #                     '… (stat truncated)' when it was longer.
 #
 # Prints nothing for an empty index or outside a git repository, and always
-# exits 0, so callers under `set -euo pipefail` decide the fallback.
+# exits 0, so callers under `set -euo pipefail` decide the fallback. Inside a
+# repository, git errors go to stderr so an empty result is never unexplained.
 
 set -u
 # Character (not byte) semantics for the 72-character cut. An unknown locale
@@ -35,7 +36,7 @@ strip_controls() {
 subject() {
   local prefix="${1:-}" files=() dirs=() f d s list
   local -A seen=()
-  mapfile -d '' -t files < <(git -c core.quotePath=false diff --cached --name-only -z --no-renames 2>/dev/null)
+  mapfile -d '' -t files < <(git -c core.quotePath=false diff --cached --name-only -z --no-renames)
   [ ${#files[@]} -gt 0 ] || return 0
   if [ ${#files[@]} -eq 1 ]; then
     s="${prefix}update ${files[0]}"
@@ -62,7 +63,10 @@ subject() {
 
 body() {
   local stat lines
-  stat="$(git -c core.quotePath=true diff --cached --stat=72 --no-color --no-ext-diff 2>/dev/null)" || return 0
+  stat="$(git -c core.quotePath=true diff --cached --stat=72 --no-color --no-ext-diff)" || {
+    echo "WARNING: workflow_commit_message.sh: git diff --stat failed; commit body left empty" >&2
+    return 0
+  }
   [ -n "$stat" ] || return 0
   lines="$(printf '%s\n' "$stat" | wc -l)"
   printf '%s\n' "$stat" | head -n "$MAX_STAT_LINES"

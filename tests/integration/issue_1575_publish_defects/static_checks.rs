@@ -92,6 +92,29 @@ fn sync_step_runs_first_in_pre_probe_mode() {
         !cmd.contains("{{"),
         "no template expansion in shell lines\n{cmd}"
     );
+    // #1528/#1575: the worktree path has no REPO_PATH fallback, so the step
+    // can never push from the caller's own checkout.
+    let path_line = cmd
+        .lines()
+        .find(|l| l.contains("WORKTREE_SETUP_WORKTREE_PATH:="))
+        .expect("worktree path default");
+    assert!(
+        !path_line.contains("REPO_PATH"),
+        "publish-sync-pr-head must not fall back to REPO_PATH\n{path_line}"
+    );
+    assert!(
+        cmd.contains("is not a linked task worktree"),
+        "publish-sync-pr-head must check for a linked task worktree\n{cmd}"
+    );
+}
+
+#[test]
+fn step15_warns_when_the_fallback_subject_is_used() {
+    let cmd = command(&publish(), "step-15-commit-push");
+    assert!(
+        cmd.contains("WARNING: step-15: commit message helper returned no subject"),
+        "{cmd}"
+    );
 }
 
 #[test]
