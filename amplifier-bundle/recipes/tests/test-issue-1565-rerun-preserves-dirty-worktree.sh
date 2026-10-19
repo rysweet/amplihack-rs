@@ -158,7 +158,16 @@ run_step() {
     ) >"${out}" 2>"${err}" || RUN_RC=$?
     RUN_STDOUT="$(cat "${out}")"
     RUN_STDERR="$(cat "${err}")"
-    RUN_JSON="$(printf '%s\n' "${RUN_STDOUT}" | grep -E '^\{' | tail -n 1 || true)"
+    # Last JSON-looking line. A single awk reads all its input, so there is no
+    # early-exit stage for pipefail to turn into a failure (#1434).
+    RUN_JSON="$(awk '/^\{/{l=$0} END{print l}' <<<"${RUN_STDOUT}")"
+}
+
+# last_lines <n> <text> -> the last <n> lines of <text>. Kept in one awk that
+# reads everything (a ring of n slots), not `| tail`, so pipefail cannot turn
+# an early-closing reader into a failed or empty diagnostic (#1434).
+last_lines() {
+    awk -v n="$1" '{ring[NR % n] = $0} END {for (i = NR - n + 1; i <= NR; i++) if (i > 0) print ring[i % n]}' <<<"$2"
 }
 
 # json_field <key> -> value of <key> in RUN_JSON ("" if absent/unparseable).
@@ -232,8 +241,8 @@ if [[ -n "${HELPER_OUT}" && ${#HELPER_OUT} -le 80 ]]; then
 else
     fail "H2-len-cap" "renamed branch is empty or ${#HELPER_OUT} characters (> 80)"
 fi
-if printf '%s\n' "${HELPER_ERR}" | grep -q 'WARNING' \
-   && printf '%s\n' "${HELPER_ERR}" | grep -qF "existing_branch=${TARGET_BRANCH}"; then
+if grep -q 'WARNING' <<<"${HELPER_ERR}" \
+   && grep -qF "existing_branch=${TARGET_BRANCH}" <<<"${HELPER_ERR}"; then
     pass "H2-warning" "helper stderr WARNING names existing_branch=${TARGET_BRANCH}"
 else
     fail "H2-warning" "helper stderr lacks a WARNING naming existing_branch=${TARGET_BRANCH}: ${HELPER_ERR}"
@@ -243,7 +252,7 @@ if [[ "${BEFORE}" == "${AFTER}" ]]; then
 else
     fail "H10-read-only" "helper changed git state (refs/worktrees/status differ)"
 fi
-if printf '%s\n' "${HELPER_ERR}${HELPER_OUT}" | grep -qF "secret-untracked-name"; then
+if grep -qF "secret-untracked-name" <<<"${HELPER_ERR}${HELPER_OUT}"; then
     fail "H11-no-filenames" "helper output leaks a porcelain file name"
 else
     pass "H11-no-filenames" "helper diagnostics contain no file names"
@@ -350,10 +359,10 @@ fi
 # A1: no destructive command remains anywhere in step-04 (comments excluded).
 STEP04_CODE="$(printf '%s\n' "${STEP04}" | sed -e 's/^[[:space:]]*#.*$//')"
 DESTRUCTIVE=""
-printf '%s\n' "${STEP04_CODE}" | grep -qE 'checkout[[:space:]]+--[[:space:]]+\.' && DESTRUCTIVE+=" 'checkout -- .'"
-printf '%s\n' "${STEP04_CODE}" | grep -qE 'clean[[:space:]]+-[a-zA-Z]*f' && DESTRUCTIVE+=" 'clean -f'"
-printf '%s\n' "${STEP04_CODE}" | grep -qE 'reset[[:space:]]+--hard' && DESTRUCTIVE+=" 'reset --hard'"
-printf '%s\n' "${STEP04_CODE}" | grep -qE 'branch[[:space:]]+-D' && DESTRUCTIVE+=" 'branch -D'"
+grep -qE 'checkout[[:space:]]+--[[:space:]]+\.' <<<"${STEP04_CODE}" && DESTRUCTIVE+=" 'checkout -- .'"
+grep -qE 'clean[[:space:]]+-[a-zA-Z]*f' <<<"${STEP04_CODE}" && DESTRUCTIVE+=" 'clean -f'"
+grep -qE 'reset[[:space:]]+--hard' <<<"${STEP04_CODE}" && DESTRUCTIVE+=" 'reset --hard'"
+grep -qE 'branch[[:space:]]+-D' <<<"${STEP04_CODE}" && DESTRUCTIVE+=" 'branch -D'"
 if [[ -z "${DESTRUCTIVE}" ]]; then
     pass "A1-no-destructive" "step-04 contains no checkout -- . / clean -f / reset --hard / branch -D"
 else
@@ -361,14 +370,14 @@ else
 fi
 
 # A2: step-04 passes --base "$BASE_REF" to the deconflict helper.
-if printf '%s\n' "${STEP04_CODE}" | grep -qE 'resolve[[:space:]]+--base[[:space:]]+"\$\{?BASE_REF\}?"'; then
+if grep -qE 'resolve[[:space:]]+--base[[:space:]]+"\$\{?BASE_REF\}?"' <<<"${STEP04_CODE}"; then
     pass "A2-passes-base" "step-04 calls the helper with resolve --base \"\$BASE_REF\""
 else
     fail "A2-passes-base" "step-04 does not call 'resolve --base \"\$BASE_REF\"'"
 fi
 
 # A3: helper output validated with check-ref-format before use (V1).
-if printf '%s\n' "${STEP04_CODE}" | grep -qE 'check-ref-format[[:space:]]+--branch[[:space:]]+"\$\{?RESOLVED_BRANCH\}?"'; then
+if grep -qE 'check-ref-format[[:space:]]+--branch[[:space:]]+"\$\{?RESOLVED_BRANCH\}?"' <<<"${STEP04_CODE}"; then
     pass "A3-validates-resolved" "step-04 validates RESOLVED_BRANCH with check-ref-format --branch"
 else
     fail "A3-validates-resolved" "step-04 does not validate RESOLVED_BRANCH with check-ref-format --branch"
@@ -401,7 +410,7 @@ run_step "${R}"
 if [[ ${RUN_RC} -eq 0 ]]; then
     pass "S1-exit0" "step-04 exits 0 on a dirty State 1 re-run"
 else
-    fail "S1-exit0" "step-04 exited ${RUN_RC} on a dirty State 1 re-run: $(printf '%s' "${RUN_STDERR}" | tail -n 5)"
+    fail "S1-exit0" "step-04 exited ${RUN_RC} on a dirty State 1 re-run: $(last_lines 5 "${RUN_STDERR}")"
 fi
 if [[ -f "${W}/untracked.txt" && "$(cat "${W}/untracked.txt")" == "untracked content" ]]; then
     pass "S1-untracked-survives" "untracked file survives"
@@ -439,7 +448,7 @@ if [[ "$(json_field created)" == "true" ]]; then
 else
     fail "S1-created" "expected created=true, got '$(json_field created)'"
 fi
-if printf '%s\n' "${RUN_STDERR}" | grep -E 'WARNING' | grep -qF "existing_branch=${TARGET_BRANCH}"; then
+if awk -v want="existing_branch=${TARGET_BRANCH}" '/WARNING/ && index($0, want) {f=1} END {exit !f}' <<<"${RUN_STDERR}"; then
     pass "S1-warns" "stderr WARNING names the kept branch (existing_branch=${TARGET_BRANCH})"
 else
     fail "S1-warns" "stderr does not WARN about the kept branch '${TARGET_BRANCH}'"
@@ -506,7 +515,7 @@ if [[ -e "${NOHELPER_HOME}/amplifier-bundle/tools/workflow_worktree_deconflict.s
     echo "HARNESS-ERROR: S5 helper is not absent" >&2; exit 2
 fi
 run_step "${R}" "${NOHELPER_HOME}"
-if [[ ${RUN_RC} -ne 0 ]] && printf '%s\n' "${RUN_STDERR}" | grep -qi 'refusing to reset'; then
+if [[ ${RUN_RC} -ne 0 ]] && grep -qi 'refusing to reset' <<<"${RUN_STDERR}"; then
     pass "S5-fail-loud" "missing helper + dirty State 1 fails loud ('refusing to reset')"
 else
     fail "S5-fail-loud" "missing helper + dirty State 1: rc=${RUN_RC}, expected non-zero with 'refusing to reset'"
@@ -531,7 +540,7 @@ R="$(build_repo s6)"
 REFS_BEFORE="$(git -C "${R}" for-each-ref --format='%(refname)' refs/heads)"
 run_step "${R}" "${STUB_HOME}"
 REFS_AFTER="$(git -C "${R}" for-each-ref --format='%(refname)' refs/heads)"
-if [[ ${RUN_RC} -ne 0 ]] && printf '%s\n' "${RUN_STDERR}" | grep -q 'ERROR'; then
+if [[ ${RUN_RC} -ne 0 ]] && grep -q 'ERROR' <<<"${RUN_STDERR}"; then
     pass "S6-invalid-name-rejected" "helper output '--base' is rejected (ERROR, non-zero exit)"
 else
     fail "S6-invalid-name-rejected" "helper output '--base' was not rejected: rc=${RUN_RC}"
