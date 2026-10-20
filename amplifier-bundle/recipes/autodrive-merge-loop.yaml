@@ -58,12 +58,10 @@ steps:
       set -uo pipefail
       REPO_CD_OK=0; cd "${REPO_PATH:-.}" 2>/dev/null && REPO_CD_OK=1
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $STATE_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      # Only the installed bundle (#1551): never a copy in the PR's own tree.
+      [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; the autodrive state helper is only loaded from the installed bundle" >&2; exit 1; }
+      STATE_HELPER="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_state.sh"
+      [ -f "$STATE_HELPER" ] || { echo "ERROR: autodrive state helper not found under AMPLIHACK_HOME: $STATE_HELPER (rerun amplihack install)" >&2; exit 1; }
       . "$STATE_HELPER"
       # #1543: the operator's own pr_number outranks a guess from the launch checkout.
       # The composer produces autodrive_pr_input as a step output, so it is
@@ -249,12 +247,13 @@ steps:
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
-      GATE="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="$(pwd)/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || GATE="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh"
-      [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $GATE; cwd=$(pwd)" >&2; exit 1; }
+      # Only the installed gate: the gh guard trusts the gate beside it under
+      # AMPLIHACK_HOME, never a copy in the PR's own tree.
+      [ -n "${AMPLIHACK_HOME:-}" ] || { echo "ERROR: AMPLIHACK_HOME is not set; the merge gate is only run from the installed bundle" >&2; exit 1; }
+      GATE="${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_merge_gate.sh"
+      [ -f "$GATE" ] || { echo "ERROR: autodrive merge gate not found under AMPLIHACK_HOME: $GATE (rerun amplihack install)" >&2; exit 1; }
+      # Issue #1551: the gh merge guard trusts only [<root bash>, -p, <physical gate path>, ...].
+      GATE_PHYS="$(cd "$(dirname "$GATE")" && pwd -P)/$(basename "$GATE")"
       g() { printf '%s' "${MERGE_LOOP_PREFLIGHT:-${RECIPE_VAR_merge_loop_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       DIR="$(g state_dir)"; PR="$(g pr)"
@@ -266,7 +265,13 @@ steps:
             --round-record "${DIR}/merge-ready-latest.json" \
             --qa-evidence "${DIR}/qa-evidence.json")
       [ "${AUTODRIVE_DRY_RUN:-false}" = "true" ] && ARGS+=(--dry-run)
-      bash "$GATE" "${ARGS[@]}"
+      # Issue #1551: the guard trusts the gate only with a clean environ: no
+      # exported functions, shell-option or loader variables. Cleared in a
+      # subshell; exec keeps the gate's argv [/bin/bash, -p, <gate>, ...].
+      ( unset -f $(compgen -A function) 2>/dev/null
+        export -n SHELLOPTS BASHOPTS 2>/dev/null
+        unset BASH_ENV ENV PS4
+        exec env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$GATE_PHYS" "${ARGS[@]}" )
       RC=$?
       if [ "$RC" -eq 79 ]; then
         echo "ERROR: exit 79 terminal policy refusal at the merge gate. Final — never retried." >&2
@@ -281,12 +286,8 @@ steps:
     command: |
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || true
-      STATE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="$(pwd)/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
-      [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the merge-ready loop." >&2; exit 0; }
+      STATE_HELPER="${AMPLIHACK_HOME:+${AMPLIHACK_HOME}/amplifier-bundle/tools/autodrive_state.sh}"
+      [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found under AMPLIHACK_HOME; this run stays correct but a resumed run will redo the merge-ready loop." >&2; exit 0; }
       . "$STATE_HELPER"
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default ''; }

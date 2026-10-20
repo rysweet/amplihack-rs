@@ -53,9 +53,8 @@ steps:
         D="$c/amplifier-bundle/tools"; SEARCHED="${SEARCHED}${SEARCHED:+, }${D}"; OK="true"
         for t in $NEED; do [ -f "$D/$t" ] || OK="false"; done
         [ "$OK" = "true" ] && D="$(cd -- "$D" 2>/dev/null && pwd -P)" && [ -n "$D" ] || continue
-        # The path reaches step-04's prompt inside a double-quoted shell word: no
-        # quote, backslash, $, backtick, template brace or control byte. The
-        # trailing x keeps $(...) from hiding a newline.
+        # The path reaches step-04's prompt in a double-quoted shell word: no quote,
+        # backslash, $, backtick, template brace or control byte (x keeps a newline).
         case "$D" in *[\"\\\$\`]* | *'{{'* | *'}}'*) echo "WARNING: skipping an auto-drive tools path with a quote, backslash, \$, backtick or template brace" >&2; continue ;; esac
         [ "$(printf '%s' "$D" | LC_ALL=C tr -d '\040-\176\200-\377'; printf x)" = "x" ] \
           || { echo "WARNING: skipping an auto-drive tools path that holds a control byte" >&2; continue; }
@@ -297,6 +296,8 @@ steps:
       **Blockers:** {{merge_ready_verdict.blocker_count}}
       **Evidence disagreements forced by measurement:** {{merge_ready_verdict.downgrade_reason}}
 
+      [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
+
       ## The assessment to satisfy
 
       {{merge_ready_review}}
@@ -381,8 +382,7 @@ steps:
       that skips hooks, nor for a branch-protection bypass at merge time. Both
       are prohibited here without exception.
     output: "merge_ready_fixes"
-  # The round record (verdict, head_sha, qa and CI signals, step-00d's qa_evidence_sha;
-  # #1517 D5), written private by `autodrive_round_evidence.sh round-record`.
+  # The round record (verdict, head_sha, qa/CI signals, qa_evidence_sha; #1517 D5): round-record.
   - id: "step-05-write-round-record"
     type: "bash"
     command: |

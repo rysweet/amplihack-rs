@@ -854,6 +854,130 @@ fn copy_amplifier_bundle_replaces_existing_atomically() {
     );
 }
 
+/// Issue #1551: the `gh` merge guard is staged with the bundle and stays
+/// executable, since `amplihack recipe run` puts its directory on PATH and
+/// refuses to run auto-drive without it.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_stages_the_merge_guard_executable() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
+    fs::create_dir_all(&guard).unwrap();
+    fs::write(
+        guard.join("gh"),
+        "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\n",
+    )
+    .unwrap();
+    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp
+        .path()
+        .join(".amplihack/amplifier-bundle/tools/gh-merge-guard/gh");
+    let meta = fs::metadata(&staged)
+        .unwrap_or_else(|e| panic!("{} must be staged: {e}", staged.display()));
+    assert!(meta.is_file());
+    assert!(
+        meta.permissions().mode() & 0o111 != 0,
+        "the staged merge guard must stay executable (mode {:o})",
+        meta.permissions().mode()
+    );
+}
+
+/// Issue #1551 G11: the install sets the shim to exactly 0755 rather than
+/// keeping whatever mode the checkout (and its umask) gave it, because
+/// `amplihack recipe run` refuses a guard that group or others can write.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_stages_the_merge_guard_at_exactly_0755() {
+    use std::os::unix::fs::PermissionsExt;
+    for source_mode in [0o775, 0o777, 0o700, 0o644] {
+        let temp = tempfile::tempdir().unwrap();
+        let repo_root = temp.path().join("repo");
+        let claude_dir = temp.path().join(".amplihack/.claude");
+        fs::create_dir_all(&claude_dir).unwrap();
+        issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+        let guard = repo_root.join("amplifier-bundle/tools/gh-merge-guard");
+        fs::create_dir_all(&guard).unwrap();
+        fs::write(
+            guard.join("gh"),
+            "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+        )
+        .unwrap();
+        fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(source_mode)).unwrap();
+
+        directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+        let staged_dir = temp
+            .path()
+            .join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
+        let mode = fs::metadata(staged_dir.join("gh"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o7777;
+        assert_eq!(
+            mode, 0o755,
+            "a {source_mode:o} source shim must be staged as 0755, got {mode:o}"
+        );
+        let dir_mode = fs::metadata(&staged_dir).unwrap().permissions().mode();
+        assert_eq!(
+            dir_mode & 0o022,
+            0,
+            "the staged guard dir must not be group- or other-writable (mode {dir_mode:o})"
+        );
+    }
+}
+
+/// Issue #1551 G11: the guard also trusts tools/ and the gate files in it, so
+/// the install removes their group and other write bits, keeping the rest.
+#[cfg(unix)]
+#[test]
+fn copy_amplifier_bundle_removes_group_write_from_tools_and_gate_files() {
+    use std::os::unix::fs::PermissionsExt;
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    let claude_dir = temp.path().join(".amplihack/.claude");
+    fs::create_dir_all(&claude_dir).unwrap();
+    issue_734_create_bundle_repo(&repo_root, issue_734_compatible_smart_orchestrator());
+    let tools = repo_root.join("amplifier-bundle/tools");
+    let guard = tools.join("gh-merge-guard");
+    fs::create_dir_all(&guard).unwrap();
+    fs::write(
+        guard.join("gh"),
+        "#!/bin/bash -p\n# amplihack-gh-merge-guard\n",
+    )
+    .unwrap();
+    fs::set_permissions(guard.join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(tools.join("autodrive_merge_gate.sh"), "#!/bin/bash\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_merge_gate.sh"),
+        fs::Permissions::from_mode(0o777),
+    )
+    .unwrap();
+    fs::write(tools.join("autodrive_state.sh"), "# sourced\n").unwrap();
+    fs::set_permissions(
+        tools.join("autodrive_state.sh"),
+        fs::Permissions::from_mode(0o664),
+    )
+    .unwrap();
+    fs::set_permissions(&tools, fs::Permissions::from_mode(0o775)).unwrap();
+
+    directories::copy_amplifier_bundle(&repo_root, &claude_dir).unwrap();
+
+    let staged = temp.path().join(".amplihack/amplifier-bundle/tools");
+    let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&staged) & 0o022, 0, "tools/ mode {:o}", mode(&staged));
+    assert_eq!(mode(&staged.join("autodrive_merge_gate.sh")), 0o755);
+    assert_eq!(mode(&staged.join("autodrive_state.sh")), 0o644);
+}
+
 #[test]
 fn copy_amplifier_bundle_replaces_stale_installed_assets_instead_of_merging() {
     let temp = tempfile::tempdir().unwrap();

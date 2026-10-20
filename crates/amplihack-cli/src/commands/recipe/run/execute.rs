@@ -546,6 +546,7 @@ pub(super) fn execute_recipe_via_rust(
     search_dirs: &[PathBuf],
     step_timeout: Option<u64>,
     agent_binary: amplihack_utils::agent_binary::Resolution,
+    merge_guard: bool,
 ) -> Result<RecipeRunResult> {
     // Issue #964: fail-closed recursion-depth guard. Refuse to spawn a nested
     // recipe-runner once the session has reached the configured maximum depth,
@@ -674,6 +675,19 @@ pub(super) fn execute_recipe_via_rust(
             .unset("CLAUDECODE")
             .set("AMPLIHACK_NONINTERACTIVE", "1")
             .with_project_graph_db(working_dir)?;
+
+        // Issue #1551: put the `gh` merge guard from this run's own bundle
+        // first on PATH, and its BASH_ENV file to put it back there after a
+        // login shell's profile, so a merge outside autodrive_merge_gate.sh
+        // is refused in every step. Fails closed, before the runner starts, when
+        // the shim is missing.
+        let env_builder = if merge_guard {
+            let guard_dir =
+                super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
+            super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir)
+        } else {
+            env_builder
+        };
 
         // Issue #439: propagate --step-timeout as AMPLIHACK_STEP_TIMEOUT env var.
         // When Some(n), the child process sees AMPLIHACK_STEP_TIMEOUT=n (0 = disable).

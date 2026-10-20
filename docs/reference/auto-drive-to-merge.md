@@ -29,6 +29,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 - [Reading the loop-health line](#reading-the-loop-health-line)
 - [Two absolute prohibitions](#two-absolute-prohibitions)
 - [No silent merge](#no-silent-merge)
+- [Merges outside the gate are refused (#1551)](#merges-outside-the-gate-are-refused-1551)
 - [Exit code 79 is terminal](#exit-code-79-is-terminal)
 - [Recursion context propagation](#recursion-context-propagation)
 - [Resumability](#resumability)
@@ -1319,18 +1320,23 @@ The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
 `AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
 before. The exception is `AUTODRIVE_PR_INPUT`: the composer's
 `autodrive-pr-input` step produces it as a step output (#1543), so each loop
-preflight reads it once in the dual-name form. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
+preflight reads it once in the dual-name form, and the composer's
+`autodrive-check-unmerged` step reads `build_result` (#1551). `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
+as a template in step-02's sub-recipe `context:`, never in a shell, so it adds
+no row here. Its name joins the checked output set, so a later shell read
+must use the dual-name form, and [check 3](#the-static-check) forbids
+templating it into a `command:`. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
 no change: the first declares step outputs but reads none, and the second
 already used the dual-name form.
 
 A read is one `${<NAME>:-` occurrence, so a line that reads the same output
 twice counts twice. Reads made inside a bundled tool, such as the merge
 round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 34 in all:
+here; that file uses the same form. There are 35 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
-| `auto-drive-to-merge.yaml` | 3 |
+| `auto-drive-to-merge.yaml` | 4 |
 | `autodrive-build.yaml` | 1 |
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 8 |
@@ -1733,6 +1739,325 @@ list and the evidence bundle path, `79` terminal policy refusal. The `gh pr
 merge` status is captured on its own line rather than inside the `then` of an
 `if ! gh …`, where `$?` is the negation's status — always `0` — which would
 make the exit-79 branch dead code and report every failure as "exit 0".
+
+## Merges outside the gate are refused (#1551)
+
+`autodrive_merge_gate.sh` is the only place in this workflow allowed to merge,
+so a phase-1 agent cannot skip the crusty and merge-ready phases. A merge
+attempted anywhere else is refused by two independent layers: a `gh` shim
+first on `PATH`, and a check in the pre-tool-use hook that reads the command
+an agent types and does not depend on `PATH`. The agents are also told not to
+merge, and a merge that happens anyway ends the run.
+
+### How the guard is applied
+
+`amplihack recipe run` applies the guard before any step runs when the
+recipe's `name:` or file stem is `auto-drive-to-merge` or starts with
+`autodrive-` (not `autodrivex` or `my-autodrive-build`), or when the
+environment carries a non-empty `AMPLIHACK_MERGE_GUARD`; any value, `0`
+included, switches it on and none switches it off. The runner puts
+`$AMPLIHACK_HOME/amplifier-bundle/tools/gh-merge-guard` first on `PATH` once
+and sets `AMPLIHACK_MERGE_GUARD=1`, which every step, agent CLI and nested run
+inherits. `amplihack claude` prepends the claude binary's directory, which can
+hold the real `gh`, so under the marker the launcher puts the guard back at
+`PATH` index 0, and stops with the same errors if it cannot find it.
+
+The run stops before any step when `AMPLIHACK_HOME` is unset or not absolute
+(the error names which), the host is not Unix (the bash shim cannot be the
+`gh` an agent runs there), the host has no `/proc/self/stat` (macOS, the
+BSDs: the shim could never trust the gate, so the run would fail only at the
+final merge; tracked in [#1646](https://github.com/rysweet/amplihack-rs/issues/1646)),
+the host has no executable `/bin/bash` (NixOS: the shim could not start, so
+every `gh` call would fail), the shim is missing or not a regular executable, or
+anything the shim trusts is group- or other-writable: the shim, its
+directory, `tools/` above it, and the gate and the helpers it sources there
+(`autodrive_state.sh`, `autodrive_trust.sh`, `autodrive_unmerged.sh`). The install sets the shim and its directory to
+`0755` and removes group and other write from the rest. Nothing skips this:
+
+```text
+amplihack: merge guard not found at /home/ryan/.amplihack/amplifier-bundle/tools/gh-merge-guard; refusing to run auto-drive without it (#1551)
+```
+
+### Keeping the shim first after a shell profile
+
+The shim works only if it is the first `gh` the agent's shell finds. A
+profile that prepends `~/.local/bin`, `~/.npm-global/bin` or Homebrew's
+directory (`brew shellenv`) would put a real `gh` ahead of it. So the runner
+also exports `BASH_ENV` pointing at `gh-merge-guard/bash-env`. Every
+non-interactive bash in the run (a recipe step, an agent's shell tool,
+`bash -c`, `bash -lc`) sources that file before its command, and a login
+shell does so after its profile. The file puts the guard directory back at
+the front of `PATH`. Some agent runtimes reset `PATH` inside the command
+itself, after `BASH_ENV` has run. Claude Code's Bash tool is one: it runs
+`bash -c 'source <snapshot> && eval …'`, and the snapshot exports the
+profile's `PATH`. So the file also defines a `gh` shell function that runs
+the shim. Bash finds a function before searching `PATH`. A `BASH_ENV` the
+user already had is kept in
+`AMPLIHACK_MERGE_GUARD_USER_BASH_ENV` and sourced first. The run stops at
+launch when `bash-env` is missing or writable by group or others, like a
+missing shim.
+
+`agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path` in
+`crates/amplihack-cli/tests/issue_1551_merge_guard.rs` checks this. It runs
+an `autodrive-*` recipe whose step starts `bash -lc` with a `HOME` whose
+`.bash_profile`, `.bashrc` and `.profile` prepend a directory holding another
+`gh`. It asserts that `type -P gh` is the shim, that `gh` is the guard's
+function, and that `gh pr merge 1` exits `3`. The last check is repeated in
+a `bash -c` that re-exports that `PATH` inside the command, the way Claude
+Code's snapshot does. The same test also pins the limit below: after that
+re-export, `type -P gh` is the profile's `gh`, and `env gh pr view 7`
+reaches it.
+
+Not covered: an interactive shell (`bash -i`), which does not read
+`BASH_ENV`, and `command gh` or a `gh` by absolute path, which skip the
+function. The hook check below still refuses the direct forms in all three.
+
+Also not covered: a `gh` run by a program that is not bash after the
+command has re-exported the profile's `PATH`. Examples are `xargs`,
+`find -exec`, `make`, `env`, `timeout` and a `subprocess.run(["gh", …])`.
+The function exists only inside bash. Such a program finds `gh` by
+searching `PATH`, and it starts no new bash, so `BASH_ENV` is not read
+again. It gets the shim only when no real `gh` comes earlier on the
+profile's `PATH`. So with a real `gh` in `~/.local/bin`,
+`gh pr list … | xargs -n1 gh pr merge` merges. The hook still refuses the
+wrapper forms (`env`, `timeout`, `nice`, `nohup`, `exec`, `command`, `sudo`
+… `gh pr merge`), because it skips those wrappers to reach the program word.
+It does not see a `gh` started by `xargs`, `find -exec`, `make` or a
+subprocess, since the program word there is not `gh`. The phase 1 and phase 2
+`MERGED` checks are what catch those.
+
+`BASH_ENV` reaches a repository's own test suite too: an agent's
+`cargo test` and the merge round's QA command run inside the guarded run.
+A test that runs a gate against a stub `gh` must start without the guard, or
+the shim refuses the stub merge. `test-auto-drive-to-merge.sh` unsets
+`BASH_ENV`, `AMPLIHACK_MERGE_GUARD` and the `gh` function at its top and
+takes the guard directory off `PATH`; its #1551 cases put the guard back on
+their own command. `auto_drive_contract_shell_test_passes` runs it under the
+guard's environment so that `cargo test` fails if this regresses.
+
+### The pre-tool-use hook check
+
+When `AMPLIHACK_MERGE_GUARD` is non-empty, the pre-tool-use hook
+(`crates/amplihack-hooks/src/pre_tool_use/merge_guard.rs`) is a second,
+deliberately small layer for the same ordinary forms. It reads the command
+of the agent's shell tool (`Bash` in Claude Code, `bash` in Copilot), so it
+does not depend on `PATH`. It refuses only these:
+
+- `gh … pr … merge` where `gh` (any path) is the program being run;
+- `gh api` on a merge endpoint, forbidden outside the gate: an endpoint
+  of `…/pulls/<n>/merge`, `repos/<o>/<r>/merges` or
+  `repositories/<id>/merges` (any case, path or URL).
+
+Running `autodrive_merge_gate.sh` is not one of these forms, and the hook
+reads no shell options. Running the gate from an agent shell is refused by
+the shim's parent and environment check: the shim trusts only a parent that
+is `/bin/bash -p <gate>` with a clean environment, and the runner exports
+`BASH_ENV` into every agent shell, so the gate's merge is refused (T2-G6 and
+`S-G6-*` in `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`).
+Doing it with a cleaned environment (`env -i /bin/bash -p <gate>`) is
+deliberate evasion and a [non-goal](#what-this-does-not-stop).
+`leaves_merge_gate_runs_to_the_shim` asserts that the hook passes gate runs
+and inspections alike (`bash -n`, `command -v`, `bash -c '… gate'`).
+
+The program is the first word of each command after splitting at unquoted
+`;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
+`!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
+`nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
+skipped. Nothing else is read. Quoted text (with `\'` escaped inside
+`$'…'`), the arguments of other programs, heredoc bodies and comments are
+data. So these pass with the guard on, alone
+or after a command that runs an interpreter (`bash test.sh && …`,
+`cargo test 2>&1 | awk '{print}'; …`):
+
+- `grep -rn 'gh pr merge' .`
+- `rg 'pulls/1/merge'`
+- `echo gh pr merge 38 > notes`
+- `cat <<'EOF' … gh pr merge … EOF`
+- `git add …/autodrive_merge_gate.sh`
+- `git commit -m '… gh pr merge …'`
+- `gh pr create --body …`
+
+`data_mentions_pass_in_every_context` in
+`crates/amplihack-hooks/src/pre_tool_use/tests/merge_guard_tests.rs` asserts
+this.
+
+The hook is not a shell parser and does not try to be one. Shell text cannot
+be read completely without running it: expansion and aliases are resolved at
+run time. Code that is not the program word is outside what the hook reads:
+`bash -c '…'`, a script file, `eval`, an alias, a variable holding `gh`, and
+command substitution (`$(…)` or backticks). The hook keeps a substitution
+inside the word it sits in, so in `out=$(gh pr merge 38 --squash)` the program
+word is the assignment and the hook does not refuse it. The hook also takes
+any `<<` as the start of a heredoc, including a shift inside bare arithmetic
+such as `(( n = 1 << 2 ))`, and then does not read the lines after it. The
+shim refuses the merge in all of these when it is the `gh` that runs, which
+covers the ordinary forms. Deliberate evasion is a non-goal; see the next
+section.
+
+### What the shim refuses
+
+`gh-merge-guard/gh` skips leading global flags (`-R`, `--repo` and
+`--hostname` take a value; `--` is skipped) and classifies the call:
+
+| Form | Examples | Label |
+| --- | --- | --- |
+| `pr merge`, any flags | `gh pr merge 38 --squash`; `gh -R o/r pr merge 38`; with `--admin` too, a flag never used anywhere (prohibited) | `gh pr merge` |
+| REST merge endpoints, any method (never outside the gate) | `gh api -X PUT repos/o/r/pulls/38/merge`; `gh api repos/o/r/merges` | `gh api merge endpoint` |
+| A merge endpoint in another spelling | a full `https://` URL (any host or port), an `api/v3/` prefix, a leading or doubled `/`, a `?query` or `#fragment`, `{owner}/{repo}` placeholders, the `repositories/<id>/` form, any letter case (`PULLS`, `Merge`) | `gh api merge endpoint` |
+| An ambiguous endpoint that mentions `pull` or `merge` | `%` escapes, `.` or `..` segments, backslashes, whitespace or control bytes; any endpoint holding `{branch}`, which gh fills in unescaped | `gh api merge endpoint` |
+| GraphQL merge mutations | `mergePullRequest`, `enablePullRequestAutoMerge`, `enqueuePullRequest`, `mergeBranch` as whole names, any case | `gh api graphql merge mutation` |
+| A GraphQL body the shim cannot read | any endpoint that mentions `graphql` (`graphql?`, a full `https://` URL, GHES `/api/graphql`, any case) with `--input` or `=@` in any argument, combined short flags (`-iF query=@f`) included | `gh api graphql unreadable query` |
+| Aliases | `gh alias set`/`import` whose expansion mentions `merge` or `graphql` or holds a `$N` placeholder; a call through an alias that expands to a merge form or holds a placeholder or quotes; any alias lookup while `gh alias list` fails | `gh alias` |
+| Extensions | `gh extension install`/`upgrade`/`exec` | `gh extension` |
+| Unknown first words | any first word that is neither in the shim's [built-in allowlist](#the-built-in-command-allowlist) nor an alias, or an alias expanding to one: an extension, or a command a newer `gh` added | `unknown gh command or extension` |
+
+An unknown first word gets its own line, because it is not necessarily a
+merge attempt. The line names the allowlist to extend:
+
+```text
+REFUSED (amplihack #1551): unknown gh command or extension — the first word is not a built-in command in the merge guard's allowlist (classify() in amplifier-bundle/tools/gh-merge-guard/gh) and not a gh alias. Extensions run their own code and could merge past this guard, so auto-drive refuses them. If a newer gh added this command, add it to that allowlist.
+```
+
+#### The built-in command allowlist
+
+`classify()` in `gh-merge-guard/gh` lists the `gh` top-level commands and
+help topics that cannot merge, checked against `gh` 2.102 (`gh help`). This
+includes `environment`, `exit-codes`, `formatting`, `mintty`, `reference` and
+`telemetry`. A word missing from the list fails safe: it is refused as
+`unknown gh command or extension`, never passed through. So after a `gh`
+upgrade, a new command is refused in auto-drive runs until it is added. Adding
+one is a one-word change to that `case` line, plus a `parity` line in
+`test-issue-1551-no-merge-outside-gate.sh`. Add a command only after checking
+that it cannot merge.
+
+Only `gh api` arguments are inspected, so a `gh pr create --body` that
+mentions `mergePullRequest` passes through. A refused call never reaches the
+real `gh`: the shim prints one fixed line, with the label and never the
+arguments, and exits `3`:
+
+```text
+REFUSED (amplihack #1551): gh pr merge is only allowed inside autodrive_merge_gate.sh; leave the PR open — auto-drive's merge gate merges after Crusty CLEAN and the merge-ready loop. Do not retry with another gh path, PATH, alias, API client or token.
+```
+
+Every other call (`gh pr view`, `gh api repos/o/r/pulls/38/files`, a GraphQL
+query that reads `mergeable`) runs `exec "$REAL_GH" "$@"` unchanged. The shim
+(`#!/bin/bash -p`, bash 3.2 included, as on macOS) takes the first executable `gh` on an absolute `PATH`
+entry, skipping its own directory and any file with the marker line
+`# amplihack-gh-merge-guard`. It exits `127` when there is none, or when
+`AMPLIHACK_GH_GUARD_DEPTH` is not 1–3 digits or passes 4.
+
+### When the gate's own merge is allowed
+
+A merge form is allowed only when the shim's **direct parent** is the trusted
+gate, `gh-merge-guard/../autodrive_merge_gate.sh`. Using `/proc`, all of these
+must hold:
+
+1. `/proc/self/stat` field 4 still equals `$PPID`.
+2. `/proc/$PPID/cmdline` is exactly `[<bash>, -p, <gate>, …]`, `<gate>` being
+   the trusted gate's physical path (no symlink, relative path or `..`).
+3. `/proc/$PPID/fd/255` is the same file as the trusted gate.
+4. `/proc/$PPID/exe` is a `bash` owned by root and writable by no one else.
+5. `/proc/$PPID/environ` has no `BASH_FUNC_*` and no non-empty `BASH_ENV`,
+   `ENV`, `SHELLOPTS`, `BASHOPTS`, `PS4`, `LD_PRELOAD`, `LD_AUDIT` or
+   `LD_LIBRARY_PATH`. Only key names are compared.
+
+Any check the shim cannot evaluate refuses. A subshell of the gate passes; a
+grandparent, a copy of the gate, `exec -a`, `bash -c` and no `-p` are refused.
+
+The gate starts with `#!/bin/bash -p` (never `#!/usr/bin/env bash -p`, which
+Linux passes to `env` as one argument) and runs `builtin unset -f gh git jq`.
+Phase 3's `autodrive-merge-loop.yaml` loads the gate and `autodrive_state.sh`
+from `$AMPLIHACK_HOME` only. Step-03 resolves the gate's
+physical path with `pwd -P` and, in a subshell that drops everything check 5
+names, runs `exec env -u LD_… /bin/bash -p "$GATE_PHYS" …`, so a session
+exporting `which` (Fedora), Lmod's `module` or `LD_LIBRARY_PATH` still merges.
+
+### What the agents are told
+
+The shim is the control; the directive saves agents a wasted round. Its
+fixed text is repeated in each prompt below, and the contract tests check
+every copy:
+
+```text
+[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
+```
+
+| Where | How |
+| --- | --- |
+| `autodrive-build.yaml` step-01b | Builds `no_merge_directive` with `jq -n --arg` (`jq` is required), appending the directive when `no_merge` is `true`, and exits non-zero if `jq` fails or the directive is missing. Step-02 passes it to `default-workflow`. |
+| `default-workflow.yaml`, `workflow-prep.yaml` | `no_merge` defaults to `""`. When `true`, acceptance criteria end at "PR open, merge-ready". |
+| `workflow-finalize.yaml` | When `no_merge` is `true`: do not merge; stop at merge-ready. |
+| `autodrive-crusty-round.yaml`, `autodrive-merge-round.yaml` | The directive line, then a blank line. |
+
+None of these tells an agent to orchestrate ([#1333 guard test](../../crates/amplihack-cli/tests/issue_1333_leaf_steps_do_not_orchestrate.rs)).
+
+### A merge outside the gate ends the run
+
+After phase 1 (`autodrive-build.yaml` step-03, when it built under
+`no_merge`) and after the crusty loop (`auto-drive-to-merge.yaml`
+`autodrive-check-unmerged`, skipped when the PR was already merged when the
+run started), `autodrive_require_unmerged` (in `autodrive_unmerged.sh`, which
+`autodrive_state.sh` sources from its own directory) re-reads the PR with
+`autodrive_pr_state`. Both checks load `autodrive_state.sh` from
+`$AMPLIHACK_HOME` only and exit `1` if it, `autodrive_unmerged.sh` or
+`REPO_PATH` is unusable. The PR number must match `^[0-9]+$`. `MERGED` exits
+`1` with `#1551 merged outside autodrive_merge_gate.sh`; an unreadable state
+is re-read once and then exits `1`.
+
+### What this does not stop
+
+**Non-goal: deliberate evasion with the same token.** The guard covers the
+ordinary means an agent uses on its own initiative: `gh pr merge` and
+`gh api` on `…/pulls/N/merge` (both forbidden outside the gate), through any
+`gh` that `PATH` resolves. It does not
+try to stop an agent that sets out to evade it with the same GitHub token
+the run uses. Examples are `curl` or another HTTP client sending the token to
+the merge endpoint, a script file the agent writes and then runs, and an
+inline alias or variable that hides `gh`. Those routes are out of scope for
+the shim and the hook. Branch protection on the base branch is the
+boundary. The `MERGED` checks after phases 1 and 2 are the backstop: they end
+the run when the PR is merged outside the gate.
+
+| Route | Outcome |
+| --- | --- |
+| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The runner's [`BASH_ENV` file](#keeping-the-shim-first-after-a-shell-profile) puts the shim back first in every non-interactive bash, after a login shell's profile, and its `gh` function answers a `gh` that bash runs when the command resets `PATH` itself (Claude Code's shell snapshot). **Not covered:** after that reset, a `gh` run by a program that is not bash (`xargs`, `find -exec`, `make`, `env`, `timeout`, a subprocess) finds the first `gh` on the profile's `PATH`. It gets the shim only if no real `gh` comes earlier there. The hook still refuses the wrapper forms (`env`, `timeout`, `nice`, `nohup`, `exec`, `command`, `sudo` … `gh pr merge`), since it skips those wrappers. It does not see a `gh` started by `xargs`, `find -exec`, `make` or a subprocess; the `MERGED` checks catch those. In an interactive shell, or through `command gh`, the [hook check](#the-pre-tool-use-hook-check) still refuses `gh pr merge` and `gh api` on a merge endpoint, since it reads the program word, not `PATH`. |
+| `gh` by absolute path or `PATH=… gh`, as the program | Refused by the hook check, which matches `gh` at any path. |
+| `curl`, `wget` or another HTTP client sending the token to the merge endpoint | Out of scope (the non-goal above). Branch protection and the `MERGED` checks. |
+| A merge inside a script file the agent writes and then runs, `bash -c '…'`, `eval`, an alias, a variable holding `gh`, a command substitution (`out=$(gh pr merge …)`), or a line after a `<<` the hook took for a heredoc | The shim refuses it when it is the `gh` that runs, which `BASH_ENV` keeps true in non-interactive bash. Otherwise out of scope: the hook reads only the program word. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| An agent CLI that runs no amplihack hooks | Only the shim applies. |
+| A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
+| Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
+| `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
+| A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
+| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the shim: an agent shell carries the runner's `BASH_ENV`, so the gate's parent environment is not clean and the shim refuses its merge. The [hook check](#the-pre-tool-use-hook-check) does not read gate runs. Clearing the environment first (`env -i /bin/bash -p <gate>`) gets past the shim, which then trusts the gate like phase 3; that is deliberate evasion, the stated non-goal. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). |
+| A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
+| An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
+| A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |
+| No `/proc` (macOS, BSDs) | `amplihack recipe run` stops the run at launch, before any step: the shim could never trust the gate's merge. Auto-drive does not run on macOS until [#1646](https://github.com/rysweet/amplihack-rs/issues/1646) adds a parent check that works there. |
+| A `/proc` where the parent's `environ` cannot be read, or a `/bin/bash` not owned by root | Fails closed: every merge is refused, the gate's included. |
+| No `/bin/bash` at all (NixOS) | `amplihack recipe run` stops the run at launch: the shim cannot start, so every `gh` call in the run would fail. |
+| A top-level command a newer `gh` added | Refused as `unknown gh command or extension` until it is added to the [allowlist](#the-built-in-command-allowlist). |
+
+### Troubleshooting
+
+- **`merge guard not found` before step 1.** Set `AMPLIHACK_HOME` to an
+  absolute path, rerun `amplihack install`, and check
+  `stat -c %a "$AMPLIHACK_HOME/amplifier-bundle/tools/gh-merge-guard/gh"`
+  prints `755`.
+- **The gate ends `NOT_MERGED — gh pr merge failed (exit 3)`.** The shim
+  did not trust the gate. Check that `readlink -f "$(command -v gh)"` and the
+  gate path step-03 resolved come from one bundle tree and that `/bin/bash`
+  is root-owned. Then rerun phase 3.
+- **An agent's non-merge `gh api` call is refused.** It mentions `pull` or
+  `merge` with `%`, `.`/`..`, a backslash or whitespace (use the plain
+  `repos/<owner>/<repo>/…` path), or it is a `gh` extension.
+- **`unknown gh command or extension` after a `gh` upgrade.** The new command
+  is missing from the [allowlist](#the-built-in-command-allowlist). Check that
+  it cannot merge, then add it.
+- **`auto-drive needs /proc/self/stat` before step 1.** The host is macOS or
+  a BSD. See [#1646](https://github.com/rysweet/amplihack-rs/issues/1646).
+- **The run exits `1` with `#1551 merged outside`.** Something merged the PR
+  before phase 3; review the merge in the PR's timeline.
 
 ## Exit code 79 is terminal
 
@@ -2336,7 +2661,11 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_crusty_rereview.sh` | tool | The merge-ready loop's `--before-round` step: sends code commits made after the clean crusty round back to the crusty loop. |
 | `amplifier-bundle/tools/autodrive_pr_worktree.sh` | tool | Resolves the pull request's linked worktree for phases 2 and 3. Read-only apart from `git worktree add` and fast-forward-only fetches. Refuses a tip that is stale against origin. |
 | `amplifier-bundle/tools/autodrive_worktree_guard.sh` | tool | The #1528 checks: the loop preflight (launch-side recipes, review dir is the main checkout of the PR's repository), each round's `step-00-review-dir-guard` (which also refuses a run-worktree gitlink in the review dir's index), `step-02b-review-dir-unchanged` (index stamp and check), the loop's stamp around each round and the evaluator, and the commit block's linked-worktree and head-branch check. Writes nothing. |
-| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv. |
+| `amplifier-bundle/tools/autodrive_merge_gate.sh` | tool | Evidence gate and the fixed merge argv; runs as `/bin/bash -p`, the only process the merge guard trusts. |
+| `amplifier-bundle/tools/gh-merge-guard/gh` | tool | The `gh` shim that refuses a merge outside the gate ([#1551](#merges-outside-the-gate-are-refused-1551)). |
+| `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs` | launcher | Decides when the shim goes first on `PATH` and exports its `BASH_ENV` file; fails closed when either is missing, the shim is not executable, or either is writable by group or others. |
+| `amplifier-bundle/tools/gh-merge-guard/bash-env` | tool | Sourced through `BASH_ENV`; puts the shim back first on `PATH` after a login shell's profile. |
+| `crates/amplihack-hooks/src/pre_tool_use/merge_guard.rs` | hook | Refuses the prohibited forms `gh pr merge`, `gh api` on a merge endpoint and a run of the gate, by program word only. |
 | `amplifier-bundle/tools/autodrive_merge_ready_files.sh` | tool | Finds the merge-ready `SKILL.md` and template. |
 | `amplifier-bundle/tools/autodrive_platform_facts.sh` | tool | Platform facts for the merge round, criterion 6 included; the review-thread count for the merge gate too. |
 | `amplifier-bundle/tools/autodrive_qa_evidence.sh` | tool | Criterion 1: the suite commands and, where `autodrive_gadugi_required` says so, the gadugi scenarios, for `autodrive-merge-evidence.yaml` step-02. |
@@ -2358,6 +2687,10 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
 | Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
+| [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
+| When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
+| `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
+| The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -2367,6 +2700,8 @@ cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
+bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
+cargo test -p amplihack-cli --test cli_integration issue_1551
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh

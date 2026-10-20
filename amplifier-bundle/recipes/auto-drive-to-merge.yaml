@@ -184,6 +184,37 @@ steps:
       task_description: "{{task_description}}"
       autodrive_state_dir: "{{build_result.state_dir}}"
 
+  # Issue #1551: only the merge gate in phase 3 merges. A PR already MERGED
+  # here was merged around the gh merge guard during phase 1 or 2; the run
+  # stops with exit 1 instead of reporting it. Values come from the
+  # environment only.
+  - id: "autodrive-check-unmerged"
+    type: "bash"
+    command: |
+      set -uo pipefail
+      cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-check-unmerged]" >&2; exit 1; }
+      export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
+      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
+      g() { printf '%s' "$BR" | amplihack orch helper extract-json --require-field "$1" \
+              | amplihack orch helper extract-field --field "$1" --default ''; }
+      PR="$(g pr)"
+      if [ "$(g merged_before_run)" = "true" ]; then
+        echo "INFO: PR #${PR} was already merged when this run started; nothing to check [autodrive-check-unmerged]" >&2
+        exit 0
+      fi
+      case "$PR" in
+        ''|*[!0-9]*) echo "ERROR: #1551: phase 1 reported no valid PR number; refusing to continue unverified [autodrive-check-unmerged]" >&2; exit 1 ;;
+      esac
+      # Only the installed bundle: REPO_PATH and cwd are the PR's own tree.
+      STATE_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_state.sh"
+      case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
+      [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check PR #${PR} before phase 3 [autodrive-check-unmerged]" >&2; exit 1; }
+      . "$STATE_HELPER"
+      # Reads autodrive_pr_state, once more if it is unreadable.
+      autodrive_require_unmerged "$PR" "phase 2 (crusty loop)" || exit 1
+      echo "INFO: PR #${PR} is unmerged after phase 2; phase 3 may run" >&2
+    output: "autodrive_unmerged_check"
+
   - id: "autodrive-merge-loop"
     type: "recipe"
     recipe: "autodrive-merge-loop"

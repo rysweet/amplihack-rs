@@ -47,7 +47,7 @@ const AUTODRIVE_RECIPES: [&str; 7] = [
     "autodrive-merge-loop",
 ];
 
-const AUTODRIVE_TOOLS: [&str; 14] = [
+const AUTODRIVE_TOOLS: [&str; 15] = [
     "autodrive_crusty_rereview.sh",
     "autodrive_done_override.sh",
     "autodrive_last_round.sh",
@@ -61,6 +61,7 @@ const AUTODRIVE_TOOLS: [&str; 14] = [
     "autodrive_round_tail.sh",
     "autodrive_state.sh",
     "autodrive_trust.sh",
+    "autodrive_unmerged.sh",
     "autodrive_worktree_guard.sh",
 ];
 
@@ -3421,6 +3422,27 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
     for d in [&trees, &home, &tmpdir] {
         fs::create_dir_all(d).expect("mkdir");
     }
+    // An autodrive-* run needs the #1551 merge guard under AMPLIHACK_HOME
+    // ($HOME/.amplihack here) before the depth guard is reached: the `gh`
+    // shim and the `bash-env` file that re-asserts it after a shell profile.
+    // The launch check refuses a guard missing either one, so stage both,
+    // at the modes the installer gives them (0755 shim, 0644 bash-env).
+    let guard = home.join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
+    fs::create_dir_all(&guard).expect("mkdir the merge guard dir");
+    let shipped = workspace_root().join("amplifier-bundle/tools/gh-merge-guard");
+    for f in ["gh", "bash-env"] {
+        fs::copy(shipped.join(f), guard.join(f)).expect("install the merge guard");
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let tools = guard.parent().expect("tools dir").to_path_buf();
+        for p in [tools, guard.clone(), guard.join("gh")] {
+            fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod guard");
+        }
+        fs::set_permissions(guard.join("bash-env"), fs::Permissions::from_mode(0o644))
+            .expect("chmod bash-env");
+    }
     const TREE: &str = "autodrivedepthtest";
     // The ceiling a root run seals: the default, 3.
     fs::write(
@@ -4719,23 +4741,37 @@ fn inherited_autodrive_context(root: &Path) -> Vec<(String, String)> {
 /// Wired here because `.github/workflows/ci.yml` lists the bash recipe tests
 /// one by one; running it from `cargo test` gets the same coverage without
 /// touching that file.
+///
+/// It runs under the #1551 gh merge guard's environment, the one
+/// `merge_guard::apply_guard` exports to every bash of an auto-drive run: the
+/// guard directory first on `PATH`, `BASH_ENV` at the shipped `bash-env`, and
+/// `AMPLIHACK_MERGE_GUARD=1`. That is where this test runs as phase-1 tests and
+/// as the merge round's QA, and where it failed twice in PR #1644 crusty round
+/// 11. The script drops the guard at its top, so a run without the guard
+/// covers nothing this one does not; it is not run twice (it takes minutes).
 #[test]
 fn auto_drive_contract_shell_test_passes() {
     let root = workspace_root();
     let script = root.join("amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh");
     assert!(script.is_file(), "missing {}", script.display());
+    let guard = root.join("amplifier-bundle/tools/gh-merge-guard");
+    let bash_env = guard.join("bash-env");
+    assert!(bash_env.is_file(), "missing {}", bash_env.display());
 
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
     let bin_dir = bin.parent().expect("binary parent dir");
     let path = match std::env::var("PATH") {
-        Ok(p) => format!("{}:{p}", bin_dir.display()),
-        Err(_) => bin_dir.display().to_string(),
+        Ok(p) => format!("{}:{}:{p}", guard.display(), bin_dir.display()),
+        Err(_) => format!("{}:{}", guard.display(), bin_dir.display()),
     };
 
     let out = Command::new("bash")
         .arg(&script)
         .current_dir(&root)
+        .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
         .env("PATH", path)
+        .env("BASH_ENV", &bash_env)
+        .env("AMPLIHACK_MERGE_GUARD", "1")
         .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the auto-drive contract shell test");

@@ -63,6 +63,23 @@ while IFS= read -r _inherited; do
   case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
 done < <(compgen -e)
 unset _inherited
+# The same goes for the #1551 gh merge guard. An auto-drive run exports
+# BASH_ENV=<guard>/bash-env and AMPLIHACK_MERGE_GUARD=1 to every bash in it,
+# this one included, and bash-env has already run before this line: it put
+# the guard first on PATH and defined a `gh` function. Left in place, every
+# gate this test starts sources it too, and the shim refuses the stub merge
+# (PR #1644 crusty round 11: GATE-merge-79 and 1551-gate-merges-under-guard
+# failed inside auto-drive). The 1551 cases put the guard back on their own
+# command (GUARD_1551). auto_drive_contract_shell_test_passes runs this under
+# the guard's environment so a regression here fails `cargo test`.
+unset BASH_ENV ENV AMPLIHACK_MERGE_GUARD AMPLIHACK_MERGE_GUARD_USER_BASH_ENV
+unset -f gh 2>/dev/null || true
+_path=""
+while IFS= read -r -d: _entry; do
+  case "${_entry}" in */gh-merge-guard|*/gh-merge-guard/) ;; *) _path="${_path:+${_path}:}${_entry}" ;; esac
+done <<< "${PATH}:"
+PATH="${_path}"; export PATH
+unset _path _entry
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -77,7 +94,7 @@ AUTODRIVE_RECIPES=(
 )
 AUTODRIVE_TOOLS=(autodrive_crusty_rereview.sh autodrive_done_override.sh autodrive_loop.sh autodrive_merge_gate.sh autodrive_merge_ready_files.sh
   autodrive_platform_facts.sh autodrive_pr_head.sh autodrive_qa_evidence.sh autodrive_round_evidence.sh autodrive_state.sh
-  autodrive_trust.sh autodrive_worktree_guard.sh)
+  autodrive_trust.sh autodrive_unmerged.sh autodrive_worktree_guard.sh)
 # merge-round step-00-tools-dir finds the tools once and every later step of
 # the round reads the directory from its output. A scalar output reaches bash
 # as RECIPE_VAR_<output> and as the upper-case name (recipe-runner 0.3.8,
@@ -961,6 +978,16 @@ case "${GH_MODE:-}" in
     [ "${1:-}" = "api" ] && { echo 0; exit 0; }
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && exit 0
     ;;
+  # Everything verifies, the merge succeeds, and the platform then reports the
+  # PR MERGED (issue #1551: the gate's whole MERGED path, run under the guard).
+  merges)
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "merge" ] && { : > "${GH_CALLS}.merged"; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && [ -f "${GH_CALLS}.merged" ] && {
+      echo '{"state":"MERGED","mergedAt":"2026-10-18T00:00:00Z","mergeCommit":{"oid":"m"}}'; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { pv; exit 0; }
+    [ "${1:-}" = "pr" ] && [ "${2:-}" = "checks" ] && { echo '[{"name":"Test","state":"SUCCESS","bucket":"pass"}]'; exit 0; }
+    [ "${1:-}" = "api" ] && { echo 0; exit 0; }
+    ;;
   # Everything verifies, then `gh pr merge` itself fails with a real exit code.
   merge-fails)
     [ "${1:-}" = "pr" ] && [ "${2:-}" = "view" ] && { pv; exit 0; }
@@ -1159,6 +1186,13 @@ crusty_mutate() { # crusty_mutate <dir> <mutation>: what an agent, or a broken l
 #   GH_HEAD           the head SHA `gh pr view` reports (default FX's CR_SHA2)
 #   GH_BASE           the baseRefName `gh pr view` reports (default main)
 #   GATE_PATH_PREFIX  a directory put first on PATH (the git shim of section 5k)
+#   GATE_PRIV         1 = run the gate the way merge-loop step-03 does (#1551 G6):
+#                     `/bin/bash -p <physical gate path>`, the only shape the gh
+#                     merge guard trusts, with the LD_* variables it refuses
+#                     stripped (cargo test sets LD_LIBRARY_PATH). Default:
+#                     `bash <gate>`.
+#   GATE_EXTRA_ENV    one NAME=VALUE the gate starts with, set through env(1),
+#                     for names bash cannot assign (BASH_FUNC_gh%%)
 #
 # --round-record and --qa-evidence name TEMPLATES. With a state dir, gate_run
 # stages them the way the merge round and autodrive_loop.sh write them (#1517
@@ -1260,11 +1294,20 @@ gate_run() { # gate_run <mode> <extra-args...>
       mv "${GATE_DIR}/crusty-latest.json" "${GATE_DIR}.planted-latest.json"
       ln -s "${GATE_DIR}.planted-latest.json" "${GATE_DIR}/crusty-latest.json" ;;
   esac
+  local gate_file="${GATE_SCRIPT:-${GATE}}"
+  local -a gate_cmd=(bash "${gate_file}")
+  if [ "${GATE_PRIV:-}" = 1 ]; then
+    # The environ merge-loop step-03 gives the gate: no BASH_ENV, ENV, PS4,
+    # SHELLOPTS, BASHOPTS or loader variables.
+    gate_cmd=(env -u BASH_ENV -u ENV -u PS4 -u SHELLOPTS -u BASHOPTS -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$(cd "$(dirname "${gate_file}")" && pwd -P)/$(basename "${gate_file}")")
+  fi
+  # env execs the gate's bash in place, so bash stays the gh shim's parent.
+  [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")
   GH_MODE="$mode" GH_CALLS="${GATE_DIR}/gh-calls" GH_HEAD="${GH_HEAD:-${GATE_HEAD}}" GH_BASE="${GH_BASE-main}" \
     PATH="${GATE_PATH_PREFIX:+${GATE_PATH_PREFIX}:}${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" \
     GH_MERGE_RC="${GH_MERGE_RC:-3}" AMPLIHACK_BIN="${REAL_AMPLIHACK}" TMPDIR="${gate_tmp}" \
     SWAP_FROM="${SWAP_FROM:-}" SWAP_TO="${GATE_DIR}/merge-ready-latest.json" \
-    bash "${GATE_SCRIPT:-${GATE}}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
+    "${gate_cmd[@]}" --pr 42 --repo "${FX}" ${sd[@]+"${sd[@]}"} ${args[@]+"${args[@]}"} \
     >"${GATE_DIR}/out" 2>"${GATE_DIR}/err"
   local rc=$?
   # Restore owner access so the EXIT trap can remove the directory.
@@ -1452,6 +1495,114 @@ else
   fail "GATE-merge-79" "exit 79 from the merge became rc=${rc}"
 fi
 unset GH_MERGE_RC
+
+# 5i-1551. Issue #1551: with the merge guard first on PATH, as every auto-drive
+# run has it, the real gate still merges. The shim finds the stub gh behind it,
+# the exact fixed merge argv reaches it, and nothing is REFUSED. The assertion
+# is on the stub's log, never on the exit code alone: the shim's refusal exit
+# is 3, the same as GH_MERGE_RC's default.
+GUARD_1551="${TOOLS}/gh-merge-guard"
+if [ -x "${GUARD_1551}/gh" ]; then
+  GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
+  if [ "$rc" -eq 0 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"' \
+     && grep -qxF "pr merge 42 --squash --delete-branch --match-head-commit ${GATE_HEAD}" "${GATE_DIR}/gh-calls" \
+     && ! grep -qF 'REFUSED' "${GATE_DIR}/err"; then
+    pass "1551-gate-merges-under-guard" "under the merge guard the real gate, run as /bin/bash -p <gate>, merges with its fixed argv"
+  else
+    fail "1551-gate-merges-under-guard" "rc=${rc}: ${GATE_OUT} | $(grep -E 'REFUSED|BLOCKER|NOT_MERGED' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+  GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run unreadable-meta; rc=$?
+  if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+     && ! grep -qF 'REFUSED' "${GATE_DIR}/err"; then
+    pass "1551-gate-not-merged-under-guard" "under the merge guard the gate's NOT_MERGED path still exits 1"
+  else
+    fail "1551-gate-not-merged-under-guard" "rc=${rc} (want 1): ${GATE_OUT}"
+  fi
+  # A copy of the gate with every helper beside it passes every check and then
+  # has its merge refused: only the bundle's own gate may merge.
+  COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
+  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
+  GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
+    gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
+  if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+     && grep -qF 'REFUSED (amplihack #1551)' "${GATE_DIR}/err" \
+     && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls"; then
+    pass "1551-gate-copy-refused" "a copy of the gate outside the bundle cannot merge under the guard; it ends NOT_MERGED"
+  else
+    fail "1551-gate-copy-refused" "rc=${rc} (want 1): ${GATE_OUT} | $(grep -E 'REFUSED|BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+  # G6: the real gate run without -p (as `bash <gate>`) cannot merge under
+  # the guard: an exported function or BASH_ENV could run inside it.
+  GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
+  if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
+     && grep -qF 'REFUSED (amplihack #1551)' "${GATE_DIR}/err" \
+     && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls"; then
+    pass "1551-gate-no-p-refused" "the real gate run without -p has its merge refused; it ends NOT_MERGED"
+  else
+    fail "1551-gate-no-p-refused" "rc=${rc} (want 1): ${GATE_OUT} | $(grep -E 'REFUSED|BLOCKER' "${GATE_DIR}/err" | tr '\n' ' ')"
+  fi
+  # G6: the privileged gate with an exported gh function in its environment
+  # (the probe that merged with --admin) is refused, and gh never sees a merge.
+  GATE_EXTRA_ENV='BASH_FUNC_gh%%=() { command gh pr merge 42 --admin --squash; }' \
+    GATE_PRIV=1 GATE_PATH_PREFIX="${GUARD_1551}" gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
+  if [ "$rc" -ne 0 ] && ! grep -q '^pr merge' "${GATE_DIR}/gh-calls" \
+     && ! printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"MERGED"'; then
+    pass "1551-gate-export-f-refused" "an exported gh function cannot ride the privileged gate's trust"
+  else
+    fail "1551-gate-export-f-refused" "rc=${rc}: ${GATE_OUT} | $(tr '\n' '|' < "${GATE_DIR}/gh-calls" 2>/dev/null)"
+  fi
+else
+  fail "1551-gate-merges-under-guard" "the merge guard ${GUARD_1551}/gh is missing or not executable"
+fi
+
+# 5i-1551b. The no-merge directive reaches every agent prompt of phases 1-3
+# (advisory; the guard is the control), and phase 2 is followed by a check
+# that the PR was not merged outside the gate (#1551 G7).
+NM_MARKER='[amplihack:no-merge]'
+nm_in_step() { # nm_in_step <id> <recipe> <step-id> <why>
+  # The step body is captured whole first: `awk | grep -q` lets grep exit
+  # early, and under pipefail awk's SIGPIPE turns a match into a failure.
+  local body
+  body="$(awk -v id="$3" 'index($0, "- id: \"" id "\"") == 3 { f=1; print; next } f && /^  - id: / { exit } f { print }' \
+       "${RECIPES}/$2.yaml")"
+  if [[ "$body" == *"${NM_MARKER}"* ]]; then
+    pass "$1" "$4"
+  else
+    fail "$1" "$4 -- ${NM_MARKER} not found in $2 $3"
+  fi
+}
+nm_in_step "1551-directive-build-01b" autodrive-build step-01b-no-merge-directive \
+  "autodrive-build step-01b builds the directive"
+nm_in_step "1551-directive-crusty-review" autodrive-crusty-round step-02-crusty-review \
+  "the crusty review prompt carries the directive"
+nm_in_step "1551-directive-crusty-fix" autodrive-crusty-round step-04-address-concerns \
+  "the crusty fix prompt carries the directive"
+nm_in_step "1551-directive-merge-round" autodrive-merge-round step-04-address-blockers \
+  "the merge-round fix prompt carries the directive"
+BUILD_02_BODY="$(awk '/^  - id: "step-02-default-workflow"/{f=1;print;next} f&&/^  - id: /{exit} f' "${RECIPES}/autodrive-build.yaml")"
+if [[ "${BUILD_02_BODY}" == *'"{{no_merge_directive.task_description}}"'* ]]; then
+  pass "1551-directive-build-02" "phase 1 hands default-workflow the directive-bearing task description"
+else
+  fail "1551-directive-build-02" "autodrive-build step-02 does not pass {{no_merge_directive.task_description}}"
+fi
+for f in default-workflow workflow-prep workflow-finalize; do
+  if grep -qF 'no_merge' "${RECIPES}/${f}.yaml"; then
+    pass "1551-directive-${f}" "${f} acts on no_merge"
+  else
+    fail "1551-directive-${f}" "${f}.yaml never mentions no_merge"
+  fi
+done
+P2_AFTER_CRUSTY="$(awk 'match($0, /^  - id: "[^"]+"/) { id = substr($0, 10, RLENGTH - 10); if (p && out == "") out = id; if (id == "autodrive-crusty-loop") p = 1 } END { print out }' \
+  "${RECIPES}/auto-drive-to-merge.yaml")"
+P2_BODY=""
+[ -n "${P2_AFTER_CRUSTY}" ] && P2_BODY="$(awk -v id="${P2_AFTER_CRUSTY}" 'index($0, "- id: \"" id "\"") == 3 { f=1; next } f && /^  - id: / { exit } f { print }' \
+  "${RECIPES}/auto-drive-to-merge.yaml")"
+if [ -n "${P2_AFTER_CRUSTY}" ] && [ "${P2_AFTER_CRUSTY}" != "autodrive-merge-loop" ] \
+   && [[ "${P2_BODY}" == *autodrive_pr_state* ]]; then
+  pass "1551-phase2-check" "a check (${P2_AFTER_CRUSTY}) reads the PR state between the crusty loop and the merge loop"
+else
+  fail "1551-phase2-check" "no autodrive_pr_state check between autodrive-crusty-loop and autodrive-merge-loop (next step: ${P2_AFTER_CRUSTY:-none})"
+fi
 
 # 5j. gadugi and crusty evidence (issue #1517). Every case runs with --dry-run
 # against an otherwise fully green PR, so a gate that wrongly passes exits 0

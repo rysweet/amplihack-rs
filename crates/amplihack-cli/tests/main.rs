@@ -64,6 +64,8 @@ mod issue_1356_release_tags_last;
 mod issue_1358_sccache_installed_before_cargo;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
+#[path = "issue_1551_merge_guard.rs"]
+mod issue_1551_merge_guard;
 #[path = "issue_1552_investigation_report_written.rs"]
 mod issue_1552_investigation_report_written;
 #[path = "issue_1553_max_total_steps_cap.rs"]

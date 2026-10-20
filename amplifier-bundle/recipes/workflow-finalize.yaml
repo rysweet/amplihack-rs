@@ -244,7 +244,7 @@ steps:
 
       Verify the PR is ready to merge: CI passing, no conflicts, review
       comments addressed, and approval present. If CI fails, diagnose and fix.
-      This is the task completion point.
+      This is the task completion point. **no_merge:** {{no_merge}}. When it is "true": do not merge; stop at merge-ready.
     output: "ci_status"
 
   # Issue #1268: the scope match below is a SIGNAL, not the verdict. Collect the

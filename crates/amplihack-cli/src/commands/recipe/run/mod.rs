@@ -8,6 +8,8 @@ pub(crate) mod execute;
 /// Issue #1267 — transient vs terminal classification of a failed run.
 mod failure_class;
 mod format;
+/// Issue #1551 — the `gh` merge guard for auto-drive runs.
+pub(crate) mod merge_guard;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
 
@@ -82,6 +84,7 @@ fn execute_recipe_via_rust_for_test(
         search_dirs,
         step_timeout,
         crate::env_builder::resolve_agent_binary_in(working_dir),
+        false,
     )
 }
 
@@ -211,6 +214,13 @@ pub(crate) fn run_recipe_with(
         return Err(exit_error(1));
     }
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
+    // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
+    // merge guard first on PATH.
+    let merge_guard = merge_guard::guard_applies(
+        &recipe.name,
+        &validated_path,
+        std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
+    );
     let result = match execute_recipe_via_rust(
         &validated_path,
         &merged_context,
@@ -220,6 +230,7 @@ pub(crate) fn run_recipe_with(
         &search_dirs,
         step_timeout,
         agent_binary,
+        merge_guard,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -376,6 +387,8 @@ mod tests_execute;
 mod tests_failure_class;
 #[cfg(test)]
 mod tests_format;
+#[cfg(test)]
+mod tests_merge_guard;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]

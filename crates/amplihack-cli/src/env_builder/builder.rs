@@ -60,9 +60,22 @@ impl EnvBuilder {
         self
     }
 
+    /// The value this builder will export for `key`, if it sets one. A key
+    /// removed with [`EnvBuilder::unset`] reads as `None`.
+    pub fn var(&self, key: &str) -> Option<&str> {
+        self.vars.get(key).map(String::as_str)
+    }
+
     /// Prepend a directory to PATH (deduplicated).
     pub fn prepend_path(mut self, dir: impl Into<PathBuf>) -> Self {
         self.path_prepend.push(dir.into());
+        self
+    }
+
+    /// Put a directory at the very front of PATH, ahead of every directory
+    /// already prepended (deduplicated). Used by the #1551 merge guard.
+    pub fn prepend_path_first(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.path_prepend.insert(0, dir.into());
         self
     }
 
