@@ -230,7 +230,8 @@ fn basename(word: &str) -> &str {
 /// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes.
 /// Quotes and backslashes are removed from words. Comments are dropped, and
 /// heredoc bodies are skipped: they are data, never a command's words.
-/// `$(…)` and backticks stay inside the word they appear in.
+/// `$(…)` and backticks stay inside the word they appear in, including a
+/// `$(…)` inside double quotes, whose own quotes do not end the string.
 fn commands(text: &str) -> Vec<Vec<String>> {
     let chars: Vec<char> = text.chars().collect();
     let mut out = vec![Vec::new()];
@@ -260,6 +261,15 @@ fn commands(text: &str) -> Vec<Vec<String>> {
                 in_word = true;
                 i += 1;
                 while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+                        // `"$(…)"`: quotes inside the substitution are its
+                        // own, not the end of this string (bash manual,
+                        // Command Substitution).
+                        let end = subst_end(&chars, i);
+                        word.extend(&chars[i..=end]);
+                        i = end + 1;
+                        continue;
+                    }
                     if chars[i] == '\\' && i + 1 < chars.len() {
                         i += 1;
                     }
@@ -278,22 +288,9 @@ fn commands(text: &str) -> Vec<Vec<String>> {
             }
             '$' if chars.get(i + 1) == Some(&'(') => {
                 in_word = true;
-                let start = i;
-                let mut depth = 0usize;
-                while i < chars.len() {
-                    match chars[i] {
-                        '(' => depth += 1,
-                        ')' => {
-                            depth -= 1;
-                            if depth == 0 {
-                                break;
-                            }
-                        }
-                        _ => {}
-                    }
-                    i += 1;
-                }
-                word.extend(&chars[start..i.min(chars.len() - 1) + 1]);
+                let end = subst_end(&chars, i);
+                word.extend(&chars[i..=end]);
+                i = end;
             }
             '`' => {
                 in_word = true;
@@ -319,51 +316,13 @@ fn commands(text: &str) -> Vec<Vec<String>> {
                 // `<<WORD` / `<<-WORD`: remember the delimiter; the body is
                 // skipped at the end of this line.
                 end_word(&mut word, &mut in_word, &mut out);
-                i += 2;
-                let strip_tabs = chars.get(i) == Some(&'-');
-                if strip_tabs {
-                    i += 1;
-                }
-                while chars.get(i).is_some_and(|c| *c == ' ' || *c == '\t') {
-                    i += 1;
-                }
-                let mut delim = String::new();
-                while let Some(&d) = chars.get(i) {
-                    if d.is_whitespace() || ";&|()<>".contains(d) {
-                        break;
-                    }
-                    if !"'\"\\".contains(d) {
-                        delim.push(d);
-                    }
-                    i += 1;
-                }
-                heredocs.push((delim, strip_tabs));
+                heredocs.push(heredoc_delim(&chars, &mut i));
                 continue;
             }
             '\n' => {
                 end_word(&mut word, &mut in_word, &mut out);
                 out.push(Vec::new());
-                for (delim, strip_tabs) in std::mem::take(&mut heredocs) {
-                    loop {
-                        let start = i + 1;
-                        if start >= chars.len() {
-                            break;
-                        }
-                        let stop = (start..chars.len())
-                            .find(|&j| chars[j] == '\n')
-                            .unwrap_or(chars.len());
-                        let line: String = chars[start..stop].iter().collect();
-                        i = stop;
-                        let line = if strip_tabs {
-                            line.trim_start_matches('\t')
-                        } else {
-                            &line
-                        };
-                        if line == delim {
-                            break;
-                        }
-                    }
-                }
+                skip_heredoc_bodies(&chars, &mut i, std::mem::take(&mut heredocs));
             }
             ';' | '&' | '|' | '(' | ')' => {
                 end_word(&mut word, &mut in_word, &mut out);
@@ -380,6 +339,104 @@ fn commands(text: &str) -> Vec<Vec<String>> {
     end_word(&mut word, &mut in_word, &mut out);
     out.retain(|c| !c.is_empty());
     out
+}
+
+/// The index of the `)` closing the `$(` at `start` (or the last index, if
+/// it is unclosed). Everything inside is data to this check; the scan only
+/// keeps quoted text and heredoc bodies from ending it early, so a `)` or `"`
+/// in a commit message body does not close the substitution.
+fn subst_end(chars: &[char], start: usize) -> usize {
+    let mut depth = 0usize;
+    let mut heredocs = Vec::new();
+    let mut i = start + 1;
+    while i < chars.len() {
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return i;
+                }
+            }
+            '\\' => i += 1,
+            '\'' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '\'' {
+                    i += 1;
+                }
+            }
+            '"' => {
+                i += 1;
+                while i < chars.len() && chars[i] != '"' {
+                    if chars[i] == '\\' {
+                        i += 1;
+                    } else if chars[i] == '$' && chars.get(i + 1) == Some(&'(') {
+                        i = subst_end(chars, i);
+                    }
+                    i += 1;
+                }
+            }
+            '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => i += 2,
+            '<' if chars.get(i + 1) == Some(&'<') => {
+                heredocs.push(heredoc_delim(chars, &mut i));
+                continue;
+            }
+            '\n' => skip_heredoc_bodies(chars, &mut i, std::mem::take(&mut heredocs)),
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len() - 1
+}
+
+/// Reads the delimiter of the `<<WORD` / `<<-WORD` at `*i`, leaving `*i` just
+/// past it. Returns the delimiter (quotes removed) and whether `-` strips tabs.
+fn heredoc_delim(chars: &[char], i: &mut usize) -> (String, bool) {
+    *i += 2;
+    let strip_tabs = chars.get(*i) == Some(&'-');
+    if strip_tabs {
+        *i += 1;
+    }
+    while chars.get(*i).is_some_and(|c| *c == ' ' || *c == '\t') {
+        *i += 1;
+    }
+    let mut delim = String::new();
+    while let Some(&d) = chars.get(*i) {
+        if d.is_whitespace() || ";&|()<>".contains(d) {
+            break;
+        }
+        if !"'\"\\".contains(d) {
+            delim.push(d);
+        }
+        *i += 1;
+    }
+    (delim, strip_tabs)
+}
+
+/// With `*i` at a newline, skips the bodies of `heredocs` in order, leaving
+/// `*i` at the newline that ends the last delimiter line.
+fn skip_heredoc_bodies(chars: &[char], i: &mut usize, heredocs: Vec<(String, bool)>) {
+    for (delim, strip_tabs) in heredocs {
+        loop {
+            let start = *i + 1;
+            if start >= chars.len() {
+                break;
+            }
+            let stop = (start..chars.len())
+                .find(|&j| chars[j] == '\n')
+                .unwrap_or(chars.len());
+            let line: String = chars[start..stop].iter().collect();
+            *i = stop;
+            let line = if strip_tabs {
+                line.trim_start_matches('\t')
+            } else {
+                &line
+            };
+            if line == delim {
+                break;
+            }
+        }
+    }
 }
 
 #[cfg(test)]

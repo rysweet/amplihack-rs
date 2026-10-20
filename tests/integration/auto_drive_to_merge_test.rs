@@ -3423,14 +3423,16 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
         fs::create_dir_all(d).expect("mkdir");
     }
     // An autodrive-* run needs the #1551 merge guard under AMPLIHACK_HOME
-    // ($HOME/.amplihack here) before the depth guard is reached.
+    // ($HOME/.amplihack here) before the depth guard is reached: the `gh`
+    // shim and the `bash-env` file that re-asserts it after a shell profile.
+    // The launch check refuses a guard missing either one, so stage both,
+    // at the modes the installer gives them (0755 shim, 0644 bash-env).
     let guard = home.join(".amplihack/amplifier-bundle/tools/gh-merge-guard");
     fs::create_dir_all(&guard).expect("mkdir the merge guard dir");
-    fs::copy(
-        workspace_root().join("amplifier-bundle/tools/gh-merge-guard/gh"),
-        guard.join("gh"),
-    )
-    .expect("install the merge guard");
+    let shipped = workspace_root().join("amplifier-bundle/tools/gh-merge-guard");
+    for f in ["gh", "bash-env"] {
+        fs::copy(shipped.join(f), guard.join(f)).expect("install the merge guard");
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -3438,6 +3440,8 @@ fn a_recipe_run_from_a_round_step_is_refused_by_the_real_guard() {
         for p in [tools, guard.clone(), guard.join("gh")] {
             fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod guard");
         }
+        fs::set_permissions(guard.join("bash-env"), fs::Permissions::from_mode(0o644))
+            .expect("chmod bash-env");
     }
     const TREE: &str = "autodrivedepthtest";
     // The ceiling a root run seals: the default, 3.

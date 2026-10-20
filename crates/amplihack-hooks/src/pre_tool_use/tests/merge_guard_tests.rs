@@ -99,6 +99,13 @@ fn data_mentions_pass_in_every_context() {
         "cat amplifier-bundle/tools/autodrive_merge_gate.sh",
         "gh pr create --title t --body 'never gh pr merge; the gate merges'",
         "gh pr create --body \"$(cat <<'EOF'\ngh pr merge 38\nEOF\n)\"",
+        // Claude Code's commit form, with an odd `"` and a `)` in the body
+        // and a body line that starts with the merge words (round 9).
+        "git commit -m \"$(cat <<'EOF'\nfix: handle the 5\" case\n\ngh pr merge is now refused\nEOF\n)\"",
+        "git commit -m \"$(cat <<'EOF'\nfix: step a) and the 5\" case\ngh pr merge 38\nEOF\n)\"",
+        // A quote that spans two body lines.
+        "gh pr create --body \"$(cat <<'EOF'\nsay \"stop\ngh pr merge 38\" twice\ngh pr merge 38\nEOF\n)\"",
+        "echo \"$(printf '%s' \"a) gh pr merge 38\")\"",
         "# gh pr merge 38",
         "cat x <<< 'gh pr merge 38'",
     ];
@@ -157,5 +164,16 @@ fn unbalanced_input_does_not_panic() {
         "gh pr",
     ] {
         let _ = check(cmd);
+    }
+}
+
+#[test]
+fn a_merge_after_a_quoted_command_substitution_is_still_refused() {
+    for cmd in [
+        "git commit -m \"$(cat <<'EOF'\nthe 5\" case\nEOF\n)\" && gh pr merge 38",
+        "git commit -m \"$(cat <<'EOF'\nthe 5\" case\nEOF\n)\"\ngh pr merge 38",
+        "echo \"$(date)\"; gh pr merge 38",
+    ] {
+        assert!(blocked(cmd), "let a merge through: {cmd}");
     }
 }
