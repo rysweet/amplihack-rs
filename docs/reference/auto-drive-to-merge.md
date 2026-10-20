@@ -1861,9 +1861,15 @@ this.
 The hook is not a shell parser and does not try to be one. Shell text cannot
 be read completely without running it: expansion and aliases are resolved at
 run time. Code that is not the program word is outside what the hook reads:
-`bash -c '…'`, a script file, `eval`, an alias, a variable holding `gh`. The
-shim handles the ordinary forms there. Deliberate evasion is a non-goal; see
-the next section.
+`bash -c '…'`, a script file, `eval`, an alias, a variable holding `gh`, and
+command substitution (`$(…)` or backticks). The hook keeps a substitution
+inside the word it sits in, so in `out=$(gh pr merge 38 --squash)` the program
+word is the assignment and the hook does not refuse it. The hook also takes
+any `<<` as the start of a heredoc, including a shift inside bare arithmetic
+such as `(( n = 1 << 2 ))`, and then does not read the lines after it. The
+shim refuses the merge in all of these when it is the `gh` that runs, which
+covers the ordinary forms. Deliberate evasion is a non-goal; see the next
+section.
 
 ### What the shim refuses
 
@@ -1994,7 +2000,7 @@ the run when the PR is merged outside the gate.
 | An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The runner's [`BASH_ENV` file](#keeping-the-shim-first-after-a-shell-profile) puts the shim back first in every non-interactive bash, after a login shell's profile, and its `gh` function holds when the command resets `PATH` itself (Claude Code's shell snapshot). In an interactive shell, or through `command gh`, the [hook check](#the-pre-tool-use-hook-check) still refuses `gh pr merge` and `gh api` on a merge endpoint, since it reads the program word, not `PATH`. |
 | `gh` by absolute path or `PATH=… gh`, as the program | Refused by the hook check, which matches `gh` at any path. |
 | `curl`, `wget` or another HTTP client sending the token to the merge endpoint | Out of scope (the non-goal above). Branch protection and the `MERGED` checks. |
-| A merge inside a script file the agent writes and then runs, `bash -c '…'`, `eval`, an alias or a variable holding `gh` | The shim refuses it when it is the `gh` that runs, which `BASH_ENV` keeps true in non-interactive bash. Otherwise out of scope: the hook reads only the program word. Caught by the phase 1 and phase 2 `MERGED` checks. |
+| A merge inside a script file the agent writes and then runs, `bash -c '…'`, `eval`, an alias, a variable holding `gh`, a command substitution (`out=$(gh pr merge …)`), or a line after a `<<` the hook took for a heredoc | The shim refuses it when it is the `gh` that runs, which `BASH_ENV` keeps true in non-interactive bash. Otherwise out of scope: the hook reads only the program word. Caught by the phase 1 and phase 2 `MERGED` checks. |
 | An agent CLI that runs no amplihack hooks | Only the shim applies. |
 | A same-user edit to the gate or the shim | Not prevented. Use a `CODEOWNERS` entry for both and review changes. |
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
