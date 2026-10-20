@@ -25,6 +25,7 @@ amplihack profile auto-switch repair
 amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate stop|status
+amplihack profile rotate autostart [on|off]
 amplihack launch|claude --profile <name> [...]
 ```
 
@@ -42,7 +43,7 @@ amplihack launch|claude --profile <name> [...]
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
-| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`. See [Rotate](#rotate). |
+| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases).
@@ -611,6 +612,7 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | `1` turns auto-switch on and `0` turns it off for this process and its children, overriding `<root>/.auto-switch`. Empty means unset. See [Toggle and precedence](#toggle-and-precedence). |
 | `<root>/.auto-switch` | Auto-switch settings. See [Settings file](#settings-file). |
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
+| `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 
 ### Seeding
 
@@ -1096,7 +1098,9 @@ With the switch off and no `<root>/.auto-switch.d/` directory:
   `<root>/.auto-switch.d/` exist?) and stop;
 - launches, nested substitution and the rerun supervisor read
   `AMPLIHACK_CLAUDE_AUTO_SWITCH` once and, unless it decides the setting, make
-  at most one bounded read of `<root>/.auto-switch` (4096 bytes).
+  at most one bounded read of `<root>/.auto-switch` (4096 bytes);
+- launches do not [start the rotator](#rotate-autostart) and do not read its
+  autostart setting.
 
 Nothing else happens. No directory is created, no lock is taken, no usage is
 recorded, no profile is substituted, no output is buffered and no step is
@@ -1118,6 +1122,16 @@ so a login moved while the switch was on stays protected after `off`.
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled` and `threshold`. |
 | `auto-switch install` | Adds the [status-line wrapper](#status-line-wrapper) to every profile that does not have it. Leaves a stale wrapper alone and reports it. Prints the root it acts on. |
 | `auto-switch repair` | If `<root>/.auto-switch.d/` exists, takes the global lock and runs [recovery](#session-end-and-recovery). Then does everything `install` does, and also rewrites stale wrappers (old or moved binary path, wrapped twice, edited by hand) to the canonical one. Prints the install lines, then one `recovery:` line per thing recovery did, or `recovery: nothing to do`. This is the only command whose purpose is recovery. |
+
+On Unix, `status` prints an `autostart:` line right after the `switch:`
+line, in the format described in [Rotate status](#rotate-status). When
+auto-switch is off it ends with ` — inactive (auto-switch off)`, because
+launches start the rotator only while auto-switch is on:
+
+```
+switch: off (file)
+autostart: on (default) — inactive (auto-switch off)
+```
 
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
 edited wrapper command, one wrapped twice, or one pointing at a different
@@ -1671,6 +1685,7 @@ amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--u
 amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
 amplihack profile rotate stop
 amplihack profile rotate status
+amplihack profile rotate autostart [on|off]
 ```
 
 | Command | Behaviour |
@@ -1681,6 +1696,8 @@ amplihack profile rotate status
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
+| `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
+| `rotate autostart on\|off` | Writes the autostart setting and prints `autostart: on (setting)` or `autostart: off (setting)`. Does not start or stop a rotator. Any other value is a usage error (status 2). |
 
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
 or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
@@ -1714,7 +1731,9 @@ hint: run `amplihack profile rotate --help` for the accepted values
 ```
 
 `start` resolves every setting and passes them to the background process as
-explicit flags, so the variables are read once, when `start` runs. The
+explicit flags, so the variables are read once, when `start` runs. A rotator
+started by [autostart](#rotate-autostart) takes them from the environment of
+the launch that started it. The
 background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
 the `claude` processes it starts.
 
@@ -1773,15 +1792,38 @@ highest headroom; ties go to the name that sorts first by byte value.
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
-| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`. |
+| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). |
 | As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
 | No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
 | Otherwise | Stay. |
 
 `swapped_at` and `previous` (the profile swapped out) come from the
 [ledger](#rotate-state-directory). During the hold no upgrade happens at
-all, so `previous` cannot come straight back by upgrade. Threshold swaps are
-never held.
+all, so `previous` cannot come straight back by upgrade. Threshold swaps on
+a measured reading are never held.
+
+#### Rotate failed live probes
+
+When the table above gives a threshold swap only because the live probe
+failed, the rotator applies these rules in order. `k` is the number of
+consecutive cycles, including this one, whose live probe failed.
+
+| Condition | Outcome | Log line |
+|-----------|---------|----------|
+| `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
+| `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
+| Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
+
+`k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
+probe does not fail, by a completed swap, and by restarting the rotator. The
+one-shot `rotate` always uses `k = 1`, so it never swaps on a failed live
+probe alone. With `--hold 0` the second rule never applies, but the first
+still limits these swaps to one every three cycles.
+
+Nothing else changes: an ALERT when no candidate meets the margin, swaps on
+a measured threshold, swaps on an exhausted live login and upgrade swaps
+behave as in the table above. A damped stay counts as a stay without an
+alert, so it clears the stored ALERT key.
 
 ### Rotate live profile
 
@@ -1955,7 +1997,8 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
-| `rotate.err` | The background process's own stdout and stderr. Not rotated. |
+| `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
+| `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -1983,7 +2026,9 @@ stdout only, without the time.
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). |
+| `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
+| `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | Hand change. |
@@ -1997,7 +2042,7 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
-| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
+| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
 `hand-change`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
@@ -2020,7 +2065,8 @@ account IDs, e-mail addresses, tokens, environment values or Claude's output.
 
 ### Rotate daemon
 
-`start` launches `amplihack profile rotate watch <resolved flags> --spawned`
+`start`, and a launch that [autostarts](#rotate-autostart) the rotator,
+launch `amplihack profile rotate watch <resolved flags> --spawned`
 with the same `amplihack` binary, in a new session (`setsid`) with `SIGHUP`
 ignored, stdin from `/dev/null`, and stdout and stderr appended to
 `rotate.err` (`0600`) beside the log. The log itself is written only by the
@@ -2030,8 +2076,10 @@ prints outside a cycle, such as start-up notices or a crash.
 pid file. No shell is involved.
 
 The child's environment is the parent's, with every `AMPLIHACK_ROTATE*`
-variable removed and `AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root
-`start` resolved. The child validates that value again when it starts, and
+variable, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE` removed and
+`AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root `start` resolved.
+Removing the profile variables means a rotator started from a
+`--profile` launch still probes and swaps `~/.claude`. The child validates that value again when it starts, and
 never reads `~/.amplihack/profile-root`. Changing the variable or the saved
 root, or closing the shell that ran `start`, does not move a running rotator.
 To move it to another root, stop it and start it again.
@@ -2105,6 +2153,7 @@ the process is not responding, not that a cycle was slow.
 ```
 root: /home/you/.claude-profiles (source: config)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -2115,6 +2164,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 |-----|-------|
 | `root` | Always the first line. `<path> (source: env\|config\|default)` for the resolved root, or `<path> (pinned by running rotator)` when the rotator was found through the [rotate root record](#rotate-root-record). The lines after it describe that root. |
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
+| `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
@@ -2126,6 +2176,7 @@ no saved root, `status` finds the running rotator through the record:
 ```
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -2135,6 +2186,78 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`.
+
+### Rotate autostart
+
+On Unix, `amplihack claude`, `amplihack launch` and `amplihack profile run`
+start the background rotator when auto-switch is on and no rotator is
+running. The check runs after the launch has resolved its profile and before
+Claude starts. It never fails the launch, never changes its exit status and
+never writes to stdout. On other platforms it does nothing.
+
+It checks, in order, and stops silently at the first that fails. Nothing is
+created on disk before step 8.
+
+| Step | Check | When it fails |
+|------|-------|---------------|
+| 1 | Auto-switch is on: `<root>/.auto-switch` says `enabled=on`, or `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`. A missing, damaged or `off` setting counts as off. | No effect. |
+| 2 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular the autostart setting is not. |
+| 3 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. |
+| 4 | Autostart is on (see the precedence table below). | No effect. |
+| 5 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
+| 6 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
+| 7 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
+| 8 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
+| 9 | Under the lock, the daemon state is still not `running`. | Already running. |
+| 10 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 11 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
+
+Steps 8 to 11 run under the state lock, and `start` and other launches check
+under the same lock, so at most one rotator runs per root. Unlike `start`,
+autostart runs no recovery; the daemon's first cycle does.
+
+After step 11 the launch prints one line to stderr:
+
+```
+amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable
+```
+
+and appends `autostart: started pid <pid> exe <path>` to `rotate.err`. A
+failure at step 10 or 11, or an I/O error at step 8, is appended to
+`rotate.err` as one `autostart: failed: <error>` line, when that file can be
+written, and is otherwise ignored. Every `rotate.err` line has the
+[log](#rotate-log) time prefix and its control characters removed.
+
+Nested launches inside a recipe run take the same steps, so they start a
+rotator only when none is running. The Claude Code `SessionStart` hook does
+not start the rotator.
+
+#### Autostart setting
+
+| `AMPLIHACK_ROTATE_AUTOSTART` | `<root>/.auto-switch.d/rotate/autostart` | Effective | Status line |
+|------------------------------|------------------------------------------|-----------|-------------|
+| `1` or `on` | any | on | `autostart: on (env)` |
+| `0` or `off` | any | off | `autostart: off (env)` |
+| unset, empty or invalid | missing | on | `autostart: on (default)` |
+| unset, empty or invalid | `on` | on | `autostart: on (setting)` |
+| unset, empty or invalid | `off` | off | `autostart: off (setting)` |
+| unset, empty or invalid | anything else | off | `autostart: off (corrupt)` |
+
+The variable is case-insensitive. Any other value is ignored, and a process
+that reads it prints `warning: ignored AMPLIHACK_ROTATE_AUTOSTART value (use
+on, off, 1 or 0); the setting decides` to stderr once, without repeating the
+value.
+
+The setting file is read without following symlinks and only up to 64 bytes.
+It counts as `corrupt` when it is a symlink, is not a regular file, is not
+owned by you, is longer than 64 bytes, cannot be read, or holds anything but
+`on` or `off` and an optional newline. `rotate autostart on|off` replaces it
+atomically with mode `0600`, creating `<root>/.auto-switch.d/rotate/` first
+if needed.
+
+When the variable is set to a valid value, `rotate autostart on|off` still
+writes the file, and then warns on stderr that
+`AMPLIHACK_ROTATE_AUTOSTART=<value>` overrides it in this environment.
 
 ### Rotate prototype coexistence
 
@@ -2254,6 +2377,14 @@ refused, as for the profile store. Auto-switch
 makes no network calls. The status-line wrapper runs the original command
 with `sh -c`, which is what Claude itself does with it; the supervisor for
 reruns starts amplihack directly with no shell.
+
+Autostart reads only the auto-switch setting, its own setting file and
+`/proc`; it never opens a login file. It prints only the pid, and its status
+line only `on`, `off` and the source. It refuses a root writable by others
+and runs nothing as root, so another user cannot use the setting or the pid
+file to start a process for you. The rotator it starts keeps the
+`AMPLIHACK_ROTATE_*` values and the binary of the launch that started it;
+`rotate.err` records which binary that was.
 
 Residual risks of auto-switch:
 

@@ -591,6 +591,12 @@ export AMPLIHACK_CLAUDE_AUTO_SWITCH=1   # on in this shell
 An empty value means unset. Any other value prints one warning, `status`
 notes it, and the file decides.
 
+With auto-switch on, `amplihack claude`, `amplihack launch` and
+`amplihack profile run` also start the
+[login rotator](claude-profile-rotation.md#start-the-rotator-automatically)
+for `~/.claude` if it is not running, and print one line when they do. To
+keep auto-switch without that, run `amplihack profile rotate autostart off`.
+
 ### 3. Check what it sees
 
 ```bash
@@ -600,6 +606,7 @@ amplihack profile auto-switch status
 ```
 root: /home/ryan/.claude-profiles
 switch: on (file)
+autostart: on (default)
 threshold: 90%
 exclude: review
 in-session swap: available (Linux)

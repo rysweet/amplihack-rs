@@ -8,14 +8,14 @@ use super::ledger::{LastCycle, RotateState};
 use super::log::{Sink, msg, open_or_warn};
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
-use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    Source, State, effective, euid, now, read_bounded_nofollow, recover_auto_switch,
-    write_private_atomic,
+    Source, State, check_root_private, effective, euid, now, read_bounded_nofollow,
+    recover_auto_switch, write_private_atomic,
 };
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir, save};
 use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
 use crate::commands::profile::usage_cmd::{PROBE_CANCEL, sanitize_display};
+use crate::commands::profile::{PROFILE_ENV, ProfileError};
 use std::ffi::OsStr;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -92,7 +92,7 @@ pub fn state_at(rs: &RotateState, proc_root: &Path, exe_name: &OsStr) -> DaemonS
     }
 }
 
-fn exe_name() -> Option<std::ffi::OsString> {
+pub(super) fn exe_name() -> Option<std::ffi::OsString> {
     std::env::current_exe()
         .ok()?
         .file_name()
@@ -104,6 +104,41 @@ pub(super) fn current_state(rs: &RotateState) -> DaemonState {
         Some(name) => state_at(rs, Path::new("/proc"), &name),
         None => DaemonState::Unverifiable,
     }
+}
+
+/// Why `start` refuses before it takes the lock, if it does: the external
+/// rotator holds its lock, or the root is not private. Creates nothing.
+pub(super) fn start_refusal(root: &Path) -> Option<ProfileError> {
+    if let Err(e) = prototype_guard(root) {
+        return Some(e);
+    }
+    check_root_private(root)
+        .err()
+        .map(|e| ProfileError::RotateRefused(format!("profile root {e}")))
+}
+
+/// Spawns a rotator with `spawn`, writes `rotate.pid` and records the root.
+/// The caller holds the state lock and has seen the daemon `Stopped` or
+/// `Stale`. Returns the pid and any failure to record the root, which does
+/// not stop the rotator.
+pub(super) fn launch_core(
+    rs: &RotateState,
+    root: &Path,
+    home: &Path,
+    s: &Settings,
+    spawn: &Spawner,
+) -> Result<(u32, Vec<ProfileError>), ProfileError> {
+    let pid = spawn(rs, s, root)?;
+    if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
+        // Without a pid file `stop` could never reach it. It is our own
+        // unreaped child, so the pid cannot have been reused.
+        if let Ok(pid) = libc::pid_t::try_from(pid) {
+            // SAFETY: kill has no memory-safety preconditions.
+            unsafe { libc::kill(pid, libc::SIGTERM) };
+        }
+        return Err(e.into());
+    }
+    Ok((pid, record_root(rs, home, root)))
 }
 
 /// `start`: prototype check, recovery under the lock, then `watch` as a
@@ -145,16 +180,7 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         }
         DaemonState::Stopped | DaemonState::Stale => {}
     }
-    let pid = spawn(&rs, s, store.root())?;
-    if let Err(e) = write_private_atomic(&rs.dir, "rotate.pid", format!("{pid}\n").as_bytes()) {
-        // Without a pid file `stop` could never reach it. It is our own
-        // unreaped child, so the pid cannot have been reused.
-        if let Ok(pid) = libc::pid_t::try_from(pid) {
-            // SAFETY: kill has no memory-safety preconditions.
-            unsafe { libc::kill(pid, libc::SIGTERM) };
-        }
-        return Err(e.into());
-    }
+    let (pid, warnings) = launch_core(&rs, store.root(), home, s, &spawn)?;
     println!(
         "rotate: started (pid {pid}), checking every {}s",
         s.interval
@@ -163,7 +189,9 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
         "log: {}",
         sanitize_display(&rs.log.display().to_string(), false)
     );
-    record_root(&rs, home, store.root());
+    for e in warnings {
+        eprintln!("warning: could not record the rotator's root: {e}");
+    }
     println!(
         "root: {}",
         sanitize_display(&store.root().display().to_string(), false)
@@ -173,21 +201,26 @@ pub fn start(store: &ProfileStore, home: &Path, s: &Settings) -> Result<(), Prof
 
 /// Records the root a rotator started with, next to its pid file and in
 /// `~/.amplihack/rotate-root`, so `status` and `stop` find it from a shell
-/// whose root resolves elsewhere. The rotator runs either way.
-fn record_root(rs: &RotateState, home: &Path, root: &Path) {
-    for file in [rs.dir.join("root"), config_dir(home).join(ROTATE_ROOT_FILE)] {
-        if let Err(e) = save(&file, root) {
-            eprintln!("warning: could not record the rotator's root: {e}");
-        }
-    }
+/// whose root resolves elsewhere. The rotator runs either way; the failures
+/// are returned for the caller to report.
+fn record_root(rs: &RotateState, home: &Path, root: &Path) -> Vec<ProfileError> {
+    [rs.dir.join("root"), config_dir(home).join(ROTATE_ROOT_FILE)]
+        .iter()
+        .filter_map(|file| save(file, root).err())
+        .collect()
 }
+
+/// What starts the background process: [`spawn`], or a fake in tests.
+pub(super) type Spawner = dyn Fn(&RotateState, &Settings, &Path) -> Result<u32, ProfileError>;
 
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
-/// the child gets no `AMPLIHACK_ROTATE*` variable, and is pinned to `root`
-/// whatever the variable or the saved root say later (issue #1592).
-fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
+/// the child gets no `AMPLIHACK_ROTATE*` variable and no profile selection
+/// (`CLAUDE_CONFIG_DIR`, `AMPLIHACK_CLAUDE_PROFILE`) from the launch that
+/// started it, and is pinned to `root` whatever the variable or the saved
+/// root say later (issue #1592).
+pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileError> {
     use std::os::unix::process::CommandExt;
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
     let (out, err) = (errors.file()?, errors.file()?);
@@ -203,6 +236,7 @@ fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, ProfileErro
             cmd.env_remove(k);
         }
     }
+    cmd.env_remove("CLAUDE_CONFIG_DIR").env_remove(PROFILE_ENV);
     cmd.env(ROOT_ENV, root);
     // SAFETY: the closure runs in the child between fork and exec and calls
     // only setsid and signal, which are async-signal-safe.

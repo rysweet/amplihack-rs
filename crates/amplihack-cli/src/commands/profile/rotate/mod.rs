@@ -1,18 +1,23 @@
 //! `amplihack profile rotate` (issue #1592): keeps the login in `~/.claude`
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
-//! `watch` with `start`, `stop` and `status`. See the Rotate section of
+//! `watch` with `start`, `stop` and `status`, which launches start on their
+//! own while auto-switch is on (`autostart`). See the Rotate section of
 //! docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
 
 #[cfg(unix)]
+mod autostart;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
 mod daemon;
+#[cfg(unix)]
+mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
@@ -35,7 +40,11 @@ mod swap;
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
 #[cfg(all(test, unix))]
+mod tests_autostart;
+#[cfg(all(test, unix))]
 mod tests_daemon;
+#[cfg(all(test, unix))]
+mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
 #[cfg(all(test, unix))]
@@ -59,6 +68,20 @@ mod tests_swap_refused;
 
 use super::root_config::RootSource;
 use super::store::ProfileStore;
+
+#[cfg(unix)]
+pub(crate) use autostart::autostart_on_launch;
+
+/// Starts the rotator from a launch when auto-switch is on; see
+/// `autostart`. Nothing to start off Unix.
+#[cfg(not(unix))]
+pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
+
+/// The `autostart:` status line for `root`, for `auto-switch status`.
+#[cfg(unix)]
+pub(in crate::commands::profile) fn autostart_line(root: &std::path::Path) -> String {
+    autostart::status_line(autostart::effective(root, &|k| std::env::var_os(k)))
+}
 
 /// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
 /// `watch` go after the subcommand.
@@ -84,6 +107,11 @@ pub enum RotateAction {
     Stop,
     /// Show whether the rotator runs, the live profile and the last cycle
     Status,
+    /// Show, or set, whether launches start the rotator while auto-switch is on
+    Autostart {
+        #[arg(value_parser = ["on", "off"])]
+        state: Option<String>,
+    },
 }
 
 /// Thresholds and margins. Kept as text so the error can name the flag; see
@@ -149,6 +177,7 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
             }
             Some(RotateAction::Stop) => control::stop(store, home.as_deref().ok())?,
             Some(RotateAction::Status) => control::status(store, home.as_deref().ok(), source),
+            Some(RotateAction::Autostart { state }) => autostart::cli(store, state.as_deref())?,
         }
         Ok(())
     }

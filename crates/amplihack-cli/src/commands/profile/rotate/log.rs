@@ -241,6 +241,16 @@ pub mod msg {
     pub const STOPPED: &str = "stop: signal received; cycle abandoned";
     pub const IDLE: &str = "idle: auto-switch is off";
 
+    /// The live probe failed for the `k`th cycle in a row; no swap yet.
+    pub fn stay_failed_probe(k: u32, limit: u32) -> String {
+        format!("stay: live probe failed ({k}/{limit})")
+    }
+
+    /// Failed live probes would swap, but the last swap is `secs` too recent.
+    pub fn stay_held_failed(secs: u64) -> String {
+        format!("stay: live probe failed; held after last swap ({secs}s left)")
+    }
+
     pub fn hand_change(live: &ProfileName) -> String {
         format!(
             "ALERT: the account in ~/.claude is not the one the ledger names (live={live}); no swap"

@@ -60,6 +60,8 @@ pub struct Measured {
 pub enum Reason {
     Threshold,
     Upgrade,
+    /// A threshold swap made after repeated failed live probes; see `damp`.
+    FailedProbe,
 }
 
 impl Reason {
@@ -67,6 +69,7 @@ impl Reason {
         match self {
             Self::Threshold => "threshold",
             Self::Upgrade => "upgrade",
+            Self::FailedProbe => "failed-probe",
         }
     }
 }
@@ -121,10 +124,7 @@ pub fn decide(
             _ => Decision::Alert,
         };
     }
-    // A swap time in the future (a clock change) still holds.
-    let held = s.hold > 0
-        && swapped_at
-            .is_some_and(|t| now.saturating_sub(t) < i64::try_from(s.hold).unwrap_or(i64::MAX));
+    let held = held(s.hold, swapped_at, now);
     match (best, gain) {
         (Some((to, _)), Some(g)) if !held && g > 0 && g >= i32::from(s.upgrade_margin) => {
             Decision::Swap {
@@ -134,4 +134,12 @@ pub fn decide(
         }
         _ => Decision::Stay,
     }
+}
+
+/// Whether a swap at `swapped_at` is less than `hold` seconds ago; `hold` 0
+/// disables it. A swap time in the future (a clock change) still holds.
+pub(super) fn held(hold: u64, swapped_at: Option<i64>, now: i64) -> bool {
+    hold > 0
+        && swapped_at
+            .is_some_and(|t| now.saturating_sub(t) < i64::try_from(hold).unwrap_or(i64::MAX))
 }
