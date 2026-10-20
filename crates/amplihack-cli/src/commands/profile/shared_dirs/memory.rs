@@ -11,8 +11,9 @@ use super::super::store::fdwalk;
 use super::merge::{MergeError, MergeOutcome, fail, merge_file, stat_at};
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path};
 
 pub(super) const INDEX: &str = "MEMORY.md";
@@ -62,10 +63,7 @@ pub(super) fn missing_entries(
         if line.trim().is_empty() || line.trim_start().starts_with('#') {
             continue;
         }
-        let mut line = line.to_string();
-        for (from, to) in renamed {
-            line = line.replace(&format!("]({from})"), &format!("]({to})"));
-        }
+        let line = rewrite_links(line, renamed);
         if !have.contains(line.as_str()) && !out.contains(&line) {
             out.push(line);
         }
@@ -73,20 +71,45 @@ pub(super) fn missing_entries(
     out
 }
 
+/// Each `](target)` whose target was renamed points at the new name; every
+/// link is rewritten at most once.
+fn rewrite_links(line: &str, renamed: &[(String, String)]) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find("](") {
+        let (head, tail) = rest.split_at(i + 2);
+        out.push_str(head);
+        let Some(end) = tail.find(')') else {
+            rest = tail;
+            break;
+        };
+        let target = &tail[..end];
+        match renamed.iter().find(|(from, _)| from == target) {
+            Some((_, to)) => out.push_str(to),
+            None => out.push_str(target),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Appends `entries` to the shared `dir/MEMORY.md` with `O_APPEND`, so a
-/// concurrent writer's bytes are never replaced.
-pub(super) fn append_entries(
-    dir: &OwnedFd,
-    ours: &str,
-    entries: &[String],
-) -> Result<(), MergeError> {
+/// concurrent writer's bytes are never replaced. Fails if the file was
+/// replaced by a rename meanwhile, since the entries then went nowhere.
+fn append_entries(dir: &OwnedFd, ours: &str, entries: &[String]) -> io::Result<()> {
     let flags = libc::O_WRONLY | libc::O_APPEND | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-    let fd = fdwalk::openat(dir.as_raw_fd(), OsStr::new(INDEX), flags, 0).map_err(fail("open"))?;
-    let mut file = File::from(fd);
-    if !file.metadata().map_err(fail("open"))?.is_file() {
-        return Err(fail("open")(std::io::Error::other(
+    let mut file = File::from(fdwalk::openat(
+        dir.as_raw_fd(),
+        OsStr::new(INDEX),
+        flags,
+        0,
+    )?);
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(io::Error::other(
             "the shared MEMORY.md is not a regular file",
-        )));
+        ));
     }
     let mut text = String::new();
     if !ours.is_empty() && !ours.ends_with('\n') {
@@ -96,8 +119,15 @@ pub(super) fn append_entries(
         text.push_str(entry);
         text.push('\n');
     }
-    file.write_all(text.as_bytes()).map_err(fail("copy"))?;
-    file.sync_all().map_err(fail("copy"))
+    file.write_all(text.as_bytes())?;
+    file.sync_all()?;
+    let now = stat_at(dir.as_raw_fd(), OsStr::new(INDEX))?;
+    if now.st_ino as u64 != meta.ino() || now.st_dev as u64 != meta.dev() {
+        return Err(io::Error::other(
+            "the shared MEMORY.md was replaced meanwhile",
+        ));
+    }
+    Ok(())
 }
 
 /// `MEMORY.md` merges like any file, then, if this profile's copy lost to a
@@ -126,7 +156,17 @@ pub(super) fn merge_index(
     if out.conflicts.len() == conflicts_before {
         return Ok(());
     }
-    let (Some(theirs), Some(ours)) = (theirs, read_index(dst, name)?) else {
+    // From here on a failure is reported, not fatal: the profile's copy is
+    // already safe, and the rest of the merge goes on.
+    let ours = match read_index(dst, name) {
+        Ok(ours) => ours,
+        Err(MergeError::Io { err, .. }) => {
+            out.indexes.push((path.to_path_buf(), Err(err.to_string())));
+            return Ok(());
+        }
+        Err(e) => return Err(e),
+    };
+    let (Some(theirs), Some(ours)) = (theirs, ours) else {
         return Ok(());
     };
     let dir = path.parent().unwrap_or(Path::new(""));
@@ -142,9 +182,13 @@ pub(super) fn merge_index(
         })
         .collect();
     let entries = missing_entries(&ours, &theirs, &renamed);
-    if !entries.is_empty() {
-        append_entries(dst, &ours, &entries)?;
-    }
-    out.indexes.push((path.to_path_buf(), entries.len()));
+    let added = if entries.is_empty() {
+        Ok(0)
+    } else {
+        append_entries(dst, &ours, &entries)
+            .map(|()| entries.len())
+            .map_err(|e| e.to_string())
+    };
+    out.indexes.push((path.to_path_buf(), added));
     Ok(())
 }

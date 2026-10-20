@@ -1457,3 +1457,73 @@ fn an_index_outside_a_project_memory_dir_is_an_ordinary_conflict() {
     assert_eq!(fs::read(&shared).unwrap(), b"- [A](a.md)\n");
     assert_eq!(r.conflicts.len(), 1);
 }
+
+#[test]
+fn a_memory_index_that_cannot_be_appended_to_is_reported_and_the_merge_goes_on() {
+    let f = Fx::new();
+    let shared_index = f.shared("projects/-w/memory/MEMORY.md", b"- [S](s.md)\n");
+    chmod(&shared_index, 0o400);
+    f.legacy("A", "projects/-w/memory/MEMORY.md", b"- [Mine](mine.md)\n");
+    f.legacy("A", "projects/-x/s2.jsonl", b"other project");
+
+    let r = f.ensure("A", Mode::Migrate);
+    chmod(&shared_index, 0o600);
+
+    assert_eq!(fs::read(&shared_index).unwrap(), b"- [S](s.md)\n");
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/MEMORY.md.conflict-A")).unwrap(),
+        b"- [Mine](mine.md)\n"
+    );
+    assert_eq!(
+        fs::read(f.canon.join("projects/-x/s2.jsonl")).unwrap(),
+        b"other project",
+        "the rest of the merge stopped"
+    );
+    f.assert_linked("A", "projects");
+    let lines = f.lines("A", &r);
+    assert!(
+        lines.iter().any(|l| l.starts_with(
+            "amplihack: profile A: projects: memory index -w/memory/MEMORY.md: entries not added ("
+        ) && l
+            .ends_with("add them by hand from ~/.claude/projects/-w/memory/MEMORY.md.conflict-A")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn memory_links_are_rewritten_once_even_when_conflict_names_chain() {
+    let f = Fx::new();
+    f.shared("projects/-w/memory/MEMORY.md", b"- [S](s.md)\n");
+    f.shared("projects/-w/memory/a.md", b"shared a");
+    f.shared("projects/-w/memory/a.md.conflict-A", b"shared second");
+    f.legacy(
+        "A",
+        "projects/-w/memory/MEMORY.md",
+        b"- [A](a.md)\n- [A2](a.md.conflict-A)\n",
+    );
+    f.legacy("A", "projects/-w/memory/a.md", b"profile a");
+    f.legacy("A", "projects/-w/memory/a.md.conflict-A", b"profile second");
+
+    f.ensure("A", Mode::Migrate);
+
+    let index = fs::read_to_string(f.canon.join("projects/-w/memory/MEMORY.md")).unwrap();
+    let saved_a = |target: &str| {
+        let line = index
+            .lines()
+            .find(|l| l.starts_with(target))
+            .unwrap()
+            .to_string();
+        let name = line
+            .split("](")
+            .nth(1)
+            .unwrap()
+            .trim_end_matches(')')
+            .to_string();
+        (
+            fs::read(f.canon.join("projects/-w/memory").join(&name)).unwrap(),
+            name,
+        )
+    };
+    assert_eq!(saved_a("- [A](").0, b"profile a", "{index}");
+    assert_eq!(saved_a("- [A2](").0, b"profile second", "{index}");
+}

@@ -847,8 +847,11 @@ lines and lines starting with `#` are left out; `](<file>)` is rewritten to
 conflict name) are appended to the canonical file with
 `O_WRONLY|O_APPEND|O_NOFOLLOW` and `fsync`ed. The conflict copy is saved
 before the append. An index over 1 MiB, or one that isn't UTF-8, is not
-appended to. A repeat run appends nothing, because every line is then
-present.
+appended to. Every link is rewritten at most once. A repeat run appends
+nothing, because every line is then present. If the append fails (the shared
+index is read-only, or was replaced by a rename while the entries were
+written), the merge goes on and a warning names the conflict copy to add the
+entries from by hand.
 
 **Other filesystem.** When a rename fails with `EXDEV`, the file is copied:
 check free space with `statvfs` (if the file doesn't fit, stop migrating this
@@ -912,6 +915,7 @@ default log level.
 | `projects: moved <n> files into ~/.claude/projects, <n> identical, <n> conflict` | A merge finished. |
 | `projects: conflict: <path> kept the shared copy; this profile's copy saved as <file>.conflict-<profile>` | A conflict. Canonical always wins. |
 | `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy` | The profile's memory index lost a conflict; its missing entries were appended to the shared index. |
+| `projects: memory index <project>/memory/MEMORY.md: entries not added (<error>); add them by hand from <conflict copy>` | The append failed; the profile's index is safe under its conflict name. |
 | `projects: skipped credential file <path>; left in <backup>` | A credential-named file was found in a shared directory. |
 | `projects: skipped <n> symbolic links or special files; left in <backup>` | Nested entries that are never moved. |
 | `projects: old directory kept as <backup>` | The backup name. |

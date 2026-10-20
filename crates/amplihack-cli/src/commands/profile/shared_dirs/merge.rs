@@ -35,8 +35,9 @@ pub(super) struct MergeOutcome {
     /// Nested symlinks and special files left in the source.
     pub skipped: usize,
     /// Memory indexes (relative to the shared dir) that kept the shared copy
-    /// and had this profile's missing entries appended, with their count.
-    pub indexes: Vec<(PathBuf, usize)>,
+    /// and had this profile's missing entries appended: their count, or why
+    /// they could not be.
+    pub indexes: Vec<(PathBuf, Result<usize, String>)>,
 }
 
 #[derive(Debug)]

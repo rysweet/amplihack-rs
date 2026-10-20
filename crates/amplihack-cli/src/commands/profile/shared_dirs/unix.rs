@@ -311,10 +311,24 @@ fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
         });
     }
     for (path, added) in &outcome.indexes {
-        r.note(format!(
-            "{name}: memory index {}: added {added} entries from this profile to the shared copy",
-            path.display()
-        ));
+        match added {
+            Ok(n) => r.note(format!(
+                "{name}: memory index {}: added {n} entries from this profile to the shared copy",
+                path.display()
+            )),
+            Err(e) => {
+                let saved = outcome
+                    .conflicts
+                    .iter()
+                    .rfind(|(p, _)| p == path)
+                    .map_or_else(|| shown.join(path), |(_, saved)| saved.clone());
+                r.warn(format!(
+                    "{name}: memory index {}: entries not added ({e}); add them by hand from {}",
+                    path.display(),
+                    saved.display()
+                ))
+            }
+        }
     }
     for path in &outcome.logins {
         r.warn(format!(
