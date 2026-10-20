@@ -76,6 +76,9 @@ fn refuses_running_the_merge_gate() {
         "bash --norc amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
         "bash -x amplifier-bundle/tools/autodrive_merge_gate.sh -n 38",
         "bash -o errexit amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // `command` without `-v`/`-V` runs it.
+        "command amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "command -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
     ] {
         let block = check(cmd).unwrap_or_else(|| panic!("not refused: {cmd}"));
         let message = block["message"].as_str().unwrap();
@@ -118,6 +121,10 @@ fn data_mentions_pass_in_every_context() {
         "bash -nv amplifier-bundle/tools/autodrive_merge_gate.sh",
         "bash -o noexec amplifier-bundle/tools/autodrive_merge_gate.sh",
         "shellcheck amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // `command -v`/`-V` look the name up and run nothing (crusty round 13).
+        "command -v amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "command -V amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "command -pv autodrive_merge_gate.sh >/dev/null && echo found",
     ];
     let before = [
         "",

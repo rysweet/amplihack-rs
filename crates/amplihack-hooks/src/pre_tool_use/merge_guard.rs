@@ -175,6 +175,8 @@ fn no_exec(options: &[String]) -> bool {
 
 /// The words from the program being run onward: reserved words, `VAR=value`
 /// assignments and [`WRAPPERS`] (with their options) are skipped.
+/// `command -v`/`-V` only look a name up and run nothing, so they have no
+/// program.
 fn program(words: &[String]) -> Option<&[String]> {
     let mut i = 0;
     while i < words.len() {
@@ -183,7 +185,7 @@ fn program(words: &[String]) -> Option<&[String]> {
             i += 1;
             continue;
         }
-        let Some((_, value_opts, positionals)) =
+        let Some((name, value_opts, positionals)) =
             WRAPPERS.iter().find(|(name, _, _)| *name == basename(w))
         else {
             return Some(&words[i..]);
@@ -194,6 +196,11 @@ fn program(words: &[String]) -> Option<&[String]> {
             let w = words[i].as_str();
             if value_opts.contains(&w) {
                 i += 2;
+            } else if *name == "command"
+                && w.strip_prefix('-')
+                    .is_some_and(|f| !f.starts_with('-') && f.contains(['v', 'V']))
+            {
+                return None;
             } else if w.starts_with('-') || is_assignment(w) {
                 i += 1;
             } else if skip > 0 {
