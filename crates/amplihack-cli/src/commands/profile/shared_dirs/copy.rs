@@ -40,7 +40,13 @@ pub(super) fn copy_across(
         .and_then(|()| output.set_modified(meta.modified()?))
         .and_then(|()| output.sync_all());
     drop(output);
-    if let Err(e) = written {
+    #[cfg(test)]
+    if super::test_hook::grow_during_copy() {
+        grow(src, name);
+    }
+    // A writer appended meanwhile: nothing is placed and the source is kept,
+    // so the next run copies it whole.
+    if let Err(e) = written.and_then(|()| unchanged(input, meta, path)) {
         discard_temp(dst, &tmp);
         return Err(Placed::Fail(fail("copy")(e)));
     }
@@ -56,22 +62,22 @@ pub(super) fn copy_across(
     if unsafe { libc::fsync(dst.as_raw_fd()) } != 0 {
         return Err(Placed::Fail(fail("copy")(io::Error::last_os_error())));
     }
-    #[cfg(test)]
-    if super::test_hook::grow_during_copy() {
-        grow(src, name);
-    }
-    // A writer appended meanwhile: the source is kept, so those bytes are
-    // not lost; the next run saves it under a conflict name.
-    let now = input
-        .metadata()
-        .map_err(|e| Placed::Fail(fail("copy")(e)))?;
-    if now.len() != bytes || now.modified().ok() != meta.modified().ok() {
-        return Err(Placed::Fail(fail("copy")(io::Error::other(format!(
+    // Checked again for a write after the rename: the source is then kept
+    // too, and the next run saves it under a conflict name.
+    unchanged(input, meta, path).map_err(|e| Placed::Fail(fail("copy")(e)))?;
+    unlink_at(src.as_raw_fd(), name).map_err(|e| Placed::Fail(fail("rename")(e)))
+}
+
+/// The source still has the size and modification time it had when opened.
+fn unchanged(input: &File, meta: &Metadata, path: &Path) -> io::Result<()> {
+    let now = input.metadata()?;
+    if now.len() != meta.len() || now.modified().ok() != meta.modified().ok() {
+        return Err(io::Error::other(format!(
             "{} changed during the copy; kept",
             path.display()
-        )))));
+        )));
     }
-    unlink_at(src.as_raw_fd(), name).map_err(|e| Placed::Fail(fail("rename")(e)))
+    Ok(())
 }
 
 #[cfg(test)]

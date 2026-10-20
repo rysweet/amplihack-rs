@@ -945,7 +945,7 @@ fn a_failed_rollback_prints_the_exact_mv_and_keeps_the_backup() {
 }
 
 #[test]
-fn a_source_written_during_the_copy_is_kept_and_saved_as_a_conflict_next_run() {
+fn a_source_written_during_the_copy_is_kept_and_copied_whole_next_run() {
     let f = Fx::new();
     let src = f.legacy("A", "projects/-w/s1.jsonl", b"line1\n");
     shared_dirs::test_hook::set_force_exdev(true);
@@ -957,6 +957,10 @@ fn a_source_written_during_the_copy_is_kept_and_saved_as_a_conflict_next_run() {
 
     assert_eq!(fs::read(&src).unwrap(), b"line1\n+", "appended bytes lost");
     assert!(is_real_dir(&f.dir("A").join("projects")));
+    assert!(
+        !f.canon.join("projects/-w/s1.jsonl").exists(),
+        "a short copy was placed"
+    );
     assert!(
         r.warnings
             .iter()
@@ -971,12 +975,9 @@ fn a_source_written_during_the_copy_is_kept_and_saved_as_a_conflict_next_run() {
     f.assert_linked("A", "projects");
     assert_eq!(
         fs::read(f.canon.join("projects/-w/s1.jsonl")).unwrap(),
-        b"line1\n"
-    );
-    assert_eq!(
-        fs::read(f.canon.join("projects/-w/s1.jsonl.conflict-A")).unwrap(),
         b"line1\n+"
     );
+    assert!(!f.canon.join("projects/-w/s1.jsonl.conflict-A").exists());
 }
 
 #[test]

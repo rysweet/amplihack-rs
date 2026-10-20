@@ -762,7 +762,7 @@ Liveness comes from the auto-switch `/proc` scan for a process with
 | `profile switch <name>` | After the pointer is written. | from liveness |
 | `profile login <name>` | Before `claude` is spawned. | from liveness |
 | Launch with a profile (`--profile`, inherited `AMPLIHACK_CLAUDE_PROFILE`, default pointer, `profile run`, usage-limit reruns) | In the [pre-spawn check](#pre-spawn-check), after the directory check passes and while holding the launch hold. | from liveness |
-| `profile rotate`, rotate cycles | After a swap that ran, for `to` and `from`. Not after `--dry-run` or a refused swap. | from liveness |
+| `profile rotate`, rotate cycles | After a swap that ran, for `to` and `from`, once the cycle is recorded and the auto-switch lock is released, so a long merge never stalls a launch. Not after `--dry-run` or a refused swap. | from liveness |
 
 Auto-switch has no call site. Its [in-session swap](#in-session-swap) moves
 only the top-level login files, and a [usage-limit rerun](#usage-limit-reruns)
@@ -861,9 +861,12 @@ name, leave it a real directory, and warn), create
 and mode `0600`, copy, `fsync`, set the mode to the source's `& 0o700` and its
 modification time, `renameat2(RENAME_NOREPLACE)` into place, `fsync` the
 directory, and only then unlink the source. If the source's size or
-modification time changed during the copy, it is not unlinked: the merge
-stops with `copy failed: <path> changed during the copy; kept`, and the next
-run saves the source under a conflict name.
+modification time changed during the copy, the temporary file is removed
+before the rename and the source is kept: the merge stops with
+`copy failed: <path> changed during the copy; kept`, and the next run copies
+the file again. The same check runs once more before the unlink; a change
+caught there keeps the source too, and the next run saves it under a
+conflict name.
 
 **Conflict names.** `<file>.conflict-<profile>`, beside the winner. If that
 name already holds identical bytes nothing more is done. If it holds

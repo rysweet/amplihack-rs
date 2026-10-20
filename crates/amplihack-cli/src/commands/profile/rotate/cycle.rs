@@ -285,7 +285,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
 
     // Step 6: revalidate and swap under the lock.
-    let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
+    let Some(lock) = state.try_lock(LOCK_WAIT)? else {
         out.emit(now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
     };
@@ -299,6 +299,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    let mut swapped = None;
     let outcome = match decision {
         Decision::Swap { to, reason } => {
             let source = match &first.live {
@@ -325,10 +326,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
-            // Issue #1634: link the session dirs of both profiles swapped.
-            for p in [&to, &from] {
-                shared_dirs::ensure_for(&ctx.store, p);
-            }
+            swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
             l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -348,5 +346,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
     };
     record(ctx, &mut l, outcome, now())?;
+    // Issue #1634: link the session dirs of both profiles swapped, after the
+    // lock is released so a long merge never stalls a launch waiting on it.
+    drop(lock);
+    for p in swapped.iter().flatten() {
+        shared_dirs::ensure_for(&ctx.store, p);
+    }
     Ok(outcome)
 }
