@@ -837,10 +837,12 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
     );
 }
 
-/// Issue #1551, crusty round 1 on PR #1644: an agent shell whose profile puts
-/// a real `gh` ahead of the merge-guard shim is still refused by the hook,
-/// because the hook reads the command, not PATH. Here a fake `gh` sits in the
-/// first PATH entry, as `~/.bashrc` prepending `~/.local/bin` would put it.
+/// Issue #1551: the hook's direct-form check does not consult PATH, so it
+/// holds even with a fake `gh` in the first PATH entry. This is the hook's
+/// own contract, not the fix for a profile that reorders PATH: that fix is the
+/// runner's `BASH_ENV` re-assertion, tested structurally in
+/// `crates/amplihack-cli/tests/issue_1551_merge_guard.rs`
+/// (`agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path`).
 #[cfg(unix)]
 #[test]
 fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {

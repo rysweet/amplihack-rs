@@ -1,71 +1,34 @@
-//! Issue #1551, crusty review of PR #1644: refuse a merge typed into an
-//! agent's Bash tool inside an auto-drive run, whatever `gh` PATH resolves.
+//! Issue #1551: inside an auto-drive run, refuse the direct merge commands an
+//! agent types into its Bash tool.
 //!
-//! The `gh` shim (`amplifier-bundle/tools/gh-merge-guard/gh`) is enforced by
-//! PATH order alone. Agent shells start from the user's profile, and a profile
-//! that prepends `~/.local/bin`, `~/.npm-global/bin` or Homebrew's directory
-//! puts a real `gh` ahead of the shim. This check reads the command text
-//! instead, so it holds in that case too. The two layers overlap on purpose:
-//! the hook sees what the agent typed, the shim sees what actually runs
-//! (aliases, extensions, scripts the agent wrote to a file).
+//! The primary guard is the `gh` shim (`amplifier-bundle/tools/gh-merge-guard/gh`),
+//! which the recipe runner puts first on `PATH` and re-asserts through
+//! `BASH_ENV` after a login shell's profile has run. This check is a second,
+//! deliberately small layer for the same ordinary forms, independent of which
+//! `gh` `PATH` finds:
+//!
+//! * `gh … pr … merge` where `gh` (any path) is the program being run;
+//! * `gh api <endpoint>` whose endpoint is `…/pulls/<n>/merge` or a
+//!   `…/merges` endpoint;
+//! * running `autodrive_merge_gate.sh`, as the program or as the script
+//!   operand of a shell or `source`/`.`.
+//!
+//! The program word is the first word of each command, after `VAR=value`
+//! assignments and the wrappers in [`WRAPPERS`]. Nothing else is read: quoted
+//! text, arguments of other programs, heredoc bodies and comments are data,
+//! so `git commit -m '… gh pr merge …'`, `echo gh pr merge 38 > notes`,
+//! `grep -rn 'gh pr merge' .` and `cat <<'EOF' … EOF` pass in any context.
+//!
+//! This is not a shell parser and does not try to be one. Code hidden from
+//! the program word (`bash -c '…'`, a script file, `eval`, an alias, a
+//! variable, `curl` with the token) is outside what this check reads. The
+//! ordinary forms are covered by the shim; deliberate evasion with the same
+//! token is a stated non-goal (docs/reference/auto-drive-to-merge.md, "What
+//! this does not stop"), backstopped by branch protection and the `MERGED`
+//! checks after each phase.
 //!
 //! Active only when `AMPLIHACK_MERGE_GUARD` is non-empty, which the recipe
-//! runner sets for every auto-drive run and every agent CLI inside one. The
-//! merge gate itself runs from a recipe bash step, never through an agent's
-//! Bash tool, so this hook never sees a legitimate run of it. An agent
-//! *running* the gate is therefore refused (crusty round 2): the gate trusts
-//! its Crusty and QA record files, which an agent can write. Only a run is
-//! refused (crusty round 3): the gate as the command word, after `VAR=…` and
-//! wrappers such as `env`, `exec`, `xargs`, `timeout`, `nohup` or `sudo`, or
-//! as the script operand of a shell or of `source`/`.`. Naming it as an
-//! argument, as `cat`, `git show HEAD:…`, `git diff -- …`, `git add`, `grep`
-//! and `rg` do, passes.
-//!
-//! When the command also runs an interpreter (a shell, Python, Perl, Ruby,
-//! Node, awk, …) in command position, quoted text is code that will run, not
-//! prose, so every word is read as a command too and scanned for endpoints,
-//! mutations and the gate's name. That catches `echo 'gh pr merge 38' | bash`,
-//! `bash -s <<<'…'`, `python3 -c "os.system('gh pr merge 38')"` and
-//! `cat <gate> | bash`, while `git commit -m '… gh pr merge …'` and `rg 'gh pr
-//! merge' --type sh`, where no interpreter is the program being run, still
-//! pass. Variable indirection (`G=gh; $G pr merge`) and script files are not
-//! readable from the command text and are left to the shim and the `MERGED`
-//! checks.
-//!
-//! A heredoc body (`<<WORD`, `<<-WORD`, `<<'WORD'`) is code unless every
-//! program that can receive it is a known data consumer (crusty round 5):
-//! `cat`, `tee`, `git` (without an `alias.` setting), `gh` (except `gh
-//! api`), `jq`, `wc`, `paste` and the other text tools in
-//! [`reads_heredoc_as_data`], with nothing in the command that runs code.
-//! So `git commit -F - <<'EOF'`, `git commit -m "$(cat <<'EOF' … EOF)"` and
-//! `gh pr create --body "$(cat <<'EOF' … EOF)"` pass whatever prose the body
-//! holds (crusty round 4), while `bash <<'EOF'`, `cat <<'EOF' | bash`,
-//! `source /dev/stdin <<'EOF'`, `eval "$(cat <<'EOF' … EOF)"`, `parallel`,
-//! `at`, `ssh` and any program not on the list read it as commands. The rule
-//! is deny by default: a program added to a toolchain later is code until it
-//! is listed. The check is per command (every simple command at that level,
-//! and every command whose arguments a `$(…)` feeds), not per pipeline, so
-//! prose sent to `git` in the same tool call as `cargo test` is read as code;
-//! the refusal says to split the call. The `$(…)`/backtick substitutions of
-//! an unquoted body, which bash runs, are always checked as commands.
-//!
-//! A listed program is a data consumer only for its stdin and its option
-//! values, not for its own argv (crusty round 6). Under `xargs`, stdin
-//! becomes the program's arguments, so `gh` and `git` there do not read a
-//! body as data, and the text that reaches `xargs`'s stdin is checked as
-//! words appended to the program's argv: `xargs gh <<'EOF'\npr merge
-//! 38\nEOF` and `echo pr merge 38 | xargs gh` are refused. Only stdin counts
-//! (crusty round 7): the commands piped in and the heredocs and here-strings
-//! of that pipeline, not commands joined by `;`, `&&` or `||`. And only a
-//! program that can merge from its argv (`gh`, `git`, an HTTP client, an
-//! interpreter) is checked: `find . | xargs grep -l 'gh pr merge'` passes.
-//! `git -c alias.<name>='!<command>'` runs the command through `sh`, so it is
-//! code and the command is checked: `git -c alias.m='!gh pr merge 38' m` is
-//! refused. A `$(…)` or backtick in the program word, or in `gh`'s or
-//! `git`'s arguments other than as a quoted option value (`--body "$(…)"`,
-//! `-m "$(…)"`, `--body="$(…)"`), is checked the same way, as the words it
-//! puts there, and its heredocs are code: `gh $(cat <<'EOF'\npr merge
-//! 38\nEOF\n)` is refused.
+//! runner sets for every auto-drive run and every agent CLI inside one.
 
 use regex::Regex;
 use serde_json::Value;
@@ -78,38 +41,71 @@ pub(super) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 /// The merge gate's file name. Only auto-drive's own recipe step runs it.
 const GATE_NAME: &str = "autodrive_merge_gate.sh";
 
-/// How deep `bash -c '…'`, `eval …` and `$(…)` bodies are followed.
-const MAX_NESTING: usize = 8;
+/// Programs that run the command after them: `(name, options that take a
+/// value, positional arguments before the command)`.
+const WRAPPERS: &[(&str, &[&str], usize)] = &[
+    (
+        "env",
+        &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
+        0,
+    ),
+    ("exec", &["-a"], 0),
+    ("command", &[], 0),
+    ("nohup", &[], 0),
+    ("time", &[], 0),
+    ("nice", &["-n", "--adjustment"], 0),
+    ("timeout", &["-s", "--signal", "-k", "--kill-after"], 1),
+    (
+        "sudo",
+        &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U"],
+        0,
+    ),
+];
+
+/// Shell reserved words that can precede a command's program word.
+const RESERVED: &[&str] = &[
+    "!", "{", "}", "if", "then", "elif", "else", "while", "until", "do",
+];
+
+/// Programs that run their first operand as a shell script.
+const SHELLS: &[&str] = &["bash", "sh", "dash", "zsh", "ksh", "source", "."];
+
+/// `gh api` options that take a value (so the value is not the endpoint).
+const GH_API_VALUE_OPTS: &[&str] = &[
+    "-X",
+    "--method",
+    "-f",
+    "--raw-field",
+    "-F",
+    "--field",
+    "-H",
+    "--header",
+    "--input",
+    "-q",
+    "--jq",
+    "-t",
+    "--template",
+    "-p",
+    "--preview",
+    "--cache",
+    "--hostname",
+];
+
+/// `gh` global options that take a value.
+const GH_VALUE_OPTS: &[&str] = &["-R", "--repo"];
 
 const BLOCK_MESSAGE: &str = "\
 🚫 OPERATION BLOCKED - merge outside auto-drive's merge gate (amplihack #1551)\n\
 \n\
 This is an auto-drive run (AMPLIHACK_MERGE_GUARD is set) and the command\n\
-contains {label}. Only autodrive_merge_gate.sh may merge: leave the PR open.\n\
+runs {label}. Only autodrive_merge_gate.sh may merge: leave the PR open.\n\
 Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop,\n\
 from its own recipe step; an agent's shell never runs the gate.\n\
-\n\
-This check reads the command itself, so it applies whichever gh your shell's\n\
-PATH finds. Do not retry with another gh path, PATH, alias, API client or token.\n\
-\n\
-If the match is prose (a commit message, PR body or doc) and you meant no merge:\n\
-the command also runs an interpreter, or a heredoc reaches a program not known\n\
-to treat it as data, so its text was read as code. Write the prose in a separate\n\
-tool call whose only programs are git, gh, cat or tee (git commit -F - <<'EOF'\n\
-… EOF passes); keep the prose as it is.";
+Do not retry with another gh path, PATH, alias, API client or token.";
 
-/// GraphQL mutations that merge, as whole names in any case (same list as
-/// the shim's `MUTATION_RE`).
-static MUTATION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)(?:^|[^a-z0-9_])(?:mergepullrequest|enablepullrequestautomerge|enqueuepullrequest|mergebranch)(?:[^a-z0-9_]|$)",
-    )
-    .expect("static regex")
-});
-
-/// REST merge endpoints in a path or URL: `…/pulls/<n>/merge` and
-/// `repos/<o>/<r>/merges` (or `repositories/<id>/merges`), any case, with an
-/// optional trailing slash, query or fragment.
+/// REST merge endpoints: `…/pulls/<n>/merge` and `repos/<o>/<r>/merges` (or
+/// `repositories/<id>/merges`), any case, with an optional trailing slash,
+/// query or fragment.
 static ENDPOINT_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)(?:^|/)(?:pulls/[^/?#\s]+/merge|(?:repos/[^/?#\s]+/[^/?#\s]+|repositories/[^/?#\s]+)/merges)/?(?:$|[?#])",
@@ -125,1010 +121,265 @@ pub(super) fn guard_active(value: Option<&str>) -> bool {
 
 /// The block response for a Bash `command` that merges, or `None`.
 pub(super) fn check(command: &str) -> Option<Value> {
-    let label = merge_form(command, 0, false, true)?;
+    let label = commands(command).iter().find_map(|c| merge_form(c))?;
     Some(serde_json::json!({
         "block": true,
         "message": BLOCK_MESSAGE.replace("{label}", label),
     }))
 }
 
-/// The label of the first merge form in `command`, following `bash -c`,
-/// `eval` and command substitutions up to [`MAX_NESTING`] levels.
-///
-/// `scripted` is set once any level of the command runs an interpreter; from
-/// then on every word is also read as code (see the module doc).
-/// `heredoc_data` is cleared once any level runs a program that is not a
-/// known data consumer; from then on heredoc bodies are read as code.
-fn merge_form(
-    command: &str,
-    depth: usize,
-    scripted: bool,
-    heredoc_data: bool,
-) -> Option<&'static str> {
-    if depth > MAX_NESTING {
-        return None;
-    }
-    let parsed = split(command);
-    let Split {
-        segments,
-        nested,
-        heredocs,
-        ..
-    } = &parsed;
-    let scripted = scripted
-        || segments.iter().any(|words| {
-            command_words(words).into_iter().any(|(i, name)| {
-                is_interpreter(basename(&name))
-                    || (basename(&name) == "git" && git_shell_alias(&words[i + 1..]).is_some())
-            })
-        });
-    // Deny by default: a body is data only when every program here (and in
-    // the command whose arguments this one's output becomes) is a known
-    // data consumer and nothing runs code.
-    let heredoc_data =
-        heredoc_data && !scripted && segments.iter().all(|w| reads_heredoc_as_data(w));
-    for sub in nested {
-        // Output that becomes a program's argv (crusty round 6): the
-        // substitution is checked as the words it puts there, and its
-        // heredocs are code.
-        let fed = sub
-            .at
-            .and_then(|(s, w)| argv_fed_by(segments.get(s)?, w, sub.quoted).map(|i| (s, w, i)));
-        if let Some((s, w, i)) = fed {
-            let words = &segments[s];
-            let tokens = text_tokens(&sub.body);
-            if let Some(label) = fed_argv_merge_form(&words[i..w], &tokens, &words[w + 1..], depth)
-            {
-                return Some(label);
-            }
+/// The label of the merge form `words` (one simple command) runs, if any.
+fn merge_form(words: &[String]) -> Option<&'static str> {
+    let rest = program(words)?;
+    let (name, args) = rest.split_first()?;
+    match basename(name) {
+        "gh" => gh_merge_form(args),
+        GATE_NAME => Some("a run of the merge gate (autodrive_merge_gate.sh)"),
+        shell if SHELLS.contains(&shell) => {
+            let script = args.iter().find(|a| !a.starts_with(['-', '+']))?;
+            (basename(script) == GATE_NAME)
+                .then_some("a run of the merge gate (autodrive_merge_gate.sh)")
         }
-        if let Some(label) = merge_form(
-            &sub.body,
-            depth + 1,
-            scripted,
-            heredoc_data && fed.is_none(),
-        ) {
-            return Some(label);
-        }
+        _ => None,
     }
-    // `xargs P` turns its stdin into P's arguments (crusty round 6). Only
-    // what reaches that stdin counts (crusty round 7): the commands piped
-    // into it and the heredocs and here-strings of its pipeline, not the
-    // `;`/`&&` commands around it. And only a program that can merge from
-    // its argv is checked: `xargs grep 'gh pr merge'` or `xargs wc -l`
-    // cannot merge whatever their arguments say.
-    for (s, words) in segments.iter().enumerate() {
-        for (i, name) in command_words(words) {
-            if !fed_by_xargs(words, i) || !merges_from_argv(basename(&name)) {
-                continue;
-            }
-            let tokens = xargs_stdin_tokens(&parsed, s);
-            // A here-string is stdin, not one of the program's arguments.
-            let argv: Vec<String> = (i..words.len())
-                .filter(|w| !parsed.herestrings.contains(&(s, *w)))
-                .map(|w| words[w].clone())
-                .collect();
-            if let Some(label) = fed_argv_merge_form(&argv, &tokens, &[], depth) {
-                return Some(label);
-            }
+}
+
+/// The words from the program being run onward: reserved words, `VAR=value`
+/// assignments and [`WRAPPERS`] (with their options) are skipped.
+fn program(words: &[String]) -> Option<&[String]> {
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if RESERVED.contains(&w) || is_assignment(w) {
+            i += 1;
+            continue;
         }
-    }
-    if !heredoc_data {
-        for (_, body) in heredocs {
-            if let Some(label) = merge_form(body, depth + 1, true, false) {
-                return Some(label);
+        let Some((_, value_opts, positionals)) =
+            WRAPPERS.iter().find(|(name, _, _)| *name == basename(w))
+        else {
+            return Some(&words[i..]);
+        };
+        i += 1;
+        let mut skip = *positionals;
+        while i < words.len() {
+            let w = words[i].as_str();
+            if value_opts.contains(&w) {
+                i += 2;
+            } else if w.starts_with('-') || is_assignment(w) {
+                i += 1;
+            } else if skip > 0 {
+                skip -= 1;
+                i += 1;
+            } else {
+                break;
             }
-        }
-    }
-    for words in segments {
-        if let Some(label) = segment_merge_form(words, depth, scripted) {
-            return Some(label);
         }
     }
     None
 }
 
-/// Whether the program at `i` in `words` runs under `xargs`, which builds
-/// its arguments from its stdin.
-fn fed_by_xargs(words: &[String], i: usize) -> bool {
-    words[..i].iter().any(|w| basename(w) == "xargs")
-}
-
-/// The index of the program whose argv the output of a substitution in word
-/// `w` of `segment` becomes, when that output may hold the program's own
-/// words: the substitution is the program word, or it is an argument of
-/// `gh` or `git` other than a quoted option value (`--body "$(…)"`, `-m
-/// "$(…)"`, `--body="$(…)"`). An unquoted one splits into several words, so
-/// it is never just a value.
-fn argv_fed_by(segment: &[String], w: usize, quoted: bool) -> Option<usize> {
-    let (i, name) = command_words(segment).into_iter().rfind(|(i, _)| *i <= w)?;
-    let word = segment.get(w)?;
-    if i == w {
-        return Some(i);
-    }
-    if !matches!(basename(&name), "gh" | "git") {
-        return None;
-    }
-    let option_value = word.starts_with('-')
-        || (w > i + 1 && segment[w - 1].len() > 1 && segment[w - 1].starts_with('-'));
-    (!(quoted && option_value)).then_some(i)
-}
-
-/// The words a piece of shell text can supply as arguments: the words of its
-/// commands and of its heredoc bodies, split on whitespace, with quotes and
-/// shell punctuation trimmed off their ends.
-fn text_tokens(text: &str) -> Vec<String> {
-    let Split {
-        segments,
-        nested,
-        heredocs,
-        ..
-    } = split(text);
-    let words = segments.iter().flatten().map(String::as_str);
-    let bodies = heredocs
-        .iter()
-        .map(|(_, b)| b.as_str())
-        .chain(nested.iter().map(|n| n.body.as_str()));
-    tokens(words.chain(bodies))
-}
-
-/// `texts` split on whitespace, with quotes and shell punctuation trimmed
-/// off the ends of each word.
-fn tokens<'a>(texts: impl IntoIterator<Item = &'a str>) -> Vec<String> {
-    texts
-        .into_iter()
-        .flat_map(str::split_whitespace)
-        .map(|t| t.trim_matches(|c: char| "'\"`$();|&<>".contains(c)))
-        .filter(|t| !t.is_empty())
-        .map(str::to_string)
-        .collect()
-}
-
-/// The words that can reach the stdin of the `xargs` in segment `s` of
-/// `parsed`: the words of the commands piped into it (`a | b | xargs …`),
-/// the heredoc bodies of that pipeline, the here-strings of its own
-/// command, and the `$(…)` bodies in any of those. Commands joined by `;`,
-/// `&&`, `||` or a newline do not share its stdin and are left out.
-fn xargs_stdin_tokens(parsed: &Split, s: usize) -> Vec<String> {
-    let mut start = s;
-    while start > 0 && parsed.piped[start - 1] {
-        start -= 1;
-    }
-    let here_string = |seg: usize, w: usize| seg == s && parsed.herestrings.contains(&(seg, w));
-    let upstream = parsed.segments[start..s]
-        .iter()
-        .flatten()
-        .map(String::as_str);
-    let herestrings = parsed
-        .herestrings
-        .iter()
-        .filter(|(seg, _)| *seg == s)
-        .filter_map(|&(seg, w)| parsed.segments[seg].get(w))
-        .map(String::as_str);
-    let heredocs = parsed
-        .heredocs
-        .iter()
-        .filter(|(seg, _)| (start..=s).contains(seg))
-        .map(|(_, b)| b.as_str());
-    let mut found = tokens(upstream.chain(herestrings).chain(heredocs));
-    for sub in &parsed.nested {
-        if sub
-            .at
-            .is_some_and(|(seg, w)| (start..s).contains(&seg) || here_string(seg, w))
-        {
-            found.extend(text_tokens(&sub.body));
+/// `gh`'s arguments: `pr merge`, or `api` with a merge endpoint.
+fn gh_merge_form(args: &[String]) -> Option<&'static str> {
+    let mut positional = operands(args, GH_VALUE_OPTS);
+    match positional.next().map(|(_, w)| w.as_str()) {
+        Some("pr") => (positional.next()?.1 == "merge").then_some("gh pr merge"),
+        Some("api") => {
+            let (at, _) = operands(args, GH_VALUE_OPTS).find(|(_, w)| w.as_str() == "api")?;
+            let (_, endpoint) = operands(&args[at + 1..], GH_API_VALUE_OPTS).next()?;
+            ENDPOINT_RE
+                .is_match(endpoint)
+                .then_some("gh api on a merge endpoint")
         }
+        _ => None,
     }
-    found
 }
 
-/// Programs that can merge when their arguments say so: `gh`, `git`
-/// (through a `!` alias), the HTTP clients and the interpreters. A text tool
-/// such as `grep`, `rg` or `wc` cannot, whatever words `xargs` hands it.
-fn merges_from_argv(name: &str) -> bool {
-    matches!(
-        name,
-        "gh" | "git" | "curl" | "wget" | "http" | "https" | "xh"
-    ) || is_interpreter(name)
-}
-
-/// The shell command of a `git -c alias.<name>='!<command>'` setting in
-/// `args` (the words after `git`): git runs a `!` alias through `sh`.
-fn git_shell_alias(args: &[String]) -> Option<&str> {
-    args.windows(2).find_map(|pair| {
-        if pair[0] != "-c" {
-            return None;
+/// The non-option words of `args` with their indexes, skipping the value of
+/// each option in `value_opts`.
+fn operands<'a>(
+    args: &'a [String],
+    value_opts: &'a [&'a str],
+) -> impl Iterator<Item = (usize, &'a String)> + 'a {
+    let mut skip_next = false;
+    args.iter().enumerate().filter(move |(_, w)| {
+        if std::mem::take(&mut skip_next) {
+            return false;
         }
-        let (key, value) = pair[1].split_once('=')?;
-        let body = value.trim_start().strip_prefix('!')?;
-        key.to_ascii_lowercase()
-            .starts_with("alias.")
-            .then_some(body)
+        if value_opts.contains(&w.as_str()) {
+            skip_next = true;
+            return false;
+        }
+        !w.starts_with('-')
     })
 }
 
-/// A merge form in the argv `prefix`, then `tokens` from some point on, then
-/// `suffix`. The tokens are tried from the start and from each `gh`, `pr`,
-/// `api` and `merge`, so leading text (`cat`, a commit subject) does not
-/// hide a subcommand that follows it.
-fn fed_argv_merge_form(
-    prefix: &[String],
-    tokens: &[String],
-    suffix: &[String],
-    depth: usize,
-) -> Option<&'static str> {
-    (0..tokens.len().max(1))
-        .filter(|&k| k == 0 || matches!(tokens[k].as_str(), "gh" | "pr" | "api" | "merge"))
-        .find_map(|k| {
-            let argv: Vec<String> = prefix
-                .iter()
-                .chain(tokens.get(k..).unwrap_or(&[]))
-                .chain(suffix)
-                .cloned()
-                .collect();
-            segment_merge_form(&argv, depth, false)
-        })
+fn is_assignment(word: &str) -> bool {
+    word.split_once('=').is_some_and(|(name, _)| {
+        !name.is_empty()
+            && name.chars().all(|c| c == '_' || c.is_ascii_alphanumeric())
+            && !name.starts_with(|c: char| c.is_ascii_digit())
+    })
 }
 
 fn basename(word: &str) -> &str {
     word.rsplit('/').next().unwrap_or(word)
 }
 
-/// Programs that run code given as text: a `-c`/`-e` argument, a here-string
-/// or a pipe on stdin. `eval`, `source` and `.` run their input as shell code
-/// too (crusty round 5).
-fn is_interpreter(name: &str) -> bool {
-    matches!(
-        name,
-        "eval"
-            | "source"
-            | "."
-            | "bash"
-            | "sh"
-            | "zsh"
-            | "dash"
-            | "ksh"
-            | "mksh"
-            | "fish"
-            | "busybox"
-            | "perl"
-            | "ruby"
-            | "node"
-            | "nodejs"
-            | "deno"
-            | "bun"
-            | "php"
-            | "lua"
-            | "tclsh"
-            | "awk"
-            | "gawk"
-            | "mawk"
-            | "nawk"
-            | "osascript"
-    ) || name.starts_with("python")
-        || name.starts_with("pypy")
-}
-
-/// Whether the simple command `words` treats a heredoc on its stdin, or the
-/// output of a `$(…)` in its arguments, as data: a bare assignment, or every
-/// program it runs is on this allowlist. Anything else (an unknown program,
-/// `parallel`, `at`, `ssh`, `script`, `expect`, a wrapper with no command
-/// left to find, as in `env -S '…'`) is code. `sed` and `awk` are left off:
-/// GNU sed's `e` command and any awk script run shell commands.
-fn reads_heredoc_as_data(words: &[String]) -> bool {
-    if words.iter().all(|w| is_assignment(w)) {
-        return true;
-    }
-    let programs = command_words(words);
-    !programs.is_empty()
-        && programs.iter().all(|(i, word)| {
-            let args = &words[i + 1..];
-            // `xargs` makes its stdin the program's arguments (crusty
-            // round 6), so `gh` and `git` under it do not read the body as
-            // data; a text tool under it still cannot run or merge it
-            // (crusty round 7).
-            if fed_by_xargs(words, *i) && matches!(basename(word), "gh" | "git") {
-                return false;
-            }
-            match basename(word) {
-                // `gh api --input -` sends the body as a request.
-                "gh" => skip_flags(args).first().map(String::as_str) != Some("api"),
-                // A `!` alias runs a shell command.
-                "git" => !args.iter().any(|a| a.contains("alias.")),
-                name => matches!(
-                    name,
-                    "cat"
-                        | "tee"
-                        | "jq"
-                        | "wc"
-                        | "head"
-                        | "tail"
-                        | "grep"
-                        | "rg"
-                        | "diff"
-                        | "cmp"
-                        | "sort"
-                        | "uniq"
-                        | "tr"
-                        | "cut"
-                        | "paste"
-                        | "fold"
-                        | "fmt"
-                        | "nl"
-                        | "base64"
-                        | "sha256sum"
-                        | "md5sum"
-                        | "echo"
-                        | "printf"
-                        | "cd"
-                        | "mkdir"
-                        | "ls"
-                        | "pwd"
-                        | "true"
-                        | "false"
-                ),
-            }
-        })
-}
-
-/// The words of `words` that run as programs, with their indices: the first
-/// word after `VAR=…` assignments and wrappers (`env`, `command`, `exec`,
-/// `xargs`, `timeout`, `nohup`, `sudo`, …, each with its flags and operands),
-/// and the same after each `find -exec`/`-execdir`/`-ok`/`-okdir`.
-fn command_words(words: &[String]) -> Vec<(usize, String)> {
-    let mut found = Vec::new();
-    let mut starts = vec![0];
-    starts.extend(
-        words
-            .iter()
-            .enumerate()
-            .filter(|(_, w)| matches!(w.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
-            .map(|(i, _)| i + 1),
-    );
-    for start in starts {
-        if let Some(i) = command_index(words, start) {
-            found.push((i, words[i].clone()));
-        }
-    }
-    found
-}
-
-/// The index of the program word of the simple command starting at `start`.
-fn command_index(words: &[String], start: usize) -> Option<usize> {
-    let mut i = start;
-    loop {
-        let word = words.get(i)?;
-        if is_assignment(word) {
-            i += 1;
-            continue;
-        }
-        let Some((value_flags, operands)) = wrapper(basename(word)) else {
-            return Some(i);
-        };
-        i += 1;
-        while let Some(arg) = words.get(i) {
-            if arg == "--" {
-                i += 1;
-                break;
-            }
-            if arg.len() > 1 && arg.starts_with('-') {
-                i += if value_flags.contains(&arg.as_str()) {
-                    2
-                } else {
-                    1
-                };
-            } else if is_assignment(arg) {
-                i += 1;
-            } else {
-                break;
-            }
-        }
-        i += operands;
-    }
-}
-
-/// `NAME=value`, a shell assignment or an `env` operand.
-fn is_assignment(word: &str) -> bool {
-    word.split_once('=').is_some_and(|(name, _)| {
-        let mut chars = name.chars();
-        chars
-            .next()
-            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
-    })
-}
-
-/// Programs that run the command after them: the flags that take a separate
-/// value, and how many operands come before the command.
-fn wrapper(name: &str) -> Option<(&'static [&'static str], usize)> {
-    Some(match name {
-        "env" => (
-            &["-u", "--unset", "-C", "--chdir", "-S", "--split-string"],
-            0,
-        ),
-        "command" | "builtin" | "nohup" | "setsid" | "unbuffer" => (&[], 0),
-        "exec" => (&["-a"], 0),
-        "xargs" => (
-            &[
-                "-I",
-                "-L",
-                "-n",
-                "-P",
-                "-s",
-                "-d",
-                "-E",
-                "-a",
-                "--arg-file",
-                "--delimiter",
-            ],
-            0,
-        ),
-        "timeout" => (&["-s", "--signal", "-k", "--kill-after"], 1),
-        "sudo" | "doas" => (
-            &["-u", "-g", "-C", "-D", "-h", "-p", "-r", "-t", "-U", "-T"],
-            0,
-        ),
-        "nice" => (&["-n", "--adjustment"], 0),
-        "ionice" => (&["-c", "-n", "-p"], 0),
-        "stdbuf" => (&["-i", "-o", "-e"], 0),
-        "time" => (&["-f", "-o", "--format", "--output"], 0),
-        "flock" => (&["-w", "--timeout", "-E", "--conflict-exit-code"], 1),
-        "chrt" | "taskset" => (&[], 1),
-        _ => return None,
-    })
-}
-
-/// Whether the simple command `words` runs the merge gate: as its program,
-/// or as the script of a shell or of `source`/`.`.
-fn runs_gate(words: &[String]) -> bool {
-    command_words(words).into_iter().any(|(i, word)| {
-        let name = basename(&word);
-        if name == GATE_NAME {
-            return true;
-        }
-        if !matches!(
-            name,
-            "bash" | "sh" | "zsh" | "dash" | "ksh" | "mksh" | "source" | "."
-        ) {
-            return false;
-        }
-        let mut args = words[i + 1..].iter();
-        while let Some(arg) = args.next() {
-            if arg == "--" {
-                return args.next().is_some_and(|a| basename(a) == GATE_NAME);
-            }
-            if arg.len() > 1 && (arg.starts_with('-') || arg.starts_with('+')) {
-                if !arg.starts_with("--") && arg[1..].contains('c') {
-                    // `bash -c '<script>'`: the script is checked as a command.
-                    return false;
-                }
-                if matches!(arg.as_str(), "-o" | "+o" | "-O" | "+O") {
-                    args.next();
-                }
-                continue;
-            }
-            return basename(arg) == GATE_NAME;
-        }
-        false
-    })
-}
-
-const GATE_LABEL: &str = "a run of the merge gate autodrive_merge_gate.sh by an agent";
-
-fn segment_merge_form(words: &[String], depth: usize, scripted: bool) -> Option<&'static str> {
-    if runs_gate(words) {
-        return Some(GATE_LABEL);
-    }
-    for (i, word) in words.iter().enumerate() {
-        let rest = &words[i + 1..];
-        // With an interpreter running, the gate named anywhere may be code
-        // that runs it (`cat <gate> | bash`, `subprocess.run(['<gate>'])`).
-        if scripted && basename(word) == GATE_NAME {
-            return Some(GATE_LABEL);
-        }
-        if scripted && let Some(label) = code_merge_form(word, depth) {
-            return Some(label);
-        }
-        let found = match basename(word) {
-            "gh" => gh_merge_form(rest),
-            // `git -c alias.m='!gh pr merge 38' m` (crusty round 7).
-            "git" => {
-                git_shell_alias(rest).and_then(|body| merge_form(body, depth + 1, true, false))
-            }
-            // HTTP clients: an endpoint or mutation anywhere in the segment.
-            "curl" | "wget" | "http" | "https" | "xh" => {
-                words.iter().find_map(|w| raw_merge_form(w))
-            }
-            "bash" | "sh" | "zsh" | "dash" | "ksh" => {
-                shell_c_body(rest).and_then(|body| merge_form(body, depth + 1, scripted, false))
-            }
-            "eval" => merge_form(&rest.join(" "), depth + 1, scripted, false),
-            _ => None,
-        };
-        if found.is_some() {
-            return found;
-        }
-    }
-    None
-}
-
-/// A word of a command that runs an interpreter, read as code: argument
-/// lists (`['gh', 'pr', 'merge']`, `"gh","pr"`) become words, and string
-/// literals keep their closing punctuation off the endpoint.
-fn code_merge_form(word: &str, depth: usize) -> Option<&'static str> {
-    let code: String = word
-        .chars()
-        .map(|c| {
-            if matches!(c, ',' | '[' | ']' | '{' | '}') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
-    if code.chars().any(char::is_whitespace)
-        && let Some(label) = merge_form(&code, depth + 1, true, false)
-    {
-        return Some(label);
-    }
-    raw_merge_form(code.trim_matches(|c: char| !(c.is_alphanumeric() || c == '/')))
-        .or_else(|| raw_merge_form(word))
-}
-
-/// The script of `bash -c '<script>'` (also `-lc`, `-ic`, `-ec`, …).
-fn shell_c_body(args: &[String]) -> Option<&str> {
-    let pos = args
-        .iter()
-        .position(|a| a.starts_with('-') && !a.starts_with("--") && a[1..].contains('c'))?;
-    args.get(pos + 1).map(String::as_str)
-}
-
-fn raw_merge_form(word: &str) -> Option<&'static str> {
-    if MUTATION_RE.is_match(word) {
-        Some("a GraphQL merge mutation")
-    } else if ENDPOINT_RE.is_match(word) {
-        Some("a REST merge endpoint")
-    } else {
-        None
-    }
-}
-
-/// `args` follow a word whose basename is `gh`.
-fn gh_merge_form(args: &[String]) -> Option<&'static str> {
-    let rest = skip_flags(args);
-    let (cmd, rest) = rest.split_first()?;
-    match cmd.as_str() {
-        "pr" => {
-            let rest = skip_flags(rest);
-            (rest.first().map(String::as_str) == Some("merge")).then_some("gh pr merge")
-        }
-        "api" => {
-            if let Some(label) = rest.iter().find_map(|w| raw_merge_form(w)) {
-                return Some(label);
-            }
-            // A GraphQL body read from a file or stdin cannot be inspected.
-            let graphql = rest
-                .iter()
-                .any(|w| w.to_ascii_lowercase().contains("graphql"));
-            let unreadable = rest
-                .iter()
-                .any(|w| w == "--input" || w.starts_with("--input=") || w.contains("=@"));
-            (graphql && unreadable).then_some("a GraphQL query read from a file or stdin")
-        }
-        _ => None,
-    }
-}
-
-/// Drops leading flags; `-R`, `--repo` and `--hostname` take a value.
-fn skip_flags(mut args: &[String]) -> &[String] {
-    while let Some((first, rest)) = args.split_first() {
-        match first.as_str() {
-            "-R" | "--repo" | "--hostname" => args = rest.get(1..).unwrap_or(&[]),
-            f if f.starts_with('-') => args = rest,
-            _ => break,
-        }
-    }
-    args
-}
-
-/// What [`split`] reads from a command.
-struct Split {
-    /// Simple commands, as word lists.
-    segments: Vec<Vec<String>>,
-    /// Per segment: a `|` (or `|&`) follows it, so its output is the next
-    /// segment's stdin.
-    piped: Vec<bool>,
-    /// The segment and word index of each here-string (`<<<word`).
-    herestrings: Vec<(usize, usize)>,
-    /// Bodies of `$(…)` and backticks, to be checked as commands.
-    nested: Vec<Nested>,
-    /// Heredoc bodies: code unless every program in the command is a known
-    /// data consumer (see [`reads_heredoc_as_data`]). Each with the index
-    /// of the segment whose redirection opened it.
-    heredocs: Vec<(usize, String)>,
-}
-
-/// A `$(…)` or backtick substitution.
-struct Nested {
-    body: String,
-    /// The segment and word it sits in; `None` inside a heredoc body.
-    at: Option<(usize, usize)>,
-    /// Inside double quotes: its output is one word.
-    quoted: bool,
-}
-
-/// A heredoc redirection waiting for the end of its line.
-struct Heredoc {
-    delimiter: String,
-    /// `<<-`: leading tabs are stripped before matching the delimiter.
-    strip_tabs: bool,
-    /// An unquoted delimiter: bash expands `$(…)` and backticks in the body.
-    expands: bool,
-    /// The segment whose redirection this is (set by [`split`]).
-    segment: usize,
-}
-
-/// The heredoc redirection whose `<<` starts at `i`, and the index after its
-/// delimiter word. `None` for a here-string (`<<<`), and for a delimiter
-/// that does not start with a letter, `_`, a quote or a backslash, so the
-/// shift in `$((1<<2))` is not read as one.
-fn heredoc_at(chars: &[char], i: usize) -> Option<(Heredoc, usize)> {
-    if chars.get(i + 1) != Some(&'<')
-        || chars.get(i + 2) == Some(&'<')
-        || (i > 0 && chars[i - 1] == '<')
-    {
-        return None;
-    }
-    let mut j = i + 2;
-    let strip_tabs = chars.get(j) == Some(&'-');
-    if strip_tabs {
-        j += 1;
-    }
-    while matches!(chars.get(j), Some(' ' | '\t')) {
-        j += 1;
-    }
-    let first = *chars.get(j)?;
-    if !(first.is_ascii_alphabetic() || matches!(first, '_' | '\'' | '"' | '\\')) {
-        return None;
-    }
-    let mut delimiter = String::new();
-    let mut quoted = false;
-    while let Some(&c) = chars.get(j) {
-        match c {
-            '\'' | '"' => {
-                quoted = true;
-                j += 1;
-                while let Some(&d) = chars.get(j) {
-                    j += 1;
-                    if d == c {
-                        break;
-                    }
-                    delimiter.push(d);
-                }
-            }
-            '\\' => {
-                quoted = true;
-                if let Some(&d) = chars.get(j + 1) {
-                    delimiter.push(d);
-                }
-                j += 2;
-            }
-            c if c.is_whitespace() || matches!(c, ';' | '&' | '|' | '<' | '>' | '(' | ')') => {
-                break;
-            }
-            c => {
-                delimiter.push(c);
-                j += 1;
-            }
-        }
-    }
-    (!delimiter.is_empty()).then_some((
-        Heredoc {
-            delimiter,
-            strip_tabs,
-            expands: !quoted,
-            segment: 0,
-        },
-        j,
-    ))
-}
-
-/// The body of `doc` starting at `start` (just after the newline that ends
-/// the redirection's line), and the index after its delimiter line. `None`
-/// when no line closes it: the text is then read as commands, as before.
-fn heredoc_body(chars: &[char], start: usize, doc: &Heredoc) -> Option<(String, usize)> {
-    let mut i = start;
-    let mut body = String::new();
-    while i < chars.len() {
-        let end = chars[i..]
-            .iter()
-            .position(|&c| c == '\n')
-            .map_or(chars.len(), |p| i + p);
-        let line: String = chars[i..end].iter().collect();
-        let compared = if doc.strip_tabs {
-            line.trim_start_matches('\t')
-        } else {
-            line.as_str()
-        };
-        if compared == doc.delimiter {
-            return Some((body, (end + 1).min(chars.len())));
-        }
-        body.push_str(&line);
-        body.push('\n');
-        i = end + 1;
-    }
-    None
-}
-
-/// Consumes the bodies of `pending` heredocs starting at `start`, and
-/// returns the index after the last one closed.
-fn take_heredocs(
-    chars: &[char],
-    start: usize,
-    pending: &mut Vec<Heredoc>,
-    mut on_body: impl FnMut(String, &Heredoc),
-) -> usize {
-    let mut i = start;
-    for doc in pending.drain(..) {
-        if let Some((body, end)) = heredoc_body(chars, i, &doc) {
-            on_body(body, &doc);
-            i = end;
-        }
-    }
-    i
-}
-
-/// The `$(…)` and backtick bodies of an unquoted heredoc body, which bash
-/// runs while reading it. Quotes are literal there, so they hide nothing.
-fn heredoc_substitutions(body: &str) -> Vec<String> {
-    let chars: Vec<char> = body.chars().collect();
-    let mut found = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        match chars[i] {
-            '\\' => i += 2,
-            '$' if chars.get(i + 1) == Some(&'(') => {
-                let (inner, end) = substitution(&chars, i + 2);
-                found.push(inner);
-                i = end;
-            }
-            '`' => {
-                let (inner, end) = backtick(&chars, i + 1);
-                found.push(inner);
-                i = end;
-            }
-            _ => i += 1,
-        }
-    }
-    found
-}
-
-/// Splits `command` into simple commands (word lists) at unquoted `;`, `&`,
-/// `|`, newlines, parentheses and redirections, honouring quotes and
-/// backslashes. Bodies of `$(…)` and backticks, quoted or not, are returned
-/// separately to be checked as commands of their own. Heredoc bodies are
-/// returned separately too; [`merge_form`] reads them as data only when
-/// every program that can receive them is a known data consumer.
+/// Splits `text` into simple commands, each a list of unquoted words.
 ///
-/// This is a reader for the commands agents write, not a shell: anything it
-/// misreads still meets the `gh` shim, and branch protection after that.
-fn split(command: &str) -> Split {
-    let chars: Vec<char> = command.chars().collect();
-    let mut segments = Vec::new();
-    let mut piped: Vec<bool> = Vec::new();
-    let mut herestrings = Vec::new();
-    let mut nested = Vec::new();
-    let mut heredocs = Vec::new();
-    let mut pending: Vec<Heredoc> = Vec::new();
-    let mut words: Vec<String> = Vec::new();
+/// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes.
+/// Quotes and backslashes are removed from words. Comments are dropped, and
+/// heredoc bodies are skipped: they are data, never a command's words.
+/// `$(…)` and backticks stay inside the word they appear in.
+fn commands(text: &str) -> Vec<Vec<String>> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = vec![Vec::new()];
     let mut word = String::new();
     let mut in_word = false;
+    let mut heredocs: Vec<(String, bool)> = Vec::new();
     let mut i = 0;
-
-    fn end_word(words: &mut Vec<String>, word: &mut String, in_word: &mut bool) {
-        if *in_word {
-            words.push(std::mem::take(word));
-            *in_word = false;
+    let end_word = |word: &mut String, in_word: &mut bool, out: &mut Vec<Vec<String>>| {
+        if std::mem::take(in_word) {
+            out.last_mut()
+                .expect("non-empty")
+                .push(std::mem::take(word));
         }
-    }
-
+    };
     while i < chars.len() {
         let c = chars[i];
         match c {
-            '\\' => {
-                if let Some(&next) = chars.get(i + 1)
-                    && next != '\n'
-                {
-                    word.push(next);
-                    in_word = true;
-                }
-                i += 2;
-            }
             '\'' => {
+                in_word = true;
                 i += 1;
                 while i < chars.len() && chars[i] != '\'' {
                     word.push(chars[i]);
                     i += 1;
                 }
-                i += 1;
-                in_word = true;
             }
             '"' => {
+                in_word = true;
                 i += 1;
                 while i < chars.len() && chars[i] != '"' {
-                    match chars[i] {
-                        '\\' if i + 1 < chars.len() => {
-                            word.push(chars[i + 1]);
-                            i += 2;
-                        }
-                        '$' if chars.get(i + 1) == Some(&'(') => {
-                            let (body, end) = substitution(&chars, i + 2);
-                            nested.push(Nested {
-                                body,
-                                at: Some((segments.len(), words.len())),
-                                quoted: true,
-                            });
-                            i = end;
-                        }
-                        '`' => {
-                            let (body, end) = backtick(&chars, i + 1);
-                            nested.push(Nested {
-                                body,
-                                at: Some((segments.len(), words.len())),
-                                quoted: true,
-                            });
-                            i = end;
-                        }
-                        other => {
-                            word.push(other);
-                            i += 1;
-                        }
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        i += 1;
                     }
+                    word.push(chars[i]);
+                    i += 1;
                 }
-                i += 1;
+            }
+            '\\' => {
                 in_word = true;
+                if let Some(&next) = chars.get(i + 1) {
+                    if next != '\n' {
+                        word.push(next);
+                    }
+                    i += 1;
+                }
             }
             '$' if chars.get(i + 1) == Some(&'(') => {
-                let (body, end) = substitution(&chars, i + 2);
-                nested.push(Nested {
-                    body,
-                    at: Some((segments.len(), words.len())),
-                    quoted: false,
-                });
                 in_word = true;
-                i = end;
+                let start = i;
+                let mut depth = 0usize;
+                while i < chars.len() {
+                    match chars[i] {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                word.extend(&chars[start..i.min(chars.len() - 1) + 1]);
             }
             '`' => {
-                let (body, end) = backtick(&chars, i + 1);
-                nested.push(Nested {
-                    body,
-                    at: Some((segments.len(), words.len())),
-                    quoted: false,
-                });
                 in_word = true;
-                i = end;
-            }
-            ';' | '&' | '|' | '\n' | '(' | ')' => {
-                end_word(&mut words, &mut word, &mut in_word);
-                // `|` and `|&` pipe; `||` does not.
-                let pipe =
-                    c == '|' && chars.get(i + 1) != Some(&'|') && (i == 0 || chars[i - 1] != '|');
-                if !words.is_empty() {
-                    segments.push(std::mem::take(&mut words));
-                    piped.push(pipe);
-                } else if pipe && let Some(last) = piped.last_mut() {
-                    // `( … ) | xargs …`
-                    *last = true;
-                }
+                word.push(c);
                 i += 1;
-                if c == '\n' && !pending.is_empty() {
-                    i = take_heredocs(&chars, i, &mut pending, |body, doc| {
-                        if doc.expands {
-                            nested.extend(heredoc_substitutions(&body).into_iter().map(|body| {
-                                Nested {
-                                    body,
-                                    at: None,
-                                    quoted: false,
-                                }
-                            }));
-                        }
-                        heredocs.push((doc.segment, body));
-                    });
+                while i < chars.len() && chars[i] != '`' {
+                    word.push(chars[i]);
+                    i += 1;
                 }
+                word.push('`');
             }
-            '<' if let Some((mut doc, end)) = heredoc_at(&chars, i) => {
-                end_word(&mut words, &mut word, &mut in_word);
-                doc.segment = segments.len();
-                pending.push(doc);
-                i = end;
+            '#' if !in_word => {
+                while i + 1 < chars.len() && chars[i + 1] != '\n' {
+                    i += 1;
+                }
             }
             '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => {
-                end_word(&mut words, &mut word, &mut in_word);
-                herestrings.push((segments.len(), words.len()));
-                i += 3;
+                // A here-string: its word follows as an ordinary word.
+                end_word(&mut word, &mut in_word, &mut out);
+                i += 2;
             }
-            '<' | '>' => {
-                end_word(&mut words, &mut word, &mut in_word);
-                i += 1;
-            }
-            c if c.is_whitespace() => {
-                end_word(&mut words, &mut word, &mut in_word);
-                i += 1;
-            }
-            other => {
-                word.push(other);
-                in_word = true;
-                i += 1;
-            }
-        }
-    }
-    end_word(&mut words, &mut word, &mut in_word);
-    if !words.is_empty() {
-        segments.push(words);
-        piped.push(false);
-    }
-    Split {
-        segments,
-        piped,
-        herestrings,
-        nested,
-        heredocs,
-    }
-}
-
-/// The body of a `$(` starting at `start`, up to its matching `)`, and the
-/// index after it. Quotes inside are skipped so their parentheses do not
-/// count, and so are heredoc bodies, whose apostrophes and parentheses are
-/// prose (`$(cat <<'EOF' … don't (ever) … EOF)`); `$((…))` arithmetic has no
-/// heredocs. An unterminated body runs to the end.
-fn substitution(chars: &[char], start: usize) -> (String, usize) {
-    let mut depth = 1usize;
-    let mut i = start;
-    let mut quote: Option<char> = None;
-    let mut pending: Vec<Heredoc> = Vec::new();
-    let arithmetic = chars.get(start) == Some(&'(');
-    while i < chars.len() {
-        let c = chars[i];
-        match quote {
-            Some(q) if c == q => quote = None,
-            Some(_) => {}
-            None => match c {
-                '<' if !arithmetic && let Some((doc, end)) = heredoc_at(chars, i) => {
-                    pending.push(doc);
-                    i = end;
-                    continue;
+            '<' if chars.get(i + 1) == Some(&'<') => {
+                // `<<WORD` / `<<-WORD`: remember the delimiter; the body is
+                // skipped at the end of this line.
+                end_word(&mut word, &mut in_word, &mut out);
+                i += 2;
+                let strip_tabs = chars.get(i) == Some(&'-');
+                if strip_tabs {
+                    i += 1;
                 }
-                '\n' if !pending.is_empty() => {
-                    i = take_heredocs(chars, i + 1, &mut pending, |_, _| {});
-                    continue;
+                while chars.get(i).is_some_and(|c| *c == ' ' || *c == '\t') {
+                    i += 1;
                 }
-                '\'' | '"' => quote = Some(c),
-                '\\' => i += 1,
-                '(' => depth += 1,
-                ')' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return (chars[start..i].iter().collect(), i + 1);
+                let mut delim = String::new();
+                while let Some(&d) = chars.get(i) {
+                    if d.is_whitespace() || ";&|()<>".contains(d) {
+                        break;
+                    }
+                    if !"'\"\\".contains(d) {
+                        delim.push(d);
+                    }
+                    i += 1;
+                }
+                heredocs.push((delim, strip_tabs));
+                continue;
+            }
+            '\n' => {
+                end_word(&mut word, &mut in_word, &mut out);
+                out.push(Vec::new());
+                for (delim, strip_tabs) in std::mem::take(&mut heredocs) {
+                    loop {
+                        let start = i + 1;
+                        if start >= chars.len() {
+                            break;
+                        }
+                        let stop = (start..chars.len())
+                            .find(|&j| chars[j] == '\n')
+                            .unwrap_or(chars.len());
+                        let line: String = chars[start..stop].iter().collect();
+                        i = stop;
+                        let line = if strip_tabs {
+                            line.trim_start_matches('\t')
+                        } else {
+                            &line
+                        };
+                        if line == delim {
+                            break;
+                        }
                     }
                 }
-                _ => {}
-            },
+            }
+            ';' | '&' | '|' | '(' | ')' => {
+                end_word(&mut word, &mut in_word, &mut out);
+                out.push(Vec::new());
+            }
+            c if c.is_whitespace() => end_word(&mut word, &mut in_word, &mut out),
+            _ => {
+                in_word = true;
+                word.push(c);
+            }
         }
         i += 1;
     }
-    (
-        chars[start.min(chars.len())..].iter().collect(),
-        chars.len(),
-    )
-}
-
-/// The body of a backtick substitution starting at `start`.
-fn backtick(chars: &[char], start: usize) -> (String, usize) {
-    let end = chars[start.min(chars.len())..]
-        .iter()
-        .position(|&c| c == '`')
-        .map_or(chars.len(), |p| start + p);
-    (chars[start.min(chars.len())..end].iter().collect(), end + 1)
+    end_word(&mut word, &mut in_word, &mut out);
+    out.retain(|c| !c.is_empty());
+    out
 }
 
 #[cfg(test)]

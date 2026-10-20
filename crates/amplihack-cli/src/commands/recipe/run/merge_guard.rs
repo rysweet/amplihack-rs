@@ -15,6 +15,15 @@ pub(crate) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 /// The shim's directory, relative to `AMPLIHACK_HOME`.
 pub(crate) const GUARD_REL: &str = "amplifier-bundle/tools/gh-merge-guard";
 
+/// The `BASH_ENV` file in the guard directory. It puts the guard back first
+/// on `PATH` in every non-interactive bash of the run, after a login shell's
+/// profile has run.
+pub(crate) const BASH_ENV_FILE: &str = "bash-env";
+
+/// Where the user's own `BASH_ENV` is kept while the guard's is in place;
+/// the guard's file sources it first.
+pub(crate) const USER_BASH_ENV: &str = "AMPLIHACK_MERGE_GUARD_USER_BASH_ENV";
+
 /// The files in the guard directory's parent (`tools/`) that the shim trusts
 /// to merge: the gate, and every helper the gate sources, directly or through
 /// another helper (`autodrive_state.sh` sources `autodrive_unmerged.sh`).
@@ -56,9 +65,27 @@ pub(crate) fn keep_guard_first(
         return Ok(env_builder);
     }
     let dir = guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-    Ok(env_builder
-        .prepend_path_first(dir)
-        .set(MERGE_GUARD_ENV, "1"))
+    Ok(apply_guard(env_builder.prepend_path_first(&dir), &dir))
+}
+
+/// Exports the guard for a run whose `PATH` already has `dir` in front: the
+/// marker, and `BASH_ENV` pointing at the guard's [`BASH_ENV_FILE`] so that a
+/// shell whose profile reorders `PATH` puts the guard back first. A user
+/// `BASH_ENV` other than the guard's own is kept in [`USER_BASH_ENV`].
+pub(crate) fn apply_guard(env_builder: EnvBuilder, dir: &Path) -> EnvBuilder {
+    let bash_env = dir.join(BASH_ENV_FILE).to_string_lossy().into_owned();
+    let current = env_builder
+        .var("BASH_ENV")
+        .map(str::to_string)
+        .or_else(|| std::env::var("BASH_ENV").ok())
+        .filter(|v| !v.is_empty() && *v != bash_env);
+    let env_builder = match current {
+        Some(user) => env_builder.set(USER_BASH_ENV, user),
+        None => env_builder,
+    };
+    env_builder
+        .set("BASH_ENV", bash_env)
+        .set(MERGE_GUARD_ENV, "1")
 }
 
 /// [`locate_guard_dir`] for the run's `AMPLIHACK_HOME`, which must be set.
@@ -72,7 +99,7 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 }
 
 /// The guard directory under `home`, provided it holds an executable `gh`
-/// file (symlinks followed). The directory is returned as given, never
+/// file (symlinks followed) and its [`BASH_ENV_FILE`]. The directory is returned as given, never
 /// canonicalised, so `PATH` de-duplication still recognises it.
 ///
 /// There is no fallback location: a missing shim, a `home` that is not an
@@ -85,6 +112,7 @@ pub(crate) fn guard_dir_for_home(home: Option<&str>) -> Result<PathBuf> {
 pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
     let dir = home.join(GUARD_REL);
     let shim = dir.join("gh");
+    let bash_env = dir.join(BASH_ENV_FILE);
     if !home.is_absolute() {
         bail!(
             "amplihack: AMPLIHACK_HOME is not absolute ({}); refusing to run auto-drive without \
@@ -107,7 +135,18 @@ pub(crate) fn locate_guard_dir(home: &Path) -> Result<PathBuf> {
         );
     }
     check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER))?;
-    if is_group_or_other_writable(&shim) || is_group_or_other_writable(&dir) {
+    if !bash_env.is_file() {
+        bail!(
+            "amplihack: the merge guard's {} is missing; without it a shell profile that \
+             reorders PATH puts another gh ahead of the guard. Refusing to run auto-drive \
+             (#1551). Rerun `amplihack install`.",
+            bash_env.display()
+        );
+    }
+    if is_group_or_other_writable(&shim)
+        || is_group_or_other_writable(&dir)
+        || is_group_or_other_writable(&bash_env)
+    {
         bail!(
             "amplihack: merge guard at {} is writable by group or others; refusing to trust it \
              (#1551). Rerun `amplihack install`, or chmod 0755 the directory and its gh.",

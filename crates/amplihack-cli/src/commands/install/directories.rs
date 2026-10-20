@@ -563,6 +563,17 @@ fn secure_merge_guard(bundle: &Path) -> Result<()> {
                 path.display()
             )
         };
+        let bash_env = dir.join(crate::commands::recipe::run::merge_guard::BASH_ENV_FILE);
+        if bash_env.is_file() {
+            fs::set_permissions(&bash_env, fs::Permissions::from_mode(0o644)).with_context(
+                || {
+                    format!(
+                        "failed to set mode 0644 on the merge guard {} (#1551)",
+                        bash_env.display()
+                    )
+                },
+            )?;
+        }
         for path in [&shim, &dir] {
             fs::set_permissions(path, fs::Permissions::from_mode(0o755)).with_context(|| {
                 format!(

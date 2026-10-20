@@ -1,7 +1,8 @@
 //! Issue #1551: when the `gh` merge guard applies, and where it is found.
 
 use super::merge_guard::{
-    GATE_FILES, GUARD_REL, MERGE_GUARD_ENV, guard_applies, guard_dir_for_home, locate_guard_dir,
+    BASH_ENV_FILE, GATE_FILES, GUARD_REL, MERGE_GUARD_ENV, guard_applies, guard_dir_for_home,
+    locate_guard_dir,
 };
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -87,6 +88,8 @@ fn bundle_with_shim(mode: Option<u32>) -> (tempfile::TempDir, PathBuf) {
     // above it, group-writable.
     set_mode(dir.parent().unwrap(), 0o755);
     set_mode(&dir, 0o755);
+    fs::write(dir.join(BASH_ENV_FILE), "# bash-env\n").unwrap();
+    set_mode(&dir.join(BASH_ENV_FILE), 0o644);
     if let Some(mode) = mode {
         let shim = dir.join("gh");
         fs::write(&shim, "#!/usr/bin/env bash\n# amplihack-gh-merge-guard\n").unwrap();
@@ -431,6 +434,11 @@ fn keep_guard_first_puts_the_guard_ahead_of_the_agent_binary_dir() {
     let first = path.split(':').next().unwrap();
     assert_eq!(Path::new(first), home.join(GUARD_REL), "PATH: {path}");
     assert_eq!(env.get(MERGE_GUARD_ENV).map(String::as_str), Some("1"));
+    assert_eq!(
+        env.get("BASH_ENV").map(PathBuf::from),
+        Some(home.join(GUARD_REL).join(BASH_ENV_FILE)),
+        "the agent's shells re-assert the guard after their profile"
+    );
 
     for inherited in [None, Some("")] {
         let env = keep_guard_first(launcher(), inherited).unwrap().build();
@@ -502,4 +510,45 @@ fn locate_guard_dir_checks_the_real_host() {
     if Path::new(SHIM_INTERPRETER).exists() {
         check_guard_host(Path::new(PROC_SELF_STAT), Path::new(SHIM_INTERPRETER)).unwrap();
     }
+}
+
+/// Crusty round 8: the BASH_ENV file is part of the guard. Without it a
+/// profile that reorders PATH puts another gh first, so its absence, or a
+/// copy others can write, stops the run like a missing shim.
+#[cfg(unix)]
+#[test]
+fn locate_guard_dir_refuses_a_missing_or_writable_bash_env_file() {
+    let (_tmp, home) = bundle_with_shim(Some(0o755));
+    let bash_env = home.join(GUARD_REL).join(BASH_ENV_FILE);
+    set_mode(&bash_env, 0o664);
+    assert_refused_as_writable(&home, "a group-writable bash-env");
+    fs::remove_file(&bash_env).unwrap();
+    let err = locate_guard_dir(&home)
+        .expect_err("a guard without its bash-env is refused")
+        .to_string();
+    assert!(err.contains("bash-env") && err.contains("#1551"), "{err}");
+}
+
+/// The guard's BASH_ENV is exported, and a user BASH_ENV is kept for the
+/// guard's file to source first; the guard's own file is never kept as the
+/// user's, so a nested run does not source itself.
+#[cfg(unix)]
+#[test]
+fn apply_guard_exports_bash_env_and_keeps_the_users() {
+    use super::merge_guard::{USER_BASH_ENV, apply_guard};
+    use crate::env_builder::EnvBuilder;
+    let dir = Path::new("/opt/ah/amplifier-bundle/tools/gh-merge-guard");
+    let ours = dir.join(BASH_ENV_FILE).display().to_string();
+
+    let env = apply_guard(EnvBuilder::new().set("BASH_ENV", "/home/u/.bash_env"), dir).build();
+    assert_eq!(env.get("BASH_ENV"), Some(&ours));
+    assert_eq!(
+        env.get(USER_BASH_ENV).map(String::as_str),
+        Some("/home/u/.bash_env")
+    );
+    assert_eq!(env.get(MERGE_GUARD_ENV).map(String::as_str), Some("1"));
+
+    let nested = apply_guard(EnvBuilder::new().set("BASH_ENV", ours.clone()), dir).build();
+    assert_eq!(nested.get("BASH_ENV"), Some(&ours));
+    assert_ne!(nested.get(USER_BASH_ENV), Some(&ours));
 }

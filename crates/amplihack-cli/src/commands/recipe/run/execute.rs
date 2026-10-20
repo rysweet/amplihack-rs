@@ -677,15 +677,14 @@ pub(super) fn execute_recipe_via_rust(
             .with_project_graph_db(working_dir)?;
 
         // Issue #1551: put the `gh` merge guard from this run's own bundle
-        // first on PATH, so a merge outside autodrive_merge_gate.sh is
-        // refused in every step. Fails closed, before the runner starts, when
+        // first on PATH, and its BASH_ENV file to put it back there after a
+        // login shell's profile, so a merge outside autodrive_merge_gate.sh
+        // is refused in every step. Fails closed, before the runner starts, when
         // the shim is missing.
         let env_builder = if merge_guard {
             let guard_dir =
                 super::merge_guard::guard_dir_for_home(env_builder.var("AMPLIHACK_HOME"))?;
-            env_builder
-                .prepend_path(guard_dir)
-                .set(super::merge_guard::MERGE_GUARD_ENV, "1")
+            super::merge_guard::apply_guard(env_builder.prepend_path(&guard_dir), &guard_dir)
         } else {
             env_builder
         };

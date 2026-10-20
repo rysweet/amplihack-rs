@@ -32,6 +32,15 @@ printf '%s' "$PATH" > "$RECORD_DIR/path"
 if [ -n "${AMPLIHACK_MERGE_GUARD+set}" ]; then
   printf '%s' "$AMPLIHACK_MERGE_GUARD" > "$RECORD_DIR/marker"
 fi
+if [ "${RUN_AGENT_SHELL:-}" = 1 ]; then
+  # What an agent step's shell tool does: a login shell, whose profile runs
+  # first, then the command.
+  bash -lc 'type -P gh' > "$RECORD_DIR/login.gh" 2>&1
+  bash -lc 'type -t gh' > "$RECORD_DIR/login.gh.kind" 2>&1
+  bash -lc 'gh pr merge 1 --squash' 2> "$RECORD_DIR/login.merge.err"
+  printf '%s' "$?" > "$RECORD_DIR/login.merge.rc"
+  bash -c 'type -P gh' > "$RECORD_DIR/plain.gh" 2>&1
+fi
 if [ "${RUN_GH_MERGE:-}" = 1 ]; then
   gh pr merge 1 --squash --admin 2> "$RECORD_DIR/merge.err"
   printf '%s' "$?" > "$RECORD_DIR/merge.rc"
@@ -68,6 +77,8 @@ impl Fixture {
         use std::os::unix::fs::PermissionsExt;
         let dir = self.guard_dir();
         fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("bash-env"), "").unwrap();
+        fs::set_permissions(dir.join("bash-env"), fs::Permissions::from_mode(0o644)).unwrap();
         // tools/ too: G11 also refuses a writable directory above the guard.
         for d in [dir.parent().unwrap(), dir.as_path()] {
             fs::set_permissions(d, fs::Permissions::from_mode(0o755)).unwrap();
@@ -79,7 +90,17 @@ impl Fixture {
         let f = Self::without_shim();
         f.make_guard_dir();
         crate::support::exec_stub::copy_executable(&shipped_shim(), &f.guard_dir().join("gh"));
+        fs::copy(
+            shipped_shim().with_file_name("bash-env"),
+            f.guard_dir().join("bash-env"),
+        )
+        .unwrap();
         use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(
+            f.guard_dir().join("bash-env"),
+            fs::Permissions::from_mode(0o644),
+        )
+        .unwrap();
         fs::set_permissions(f.guard_dir().join("gh"), fs::Permissions::from_mode(0o755)).unwrap();
         f
     }
@@ -534,5 +555,86 @@ fn phase1_step_gh_pr_merge_fails_closed_off_linux() {
     assert!(
         !log.lines().any(|l| l.starts_with("pr merge")),
         "the real gh must never see the merge; gh.log: {log:?}"
+    );
+}
+
+/// Crusty round 8, structural: an agent step's login shell whose profile
+/// prepends a directory holding another `gh` (as `~/.local/bin` or Homebrew
+/// would) still resolves `gh` to the shim, because the runner's `BASH_ENV`
+/// puts the guard back first after the profile has run. `gh pr merge` from
+/// that shell exits 3 and never reaches the other gh. No command text is read
+/// here: this is PATH resolution only.
+#[cfg(target_os = "linux")]
+#[test]
+fn agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path() {
+    let f = Fixture::with_shipped_shim();
+    let profile_bin = f.home.join(".local/bin");
+    fs::create_dir_all(&profile_bin).unwrap();
+    executable(&profile_bin.join("gh"), REAL_GH_STUB, 0o755);
+    let prepend = format!("export PATH=\"{}:$PATH\"\n", profile_bin.display());
+    for profile in [".bash_profile", ".bashrc", ".profile"] {
+        fs::write(f.home.join(profile), &prepend).unwrap();
+    }
+
+    let recipe = f.recipe("autodrive-build", "autodrive-build");
+    let out = f.run(&recipe, None, &[("RUN_AGENT_SHELL", "1")]);
+    assert!(out.status.success(), "{}", describe(&out));
+    let read = |name: &str| fs::read_to_string(f.records.join(name)).unwrap_or_default();
+    let shim = f.guard_dir().join("gh").display().to_string();
+
+    assert_eq!(
+        read("login.gh").trim(),
+        shim,
+        "bash -lc must find the shim first on PATH despite the profile"
+    );
+    assert_eq!(
+        read("login.gh.kind").trim(),
+        "function",
+        "bash -lc must run gh through the guard's function"
+    );
+    assert_eq!(
+        read("plain.gh").trim(),
+        shim,
+        "bash -c must resolve gh to the shim"
+    );
+    let merge_err = read("login.merge.err");
+    assert_eq!(read("login.merge.rc"), "3", "stderr: {merge_err}");
+    assert!(
+        merge_err.contains("REFUSED (amplihack #1551)"),
+        "{merge_err}"
+    );
+    assert!(
+        !read("gh.log").lines().any(|l| l.starts_with("pr merge")),
+        "the profile's gh must never see the merge"
+    );
+}
+
+/// The shipped bash-env keeps a user's own BASH_ENV working: it is sourced
+/// first, then the guard is put back in front.
+#[cfg(target_os = "linux")]
+#[test]
+fn shipped_bash_env_sources_the_users_bash_env_then_puts_the_guard_first() {
+    let f = Fixture::with_shipped_shim();
+    let user_env = f.home.join("user-bash-env");
+    fs::write(
+        &user_env,
+        "export FROM_USER_BASH_ENV=yes\nexport PATH=/elsewhere:$PATH\n",
+    )
+    .unwrap();
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg("printf '%s|%s' \"$FROM_USER_BASH_ENV\" \"${PATH%%:*}\"")
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &f.home)
+        .env("BASH_ENV", f.guard_dir().join("bash-env"))
+        .env("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV", &user_env)
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&out.stdout),
+        format!("yes|{}", f.guard_dir().display()),
+        "{}",
+        describe(&out)
     );
 }
