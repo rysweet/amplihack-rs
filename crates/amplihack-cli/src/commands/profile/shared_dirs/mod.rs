@@ -34,6 +34,8 @@ const UNSUPPORTED: &str =
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Deferred {
     LiveSession,
+    /// Linux only: the `/proc` scan failed, so no session was seen either way.
+    LivenessCheckFailed,
     LivenessUnknown,
     Raced,
 }
@@ -71,6 +73,8 @@ pub(super) struct Report {
     pub conflicts: Vec<Conflict>,
     pub warnings: Vec<String>,
     pub unsupported: bool,
+    /// The `merging session history` line was printed before a merge began.
+    pub announced: bool,
     /// Message lines in order, without the prefix; `true` when home-relative
     /// shortening applies.
     notes: Vec<(String, bool)>,
@@ -124,6 +128,9 @@ impl Report {
         self.deferred.push((name, why));
         self.note(match why {
             Deferred::LiveSession => format!("{name}: migration deferred: live session"),
+            Deferred::LivenessCheckFailed => format!(
+                "{name}: migration deferred: could not check for running sessions (retried next launch)"
+            ),
             Deferred::LivenessUnknown => format!(
                 "{name}: not merged: running sessions can't be checked on this system; merge by hand, see docs/howto/claude-profiles.md#merge-by-hand-on-macos"
             ),
@@ -194,14 +201,34 @@ pub(super) fn after_add(dir: &Path, name: &ProfileName, canonical_root: &Path) {
     print(&report, name, canonical_root, true);
 }
 
+/// `$HOME` when the canonical root is `$HOME/.claude`, so paths print as `~`.
+fn home_of(canonical_root: &Path) -> Option<&Path> {
+    canonical_root
+        .parent()
+        .filter(|_| canonical_root.file_name() == Some(std::ffi::OsStr::new(".claude")))
+}
+
+/// Printed straight to stderr before the first merge of a call starts, since
+/// the report only prints once everything is done and a large merge (a
+/// cross-filesystem copy) can otherwise look hung.
+pub(super) fn migration_notice(profile: &ProfileName, canonical_root: &Path) -> String {
+    let root = canonical_root.display().to_string();
+    let root = match home_of(canonical_root) {
+        Some(home) => shorten_home(&format!("{root}/"), home)
+            .trim_end_matches('/')
+            .to_string(),
+        None => root,
+    };
+    format!(
+        "amplihack: profile {profile}: merging session history into {root} (one-time; may take a while)"
+    )
+}
+
 fn print(r: &Report, name: &ProfileName, canonical_root: &Path, add: bool) {
     if r.is_noop() {
         return;
     }
-    // `~` only when the canonical root is `$HOME/.claude`.
-    let home = canonical_root
-        .parent()
-        .filter(|_| canonical_root.file_name() == Some(std::ffi::OsStr::new(".claude")));
+    let home = home_of(canonical_root);
     for line in r.lines(name, home, !add) {
         eprintln!("{line}");
     }
@@ -237,7 +264,7 @@ pub(super) fn mode_from_liveness(
         // On Linux `Unsupported` means the /proc scan failed: retried next call.
         Liveness::Unsupported if cfg!(target_os = "linux") => {
             tracing::debug!("profile {name}: liveness scan failed; migration deferred");
-            Mode::LinkOnly(Deferred::LiveSession)
+            Mode::LinkOnly(Deferred::LivenessCheckFailed)
         }
         Liveness::Unsupported => Mode::LinkOnly(Deferred::LivenessUnknown),
     }

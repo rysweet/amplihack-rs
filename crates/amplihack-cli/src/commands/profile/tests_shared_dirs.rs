@@ -12,7 +12,7 @@
 //!
 //! API used (all `pub(super)` in `profile::shared_dirs`):
 //! - `SHARED_SESSION_DIRS`, `Mode { Migrate, LinkOnly(Deferred) }` (Copy),
-//!   `Deferred { LiveSession, LivenessUnknown, Raced }` (Copy, PartialEq).
+//!   `Deferred { LiveSession, LivenessCheckFailed, LivenessUnknown, Raced }` (Copy, PartialEq).
 //! - `ensure_shared_session_dirs(profile_dir, profile, canonical_root, mode)`
 //!   -> `Report { linked, already_ok, migrated, deferred, conflicts,
 //!   warnings, unsupported }`, `Report::is_noop()`,
@@ -666,7 +666,31 @@ fn liveness_maps_to_mode_and_any_doubt_never_migrates() {
     // On Linux `Unsupported` means the scan failed: retried next call.
     assert_eq!(
         shared_dirs::mode_from_liveness(&Liveness::Unsupported, &a),
-        Mode::LinkOnly(Deferred::LiveSession)
+        Mode::LinkOnly(Deferred::LivenessCheckFailed)
+    );
+}
+
+/// A failed scan says so; it never claims a live session was found.
+#[test]
+fn a_failed_liveness_check_is_reported_as_such() {
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/s1.jsonl", b"open");
+    let r = f.ensure("A", Mode::LinkOnly(Deferred::LivenessCheckFailed));
+    assert_eq!(
+        r.deferred,
+        vec![("projects", Deferred::LivenessCheckFailed)]
+    );
+    let lines = r.render(&n("A"), None);
+    assert!(
+        lines.contains(
+            &"amplihack: profile A: projects: migration deferred: could not check for running sessions (retried next launch)"
+                .to_string()
+        ),
+        "{lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("live session")),
+        "{lines:?}"
     );
 }
 
@@ -1526,4 +1550,37 @@ fn memory_links_are_rewritten_once_even_when_conflict_names_chain() {
     };
     assert_eq!(saved_a("- [A](").0, b"profile a", "{index}");
     assert_eq!(saved_a("- [A2](").0, b"profile second", "{index}");
+}
+
+/// S7: a merge announces itself before it starts, once per call; linking
+/// alone prints nothing ahead of the report.
+#[test]
+fn a_merge_is_announced_once_and_linking_alone_is_not() {
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/s1.jsonl", b"one");
+    f.legacy("A", "file-history/x/v1", b"two");
+    let r = f.ensure("A", Mode::Migrate);
+    assert_eq!(r.migrated.len(), 2, "{:?}", r.migrated);
+    assert!(r.announced);
+    f.profile("B");
+    let r = f.ensure_no_mode("B");
+    assert!(!r.announced);
+}
+
+#[test]
+fn the_migration_notice_names_the_shared_store_with_a_tilde() {
+    let f = Fx::new();
+    assert_eq!(
+        shared_dirs::migration_notice(&n("A"), &f.canon),
+        "amplihack: profile A: merging session history into ~/.claude (one-time; may take a while)"
+    );
+    // Not `$HOME/.claude`: the path is printed as is.
+    let other = f.outside.join("store");
+    assert_eq!(
+        shared_dirs::migration_notice(&n("A"), &other),
+        format!(
+            "amplihack: profile A: merging session history into {} (one-time; may take a while)",
+            other.display()
+        )
+    );
 }

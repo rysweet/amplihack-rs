@@ -911,6 +911,7 @@ default log level.
 
 | Message | Meaning |
 |---------|---------|
+| `merging session history into ~/.claude (one-time; may take a while)` | Printed once per call, before the first merge starts, so a long merge doesn't look hung. Every other line is printed when the call finishes. |
 | `linked projects, file-history, session-env` | Links created (not printed by `add`). Lists only the names linked. |
 | `projects: moved <n> files into ~/.claude/projects, <n> identical, <n> conflict` | A merge finished. |
 | `projects: conflict: <path> kept the shared copy; this profile's copy saved as <file>.conflict-<profile>` | A conflict. Canonical always wins. |
@@ -920,6 +921,7 @@ default log level.
 | `projects: skipped <n> symbolic links or special files; left in <backup>` | Nested entries that are never moved. |
 | `projects: old directory kept as <backup>` | The backup name. |
 | `projects: migration deferred: live session` | `Deferred::LiveSession`. The merge runs on a later call. |
+| `projects: migration deferred: could not check for running sessions (retried next launch)` | `Deferred::LivenessCheckFailed`: on Linux the `/proc` scan failed, so no session was seen either way. The merge runs on a later call. |
 | `projects: not merged: running sessions can't be checked on this system; merge by hand, see docs/howto/claude-profiles.md#merge-by-hand-on-macos` | `Deferred::LivenessUnknown`. Printed on every call while the name is a real directory. |
 | `projects: link not created: the name appeared during the check; retried next launch` | `Deferred::Raced` (`EEXIST` from `symlink()`). |
 | `projects is a symlink to <target>; left alone` | A foreign or dangling link at the profile's name. |
@@ -937,8 +939,9 @@ default log level.
 | `shared session dirs not supported on this platform; profiles keep separate projects/` | Not a Unix system. Printed by `add` only. |
 
 The `projects` in each message is replaced by the name concerned. A
-`moved` line is printed only when a merge completes; there is no progress
-output.
+`moved` line is printed only when a merge completes; apart from the
+`merging session history` line printed before it starts, there is no
+progress output.
 
 ### Shared directories platform support
 

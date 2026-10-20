@@ -75,18 +75,27 @@ fn check_canonical_root(root: &Path, r: &mut Report) -> Option<(PathBuf, OwnedFd
         refused(r);
         return None;
     }
-    if meta.uid() != euid() || writable_by_others(&meta) {
+    let not_safe = |r: &mut Report| {
         r.warn(format!(
             "{} is not owned by you or is writable by group or others; sessions not shared",
             root.display()
         ));
+    };
+    if !root_ok(&meta) {
+        not_safe(r);
         return None;
     }
     let opened = root.canonicalize().and_then(|canon| {
         fdwalk::openat(libc::AT_FDCWD, canon.as_os_str(), DIR_FLAGS, 0).map(|fd| (canon, fd))
     });
-    match opened {
-        Ok(pair) => Some(pair),
+    match opened.and_then(|(canon, fd)| opened_meta(fd).map(|(fd, m)| (canon, fd, m))) {
+        // The path check above can be raced; the opened directory is what
+        // the merge writes into, so it is checked again.
+        Ok((canon, fd, m)) if root_ok(&m) => Some((canon, fd)),
+        Ok(_) => {
+            not_safe(r);
+            None
+        }
         Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
             refused(r);
             None
@@ -117,11 +126,7 @@ fn check_profile_dir(
             return None;
         }
     };
-    if meta.file_type().is_symlink()
-        || !meta.is_dir()
-        || meta.uid() != euid()
-        || meta.mode() & 0o077 != 0
-    {
+    if meta.file_type().is_symlink() || !profile_ok(&meta) {
         unsafe_dir(r);
         return None;
     }
@@ -138,17 +143,35 @@ fn check_profile_dir(
         tracing::debug!("profile {profile}: inside the shared store; never linked");
         return None;
     }
-    match fdwalk::openat(libc::AT_FDCWD, dir.as_os_str(), DIR_FLAGS, 0) {
-        Ok(fd) => Some(fd),
-        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
-            unsafe_dir(r);
-            None
-        }
-        Err(e) => {
+    match fdwalk::openat(libc::AT_FDCWD, dir.as_os_str(), DIR_FLAGS, 0).and_then(opened_meta) {
+        // Checked again on the opened directory, as for the canonical root.
+        Ok((fd, m)) if profile_ok(&m) => Some(fd),
+        Err(e) if !matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
             r.warn(format!("{}: {e}; sessions not shared", dir.display()));
             None
         }
+        _ => {
+            unsafe_dir(r);
+            None
+        }
     }
+}
+
+/// A directory you own that only you (or your private group) can write.
+fn root_ok(m: &fs::Metadata) -> bool {
+    m.is_dir() && m.uid() == euid() && !writable_by_others(m)
+}
+
+/// A directory you own with no group or other permissions.
+fn profile_ok(m: &fs::Metadata) -> bool {
+    m.is_dir() && m.uid() == euid() && m.mode() & 0o077 == 0
+}
+
+/// `fstat` on an opened directory, handing the descriptor back.
+fn opened_meta(fd: OwnedFd) -> std::io::Result<(OwnedFd, fs::Metadata)> {
+    let file = File::from(fd);
+    let meta = file.metadata()?;
+    Ok((OwnedFd::from(file), meta))
 }
 
 /// `<canonical root>/<name>`, created `0700` when missing. `None` (with a
@@ -250,6 +273,10 @@ fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
             return;
         }
     };
+    if !r.announced {
+        r.announced = true;
+        eprintln!("{}", super::migration_notice(s.profile, s.shown_root));
+    }
     let outcome = match merge_tree(&src, shared_fd, &target, s.profile) {
         Ok(o) => o,
         Err(MergeError::Io { step, err }) => {
@@ -365,3 +392,7 @@ fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
         });
     }
 }
+
+#[cfg(test)]
+#[path = "tests_unix.rs"]
+mod tests;

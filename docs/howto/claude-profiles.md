@@ -163,8 +163,9 @@ They never stop a launch, an `add`, a `switch`, a `login` or a rotate.
 Profiles made before sessions were shared have real `projects/`,
 `file-history/` and `session-env/` directories. The first launch, `switch` or
 `login` of such a profile merges them into `~/.claude` and replaces each with
-a link. The merge runs before `claude` starts and prints nothing until it
-finishes. When the profile and `~/.claude` are on different filesystems every
+a link. The merge runs before `claude` starts. It prints
+`amplihack: profile work: merging session history into ~/.claude (one-time; may take a while)`
+when it begins and the results when it finishes. When the profile and `~/.claude` are on different filesystems every
 file is copied, so a profile with gigabytes of history can take minutes;
 let it finish rather than interrupting it (an interrupted merge is safe and
 resumes on the next launch, but it starts by re-checking every file).
@@ -253,6 +254,10 @@ removes only the links, never the shared sessions they point to.
 If a Claude session is running with the profile's directory, its real
 directories are not merged; you see
 `amplihack: profile work: projects: migration deferred: live session`.
+If amplihack can't read the list of running processes (on Linux, `/proc`), it
+also waits, and says
+`projects: migration deferred: could not check for running sessions (retried next launch)`
+instead.
 Missing names still get links straight away. The merge happens on the first
 launch, `switch` or `login` after every session using that profile has ended.
 
@@ -1220,8 +1225,8 @@ do not depend on these two behaviours.
 - Claude Code is expected to follow the `projects/` link. If a Claude version
   replaces the link with a real directory, the next launch merges it back.
 - A first launch that merges a large `projects/` held on another filesystem
-  copies every file, so it can take a while. Nothing is printed until it
-  finishes, free space is checked before each file, and it happens once.
+  copies every file, so it can take a while. One line is printed when it
+  starts and the results when it finishes; free space is checked before each file, and it happens once.
 - No token vault or token refresh exists by design. Usage is checked only
   when you run `amplihack profile usage`, which asks Claude itself. Automatic
   switching is opt-in and only moves logins between your own profiles; see
