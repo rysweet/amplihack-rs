@@ -563,6 +563,9 @@ quiet period after a swap does not apply: `/usage` asks the live login
 directly, so its answer is current. Any failure while recording prints one
 `auto-switch:` warning to stderr and the exit status stays 0.
 
+After `usage.json` is written, `profile usage` also updates the
+[capacity file](#capacity-file) when the switch is on.
+
 On platforms without auto-switch (Windows and other non-Unix), there are no
 lease marks, `account` is always the profile's own name, and nothing is
 recorded or noted.
@@ -1657,6 +1660,10 @@ When Claude runs the wrapper, it:
    byte for byte;
 4. runs the [in-session swap](#in-session-swap) check.
 
+While the [capacity notice](#capacity-notice) is due, step 3 adds one line
+after the original output, and step 2 also updates the
+[capacity file](#capacity-file) after recording the reading.
+
 The saved original in `statusline/<name>.json` is run only if it passes the
 [state directory](#state-directory) checks (a regular file owned by you,
 mode `0600`, not a symlink, at most 64 KiB, valid JSON). If it fails them, the
@@ -1681,7 +1688,8 @@ covered instead by [nested substitution](#nested-launches-and-auto-switch)
 when they start and by [usage-limit reruns](#usage-limit-reruns) when they
 fail.
 
-The wrapper never writes to standard output itself. Its exit code is the
+The wrapper writes to standard output itself only to add the
+[capacity notice](#capacity-notice) after the original output. Its exit code is the
 original command's, or `0` if there is none or it was not run. Its own errors, including a
 panic, are one line on stderr naming paths only.
 
@@ -1926,6 +1934,241 @@ A rerun starts the step again from the beginning, so anything the attempt
 that hit the limit had already done (a commit, a push, a comment) may be done
 again.
 
+### Capacity notice
+
+When auto-switch is on and every eligible account is at or above the
+threshold, amplihack says so in the status line, in Claude Code (through the
+hooks), and when `amplihack claude` or `amplihack recipe run` starts. The
+notice only informs: it makes no swap, refuses nothing and changes no exit
+status. With the switch off, none of this runs and behaviour is unchanged.
+
+#### Capacity file
+
+The state lives in `<root>/.auto-switch.d/capacity.json`:
+
+```json
+{
+  "version": 1,
+  "state": "low",
+  "threshold": 90,
+  "over": ["personal", "work"],
+  "earliest_reset": "2026-10-22T09:00:00Z",
+  "written_at": "2026-10-20T14:03:11Z",
+  "writer": "statusline"
+}
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `version` | integer | Always `1`. |
+| `state` | `"ok"`, `"low"` or `"exhausted"` | See [Capacity states](#capacity-states). |
+| `threshold` | integer `1`–`100` | The auto-switch threshold the state was computed with. |
+| `over` | array of profile names | The eligible accounts at or above the threshold, sorted, no duplicates. |
+| `earliest_reset` | RFC 3339 UTC string or `null` | When the first of the `over` accounts gets capacity back. `null` when no reset time is known. |
+| `written_at` | RFC 3339 UTC string | When the file was written. |
+| `writer` | `"statusline"`, `"usage"` or `"rotate"` | Which command wrote it. |
+
+The file holds profile names, the state, the threshold and times only. It
+never holds account IDs, e-mail addresses, tokens or credential paths, and
+no reader ever shows `over` or `writer` to you or to the model.
+
+#### Capacity states
+
+The *eligible* accounts are the profiles that `profile list` shows, minus the
+[exclusion list](#settings-file). Listing reads the root directory; it runs
+no probe.
+
+- An account is *over* when it has a reading and the higher of its two
+  adjusted windows is at or above the threshold. This is the same test that
+  makes an account exhausted in [Candidate selection](#candidate-selection).
+- An account is *at its limit* when the same test passes at 100%, when it has
+  a `usage_limit_failure` [reading](#readings) whose window has not reset
+  yet, or, for the rotator only, when its probe reported `session_exhausted`
+  or `weekly_exhausted`.
+- An account with no reading, or whose probe failed, is not over. Missing
+  data never raises a notice.
+
+| State | When |
+|-------|------|
+| `exhausted` | Every eligible account is at its limit. |
+| `low` | Every eligible account is over, and at least one is not at its limit. |
+| `ok` | Anything else, including no eligible profiles. |
+
+With a single eligible profile, the state is `low` as soon as that account
+crosses the threshold.
+
+An account's reset time is the time it gets capacity back: the later of the
+two `resets_at` values when both windows are over, otherwise the `resets_at`
+of the window that is over. Only reset times in the future count.
+`earliest_reset` is the earliest known reset time among the `over` accounts,
+or `null` when none is known.
+
+#### When the notice clears
+
+Readers do not trust the stored state forever. The state they act on is:
+
+1. `ok` when the stored state is `ok`;
+2. `ok` once `earliest_reset` has passed. The first account to reset means
+   not every account is over any more, so the notice stops without anyone
+   rewriting the file;
+3. when `earliest_reset` is `null`, the stored state until 5 hours after
+   `written_at`, then `ok`.
+
+The 5-hour bound is the only time-based expiry, and it applies only when the
+reset time is unknown, so a notice can never stay up indefinitely. 5 hours is
+the length of the session window. A writer that keeps seeing the same state
+rewrites the file at least hourly in that case, so the bound does not clear a
+state that is still true.
+
+#### Capacity writers
+
+Only the three commands that already evaluate capacity write the file. None
+of them makes an extra network call or probe for it.
+
+| `writer` | Written | Readings used |
+|----------|---------|---------------|
+| `statusline` | By the [status-line wrapper](#status-line-wrapper), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as 100%; a failed probe counts as no reading. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
+
+All three use the auto-switch threshold and exclusion list, not the
+rotator's `--session-at` and `--week-at`, so they agree on the state. The
+rotator's own `ALERT` line still follows its own thresholds. All three
+write while holding the global state lock, so writes never interleave and
+the last one wins. A writer that cannot get the lock records nothing and
+writes no capacity file. The three take reset times from the same
+`usage.json` entries, so a later write differs from an earlier one only by
+the readings taken in between.
+
+[Usage-limit reruns](#usage-limit-reruns) do not write the file. A step that
+runs out of profiles shows no notice until one of the three writers next
+runs.
+
+Write rules:
+
+- The file is written only while the [effective setting](#toggle-and-precedence)
+  is on. With the switch off it is neither written nor read, and a file left
+  from before is ignored. This gate applies to the rotator too: with no
+  `<root>/.auto-switch` and no `AMPLIHACK_CLAUDE_AUTO_SWITCH`, the rotator
+  still rotates and writes its `ALERT`, but no notice appears anywhere. Turn
+  auto-switch on to get the notice.
+- Writes go through a private temp file, are synced and renamed into place.
+  The file is `0600` in the `0700` state directory, and is never written
+  through a symlink.
+- The write is skipped when `state`, `over`, `threshold` and
+  `earliest_reset` are all unchanged, so the status line does not sync a file
+  every turn. The exception: when `earliest_reset` is `null` and `written_at`
+  is more than 1 hour old, the file is rewritten to keep the 5-hour bound
+  from expiring a state that still holds.
+- An `ok` result never creates the file. It only replaces an existing one.
+- A failed write is logged at debug level, naming only the operation and the
+  error kind. It never changes the writer's output or exit status.
+
+#### Reading the capacity file
+
+The hooks, the status-line wrapper, launches and `recipe run` read the file
+the same way. They take no lock, start no process and use no network.
+
+1. **Root.** Chosen in the same order as the [profile root](#profile-root):
+   `AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then
+   `~/.amplihack/claude-profiles`, with the same checks on each value. A value
+   that fails them means no notice; the reader never falls back to the
+   default root.
+2. **Gate.** The notice is shown only when the
+   [effective setting](#toggle-and-precedence) is on:
+   `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` or `0` wins, any other value is ignored,
+   and otherwise `<root>/.auto-switch` must be a valid
+   [settings file](#settings-file) with `enabled=on`. Nothing is printed
+   about a bad variable on this path.
+3. **File.** It is opened without following symlinks and without blocking,
+   so a FIFO cannot hang a hook. It must be a regular file owned by you, at
+   most 16 KiB, valid JSON with `"version": 1`, a `threshold` from `1` to
+   `100`, and a `written_at` no more than 5 minutes in the future. Unknown
+   fields are accepted. An `earliest_reset` more than 8 days after
+   `written_at` is treated as unknown.
+
+If any step fails, the reader acts as if the state were `ok`: no notice, no
+error, and the caller's output is unchanged.
+
+#### Notice text
+
+The line has two forms, built only from fixed text, the state, the threshold
+and the reset time:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+⚠ all Claude accounts at limit · next reset Oct 22 2:30am
+```
+
+The first is `low` and shows the configured threshold; the second is
+`exhausted`. The reset time is in local time, with minutes only when they
+are not zero. When the reset time is unknown, the end reads
+`next reset unknown`.
+
+| Where | When | What is shown |
+|-------|------|---------------|
+| Status line | Every render while the state is `low` or `exhausted`. | The line, below the original status line. |
+| Claude Code, through the `SessionStart` and `UserPromptSubmit` hooks | Once per state per session, and again when the state gets worse. | The line plus `— run 'amplihack profile usage'` as a user-visible message, and a note to the model. See [Hook specifications](hook-specifications.md#capacity-notice-in-hooks). |
+| `amplihack claude` and `amplihack launch` | At start, on stderr. | The line plus ` — run 'amplihack profile usage'`. |
+| `amplihack recipe run` | At start, on stderr, before the recipe runs. | `amplihack recipe run: ` + the line + ` — run 'amplihack profile usage' (continuing anyway)`. |
+
+Examples:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'
+amplihack recipe run: ⚠ all Claude accounts at limit · next reset Oct 22 2am — run 'amplihack profile usage' (continuing anyway)
+```
+
+`amplihack claude` and `launch` print nothing when the arguments contain
+`-p` or `--print`, or when they run inside a recipe (`AMPLIHACK_SESSION_DEPTH`
+is a number above 0), so recipe agent steps do not repeat the warning.
+`recipe run` prints nothing when it is itself nested. Neither ever prompts,
+refuses to run or changes the exit status.
+
+**Status line.** When the state is `low` or `exhausted`, the wrapper passes
+the original command's standard output through unchanged, with no size cap,
+then writes the line on its own line: a newline first only if the original
+output was not empty and did not end with one, then the line, then a
+newline. The original command's standard error and exit status, including
+death by a signal, pass through unchanged. When the switch is off or the
+state is `ok`, the wrapper runs exactly as it did before this notice
+existed and its output is byte-identical.
+
+```
+work · opus 4 · 5h 93%
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+```
+
+#### Notice records
+
+The hooks remember the last state they showed for each session in
+`<root>/.auto-switch.d/notice/<session id>`. The file name is the session
+ID with unsafe characters replaced, cut to 128 bytes. The file holds one
+word, `low` or `exhausted`, and is read up to 64 bytes; anything else counts
+as no record.
+
+| Current state | Last shown | Result |
+|---------------|------------|--------|
+| `low` or `exhausted` | none | Show, record the state. |
+| `low` | `low` or `exhausted` | Nothing. |
+| `exhausted` | `low` | Show again, record `exhausted`. |
+| `exhausted` | `exhausted` | Nothing. |
+| `ok` | anything | Nothing, and delete the record, so a later drop shows again. |
+
+A hook call without a session ID shows the notice every time the state is
+`low` or `exhausted`, because there is nothing to key a record on.
+
+Records are written only when `.auto-switch.d/` and `notice/` are real
+directories owned by you with no group or other permissions (`notice/` is
+created `0700`). Each record is a `0600` temp file renamed into place. If the
+directories fail the check, nothing is written and the notice is still
+shown. When the state goes back to ok, the session's record is removed only if
+both directories already pass that check; otherwise it is left alone. Each
+write also deletes records older than 7 days, looking at no more
+than 256 entries, never following a symlink and removing only regular files
+you own. Two hooks in the same session racing on a record can at worst show
+the notice twice.
+
 ### State directory
 
 Everything is under `<root>/.auto-switch.d/` (directories `0700`, files
@@ -1942,9 +2185,11 @@ profile and never appears in `profile list`.
 | `accounts/<name>.json` | The profile's saved `oauthAccount` block. No tokens. |
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
+| `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
+| `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
-Every state file has `"version": 1` and rejects unknown fields. State files
-are capped at 64 KiB. Each name in them is checked with the
+Apart from `capacity.json` and `notice/<session>`, every state file has
+`"version": 1`, rejects unknown fields and is capped at 64 KiB. Each name in them is checked with the
 [name rules](#name-rules) before it is used in a path. A damaged
 `accounts/` or `statusline/` file is ignored with a warning and not
 overwritten.
@@ -2075,6 +2320,17 @@ Every non-dry-run cycle runs these steps in order:
 7. **Record.** Write the log lines and the ledger's `last_cycle`. When the
    cycle stays or raises the no-capacity ALERT and the live profile is known,
    also record it as `live`, with its `account`.
+
+Between steps 6 and 7, after the swap, stay or ALERT and still under the
+lock taken in step 6, the cycle updates the
+[capacity file](#capacity-file) from that cycle's readings. This writes
+nothing under `rotate/` and does not change the decision. A cycle that ends
+before then does not update it: the lock busy in step 3 or 6, `skip: state
+changed during measurement`, a pending signal or stop, an inconsistent
+recovery, an ALERT about the live login, or a refused swap. The update is
+also skipped when the [effective setting](#toggle-and-precedence) is off,
+which includes having no setting at all, even though rotation still runs
+then.
 
 ### Rotate decision rule
 

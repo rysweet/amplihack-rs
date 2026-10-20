@@ -136,6 +136,8 @@ mod issue_833_merge_validations_json_tolerance;
 mod issue_860_pr_guide_present;
 #[path = "issue_899_merge_validations_abstention.rs"]
 mod issue_899_merge_validations_abstention;
+#[path = "no_capacity_notice_statusline.rs"]
+mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
 #[path = "remote_cli_contract.rs"]

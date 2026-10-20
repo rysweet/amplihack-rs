@@ -281,6 +281,7 @@ dependencies = [
  "amplihack-utils",
  "amplihack-workflows",
  "anyhow",
+ "chrono",
  "libc",
  "regex",
  "serde",
