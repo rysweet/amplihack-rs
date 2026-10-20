@@ -4741,23 +4741,37 @@ fn inherited_autodrive_context(root: &Path) -> Vec<(String, String)> {
 /// Wired here because `.github/workflows/ci.yml` lists the bash recipe tests
 /// one by one; running it from `cargo test` gets the same coverage without
 /// touching that file.
+///
+/// It runs under the #1551 gh merge guard's environment, the one
+/// `merge_guard::apply_guard` exports to every bash of an auto-drive run: the
+/// guard directory first on `PATH`, `BASH_ENV` at the shipped `bash-env`, and
+/// `AMPLIHACK_MERGE_GUARD=1`. That is where this test runs as phase-1 tests and
+/// as the merge round's QA, and where it failed twice in PR #1644 crusty round
+/// 11. The script drops the guard at its top, so a run without the guard
+/// covers nothing this one does not; it is not run twice (it takes minutes).
 #[test]
 fn auto_drive_contract_shell_test_passes() {
     let root = workspace_root();
     let script = root.join("amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh");
     assert!(script.is_file(), "missing {}", script.display());
+    let guard = root.join("amplifier-bundle/tools/gh-merge-guard");
+    let bash_env = guard.join("bash-env");
+    assert!(bash_env.is_file(), "missing {}", bash_env.display());
 
     let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
     let bin_dir = bin.parent().expect("binary parent dir");
     let path = match std::env::var("PATH") {
-        Ok(p) => format!("{}:{p}", bin_dir.display()),
-        Err(_) => bin_dir.display().to_string(),
+        Ok(p) => format!("{}:{}:{p}", guard.display(), bin_dir.display()),
+        Err(_) => format!("{}:{}", guard.display(), bin_dir.display()),
     };
 
     let out = Command::new("bash")
         .arg(&script)
         .current_dir(&root)
+        .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
         .env("PATH", path)
+        .env("BASH_ENV", &bash_env)
+        .env("AMPLIHACK_MERGE_GUARD", "1")
         .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the auto-drive contract shell test");

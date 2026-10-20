@@ -72,6 +72,10 @@ fn refuses_running_the_merge_gate() {
         "env -u AMPLIHACK_MERGE_GUARD amplifier-bundle/tools/autodrive_merge_gate.sh",
         "X=1 . amplifier-bundle/tools/autodrive_merge_gate.sh",
         "source amplifier-bundle/tools/autodrive_merge_gate.sh",
+        // `-n` only counts before the script, and `--norc` is not `-n`.
+        "bash --norc amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "bash -x amplifier-bundle/tools/autodrive_merge_gate.sh -n 38",
+        "bash -o errexit amplifier-bundle/tools/autodrive_merge_gate.sh",
     ] {
         let block = check(cmd).unwrap_or_else(|| panic!("not refused: {cmd}"));
         let message = block["message"].as_str().unwrap();
@@ -108,6 +112,12 @@ fn data_mentions_pass_in_every_context() {
         "echo \"$(printf '%s' \"a) gh pr merge 38\")\"",
         "# gh pr merge 38",
         "cat x <<< 'gh pr merge 38'",
+        // A syntax check reads the gate and runs none of it (crusty round 11).
+        "bash -n amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "sh -n amplifier-bundle/tools/autodrive_merge_gate.sh && echo ok",
+        "bash -nv amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "bash -o noexec amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "shellcheck amplifier-bundle/tools/autodrive_merge_gate.sh",
     ];
     let before = [
         "",

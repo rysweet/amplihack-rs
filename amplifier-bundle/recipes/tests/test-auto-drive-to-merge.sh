@@ -63,6 +63,23 @@ while IFS= read -r _inherited; do
   case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
 done < <(compgen -e)
 unset _inherited
+# The same goes for the #1551 gh merge guard. An auto-drive run exports
+# BASH_ENV=<guard>/bash-env and AMPLIHACK_MERGE_GUARD=1 to every bash in it,
+# this one included, and bash-env has already run before this line: it put
+# the guard first on PATH and defined a `gh` function. Left in place, every
+# gate this test starts sources it too, and the shim refuses the stub merge
+# (PR #1644 crusty round 11: GATE-merge-79 and 1551-gate-merges-under-guard
+# failed inside auto-drive). The 1551 cases put the guard back on their own
+# command (GUARD_1551). auto_drive_contract_shell_test_passes runs this under
+# the guard's environment so a regression here fails `cargo test`.
+unset BASH_ENV ENV AMPLIHACK_MERGE_GUARD AMPLIHACK_MERGE_GUARD_USER_BASH_ENV
+unset -f gh 2>/dev/null || true
+_path=""
+while IFS= read -r -d: _entry; do
+  case "${_entry}" in */gh-merge-guard|*/gh-merge-guard/) ;; *) _path="${_path:+${_path}:}${_entry}" ;; esac
+done <<< "${PATH}:"
+PATH="${_path}"; export PATH
+unset _path _entry
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
@@ -1280,7 +1297,9 @@ gate_run() { # gate_run <mode> <extra-args...>
   local gate_file="${GATE_SCRIPT:-${GATE}}"
   local -a gate_cmd=(bash "${gate_file}")
   if [ "${GATE_PRIV:-}" = 1 ]; then
-    gate_cmd=(env -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$(cd "$(dirname "${gate_file}")" && pwd -P)/$(basename "${gate_file}")")
+    # The environ merge-loop step-03 gives the gate: no BASH_ENV, ENV, PS4,
+    # SHELLOPTS, BASHOPTS or loader variables.
+    gate_cmd=(env -u BASH_ENV -u ENV -u PS4 -u SHELLOPTS -u BASHOPTS -u LD_PRELOAD -u LD_AUDIT -u LD_LIBRARY_PATH /bin/bash -p "$(cd "$(dirname "${gate_file}")" && pwd -P)/$(basename "${gate_file}")")
   fi
   # env execs the gate's bash in place, so bash stays the gh shim's parent.
   [ -z "${GATE_EXTRA_ENV:-}" ] || gate_cmd=(env "${GATE_EXTRA_ENV}" "${gate_cmd[@]}")

@@ -136,12 +136,41 @@ fn merge_form(words: &[String]) -> Option<&'static str> {
         "gh" => gh_merge_form(args),
         GATE_NAME => Some("a run of the merge gate (autodrive_merge_gate.sh)"),
         shell if SHELLS.contains(&shell) => {
-            let script = args.iter().find(|a| !a.starts_with(['-', '+']))?;
-            (basename(script) == GATE_NAME)
+            let at = script_index(args)?;
+            (basename(&args[at]) == GATE_NAME && !no_exec(&args[..at]))
                 .then_some("a run of the merge gate (autodrive_merge_gate.sh)")
         }
         _ => None,
     }
+}
+
+/// The index of a shell's script operand: the first word that is not an
+/// option, where `-o`/`+o`/`-O`/`+O` take the next word as their value.
+fn script_index(args: &[String]) -> Option<usize> {
+    let mut i = 0;
+    while let Some(a) = args.get(i) {
+        if !a.starts_with(['-', '+']) {
+            return Some(i);
+        }
+        i += if matches!(a.as_str(), "-o" | "+o" | "-O" | "+O") {
+            2
+        } else {
+            1
+        };
+    }
+    None
+}
+
+/// Whether a shell's options (the words before its script) turn on `noexec`,
+/// as `-n`, a cluster such as `-nv`, or `-o noexec`: the shell only reads the
+/// script for syntax errors and runs none of it, so `bash -n <gate>` is a
+/// syntax check, not a run of the gate (crusty round 11).
+fn no_exec(options: &[String]) -> bool {
+    options.iter().enumerate().any(|(i, o)| {
+        let short = o.strip_prefix('-').filter(|f| !f.starts_with('-'));
+        short.is_some_and(|f| f.contains('n'))
+            || (o == "-o" && options.get(i + 1).is_some_and(|v| v == "noexec"))
+    })
 }
 
 /// The words from the program being run onward: reserved words, `VAR=value`

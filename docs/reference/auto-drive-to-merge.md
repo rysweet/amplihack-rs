@@ -1810,6 +1810,15 @@ Not covered: an interactive shell (`bash -i`), which does not read
 `BASH_ENV`, and `command gh` or a `gh` by absolute path, which skip the
 function. The hook check below still refuses the direct forms in all three.
 
+`BASH_ENV` reaches a repository's own test suite too: an agent's
+`cargo test` and the merge round's QA command run inside the guarded run.
+A test that runs a gate against a stub `gh` must start without the guard, or
+the shim refuses the stub merge. `test-auto-drive-to-merge.sh` unsets
+`BASH_ENV`, `AMPLIHACK_MERGE_GUARD` and the `gh` function at its top and
+takes the guard directory off `PATH`; its #1551 cases put the guard back on
+their own command. `auto_drive_contract_shell_test_passes` runs it under the
+guard's environment so that `cargo test` fails if this regresses.
+
 ### The pre-tool-use hook check
 
 When `AMPLIHACK_MERGE_GUARD` is non-empty, the pre-tool-use hook
@@ -1825,7 +1834,8 @@ does not depend on `PATH`. It refuses only these:
 - running `autodrive_merge_gate.sh` as the program, or as the script operand
   of `bash`, `sh`, `dash`, `zsh`, `ksh`, `source` or `.`. The gate runs only
   from auto-drive's own recipe step, and it trusts Crusty and QA record
-  files an agent could write.
+  files an agent could write. A syntax check (`bash -n …`, `-nv`,
+  `-o noexec`) runs none of the script and passes.
 
 The program is the first word of each command after splitting at unquoted
 `;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
