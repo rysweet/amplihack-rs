@@ -40,6 +40,13 @@ pub(super) struct MergeOutcome {
     pub indexes: Vec<(PathBuf, Result<usize, String>)>,
 }
 
+/// What every step of one merge shares: whose files these are, and the
+/// running outcome.
+pub(super) struct Ctx<'a> {
+    pub profile: &'a ProfileName,
+    pub out: MergeOutcome,
+}
+
 #[derive(Debug)]
 pub(super) enum MergeError {
     /// `step` is one of `open`, `read`, `copy`, `rename`, `mkdir`, `chmod`.
@@ -73,9 +80,12 @@ pub(super) fn merge_tree(
     dst_abs: &Path,
     profile: &ProfileName,
 ) -> Result<MergeOutcome, MergeError> {
-    let mut out = MergeOutcome::default();
-    walk(src, dst, Path::new(""), dst_abs, 0, profile, &mut out)?;
-    Ok(out)
+    let mut cx = Ctx {
+        profile,
+        out: MergeOutcome::default(),
+    };
+    walk(src, dst, Path::new(""), dst_abs, 0, &mut cx)?;
+    Ok(cx.out)
 }
 
 fn walk(
@@ -84,8 +94,7 @@ fn walk(
     rel: &Path,
     dst_abs: &Path,
     depth: usize,
-    profile: &ProfileName,
-    out: &mut MergeOutcome,
+    cx: &mut Ctx,
 ) -> Result<(), MergeError> {
     if depth > MAX_DEPTH {
         return Err(fail("open")(io::Error::other(format!(
@@ -104,7 +113,7 @@ fn walk(
             continue;
         }
         if is_credential_name(&name) {
-            out.logins.push(path);
+            cx.out.logins.push(path);
             continue;
         }
         if name.as_bytes().starts_with(TMP_PREFIX) {
@@ -116,18 +125,17 @@ fn walk(
             Err(e) => return Err(fail("open")(e)),
         };
         match st.st_mode & libc::S_IFMT {
-            libc::S_IFDIR => merge_dir(src, dst, &name, &path, dst_abs, depth, profile, out)?,
-            libc::S_IFREG => merge_file(src, dst, &name, &path, dst_abs, profile, out)?,
-            _ => out.skipped += 1,
+            libc::S_IFDIR => merge_dir(src, dst, &name, &path, dst_abs, depth, cx)?,
+            libc::S_IFREG => merge_file(src, dst, &name, &path, dst_abs, cx)?,
+            _ => cx.out.skipped += 1,
         }
     }
     match index {
-        Some((name, path)) => memory::merge_index(src, dst, &name, &path, dst_abs, profile, out),
+        Some((name, path)) => memory::merge_index(src, dst, &name, &path, dst_abs, cx),
         None => Ok(()),
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn merge_dir(
     src: &OwnedFd,
     dst: &OwnedFd,
@@ -135,13 +143,12 @@ fn merge_dir(
     path: &Path,
     dst_abs: &Path,
     depth: usize,
-    profile: &ProfileName,
-    out: &mut MergeOutcome,
+    cx: &mut Ctx,
 ) -> Result<(), MergeError> {
     let child = match fdwalk::openat(src.as_raw_fd(), name, DIR_FLAGS, 0) {
         Ok(fd) => fd,
         Err(e) if not_a_dir(&e) => {
-            out.skipped += 1;
+            cx.out.skipped += 1;
             return Ok(());
         }
         Err(e) => return Err(fail("open")(e)),
@@ -158,20 +165,12 @@ fn merge_dir(
         Ok(fd) => fd,
         // The shared store has a non-directory here: the subtree stays put.
         Err(e) if not_a_dir(&e) => {
-            out.skipped += 1;
+            cx.out.skipped += 1;
             return Ok(());
         }
         Err(e) => return Err(fail("open")(e)),
     };
-    walk(
-        &child,
-        &target,
-        path,
-        &dst_abs.join(name),
-        depth + 1,
-        profile,
-        out,
-    )
+    walk(&child, &target, path, &dst_abs.join(name), depth + 1, cx)
 }
 
 pub(super) fn merge_file(
@@ -180,16 +179,15 @@ pub(super) fn merge_file(
     name: &OsStr,
     path: &Path,
     dst_abs: &Path,
-    profile: &ProfileName,
-    out: &mut MergeOutcome,
+    cx: &mut Ctx,
 ) -> Result<(), MergeError> {
     let Some((input, meta)) = open_regular(src.as_raw_fd(), name)? else {
-        out.skipped += 1;
+        cx.out.skipped += 1;
         return Ok(());
     };
     match place(&input, &meta, src, name, dst, name, path) {
         Ok(()) => {
-            out.moved += 1;
+            cx.out.moved += 1;
             return Ok(());
         }
         Err(Placed::Exists) => {}
@@ -198,12 +196,12 @@ pub(super) fn merge_file(
     if let Some((existing, _)) = open_regular(dst.as_raw_fd(), name)?
         && same_bytes(&input, &existing).map_err(fail("read"))?
     {
-        out.identical += 1;
+        cx.out.identical += 1;
         return Ok(());
     }
     // Canonical always wins; this profile's copy goes to a conflict name.
     for _ in 0..MAX_CONFLICT_SLOTS {
-        let (slot, held) = conflict_slot(dst, name, profile, &input)?;
+        let (slot, held) = conflict_slot(dst, name, cx.profile, &input)?;
         if !held {
             match place(&input, &meta, src, name, dst, &slot, path) {
                 Ok(()) => {}
@@ -211,7 +209,9 @@ pub(super) fn merge_file(
                 Err(Placed::Fail(e)) => return Err(e),
             }
         }
-        out.conflicts.push((path.to_path_buf(), dst_abs.join(slot)));
+        cx.out
+            .conflicts
+            .push((path.to_path_buf(), dst_abs.join(slot)));
         return Ok(());
     }
     Err(fail("rename")(io::Error::other(format!(

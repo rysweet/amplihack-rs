@@ -6,9 +6,8 @@
 //! so Claude can still find the memory files the merge moved in. Appending
 //! is the only change ever made to an existing file in the shared store.
 
-use super::super::name::ProfileName;
 use super::super::store::fdwalk;
-use super::merge::{MergeError, MergeOutcome, fail, merge_file, stat_at};
+use super::merge::{Ctx, MergeError, fail, merge_file, stat_at};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, Read, Write};
@@ -138,22 +137,21 @@ pub(super) fn merge_index(
     name: &OsStr,
     path: &Path,
     dst_abs: &Path,
-    profile: &ProfileName,
-    out: &mut MergeOutcome,
+    cx: &mut Ctx,
 ) -> Result<(), MergeError> {
     let theirs = read_index(src, name)?;
-    let conflicts_before = out.conflicts.len();
+    let conflicts_before = cx.out.conflicts.len();
     match stat_at(src.as_raw_fd(), name) {
         Ok(st) if st.st_mode & libc::S_IFMT == libc::S_IFREG => {
-            merge_file(src, dst, name, path, dst_abs, profile, out)?
+            merge_file(src, dst, name, path, dst_abs, cx)?
         }
-        Ok(_) => out.skipped += 1,
+        Ok(_) => cx.out.skipped += 1,
         Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {}
         Err(e) => return Err(fail("open")(e)),
     }
     // The profile's copy is saved under a conflict name before anything is
     // appended, so its bytes are kept whatever happens next.
-    if out.conflicts.len() == conflicts_before {
+    if cx.out.conflicts.len() == conflicts_before {
         return Ok(());
     }
     // From here on a failure is reported, not fatal: the profile's copy is
@@ -161,7 +159,9 @@ pub(super) fn merge_index(
     let ours = match read_index(dst, name) {
         Ok(ours) => ours,
         Err(MergeError::Io { err, .. }) => {
-            out.indexes.push((path.to_path_buf(), Err(err.to_string())));
+            cx.out
+                .indexes
+                .push((path.to_path_buf(), Err(err.to_string())));
             return Ok(());
         }
         Err(e) => return Err(e),
@@ -170,7 +170,8 @@ pub(super) fn merge_index(
         return Ok(());
     };
     let dir = path.parent().unwrap_or(Path::new(""));
-    let renamed: Vec<(String, String)> = out
+    let renamed: Vec<(String, String)> = cx
+        .out
         .conflicts
         .iter()
         .filter(|(p, _)| p.parent() == Some(dir))
@@ -189,6 +190,6 @@ pub(super) fn merge_index(
             .map(|()| entries.len())
             .map_err(|e| e.to_string())
     };
-    out.indexes.push((path.to_path_buf(), added));
+    cx.out.indexes.push((path.to_path_buf(), added));
     Ok(())
 }
