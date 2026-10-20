@@ -8,6 +8,10 @@
 
 mod auto_switch;
 mod default_live;
+#[cfg(unix)]
+mod duplicates;
+#[cfg(unix)]
+mod login_check;
 mod name;
 mod pointer;
 mod root_cmd;
@@ -24,6 +28,10 @@ mod tests_commands;
 mod tests_default_live;
 #[cfg(test)]
 mod tests_docs_sync;
+#[cfg(all(test, unix))]
+mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_login_check;
 #[cfg(test)]
 mod tests_name;
 #[cfg(test)]
@@ -263,8 +271,14 @@ pub enum ProfileCommands {
     List,
     /// Show the default profile name and directory
     Show,
-    /// Make a profile the default for `launch` and `claude`
-    Switch { name: String },
+    /// Make a profile the default for `launch` and `claude`, or clear it with --none
+    Switch {
+        #[arg(required_unless_present = "none")]
+        name: Option<String>,
+        /// Clear the default instead: `launch` and `claude` then use no profile
+        #[arg(long, conflicts_with = "name")]
+        none: bool,
+    },
     /// Delete a profile directory
     Remove {
         name: String,
@@ -348,8 +362,9 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             }
         }
         ProfileCommands::Show => print!("{}", render_show(&store)?),
-        ProfileCommands::Switch { name } => {
-            let name = ProfileName::parse(&name)?;
+        ProfileCommands::Switch { none: true, .. } => println!("{}", clear_default(&store)?),
+        ProfileCommands::Switch { name, .. } => {
+            let name = ProfileName::parse(name.as_deref().unwrap_or_default())?;
             store.resolve(&name)?;
             pointer::write(store.root(), &name)?;
             println!("default profile: {name}");
@@ -366,7 +381,12 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             let name = ProfileName::parse(&name)?;
             store.resolve(&name)?;
             auto_switch::guard(&store, &name, auto_switch::Action::Login)?;
-            run::login(&store, &name)?
+            #[cfg(unix)]
+            login_check::login_checked(&store, &name, usage_cmd::home_dir().as_deref(), || {
+                run::login(&store, &name)
+            })?;
+            #[cfg(not(unix))]
+            run::login(&store, &name)?;
         }
         ProfileCommands::Run { name, args } => {
             let name = ProfileName::parse(&name)?;
@@ -387,6 +407,27 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Printed by `profile switch --none`.
+const CLEARED: &str = "Default profile cleared.";
+const NOT_SET: &str = "No default profile was set.";
+
+/// Removes the default pointer, valid or not; the message to print.
+fn clear_default(store: &ProfileStore) -> Result<&'static str, ProfileError> {
+    store.check_root_not_symlink()?;
+    let existed = pointer::exists(store.root());
+    pointer::clear(store.root())?;
+    Ok(if existed { CLEARED } else { NOT_SET })
+}
+
+/// The one line printed when a launch of the rotator's live profile runs
+/// against `~/.claude`.
+fn live_launch_note(name: &str) -> String {
+    format!(
+        "note: profile '{name}' is the rotator's live login, which is in ~/.claude; \
+         launching against ~/.claude."
+    )
 }
 
 /// Resolution order: `--profile` flag, then a non-empty inherited
@@ -559,6 +600,7 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
         docker,
         docker_env,
         auto,
+        usage_cmd::home_dir().as_deref(),
         ProfileStore::from_env,
     )
     .map_err(with_hint)
@@ -566,13 +608,14 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
 
 /// `launch_profile_dir` with the environment passed in, so tests do not depend
 /// on the caller's environment. `open_store` is only called when a profile may
-/// be applied.
+/// be applied. `home` is `$HOME`, for finding the rotator's live profile.
 fn launch_profile_dir_with(
     flag: Option<&str>,
     inherited: Option<&OsStr>,
     docker: bool,
     docker_env: bool,
     auto: bool,
+    home: Option<&std::path::Path>,
     open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
 ) -> Result<Option<PathBuf>, ProfileError> {
     validate_launch_flags(flag, docker, docker_env, auto)?;
@@ -606,6 +649,21 @@ fn launch_profile_dir_with(
     let Some((name, dir)) = resolved else {
         return Ok(None);
     };
+    // The rotator's live profile has its login in `~/.claude`, not in its
+    // directory: launch with no profile, as Claude then uses `~/.claude`.
+    // Only a directory without its own login can be live, so one lstat
+    // skips reading the ledgers and every profile's `.claude.json` on the
+    // usual launch.
+    if default_live::could_be_live(&store, &name) {
+        let (live, warning) = default_live::detect(&store, home);
+        if let Some(w) = warning {
+            eprintln!("{w}");
+        }
+        if live.is_some_and(|l| l.name == name) {
+            eprintln!("{}", live_launch_note(name.as_str()));
+            return Ok(None);
+        }
+    }
     // Auto-switch (#1569): only an inherited profile is ever redirected or
     // allowed to join a hosted session; a flag or the pointer never is.
     let is_inherited = flag.is_none() && inherited.is_some();

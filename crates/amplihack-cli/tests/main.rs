@@ -100,6 +100,8 @@ mod issue_1592_recovery;
 mod issue_1592_root;
 #[path = "issue_1592_root_rotator.rs"]
 mod issue_1592_root_rotator;
+#[path = "issue_1650_profile_identity.rs"]
+mod issue_1650_profile_identity;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

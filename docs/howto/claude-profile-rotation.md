@@ -32,6 +32,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
 - [Swap refused](#swap-refused)
 - [Recovery](#recovery)
+- [Live default and duplicate logins](#live-default-and-duplicate-logins)
 - [Limits](#limits)
 
 ## Before you start
@@ -447,6 +448,35 @@ out the live profile again from the accounts.
 If you cannot tell which login belongs where, log each affected profile in
 again with `amplihack profile login <name>`.
 
+## Live default and duplicate logins
+
+While a profile's login is in `~/.claude`, the profile's own directory has
+no login. If that profile is also your default (`amplihack profile switch`),
+`amplihack claude` runs against `~/.claude` instead of the empty directory
+and prints:
+
+```
+note: profile 'team' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+The same happens for `--profile team` and for an inherited
+`AMPLIHACK_CLAUDE_PROFILE=team`. Without this, Claude would ask you to log
+in, and logging in there would put a second copy of an account into
+`team`. To stop using a default at all, run
+`amplihack profile switch --none`. See
+[Launching the rotator's live profile](claude-profiles.md#launching-the-rotators-live-profile).
+
+`amplihack profile login <name>` refuses a login that duplicates the account
+in `~/.claude`, naming the holder as `~/.claude (rotator live profile 'team')`.
+`profile usage` and `auto-switch status` warn about a profile that holds the
+same account as `~/.claude`. The live profile itself is never flagged against
+`~/.claude`. See [Duplicate logins](claude-profiles.md#duplicate-logins).
+
+Accounts are compared by user and organization: one user in two
+organizations is two accounts, and both can be rotation candidates. The
+full rule is in
+[Which logins count as the same account](claude-profiles.md#which-logins-count-as-the-same-account).
+
 ## Limits
 
 - **Linux only in practice.** On macOS Claude keeps logins in the Keychain, so
@@ -477,5 +507,12 @@ again with `amplihack profile login <name>`.
   remains between the check and the signal.
 - **Sessions keep their login until they reread it.** A running `claude` may
   keep using the outgoing account until it next reads its credentials.
+- **The ledger records the user, not the organization.** The rotate ledger
+  is unchanged and names the account in `~/.claude` by user (or e-mail).
+  If someone runs `/login` in `~/.claude` and signs in to the same user in
+  another organization, the rotator does not see a hand change. Run
+  `amplihack profile usage` to check: the live row then reports the other
+  organization's usage, and if another profile already holds that
+  organization, both commands warn about a duplicate login.
 - **Each cycle starts `claude` once per profile.** The probes run
   `claude -p /usage` in parallel, so a short `--interval` means many processes.

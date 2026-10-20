@@ -10,7 +10,7 @@ amplihack profile add <name>
 amplihack profile list
 amplihack profile root [<dir>]
 amplihack profile show
-amplihack profile switch <name>
+amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
@@ -37,8 +37,9 @@ amplihack launch|claude --profile <name> [...]
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. |
+| `switch --none` | Removes the default pointer. Prints `Default profile cleared.`, or `No default profile was set.` when there was none; exits 0 either way. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks. |
-| `login <name>` | Always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
+| `login <name>` | Always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
@@ -439,6 +440,7 @@ status, and none marks a profile live when there is doubt.
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `warning: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded` | The evidence for the live profile changed during the probe. See [Swaps during the probe](#swaps-during-the-probe). |
+| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: …` | Two logins are the same account. One line per pair, after the other warnings. See [Duplicate-login warning](#duplicate-login-warning). |
 
 #### JSON output
 
@@ -1161,7 +1163,7 @@ Both `install` and `repair` are idempotent: a second run leaves every
 | `ignored AMPLIHACK_CLAUDE_AUTO_SWITCH value (use 1 or 0); the file decides` | The variable is set to something other than `1`, `0` or empty. |
 | `profiles without the wrapper: <names> — run: amplihack profile auto-switch install` | A profile's wrapper is `missing` or `stale`. |
 | `excluded but missing: <names>` | An exclusion names no existing profile. |
-| `profiles <a> and <b> are signed in to the same account; their readings are not reliable` | Two profiles' `oauthAccount.accountUuid` values are equal: from the profile's own `.claude.json`, or from its saved block while its directory hosts another account. The UUID itself is not printed. |
+| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). See [Duplicate-login warning](#duplicate-login-warning). No uuid, organization or e-mail is printed. |
 
 Every command takes the global state lock only when it needs it, and exits
 with status 1 on error with the usual `error:`/`hint:` lines.
@@ -1786,9 +1788,12 @@ never held.
 ### Rotate live profile
 
 The live profile is the one whose login is in `~/.claude`. Accounts are
-compared by `oauthAccount.accountUuid`, or by `emailAddress` (case-insensitive)
-when either side has no uuid, read from `$HOME/.claude.json` and from each
-`<root>/<name>/.claude.json`. No credentials file is read. An account value
+compared by the [account identity rule](#account-identity) (user and
+organization), read from `$HOME/.claude.json` and from each
+`<root>/<name>/.claude.json`. The rotate ledger's `account` field is still
+the user only (or the e-mail address when there is no uuid), so the
+`hand-change` check does not notice a new login to the same user in
+another organization. No credentials file is read. An account value
 over 320 bytes or containing control characters counts as missing. Account
 values are never logged or printed.
 
@@ -2171,6 +2176,9 @@ failures use this format.
 | Pointer dangling (names a missing profile) | `amplihack profile switch <name>` |
 | Pointer corrupt or oversized | Re-run `profile switch <name>` |
 | `remove` without `--yes` | Re-run with `--yes` |
+| `login` produced a duplicate login | `sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.` See [Login check](#login-check). |
+| `login` found a new or previous login that is not a private regular file, or a `.rejected-logins` entry that already exists | Nothing was moved; follow the paths in the message. See [Login check](#login-check). |
+| `login` named the rotator's live profile | `log in with plain 'claude', or stop the rotator first.` See [Login check](#login-check). |
 | `--profile` with `--docker`/`--auto` | Launch without the flag combination |
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` with `--docker`, `--auto` or env-activated Docker | `unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto` |
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` is an invalid name or not found | Unset `AMPLIHACK_CLAUDE_PROFILE`, or create the profile with `amplihack profile add <name>` |
@@ -2270,3 +2278,184 @@ Residual risks of auto-switch:
   to print (for example by prompt injection) can cost one extra attempt per
   profile, but only for a step that already failed with a non-zero exit and
   was not killed.
+
+## Identity and duplicate logins
+
+How amplihack decides that two logins are the same account, how
+`profile login` refuses a duplicate, how a launch of the rotator's live
+profile is redirected, and how the default is cleared. The walkthrough is
+in [Accounts, organizations and duplicate logins](../howto/claude-profiles.md#accounts-organizations-and-duplicate-logins).
+
+### Account identity
+
+An account is read from the `oauthAccount` object of a `.claude.json`:
+`accountUuid` (the user), `organizationUuid` (the organization) and
+`emailAddress`. A value that is not a string, is over 320 bytes or contains
+control characters counts as missing. Only these fields are read.
+
+| Left | Right | Same account |
+|------|-------|--------------|
+| uuid `u`, org `o1` | uuid `u`, org `o1` | yes |
+| uuid `u`, org `o1` | uuid `u`, org `o2` | no |
+| uuid `u`, org `o1` | uuid `u`, no org | no |
+| uuid `u`, no org | uuid `u`, no org | yes |
+| different uuids | (any) | no |
+| uuid on one side only | (any) | no |
+| no uuid on either side | — | the e-mail addresses match, ignoring case |
+
+Every account-to-account comparison uses this rule: the `login` check, the
+[duplicate-login warning](#duplicate-login-warning), the
+[rotate live profile](#rotate-live-profile) match, auto-switch's account
+checks and the rotator's candidate checks. Two profiles with the same uuid
+and different organizations are two accounts, so they do not make the live
+profile `ambiguous`.
+
+The rotate ledger and auto-switch state files are unchanged. They still
+record the user only, and checks against them (the rotate ledger match,
+swap verification and auto-switch's observed-account check) still compare
+the user only. Where a full account is needed, the organization is read
+from the profile's `.claude.json`.
+
+### Login check
+
+`amplihack profile login <name>` runs in three steps. The usual
+[lease](#leases) refusals apply first. A login to the rotator's
+[live profile](#logins-in-claude) is refused before step 1, with nothing
+moved, because its login is `~/.claude` and the rotator refuses to swap back
+into a profile that has a login of its own:
+
+```
+error: profile '<name>' is the rotator's live profile; its login is ~/.claude. Nothing was moved.
+hint: log in with plain 'claude', or stop the rotator first.
+```
+
+1. **Before Claude starts.** If `<root>/<name>/.credentials.json` exists, it
+   is renamed into a new directory
+   `<root>/.rejected-logins/.pending-<name>-<time>/`, and the profile's
+   current `oauthAccount` block is written there as `oauthAccount.json`.
+   The path is printed first:
+   `note: holding the previous login of profile '<name>' in <path> while you log in`.
+   A previous login that is a symlink, has more than one link or is not
+   private stops the command here, before Claude starts, with nothing moved.
+2. **Claude runs.** amplihack ignores SIGINT while it waits, so Ctrl-C ends
+   Claude and the restore in step 3 still runs. No lock is held.
+3. **After Claude exits.** amplihack takes the state lock again and checks
+   leases again; if the profile is now leased or hosting another account,
+   or the rotator made it the live profile while Claude ran (the rotator
+   takes no lease), it stops, moves nothing, and prints where each login
+   is. If cleanup fails after Claude itself failed, the message starts with
+   `claude exited with an error first: ` and Claude's error. Otherwise:
+
+| Outcome | What happens | Exit |
+|---------|--------------|------|
+| Claude exited non-zero | Any new `.credentials.json` goes to `<name>-<time>/`. The previous login and `oauthAccount` are restored. No duplicate check. | Claude's status |
+| Claude exited 0, no new `.credentials.json`, a previous login was held | The login did not finish. The previous login and `oauthAccount` are restored: `Claude exited without writing a login file; the previous login of profile '<name>' was restored`. | 1 |
+| Claude exited 0, no `.credentials.json` before or after | The macOS Keychain case. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. If `.claude.json` names a duplicate account, the refusal is printed but there is no file to move. | 0, or 1 for a duplicate |
+| New login is not a private regular file | Nothing is moved and its mode is not changed. The error reports the mode and says the login may be exposed; the previous login stays in the `.pending-…` directory, and the hint prints that path. | 1 |
+| New login duplicates another login | Refused; see below. | 1 |
+| The profiles cannot be listed, or the auto-switch state cannot be opened | The check fails closed: the new login is set aside and the previous one restored as for a refusal, with `could not check profile '<name>' for duplicate logins: <reason>`. | 1 |
+| New login is accepted | The previous login, if any, moves to `<name>-<time>-replaced/` and its path is printed. The empty `.pending-…` directory is removed. | 0 |
+
+The new login is compared with every other profile (its own `.claude.json`,
+or its saved block while it hosts another account) and with
+`$HOME/.claude.json`. The rotator's live profile is never compared with
+`~/.claude`, because it is refused before Claude starts.
+
+A refusal:
+
+1. prints `note: moving the new login of profile '<name>' to <path>`;
+2. renames the new `.credentials.json` into `<root>/.rejected-logins/<name>-<time>/`
+   and writes its `oauthAccount` block there as `oauthAccount.json`;
+3. renames the previous login back, if there was one;
+4. sets only the `oauthAccount` key of `<root>/<name>/.claude.json` back to
+   the saved block, or removes the key if there was none, keeping the file's
+   mode. Other keys stay as Claude left them. `.claude.json` is never
+   created. If a block has to go back but the file is missing, unparsable
+   or not a JSON object, amplihack stops and keeps the `.pending-…`
+   directory, whose `oauthAccount.json` is then the only copy of the block;
+5. removes the empty `.pending-…` directory and prints:
+
+```
+error: profile '<name>' was signed in to the same account and organization as <holder>. The new login was moved to <path>; '<name>' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.
+```
+
+`<holder>` is `profile '<other>'`, `~/.claude (rotator live profile '<live>')`
+when the live profile is known, or `~/.claude`.
+
+If a step fails part-way, amplihack stops and prints the path of every
+login it has moved. It never copies or deletes one.
+
+`<time>` is UTC as `YYYYMMDDTHHMMSSZ`. `.rejected-logins/` is created `0700`
+under a profile root that is not a symlink; each entry directory is created
+new (an existing one is an error, nothing moves) and is `0700`; files are
+`0600`. amplihack never deletes anything under `.rejected-logins/` except
+its own empty `.pending-…` directory and that directory's
+`oauthAccount.json`. Logins there are not listed by `profile list` and are
+never rotation or auto-switch candidates.
+
+The check never opens, reads, copies, changes the mode of or deletes a
+`.credentials.json`; it only checks its metadata without following symlinks
+and renames it with `renameat2(RENAME_NOREPLACE)`, syncing both directories.
+Messages contain profile names and paths only, never uuids, organization IDs
+or e-mail addresses. On platforms without Unix file semantics, `login` runs
+Claude as before, with no check.
+
+### Duplicate-login warning
+
+```
+profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.
+```
+
+`auto-switch status` prints it as a [status note](#status-notes) on stdout.
+`profile usage` prints it on stderr prefixed with `warning: `, after its
+other warnings, and it does not change the table, the JSON or the exit
+status. Both cover every profile under the root, whatever names `usage` was
+given.
+
+One line is printed per pair. Pairs of profiles follow `profile list` order;
+a pair with the login in `~/.claude` comes last, with `'~/.claude'` as
+`<a>` and the profile as `<b>`, so the fix always names a profile. The
+rotator's live profile is never paired with `~/.claude`. Names are cleaned
+of control characters.
+
+### Live profile launch
+
+When `amplihack claude` or `amplihack launch` resolves a profile (from
+`--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`, or the default
+pointer) and that profile is the one [rotate live profile](#rotate-live-profile)
+detection names, the launch runs with no profile: `CLAUDE_CONFIG_DIR` and
+`AMPLIHACK_CLAUDE_PROFILE` are not set for the child, so Claude uses
+`~/.claude`. One line goes to stderr:
+
+```
+note: profile '<name>' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+| Case | Result |
+|------|--------|
+| The resolved profile is the live profile | Redirected, one note. The pre-spawn check, the auto-switch launch checks and the launch hold do not run, as for a launch with no profile. |
+| Detection finds no live profile, is ambiguous, or fails | Not redirected, no note. |
+| Windows or another platform without Unix file semantics | Not redirected, no note. |
+| `--docker`, `--auto`, env-activated Docker | Unchanged; these are handled before this check. |
+| `profile run <name>` | Not redirected. It uses `<root>/<name>/`. |
+
+A plain `amplihack claude` with an ambient `CLAUDE_CONFIG_DIR` you exported
+yourself and no profile selected is unchanged.
+
+### Clearing the default
+
+```
+amplihack profile switch --none
+```
+
+| `.default` before | Output | Exit |
+|-------------------|--------|------|
+| exists (valid, corrupt or dangling) | `Default profile cleared.` | 0 |
+| missing | `No default profile was set.` | 0 |
+| a name and `--none` together, or neither | clap usage error | 2 |
+
+`--none` removes `<root>/.default` and nothing else; it does not need the
+named profile to exist. There is no `switch default` alias: `default` is a
+valid [profile name](#name-rules), so `switch default` selects the profile
+called `default`.

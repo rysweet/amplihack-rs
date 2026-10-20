@@ -131,9 +131,7 @@ pub(super) fn run(
         return Ok(());
     }
     let binary = run::resolve_claude_binary()?;
-    let home = std::env::var_os("HOME")
-        .filter(|h| !h.is_empty())
-        .map(std::path::PathBuf::from);
+    let home = home_dir();
     let live = detect_live(store, home.as_deref(), &profiles);
     let live_name = live.as_ref().map(|l| l.name.clone());
     // Read before probing: the account each row is recorded under must be
@@ -157,8 +155,19 @@ pub(super) fn run(
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
+    #[cfg(unix)]
+    for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
+        eprintln!("warning: {}", super::duplicates::warning(&a, &b));
+    }
     record(store, &rows, swapped.as_ref(), json);
     Ok(())
+}
+
+/// `$HOME` as an absolute path; `None` when it is unset, empty or relative.
+pub(super) fn home_dir() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|h| h.is_absolute())
 }
 
 fn print_empty(json: bool) {

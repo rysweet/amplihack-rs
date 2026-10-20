@@ -65,8 +65,6 @@ pub use cli::AutoSwitchCommand;
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
 #[cfg(unix)]
 pub(super) use state::CREDS;
-#[cfg(unix)]
-pub(super) use swap::read_claude_json;
 
 #[cfg(not(unix))]
 #[derive(Debug, clap::Subcommand)]
