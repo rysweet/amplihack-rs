@@ -251,6 +251,21 @@ fn commands(text: &str) -> Vec<Vec<String>> {
                     i += 1;
                 }
             }
+            '$' if chars.get(i + 1) == Some(&'\'') => {
+                // `$'…'` (ANSI-C quoting): `\'` inside is an escaped quote,
+                // not the end of the string (bash manual, ANSI-C Quoting).
+                in_word = true;
+                let end = ansi_c_end(&chars, i + 1);
+                let mut j = i + 2;
+                while j < end {
+                    if chars[j] == '\\' && j + 1 < end {
+                        j += 1;
+                    }
+                    word.push(chars[j]);
+                    j += 1;
+                }
+                i = end;
+            }
             '"' => {
                 in_word = true;
                 i += 1;
@@ -353,6 +368,7 @@ fn subst_end(chars: &[char], start: usize) -> usize {
                 }
             }
             '\\' => i += 1,
+            '$' if chars.get(i + 1) == Some(&'\'') => i = ansi_c_end(chars, i + 1),
             '\'' => {
                 i += 1;
                 while i < chars.len() && chars[i] != '\'' {
@@ -376,6 +392,22 @@ fn subst_end(chars: &[char], start: usize) -> usize {
                 continue;
             }
             '\n' => skip_heredoc_bodies(chars, &mut i, std::mem::take(&mut heredocs)),
+            _ => {}
+        }
+        i += 1;
+    }
+    chars.len() - 1
+}
+
+/// The index of the `'` closing the `$'…'` string whose opening `'` is at
+/// `open` (or the last index, if it is unclosed). A backslash escapes the
+/// next character, so `\'` does not close it.
+fn ansi_c_end(chars: &[char], open: usize) -> usize {
+    let mut i = open + 1;
+    while i < chars.len() {
+        match chars[i] {
+            '\\' => i += 1,
+            '\'' => return i,
             _ => {}
         }
         i += 1;

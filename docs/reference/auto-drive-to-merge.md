@@ -1863,8 +1863,9 @@ The program is the first word of each command after splitting at unquoted
 `;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
 `!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
 `nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
-skipped. Nothing else is read. Quoted text, the arguments of other programs,
-heredoc bodies and comments are data. So these pass with the guard on, alone
+skipped. Nothing else is read. Quoted text (with `\'` escaped inside
+`$'…'`), the arguments of other programs, heredoc bodies and comments are
+data. So these pass with the guard on, alone
 or after a command that runs an interpreter (`bash test.sh && …`,
 `cargo test 2>&1 | awk '{print}'; …`):
 

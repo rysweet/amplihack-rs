@@ -42,6 +42,7 @@ fn refuses_gh_pr_merge_as_the_program_whatever_gh_path_finds() {
         "{ gh pr merge 38; }",
         "if true; then gh pr merge 38; fi",
         "'gh' pr merge 38",
+        "$'gh' pr merge 38",
         "g\\h pr merge 38",
         "cat <<'EOF'\nprose\nEOF\ngh pr merge 38",
     ] {
@@ -113,6 +114,9 @@ fn data_mentions_pass_in_every_context() {
         "echo \"$(printf '%s' \"a) gh pr merge 38\")\"",
         "# gh pr merge 38",
         "cat x <<< 'gh pr merge 38'",
+        // ANSI-C quoting: `\'` does not end a `$'…'` string (round 18).
+        "echo $'it\\'s; gh pr merge 1'",
+        "echo \"$(printf $'a\\'b)\" ; gh pr merge 1 ')\"",
     ];
     let before = [
         "",
