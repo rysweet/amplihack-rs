@@ -15,6 +15,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, exists, now, recover_auto_switch};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
+use crate::commands::profile::shared_dirs;
 use crate::commands::profile::store::ProfileStore;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -324,6 +325,10 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 }
                 Err(e) => return Err(e),
             };
+            // Issue #1634: link the session dirs of both profiles swapped.
+            for p in [&to, &from] {
+                shared_dirs::ensure_for(&ctx.store, p);
+            }
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
             l = ctx.rs.load_ledger()?.unwrap_or_default();
