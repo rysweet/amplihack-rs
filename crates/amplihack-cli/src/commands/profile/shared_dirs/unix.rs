@@ -2,42 +2,17 @@
 //! store (issue #1634), Unix only.
 
 use super::link::{Swap, shell_quote, swap_in_link, symlink_at};
-use super::merge::{MergeError, merge_tree, stat_at};
+use super::merge::{DIR_FLAGS, MergeError, merge_tree, stat_at};
 use super::{Conflict, Deferred, Migrated, Mode, Report, SHARED_SESSION_DIRS};
+use crate::commands::profile::auto_switch::euid;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::fdwalk;
+use std::cell::LazyCell;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-
-const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
-
-fn euid() -> u32 {
-    // SAFETY: geteuid has no preconditions.
-    unsafe { libc::geteuid() }
-}
-
-/// `mode` evaluated once, on first use.
-struct LazyMode<F> {
-    f: Option<F>,
-    v: Option<Mode>,
-}
-
-impl<F: FnOnce() -> Mode> LazyMode<F> {
-    fn get(&mut self) -> Mode {
-        if let Some(v) = self.v {
-            return v;
-        }
-        let v = match self.f.take() {
-            Some(f) => f(),
-            None => Mode::LinkOnly(Deferred::LiveSession),
-        };
-        self.v = Some(v);
-        v
-    }
-}
 
 /// The two sides every name is checked against.
 struct Sides<'a> {
@@ -71,12 +46,10 @@ pub(super) fn ensure(
         canon,
         canon_fd,
     };
-    let mut mode = LazyMode {
-        f: Some(mode),
-        v: None,
-    };
+    // Evaluated once, and only when a name is a real directory.
+    let mode = LazyCell::new(mode);
     for name in SHARED_SESSION_DIRS {
-        one_name(&sides, name, &mut mode, r);
+        one_name(&sides, name, &mode, r);
     }
 }
 
@@ -210,7 +183,7 @@ fn canonical_subdir(s: &Sides, name: &'static str, r: &mut Report) -> Option<Own
 fn one_name<F: FnOnce() -> Mode>(
     s: &Sides,
     name: &'static str,
-    mode: &mut LazyMode<F>,
+    mode: &LazyCell<Mode, F>,
     r: &mut Report,
 ) {
     let Some(shared_fd) = canonical_subdir(s, name, r) else {
@@ -243,7 +216,7 @@ fn one_name<F: FnOnce() -> Mode>(
                 r.warn(format!("{name} is a symlink to {shown}; left alone"));
             }
         }
-        libc::S_IFDIR => match mode.get() {
+        libc::S_IFDIR => match **mode {
             Mode::Migrate => migrate(s, name, &shared_fd, r),
             Mode::LinkOnly(why) => r.defer(name, why),
         },

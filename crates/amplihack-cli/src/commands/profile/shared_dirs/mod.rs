@@ -15,6 +15,8 @@ mod link;
 mod merge;
 #[cfg(all(test, unix))]
 mod tests_source_scan;
+#[cfg(unix)]
+mod unix;
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
@@ -238,9 +240,6 @@ pub(super) fn mode_from_liveness(
         Liveness::Unsupported => Mode::LinkOnly(Deferred::LivenessUnknown),
     }
 }
-
-#[cfg(unix)]
-mod unix;
 
 #[cfg(test)]
 pub(super) mod test_hook {

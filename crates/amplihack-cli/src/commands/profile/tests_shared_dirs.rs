@@ -641,7 +641,7 @@ fn every_name_lands_in_exactly_one_outcome() {
 #[cfg(target_os = "linux")]
 #[test]
 fn liveness_maps_to_mode_and_any_doubt_never_migrates() {
-    use super::auto_switch::Liveness;
+    use super::auto_switch::kit::Liveness;
     use std::collections::BTreeSet;
     let a = n("A");
     let known = |names: &[&str]| {
@@ -673,7 +673,7 @@ fn liveness_maps_to_mode_and_any_doubt_never_migrates() {
 #[cfg(all(unix, not(target_os = "linux")))]
 #[test]
 fn unsupported_liveness_off_linux_is_liveness_unknown() {
-    use super::auto_switch::Liveness;
+    use super::auto_switch::kit::Liveness;
     assert_eq!(
         shared_dirs::mode_from_liveness(&Liveness::Unsupported, &n("A")),
         Mode::LinkOnly(Deferred::LivenessUnknown)

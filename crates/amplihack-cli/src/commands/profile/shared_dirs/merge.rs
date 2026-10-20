@@ -20,7 +20,7 @@ const MAX_DEPTH: usize = 16;
 /// Temporary copies in the shared store; the only files ever deleted there.
 pub(super) const TMP_PREFIX: &[u8] = b".amplihack-share-tmp-";
 const MAX_CONFLICT_SLOTS: usize = 1000;
-const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
+pub(super) const DIR_FLAGS: libc::c_int = libc::O_RDONLY | libc::O_NOFOLLOW | libc::O_DIRECTORY;
 
 #[derive(Debug, Default)]
 pub(super) struct MergeOutcome {
@@ -277,8 +277,7 @@ fn forced_exdev() -> bool {
 /// Removes leftover reserved temporary files from an interrupted copy, but
 /// only regular files owned by the effective user.
 fn remove_reserved_temps(dst: &OwnedFd) -> Result<(), MergeError> {
-    // SAFETY: geteuid has no preconditions.
-    let euid = unsafe { libc::geteuid() };
+    let euid = super::super::auto_switch::euid();
     for name in fdwalk::list(dst).map_err(fail("read"))? {
         if !name.as_bytes().starts_with(TMP_PREFIX) {
             continue;
