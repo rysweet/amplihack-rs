@@ -193,6 +193,14 @@ behind, and the link takes its place. The merge is safe to stop and re-run;
 the next launch picks up where it stopped. A second run on a merged profile
 changes nothing.
 
+If the link is put in place but the old directory can't then be renamed to
+its `.pre-share-` backup name, amplihack warns
+`rename failed: ...; nothing removed, the old directory is at <profile>/.<name>.share-tmp`.
+That warning is printed only once: on later runs `<name>` is a correct link
+and the leftover isn't mentioned again. Check its contents, move anything you
+still want into `~/.claude/<name>`, then remove it by hand. While it is still
+there, a later swap of the same name refuses to run.
+
 ### Resume the losing copy of a conflict
 
 The `.conflict-<profile>` suffix stops Claude from listing the file as a
@@ -286,13 +294,15 @@ amplihack leaves a profile's directories as they are, with a warning, when:
   [Stop sharing for one profile](#stop-sharing-for-one-profile));
 - `$HOME` is unset, or `~/.claude` doesn't exist (no warning in this case;
   amplihack doesn't create `~/.claude`);
-- `~/.claude` is not owned by you, or is writable by group or others
-  (`mode & 0o022` is not zero);
+- `~/.claude` is not owned by you, or is writable by group or others (a
+  group-writable directory is accepted when the group is your own private
+  group, as with Ubuntu's default umask of `002`);
 - the profile directory is not owned by you, or has any group or other
   permission bit (`mode & 0o077` is not zero, the same rule as the
   launch check);
-- `~/.claude/projects` (or one of the other two) is a symlink or not a
-  directory;
+- `~/.claude/projects` (or one of the other two) is a symlink, not a
+  directory, not owned by you, or writable by group or others (same rule as
+  `~/.claude`). Only that name is skipped;
 - the profile directory is `~/.claude` or inside it;
 - the profile's `projects/` is already a symlink to somewhere else, or is a
   file rather than a directory. amplihack never follows or replaces it.

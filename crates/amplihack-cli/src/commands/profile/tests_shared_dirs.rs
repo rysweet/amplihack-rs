@@ -860,9 +860,11 @@ fn a_failed_link_swap_is_rolled_back_and_nothing_is_lost() {
     );
     let lines = f.lines("A", &r);
     assert!(
-        lines.iter().any(|l| l.starts_with(
-            "amplihack: profile A: projects: could not replace the directory with a link ("
-        ) && l.ends_with("); left as it was")),
+        lines.iter().any(|l| l
+            .starts_with("amplihack: profile A: projects: could not swap in the link (")
+            && l.ends_with(
+                "); ~/.claude-profiles/A/projects was not replaced; files already merged are in ~/.claude/projects"
+            )),
         "{lines:#?}"
     );
 }
@@ -900,6 +902,40 @@ fn a_cross_filesystem_move_copies_masks_the_mode_keeps_mtime_then_unlinks() {
         .collect();
     assert!(leftovers.is_empty(), "temp files left: {leftovers:?}");
     assert_eq!(r.migrated[0].moved, 1);
+}
+
+#[test]
+fn a_cross_filesystem_merge_checks_the_destination_before_copying() {
+    let f = Fx::new();
+    let same = f.shared("projects/-w/same.jsonl", b"same");
+    let same_ino = fs::metadata(&same).unwrap().ino();
+    let kept = f.shared("projects/-w/s1.jsonl", b"canonical");
+    let kept_ino = fs::metadata(&kept).unwrap().ino();
+    f.legacy("A", "projects/-w/same.jsonl", b"same");
+    f.legacy("A", "projects/-w/s1.jsonl", b"profile copy");
+    shared_dirs::test_hook::set_force_exdev(true);
+    let _reset = Reset(|| shared_dirs::test_hook::set_force_exdev(false));
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    let m = &r.migrated[0];
+    assert_eq!((m.moved, m.identical, m.conflicts), (0, 1, 1));
+    assert_eq!(fs::metadata(&same).unwrap().ino(), same_ino);
+    assert_eq!(fs::metadata(&kept).unwrap().ino(), kept_ino);
+    assert_eq!(fs::read(&kept).unwrap(), b"canonical");
+    let mut names: Vec<_> = fs::read_dir(f.canon.join("projects/-w"))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().into_string().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["s1.jsonl", "s1.jsonl.conflict-A", "same.jsonl"]);
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/s1.jsonl.conflict-A")).unwrap(),
+        b"profile copy"
+    );
+    let backup = f.only_backup("A", "projects");
+    assert_eq!(fs::read(backup.join("-w/same.jsonl")).unwrap(), b"same");
+    assert!(!backup.join("-w/s1.jsonl").exists(), "conflict source kept");
 }
 
 // ------------------------------------------------------------- security
@@ -1072,8 +1108,8 @@ fn a_symlinked_canonical_root_is_refused_and_nothing_changes() {
 }
 
 #[test]
-fn a_group_or_world_writable_canonical_root_is_refused() {
-    for mode in [0o770, 0o707, 0o777] {
+fn a_world_writable_canonical_root_is_refused() {
+    for mode in [0o707, 0o777] {
         let f = Fx::new();
         chmod(&f.canon, mode);
         f.legacy("A", "projects/-w/s1.jsonl", b"x");
@@ -1089,6 +1125,63 @@ fn a_group_or_world_writable_canonical_root_is_refused() {
             f.lines("A", &r)
         );
     }
+}
+
+/// Group write is accepted only for the user's own private group, so the
+/// answer depends on the host's groups; both outcomes are checked.
+#[test]
+fn a_group_writable_canonical_root_follows_the_private_group_rule() {
+    let f = Fx::new();
+    chmod(&f.canon, 0o770);
+    f.profile("A");
+    let refused = super::auto_switch::writable_by_others(&fs::metadata(&f.canon).unwrap());
+    let before = snapshot(&f.home);
+
+    let r = f.ensure_no_mode("A");
+
+    let warning = "amplihack: profile A: ~/.claude is not owned by you or is writable by group or others; sessions not shared".to_string();
+    if refused {
+        assert_eq!(snapshot(&f.home), before);
+        assert!(
+            f.lines("A", &r).contains(&warning),
+            "{:#?}",
+            f.lines("A", &r)
+        );
+    } else {
+        f.assert_linked("A", "projects");
+        assert!(
+            !f.lines("A", &r).contains(&warning),
+            "{:#?}",
+            f.lines("A", &r)
+        );
+    }
+}
+
+#[test]
+fn a_canonical_subdir_writable_by_others_refuses_only_that_name() {
+    let f = Fx::new();
+    fs::create_dir(f.canon.join("projects")).unwrap();
+    chmod(&f.canon.join("projects"), 0o707);
+    f.legacy("A", "projects/-w/s1.jsonl", b"x");
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert!(is_real_dir(&f.dir("A").join("projects")));
+    assert_eq!(
+        fs::read(f.dir("A").join("projects/-w/s1.jsonl")).unwrap(),
+        b"x"
+    );
+    assert!(!f.canon.join("projects/-w").exists());
+    f.assert_linked("A", "file-history");
+    f.assert_linked("A", "session-env");
+    assert!(
+        f.lines("A", &r).contains(
+            &"amplihack: profile A: ~/.claude/projects is not owned by you or is writable by group or others; projects not shared"
+                .to_string()
+        ),
+        "{:#?}",
+        f.lines("A", &r)
+    );
 }
 
 #[test]

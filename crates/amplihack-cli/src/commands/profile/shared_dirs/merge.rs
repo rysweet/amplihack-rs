@@ -259,7 +259,16 @@ fn place(
     };
     match err.raw_os_error() {
         Some(libc::EEXIST) => Err(Placed::Exists),
-        Some(libc::EXDEV) => copy_across(input, meta, src, name, dst, to, path),
+        // EXDEV comes before any check of `to`; look first so a name the
+        // shared store already has is never copied. The no-replace rename at
+        // the end of the copy still covers a name that appears meanwhile.
+        Some(libc::EXDEV) => match stat_at(dst.as_raw_fd(), to) {
+            Ok(_) => Err(Placed::Exists),
+            Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
+                copy_across(input, meta, src, name, dst, to, path)
+            }
+            Err(e) => Err(Placed::Fail(fail("open")(e))),
+        },
         _ => Err(Placed::Fail(fail("rename")(err))),
     }
 }

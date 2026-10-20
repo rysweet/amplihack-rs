@@ -4,12 +4,12 @@
 use super::link::{Swap, shell_quote, swap_in_link, symlink_at};
 use super::merge::{DIR_FLAGS, MergeError, merge_tree, stat_at};
 use super::{Conflict, Deferred, Migrated, Mode, Report, SHARED_SESSION_DIRS};
-use crate::commands::profile::auto_switch::euid;
+use crate::commands::profile::auto_switch::{euid, writable_by_others};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::fdwalk;
 use std::cell::LazyCell;
 use std::ffi::OsStr;
-use std::fs;
+use std::fs::{self, File};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -75,7 +75,7 @@ fn check_canonical_root(root: &Path, r: &mut Report) -> Option<(PathBuf, OwnedFd
         refused(r);
         return None;
     }
-    if meta.uid() != euid() || meta.mode() & 0o022 != 0 {
+    if meta.uid() != euid() || writable_by_others(&meta) {
         r.warn(format!(
             "{} is not owned by you or is writable by group or others; sessions not shared",
             root.display()
@@ -152,10 +152,11 @@ fn check_profile_dir(
 }
 
 /// `<canonical root>/<name>`, created `0700` when missing. `None` (with a
-/// warning) when it is a symlink, not a directory, or cannot be made.
+/// warning) when it is a symlink, not a directory, not owned by you or
+/// writable by others, or cannot be made.
 fn canonical_subdir(s: &Sides, name: &'static str, r: &mut Report) -> Option<OwnedFd> {
     let n = OsStr::new(name);
-    let c = fdwalk::cstr(n).ok()?;
+    let c = fdwalk::cstr(n).expect("static name has no NUL");
     // SAFETY: a valid directory descriptor and NUL-terminated name.
     if unsafe { libc::mkdirat(s.canon_fd.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
         let e = std::io::Error::last_os_error();
@@ -164,11 +165,26 @@ fn canonical_subdir(s: &Sides, name: &'static str, r: &mut Report) -> Option<Own
             return None;
         }
     }
-    match fdwalk::openat(s.canon_fd.as_raw_fd(), n, DIR_FLAGS, 0) {
-        Ok(fd) => Some(fd),
+    let file = match fdwalk::openat(s.canon_fd.as_raw_fd(), n, DIR_FLAGS, 0) {
+        Ok(fd) => File::from(fd),
         Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
             r.warn(format!(
                 "{} is a symlink or not a directory; {name} not shared",
+                s.shown_root.join(name).display()
+            ));
+            return None;
+        }
+        Err(e) => {
+            r.warn(format!("{name}: open failed: {e}; nothing removed"));
+            return None;
+        }
+    };
+    // The opened descriptor, not the path, is what the merge writes into.
+    match file.metadata() {
+        Ok(m) if m.uid() == euid() && !writable_by_others(&m) => Some(OwnedFd::from(file)),
+        Ok(_) => {
+            r.warn(format!(
+                "{} is not owned by you or is writable by group or others; {name} not shared",
                 s.shown_root.join(name).display()
             ));
             None
@@ -255,7 +271,9 @@ fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
         Swap::Done(backup) => Some(backup),
         Swap::RolledBack(e) => {
             r.warn(format!(
-                "{name}: could not replace the directory with a link ({e}); left as it was"
+                "{name}: could not swap in the link ({e}); {} was not replaced; files already merged are in {}",
+                real.display(),
+                shown.display()
             ));
             None
         }

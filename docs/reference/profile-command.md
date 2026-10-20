@@ -782,13 +782,15 @@ changed.
 | `$HOME` unset (`shared_assets` is `None`) | No-op, no message. |
 | `~/.claude` doesn't exist | No-op, debug log only. `~/.claude` is never created. |
 | `~/.claude` is a symlink or not a directory | Warning, no-op. |
-| `~/.claude` is not owned by the effective user, or `mode & 0o022 != 0` (group or world writable) | Warning, no-op. |
+| `~/.claude` is not owned by the effective user, or is writable by others, or is group-writable when the group is not your own private group (a group named like your user with no listed members, the usual layout with a umask of `002`) | Warning, no-op. |
 | The profile directory is not owned by the effective user, or `mode & 0o077 != 0` (any group or other bit; the same mask as the [pre-spawn check](#pre-spawn-check)) | Warning, no-op. |
 | The profile directory is the canonical root or inside it (canonicalized, compared by path components) | No-op. `~/.claude/projects` is never replaced with a link. |
 
 Then each name is checked on its own. If `<canonical root>/<name>` is
-missing it is created with mode `0700`. If it is a symlink or not a
-directory, that name is refused with a warning and the other names go on.
+missing it is created with mode `0700`. If it is a symlink, not a
+directory, not owned by the effective user, or writable by group or others
+(the same private-group rule as the root, checked with `fstat` on the opened
+directory), that name is refused with a warning and the other names go on.
 Modes of existing directories are never changed.
 
 ### Per-name state table
@@ -906,12 +908,14 @@ default log level.
 | `projects is a symlink to <target>; left alone` | A foreign or dangling link at the profile's name. |
 | `projects is not a directory or a link; left alone` | Any other file type at the profile's name. |
 | `~/.claude/projects is a symlink or not a directory; projects not shared` | The canonical name is refused; the other names go on. |
+| `~/.claude/projects is not owned by you or is writable by group or others; projects not shared` | The canonical name fails the ownership/permission check; the other names go on. |
 | `~/.claude is a symlink or not a directory; sessions not shared` | Canonical root refused. |
-| `~/.claude is not owned by you or is writable by group or others; sessions not shared` | Canonical root fails the `0o022` check. |
+| `~/.claude is not owned by you or is writable by group or others; sessions not shared` | Canonical root fails the ownership/permission check (group write is accepted only for your own private group, as for `install`). |
 | `profile directory is not owned by you or has group or other permissions; sessions not shared` | Profile directory fails the `0o077` check. |
 | `projects: not enough free space to copy <path> (<n> bytes) to ~/.claude/projects; merge stopped, nothing removed` | `EXDEV` copy refused by the `statvfs` check. The name stays a real directory and the next call retries. |
-| `projects: could not replace the directory with a link (<OS error>); left as it was` | The link swap failed and the rollback worked. |
+| `projects: could not swap in the link (<OS error>); <profile dir>/projects was not replaced; files already merged are in ~/.claude/projects` | The link swap failed and the rollback worked. The profile's directory is still real, but the files moved before the swap are already in the shared store. The next call merges what is left and retries the swap. |
 | `projects: could not restore the old directory (<OS error>); run: mv '<backup>' '<profile dir>/projects'` | The link swap and its rollback both failed. The `mv` is printed with the real absolute paths, shell-quoted. |
+| `projects: rename failed: <OS error>; nothing removed, the old directory is at <profile dir>/.projects.share-tmp` | The link is in place but the old directory could not be renamed to its backup name. Printed once; remove the leftover by hand after checking it (see the how-to). While it exists, a later swap of the same name refuses. |
 | `projects: <step> failed: <OS error>; nothing removed` | Any other I/O error during the merge. `<step>` is `open`, `read`, `copy`, `rename` or `mkdir`. The name stays a real directory. |
 | `shared session dirs not supported on this platform; profiles keep separate projects/` | Not a Unix system. Printed by `add` only. |
 
