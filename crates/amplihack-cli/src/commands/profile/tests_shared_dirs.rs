@@ -15,7 +15,7 @@
 //!   `Deferred { LiveSession, LivenessCheckFailed, LivenessUnknown, Raced }` (Copy, PartialEq).
 //! - `ensure_shared_session_dirs(profile_dir, profile, canonical_root, mode)`
 //!   -> `Report { linked, already_ok, migrated, deferred, conflicts,
-//!   warnings, unsupported }`, `Report::is_noop()`,
+//!   warnings, unsupported, announced }`, `Report::is_noop()`,
 //!   `Report::render(&ProfileName, Option<&Path>) -> Vec<String>` (the
 //!   stderr lines, prefix included, paths shortened against the home given).
 //! - `Migrated { name, moved, identical, conflicts, backup }`,
@@ -1510,6 +1510,28 @@ fn a_memory_index_that_cannot_be_appended_to_is_reported_and_the_merge_goes_on()
             "amplihack: profile A: projects: memory index -w/memory/MEMORY.md: entries not added ("
         ) && l
             .ends_with("add them by hand from ~/.claude/projects/-w/memory/MEMORY.md.conflict-A")),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn a_memory_index_that_is_not_utf8_is_reported_as_not_merged() {
+    let f = Fx::new();
+    f.shared("projects/-w/memory/MEMORY.md", b"- [S](s.md)\n");
+    f.legacy("A", "projects/-w/memory/MEMORY.md", b"- [Mine](\xff.md)\n");
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/MEMORY.md.conflict-A")).unwrap(),
+        b"- [Mine](\xff.md)\n"
+    );
+    let lines = f.lines("A", &r);
+    assert!(
+        lines.iter().any(|l| l
+            == "amplihack: profile A: projects: memory index -w/memory/MEMORY.md: entries not added \
+                (an index is over 1 MiB or not UTF-8); add them by hand from \
+                ~/.claude/projects/-w/memory/MEMORY.md.conflict-A"),
         "{lines:#?}"
     );
 }

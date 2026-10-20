@@ -167,6 +167,8 @@ pub(super) fn merge_index(
         Err(e) => return Err(e),
     };
     let (Some(theirs), Some(ours)) = (theirs, ours) else {
+        let why = "an index is over 1 MiB or not UTF-8".to_string();
+        cx.out.indexes.push((path.to_path_buf(), Err(why)));
         return Ok(());
     };
     let dir = path.parent().unwrap_or(Path::new(""));
