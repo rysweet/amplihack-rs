@@ -119,35 +119,32 @@ fn check_profile_dir(
                 .to_string(),
         );
     };
-    let meta = match fs::symlink_metadata(dir) {
-        Ok(m) => m,
-        Err(e) => {
-            r.warn(format!("{}: {e}; sessions not shared", dir.display()));
-            return None;
-        }
-    };
+    let io_err = |r: &mut Report, e| r.warn(format!("{}: {e}; sessions not shared", dir.display()));
+    let meta = fs::symlink_metadata(dir).map_err(|e| io_err(r, e)).ok()?;
     if meta.file_type().is_symlink() || !profile_ok(&meta) {
         unsafe_dir(r);
         return None;
     }
-    let real = match dir.canonicalize() {
-        Ok(p) => p,
-        Err(e) => {
-            r.warn(format!("{}: {e}; sessions not shared", dir.display()));
-            return None;
-        }
-    };
+    let real = dir.canonicalize().map_err(|e| io_err(r, e)).ok()?;
     // Path::starts_with compares whole components, so `~/.claude-profiles`
     // is not inside `~/.claude`.
+    if real == canon {
+        tracing::debug!("profile {profile}: is the shared store; never linked");
+        return None;
+    }
     if real.starts_with(canon) {
-        tracing::debug!("profile {profile}: inside the shared store; never linked");
+        r.warn(format!(
+            "{} is inside {}; sessions not shared",
+            dir.display(),
+            canon.display()
+        ));
         return None;
     }
     match fdwalk::openat(libc::AT_FDCWD, dir.as_os_str(), DIR_FLAGS, 0).and_then(opened_meta) {
         // Checked again on the opened directory, as for the canonical root.
         Ok((fd, m)) if profile_ok(&m) => Some(fd),
         Err(e) if !matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
-            r.warn(format!("{}: {e}; sessions not shared", dir.display()));
+            io_err(r, e);
             None
         }
         _ => {

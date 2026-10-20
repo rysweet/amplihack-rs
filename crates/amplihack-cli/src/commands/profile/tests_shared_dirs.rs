@@ -1373,7 +1373,13 @@ fn the_canonical_root_itself_or_a_dir_inside_it_is_never_linked() {
     chmod(&inside, 0o700);
     let before_inside = snapshot(&f.home);
     let r = ensure_shared_session_dirs(&inside, &n("nested"), &f.canon, || Mode::Migrate);
-    assert!(r.is_noop());
+    // Not silent: the user would otherwise never learn sharing is off.
+    assert_eq!(
+        f.lines("nested", &r),
+        vec![
+            "amplihack: profile nested: ~/.claude/nested is inside ~/.claude; sessions not shared"
+        ]
+    );
     assert_eq!(snapshot(&f.home), before_inside);
     assert!(is_real_dir(&f.canon.join("projects")));
 }

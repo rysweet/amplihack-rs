@@ -336,7 +336,8 @@ amplihack leaves a profile's directories as they are, with a warning, when:
 - `~/.claude/projects` (or one of the other two) is a symlink, not a
   directory, not owned by you, or writable by group or others (same rule as
   `~/.claude`). Only that name is skipped;
-- the profile directory is `~/.claude` or inside it;
+- the profile directory is inside `~/.claude` (a warning is printed; move
+  the profile root elsewhere to share sessions);
 - the profile's `projects/` is already a symlink to somewhere else, or is a
   file rather than a directory. amplihack never follows or replaces it.
 

@@ -784,7 +784,8 @@ changed.
 | `~/.claude` is a symlink or not a directory | Warning, no-op. |
 | `~/.claude` is not owned by the effective user, or is writable by others, or is group-writable when the group is not your own private group (a group named like your user with no listed members, the usual layout with a umask of `002`) | Warning, no-op. |
 | The profile directory is not owned by the effective user, or `mode & 0o077 != 0` (any group or other bit; the same mask as the [pre-spawn check](#pre-spawn-check)) | Warning, no-op. |
-| The profile directory is the canonical root or inside it (canonicalized, compared by path components) | No-op. `~/.claude/projects` is never replaced with a link. |
+| The profile directory is the canonical root (canonicalized) | No-op, debug log only. `~/.claude/projects` is never replaced with a link. |
+| The profile directory is inside the canonical root (canonicalized, compared by path components) | Warning, no-op. |
 
 Then each name is checked on its own. If `<canonical root>/<name>` is
 missing it is created with mode `0700`. If it is a symlink, not a
@@ -943,6 +944,7 @@ default log level.
 | `projects: could not restore the old directory (<OS error>); run: mv '<backup>' '<profile dir>/projects'` | The link swap and its rollback both failed. The `mv` is printed with the real absolute paths, shell-quoted. |
 | `projects: rename failed: <OS error>; nothing removed, the old directory is at <profile dir>/.projects.share-tmp` | The link is in place but the old directory could not be renamed to its backup name. Printed once; remove the leftover by hand after checking it (see the how-to). While it exists, a later swap of the same name refuses. |
 | `projects: <step> failed: <OS error>; nothing removed` | Any other I/O error during the merge. `<step>` is `open`, `read`, `copy`, `rename`, `mkdir`, `chmod` or `link`. The same line is printed when creating, opening or linking the name fails before any merge. The name stays a real directory. |
+| `<profile dir> is inside ~/.claude; sessions not shared` | The profile root is under `~/.claude`; move it elsewhere to share sessions. |
 | `<path>: <OS error>; sessions not shared` | The opt-out marker, `~/.claude` or the profile directory could not be checked. Nothing changed. |
 | `shared session dirs not supported on this platform; profiles keep separate projects/` | Not a Unix system. Printed by `add` only. |
 
