@@ -46,6 +46,9 @@ mod tests_usage_parse;
 mod tests_verify;
 
 use anyhow::Result;
+pub(crate) use auto_switch::{
+    launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
+};
 use clap::Subcommand;
 use name::ProfileName;
 use root_cmd::{render_list, render_show};

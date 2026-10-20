@@ -3,7 +3,9 @@
 //!
 //! The wrapper records the `rate_limits` reading, runs the profile's original
 //! status-line command with the same input and passes its output through
-//! unchanged, then runs the swap check. It never writes to stdout itself.
+//! unchanged, then runs the swap check. The only thing it writes to stdout
+//! itself is the no-capacity warning line, after the original output, when
+//! every account is over the auto-switch threshold (see `capacity`).
 
 use super::config;
 use super::fsx;
@@ -48,8 +50,14 @@ pub fn run(root_arg: &str, owner_arg: &str) -> i32 {
         reading = std::panic::catch_unwind(|| record(state, owner, &input)).unwrap_or(None);
     }
 
+    // After the reading, so this tick's own reading counts.
+    let notice = state.as_ref().and_then(|s| {
+        std::panic::catch_unwind(|| super::capacity::statusline_line(&s.root))
+            .ok()
+            .flatten()
+    });
     let code = match (&state, &owner) {
-        (Some(s), Some(o)) => run_original(s, o, &input),
+        (Some(s), Some(o)) => run_original(s, o, &input, notice.as_deref()),
         _ => 0,
     };
 
@@ -130,8 +138,9 @@ fn record(state: &State, owner: &ProfileName, input: &[u8]) -> Option<usage::Rat
         let mut file = state.load_usage();
         let merged = usage::merge(file.accounts.get(&account), usage::reading_from(&rl, now));
         file.accounts.insert(account, merged);
-        if let Err(e) = state.save_usage(&file) {
-            eprintln!("auto-switch: {e}");
+        match state.save_usage(&file) {
+            Ok(()) => super::capacity::refresh(state, &file, &ledger, "statusline"),
+            Err(e) => eprintln!("auto-switch: {e}"),
         }
     }
     drop(lock);
@@ -162,8 +171,27 @@ fn swap_step(state: &State, owner: &ProfileName, rl: &usage::RateLimits) {
 }
 
 /// Step 2: the profile's original status line, run with `sh -c` like Claude
-/// does, with the same input. Its stdout and stderr are the wrapper's.
-fn run_original(state: &State, owner: &ProfileName, input: &[u8]) -> i32 {
+/// does, with the same input. Its stdout and stderr are the wrapper's. With a
+/// `notice`, its stdout is streamed through unchanged and the warning line
+/// follows on a line of its own.
+fn run_original(state: &State, owner: &ProfileName, input: &[u8], notice: Option<&str>) -> i32 {
+    let Some(line) = notice else {
+        return spawn_original(state, owner, input, None);
+    };
+    let mut out = super::capacity::Tail::new(std::io::stdout().lock());
+    let code = spawn_original(state, owner, input, Some(&mut out));
+    out.finish_with(line);
+    code
+}
+
+/// The original status line; `piped` receives its stdout instead of the
+/// terminal.
+fn spawn_original(
+    state: &State,
+    owner: &ProfileName,
+    input: &[u8],
+    piped: Option<&mut dyn Write>,
+) -> i32 {
     if !state.exists() {
         return 0;
     }
@@ -182,7 +210,11 @@ fn run_original(state: &State, owner: &ProfileName, input: &[u8]) -> i32 {
         .arg("-c")
         .arg(command)
         .stdin(Stdio::piped())
-        .stdout(Stdio::inherit())
+        .stdout(if piped.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .stderr(Stdio::inherit())
         .spawn()
     {
@@ -197,6 +229,11 @@ fn run_original(state: &State, owner: &ProfileName, input: &[u8]) -> i32 {
         std::thread::spawn(move || {
             let _ = stdin.write_all(&bytes);
         });
+    }
+    if let (Some(out), Some(mut stdout)) = (piped, child.stdout.take()) {
+        // fail-quiet: status-line output contract. A broken pipe ends the
+        // copy; the exit status still comes from the child.
+        let _ = std::io::copy(&mut stdout, out);
     }
     match child.wait() {
         Ok(status) => status.code().unwrap_or(1),

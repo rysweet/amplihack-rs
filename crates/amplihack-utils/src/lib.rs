@@ -33,6 +33,7 @@ pub mod artifact_guard;
 pub mod backoff;
 pub mod binary_finder;
 pub mod bundle_generator;
+pub mod claude_capacity;
 pub mod claude_md;
 /// Platform-package selection and native-binary materialization checks for
 /// `@anthropic-ai/claude-code`. See issue #1266.

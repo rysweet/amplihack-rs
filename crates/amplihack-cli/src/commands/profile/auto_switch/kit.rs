@@ -1,7 +1,9 @@
 //! What `profile rotate` (issue #1592) reuses from auto-switch: the state
 //! lock, the toggle, the liveness scan, the file helpers, the login-move
-//! primitives and auto-switch recovery. Re-exports only.
+//! primitives, auto-switch recovery and the no-capacity file writer.
+//! Re-exports only.
 
+pub use super::capacity::{Rotated, refresh_from_rotation as capacity_from_rotation};
 pub use super::config::{Source, effective};
 pub use super::fsx::{
     check_root_private, ensure_private_dir, euid, exists, fsync_dir, movable_login, now,
