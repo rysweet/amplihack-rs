@@ -1830,23 +1830,24 @@ does not depend on `PATH`. It refuses only these:
 - `gh … pr … merge` where `gh` (any path) is the program being run;
 - `gh api` on a merge endpoint, forbidden outside the gate: an endpoint
   of `…/pulls/<n>/merge`, `repos/<o>/<r>/merges` or
-  `repositories/<id>/merges` (any case, path or URL);
-- running `autodrive_merge_gate.sh` as the program, or as the script operand
-  of `bash`, `sh`, `dash`, `zsh`, `ksh`, `source` or `.`. The gate runs only
-  from auto-drive's own recipe step, and it trusts Crusty and QA record
-  files an agent could write. A syntax check (`bash -n …`, `-nv`,
-  `-o noexec`) runs none of the script and passes. With `-c` (alone or in
-  a cluster such as `-ec`) the shell's first operand is a command string,
-  not a script, so `bash -c 'wc -l …/autodrive_merge_gate.sh'` passes: the
-  string is code, which the hook does not read (the `gh` shim still
-  covers a `gh pr merge` inside it).
+  `repositories/<id>/merges` (any case, path or URL).
+
+Running `autodrive_merge_gate.sh` is not one of these forms, and the hook
+reads no shell options. Running the gate from an agent shell is refused by
+the shim's parent and environment check: the shim trusts only a parent that
+is `/bin/bash -p <gate>` with a clean environment, and the runner exports
+`BASH_ENV` into every agent shell, so the gate's merge is refused (T2-G6 and
+`S-G6-*` in `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh`).
+Doing it with a cleaned environment (`env -i /bin/bash -p <gate>`) is
+deliberate evasion and a [non-goal](#what-this-does-not-stop).
+`leaves_merge_gate_runs_to_the_shim` asserts that the hook passes gate runs
+and inspections alike (`bash -n`, `command -v`, `bash -c '… gate'`).
 
 The program is the first word of each command after splitting at unquoted
 `;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
 `!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
 `nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
-skipped. `command -v`/`-V` (also `-pv`, `-p -v`) only looks a name up and
-runs nothing, so it passes. Nothing else is read. Quoted text, the arguments of other programs,
+skipped. Nothing else is read. Quoted text, the arguments of other programs,
 heredoc bodies and comments are data. So these pass with the guard on, alone
 or after a command that runs an interpreter (`bash test.sh && …`,
 `cargo test 2>&1 | awk '{print}'; …`):
@@ -2011,7 +2012,7 @@ the run when the PR is merged outside the gate.
 | Forged `--round-record` or evidence files | Not prevented. The gate re-checks platform facts. |
 | `git push` to the base branch, or `gh api -X PATCH …/git/refs/heads/<base>` | Pushes, not merges: branch protection is the boundary. In phases 1–2 the `MERGED` checks catch them. |
 | A same-user process that preloads a library into, or attaches a debugger to, a gate it launched itself | Not prevented. As deliberate as calling `gh` by absolute path. |
-| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the [hook check](#the-pre-tool-use-hook-check) when the gate is the program, or the script operand of a shell or of `source`/`.`. Reading, diffing, staging or searching the gate passes. Through a variable or a script file the hook does not see it, and the shim then trusts the gate like phase 3. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). |
+| An agent running the installed gate itself, as `/bin/bash -p <gate> --pr N` | Refused by the shim: an agent shell carries the runner's `BASH_ENV`, so the gate's parent environment is not clean and the shim refuses its merge. The [hook check](#the-pre-tool-use-hook-check) does not read gate runs. Clearing the environment first (`env -i /bin/bash -p <gate>`) gets past the shim, which then trusts the gate like phase 3; that is deliberate evasion, the stated non-goal. The gate still re-reads CI, conflicts and review threads from GitHub, so it merges only a PR that passes them, but its Crusty and QA records are files and can be forged (below). |
 | A merge during phase 3 | The gate treats an already-`MERGED` PR as success, so it is not reported. |
 | An extension binary run directly from `~/.local/share/gh/extensions` | Not refused, like `gh` by absolute path. Caught by the `MERGED` checks. |
 | A fake `jq`, `git` or `gh` planted in a `PATH` entry ahead of the system one | The gate finds its tools through `PATH`, so it could misread CI. Not prevented; the gate's facts come from GitHub, and branch protection is the boundary. |

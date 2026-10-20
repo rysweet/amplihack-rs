@@ -62,27 +62,23 @@ fn refuses_gh_api_on_a_merge_endpoint() {
     }
 }
 
+/// Running the merge gate is not a form this hook reads (crusty round 15):
+/// the shim refuses the merge of a gate run from an agent shell, since its
+/// environment carries `BASH_ENV`, and a cleared environment is the
+/// non-goal. So gate runs and inspections pass the hook alike, with no shell
+/// option parsing to get wrong.
 #[test]
-fn refuses_running_the_merge_gate() {
+fn leaves_merge_gate_runs_to_the_shim() {
     for cmd in [
         "./amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
-        "bash -p \"$AMPLIHACK_HOME/amplifier-bundle/tools/autodrive_merge_gate.sh\" --pr 38",
-        "/bin/bash -p ~/.amplihack/amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
-        "cd amplifier-bundle/tools && bash autodrive_merge_gate.sh --pr 38",
-        "env -u AMPLIHACK_MERGE_GUARD amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "X=1 . amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "source amplifier-bundle/tools/autodrive_merge_gate.sh",
-        // `-n` only counts before the script, and `--norc` is not `-n`.
-        "bash --norc amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
-        "bash -x amplifier-bundle/tools/autodrive_merge_gate.sh -n 38",
-        "bash -o errexit amplifier-bundle/tools/autodrive_merge_gate.sh",
-        // `command` without `-v`/`-V` runs it.
-        "command amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
-        "command -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "bash -p amplifier-bundle/tools/autodrive_merge_gate.sh --pr 38",
+        "bash -n amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "bash -s < amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "zsh --no-rcs amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "command -v amplifier-bundle/tools/autodrive_merge_gate.sh",
+        "bash -c 'wc -l amplifier-bundle/tools/autodrive_merge_gate.sh'",
     ] {
-        let block = check(cmd).unwrap_or_else(|| panic!("not refused: {cmd}"));
-        let message = block["message"].as_str().unwrap();
-        assert!(message.contains("merge gate"), "{message}");
+        assert!(!blocked(cmd), "the hook read a gate run: {cmd}");
     }
 }
 
@@ -115,20 +111,6 @@ fn data_mentions_pass_in_every_context() {
         "echo \"$(printf '%s' \"a) gh pr merge 38\")\"",
         "# gh pr merge 38",
         "cat x <<< 'gh pr merge 38'",
-        // A syntax check reads the gate and runs none of it (crusty round 11).
-        "bash -n amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "sh -n amplifier-bundle/tools/autodrive_merge_gate.sh && echo ok",
-        "bash -nv amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "bash -o noexec amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "shellcheck amplifier-bundle/tools/autodrive_merge_gate.sh",
-        // `command -v`/`-V` look the name up and run nothing (crusty round 13).
-        "command -v amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "command -V amplifier-bundle/tools/autodrive_merge_gate.sh",
-        "command -pv autodrive_merge_gate.sh >/dev/null && echo found",
-        // A `-c` string is code, not a script operand (crusty round 14).
-        "bash -c 'wc -l amplifier-bundle/tools/autodrive_merge_gate.sh'",
-        "sh -c \"shellcheck amplifier-bundle/tools/autodrive_merge_gate.sh\"",
-        "bash -o pipefail -c 'git diff | grep x amplifier-bundle/tools/autodrive_merge_gate.sh'",
     ];
     let before = [
         "",

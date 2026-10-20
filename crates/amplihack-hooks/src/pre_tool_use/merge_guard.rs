@@ -9,9 +9,15 @@
 //!
 //! * `gh … pr … merge` where `gh` (any path) is the program being run;
 //! * `gh api <endpoint>` whose endpoint is `…/pulls/<n>/merge` or a
-//!   `…/merges` endpoint;
-//! * running `autodrive_merge_gate.sh`, as the program or as the script
-//!   operand of a shell or `source`/`.`.
+//!   `…/merges` endpoint.
+//!
+//! Running `autodrive_merge_gate.sh` is not one of them. The shim trusts only
+//! a parent that is `/bin/bash -p <gate>` with a clean environment, and the
+//! runner exports `BASH_ENV` into every agent shell, so a gate run from an
+//! agent's shell has its merge refused by the shim. Clearing the environment
+//! first to get past that is deliberate evasion, the stated non-goal; reading
+//! shell options here to spot gate runs only produced false positives
+//! (`bash -n`, `command -v`, `bash -c '… gate'`; crusty rounds 11–15).
 //!
 //! The program word is the first word of each command, after `VAR=value`
 //! assignments and the wrappers in [`WRAPPERS`]. Nothing else is read: quoted
@@ -38,9 +44,6 @@ use std::sync::LazyLock;
 /// `crates/amplihack-cli/src/commands/recipe/run/merge_guard.rs`).
 pub(super) const MERGE_GUARD_ENV: &str = "AMPLIHACK_MERGE_GUARD";
 
-/// The merge gate's file name. Only auto-drive's own recipe step runs it.
-const GATE_NAME: &str = "autodrive_merge_gate.sh";
-
 /// Programs that run the command after them: `(name, options that take a
 /// value, positional arguments before the command)`.
 const WRAPPERS: &[(&str, &[&str], usize)] = &[
@@ -66,9 +69,6 @@ const WRAPPERS: &[(&str, &[&str], usize)] = &[
 const RESERVED: &[&str] = &[
     "!", "{", "}", "if", "then", "elif", "else", "while", "until", "do",
 ];
-
-/// Programs that run their first operand as a shell script.
-const SHELLS: &[&str] = &["bash", "sh", "dash", "zsh", "ksh", "source", "."];
 
 /// `gh api` options that take a value (so the value is not the endpoint).
 const GH_API_VALUE_OPTS: &[&str] = &[
@@ -132,59 +132,14 @@ pub(super) fn check(command: &str) -> Option<Value> {
 fn merge_form(words: &[String]) -> Option<&'static str> {
     let rest = program(words)?;
     let (name, args) = rest.split_first()?;
-    match basename(name) {
-        "gh" => gh_merge_form(args),
-        GATE_NAME => Some("a run of the merge gate (autodrive_merge_gate.sh)"),
-        shell if SHELLS.contains(&shell) => {
-            let at = script_index(args)?;
-            (basename(&args[at]) == GATE_NAME && !no_exec(&args[..at]))
-                .then_some("a run of the merge gate (autodrive_merge_gate.sh)")
-        }
-        _ => None,
+    if basename(name) != "gh" {
+        return None;
     }
-}
-
-/// The index of a shell's script operand: the first word that is not an
-/// option, where `-o`/`+o`/`-O`/`+O` take the next word as their value.
-/// With `-c` (alone or in a cluster such as `-ec`) the first operand is a
-/// command string, not a script file, so there is no script operand: the
-/// string is code, which the hook does not read (crusty round 14).
-fn script_index(args: &[String]) -> Option<usize> {
-    let mut i = 0;
-    while let Some(a) = args.get(i) {
-        if !a.starts_with(['-', '+']) {
-            return Some(i);
-        }
-        if a.strip_prefix('-')
-            .is_some_and(|f| !f.starts_with('-') && f.contains('c'))
-        {
-            return None;
-        }
-        i += if matches!(a.as_str(), "-o" | "+o" | "-O" | "+O") {
-            2
-        } else {
-            1
-        };
-    }
-    None
-}
-
-/// Whether a shell's options (the words before its script) turn on `noexec`,
-/// as `-n`, a cluster such as `-nv`, or `-o noexec`: the shell only reads the
-/// script for syntax errors and runs none of it, so `bash -n <gate>` is a
-/// syntax check, not a run of the gate (crusty round 11).
-fn no_exec(options: &[String]) -> bool {
-    options.iter().enumerate().any(|(i, o)| {
-        let short = o.strip_prefix('-').filter(|f| !f.starts_with('-'));
-        short.is_some_and(|f| f.contains('n'))
-            || (o == "-o" && options.get(i + 1).is_some_and(|v| v == "noexec"))
-    })
+    gh_merge_form(args)
 }
 
 /// The words from the program being run onward: reserved words, `VAR=value`
 /// assignments and [`WRAPPERS`] (with their options) are skipped.
-/// `command -v`/`-V` only look a name up and run nothing, so they have no
-/// program.
 fn program(words: &[String]) -> Option<&[String]> {
     let mut i = 0;
     while i < words.len() {
@@ -193,7 +148,7 @@ fn program(words: &[String]) -> Option<&[String]> {
             i += 1;
             continue;
         }
-        let Some((name, value_opts, positionals)) =
+        let Some((_, value_opts, positionals)) =
             WRAPPERS.iter().find(|(name, _, _)| *name == basename(w))
         else {
             return Some(&words[i..]);
@@ -204,11 +159,6 @@ fn program(words: &[String]) -> Option<&[String]> {
             let w = words[i].as_str();
             if value_opts.contains(&w) {
                 i += 2;
-            } else if *name == "command"
-                && w.strip_prefix('-')
-                    .is_some_and(|f| !f.starts_with('-') && f.contains(['v', 'V']))
-            {
-                return None;
             } else if w.starts_with('-') || is_assignment(w) {
                 i += 1;
             } else if skip > 0 {
