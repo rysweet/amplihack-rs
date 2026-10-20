@@ -57,6 +57,8 @@ fn rotate_has_the_planned_files() {
         "cycle.rs",
         "log.rs",
         "daemon.rs",
+        "damp.rs",
+        "autostart.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }

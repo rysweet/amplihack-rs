@@ -139,6 +139,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+            profile::autostart_on_launch(docker);
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -193,6 +194,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+            profile::autostart_on_launch(docker);
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;

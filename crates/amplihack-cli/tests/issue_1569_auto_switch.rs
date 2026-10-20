@@ -216,6 +216,8 @@ impl Fixture {
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
+            // Launches never start a real background rotator here (autostart).
+            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c
@@ -2541,4 +2543,64 @@ fn every_sentinel_survives_a_full_flow_without_being_printed() {
     f.ok(&["profile", "auto-switch", "status"]);
     f.assert_one_place_each();
     f.assert_no_leak();
+}
+
+/// Rotator autostart opt-out: with auto-switch on and
+/// `AMPLIHACK_ROTATE_AUTOSTART=0` (set by every fixture command), a launch
+/// behaves as before and starts no rotator.
+#[cfg(unix)]
+#[test]
+fn launch_with_autostart_off_starts_no_rotator() {
+    let f = Fixture::new();
+    let off = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    assert!(off.status.success(), "{}", text(&off.stderr));
+    f.switch_on();
+    let out = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(out.status.code(), off.status.code());
+    assert_eq!(claude_stdout(&out), claude_stdout(&off), "stdout unchanged");
+    assert!(
+        !text(&out.stderr).contains("started Claude login rotator"),
+        "{}",
+        text(&out.stderr)
+    );
+    let rotate = f.state().join("rotate");
+    assert!(!rotate.join("rotate.pid").exists(), "no rotator started");
+    assert!(
+        !rotate.join("autostart").exists(),
+        "the setting is not written"
+    );
+}
+
+/// `auto-switch status` shows the autostart state right after `switch:`, and
+/// marks it inactive while auto-switch is off.
+#[cfg(unix)]
+#[test]
+fn auto_switch_status_shows_autostart() {
+    let f = Fixture::new();
+    let lines = |s: String| s.lines().map(str::to_string).collect::<Vec<_>>();
+    let off = lines(f.stdout(&["profile", "auto-switch", "status"]));
+    let i = off.iter().position(|l| l.starts_with("switch:")).unwrap();
+    assert_eq!(
+        off.get(i + 1).map(String::as_str),
+        Some("autostart: off (env) — inactive (auto-switch off)"),
+        "{off:?}"
+    );
+    f.switch_on();
+    let on = lines(f.stdout(&["profile", "auto-switch", "status"]));
+    let i = on.iter().position(|l| l.starts_with("switch:")).unwrap();
+    assert_eq!(
+        on.get(i + 1).map(String::as_str),
+        Some("autostart: off (env)"),
+        "{on:?}"
+    );
+    let mut c = f.cmd(&["profile", "auto-switch", "status"]);
+    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("\nautostart: on (default)\n"),
+        "{}",
+        text(&out.stdout)
+    );
 }
