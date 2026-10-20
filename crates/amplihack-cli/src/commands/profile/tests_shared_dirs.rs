@@ -751,7 +751,11 @@ fn a_stale_temp_link_is_replaced_and_a_reserved_temp_file_is_removed() {
         f.dir("A").join(".projects.share-tmp"),
     )
     .unwrap();
-    let leftover = f.shared("projects/-w/.amplihack-share-tmp-1-0", b"half copy");
+    // A pid above any pid_max: its writer is gone, so the file is stale.
+    let leftover = f.shared(
+        "projects/-w/.amplihack-share-tmp-2147483647-0",
+        b"half copy",
+    );
 
     f.ensure("A", Mode::Migrate);
 
@@ -761,6 +765,21 @@ fn a_stale_temp_link_is_replaced_and_a_reserved_temp_file_is_removed() {
         fs::symlink_metadata(&leftover).is_err(),
         "reserved temp file kept"
     );
+}
+
+#[test]
+fn a_reserved_temp_file_of_a_running_writer_is_kept() {
+    // Another merge (here: this process) may be copying into the same
+    // directory; its temporary file is not deleted under it.
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/s1.jsonl", b"x");
+    let name = format!("projects/-w/.amplihack-share-tmp-{}-99", std::process::id());
+    let busy = f.shared(&name, b"copy in progress");
+
+    f.ensure("A", Mode::Migrate);
+
+    f.assert_linked("A", "projects");
+    assert_eq!(fs::read(&busy).unwrap(), b"copy in progress");
 }
 
 #[test]
@@ -889,6 +908,100 @@ fn a_failed_link_swap_is_rolled_back_and_nothing_is_lost() {
             && l.ends_with(
                 "); ~/.claude-profiles/A/projects was not replaced; files already merged are in ~/.claude/projects"
             )),
+        "{lines:#?}"
+    );
+}
+
+#[test]
+fn a_failed_rollback_prints_the_exact_mv_and_keeps_the_backup() {
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/s1.jsonl", b"x");
+    store::test_hook::set_no_exchange(true);
+    shared_dirs::test_hook::set_fail_link_rename(true);
+    shared_dirs::test_hook::set_fail_restore(true);
+    let _r1 = Reset(|| store::test_hook::set_no_exchange(false));
+    let _r2 = Reset(|| shared_dirs::test_hook::set_fail_link_rename(false));
+    let _r3 = Reset(|| shared_dirs::test_hook::set_fail_restore(false));
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    let real = f.dir("A").join("projects");
+    assert!(fs::symlink_metadata(&real).is_err(), "nothing at the name");
+    let backup = f.only_backup("A", "projects");
+    assert!(r.migrated.is_empty());
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/s1.jsonl")).unwrap(),
+        b"x"
+    );
+    // Not shortened with `~`: the command must work when pasted.
+    let want = format!(
+        "amplihack: profile A: projects: could not restore the old directory \
+         (restore rename failed (test hook)); run: mv '{}' '{}'",
+        backup.display(),
+        real.display()
+    );
+    let lines = f.lines("A", &r);
+    assert!(lines.contains(&want), "{lines:#?}");
+}
+
+#[test]
+fn a_source_written_during_the_copy_is_kept_and_saved_as_a_conflict_next_run() {
+    let f = Fx::new();
+    let src = f.legacy("A", "projects/-w/s1.jsonl", b"line1\n");
+    shared_dirs::test_hook::set_force_exdev(true);
+    shared_dirs::test_hook::set_grow_during_copy(true);
+    let _r1 = Reset(|| shared_dirs::test_hook::set_force_exdev(false));
+    let _r2 = Reset(|| shared_dirs::test_hook::set_grow_during_copy(false));
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert_eq!(fs::read(&src).unwrap(), b"line1\n+", "appended bytes lost");
+    assert!(is_real_dir(&f.dir("A").join("projects")));
+    assert!(
+        r.warnings
+            .iter()
+            .any(|w| w.contains("copy failed: -w/s1.jsonl changed during the copy; kept")),
+        "{:?}",
+        r.warnings
+    );
+
+    shared_dirs::test_hook::set_grow_during_copy(false);
+    f.ensure("A", Mode::Migrate);
+
+    f.assert_linked("A", "projects");
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/s1.jsonl")).unwrap(),
+        b"line1\n"
+    );
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/s1.jsonl.conflict-A")).unwrap(),
+        b"line1\n+"
+    );
+}
+
+#[test]
+fn not_enough_space_stops_the_merge_and_keeps_the_real_directory() {
+    let f = Fx::new();
+    let src = f.legacy("A", "projects/-w/s1.jsonl", b"too big");
+    shared_dirs::test_hook::set_force_exdev(true);
+    shared_dirs::test_hook::set_no_space(true);
+    let _r1 = Reset(|| shared_dirs::test_hook::set_force_exdev(false));
+    let _r2 = Reset(|| shared_dirs::test_hook::set_no_space(false));
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert!(is_real_dir(&f.dir("A").join("projects")));
+    assert_eq!(fs::read(&src).unwrap(), b"too big");
+    assert!(!f.canon.join("projects/-w/s1.jsonl").exists());
+    assert!(f.backups("A", "projects").is_empty());
+    assert!(r.migrated.is_empty());
+    let lines = f.lines("A", &r);
+    assert!(
+        lines.contains(
+            &"amplihack: profile A: projects: not enough free space to copy -w/s1.jsonl \
+              (7 bytes) to ~/.claude/projects; merge stopped, nothing removed"
+                .to_string()
+        ),
         "{lines:#?}"
     );
 }
@@ -1484,6 +1597,11 @@ fn an_index_outside_a_project_memory_dir_is_an_ordinary_conflict() {
 
 #[test]
 fn a_memory_index_that_cannot_be_appended_to_is_reported_and_the_merge_goes_on() {
+    // Root writes through a read-only mode, so the append would not fail.
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        return;
+    }
     let f = Fx::new();
     let shared_index = f.shared("projects/-w/memory/MEMORY.md", b"- [S](s.md)\n");
     chmod(&shared_index, 0o400);

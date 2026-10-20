@@ -32,6 +32,16 @@ pub(super) fn swap_in_link(dir: &OwnedFd, profile_dir: &Path, name: &str, target
     if let Err(e) = make_temp_link(dir, &tmp, target) {
         return Swap::RolledBack(e);
     }
+    // Another process may have swapped it in meanwhile; a link is never
+    // exchanged for a link and reported as a backup.
+    match stat_at(dir.as_raw_fd(), OsStr::new(name)) {
+        Ok(st) if st.st_mode & libc::S_IFMT == libc::S_IFDIR => {}
+        Ok(_) => {
+            let e = io::Error::other("it is no longer a directory");
+            return rolled_back(dir, &tmp, e);
+        }
+        Err(e) => return rolled_back(dir, &tmp, e),
+    }
     let backup = match backup_name(dir, name) {
         Ok(b) => profile_dir.join(b),
         Err(e) => return rolled_back(dir, &tmp, e),
@@ -52,7 +62,7 @@ pub(super) fn swap_in_link(dir: &OwnedFd, profile_dir: &Path, name: &str, target
     }
     match link_rename(&tmp_path, &real) {
         Ok(()) => Swap::Done(backup),
-        Err(e) => match rename_noreplace(&backup, &real) {
+        Err(e) => match restore_rename(&backup, &real) {
             Ok(()) => rolled_back(dir, &tmp, e),
             Err(err) => Swap::Stranded { err, backup },
         },
@@ -69,6 +79,19 @@ fn link_rename(from: &Path, to: &Path) -> io::Result<()> {
 
 #[cfg(not(test))]
 fn link_rename(from: &Path, to: &Path) -> io::Result<()> {
+    rename_noreplace(from, to)
+}
+
+#[cfg(test)]
+fn restore_rename(from: &Path, to: &Path) -> io::Result<()> {
+    if super::test_hook::fail_restore() {
+        return Err(io::Error::other("restore rename failed (test hook)"));
+    }
+    rename_noreplace(from, to)
+}
+
+#[cfg(not(test))]
+fn restore_rename(from: &Path, to: &Path) -> io::Result<()> {
     rename_noreplace(from, to)
 }
 

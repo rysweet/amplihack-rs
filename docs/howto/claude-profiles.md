@@ -146,7 +146,7 @@ nothing to do it prints nothing.
 | Command | What happens |
 |---------|--------------|
 | `profile add <name>` | Links are created in the new profile. Nothing is printed unless something went wrong. |
-| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed before the pointer is written or `claude` starts. |
+| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed: by `switch` after the pointer is written, by `login` before `claude` starts. |
 | `amplihack claude` / `launch` with any profile (`--profile`, inherited, default pointer), `profile run` | Checked just before spawn, after the usual directory check. |
 | `profile rotate` | After a swap that actually ran, for both profiles in it. `--dry-run` and refused rotates change nothing. |
 
@@ -172,7 +172,7 @@ resumes on the next launch, but it starts by re-checking every file).
 
 ```
 amplihack: profile work: projects: moved 41 files into ~/.claude/projects, 2 identical, 1 conflict
-amplihack: profile work: projects: conflict: -home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl kept the shared copy; this profile's copy saved as 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work
+amplihack: profile work: projects: conflict: -home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl kept the shared copy; this profile's copy saved as ~/.claude/projects/-home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work
 amplihack: profile work: projects: old directory kept as ~/.amplihack/claude-profiles/work/projects.pre-share-20261020T141503Z
 ```
 
@@ -283,9 +283,10 @@ for d in projects file-history session-env; do
   [ -d "$p/$d" ] && [ ! -L "$p/$d" ] || continue      # only real directories
   rsync -a --no-links --ignore-existing \
     --exclude='.credentials*' --exclude='.claude.json' \
-    "$p/$d/" "$HOME/.claude/$d/"
-  mv "$p/$d" "$p/$d.pre-share-manual"
-  ln -s "$HOME/.claude/$d" "$p/$d"
+    "$p/$d/" "$HOME/.claude/$d/" &&
+  mv "$p/$d" "$p/$d.pre-share-manual" &&
+  ln -s "$HOME/.claude/$d" "$p/$d" ||
+  { echo "stopped at $d; nothing was linked for it" >&2; break; }
 done
 ```
 

@@ -56,7 +56,29 @@ pub(super) fn copy_across(
     if unsafe { libc::fsync(dst.as_raw_fd()) } != 0 {
         return Err(Placed::Fail(fail("copy")(io::Error::last_os_error())));
     }
+    #[cfg(test)]
+    if super::test_hook::grow_during_copy() {
+        grow(src, name);
+    }
+    // A writer appended meanwhile: the source is kept, so those bytes are
+    // not lost; the next run saves it under a conflict name.
+    let now = input
+        .metadata()
+        .map_err(|e| Placed::Fail(fail("copy")(e)))?;
+    if now.len() != bytes || now.modified().ok() != meta.modified().ok() {
+        return Err(Placed::Fail(fail("copy")(io::Error::other(format!(
+            "{} changed during the copy; kept",
+            path.display()
+        )))));
+    }
     unlink_at(src.as_raw_fd(), name).map_err(|e| Placed::Fail(fail("rename")(e)))
+}
+
+#[cfg(test)]
+fn grow(src: &OwnedFd, name: &OsStr) {
+    let flags = libc::O_WRONLY | libc::O_APPEND;
+    let mut f = File::from(fdwalk::openat(src.as_raw_fd(), name, flags, 0).unwrap());
+    f.write_all(b"+").unwrap();
 }
 
 fn create_temp(dst: &OwnedFd) -> io::Result<(OsString, File)> {
@@ -108,7 +130,8 @@ fn copy_bytes(input: &File, output: &mut File, len: u64) -> io::Result<()> {
     let mut buf = vec![0u8; CHUNK];
     let mut off = 0u64;
     while off < len {
-        let n = input.read_at(&mut buf, off)?;
+        let want = CHUNK.min((len - off) as usize);
+        let n = input.read_at(&mut buf[..want], off)?;
         if n == 0 {
             return Err(io::Error::new(
                 io::ErrorKind::UnexpectedEof,
@@ -123,6 +146,10 @@ fn copy_bytes(input: &File, output: &mut File, len: u64) -> io::Result<()> {
 
 #[allow(clippy::unnecessary_cast)]
 fn free_bytes(dir: &OwnedFd) -> io::Result<u64> {
+    #[cfg(test)]
+    if super::test_hook::no_space() {
+        return Ok(0);
+    }
     let mut st = std::mem::MaybeUninit::<libc::statvfs>::zeroed();
     // SAFETY: a valid descriptor and out-pointer; read only on success.
     if unsafe { libc::fstatvfs(dir.as_raw_fd(), st.as_mut_ptr()) } != 0 {

@@ -277,6 +277,36 @@ pub(super) mod test_hook {
     thread_local! {
         static FORCE_EXDEV: Cell<bool> = const { Cell::new(false) };
         static FAIL_LINK_RENAME: Cell<bool> = const { Cell::new(false) };
+        static FAIL_RESTORE: Cell<bool> = const { Cell::new(false) };
+        static NO_SPACE: Cell<bool> = const { Cell::new(false) };
+        static GROW_DURING_COPY: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Appends a byte to the source after the cross-filesystem copy.
+    pub fn set_grow_during_copy(on: bool) {
+        GROW_DURING_COPY.with(|c| c.set(on));
+    }
+
+    pub(super) fn grow_during_copy() -> bool {
+        GROW_DURING_COPY.with(Cell::get)
+    }
+
+    /// Fails the rename that puts the old directory back after a failed swap.
+    pub fn set_fail_restore(on: bool) {
+        FAIL_RESTORE.with(|c| c.set(on));
+    }
+
+    /// Reports no free space to the cross-filesystem copy.
+    pub fn set_no_space(on: bool) {
+        NO_SPACE.with(|c| c.set(on));
+    }
+
+    pub(super) fn fail_restore() -> bool {
+        FAIL_RESTORE.with(Cell::get)
+    }
+
+    pub(super) fn no_space() -> bool {
+        NO_SPACE.with(Cell::get)
     }
 
     /// Treats every move into the shared store as cross-filesystem.

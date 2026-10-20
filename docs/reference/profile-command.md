@@ -712,7 +712,7 @@ The module is `profile::shared_dirs`; every item is `pub(super)`.
 ```rust
 pub(super) const SHARED_SESSION_DIRS: [&str; 3] = ["projects", "file-history", "session-env"];
 
-pub(super) enum Deferred { LiveSession, LivenessUnknown, Raced }
+pub(super) enum Deferred { LiveSession, LivenessCheckFailed, LivenessUnknown, Raced }
 
 pub(super) enum Mode { Migrate, LinkOnly(Deferred) }
 
@@ -743,7 +743,7 @@ Liveness comes from the auto-switch `/proc` scan for a process with
 |-------------|------|
 | No such process | `Migrate` |
 | A matching process, or the scan sees everything as running | `LinkOnly(LiveSession)` |
-| The scan failed (Linux) | `LinkOnly(LiveSession)`; the error is logged at debug level and the next call retries |
+| The scan failed (Linux) | `LinkOnly(LivenessCheckFailed)`; the error is logged at debug level and the next call retries |
 | `Unsupported` (every Unix except Linux) | `LinkOnly(LivenessUnknown)` |
 
 `Deferred::Raced` is never passed in; the helper sets it itself (see the
@@ -859,7 +859,10 @@ name, leave it a real directory, and warn), create
 `.amplihack-share-tmp-<pid>-<n>` in the destination directory with `O_EXCL`
 and mode `0600`, copy, `fsync`, set the mode to the source's `& 0o700` and its
 modification time, `renameat2(RENAME_NOREPLACE)` into place, `fsync` the
-directory, and only then unlink the source.
+directory, and only then unlink the source. If the source's size or
+modification time changed during the copy, it is not unlinked: the merge
+stops with `copy failed: <path> changed during the copy; kept`, and the next
+run saves the source under a conflict name.
 
 **Conflict names.** `<file>.conflict-<profile>`, beside the winner. If that
 name already holds identical bytes nothing more is done. If it holds
@@ -874,7 +877,9 @@ and reported in one line per name.
 After a name's merge:
 
 1. Create `<profile>/.<name>.share-tmp` as a symlink to the canonical
-   directory, replacing a stale symlink of that name.
+   directory, replacing a stale symlink of that name. If `<name>` is no
+   longer a directory (another process swapped it meanwhile), stop with the
+   `could not swap in the link` warning.
 2. On Linux, exchange it with the real directory using
    `renameat2(RENAME_EXCHANGE)`, then rename the real directory (now at the
    temporary name) to the backup name.
@@ -895,7 +900,9 @@ disk. An interrupted run is resumed by the next one:
 
 - files already moved are no longer in the source;
 - `.amplihack-share-tmp-*` files are removed, but only when they are regular
-  files owned by the effective user (`unlinkat`);
+  files owned by the effective user and the process whose pid is in the name
+  is no longer running, so a merge running at the same time in another
+  process keeps its copy (`unlinkat`);
 - a stale `.<name>.share-tmp` is replaced, but only when it is a symlink;
 - if both a backup and a real `<name>` exist, the real `<name>` is migrated
   again.
@@ -914,7 +921,7 @@ default log level.
 | `merging session history into ~/.claude (one-time; may take a while)` | Printed once per call, before the first merge starts, so a long merge doesn't look hung. Every other line is printed when the call finishes. |
 | `linked projects, file-history, session-env` | Links created (not printed by `add`). Lists only the names linked. |
 | `projects: moved <n> files into ~/.claude/projects, <n> identical, <n> conflict` | A merge finished. |
-| `projects: conflict: <path> kept the shared copy; this profile's copy saved as <file>.conflict-<profile>` | A conflict. Canonical always wins. |
+| `projects: conflict: <path> kept the shared copy; this profile's copy saved as ~/.claude/projects/<path>.conflict-<profile>` | A conflict. Canonical always wins. |
 | `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy` | The profile's memory index lost a conflict; its missing entries were appended to the shared index. |
 | `projects: memory index <project>/memory/MEMORY.md: entries not added (<error>); add them by hand from <conflict copy>` | The append failed, or either index is over 1 MiB or not UTF-8; the profile's index is safe under its conflict name. |
 | `projects: skipped credential file <path>; left in <backup>` | A credential-named file was found in a shared directory. |
@@ -935,7 +942,8 @@ default log level.
 | `projects: could not swap in the link (<OS error>); <profile dir>/projects was not replaced; files already merged are in ~/.claude/projects` | The link swap failed and the rollback worked. The profile's directory is still real, but the files moved before the swap are already in the shared store. The next call merges what is left and retries the swap. |
 | `projects: could not restore the old directory (<OS error>); run: mv '<backup>' '<profile dir>/projects'` | The link swap and its rollback both failed. The `mv` is printed with the real absolute paths, shell-quoted. |
 | `projects: rename failed: <OS error>; nothing removed, the old directory is at <profile dir>/.projects.share-tmp` | The link is in place but the old directory could not be renamed to its backup name. Printed once; remove the leftover by hand after checking it (see the how-to). While it exists, a later swap of the same name refuses. |
-| `projects: <step> failed: <OS error>; nothing removed` | Any other I/O error during the merge. `<step>` is `open`, `read`, `copy`, `rename` or `mkdir`. The name stays a real directory. |
+| `projects: <step> failed: <OS error>; nothing removed` | Any other I/O error during the merge. `<step>` is `open`, `read`, `copy`, `rename`, `mkdir`, `chmod` or `link`. The same line is printed when creating, opening or linking the name fails before any merge. The name stays a real directory. |
+| `<path>: <OS error>; sessions not shared` | The opt-out marker, `~/.claude` or the profile directory could not be checked. Nothing changed. |
 | `shared session dirs not supported on this platform; profiles keep separate projects/` | Not a Unix system. Printed by `add` only. |
 
 The `projects` in each message is replaced by the name concerned. A

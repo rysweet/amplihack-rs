@@ -308,11 +308,14 @@ fn forced_exdev() -> bool {
 }
 
 /// Removes leftover reserved temporary files from an interrupted copy, but
-/// only regular files owned by the effective user.
+/// only regular files owned by the effective user whose writer has exited.
 fn remove_reserved_temps(dst: &OwnedFd) -> Result<(), MergeError> {
     let euid = super::super::auto_switch::euid();
     for name in fdwalk::list(dst).map_err(fail("read"))? {
-        if !name.as_bytes().starts_with(TMP_PREFIX) {
+        let Some(rest) = name.as_bytes().strip_prefix(TMP_PREFIX) else {
+            continue;
+        };
+        if writer_alive(rest) {
             continue;
         }
         match stat_at(dst.as_raw_fd(), &name) {
@@ -329,6 +332,24 @@ fn remove_reserved_temps(dst: &OwnedFd) -> Result<(), MergeError> {
         }
     }
     Ok(())
+}
+
+/// `<pid>-<n>` names a process that still runs (another merge copying into
+/// the same directory, or this one); its temporary file is not stale.
+fn writer_alive(rest: &[u8]) -> bool {
+    let pid = rest
+        .split(|&b| b == b'-')
+        .next()
+        .and_then(|p| std::str::from_utf8(p).ok());
+    let Some(pid) = pid
+        .and_then(|p| p.parse::<libc::pid_t>().ok())
+        .filter(|&p| p > 0)
+    else {
+        return false;
+    };
+    // SAFETY: signal 0 only checks that the process exists.
+    let rc = unsafe { libc::kill(pid, 0) };
+    rc == 0 || io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// Opens `dir/name` without following; `None` unless it is a regular file.

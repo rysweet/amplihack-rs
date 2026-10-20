@@ -50,3 +50,31 @@ fn a_world_writable_root_is_refused_with_the_documented_warning() {
     assert!(check_canonical_root(&root, &mut r).is_some());
     assert!(r.warnings.is_empty(), "{:?}", r.warnings);
 }
+
+/// A second process that finds the name already linked does not exchange a
+/// link for a link and report it as a backup (adversarial review #2).
+#[test]
+fn the_swap_refuses_when_the_name_is_no_longer_a_directory() {
+    use super::super::link::{Swap, swap_in_link};
+    let tmp = tempfile::tempdir().unwrap();
+    let profile = tmp.path().join("p");
+    let target = tmp.path().join("shared");
+    fs::create_dir_all(&target).unwrap();
+    fs::create_dir(&profile).unwrap();
+    std::os::unix::fs::symlink(&target, profile.join("projects")).unwrap();
+    let dir = open_dir(&profile);
+
+    match swap_in_link(&dir, &profile, "projects", &target) {
+        Swap::RolledBack(e) => assert!(e.to_string().contains("no longer a directory"), "{e}"),
+        _ => panic!("swap went ahead on a link"),
+    }
+    let names: Vec<_> = fs::read_dir(&profile)
+        .unwrap()
+        .map(|e| e.unwrap().file_name())
+        .collect();
+    assert_eq!(
+        names,
+        vec![std::ffi::OsString::from("projects")],
+        "temp link or backup left"
+    );
+}
