@@ -28,6 +28,8 @@ fn refuses_gh_pr_merge_as_the_program_whatever_gh_path_finds() {
         "/opt/homebrew/bin/gh pr merge 38 --admin",
         "PATH=/home/u/.npm-global/bin:$PATH gh pr merge 38",
         "GH_TOKEN=x env -u GH_HOST PATH=/x gh pr merge 38",
+        "env gh pr merge 38",
+        "nice gh pr merge 38",
         "exec gh pr merge 38",
         "command gh pr merge 38",
         "timeout 60 gh pr merge 38",
