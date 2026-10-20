@@ -163,7 +163,11 @@ They never stop a launch, an `add`, a `switch`, a `login` or a rotate.
 Profiles made before sessions were shared have real `projects/`,
 `file-history/` and `session-env/` directories. The first launch, `switch` or
 `login` of such a profile merges them into `~/.claude` and replaces each with
-a link:
+a link. The merge runs before `claude` starts and prints nothing until it
+finishes. When the profile and `~/.claude` are on different filesystems every
+file is copied, so a profile with gigabytes of history can take minutes;
+let it finish rather than interrupting it (an interrupted merge is safe and
+resumes on the next launch, but it starts by re-checking every file).
 
 ```
 amplihack: profile work: projects: moved 41 files into ~/.claude/projects, 2 identical, 1 conflict
@@ -174,7 +178,9 @@ amplihack: profile work: projects: old directory kept as ~/.amplihack/claude-pro
 The merge never deletes or overwrites a session:
 
 - **Only in the profile:** the file is moved into the shared store, keeping
-  its mode (limited to the owner) and modification time.
+  its modification time. Its mode is limited to the owner (a `0644`
+  transcript becomes `0600`), because `~/.claude` may be readable by other
+  users where the profile directory was not.
 - **Same bytes in both:** the shared copy stays. The profile's copy is left
   behind and ends up in the backup.
 - **Different contents:** the shared copy always keeps the real name. The
@@ -184,6 +190,19 @@ The merge never deletes or overwrites a session:
   split and its name never goes missing, even for a moment. If the
   profile's copy was the one you wanted, see
   [Resume the losing copy of a conflict](#resume-the-losing-copy-of-a-conflict).
+- **Claude's memory index:** Claude reads per-project memory only through
+  `projects/<project>/memory/MEMORY.md`, which lists the memory files beside
+  it. When the profile's `MEMORY.md` differs from the shared one, the shared
+  file keeps its name and the profile's copy is saved as
+  `MEMORY.md.conflict-<profile>` like any conflict, and then every entry of
+  the profile's index that the shared index lacks is appended to the shared
+  `MEMORY.md` (headings and blank lines are left out; a link to a memory file
+  that was itself saved under a conflict name points at that name). This
+  append is the only change the merge ever makes to an existing shared file.
+  amplihack prints
+  `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy`.
+  Read the shared `MEMORY.md` afterwards and tidy any entries that now say
+  the same thing twice.
 - **Skipped and left in the backup:** credential files (`.credentials*`,
   `.claude.json`) at any depth, symbolic links, and special files.
 
@@ -286,6 +305,11 @@ don't list them, but they are still files your OS user can read. If you need
 an account whose sessions the others can't read, use a different OS user
 rather than a profile.
 
+All profiles also share one `session-env/`. If you keep accounts separate
+for trust reasons, for example a client's account next to your own, create
+`.no-shared-sessions` in that profile before its first launch after the
+upgrade (see [Stop sharing for one profile](#stop-sharing-for-one-profile)).
+
 ### When nothing is linked
 
 amplihack leaves a profile's directories as they are, with a warning, when:
@@ -294,6 +318,9 @@ amplihack leaves a profile's directories as they are, with a warning, when:
   [Stop sharing for one profile](#stop-sharing-for-one-profile));
 - `$HOME` is unset, or `~/.claude` doesn't exist (no warning in this case;
   amplihack doesn't create `~/.claude`);
+- `~/.claude` is itself a symlink, as in many dotfile setups (a warning is
+  printed). Point the profiles at the real directory instead, or keep
+  sharing off;
 - `~/.claude` is not owned by you, or is writable by group or others (a
   group-writable directory is accepted when the group is your own private
   group, as with Ubuntu's default umask of `002`);

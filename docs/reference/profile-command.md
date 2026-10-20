@@ -824,7 +824,7 @@ For each regular file at relative path `p`:
 
 | In canonical | Action |
 |--------------|--------|
-| Absent | Move it in with `renameat2(RENAME_NOREPLACE)`. |
+| Absent | Set the source's mode to `mode & 0o700` with `fchmod` on the opened file, then move it in with `renameat2(RENAME_NOREPLACE)`. |
 | Same bytes (size compared first, then a streamed comparison) | Leave the source copy; it ends up in the backup. |
 | Different bytes | Canonical always wins. Move the source to the [conflict name](#migration) with `renameat2(RENAME_NOREPLACE)`. |
 
@@ -836,7 +836,19 @@ profile's copy swaps the two by hand
 
 New directories in canonical are created `0700`. No file in canonical is ever
 renamed, overwritten or deleted: every write into canonical uses
-`RENAME_NOREPLACE` or `O_EXCL`.
+`RENAME_NOREPLACE` or `O_EXCL`, apart from the memory-index append below.
+
+**Memory index.** In a directory at relative path `<project>/memory` of
+`projects/`, `MEMORY.md` is handled after every other entry. It merges like
+any file. If that made a conflict, the source's lines missing from the
+canonical `MEMORY.md` (compared after trimming trailing white space; blank
+lines and lines starting with `#` are left out; `](<file>)` is rewritten to
+`](<saved name>)` for every file in the same directory saved under a
+conflict name) are appended to the canonical file with
+`O_WRONLY|O_APPEND|O_NOFOLLOW` and `fsync`ed. The conflict copy is saved
+before the append. An index over 1 MiB, or one that isn't UTF-8, is not
+appended to. A repeat run appends nothing, because every line is then
+present.
 
 **Other filesystem.** When a rename fails with `EXDEV`, the file is copied:
 check free space with `statvfs` (if the file doesn't fit, stop migrating this
@@ -899,6 +911,7 @@ default log level.
 | `linked projects, file-history, session-env` | Links created (not printed by `add`). Lists only the names linked. |
 | `projects: moved <n> files into ~/.claude/projects, <n> identical, <n> conflict` | A merge finished. |
 | `projects: conflict: <path> kept the shared copy; this profile's copy saved as <file>.conflict-<profile>` | A conflict. Canonical always wins. |
+| `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy` | The profile's memory index lost a conflict; its missing entries were appended to the shared index. |
 | `projects: skipped credential file <path>; left in <backup>` | A credential-named file was found in a shared directory. |
 | `projects: skipped <n> symbolic links or special files; left in <backup>` | Nested entries that are never moved. |
 | `projects: old directory kept as <backup>` | The backup name. |

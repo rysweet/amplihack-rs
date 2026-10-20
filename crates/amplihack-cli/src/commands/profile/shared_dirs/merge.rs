@@ -9,11 +9,13 @@
 use super::super::name::ProfileName;
 use super::super::store::{fdwalk, renameat_noreplace};
 use super::copy::{copy_across, same_bytes};
+use super::memory;
 use std::ffi::{OsStr, OsString};
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, Permissions};
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 const MAX_DEPTH: usize = 16;
@@ -32,11 +34,14 @@ pub(super) struct MergeOutcome {
     pub logins: Vec<PathBuf>,
     /// Nested symlinks and special files left in the source.
     pub skipped: usize,
+    /// Memory indexes (relative to the shared dir) that kept the shared copy
+    /// and had this profile's missing entries appended, with their count.
+    pub indexes: Vec<(PathBuf, usize)>,
 }
 
 #[derive(Debug)]
 pub(super) enum MergeError {
-    /// `step` is one of `open`, `read`, `copy`, `rename`, `mkdir`.
+    /// `step` is one of `open`, `read`, `copy`, `rename`, `mkdir`, `chmod`.
     Io {
         step: &'static str,
         err: io::Error,
@@ -88,8 +93,15 @@ fn walk(
         ))));
     }
     remove_reserved_temps(dst)?;
+    let memory_dir = memory::is_memory_dir(rel);
+    let mut index = None;
     for name in fdwalk::list(src).map_err(fail("read"))? {
         let path = rel.join(&name);
+        // Last, so the conflict names of the files it lists are known.
+        if memory_dir && name == memory::INDEX {
+            index = Some((name, path));
+            continue;
+        }
         if is_credential_name(&name) {
             out.logins.push(path);
             continue;
@@ -108,7 +120,10 @@ fn walk(
             _ => out.skipped += 1,
         }
     }
-    Ok(())
+    match index {
+        Some((name, path)) => memory::merge_index(src, dst, &name, &path, dst_abs, profile, out),
+        None => Ok(()),
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -158,7 +173,7 @@ fn merge_dir(
     )
 }
 
-fn merge_file(
+pub(super) fn merge_file(
     src: &OwnedFd,
     dst: &OwnedFd,
     name: &OsStr,
@@ -249,6 +264,14 @@ fn place(
     to: &OsStr,
     path: &Path,
 ) -> Result<(), Placed> {
+    // The profile directory hid group/other bits; the shared store may not.
+    // Owner-only before the move, so a failure leaves nothing half done.
+    let private = meta.mode() & 0o700;
+    if meta.mode() & 0o7777 != private {
+        input
+            .set_permissions(Permissions::from_mode(private))
+            .map_err(|e| Placed::Fail(fail("chmod")(e)))?;
+    }
     let err = if forced_exdev() {
         io::Error::from_raw_os_error(libc::EXDEV)
     } else {

@@ -1363,3 +1363,97 @@ fn ensure_for_migrates_a_profile_no_process_is_using() {
     assert!(f.canon.join("projects/-w/s1.jsonl").is_file());
     assert_no_credentials_under(&f.canon);
 }
+
+#[test]
+fn a_same_filesystem_move_makes_the_file_owner_only() {
+    let f = Fx::new();
+    let src = f.legacy("A", "projects/-w/s1.jsonl", b"transcript");
+    chmod(&src, 0o644);
+    let hist = f.legacy("A", "file-history/x/v1", b"old .env contents");
+    chmod(&hist, 0o664);
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    assert_eq!(mode_of(&f.canon.join("projects/-w/s1.jsonl")), 0o600);
+    assert_eq!(mode_of(&f.canon.join("file-history/x/v1")), 0o600);
+}
+
+#[test]
+fn a_conflicting_memory_index_keeps_the_shared_copy_and_gains_the_missing_entries() {
+    let f = Fx::new();
+    let shared_index = f.shared(
+        "projects/-w/memory/MEMORY.md",
+        b"# Memory\n- [Shared](shared.md) \xe2\x80\x94 from the default login\n- [Both](both.md)",
+    );
+    f.shared("projects/-w/memory/shared.md", b"shared note");
+    f.shared("projects/-w/memory/clash.md", b"shared clash");
+    f.shared("projects/-w/memory/both.md", b"both");
+    let profile_index = b"# Profile memory\n\n- [Both](both.md)\n- [Mine](mine.md) \xe2\x80\x94 only in A\n- [Clash](clash.md)\n";
+    f.legacy("A", "projects/-w/memory/MEMORY.md", profile_index);
+    f.legacy("A", "projects/-w/memory/mine.md", b"profile note");
+    f.legacy("A", "projects/-w/memory/clash.md", b"profile clash");
+    f.legacy("A", "projects/-w/memory/both.md", b"both");
+
+    let r = f.ensure("A", Mode::Migrate);
+
+    assert!(r.warnings.is_empty(), "{:?}", r.warnings);
+    let index = fs::read_to_string(&shared_index).unwrap();
+    assert_eq!(
+        index,
+        "# Memory\n- [Shared](shared.md) \u{2014} from the default login\n- [Both](both.md)\n\
+         - [Mine](mine.md) \u{2014} only in A\n- [Clash](clash.md.conflict-A)\n"
+    );
+    // The profile's index and the losing memory file are still kept whole.
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/MEMORY.md.conflict-A")).unwrap(),
+        profile_index
+    );
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/clash.md.conflict-A")).unwrap(),
+        b"profile clash"
+    );
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/mine.md")).unwrap(),
+        b"profile note"
+    );
+    let lines = f.lines("A", &r);
+    assert!(
+        lines.contains(
+            &"amplihack: profile A: projects: memory index -w/memory/MEMORY.md: added 2 entries from this profile to the shared copy"
+                .to_string()
+        ),
+        "{lines:#?}"
+    );
+
+    // A second migration of the same index adds nothing twice.
+    fs::remove_file(f.dir("A").join("projects")).unwrap();
+    f.legacy("A", "projects/-w/memory/MEMORY.md", profile_index);
+    f.legacy("A", "projects/-w/memory/clash.md", b"profile clash");
+    let again = f.ensure("A", Mode::Migrate);
+    assert!(again.warnings.is_empty(), "{:?}", again.warnings);
+    assert_eq!(fs::read_to_string(&shared_index).unwrap(), index);
+}
+
+#[test]
+fn a_memory_index_the_shared_store_lacks_is_simply_moved() {
+    let f = Fx::new();
+    f.legacy("A", "projects/-w/memory/MEMORY.md", b"- [Mine](mine.md)\n");
+    let r = f.ensure("A", Mode::Migrate);
+    assert_eq!(
+        fs::read(f.canon.join("projects/-w/memory/MEMORY.md")).unwrap(),
+        b"- [Mine](mine.md)\n"
+    );
+    assert!(r.conflicts.is_empty());
+    assert!(!f.lines("A", &r).iter().any(|l| l.contains("memory index")));
+}
+
+#[test]
+fn an_index_outside_a_project_memory_dir_is_an_ordinary_conflict() {
+    let f = Fx::new();
+    let shared = f.shared("projects/-w/MEMORY.md", b"- [A](a.md)\n");
+    f.legacy("A", "projects/-w/MEMORY.md", b"- [B](b.md)\n");
+    let r = f.ensure("A", Mode::Migrate);
+    assert_eq!(fs::read(&shared).unwrap(), b"- [A](a.md)\n");
+    assert_eq!(r.conflicts.len(), 1);
+}

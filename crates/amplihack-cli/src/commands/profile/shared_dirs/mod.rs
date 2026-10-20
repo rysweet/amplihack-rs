@@ -12,6 +12,8 @@ mod copy;
 #[cfg(unix)]
 mod link;
 #[cfg(unix)]
+mod memory;
+#[cfg(unix)]
 mod merge;
 #[cfg(all(test, unix))]
 mod tests_source_scan;

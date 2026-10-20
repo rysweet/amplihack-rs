@@ -310,6 +310,12 @@ fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
             saved_as: saved_as.clone(),
         });
     }
+    for (path, added) in &outcome.indexes {
+        r.note(format!(
+            "{name}: memory index {}: added {added} entries from this profile to the shared copy",
+            path.display()
+        ));
+    }
     for path in &outcome.logins {
         r.warn(format!(
             "{name}: skipped credential file {}; left in {}",
