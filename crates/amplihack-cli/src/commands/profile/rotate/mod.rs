@@ -16,7 +16,7 @@ mod daemon;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
-mod identify;
+pub(super) mod identify;
 #[cfg(unix)]
 mod ledger;
 #[cfg(unix)]

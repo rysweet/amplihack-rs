@@ -13,4 +13,4 @@ pub use super::mv::{
     take_refresh_lock_at,
 };
 pub use super::state::{CLAUDE_JSON, CREDS, Ledger, State};
-pub use super::swap::{read_claude_json, recover as recover_auto_switch};
+pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};

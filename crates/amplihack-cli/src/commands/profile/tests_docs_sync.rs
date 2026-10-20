@@ -334,3 +334,114 @@ fn docs_describe_the_saved_profile_root() {
     assert!(HOWTO.contains("amplihack profile root"));
     assert!(ROTATE_HOWTO.contains("pinned by running rotator"));
 }
+
+// ---------------------------------------------------------------------------
+// Account identity, duplicate logins and the live default (bugs 1-3).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reference_quotes_the_switch_none_messages() {
+    for m in [super::CLEARED, super::NOT_SET] {
+        assert!(
+            REFERENCE.contains(&format!("`{m}`")),
+            "reference is missing {m:?}"
+        );
+        assert!(HOWTO.contains(m), "howto is missing {m:?}");
+    }
+    for doc in [REFERENCE, HOWTO, ROTATE_HOWTO] {
+        assert!(doc.contains("profile switch --none"));
+    }
+}
+
+#[test]
+fn docs_quote_the_live_launch_note() {
+    let note = super::live_launch_note("<name>");
+    assert!(REFERENCE.contains(&note), "reference is missing {note:?}");
+    let team = super::live_launch_note("team");
+    assert!(HOWTO.contains(&team), "howto is missing {team:?}");
+    assert!(
+        ROTATE_HOWTO.contains(&team),
+        "rotation howto is missing {team:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reference_quotes_the_login_refusal() {
+    use super::login_check::{refusal_hint, refusal_message};
+    let msg = format!("error: {}", refusal_message("<name>", "<holder>", "<path>"));
+    let hint = format!("hint: {}", refusal_hint("<name>"));
+    for line in [&msg, &hint] {
+        assert!(
+            REFERENCE.contains(line.as_str()),
+            "reference is missing {line:?}"
+        );
+    }
+    let howto_hint = format!("hint: {}", refusal_hint("rssourcelabs"));
+    assert!(
+        HOWTO.contains(&howto_hint),
+        "howto is missing {howto_hint:?}"
+    );
+    let howto_msg = refusal_message("rssourcelabs", "profile 'ryan-ryansweet'", "");
+    let head = howto_msg.split(" The new login").next().unwrap();
+    assert!(
+        HOWTO.contains(&format!("error: {head}")),
+        "howto is missing {head:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_live_profile_login_refusal() {
+    use super::login_check::{LIVE_REFUSAL_HINT, live_refusal_message};
+    let hint = format!("hint: {LIVE_REFUSAL_HINT}");
+    for (doc, name) in [(REFERENCE, "<name>"), (HOWTO, "team")] {
+        let msg = format!("error: {}", live_refusal_message(name));
+        assert!(doc.contains(&msg), "docs are missing {msg:?}");
+        assert!(doc.contains(&hint), "docs are missing {hint:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_duplicate_login_warning() {
+    use super::duplicates::{Holder, warning};
+    let p = |s: &str| Holder::Profile(super::name::ProfileName::parse(s).unwrap());
+    let template = warning(&p("aaa"), &p("bbb"))
+        .replace("aaa", "<a>")
+        .replace("bbb", "<b>");
+    assert!(
+        REFERENCE.contains(&template),
+        "reference is missing {template:?}"
+    );
+    let example = format!(
+        "note: {}",
+        warning(&p("rssourcelabs"), &p("ryan-ryansweet"))
+    );
+    assert!(HOWTO.contains(&example), "howto is missing {example:?}");
+}
+
+#[test]
+fn the_old_same_account_note_is_gone_from_the_docs() {
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("howto", HOWTO),
+        ("rotation howto", ROTATE_HOWTO),
+    ] {
+        assert!(
+            !doc.contains("their readings are not reliable"),
+            "{name} still quotes the old note"
+        );
+    }
+}
+
+#[test]
+fn docs_state_the_identity_rule() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        assert!(
+            doc.contains("organizationUuid"),
+            "{name} must name organizationUuid"
+        );
+    }
+    assert!(REFERENCE.contains("| uuid on one side only | (any) | no |"));
+}
