@@ -125,6 +125,10 @@ fn data_mentions_pass_in_every_context() {
         "command -v amplifier-bundle/tools/autodrive_merge_gate.sh",
         "command -V amplifier-bundle/tools/autodrive_merge_gate.sh",
         "command -pv autodrive_merge_gate.sh >/dev/null && echo found",
+        // A `-c` string is code, not a script operand (crusty round 14).
+        "bash -c 'wc -l amplifier-bundle/tools/autodrive_merge_gate.sh'",
+        "sh -c \"shellcheck amplifier-bundle/tools/autodrive_merge_gate.sh\"",
+        "bash -o pipefail -c 'git diff | grep x amplifier-bundle/tools/autodrive_merge_gate.sh'",
     ];
     let before = [
         "",

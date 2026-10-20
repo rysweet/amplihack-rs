@@ -1835,13 +1835,18 @@ does not depend on `PATH`. It refuses only these:
   of `bash`, `sh`, `dash`, `zsh`, `ksh`, `source` or `.`. The gate runs only
   from auto-drive's own recipe step, and it trusts Crusty and QA record
   files an agent could write. A syntax check (`bash -n …`, `-nv`,
-  `-o noexec`) runs none of the script and passes.
+  `-o noexec`) runs none of the script and passes. With `-c` (alone or in
+  a cluster such as `-ec`) the shell's first operand is a command string,
+  not a script, so `bash -c 'wc -l …/autodrive_merge_gate.sh'` passes: the
+  string is code, which the hook does not read (the `gh` shim still
+  covers a `gh pr merge` inside it).
 
 The program is the first word of each command after splitting at unquoted
 `;`, `&`, `|`, parentheses and newlines. Reserved words (`if`, `then`, `{`,
 `!`, …), `VAR=value` assignments and the wrappers `env`, `exec`, `command`,
 `nohup`, `time`, `nice`, `timeout` and `sudo` (with their options) are
-skipped. Nothing else is read. Quoted text, the arguments of other programs,
+skipped. `command -v`/`-V` (also `-pv`, `-p -v`) only looks a name up and
+runs nothing, so it passes. Nothing else is read. Quoted text, the arguments of other programs,
 heredoc bodies and comments are data. So these pass with the guard on, alone
 or after a command that runs an interpreter (`bash test.sh && …`,
 `cargo test 2>&1 | awk '{print}'; …`):

@@ -146,11 +146,19 @@ fn merge_form(words: &[String]) -> Option<&'static str> {
 
 /// The index of a shell's script operand: the first word that is not an
 /// option, where `-o`/`+o`/`-O`/`+O` take the next word as their value.
+/// With `-c` (alone or in a cluster such as `-ec`) the first operand is a
+/// command string, not a script file, so there is no script operand: the
+/// string is code, which the hook does not read (crusty round 14).
 fn script_index(args: &[String]) -> Option<usize> {
     let mut i = 0;
     while let Some(a) = args.get(i) {
         if !a.starts_with(['-', '+']) {
             return Some(i);
+        }
+        if a.strip_prefix('-')
+            .is_some_and(|f| !f.starts_with('-') && f.contains('c'))
+        {
+            return None;
         }
         i += if matches!(a.as_str(), "-o" | "+o" | "-O" | "+O") {
             2
