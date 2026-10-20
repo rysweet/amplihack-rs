@@ -43,6 +43,8 @@ resolve_pr_number() { workflow_finalization_metadata pr_number || :; }
 here="$(dirname "${BASH_SOURCE[0]}")"
 . "$here/workflow_finalization_metadata.sh"
 . "$here/workflow_finalization_collect.sh"
+. "$here/workflow_gh_retry.sh"
+. "$here/workflow_finalization_pr_signal.sh"
 . "$here/workflow_finalization_validate.sh"
 . "$here/workflow_finalization_complete.sh"
 

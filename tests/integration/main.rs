@@ -437,3 +437,12 @@ mod issue_1510_collector_agent_prose;
 // tests themselves need only extract-json / extract-field, already on main.
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
+
+// Issue #1641: a resumed run whose branch already has an open, same-repo PR
+// with green checks (or pending/no CI plus this run's typed precommit evidence)
+// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
+// check is BLOCKED_CI, and every fail-closed case (no PR, no verification
+// signal, hollow success, blockers) is kept. Runs the
+// real validator against a private git repo and a stub gh.
+#[path = "issue_1641_finalization_open_pr.rs"]
+mod issue_1641_finalization_open_pr;
