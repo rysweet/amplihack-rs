@@ -1804,11 +1804,24 @@ an `autodrive-*` recipe whose step starts `bash -lc` with a `HOME` whose
 `gh`. It asserts that `type -P gh` is the shim, that `gh` is the guard's
 function, and that `gh pr merge 1` exits `3`. The last check is repeated in
 a `bash -c` that re-exports that `PATH` inside the command, the way Claude
-Code's snapshot does.
+Code's snapshot does. The same test also pins the limit below: after that
+re-export, `type -P gh` is the profile's `gh`, and `env gh pr view 7`
+reaches it.
 
 Not covered: an interactive shell (`bash -i`), which does not read
 `BASH_ENV`, and `command gh` or a `gh` by absolute path, which skip the
 function. The hook check below still refuses the direct forms in all three.
+
+Also not covered: a `gh` run by a program that is not bash after the
+command has re-exported the profile's `PATH`. Examples are `xargs`,
+`find -exec`, `make`, `env`, `timeout` and a `subprocess.run(["gh", …])`.
+The function exists only inside bash. Such a program finds `gh` by
+searching `PATH`, and it starts no new bash, so `BASH_ENV` is not read
+again. It gets the shim only when no real `gh` comes earlier on the
+profile's `PATH`. So with a real `gh` in `~/.local/bin`,
+`gh pr list … | xargs -n1 gh pr merge` merges. The hook does not see it
+either, because the program word is `xargs`. The phase 1 and phase 2
+`MERGED` checks are what catch it.
 
 `BASH_ENV` reaches a repository's own test suite too: an agent's
 `cargo test` and the merge round's QA command run inside the guarded run.
@@ -2003,7 +2016,7 @@ the run when the PR is merged outside the gate.
 
 | Route | Outcome |
 | --- | --- |
-| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The runner's [`BASH_ENV` file](#keeping-the-shim-first-after-a-shell-profile) puts the shim back first in every non-interactive bash, after a login shell's profile, and its `gh` function holds when the command resets `PATH` itself (Claude Code's shell snapshot). In an interactive shell, or through `command gh`, the [hook check](#the-pre-tool-use-hook-check) still refuses `gh pr merge` and `gh api` on a merge endpoint, since it reads the program word, not `PATH`. |
+| An agent CLI profile that reorders `PATH` so a real `gh` comes first (`~/.local/bin`, `~/.npm-global/bin`, `brew shellenv`) | The runner's [`BASH_ENV` file](#keeping-the-shim-first-after-a-shell-profile) puts the shim back first in every non-interactive bash, after a login shell's profile, and its `gh` function answers a `gh` that bash runs when the command resets `PATH` itself (Claude Code's shell snapshot). **Not covered:** after that reset, a `gh` run by a program that is not bash (`xargs`, `find -exec`, `make`, `env`, a subprocess) finds the first `gh` on the profile's `PATH`. It gets the shim only if no real `gh` comes earlier there. The hook does not see it either, since the program word is `xargs` or similar. The `MERGED` checks catch it. In an interactive shell, or through `command gh`, the [hook check](#the-pre-tool-use-hook-check) still refuses `gh pr merge` and `gh api` on a merge endpoint, since it reads the program word, not `PATH`. |
 | `gh` by absolute path or `PATH=… gh`, as the program | Refused by the hook check, which matches `gh` at any path. |
 | `curl`, `wget` or another HTTP client sending the token to the merge endpoint | Out of scope (the non-goal above). Branch protection and the `MERGED` checks. |
 | A merge inside a script file the agent writes and then runs, `bash -c '…'`, `eval`, an alias, a variable holding `gh`, a command substitution (`out=$(gh pr merge …)`), or a line after a `<<` the hook took for a heredoc | The shim refuses it when it is the `gh` that runs, which `BASH_ENV` keeps true in non-interactive bash. Otherwise out of scope: the hook reads only the program word. Caught by the phase 1 and phase 2 `MERGED` checks. |

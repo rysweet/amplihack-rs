@@ -40,6 +40,16 @@ if [ "${RUN_AGENT_SHELL:-}" = 1 ]; then
   bash -lc 'gh pr merge 1 --squash' 2> "$RECORD_DIR/login.merge.err"
   printf '%s' "$?" > "$RECORD_DIR/login.merge.rc"
   bash -c 'type -P gh' > "$RECORD_DIR/plain.gh" 2>&1
+  # Claude Code's snapshot replay: the command re-exports the profile's PATH
+  # after BASH_ENV has run. The guard's gh function still answers a gh that
+  # bash runs, but a gh that a non-bash program execs (xargs, find -exec,
+  # env, a subprocess) is found by PATH search and gets the profile's gh:
+  # the documented limit, caught only by the MERGED checks.
+  SNAP='export PATH="$HOME/.local/bin:$PATH";'
+  bash -c "$SNAP gh pr merge 1 --squash" 2> "$RECORD_DIR/snap.merge.err"
+  printf '%s' "$?" > "$RECORD_DIR/snap.merge.rc"
+  bash -c "$SNAP type -P gh" > "$RECORD_DIR/snap.gh" 2>&1
+  bash -c "$SNAP env gh pr view 7" > /dev/null 2>&1
 fi
 if [ "${RUN_GH_MERGE:-}" = 1 ]; then
   gh pr merge 1 --squash --admin 2> "$RECORD_DIR/merge.err"
@@ -603,8 +613,26 @@ fn agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path() {
         merge_err.contains("REFUSED (amplihack #1551)"),
         "{merge_err}"
     );
+    // Snapshot replay: the command re-exports the profile's PATH itself.
+    let snap_err = read("snap.merge.err");
+    assert_eq!(read("snap.merge.rc"), "3", "stderr: {snap_err}");
+    assert!(snap_err.contains("REFUSED (amplihack #1551)"), "{snap_err}");
+    // The documented limit (docs/reference/auto-drive-to-merge.md, "What
+    // this does not stop"): after that re-export, a gh run by a program that
+    // is not bash finds the profile's gh by PATH search, not the function.
+    // Pinned here so the doc cannot drift from what actually happens.
+    assert_eq!(
+        read("snap.gh").trim(),
+        profile_bin.join("gh").display().to_string(),
+        "after the snapshot re-export, PATH search finds the profile's gh"
+    );
+    let log = read("gh.log");
     assert!(
-        !read("gh.log").lines().any(|l| l.starts_with("pr merge")),
+        log.lines().any(|l| l == "pr view 7"),
+        "a gh exec'd by a non-bash program reaches the profile's gh; gh.log: {log:?}"
+    );
+    assert!(
+        !log.lines().any(|l| l.starts_with("pr merge")),
         "the profile's gh must never see the merge"
     );
 }
