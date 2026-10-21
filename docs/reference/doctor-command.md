@@ -105,6 +105,9 @@ Effective config:
   node.max_old_space_mb = (unset)  # default
   recipe.verbose = false  # default
   recipe.step_timeout = (unset)  # default
+  recipe.detach = "none"  # default
+  recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
+  recipe.log_dir = (unset)  # default
   orchestrator.max_depth = 2  # project (/home/alice/src/myapp/.amplihack/config.toml)
 
 Config problems:
@@ -140,6 +143,9 @@ Effective config:
   node.max_old_space_mb = (unset)  # default
   recipe.verbose = false  # default
   recipe.step_timeout = (unset)  # default
+  recipe.detach = "none"  # default
+  recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
+  recipe.log_dir = (unset)  # default
   orchestrator.max_depth = 3  # default
 ```
 

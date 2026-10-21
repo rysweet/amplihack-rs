@@ -23,6 +23,9 @@ const SCHEMA_ORDER: &[&str] = &[
     "node.max_old_space_mb",
     "recipe.verbose",
     "recipe.step_timeout",
+    "recipe.detach",
+    "recipe.tmux_session_pattern",
+    "recipe.log_dir",
     "orchestrator.max_depth",
 ];
 
@@ -327,6 +330,9 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "node.max_old_space_mb = (unset)",
             "recipe.verbose = false",
             "recipe.step_timeout = (unset)",
+            "recipe.detach = \"none\"",
+            "recipe.tmux_session_pattern = \"amp-{recipe}-{repo}-{ts}\"",
+            "recipe.log_dir = (unset)",
             "orchestrator.max_depth = 3",
         ]
     );

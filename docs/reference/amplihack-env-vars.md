@@ -215,6 +215,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_BINARY` | test-only |  | Binary under test in contract tests. |
 | `AMPLIHACK_TEST_BOOL_UNSET_XYZ` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_DENIAL_PANIC` | test-only |  | Fault injection in the hook protocol test. |
+| `AMPLIHACK_TEST_DETACH_START_SECS` | test-only |  | Shortens how long `recipe run --detach` waits for the pane to start the run (default 15 s), so a test of a pane that never starts is quick. |
 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | test-only |  | Fakes the latest release for update tests. |
 | `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. |
 | `AMPLIHACK_TEST_MISSING_NO_DEFAULT` | test-only |  | `EnvVar` unit test name. |

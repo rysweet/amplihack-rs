@@ -591,6 +591,29 @@ pub enum RecipeCommands {
         /// sub-recipes intentionally have none, so agent steps never time out.
         #[arg(long = "step-timeout")]
         step_timeout: Option<u64>,
+        /// Run in a new tmux session with a private log, print the session
+        /// name and log path, and return. The default comes from
+        /// `recipe.detach` (`amplihack config`).
+        #[arg(long, overrides_with = "no_detach")]
+        detach: bool,
+        /// Run in the foreground even when `recipe.detach = "tmux"`.
+        #[arg(long, overrides_with = "detach")]
+        no_detach: bool,
+    },
+    /// Stop a recipe run and its whole process tree: a tmux session started
+    /// by `recipe run --detach`, or a run id from its log pointer
+    Stop {
+        /// tmux session name or run id
+        target: String,
+    },
+    /// Internal: the process `recipe run --detach` starts in its tmux pane.
+    #[command(name = "detached-child", hide = true)]
+    DetachedChild {
+        /// The run's log, opened first so a start-up error has somewhere to go
+        #[arg(long)]
+        log: std::path::PathBuf,
+        /// The private run spec written by `recipe run --detach`
+        spec: std::path::PathBuf,
     },
     /// List available recipes
     List {

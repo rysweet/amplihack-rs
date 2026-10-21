@@ -205,8 +205,24 @@ This is the preferred execution mode for most scenarios. It is simpler, has
 no external dependencies beyond the Rust binary, works on all platforms,
 and makes output capture straightforward.
 
-For tmux durable execution, environment variables, error recovery strategies,
-fallback recipes, and enforcement details, see [reference.md](./reference.md).
+#### Long runs: detached
+
+Save the shared settings once, then start each long run with `--detach`. It
+creates its own tmux session and private log, hands the agent CLI over itself,
+prints the session and log path, and returns:
+
+```bash
+amplihack config set agent.binary claude     # once: the agent CLI you use
+amplihack config set recipe.verbose true      # once
+amplihack recipe run smart-orchestrator --detach -w /path/to/repo \
+  --context-from-file task_description=/path/to/task.md -c repo_path=.
+```
+
+Stop it, with every agent it started, with `amplihack recipe stop <session>`.
+Do not hand-write the tmux command for a recipe run.
+
+For details of detached runs, environment variables, error recovery
+strategies, fallback recipes, and enforcement, see [reference.md](./reference.md).
 
 ## Task Type Classification
 
