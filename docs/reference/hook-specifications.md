@@ -174,6 +174,8 @@ future events and must not use this path.
 
 Runs when Claude Code starts a new session. Initializes session context, checks for version mismatches natively in Rust, and migrates stale global amplihack hook registrations out of `~/.claude/settings.json`.
 
+When no Claude account has capacity left, it also shows a [capacity notice](#capacity-notice-in-hooks).
+
 ### 2. Stop — `stop`
 
 Runs when Claude Code stops. Triggers native Rust reflection prompt assembly plus Claude CLI analysis, saves session memory, and handles lock-mode signaling. 120-second timeout allows the reflection write to complete.
@@ -194,9 +196,76 @@ The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification
 
 The **second** of two `UserPromptSubmit` hooks. Injects user preferences and native Rust memory context for referenced agents into the prompt. Runs via `amplihack-hooks`. 10-second timeout.
 
+When no Claude account has capacity left, it also shows a [capacity notice](#capacity-notice-in-hooks).
+
 ### 7. PreCompact — `pre-compact`
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
+
+## Capacity notice in hooks
+
+When [auto-switch](profile-command.md#auto-switch) is on and every eligible
+Claude account is at or above its threshold, `session-start` and
+`user-prompt-submit` tell both you and the model. The state comes from the
+[capacity file](profile-command.md#capacity-file); the rules for when it is
+`low` or `exhausted` and when it clears are in
+[Capacity notice](profile-command.md#capacity-notice).
+
+### What the hooks add
+
+Both hooks add a top-level `systemMessage`, which Claude Code shows to you,
+and append a note for the model to `hookSpecificOutput.additionalContext`.
+For `user-prompt-submit`:
+
+```json
+{
+  "systemMessage": "⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'",
+  "hookSpecificOutput": {
+    "hookEventName": "UserPromptSubmit",
+    "additionalContext": "<the usual context>\n\nClaude account capacity is low across all profiles (next reset Oct 22 2am). Avoid launching large parallel workflows, multi-agent fan-out or long recipe runs; prefer small sequential steps."
+  }
+}
+```
+
+With the `exhausted` state the message reads `at limit` instead of `≥90%`,
+and the model note reads `exhausted` instead of `low`. An unknown reset time
+is written as `next reset unknown`.
+
+`session-start` adds the same `systemMessage` and appends the same note to
+its `additionalContext`; `hookEventName` and `indexing_status` are kept.
+When `user-prompt-submit` has no other context, the notice is the whole
+`additionalContext` instead of the empty `{}` it returns otherwise. An
+empty prompt still returns early, with no notice.
+
+Both texts are built from fixed wording, the state, the threshold and the
+reset time. Nothing else from the capacity file reaches the output, so a
+profile name or other text written into the file cannot be injected into the
+model's context.
+
+### When the hooks show it
+
+- **Once per state per session.** The hooks keep the last state shown for
+  each `session_id` in a [notice record](profile-command.md#notice-records).
+  `low` after `low` shows nothing; `low` then `exhausted` shows again. When
+  the state returns to `ok`, the record is deleted, so a later drop shows
+  again.
+- **SessionStart counts.** A new session has no record, so `session-start`
+  shows the notice and records it, and the first prompt stays quiet.
+- **No `session_id`.** The notice is shown every time the state is `low` or
+  `exhausted`.
+- **Nested recipe sessions** (`AMPLIHACK_SESSION_DEPTH` above 0) get the
+  model note only, never a `systemMessage`. The record is kept as usual.
+- **Codex** reads only `additionalContext`, so under Codex the model gets
+  the note and you see no message.
+
+### Cost and failure
+
+The check reads one file of at most 16 KiB and at most one small record,
+and may write one record. It starts no process, uses no network and takes no
+lock. A missing, damaged or unreadable file, an unresolvable profile root,
+the switch being off, or any error in the check gives no notice, and the
+hook's output is byte-identical to what it is without this feature. The
+check never makes a hook fail.
 
 ## Hook Runtime Location
 

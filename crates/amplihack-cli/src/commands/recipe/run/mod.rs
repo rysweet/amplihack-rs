@@ -213,6 +213,8 @@ pub(crate) fn run_recipe_with(
         writeln!(preflight_out, "Error: {error}")?;
         return Err(exit_error(1));
     }
+    // Never refuses: the user may know better than the capacity file.
+    crate::commands::profile::capacity_recipe_warning(preflight_out);
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
     // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
     // merge guard first on PATH.

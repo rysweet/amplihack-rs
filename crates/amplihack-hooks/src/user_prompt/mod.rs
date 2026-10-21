@@ -10,6 +10,8 @@ mod memory;
 mod preferences;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+mod tests_capacity;
 
 use crate::post_tool_use::begin_workflow_enforcement_tracking;
 use crate::prompt_input::extract_user_prompt;
@@ -104,17 +106,28 @@ impl Hook for UserPromptSubmitHook {
             );
         }
 
+        // The no-capacity notice: once per state change per session.
+        let notice =
+            crate::capacity_notice::notice(session_id.as_deref(), is_nested_recipe_session());
+        if let Some(n) = &notice {
+            context_parts.push(n.context.clone());
+        }
+
         if context_parts.is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
         let additional_context = context_parts.join("\n\n");
 
-        Ok(serde_json::json!({
+        let mut output = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": additional_context
             }
-        }))
+        });
+        if let Some(message) = notice.and_then(|n| n.system_message) {
+            output["systemMessage"] = Value::String(message);
+        }
+        Ok(output)
     }
 }
