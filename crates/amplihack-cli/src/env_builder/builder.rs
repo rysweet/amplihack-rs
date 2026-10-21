@@ -162,7 +162,14 @@ impl EnvBuilder {
         tool: &str,
         var: &dyn Fn(&str) -> Option<String>,
     ) -> Self {
-        let this = self.with_resolved_agent_binary(tool, super::launch_binary_source(tool, var));
+        let this = self
+            .with_resolved_agent_binary(tool, super::launch_binary_source(tool, var))
+            // Issue #1606: lets a process in this session tell it apart from
+            // a tmux server's copy of another session of the same CLI.
+            .set(
+                amplihack_utils::agent_binary::SESSION_NONCE_ENV,
+                uuid::Uuid::new_v4().to_string(),
+            );
         amplihack_utils::agent_binary::other_clis_markers(tool)
             .fold(this, |builder, marker| builder.unset(marker))
     }
@@ -279,6 +286,24 @@ impl EnvBuilder {
             && !existing.is_empty()
         {
             return self.set("AMPLIHACK_HOME", existing);
+        }
+
+        // Step 1b (issue #1606): the user's configured `paths.home`, an
+        // explicit choice that ranks below the variable and above every
+        // inferred location. It is used only while it is still an existing
+        // directory this user owns.
+        if let Some(configured) = crate::user_config::configured_home() {
+            match crate::user_config::schema::validate_home_dir(&configured) {
+                Ok(()) => {
+                    if let Some(value) = validate_amplihack_home_path(&configured) {
+                        return self.set("AMPLIHACK_HOME", value);
+                    }
+                }
+                Err(reason) => tracing::warn!(
+                    path = %configured.display(),
+                    "ignoring the configured paths.home: it {reason}"
+                ),
+            }
         }
 
         // Step 2: prefer the checked-out bundle root when running from a repo

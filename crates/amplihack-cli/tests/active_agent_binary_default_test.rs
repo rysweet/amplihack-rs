@@ -22,6 +22,11 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     // The fallback probes also need a cwd without persisted launcher context.
     let probe_dir = tempfile::tempdir().expect("could not create isolated probe directory");
     cmd.current_dir(probe_dir.path());
+    // Issue #1606: the resolver also reads ~/.amplihack/config.toml, so the
+    // probe gets a HOME with no config in it, never the developer's.
+    cmd.env("HOME", probe_dir.path());
+    cmd.env("TMPDIR", std::env::temp_dir());
+    cmd.env(crate::isolated_amplihack::HOME_GUARD_ENV, "1");
     cmd.args([
         "--exact",
         &test_path(module_path!(), test_name),

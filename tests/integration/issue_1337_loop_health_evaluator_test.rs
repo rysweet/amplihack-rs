@@ -821,7 +821,7 @@ fn explicit_json_null_takes_the_default_through_the_cli() {
 /// Run `amplihack <args>` with `stdin`, returning stdout.
 fn helper_stdin(bin: &Path, args: &[&str], stdin: &str) -> String {
     use std::io::Write;
-    let mut child = Command::new(bin)
+    let mut child = crate::isolated_amplihack::isolated(bin)
         .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -871,7 +871,7 @@ fn normalise_loop_verdict_helper_is_wired_into_the_cli() {
 
 fn crate_run(bin: &Path, stdin: &str) -> String {
     use std::io::Write;
-    let mut child = Command::new(bin)
+    let mut child = crate::isolated_amplihack::isolated(bin)
         .args(["orch", "helper", "normalise-loop-verdict"])
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())

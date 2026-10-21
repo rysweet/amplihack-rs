@@ -4,7 +4,6 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::support::amplihack_bin::amplihack_bin;
@@ -45,10 +44,12 @@ fn frontmatter(content: &str) -> serde_yaml::Mapping {
 
 fn help(args: &[&str]) -> String {
     let tmp = tempfile::tempdir().unwrap();
-    let out = Command::new(amplihack_bin())
+    let out = crate::isolated_amplihack::isolated(amplihack_bin())
         .args(args)
         .arg("--help")
         .env_clear()
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", "/usr/bin:/bin")
         .env("HOME", tmp.path())
         .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", tmp.path().join("profiles"))

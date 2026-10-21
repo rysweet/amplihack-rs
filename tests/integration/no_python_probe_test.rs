@@ -54,7 +54,7 @@ fn clean_path_without_python() -> String {
 /// probe-no-python.sh environment.  This is the environment in which every
 /// AC9 smoke test must succeed.
 fn cmd_without_python(bin: &PathBuf) -> Command {
-    let mut cmd = Command::new(bin);
+    let mut cmd = crate::isolated_amplihack::isolated(bin);
     cmd.env("PATH", clean_path_without_python());
     cmd
 }
@@ -85,7 +85,7 @@ fn cmd_with_failing_python_shims(bin: &PathBuf, shim_dir: &Path, python_log: &Pa
         format!("{}:{clean_path}", shim_dir.display())
     };
 
-    let mut cmd = Command::new(bin);
+    let mut cmd = crate::isolated_amplihack::isolated(bin);
     cmd.env("PATH", path);
     cmd
 }
@@ -1204,7 +1204,7 @@ exit 1
         let stdout_file = unsafe { fs::File::from_raw_fd(stdout_fd) };
         let stderr_file = unsafe { fs::File::from_raw_fd(stderr_fd) };
 
-        let mut command = Command::new(bin);
+        let mut command = crate::isolated_amplihack::isolated(bin);
         command
             .args(["fleet", "tui", "--interval", "1", "--capture-lines", "10"])
             .env("PATH", path)

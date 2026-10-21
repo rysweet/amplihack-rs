@@ -117,8 +117,10 @@ fn require_bin_or_panic() -> PathBuf {
 /// cleared, the synthetic-release env var set, and HOME pointed at a
 /// per-test tempdir. Caller adds the specific signal(s) under test.
 fn cmd_with_clean_env(home: &std::path::Path) -> Command {
-    let mut cmd = Command::new(require_bin_or_panic());
+    let mut cmd = crate::isolated_amplihack::isolated(require_bin_or_panic());
     cmd.env_clear();
+    cmd.env(crate::isolated_amplihack::HOME_GUARD_ENV, "1");
+    cmd.env("TMPDIR", std::env::temp_dir());
     // Inherit minimum env required for a Rust binary on Unix to function.
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);

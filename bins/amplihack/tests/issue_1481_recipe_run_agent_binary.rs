@@ -79,7 +79,9 @@ impl Fixture {
 
     /// [`Fixture::run`] with extra `recipe run` arguments.
     fn run_with_args(&self, args: &[&std::ffi::OsStr], extra: &[(&str, &str)]) -> (Output, Value) {
-        let mut command = self.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        let mut command = self.harness(crate::isolated_amplihack::isolated(env!(
+            "CARGO_BIN_EXE_amplihack"
+        )));
         command
             .arg("recipe")
             .arg("run")
@@ -98,6 +100,8 @@ impl Fixture {
     fn harness(&self, mut command: Command) -> Command {
         command
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", std::env::var_os("PATH").unwrap_or_default())
             .env("HOME", self.path().join("home"))
             .env("TMPDIR", std::env::temp_dir())
@@ -297,7 +301,9 @@ fn a_rejected_value_is_never_logged_at_any_filter() {
     const REJECTED: &str = "claude-code";
     let fx = Fixture::new();
     let agent_binary = |extra: &[(&str, &str)]| {
-        let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+        let mut command = fx.harness(crate::isolated_amplihack::isolated(env!(
+            "CARGO_BIN_EXE_amplihack"
+        )));
         command.arg("agent-binary").env("RUST_LOG", "trace");
         for (key, value) in extra {
             command.env(key, value);
@@ -512,8 +518,10 @@ fn auto_mode_hands_an_inherited_guess_on_tagged_and_persists_nothing() {
         &std::env::var_os("PATH").unwrap_or_default(),
     )))
     .expect("join PATH");
-    let mut child = Command::new(env!("CARGO_BIN_EXE_amplihack"))
+    let mut child = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"))
         .env_clear()
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+        .env("TMPDIR", std::env::temp_dir())
         .env("PATH", path)
         .env("HOME", fx.path().join("home"))
         .env("TMPDIR", &tmp)
@@ -1762,7 +1770,9 @@ fn without_the_hand_off_a_server_an_amplihack_codex_agent_started_is_named() {
 
 /// `amplihack agent-binary --shell` run directly, stdout and stderr apart.
 fn agent_binary_shell(fx: &Fixture, env: &[(&str, &str)]) -> Output {
-    let mut command = fx.harness(Command::new(env!("CARGO_BIN_EXE_amplihack")));
+    let mut command = fx.harness(crate::isolated_amplihack::isolated(env!(
+        "CARGO_BIN_EXE_amplihack"
+    )));
     command.args(["agent-binary", "--shell"]);
     for (key, value) in env {
         command.env(key, value);

@@ -83,7 +83,7 @@ use std::path::PathBuf;
 
 use amplihack_utils::agent_binary::{
     BINARY_ENV, Resolution, ResolutionSource, SESSION_MARKERS, SOURCE_ENV, SessionMarker,
-    default_guess_tag, tmux_server_marker_tag,
+    default_guess_tag, tmux_server_marker_tag, user_config_tag,
 };
 use anyhow::{Context, Result};
 
@@ -130,6 +130,10 @@ pub(crate) fn render(
     }
     let tag = match (resolution.source, from_tmux_server) {
         (ResolutionSource::Default, _) => default_guess_tag(&resolution.binary),
+        // Issue #1606: the configured value decided, not any marker the tmux
+        // server holds, so it crosses as a configured value whatever the
+        // server's environment says.
+        (ResolutionSource::UserConfig, _) => user_config_tag(&resolution.binary),
         (_, Some(marker)) => tmux_server_marker_tag(marker),
         (
             ResolutionSource::Env
@@ -291,6 +295,39 @@ mod tests {
                 Some(copilot_cli)
             ),
             "copilot (session_marker)"
+        );
+    }
+
+    /// Issue #1606: a configured `agent.binary` crosses tagged as one, even
+    /// when the tmux server holds another CLI's marker.
+    #[test]
+    fn a_configured_binary_is_handed_on_tagged_user_config() {
+        let copilot_cli = SessionMarker {
+            variable: "COPILOT_CLI",
+            binary: "copilot",
+        };
+        for marker in [None, Some(copilot_cli)] {
+            assert_eq!(
+                render(
+                    &resolved("claude", ResolutionSource::UserConfig),
+                    true,
+                    marker
+                ),
+                format!(
+                    "{} AMPLIHACK_AGENT_BINARY=claude \
+                     AMPLIHACK_AGENT_BINARY_SOURCE=user_config:claude",
+                    unset_every_marker()
+                ),
+                "{marker:?}"
+            );
+        }
+        assert_eq!(
+            render(
+                &resolved("claude", ResolutionSource::UserConfig),
+                false,
+                None
+            ),
+            "claude (user_config)"
         );
     }
 

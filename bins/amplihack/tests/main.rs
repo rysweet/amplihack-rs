@@ -15,6 +15,9 @@
 //! `tests/integration/test_harness_binary_path_contract_test.rs`) fails on any
 //! file left out.
 
+#[path = "../../../tests/support/isolated_amplihack.rs"]
+mod isolated_amplihack;
+
 #[path = "issue_1445_host_only_litellm.rs"]
 mod issue_1445_host_only_litellm;
 #[path = "issue_1481_recipe_run_agent_binary.rs"]

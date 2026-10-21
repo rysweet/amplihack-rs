@@ -141,6 +141,8 @@ amplihack copilot
 
 #### General Configuration
 
+- [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
+- [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts

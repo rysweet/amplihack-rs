@@ -10,7 +10,7 @@
 use serde_yaml::Value;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 fn workspace_root() -> PathBuf {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -34,7 +34,7 @@ fn amplihack_bin() -> PathBuf {
 }
 
 fn run_recipe_from(cwd: &Path, recipe: &Path, extra_args: &[&str]) -> Output {
-    let mut command = Command::new(amplihack_bin());
+    let mut command = crate::isolated_amplihack::isolated(amplihack_bin());
     for key in [
         "AMPLIHACK_SESSION_TREE_DIR",
         "AMPLIHACK_TREE_ID",

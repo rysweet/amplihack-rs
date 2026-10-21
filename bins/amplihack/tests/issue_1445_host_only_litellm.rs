@@ -11,7 +11,7 @@ const CI_MARKERS: &[&str] = &[
 ];
 
 fn command() -> Command {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+    let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
     for marker in CI_MARKERS {
         command.env_remove(marker);
     }

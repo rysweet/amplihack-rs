@@ -1,11 +1,7 @@
 //! Behavioral contracts for the private Cargo-only runner validation boundary.
 #![cfg(unix)]
 use serde_json::{Value, json};
-use std::{
-    fs,
-    path::Path,
-    process::{Command, Output},
-};
+use std::{fs, path::Path, process::Output};
 
 fn cli_binary() -> std::path::PathBuf {
     std::env::var_os("AMPLIHACK_TEST_BINARY")
@@ -63,7 +59,7 @@ impl Fixture {
         self.receipt(json!({format!("recipe-runner-rs 0.4.0 (git+{REPO}?rev={REV}#{REV})"): {"bins":["recipe-runner-rs"]}}));
     }
     fn run(&self, provider: &str, managed: bool, binary: &Path) -> Output {
-        let mut c = Command::new(cli_binary());
+        let mut c = crate::isolated_amplihack::isolated(cli_binary());
         c.args([
             "internal",
             "validate-recipe-runner",
@@ -179,7 +175,7 @@ fn missing_receipt_and_shadowed_selection_fail_visibly() {
 #[test]
 fn partial_managed_arguments_fail_before_probe() {
     let f = Fixture::new(REPORT, 0);
-    let o = Command::new(cli_binary())
+    let o = crate::isolated_amplihack::isolated(cli_binary())
         .args([
             "internal",
             "validate-recipe-runner",

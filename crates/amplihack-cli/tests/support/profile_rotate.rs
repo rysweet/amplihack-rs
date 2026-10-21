@@ -248,10 +248,12 @@ impl Fixture {
 
     fn base(&self, args: &[&str]) -> Command {
         self.assert_isolated();
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work_dir)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),

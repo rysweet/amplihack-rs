@@ -328,7 +328,7 @@ mod end_to_end {
     use amplihack_utils::prompt_delivery::FILE_REFERENCE_PREFIX;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::process::{Command, Output, Stdio};
+    use std::process::{Output, Stdio};
 
     /// Records, per run `n`: its argv (NUL-separated), its parent's argv, its
     /// environment and its stdin.
@@ -403,10 +403,12 @@ echo "fake copilot turn $n"
         /// No inherited environment, and in particular no
         /// `AMPLIHACK_NONINTERACTIVE`, so the test sees what auto mode sets.
         fn run(&self, args: &[&str]) -> Output {
-            Command::new(amplihack_bin())
+            crate::isolated_amplihack::isolated(amplihack_bin())
                 .args(args)
                 .current_dir(&self.work)
                 .env_clear()
+                .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+                .env("TMPDIR", std::env::temp_dir())
                 .env(
                     "PATH",
                     format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),

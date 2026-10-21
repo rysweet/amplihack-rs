@@ -19,6 +19,10 @@
 mod amplihack_path;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
+#[path = "../support/isolated_amplihack.rs"]
+mod isolated_amplihack;
+#[path = "isolated_amplihack_scan.rs"]
+mod isolated_amplihack_scan;
 
 #[path = "smart_orchestrator_decomposition_test.rs"]
 mod smart_orchestrator_decomposition;

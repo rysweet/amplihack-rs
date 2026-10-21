@@ -55,6 +55,8 @@ const SKIP_ENV: &str = "AMPLIHACK_SKIP_AUTO_INSTALL";
 /// - `agent-binary`: runs inside `$(...)` to hand the agent binary to a
 ///   detached launch (issue #1525); an install there would be a side effect
 ///   of reading a value, and its output would land on the caller's terminal.
+/// - `config`: reads and writes user defaults, often inside `$(...)`
+///   (issue #1606); the same reasoning as `agent-binary`.
 const SKIP_SUBCOMMANDS: &[&str] = &[
     "install",
     "uninstall",
@@ -63,6 +65,7 @@ const SKIP_SUBCOMMANDS: &[&str] = &[
     "doctor",
     "help",
     "agent-binary",
+    "config",
 ];
 
 /// Top-level flags that short-circuit clap and should not pay for an

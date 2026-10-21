@@ -204,12 +204,12 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `<FILE>` | (required) | Path to the recipe YAML file |
 | `-c KEY=VALUE` | (none) | Set a context variable; repeat for multiple values |
 | `--dry-run` | false | Print the execution plan without running any steps |
-| `--verbose` | false | Increase progress detail on stderr; basic step progress is emitted by default |
+| `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
-| `--step-timeout <SECONDS>` | (none) | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
+| `--step-timeout <SECONDS>` | `AMPLIHACK_STEP_TIMEOUT`, then [`recipe.step_timeout`](./user-config.md#recipestep_timeout), else none | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
 
-Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override.
+Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
 
 > **No per-step timeouts on agent steps by default.** As of the resolution
 > of [issue #439](https://github.com/rysweet/amplihack-rs/issues/439), the
@@ -347,9 +347,14 @@ Pointer lines use the stable prefix `amplihack.recipe.log_pointer ` followed by
 one JSON object:
 
 ```text
-amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","runner_path":"/home/user/.local/bin/recipe-runner-rs","timestamp":"2026-06-12T03:55:11Z"}
-amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs","log_paths":{"jsonl":"/tmp/default-workflow.jsonl"},"timestamp":"2026-06-12T04:21:39Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"early","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","runner_path":"/home/user/.local/bin/recipe-runner-rs","agent_binary":"claude","agent_binary_source":"user_config","amplihack_home":"/home/user/.amplihack","timestamp":"2026-06-12T03:55:11Z"}
+amplihack.recipe.log_pointer {"schema_version":1,"event":"final","run_id":"5b60657b-76ef-4f49-8a22-8b89ed75f43e","recipe_name":"default-workflow","status":"success","cwd":"/home/user/src/myapp","worktree":"/home/user/src/myapp","branch":"main","child_pid":41822,"exit_code":0,"runner_path":"/home/user/.local/bin/recipe-runner-rs","agent_binary":"claude","agent_binary_source":"user_config","amplihack_home":"/home/user/.amplihack","log_paths":{"jsonl":"/tmp/default-workflow.jsonl"},"timestamp":"2026-06-12T04:21:39Z"}
 ```
+
+`agent_binary` and `agent_binary_source` record the agent CLI the steps run
+under and the resolver layer that chose it (`env`, `user_config`,
+`session_marker`, `launcher_context` or `default`). `amplihack_home` is the
+`AMPLIHACK_HOME` handed to the runner.
 
 Final pointer `status` values are lowercase wrapper statuses: `success`,
 `failure`, `spawn_failure`, or `parse_failure`. Top-level recipe result statuses
