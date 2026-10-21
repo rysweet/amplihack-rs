@@ -5,7 +5,7 @@
 //! `kind: ValueKind`, `env: Option<&str>`; `parse_cli(key, raw) ->
 //! Result<Value, ConfigError>`; `ConfigError::exit_code()`.
 
-use super::schema::{KEYS, Scope, ValueKind, parse_cli};
+use super::schema::{KEYS, Scope, Value, ValueKind, key as key_def, parse_cli};
 
 #[test]
 fn keys_are_in_documented_order() {
@@ -19,6 +19,9 @@ fn keys_are_in_documented_order() {
             "node.max_old_space_mb",
             "recipe.verbose",
             "recipe.step_timeout",
+            "recipe.detach",
+            "recipe.tmux_session_pattern",
+            "recipe.log_dir",
             "orchestrator.max_depth",
         ]
     );
@@ -40,7 +43,7 @@ fn no_project_scoped_key_names_a_path() {
 }
 
 #[test]
-fn user_only_keys_are_agent_home_and_node() {
+fn user_only_keys_are_agent_home_node_and_log_dir() {
     let user_only: Vec<&str> = KEYS
         .iter()
         .filter(|k| k.scope == Scope::UserOnly)
@@ -52,9 +55,50 @@ fn user_only_keys_are_agent_home_and_node() {
             "agent.binary",
             "paths.home",
             "node.heap_consent",
-            "node.max_old_space_mb"
+            "node.max_old_space_mb",
+            "recipe.log_dir"
         ]
     );
+}
+
+#[test]
+fn every_default_passes_its_own_validation() {
+    for key in KEYS {
+        let _ = key.default_value();
+    }
+    assert_eq!(
+        key_def("orchestrator.max_depth").unwrap().default_value(),
+        Some(Value::Int(u64::from(
+            crate::commands::session_tree::state::DEFAULT_MAX_DEPTH
+        )))
+    );
+}
+
+#[test]
+fn session_patterns_allow_placeholders_and_safe_characters_only() {
+    use super::schema::validate_session_pattern;
+    for good in ["amp-{recipe}-{repo}-{ts}", "run_{ts}", "x"] {
+        assert!(validate_session_pattern(good).is_ok(), "{good}");
+    }
+    for bad in [
+        "",
+        "a.b",
+        "a:b",
+        "a b",
+        "{user}",
+        "$(id)",
+        "a'b",
+        &"x".repeat(65),
+    ] {
+        assert!(validate_session_pattern(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn detach_accepts_tmux_and_none_only() {
+    assert!(parse_cli("recipe.detach", "tmux").is_ok());
+    assert!(parse_cli("recipe.detach", "none").is_ok());
+    assert!(parse_cli("recipe.detach", "screen").is_err());
 }
 
 #[test]

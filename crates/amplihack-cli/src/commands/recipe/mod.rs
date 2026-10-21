@@ -11,11 +11,18 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Issue #1606: `recipe run --detach`.
+pub mod detach;
 pub mod list;
 mod parse;
+/// Issue #1606: the processes `recipe stop` signals.
+#[cfg(target_os = "linux")]
+mod process_tree;
 mod resolve;
 pub mod run;
 pub mod show_validate;
+/// Issue #1606: `recipe stop`.
+pub mod stop;
 
 pub use list::run_list;
 pub use run::{resolve_context_args, run_recipe};

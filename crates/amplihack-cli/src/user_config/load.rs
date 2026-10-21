@@ -229,7 +229,7 @@ fn merge_files(
     let base = user
         .as_ref()
         .map(|(value, _)| (value.clone(), "user value"))
-        .or_else(|| def.default.clone().map(|value| (value, "default")));
+        .or_else(|| def.default_value().map(|value| (value, "default")));
     match (base, project_value.as_int()) {
         (Some((base_value, label)), Some(lowered))
             if base_value.as_int().is_some_and(|base| lowered > base) =>
@@ -258,7 +258,7 @@ fn resolve_entry(
 ) -> Entry {
     let below = || match &file {
         Some((value, origin)) => (Some(value.clone()), origin.clone()),
-        None => (def.default.clone(), Origin::Default),
+        None => (def.default_value(), Origin::Default),
     };
     let (value, origin) = match env_layer(def, env) {
         EnvLayer::Unset => below(),
@@ -317,6 +317,7 @@ fn env_reason(kind: ValueKind, var: &str, raw: &str) -> String {
         ValueKind::Int { min, max } => format!("{var} is outside {min} to {max}"),
         ValueKind::AbsPath => format!("{var} is not a valid absolute path"),
         ValueKind::Bool => format!("{var} is not true or false"),
+        ValueKind::Choice(_) | ValueKind::SessionPattern => format!("{var} is not a valid value"),
         ValueKind::AgentBinary => {
             format!("{var} is not one of amplifier, claude, codex or copilot")
         }

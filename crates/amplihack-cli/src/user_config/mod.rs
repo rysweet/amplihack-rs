@@ -303,6 +303,36 @@ pub(crate) fn recipe_step_timeout(cwd: &Path) -> Option<u64> {
         .and_then(Value::as_int)
 }
 
+/// `recipe.detach = "tmux"` from the files: whether `recipe run` detaches
+/// when neither `--detach` nor `--no-detach` is given.
+pub(crate) fn recipe_detach(cwd: &Path) -> bool {
+    load_for(cwd)
+        .entry("recipe.detach")
+        .value
+        .as_ref()
+        .and_then(Value::as_text)
+        == Some("tmux")
+}
+
+/// The effective `recipe.tmux_session_pattern` (the default when unset).
+pub(crate) fn tmux_session_pattern(cwd: &Path) -> String {
+    load_for(cwd)
+        .entry("recipe.tmux_session_pattern")
+        .value
+        .as_ref()
+        .and_then(Value::as_text)
+        .unwrap_or(schema::DEFAULT_SESSION_PATTERN)
+        .to_string()
+}
+
+/// The configured `recipe.log_dir`, from the user file only.
+pub(crate) fn recipe_log_dir() -> Option<PathBuf> {
+    load_user_only()
+        .file_value("recipe.log_dir")
+        .and_then(Value::as_text)
+        .map(PathBuf::from)
+}
+
 /// `orchestrator.max_depth` from the files. Consumers apply it only where the
 /// built-in default applied before, below `AMPLIHACK_MAX_DEPTH` and any
 /// sealed tree ceiling.

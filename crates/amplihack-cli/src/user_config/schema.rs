@@ -38,7 +38,27 @@ pub(crate) enum ValueKind {
     Bool,
     /// A decimal integer in `min..=max`.
     Int { min: u64, max: u64 },
+    /// One of a fixed list of words.
+    Choice(&'static [&'static str]),
+    /// A tmux session-name pattern: see [`validate_session_pattern`].
+    SessionPattern,
 }
+
+/// The values of `recipe.detach`.
+pub(crate) const DETACH_MODES: &[&str] = &["tmux", "none"];
+
+/// The placeholders a `recipe.tmux_session_pattern` may use.
+pub(crate) const SESSION_PLACEHOLDERS: &[&str] = &["{recipe}", "{repo}", "{ts}"];
+
+/// The default `recipe.tmux_session_pattern`.
+pub(crate) const DEFAULT_SESSION_PATTERN: &str = "amp-{recipe}-{repo}-{ts}";
+
+/// The default `orchestrator.max_depth`, as text; a test pins it to
+/// `session_tree::state::DEFAULT_MAX_DEPTH`.
+const DEFAULT_MAX_DEPTH: &str = "3";
+
+/// Longest accepted session pattern, in characters.
+pub(crate) const MAX_SESSION_PATTERN_CHARS: usize = 64;
 
 /// A validated value.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -111,14 +131,22 @@ pub(crate) struct KeyDef {
     pub kind: ValueKind,
     /// The environment variable that outranks every file, if any.
     pub env: Option<&'static str>,
-    /// The built-in default, or `None` for "(unset)".
-    pub default: Option<Value>,
+    /// The built-in default, as it would be typed on the command line, or
+    /// `None` for "(unset)". Parsed by [`KeyDef::default_value`].
+    pub default: Option<&'static str>,
     /// The project file may only lower this key below the user value (or the
     /// default), so a cloned repository cannot raise a limit.
     pub lower_only: bool,
 }
 
 impl KeyDef {
+    /// The built-in default as a value.
+    pub(crate) fn default_value(&self) -> Option<Value> {
+        self.default.map(|raw| {
+            parse_raw(self.kind, raw).expect("every schema default passes its own validation")
+        })
+    }
+
     /// The TOML table and the key inside it.
     pub(crate) fn split(&self) -> (&'static str, &'static str) {
         self.name
@@ -171,7 +199,7 @@ pub(crate) static KEYS: &[KeyDef] = &[
         scope: Scope::UserAndProject,
         kind: ValueKind::Bool,
         env: None,
-        default: Some(Value::Bool(false)),
+        default: Some("false"),
         lower_only: false,
     },
     KeyDef {
@@ -186,6 +214,30 @@ pub(crate) static KEYS: &[KeyDef] = &[
         lower_only: true,
     },
     KeyDef {
+        name: "recipe.detach",
+        scope: Scope::UserAndProject,
+        kind: ValueKind::Choice(DETACH_MODES),
+        env: None,
+        default: Some("none"),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "recipe.tmux_session_pattern",
+        scope: Scope::UserAndProject,
+        kind: ValueKind::SessionPattern,
+        env: None,
+        default: Some(DEFAULT_SESSION_PATTERN),
+        lower_only: false,
+    },
+    KeyDef {
+        name: "recipe.log_dir",
+        scope: Scope::UserOnly,
+        kind: ValueKind::AbsPath,
+        env: None,
+        default: None,
+        lower_only: false,
+    },
+    KeyDef {
         name: "orchestrator.max_depth",
         scope: Scope::UserAndProject,
         kind: ValueKind::Int {
@@ -193,9 +245,7 @@ pub(crate) static KEYS: &[KeyDef] = &[
             max: MAX_DEPTH_CEILING as u64,
         },
         env: Some("AMPLIHACK_MAX_DEPTH"),
-        default: Some(Value::Int(
-            crate::commands::session_tree::state::DEFAULT_MAX_DEPTH as u64,
-        )),
+        default: Some(DEFAULT_MAX_DEPTH),
         lower_only: true,
     },
 ];
@@ -227,6 +277,14 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
             .map(Value::Text)
             .ok_or_else(|| kind_requirement(kind)),
         ValueKind::AbsPath => validate_abs_path(raw).map(|()| Value::Text(raw.to_string())),
+        ValueKind::Choice(words) => words
+            .iter()
+            .find(|word| **word == raw)
+            .map(|word| Value::Text((*word).to_string()))
+            .ok_or_else(|| kind_requirement(kind)),
+        ValueKind::SessionPattern => {
+            validate_session_pattern(raw).map(|()| Value::Text(raw.to_string()))
+        }
         ValueKind::Bool => match raw {
             "true" => Ok(Value::Bool(true)),
             "false" => Ok(Value::Bool(false)),
@@ -247,9 +305,13 @@ pub(crate) fn parse_raw(kind: ValueKind, raw: &str) -> Result<Value, String> {
 /// Convert a value read from a TOML file. The error is the reason.
 pub(crate) fn from_toml(kind: ValueKind, item: &toml_edit::Value) -> Result<Value, String> {
     match (kind, item) {
-        (ValueKind::AgentBinary | ValueKind::AbsPath, toml_edit::Value::String(s)) => {
-            parse_raw(kind, s.value())
-        }
+        (
+            ValueKind::AgentBinary
+            | ValueKind::AbsPath
+            | ValueKind::Choice(_)
+            | ValueKind::SessionPattern,
+            toml_edit::Value::String(s),
+        ) => parse_raw(kind, s.value()),
         (ValueKind::Bool, toml_edit::Value::Boolean(b)) => Ok(Value::Bool(*b.value())),
         (ValueKind::Int { .. }, toml_edit::Value::Integer(i)) => {
             let value = *i.value();
@@ -271,6 +333,12 @@ pub(crate) fn kind_requirement(kind: ValueKind) -> String {
              {MAX_PATH_BYTES} bytes"
         ),
         ValueKind::Bool => "must be true or false".to_string(),
+        ValueKind::Choice(words) => format!("must be one of {}", words.join(", ")),
+        ValueKind::SessionPattern => format!(
+            "must be 1 to {MAX_SESSION_PATTERN_CHARS} characters of letters, digits, '-' and \
+             '_', with the placeholders {}",
+            SESSION_PLACEHOLDERS.join(", ")
+        ),
         ValueKind::Int { min, max } if max == u64::MAX => {
             format!("must be an integer of at least {min}")
         }
@@ -290,6 +358,29 @@ pub(crate) fn validate_abs_path(raw: &str) -> Result<(), String> {
         return Err(requirement());
     }
     Ok(())
+}
+
+/// A session pattern is 1 to [`MAX_SESSION_PATTERN_CHARS`] characters of
+/// ASCII letters, digits, `-` and `_`, plus the [`SESSION_PLACEHOLDERS`].
+/// tmux forbids `.` and `:` in session names, and nothing here needs quoting.
+pub(crate) fn validate_session_pattern(raw: &str) -> Result<(), String> {
+    let requirement = || kind_requirement(ValueKind::SessionPattern);
+    if raw.is_empty() || raw.chars().count() > MAX_SESSION_PATTERN_CHARS {
+        return Err(requirement());
+    }
+    let literal = SESSION_PLACEHOLDERS
+        .iter()
+        .fold(raw.to_string(), |rest, placeholder| {
+            rest.replace(placeholder, "")
+        });
+    if literal
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        Ok(())
+    } else {
+        Err(requirement())
+    }
 }
 
 /// The extra check a configured home must pass when it is used or set: an

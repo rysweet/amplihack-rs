@@ -106,6 +106,8 @@ mod issue_1592_root;
 mod issue_1592_root_rotator;
 #[path = "issue_1606_config_cli.rs"]
 mod issue_1606_config_cli;
+#[path = "issue_1606_detach.rs"]
+mod issue_1606_detach;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

@@ -11,6 +11,8 @@ inspects, validates, and runs YAML recipe files.
   - [recipe show](#recipe-show)
   - [recipe validate](#recipe-validate)
   - [recipe run](#recipe-run)
+  - [Detached runs](#detached-runs)
+  - [recipe stop](#recipe-stop)
 - [Output formats](#output-formats)
 - [Progress and stream contract](#progress-and-stream-contract)
 - [Recipe file format](#recipe-file-format)
@@ -197,6 +199,7 @@ Execute a recipe by delegating to the `recipe-runner-rs` binary.
 ```
 amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
   [--format <FORMAT>] [--working-dir <DIR>] [--step-timeout <SECONDS>]
+  [--detach | --no-detach]
 ```
 
 | Flag | Default | Description |
@@ -207,6 +210,8 @@ amplihack recipe run <FILE> [-c KEY=VALUE]... [--dry-run] [--verbose]
 | `--verbose` | false, or [`recipe.verbose`](./user-config.md#recipeverbose) | Increase progress detail on stderr; basic step progress is emitted by default. On when either the flag or `recipe.verbose = true` is set |
 | `--format <FORMAT>` | `table` | Output format for results: `table`, `json`, or `yaml` |
 | `--working-dir <DIR>` | `.` | Working directory for step execution |
+| `--detach` | false, or [`recipe.detach`](./user-config.md#recipedetach) `= "tmux"` | Run in a new tmux session with a private log, print the session and log path, and return. See [Detached runs](#detached-runs) |
+| `--no-detach` | | Run in the foreground even when `recipe.detach = "tmux"` |
 | `--step-timeout <SECONDS>` | `AMPLIHACK_STEP_TIMEOUT`, then [`recipe.step_timeout`](./user-config.md#recipestep_timeout), else none | Apply a global per-step timeout ceiling to **every** step in the recipe. Useful for CI guard rails. `0` disables all step timeouts. When omitted, agent steps run without a per-step timeout and bash steps use the YAML-defined `timeout_seconds` only when present |
 
 Before spawning `recipe-runner-rs`, the Rust CLI always injects `AMPLIHACK_HOME` and, when available, `AMPLIHACK_ASSET_RESOLVER` into the child environment. That gives recipes a stable native way to resolve `amplifier-bundle/...` assets without assuming the Python package layout. Additionally, when `--step-timeout` is provided, the CLI sets [`AMPLIHACK_STEP_TIMEOUT`](./environment-variables.md#amplihack_step_timeout) in the child environment so `recipe-runner-rs` can read and apply the override. Without the flag, an `AMPLIHACK_STEP_TIMEOUT` already in the environment is passed on unchanged, and otherwise a configured `recipe.step_timeout` is exported.
@@ -289,6 +294,86 @@ Steps:
 ```
 
 Step status values: `completed`, `failed`, `skipped`.
+
+A SIGHUP, SIGINT or SIGTERM to `recipe run` (closing the terminal, Ctrl-C,
+`tmux kill-session`, `kill`) stops the whole run, whenever it arrives: during
+setup, while a step runs, or during retry backoff, which it cuts short. The
+runner's process group gets SIGTERM, then SIGKILL after the teardown grace
+(`AMPLIHACK_TEARDOWN_GRACE_SECS`, default 5 s), as on a timeout. On Linux every
+descendant found under the runner beforehand (by parent and process group, so
+one that started its own session too) is then terminated the same way.
+`recipe run` exits with `128 + signal` (129 for SIGHUP, 130 for Ctrl-C). The
+runner is started in its own session, so before this the signal ended only
+`recipe run` and left the runner and its agents running.
+
+SIGKILL cannot be caught. If `recipe run` is killed that way, on Linux the
+kernel sends the runner SIGTERM (`PR_SET_PDEATHSIG`); agents the runner started
+can outlive it. Use `amplihack recipe stop <run_id>` to end them.
+
+### Detached runs
+
+`recipe run --detach` (or every `recipe run` once
+`amplihack config set recipe.detach tmux` is set) starts the run in a new tmux
+session and returns:
+
+```console
+$ amplihack recipe run smart-orchestrator --detach -w ~/src/myapp \
+    --context-from-file task_description=task.md -c repo_path=.
+session: amp-smart-orchestrator-myapp-20261020-101500
+log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-101500.log
+```
+
+- **Session name** — [`recipe.tmux_session_pattern`](./user-config.md#recipetmux_session_pattern),
+  default `amp-{recipe}-{repo}-{ts}`: the recipe's file stem or name, the git
+  root's directory name, and a UTC timestamp. Any character tmux does not
+  accept becomes `-`. When a live session or an earlier run's log already has
+  the name, `-2`, `-3`, ... is appended, so a pattern without `{ts}`, or two
+  launches in the same second, still works.
+- **Log** — `<session>.log` in [`recipe.log_dir`](./user-config.md#recipelog_dir),
+  default `~/.amplihack/recipe-logs`. The directory is created 0700 and the log
+  0600. It receives everything the run prints, which the tmux pane shows too.
+- **Environment** — the run gets your shell's environment, not the tmux
+  server's. The agent CLI is resolved in your shell, as a foreground run would
+  resolve it, and handed over tagged; every agent session marker the tmux
+  server holds is removed. The environment travels in a 0600 file in the log
+  directory that the pane reads and deletes at once, never on a command line.
+  If the pane has not read it within 15 s, or the launch is interrupted, the
+  file is deleted and the launch fails.
+- **Context** — `-c`, `--context-file` and `--context-from-file` are read
+  when you launch, not later, and reach the run in a 0600
+  `<session>.context.json` in the log directory, removed when the run ends.
+  No context value is on the pane's command line.
+- **Start-up check** — the launch returns only after the pane has written
+  `amplihack: detached run started (pid N)` to the log. If the pane cannot
+  start the run, it writes the reason there instead, and the launch prints it
+  and fails.
+- **Stopping** — `amplihack recipe stop <session>`, or `tmux kill-session`.
+
+Needs `tmux` on `PATH`.
+
+### recipe stop
+
+```
+amplihack recipe stop <SESSION | RUN_ID>
+```
+
+Stops a recipe run and its whole process tree: `recipe run`, the recipe runner
+and every agent and command it started.
+
+- **A tmux session** started by `recipe run --detach` (a session with no
+  pane running `amplihack recipe detached-child` is refused): only that
+  pane's process group gets SIGTERM, and `recipe run` there tears its runner
+  down. Anything of its tree still running after 15 s gets SIGKILL. Then the
+  session is killed, which closes any other pane in it (a `tail -f` you split
+  off) without a signal from `recipe stop`.
+- **A run id**, the `run_id` of a run's `amplihack.recipe.log_pointer` line:
+  every process started with that `AMPLIHACK_RECIPE_RUN_ID`, its descendants
+  and their process groups get SIGTERM, then SIGKILL after 15 s. Linux only.
+
+The tree is found before anything is signalled, and each process is
+signalled only while its start time still matches, so a reused pid is never
+hit. `recipe stop` never signals itself or its own ancestors. It prints
+`stopped <what> (<n> processes)` and exits 0, or exits 1 when nothing matches.
 
 ---
 

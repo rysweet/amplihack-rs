@@ -556,6 +556,9 @@ pub(super) fn execute_recipe_via_rust(
     // the orchestrator and fork-bomb the host. Runs BEFORE any work (binary
     // lookup, temp dirs, spawn) so no descendant is ever created past the limit.
     let guard = enforce_recursion_depth_guard(working_dir)?;
+    // Issue #1606: from here on a SIGHUP/SIGINT/SIGTERM stops the run, at any
+    // point: setup, a running attempt, or retry backoff.
+    super::stop_signal::arm();
 
     let binary = super::binary::find_recipe_runner_binary()?;
     let recipe_name = recipe_name_for_correlation(recipe_path);
@@ -747,6 +750,13 @@ pub(super) fn execute_recipe_via_rust(
     let (result, summary) = run_with_transient_retry(
         &limits,
         |attempt_no| {
+            // Issue #1606: never start an attempt after a stop signal, e.g.
+            // one that arrived during retry backoff.
+            if let Some(signal) = super::stop_signal::pending() {
+                return AttemptOutcome::Final(Err(anyhow::Error::new(
+                    super::stop_signal::StoppedBySignal(signal),
+                )));
+            }
             let correlation = RecipeRunCorrelation::new(
                 recipe_name.clone(),
                 working_dir,
@@ -778,6 +788,16 @@ pub(super) fn execute_recipe_via_rust(
                 Err(_) => true,
                 Ok(run_result) => !run_result.success,
             };
+            // Issue #1606: a stop signal is the user's decision, never a
+            // transient fault to retry.
+            if let Err(error) = &attempt_result
+                && error
+                    .downcast_ref::<super::stop_signal::StoppedBySignal>()
+                    .is_some()
+            {
+                caller_git.restore_on_failure();
+                return AttemptOutcome::Final(attempt_result);
+            }
             if !failed {
                 return AttemptOutcome::Final(attempt_result);
             }
@@ -812,7 +832,8 @@ pub(super) fn execute_recipe_via_rust(
                 verdict.reasoning()
             );
         },
-        std::thread::sleep,
+        // Issue #1606: backoff can last minutes; a stop signal ends it.
+        super::stop_signal::sleep_unless_stopped,
     );
 
     if let Some(stop_reason) = summary.stop_reason
@@ -876,12 +897,30 @@ fn spawn_with_streaming_stderr(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
-        // SAFETY: `pre_exec` runs after fork and before exec. `setsid` is
-        // async-signal-safe and lets timeout cleanup terminate the recipe tree.
+        // Issue #1606: SIGKILL cannot be caught, so a `recipe run` killed that
+        // way never tears the runner down. On Linux the kernel then sends the
+        // runner SIGTERM (PR_SET_PDEATHSIG). Captured before the fork: the
+        // check after prctl catches a parent that died in between.
+        #[cfg(target_os = "linux")]
+        let parent = std::process::id() as libc::pid_t;
+        // SAFETY: `pre_exec` runs after fork and before exec. `setsid`,
+        // `prctl` and `getppid` are async-signal-safe. `setsid` lets timeout
+        // cleanup terminate the recipe tree.
         unsafe {
-            command.pre_exec(|| {
+            command.pre_exec(move || {
                 if libc::setsid() == -1 {
                     return Err(std::io::Error::last_os_error());
+                }
+                #[cfg(target_os = "linux")]
+                {
+                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    if libc::getppid() != parent {
+                        // No allocation after fork: ESRCH, "no such process",
+                        // for the parent that is already gone.
+                        return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+                    }
                 }
                 Ok(())
             });
@@ -956,8 +995,62 @@ fn spawn_with_streaming_stderr(
                 error,
             )
         })? {
-        Some(status) => status,
-        None => {
+        RunnerWait::Exited(status) => {
+            // Issue #1606: a signal that arrived as the runner exited still
+            // stops the run; it must not end in a success.
+            if let Some(signal) = super::stop_signal::pending() {
+                // The runner has exited and been reaped, so its pid may already
+                // belong to another process: seed from its group's remaining
+                // members only. Every descendant that left the group is still
+                // found through them.
+                let tree = crate::commands::recipe::stop::snapshot_group(child.id() as i32);
+                #[cfg(unix)]
+                reap_recipe_runner_group(child.id(), recipe_runner_teardown_grace());
+                crate::commands::recipe::stop::terminate(&tree);
+                crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+                correlation.emit_final(
+                    RecipeRunFinalStatus::Failure,
+                    child_pid,
+                    status.code(),
+                    known_log_paths(None),
+                );
+                return Err(anyhow::Error::new(super::stop_signal::StoppedBySignal(
+                    signal,
+                )));
+            }
+            status
+        }
+        RunnerWait::Stopped(signal) => {
+            // Issue #1606: the same teardown as a timeout, for a signal, plus
+            // every descendant that left the runner's group (an agent that
+            // setsid'd again): the whole tree is found before anything is
+            // signalled, and swept after the group teardown.
+            let tree =
+                crate::commands::recipe::stop::snapshot_tree(&std::collections::BTreeSet::from([
+                    child.id() as i32,
+                ]));
+            let summary = correlation.emit_final(
+                RecipeRunFinalStatus::Failure,
+                child_pid,
+                None,
+                known_log_paths(None),
+            );
+            let detail = super::format::format_log_pointer_summary(&summary);
+            // The sweep runs whatever the group teardown reports: a runner
+            // that could not be reaped must not leave its descendants behind.
+            let teardown = terminate_recipe_runner(&mut child);
+            crate::commands::recipe::stop::terminate(&tree);
+            crate::commands::recipe::stop::sweep(&tree, recipe_runner_teardown_grace());
+            let stopped = anyhow::Error::new(super::stop_signal::StoppedBySignal(signal));
+            return Err(match teardown {
+                Ok(()) => stopped,
+                Err(error) => stopped.context(format!(
+                    "recipe run {} could not terminate its runner: {error:#}; {detail}",
+                    summary.run_id
+                )),
+            });
+        }
+        RunnerWait::TimedOut => {
             let pid = child.id();
             // Issue #1304: emit the terminal record BEFORE terminating. The
             // `?` on terminate_recipe_runner used to be able to return first,
@@ -1326,21 +1419,29 @@ fn recipe_runner_timeout() -> Duration {
         .unwrap_or(RECIPE_RUNNER_DEFAULT_TIMEOUT)
 }
 
-fn wait_for_recipe_runner(
-    child: &mut Child,
-    timeout: Duration,
-) -> std::io::Result<Option<ExitStatus>> {
+/// How waiting for the runner ended.
+enum RunnerWait {
+    Exited(ExitStatus),
+    TimedOut,
+    /// Issue #1606: `recipe run` received this stop signal.
+    Stopped(i32),
+}
+
+fn wait_for_recipe_runner(child: &mut Child, timeout: Duration) -> std::io::Result<RunnerWait> {
     let started = Instant::now();
     loop {
         if let Some(status) = child.try_wait()? {
-            return Ok(Some(status));
+            return Ok(RunnerWait::Exited(status));
+        }
+        if let Some(signal) = super::stop_signal::pending() {
+            return Ok(RunnerWait::Stopped(signal));
         }
         // Single clock read per poll: derive the remaining budget once and reuse
         // it for both the deadline check and the sleep cap. A zero (or elapsed)
         // remaining is the timeout.
         let remaining = match timeout.checked_sub(started.elapsed()) {
             Some(remaining) if !remaining.is_zero() => remaining,
-            _ => return Ok(None),
+            _ => return Ok(RunnerWait::TimedOut),
         };
         thread::sleep(RECIPE_RUNNER_POLL_INTERVAL.min(remaining));
     }

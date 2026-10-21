@@ -16,6 +16,7 @@ files.
   - [node.heap_consent and node.max_old_space_mb](#nodeheap_consent-and-nodemax_old_space_mb)
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
+  - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
   - [orchestrator.max_depth](#orchestratormax_depth)
 - [The config command](#the-config-command)
   - [config get](#config-get)
@@ -51,6 +52,9 @@ node.heap_consent = true  # user (/home/alice/.amplihack/config.toml)
 node.max_old_space_mb = (unset)  # default
 recipe.verbose = true  # user (/home/alice/.amplihack/config.toml)
 recipe.step_timeout = (unset)  # default
+recipe.detach = "none"  # default
+recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
+recipe.log_dir = (unset)  # default
 orchestrator.max_depth = 3  # default
 ```
 
@@ -134,6 +138,9 @@ command, so it never prints `flag`.
 | `node.max_old_space_mb` | integer, 8192 to 32768 | (unset) | — | — | user only |
 | `recipe.verbose` | bool | `false` | — | `--verbose` | user, project |
 | `recipe.step_timeout` | integer seconds, at least 1 | (unset) | `AMPLIHACK_STEP_TIMEOUT` | `--step-timeout` | user, project (lower only) |
+| `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
+| `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
+| `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 
 Any other key is an error for `config set` and a diagnostic when found in a
@@ -282,6 +289,28 @@ run, pass `--step-timeout 0`.
 A project file can only lower this value below the user file's. When the user
 file does not set it, the project value applies.
 
+### recipe.detach
+
+`recipe.detach = "tmux"` makes every `amplihack recipe run` start detached, as
+`--detach` does: in a new tmux session with a private log. `--no-detach` runs
+one in the foreground anyway. See
+[Detached runs](./recipe-command.md#detached-runs).
+
+### recipe.tmux_session_pattern
+
+The name of the tmux session a detached run creates. `{recipe}` is the
+recipe's file stem or name, `{repo}` the directory name of the git root above
+the working directory, and `{ts}` the UTC time as `YYYYMMDD-HHMMSS`. The
+pattern is 1 to 64 characters of letters, digits, `-` and `_` besides those
+placeholders, so a session name never needs quoting.
+
+### recipe.log_dir
+
+Where detached runs write their logs, as `<session>.log`. Unset, it is
+`~/.amplihack/recipe-logs`. The directory is created with mode 0700, and an
+existing one must be yours; each log is created with mode 0600. User-only,
+like every path.
+
 ### orchestrator.max_depth
 
 The session-tree recursion ceiling for a new root session, replacing the
@@ -394,6 +423,9 @@ node.heap_consent = true  # user (/home/alice/.amplihack/config.toml)
 node.max_old_space_mb = (unset)  # default
 recipe.verbose = false  # default
 recipe.step_timeout = 1800  # project (/home/alice/src/myapp/.amplihack/config.toml)
+recipe.detach = "none"  # default
+recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
+recipe.log_dir = (unset)  # default
 orchestrator.max_depth = 5  # env (AMPLIHACK_MAX_DEPTH)
 
 Config problems:
@@ -479,8 +511,8 @@ The user file is yours. The project file arrives with a repository you may
 have just cloned, so it is trusted less.
 
 - **The user file must be owned by you and not writable by group or others.**
-  If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`)
-  are ignored and reported. Its other keys still apply.
+  If it is not, its user-only keys (`agent.binary`, `paths.home`, `node.*`,
+  `recipe.log_dir`) are ignored and reported. Its other keys still apply.
 - **The project file never names a path, a command, an executable or the
   agent CLI.** `agent.binary` and every path-valued key are user-only.
 - **`config set --project` and `config edit --project` refuse a project

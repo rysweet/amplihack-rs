@@ -12,6 +12,8 @@ mod format;
 pub(crate) mod merge_guard;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
+pub(crate) mod stop_signal;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -256,6 +258,10 @@ pub(crate) fn run_recipe_with(
                 return Err(exit_error(code));
             }
             writeln!(io::stderr(), "Error: {error}")?;
+            // Issue #1606: a stopped run exits the way a killed process does.
+            if let Some(stopped) = error.downcast_ref::<stop_signal::StoppedBySignal>() {
+                return Err(exit_error(stopped.exit_code()));
+            }
             return Err(exit_error(1));
         }
     };
