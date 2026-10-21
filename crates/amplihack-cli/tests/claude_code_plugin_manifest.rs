@@ -179,6 +179,7 @@ const EXPECTED_HOOKS: &[(&str, Option<&str>, &[&str])] = &[
     ("Stop", None, &["stop"]),
     ("PreCompact", None, &["pre-compact"]),
     ("SessionEnd", None, &["session-stop-event"]),
+    ("StopFailure", Some("rate_limit"), &["limit-resume"]),
 ];
 
 #[test]

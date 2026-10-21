@@ -86,6 +86,19 @@
           }
         ]
       }
+    ],
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/claude-plugin/bin/amplihack-hook\" limit-resume",
+            "timeout": 1800,
+            "asyncRewake": true
+          }
+        ]
+      }
     ]
   }
 }

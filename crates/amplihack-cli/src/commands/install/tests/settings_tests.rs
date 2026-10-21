@@ -154,6 +154,7 @@ fn validate_amplihack_native_hook_contract_reports_duplicate_native_drift() {
         },
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     };
     wrappers.push(hooks::build_hook_wrapper(&drift_spec, &hooks_bin));
 

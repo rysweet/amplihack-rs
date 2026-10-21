@@ -287,6 +287,7 @@ echo $AMPLIHACK_PROFILE
 ## Related
 
 - [Rotate Claude logins automatically](howto/claude-profile-rotation.md): Claude *login* profiles, not component profiles; keeps `~/.claude` on the account with the most capacity
+- [Resume sessions stopped by a usage limit](howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit): the `limit-resume` hook continues a session after the rotator finds a login with capacity, so the tmux limit nudger is no longer needed
 - Issue #1537: Profile staging implementation
 - `~/.amplihack/.claude/profiles/`: Built-in profile configurations
 - `~/.amplihack/.claude/tools/amplihack/profile_management/`: Implementation modules

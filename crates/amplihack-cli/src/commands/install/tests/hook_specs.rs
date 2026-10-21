@@ -189,6 +189,7 @@ fn build_hook_wrapper_binary_subcmd_generates_binary_plus_subcmd() {
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     };
 
     let wrapper = hooks::build_hook_wrapper(&spec, &hooks_bin);
@@ -228,6 +229,7 @@ fn build_hook_wrapper_binary_subcmd_omits_timeout_when_none() {
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     };
 
     let wrapper = hooks::build_hook_wrapper(&spec, &hooks_bin);
@@ -257,6 +259,7 @@ fn build_hook_wrapper_binary_subcmd_quotes_binary_path() {
         },
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     };
 
     let wrapper = hooks::build_hook_wrapper(&spec, &hooks_bin);

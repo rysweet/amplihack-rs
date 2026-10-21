@@ -2,10 +2,94 @@
 //!
 //! Provides helpers that create files and directories with owner-only
 //! access (`0o700` for dirs, `0o600` for files) on Unix systems.
+//!
+//! The Unix-only helpers below (`read_bounded_nofollow`,
+//! `write_private_atomic`, `ensure_private_dir`, …) moved here from the
+//! CLI's auto-switch `fsx.rs` (issue #1658) so the limit-resume hook, which
+//! cannot depend on the CLI, uses the same implementation. Unlike
+//! `ensure_private_directory` and `open_private_append`, they never create
+//! parent directories, never follow a final symlink and never change the
+//! mode of an existing path.
 
 use std::fs;
 use std::io;
 use std::path::Path;
+#[cfg(unix)]
+use std::time::Duration;
+
+#[cfg(unix)]
+mod unix;
+#[cfg(unix)]
+pub use unix::*;
+
+/// An exclusive `flock` held on a file; released when dropped.
+#[derive(Debug)]
+pub struct ExclusiveLock {
+    #[cfg_attr(not(unix), allow(dead_code))]
+    file: fs::File,
+}
+
+impl ExclusiveLock {
+    /// The locked file.
+    pub fn file(&self) -> &fs::File {
+        &self.file
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ExclusiveLock {
+    fn drop(&mut self) {
+        use std::os::unix::io::AsRawFd;
+        // SAFETY: the descriptor is owned by `self.file` and still open.
+        // Closing the file would release the lock too; unlocking first makes
+        // the release independent of other descriptors for the same file.
+        unsafe {
+            libc::flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        }
+    }
+}
+
+/// Takes an exclusive `flock` on `file`, retrying every 100 ms until
+/// `timeout` has passed. A zero timeout tries once. Gives up with
+/// `ErrorKind::TimedOut`.
+#[cfg(unix)]
+pub fn lock_exclusive_timeout(file: fs::File, timeout: Duration) -> io::Result<ExclusiveLock> {
+    use std::os::unix::io::AsRawFd;
+    const RETRY: Duration = Duration::from_millis(100);
+    let start = std::time::Instant::now();
+    loop {
+        // SAFETY: the descriptor is owned by `file` and open.
+        if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            return Ok(ExclusiveLock { file });
+        }
+        let err = io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(code) if code == libc::EWOULDBLOCK || code == libc::EAGAIN => {}
+            _ => return Err(err),
+        }
+        let waited = start.elapsed();
+        if waited >= timeout {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "timed out waiting for an exclusive lock",
+            ));
+        }
+        std::thread::sleep(RETRY.min(timeout - waited));
+    }
+}
+
+/// Not supported off Unix: always `ErrorKind::Unsupported`.
+#[cfg(not(unix))]
+pub fn lock_exclusive_timeout(
+    _file: fs::File,
+    _timeout: std::time::Duration,
+) -> io::Result<ExclusiveLock> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "exclusive file locks need Unix",
+    ))
+}
 
 /// Create a directory (and parents) with owner-only permissions.
 ///

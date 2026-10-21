@@ -78,6 +78,7 @@ pub mod prompt_delivery;
 pub mod resolve_bundle_asset;
 /// `IS_SANDBOX=1` for `claude --dangerously-skip-permissions` as root (issue #1482).
 pub mod root_sandbox;
+pub mod rotator_status;
 pub mod runtime_assets;
 /// Secure file and directory creation with restrictive permissions.
 pub mod secure_files;

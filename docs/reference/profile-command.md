@@ -2154,6 +2154,173 @@ creates, writes or deletes anything under `<root>/.rotator/`.
 | `1` | `RotateConfig`, `RotatePrototypeRunning`, `RotateInconsistent`, `RotateRefused`, `RotateUnsupported`, `RotateDaemon`, or any other [error](#errors). |
 | `2` | A usage error from argument parsing, such as a tuning flag before `start`. |
 
+### Rotate session resume
+
+`amplihack-hooks limit-resume` is a Claude Code `StopFailure` hook that
+restarts a session which stopped on a usage limit, once the rotator has put a
+login with capacity in `~/.claude`. `amplihack install` registers it; see
+[StopFailure in the hook reference](hook-specifications.md#8-stopfailure--limit-resume).
+The [how-to](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)
+shows how to use it. The hook only reads the rotate ledger. It never moves a
+login, and never opens `.credentials.json`, a token file or anything under a
+profile directory.
+
+The hook exits `2` with the resume message on stderr, or `0` with nothing on
+stdout or stderr. It never writes to stdout and never exits with any other
+status. A panic exits `0` with nothing printed. The resume message is exactly:
+
+```
+amplihack: the usage limit was cleared by switching to a login with capacity. Continue the task you were working on.
+```
+
+Claude Code shows it to the model as a system reminder and starts a new turn.
+
+The hook relies on Claude Code behaviours that a live check against Claude
+Code 2.1.306 confirmed. It used a stub `StopFailure` hook with
+`asyncRewake: true`, triggered by an invalid API key (matcher
+`authentication_failed`):
+
+- a turn that ends on an API error runs `StopFailure`, not `Stop`;
+- the payload has `session_id`, `transcript_path`, `cwd`, `hook_event_name`,
+  `error` and `last_assistant_message`, plus `prompt_id` and an `effort`
+  object, which the hook ignores;
+- in an interactive session, exit `2` starts a new turn with stderr shown to
+  the model as a system reminder. With `claude -p` the process exits first, so
+  there is no new turn;
+- the payload has no `stop_hook_active`, not even on the failure of the turn
+  the hook started. A repeated failure is stopped by the
+  [event marker](#resume-state-directory) instead: the event key leaves out
+  `prompt_id`, so the same error text in the same session gives the same key.
+
+Not verified: that a real usage limit arrives with `error` set to
+`rate_limit`, and that the new turn gets past the limit menu
+(`What do you want to do?`). Neither can be triggered on demand.
+
+#### Resume decision
+
+The checks run in this order. The first one that fails decides the outcome.
+
+| Step | Check | When it fails |
+|------|-------|---------------|
+| 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
+| 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
+| 3 | `stop_hook_active` is absent or `false`. | Exit `0`, outcome `stop-hook-active`. |
+| 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
+| 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
+| 6 | A [fresh cycle with capacity](#capacity-for-a-resume) appears within 20 minutes. The ledger is read every 15 seconds, and once more at the deadline. | Exit `0`, outcome `no-capacity-timeout`. |
+| 7 | Under the resume lock, steps 4 and 5 still pass, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `duplicate` or `cap` if another hook won, `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 8 | — | Exit `2` with the resume message, outcome `resumed`. |
+
+Steps 4 and 5 run once without the lock, so a duplicate or capped session
+exits at once instead of waiting 20 minutes, and again under the lock in
+step 7. The lock is not held while waiting in step 6. The marker and session record
+are on disk before the hook exits `2`, so a resume that is cut short never
+repeats.
+
+#### Limit detection
+
+| `error` field | Counts as a limit when |
+|---------------|------------------------|
+| `rate_limit` | Always. |
+| Absent, empty or `unknown` | `last_assistant_message` or `error_details` matches `You've hit your (org's )?(monthly spend \|usage \|session \|weekly )?limit\|hit your limit` (with a straight or curly apostrophe) or contains `Stop and wait for limit to reset`. |
+| Any other value, such as `authentication_failed` or `overloaded` | Never, even if the text matches. |
+
+The installed hook has matcher `rate_limit`, so Claude Code runs it only when
+`error` is `rate_limit`, and the first row decides. The text match is defence
+in depth: it applies only when the payload has no `error` field, an empty one,
+or `unknown`, such as from a Claude Code version that names the field
+differently. If usage-limit stops turn out to arrive with an `error` value
+other than `rate_limit`, the matcher changes, not this table.
+
+Only the first 64 KiB of each text field is matched. Standard input is read up
+to 1 MiB; a larger or malformed payload, or an `error` that is not a string,
+exits `0` with nothing logged.
+
+#### Capacity for a resume
+
+The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
+[Rotate state directory](#rotate-state-directory)) and uses only `live`,
+`alert` and `last_cycle`. There is capacity when all of these hold:
+
+- `last_cycle.at` is more than 60 seconds after the time the hook started;
+- `last_cycle.outcome` is `swapped` or `stayed`;
+- `alert` is not set.
+
+The rotator sets `last_cycle.at` when it records the result, at the end of a
+cycle, not when the cycle starts. A cycle that was already measuring when the
+limit hit can therefore be recorded a few seconds after the hook starts, with
+readings taken before the limit. The 60-second margin is longer than the
+default probe timeout of 30 seconds, so any cycle recorded after the margin
+started its probes after the hook did. If `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` is set
+above about 50 seconds, an older cycle can still count, and one resume may be
+spent on a login that is still at its limit; the per-event and per-session
+caps bound the cost.
+
+Any outcome other than `swapped` or `stayed` (`alerted`, `skipped`, `idle`,
+or one the hook does not know), a missing ledger, or a ledger that is not
+trusted means no capacity yet. The hook does not apply the
+rotator's thresholds itself.
+
+The hook reads the ledger more loosely than the rotator does: it ignores
+unknown fields, but still requires `"version": 1`, at most 64 KiB, a regular
+file owned by you, not a symlink and not writable by group or others. A
+`last_cycle.at` of 0 or more than 300 seconds in the future is ignored. A
+`live` value that fails the [name rules](#name-rules) is logged as `-`.
+
+#### Resume state directory
+
+Everything is under `<root>/.auto-switch.d/resume/`. Each directory is created
+one level at a time with mode `0700`, and the hook refuses to use any path that
+is a symlink, is not owned by you, or is writable by group or others. It never
+changes the mode of a path that already exists. Files hold only hashes, counts
+and epoch seconds.
+
+| Path | Contents |
+|------|----------|
+| `lock` | Lock file for steps 4, 5 and 7. Waited on for at most 5 seconds. |
+| `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details` and `last_assistant_message`, each written with its length, so no two different payloads share a name. Markers older than 7 days are removed. |
+| `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
+| `resume.log` | One line per decision from step 3 on. |
+| `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
+
+#### Resume log
+
+```
+2026-10-21T14:12:46Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare
+2026-10-21T16:40:02Z resume session=3f9a1c2b7e04 event=a0c55e1f9d38 outcome=no-capacity-timeout live=work
+2026-10-21T16:40:09Z resume session=91be04d2aa70 event=a0c55e1f9d38 outcome=duplicate live=-
+```
+
+`session` and `event` are the first 12 hex digits of the hashes above. Every
+field holds only `A-Z`, `a-z`, `0-9`, `.`, `_`, `:` and `-`; any other
+character is written as `-`. The log never holds message text, error text,
+account IDs or tokens. Failing to write it does not change the outcome.
+
+| Outcome | Meaning |
+|---------|---------|
+| `resumed` | The hook exited `2` and the session was told to continue. |
+| `no-capacity-timeout` | No fresh cycle with capacity within 20 minutes. |
+| `duplicate` | This limit event was already resumed. |
+| `cap` | The session already resumed 3 times in 24 hours. |
+| `stop-hook-active` | Claude Code reported a stop hook already running. |
+| `guard-failed` | `resume/`, the lock, a marker or the session record could not be used safely. |
+
+#### Resume limits
+
+| Constant | Value |
+|----------|-------|
+| Wait for capacity | 1200 s (20 minutes) |
+| Ledger read interval | 15 s |
+| Freshness margin after hook start | 60 s |
+| Registered hook timeout | 1800 s |
+| Resumes per session | 3 per 24 hours |
+| Resumes per limit event | 1 |
+| Resume lock wait | 5 s |
+| Event marker retention | 7 days |
+
+The wait plus one read interval is less than the hook timeout, so the hook
+always decides before Claude Code stops it.
+
 ## Errors
 
 Errors print one line to stderr as `error: <message>` plus `hint: <next step>`

@@ -229,6 +229,7 @@ pub(super) fn build_canonical_native_hook_settings(hooks_bin: &Path) -> serde_js
             },
             timeout: entry.timeout,
             matcher: entry.matcher,
+            async_rewake: entry.async_rewake,
         };
         wrappers.push(hooks::build_hook_wrapper(&spec, hooks_bin));
     }

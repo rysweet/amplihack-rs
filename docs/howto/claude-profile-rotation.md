@@ -28,6 +28,7 @@ The exact flags, files, exit codes and log lines are in the
 - [When a swap happens](#when-a-swap-happens)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
+- [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
 - [Swap refused](#swap-refused)
@@ -304,6 +305,124 @@ changes. The one-shot `rotate` still prints it on every run. The log
 holds profile names, percentages and fixed text; it never holds account IDs,
 e-mail addresses, tokens or Claude's output.
 
+## Resume sessions stopped by a usage limit
+
+A swap only helps a session that sends another request. A session that has
+already stopped with `You've hit your session limit` sits idle until someone
+types into it. amplihack's `limit-resume` hook restarts it: when a turn ends
+on a usage limit, the hook waits for the rotator to finish a cycle that leaves
+a login with capacity in `~/.claude`, then tells the session to continue.
+
+You need:
+
+- Claude Code 2.1.306 or later (`claude --version`).
+- `amplihack install` run with this version of amplihack, which registers the
+  hook in `~/.claude/settings.json`.
+- Auto-switch on and the rotator running:
+  ```bash
+  amplihack profile auto-switch on
+  amplihack profile rotate start
+  ```
+
+Check that the hook is registered:
+
+```bash
+jq '.hooks.StopFailure' ~/.claude/settings.json
+```
+
+```json
+[
+  {
+    "matcher": "rate_limit",
+    "hooks": [
+      {
+        "type": "command",
+        "command": "/home/you/.local/bin/amplihack-hooks limit-resume",
+        "timeout": 1800,
+        "asyncRewake": true
+      }
+    ]
+  }
+]
+```
+
+### What happens on a limit
+
+1. The turn ends with a usage-limit error, and Claude Code runs the hook in
+   the background.
+2. The hook reads the rotator's ledger every 15 seconds. It waits for a cycle
+   recorded more than 60 seconds after the limit hit that ended `swapped` or
+   `stayed` with no ALERT. The margin skips a cycle that was already
+   measuring when the limit hit.
+3. When it sees one, the hook exits `2`, and the session gets this message
+   and starts a new turn:
+   ```
+   amplihack: the usage limit was cleared by switching to a login with capacity. Continue the task you were working on.
+   ```
+4. If no such cycle comes within 20 minutes, the hook exits quietly and the
+   session stays stopped.
+
+Steps 1 and 3 depend on Claude Code running `StopFailure` instead of `Stop`
+for a limit stop and starting a turn when an `asyncRewake` hook exits `2`.
+Both are checked against Claude Code 2.1.306 before release.
+
+The hook trusts the rotator's verdict. It never applies the thresholds itself
+and never reads a login.
+
+### See what it did
+
+Each decision is one line in `<root>/.auto-switch.d/resume/resume.log`:
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
+```
+
+```
+2026-10-21T14:12:46Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare
+2026-10-21T16:40:02Z resume session=3f9a1c2b7e04 event=a0c55e1f9d38 outcome=no-capacity-timeout live=work
+```
+
+`no-capacity-timeout` usually means every login was at capacity, so the
+rotator wrote `ALERT: no profile has capacity`, or the rotator was not running.
+The other outcomes are listed in the
+[resume log reference](../reference/profile-command.md#resume-log).
+
+### Why it cannot loop
+
+- **One resume per limit event.** A second hook run for the same session and
+  the same error text logs `duplicate`.
+- **A fresh cycle every time.** Each resume needs a rotator cycle recorded
+  after the limit hit, so one session resumes at most once per `--interval`.
+- **No resume without capacity.** When every login is at its limit the
+  rotator records an ALERT, and the hook does nothing.
+- **At most 3 resumes per session in 24 hours.** After that it logs `cap`.
+
+If anything it needs cannot be read or written safely, it does not resume.
+
+### Stop using the tmux nudger
+
+The hook replaces the tmux stopgap that watched panes and typed "please
+continue" into them (`~/.claude-profiles/.backups/limit-nudger.sh`). Once the
+hook is registered, stop the nudger so a session is not told to continue
+twice:
+
+```bash
+pkill -f limit-nudger.sh
+```
+
+Newer Claude Code versions show a `What do you want to do?` menu at a limit.
+Whether the hook's wake gets past that menu has not been tested yet. If a
+session stays on the menu after `resume.log` shows `resumed`, press Esc and
+type `continue` yourself, or keep the nudger for that case.
+
+### Turn it off
+
+`amplihack profile auto-switch off` turns the hook off together with
+background rotation and auto-switch. With auto-switch off the hook exits at
+once, prints nothing, and reads only the saved root and the toggle. To keep rotation but not
+the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
+`amplihack install` adds it again.
+
 ## Move from the tmux prototype
 
 The rotator refuses to run while the external prototype holds
@@ -477,5 +596,11 @@ again with `amplihack profile login <name>`.
   remains between the check and the signal.
 - **Sessions keep their login until they reread it.** A running `claude` may
   keep using the outgoing account until it next reads its credentials.
+- **Resume needs the rotator and a fresh cycle.** Without a running rotator,
+  or when every login is at capacity, a session stopped by a limit is never
+  resumed. The resume also waits for at most 20 minutes; a shorter
+  `--interval` resumes sooner. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
+  above about 50 seconds, a cycle measured before the limit can still count,
+  and one resume may be spent on a login that is still at its limit.
 - **Each cycle starts `claude` once per profile.** The probes run
   `claude -p /usage` in parallel, so a short `--interval` means many processes.
