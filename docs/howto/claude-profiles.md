@@ -111,6 +111,9 @@ also saves the profile root it used; see
 [Choose where profiles live](#choose-where-profiles-live). `login`
 always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
+If the new login is an account another profile already has, `login` refuses
+it and puts the previous login back; see
+[Duplicate logins](#duplicate-logins).
 
 ## Choose a profile
 
@@ -127,7 +130,12 @@ As a persistent default:
 amplihack profile switch work
 amplihack claude              # uses "work"
 amplihack profile show        # prints name and directory, or "none"
+amplihack profile switch --none   # no default again
 ```
+
+See [Clearing the default profile](#clearing-the-default-profile). If the
+default is the profile the rotator has moved into `~/.claude`, see
+[Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
 Resolution order: `--profile` flag, then an inherited
 `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
@@ -180,6 +188,54 @@ hint: unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack prof
 See the
 [resolution reference](../reference/profile-command.md#resolution-and-environment)
 for how the name reaches each kind of nested launch.
+
+## Clearing the default profile
+
+```bash
+amplihack profile switch --none
+# Default profile cleared.
+amplihack profile show
+# none
+```
+
+After this, `amplihack claude` runs with no profile and leaves
+`CLAUDE_CONFIG_DIR` alone. If no default was set, the command prints
+`No default profile was set.` and still exits 0. `--none` cannot be combined
+with a name, and `switch` with neither is a usage error (exit 2).
+
+There is no `switch default` form: `default` is a valid profile name, so
+`amplihack profile switch default` selects a profile called `default`.
+
+## Launching the rotator's live profile
+
+When [`amplihack profile rotate`](claude-profile-rotation.md) has moved a
+profile's login into `~/.claude`, that profile's own directory has no login.
+Launching Claude in that directory would ask you to log in, and logging in
+there would create a [duplicate login](#duplicate-logins).
+
+So when the profile a launch resolves to is the rotator's live profile,
+`amplihack claude` and `amplihack launch` run against `~/.claude` instead,
+with `CLAUDE_CONFIG_DIR` unset and no profile pinned. This applies whether
+the profile came from `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`,
+or the default pointer. One line goes to stderr:
+
+```
+note: profile 'team' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+The session uses the right account because `~/.claude` is where that
+account's login is. Because no profile is pinned, nested launches inside
+the session also run against `~/.claude`.
+
+The live profile is the one shown as `live in ~/.claude` by
+[`profile usage`](#a-profile-shows-live-in-claude). If amplihack cannot tell
+which profile is live (no ledger and no single account match, or Windows or
+another platform without Unix file semantics), it launches the profile directory as before and prints
+nothing. Docker and `--auto` launches are not affected.
+
+`amplihack profile run <name>` does not redirect; it always uses the
+profile's own directory. Use `amplihack claude --profile <name>` for the
+live profile.
 
 ## Choose where profiles live
 
@@ -474,6 +530,171 @@ away and back again when the ledger has no `since` time. See
 [Logins in `~/.claude`](../reference/profile-command.md#logins-in-claude)
 for the exact rules and warnings.
 
+## Accounts, organizations and duplicate logins
+
+### Which logins count as the same account
+
+One Claude user can belong to several organizations, for example a team
+organization and a personal one. Each organization has its own subscription
+and its own usage limits, so a profile per organization is a normal setup.
+
+amplihack reads two values from the `oauthAccount` block of each
+`.claude.json`: `accountUuid` (the user) and `organizationUuid` (the
+organization). Two logins are the same account only when both match:
+
+| Login A | Login B | Same account? |
+|---------|---------|---------------|
+| user U, org O1 | user U, org O1 | yes |
+| user U, org O1 | user U, org O2 | no |
+| user U, org O1 | user U, no org | no |
+| user U, no org | user U, no org | yes |
+| different users | (any) | no |
+| no user on either side | — | compared by e-mail address, ignoring case |
+
+A missing value never makes two logins look the same. This one rule is used
+by `profile login`, `profile usage`, `auto-switch status`, auto-switch swaps
+and the rotator. No credentials file is read to decide it, and the values
+are never printed.
+
+For example, profiles `ryan-mistt-org` and `ryan-mistt-personal` share a user
+but have different organizations. They are two accounts, and no command
+warns about them.
+
+### Duplicate logins
+
+Claude's login opens claude.ai in your browser and signs in whichever
+account the browser is already signed in to. If that account is already in
+another profile, you get two profiles with the same login.
+
+`amplihack profile login` checks for this after Claude exits. It compares the
+new login with every other profile and with the login in `~/.claude`. If it
+matches one, the login is refused:
+
+```bash
+amplihack profile login rssourcelabs
+```
+
+```
+note: holding the previous login of profile 'rssourcelabs' in /home/ryan/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z while you log in
+...interactive claude session...
+note: moving the new login of profile 'rssourcelabs' to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z
+error: profile 'rssourcelabs' was signed in to the same account and organization as profile 'ryan-ryansweet'. The new login was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z; 'rssourcelabs' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login rssourcelabs' again.
+```
+
+The command exits with status 1. The profile has the login it had before
+(or no login, if it had none), and its `oauthAccount` block is restored.
+Other `.claude.json` keys Claude changed during the login stay as Claude
+left them. The refused login is moved, not deleted.
+
+To fix it, sign out of claude.ai in the browser, or open a private window,
+and run `amplihack profile login rssourcelabs` again. Sign in to the account
+this profile is meant for.
+
+If the account is the one in `~/.claude`, the holder is named
+`~/.claude (rotator live profile 'team')` when the rotator's live profile is
+known, otherwise just `~/.claude`.
+
+The rotator's live profile cannot be logged in to at all: its login is the
+one in `~/.claude`, and the rotator refuses to swap it back into a profile
+directory that has a login of its own. `login` refuses before Claude starts
+and moves nothing:
+
+```
+error: profile 'team' is the rotator's live profile; its login is ~/.claude. Nothing was moved.
+hint: log in with plain 'claude', or stop the rotator first.
+```
+
+When the login is accepted and the profile had a previous login, that login
+is kept too:
+
+```
+note: the previous login of profile 'work' was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/work-20261020T171502Z-replaced
+```
+
+If Claude exits with an error, or you press Ctrl-C, the previous login is
+put back, Claude's exit status is kept, and no check is made. A login Claude
+wrote anyway goes to `.rejected-logins/` like a refused one.
+
+#### What is in `.rejected-logins`
+
+```
+<root>/.rejected-logins/                         0700
+├── .pending-<name>-<time>/                       the previous login while Claude runs
+├── <name>-<time>/                                a refused login
+│   ├── .credentials.json                         0600, moved, not copied
+│   └── oauthAccount.json                         its oauthAccount block, 0600
+└── <name>-<time>-replaced/                       a previous login replaced by an accepted one
+```
+
+`<time>` is UTC, for example `20261020T171502Z`. amplihack never deletes
+anything here. Each login file is in one place only: the profile directory
+or one of these directories. To use a kept login again, move it back with
+`mv -n` into a profile that has no `.credentials.json`, never `cp`.
+
+If amplihack itself is killed while Claude runs, the previous login stays in
+the `.pending-…` directory printed at the start. Ctrl-C is handled, but
+closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
+can restore anything. The previous login is then at
+`<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
+`oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
+new login, move that one aside first (or delete it if you do not want it),
+then move the previous one back into the profile directory with one `mv`.
+This example uses the default root; if you chose another root (`amplihack
+profile root` prints it), use that path instead:
+
+```bash
+mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z/.credentials.json \
+      ~/.amplihack/claude-profiles/rssourcelabs/
+```
+
+#### When the check cannot move the login
+
+- **macOS.** Claude keeps the login in the Keychain, not in
+  `.credentials.json`. A duplicate is still reported and `login` exits 1,
+  but there is no file to move aside. The profile's `oauthAccount` block is
+  left as Claude wrote it, so `.claude.json` still matches the login in the
+  Keychain. Sign out in the browser and log in again.
+- **No login file after a previous one.** If the profile had a
+  `.credentials.json` and Claude exits 0 without writing a new one, the
+  login did not finish: the previous login and its `oauthAccount` block are
+  both put back, and `login` exits 1.
+- **The profiles cannot be read.** If the profile root cannot be listed or
+  the auto-switch state cannot be opened, the new login cannot be compared,
+  so it is treated like a refused one: moved to `.rejected-logins/`, the
+  previous login put back, exit 1.
+- **The rotator swapped the profile in during the login.** `profile rotate`
+  takes no lease. If it made this profile the live one while Claude ran,
+  amplihack stops without moving anything and prints where each login is.
+- **A login file that is not private.** If the new `.credentials.json` is
+  not a private regular file (for example mode `0644`, or a symlink),
+  amplihack does not move it or change its mode. It exits 1, reports the
+  mode, and leaves the previous login in the `.pending-…` directory, whose
+  path the hint prints. Treat the new login as exposed: log in again.
+- **A session started using the profile during the login.** If auto-switch
+  lent the profile's login to a session or the profile now hosts another
+  account, amplihack stops without moving anything and prints where each
+  login is.
+
+#### `/login` inside a running session
+
+Running `/login` inside a Claude session is not checked when it happens.
+`amplihack profile usage` and `amplihack profile auto-switch status` find the
+duplicate afterwards:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login ryan-ryansweet' with the browser signed out of claude.ai or in a private window.
+```
+
+Profile names are listed in sorted order and the fix names the second one.
+If the second profile is the one with the right login, log in the first one
+again instead.
+
+`status` prints it as a `note:` line; `usage` prints the same text on stderr
+as a `warning:` line, after the table. The login in `~/.claude` takes part
+too, named `~/.claude`. The rotator's live profile is not compared with
+`~/.claude`, since that is where its own login is.
+
 ## Switch accounts automatically
 
 When one account is close to its five-hour or seven-day usage limit,
@@ -636,8 +857,9 @@ without returning its login, `status` says so and tells you to run
 update fixes it too.
 
 Usage is tracked per profile. If two profiles are signed in to the same
-Anthropic account, `status` warns that their readings are not reliable;
-this setup is not supported.
+account and organization, `status` prints a duplicate-login note with the
+fix; see [Duplicate logins](#duplicate-logins). Two profiles for the same
+user in different organizations are separate accounts and get no note.
 
 ### What happens inside a running session
 
@@ -859,9 +1081,10 @@ do not depend on these two behaviours.
 - **Helper processes keep a session alive.** A login returns home only when
   no process (including MCP servers Claude started) still has the directory
   in its environment.
-- **Two profiles signed in to the same account** are not supported. An
-  account is identified by the profile that owns its login, so they are
-  treated as two accounts with separate readings; `status` warns about it.
+- **Two profiles signed in to the same account and organization** are not
+  supported. An account is identified by the profile that owns its login,
+  so they are treated as two accounts with separate readings; `status`
+  warns about it. See [Duplicate logins](#duplicate-logins).
 - **`/status` can lag.** It may name the previous account after a swap
   until Claude rewrites `.claude.json`; see above.
 - **Leases protect against accidents, not attacks.** Any process running as
@@ -942,6 +1165,11 @@ do not depend on these two behaviours.
   `~/.claude/settings.json` as trusted input.
 - If the default pointer names a deleted profile, launch fails with a hint
   (`amplihack profile switch <name>`); it does not fall back silently.
+- `profile run <name>` with the rotator's live profile still runs in the
+  profile's empty directory; only `amplihack claude` and `amplihack launch`
+  [redirect to `~/.claude`](#launching-the-rotators-live-profile).
+- A redirected launch skips the auto-switch launch checks, as a launch with
+  no profile does.
 - Profiles are not a security boundary against other processes of the same OS
   user. Anyone able to read your home directory can read the profile.
 - No token vault or token refresh exists by design. Usage is checked only

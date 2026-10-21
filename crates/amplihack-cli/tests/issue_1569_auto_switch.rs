@@ -1886,17 +1886,42 @@ fn shared_account_is_a_note_without_the_uuid() {
     let f = Fixture::new();
     private_file(
         &f.dir("Z").join(".claude.json"),
-        "{\"oauthAccount\":{\"accountUuid\":\"uuid-X\",\"emailAddress\":\"x@example.invalid\"}}",
+        "{\"oauthAccount\":{\"accountUuid\":\"uuid-X\",\"organizationUuid\":\"org-X\",\"emailAddress\":\"x@example.invalid\"}}",
     );
     let status = f.stdout(&["profile", "auto-switch", "status"]);
     assert!(
         status.contains(
-            "note: profiles X and Z are signed in to the same account; their readings are not reliable\n"
+            "note: profiles 'X' and 'Z' are signed in to the same account and organization \
+             (duplicate login); fix: run 'amplihack profile login Z' with the browser signed \
+             out of claude.ai or in a private window.\n"
         ),
         "{status}"
     );
-    assert!(!status.contains("uuid-"), "{status}");
-    assert!(!status.contains("profiles X and Y"), "{status}");
+    assert!(!status.contains("readings are not reliable"), "{status}");
+    assert!(
+        !status.contains("uuid-") && !status.contains("org-"),
+        "{status}"
+    );
+    assert!(!status.contains("profiles 'X' and 'Y'"), "{status}");
+    f.assert_no_leak();
+}
+
+#[test]
+fn one_user_in_two_organizations_is_not_a_shared_account() {
+    // Bug 1: the same accountUuid in another organization is another
+    // subscription with its own limits.
+    let f = Fixture::new();
+    for (p, org) in [("X", "org-team"), ("Z", "org-personal")] {
+        private_file(
+            &f.dir(p).join(".claude.json"),
+            &format!(
+                "{{\"oauthAccount\":{{\"accountUuid\":\"uuid-X\",\"organizationUuid\":\"{org}\",\"emailAddress\":\"x@example.invalid\"}}}}"
+            ),
+        );
+    }
+    let status = f.stdout(&["profile", "auto-switch", "status"]);
+    assert!(!status.contains("same account"), "{status}");
+    assert!(!status.contains("org-"), "{status}");
     f.assert_no_leak();
 }
 

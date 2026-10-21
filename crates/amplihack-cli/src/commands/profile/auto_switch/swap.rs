@@ -15,6 +15,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate::identify::Account;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -181,23 +182,15 @@ pub fn snapshot_account(state: &State, name: &str) {
     }
 }
 
-/// The `accountUuid` of the account that owns `name`'s login, for the
-/// duplicate-account note: the saved block while `name`'s directory hosts
-/// another account, else the directory's own `.claude.json`. Read-only.
-pub fn account_uuid(state: &State, name: &str, hosting: bool) -> Option<String> {
-    let block = if hosting {
-        state.read_sub_json("accounts", name).ok()??
+/// The account that owns `name`'s login, for the duplicate-login checks:
+/// the saved block while `name`'s directory hosts another account, else the
+/// directory's own `.claude.json`. Read-only.
+pub fn account(state: &State, name: &str, hosting: bool) -> Option<Account> {
+    if hosting {
+        Account::from_block(&state.read_sub_json("accounts", name).ok()??)
     } else {
-        read_claude_json(&state.profile_dir(name))?
-            .0
-            .get("oauthAccount")?
-            .clone()
-    };
-    block
-        .get("accountUuid")?
-        .as_str()
-        .filter(|u| !u.is_empty())
-        .map(str::to_string)
+        Account::of_dir(&state.profile_dir(name))
+    }
 }
 
 /// Sets `oauthAccount` in `dir`'s `.claude.json` to `account`'s saved block,

@@ -360,8 +360,8 @@ pub(super) fn finish(
     l.live = Some(j.to.clone());
     l.previous = Some(j.from.clone());
     l.account = block
-        .map(|b| serde_json::json!({ "oauthAccount": b }))
-        .and_then(|v| Account::from_value(&v))
+        .as_ref()
+        .and_then(Account::from_block)
         .map(|a| a.key().to_string());
     l.since = Some(j.started_at);
     l.swapped_at = Some(j.started_at);
