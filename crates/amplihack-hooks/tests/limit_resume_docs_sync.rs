@@ -16,9 +16,11 @@ const MANAGEMENT: &str = include_str!("../../../docs/PROFILE_MANAGEMENT.md");
 const SKILL: &str =
     include_str!("../../../amplifier-bundle/skills/claude-profile-rotation/SKILL.md");
 
-const LOGGED_OUTCOMES: [Outcome; 6] = [
+const LOGGED_OUTCOMES: [Outcome; 8] = [
     Outcome::Resumed,
     Outcome::NoCapacityTimeout,
+    Outcome::MovedOn,
+    Outcome::Disabled,
     Outcome::Duplicate,
     Outcome::Cap,
     Outcome::StopHookActive,

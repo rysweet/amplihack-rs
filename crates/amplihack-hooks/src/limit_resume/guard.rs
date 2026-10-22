@@ -1,5 +1,6 @@
-//! The loop guard: at most one resume per limit event and at most
-//! `MAX_RESUMES_PER_SESSION` per session in 24 hours, kept on disk under
+//! The loop guard: at most one resume per limit event, one per waiting
+//! period of a session, and at most `MAX_RESUMES_PER_SESSION` per session
+//! in 24 hours, kept on disk under
 //! `<root>/.auto-switch.d/resume/`:
 //!
 //! ```text
@@ -38,7 +39,8 @@ pub enum CommitError {
     /// The session already has `MAX_RESUMES_PER_SESSION` resumes in the last
     /// 24 hours, or its record is malformed.
     Cap,
-    /// The event already has a marker.
+    /// The event already has a marker, or the session was resumed at or
+    /// after this hook's start.
     Duplicate,
     /// The state could not be read or written safely.
     Io,
@@ -58,8 +60,16 @@ pub trait GuardStore {
     fn seen(&mut self, event: &str) -> io::Result<bool>;
     /// Resumes recorded for `session` in the 24 hours before `now`.
     fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32>;
-    /// Records a resume of `event` in `session` at `now`.
-    fn commit(&mut self, event: &str, session: &str, now: i64) -> Result<(), CommitError>;
+    /// Records a resume of `event` in `session` at `now`, for a hook that
+    /// started at `start`. A session already resumed at or after `start`
+    /// was woken by a newer or concurrent hook and is `Duplicate`.
+    fn commit(
+        &mut self,
+        event: &str,
+        session: &str,
+        start: i64,
+        now: i64,
+    ) -> Result<(), CommitError>;
 }
 
 /// The on-disk guard for a profile root. Creating one touches nothing.
@@ -242,7 +252,13 @@ impl GuardStore for FsGuard {
         })
     }
 
-    fn commit(&mut self, event: &str, session: &str, now: i64) -> Result<(), CommitError> {
+    fn commit(
+        &mut self,
+        event: &str,
+        session: &str,
+        start: i64,
+        now: i64,
+    ) -> Result<(), CommitError> {
         check_key(event)?;
         check_key(session)?;
         let dir = self.ensure_resume_dir()?;
@@ -262,6 +278,9 @@ impl GuardStore for FsGuard {
         let times = match self.read_session(&sessions.join(session))? {
             None => Vec::new(),
             Some(None) => return Err(CommitError::Cap),
+            Some(Some(times)) if times.iter().any(|t| *t >= start) => {
+                return Err(CommitError::Duplicate);
+            }
             Some(Some(times)) => recent(&times, now),
         };
         if times.len() as u32 >= MAX_RESUMES_PER_SESSION {

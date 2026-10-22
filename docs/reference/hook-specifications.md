@@ -262,10 +262,12 @@ on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false)
 the error is a usage limit, the hook waits up to 5 hours for
 `amplihack profile rotate` to record a cycle with capacity more than 60 seconds
 after the hook started, then exits `2` with
-a one-line continue message on stderr, which wakes the session. In every other
-case it exits `0` and prints nothing; stdout is always empty. It resumes at
-most once per limit event and 3 times per session in 24 hours, and never reads
-a credentials or token file. The 18600-second timeout covers the 5-hour wait
+a one-line continue message on stderr, which wakes the session. It stops
+waiting if auto-switch is turned off or the session's transcript changes (the
+session moved on). In every other case it exits `0` and prints nothing; stdout
+is always empty. It resumes at most once per limit event, once per session per
+wait, and 3 times per session in 24 hours, and never reads a credentials or
+token file; of the transcript it reads only the size. The 18600-second timeout covers the 5-hour wait
 plus one 15-second ledger read. Requires Claude Code 2.1.306 or later. Full
 rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 

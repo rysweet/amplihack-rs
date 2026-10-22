@@ -63,6 +63,7 @@ fn ev(n: u32) -> String {
         Some("rate_limit"),
         None,
         Some(format!("hit your limit {n}").as_str()),
+        Some("spare"),
     )
 }
 
@@ -125,7 +126,7 @@ fn constructing_a_guard_touches_nothing() {
 fn commit_creates_private_layout_with_hash_names_only() {
     let r = root();
     let mut g = FsGuard::new(r.path());
-    g.commit(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
 
     let d = resume_dir(r.path());
     for sub in [d.clone(), d.join("events"), d.join("sessions")] {
@@ -150,7 +151,7 @@ fn commit_creates_auto_switch_d_when_missing() {
     let t = tempfile::tempdir().unwrap();
     fs::set_permissions(t.path(), fs::Permissions::from_mode(0o700)).unwrap();
     let mut g = FsGuard::new(t.path());
-    g.commit(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     assert_eq!(mode(&t.path().join(".auto-switch.d")), 0o700);
 }
 
@@ -160,7 +161,7 @@ fn seen_and_resumes_reflect_commits() {
     let mut g = FsGuard::new(r.path());
     assert!(!g.seen(&ev(1)).unwrap());
     assert_eq!(g.resumes(&sess(), NOW).unwrap(), 0);
-    g.commit(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     assert!(g.seen(&ev(1)).unwrap());
     assert!(!g.seen(&ev(2)).unwrap());
     assert_eq!(g.resumes(&sess(), NOW).unwrap(), 1);
@@ -170,9 +171,9 @@ fn seen_and_resumes_reflect_commits() {
 fn same_event_twice_is_duplicate() {
     let r = root();
     let mut g = FsGuard::new(r.path());
-    g.commit(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     assert!(matches!(
-        g.commit(&ev(1), &sess(), NOW + 5),
+        g.commit(&ev(1), &sess(), NOW + 5, NOW + 5),
         Err(CommitError::Duplicate)
     ));
     assert_eq!(g.resumes(&sess(), NOW + 5).unwrap(), 1);
@@ -183,10 +184,11 @@ fn session_cap_is_three_per_24_hours() {
     let r = root();
     let mut g = FsGuard::new(r.path());
     for i in 0..MAX_RESUMES_PER_SESSION {
-        g.commit(&ev(i), &sess(), NOW + i as i64).unwrap();
+        g.commit(&ev(i), &sess(), NOW + i as i64, NOW + i as i64)
+            .unwrap();
     }
     assert!(matches!(
-        g.commit(&ev(99), &sess(), NOW + 10),
+        g.commit(&ev(99), &sess(), NOW + 10, NOW + 10),
         Err(CommitError::Cap)
     ));
     assert!(
@@ -197,7 +199,7 @@ fn session_cap_is_three_per_24_hours() {
     // A day later the old resumes no longer count.
     let later = NOW + DAY + 10;
     assert_eq!(g.resumes(&sess(), later).unwrap(), 0);
-    g.commit(&ev(100), &sess(), later).unwrap();
+    g.commit(&ev(100), &sess(), later, later).unwrap();
     let text = fs::read_to_string(resume_dir(r.path()).join("sessions").join(sess())).unwrap();
     assert_eq!(text, format!("{later}\n"), "expired entries are dropped");
 }
@@ -207,16 +209,17 @@ fn sessions_are_capped_independently() {
     let r = root();
     let mut g = FsGuard::new(r.path());
     for i in 0..MAX_RESUMES_PER_SESSION {
-        g.commit(&ev(i), &sess(), NOW).unwrap();
+        let t = NOW + i as i64;
+        g.commit(&ev(i), &sess(), t, t).unwrap();
     }
-    g.commit(&ev(50), &session_key("s2"), NOW).unwrap();
+    g.commit(&ev(50), &session_key("s2"), NOW, NOW).unwrap();
 }
 
 #[test]
 fn malformed_session_file_counts_as_capped_and_is_left_alone() {
     let r = root();
     let mut g = FsGuard::new(r.path());
-    g.commit(&ev(1), &sess(), NOW).unwrap();
+    g.commit(&ev(1), &sess(), NOW, NOW).unwrap();
     let f = resume_dir(r.path()).join("sessions").join(sess());
     for junk in [&b"garbage\n"[..], b"123\nabc\n", b"\xff\xfe", b"-1\n"] {
         fs::write(&f, junk).unwrap();
@@ -225,7 +228,7 @@ fn malformed_session_file_counts_as_capped_and_is_left_alone() {
             "{junk:?}"
         );
         assert!(matches!(
-            g.commit(&ev(7), &sess(), NOW),
+            g.commit(&ev(7), &sess(), NOW, NOW),
             Err(CommitError::Cap)
         ));
         assert_eq!(fs::read(&f).unwrap(), junk, "never rewritten");
@@ -239,7 +242,7 @@ fn assert_refused(g: &mut FsGuard) {
     assert!(g.seen(&ev(1)).is_err(), "seen");
     assert!(g.resumes(&sess(), NOW).is_err(), "resumes");
     assert!(
-        matches!(g.commit(&ev(1), &sess(), NOW), Err(CommitError::Io)),
+        matches!(g.commit(&ev(1), &sess(), NOW, NOW), Err(CommitError::Io)),
         "commit"
     );
 }
@@ -294,7 +297,7 @@ fn symlinked_events_or_sessions_dir_is_refused() {
         symlink(&elsewhere, d.join(sub)).unwrap();
         let mut g = FsGuard::new(r.path());
         assert!(
-            matches!(g.commit(&ev(1), &sess(), NOW), Err(CommitError::Io)),
+            matches!(g.commit(&ev(1), &sess(), NOW, NOW), Err(CommitError::Io)),
             "{sub}"
         );
         assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0, "{sub}");
@@ -311,7 +314,7 @@ fn planted_symlink_marker_is_never_followed() {
     let target = r.path().join("target");
     symlink(&target, d.join("events").join(ev(1))).unwrap();
     let mut g = FsGuard::new(r.path());
-    assert!(g.commit(&ev(1), &sess(), NOW).is_err());
+    assert!(g.commit(&ev(1), &sess(), NOW, NOW).is_err());
     assert!(!target.exists(), "create_new must not follow the symlink");
 }
 
@@ -326,7 +329,7 @@ fn symlinked_session_file_is_never_written_through() {
     fs::write(&target, b"keep").unwrap();
     symlink(&target, d.join("sessions").join(sess())).unwrap();
     let mut g = FsGuard::new(r.path());
-    assert!(g.commit(&ev(1), &sess(), NOW).is_err());
+    assert!(g.commit(&ev(1), &sess(), NOW, NOW).is_err());
     assert_eq!(fs::read(&target).unwrap(), b"keep");
 }
 
@@ -339,7 +342,7 @@ fn symlinked_lock_file_is_refused() {
     symlink(&target, d.join("lock")).unwrap();
     let mut g = FsGuard::new(r.path());
     assert!(matches!(
-        g.commit(&ev(1), &sess(), NOW),
+        g.commit(&ev(1), &sess(), NOW, NOW),
         Err(CommitError::Io)
     ));
     assert!(!target.exists());
@@ -351,7 +354,7 @@ fn malformed_event_key_is_refused() {
     let mut g = FsGuard::new(r.path());
     let g64 = "g".repeat(64);
     for bad in ["../escape", "ABC", "", g64.as_str()] {
-        assert!(g.commit(bad, &sess(), NOW).is_err(), "{bad:?}");
+        assert!(g.commit(bad, &sess(), NOW, NOW).is_err(), "{bad:?}");
     }
     assert!(!r.path().join("escape").exists());
 }
@@ -371,7 +374,7 @@ fn stuck_lock_times_out_as_io_error() {
     let mut g = FsGuard::with_lock_timeout(r.path(), Duration::from_millis(200));
     let start = Instant::now();
     assert!(matches!(
-        g.commit(&ev(1), &sess(), NOW),
+        g.commit(&ev(1), &sess(), NOW, NOW),
         Err(CommitError::Io)
     ));
     assert!(start.elapsed() < Duration::from_secs(3));
@@ -391,7 +394,7 @@ fn default_lock_timeout_is_five_seconds() {
     .unwrap();
     let mut g = FsGuard::new(r.path());
     let start = Instant::now();
-    assert!(g.commit(&ev(1), &sess(), NOW).is_err());
+    assert!(g.commit(&ev(1), &sess(), NOW, NOW).is_err());
     let waited = start.elapsed();
     drop(held);
     assert!(
@@ -413,7 +416,7 @@ fn eight_racing_hooks_on_one_event_commit_exactly_once() {
             std::thread::spawn(move || {
                 let mut g = FsGuard::new(&p);
                 b.wait();
-                g.commit(&ev(1), &sess(), NOW)
+                g.commit(&ev(1), &sess(), NOW, NOW)
             })
         })
         .collect();
@@ -430,7 +433,8 @@ fn eight_racing_hooks_on_one_event_commit_exactly_once() {
 }
 
 #[test]
-fn eight_racing_hooks_on_distinct_events_respect_the_cap() {
+fn eight_racing_waiters_for_one_session_wake_it_once() {
+    // Distinct events, one session, all waiting since NOW.
     let r = root();
     let path = Arc::new(r.path().to_path_buf());
     let barrier = Arc::new(Barrier::new(8));
@@ -440,21 +444,51 @@ fn eight_racing_hooks_on_distinct_events_respect_the_cap() {
             std::thread::spawn(move || {
                 let mut g = FsGuard::new(&p);
                 b.wait();
-                g.commit(&ev(i), &sess(), NOW)
+                g.commit(&ev(i), &sess(), NOW, NOW + 100)
             })
         })
         .collect();
     let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
-    assert_eq!(
-        results.iter().filter(|r| r.is_ok()).count() as u32,
-        MAX_RESUMES_PER_SESSION
-    );
+    assert_eq!(results.iter().filter(|r| r.is_ok()).count(), 1);
     assert!(
         results
             .iter()
             .filter(|r| r.is_err())
-            .all(|r| matches!(r, Err(CommitError::Cap)))
+            .all(|r| matches!(r, Err(CommitError::Duplicate)))
     );
+    assert_eq!(
+        FsGuard::new(r.path()).resumes(&sess(), NOW + 100).unwrap(),
+        1
+    );
+}
+
+#[test]
+fn two_waiters_for_one_session_with_distinct_events_resume_once() {
+    // A waits from NOW, B from NOW + 10; whichever commits second loses.
+    for b_first in [false, true] {
+        let r = root();
+        let mut g = FsGuard::new(r.path());
+        let (a, b) = ((ev(1), NOW, NOW + 100), (ev(2), NOW + 10, NOW + 105));
+        let order = if b_first { [&b, &a] } else { [&a, &b] };
+        let first = g.commit(&order[0].0, &sess(), order[0].1, order[0].2);
+        let second = g.commit(&order[1].0, &sess(), order[1].1, order[1].2);
+        assert!(first.is_ok(), "b_first={b_first}");
+        assert!(
+            matches!(second, Err(CommitError::Duplicate)),
+            "b_first={b_first}: {second:?}"
+        );
+        assert!(!g.seen(&order[1].0).unwrap(), "the loser leaves no marker");
+        assert_eq!(g.resumes(&sess(), NOW + 105).unwrap(), 1);
+    }
+}
+
+#[test]
+fn a_waiter_that_started_after_the_last_resume_may_commit() {
+    let r = root();
+    let mut g = FsGuard::new(r.path());
+    g.commit(&ev(1), &sess(), NOW, NOW + 100).unwrap();
+    g.commit(&ev(2), &sess(), NOW + 101, NOW + 200).unwrap();
+    assert_eq!(g.resumes(&sess(), NOW + 200).unwrap(), 2);
 }
 
 // ── FsGuard: retention ──────────────────────────────────────────────────────
@@ -464,7 +498,7 @@ fn markers_older_than_seven_days_are_pruned_and_nothing_else() {
     let r = root();
     let now = real_now();
     let mut g = FsGuard::new(r.path());
-    g.commit(&ev(1), &sess(), now).unwrap();
+    g.commit(&ev(1), &sess(), now, now).unwrap();
     let events = resume_dir(r.path()).join("events");
 
     let old = events.join(ev(2));
@@ -485,7 +519,7 @@ fn markers_older_than_seven_days_are_pruned_and_nothing_else() {
     symlink("/nonexistent", &old_link).unwrap();
     set_mtime(&old_link, now - 30 * DAY);
 
-    g.commit(&ev(5), &session_key("s9"), now).unwrap();
+    g.commit(&ev(5), &session_key("s9"), now, now).unwrap();
 
     assert!(!old.exists(), "8-day-old marker pruned");
     assert!(recent.exists(), "6-day-old marker kept");
@@ -504,6 +538,7 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
         event: "7d41e0a9c2b1".into(),
         outcome,
         live: live.map(str::to_string),
+        cycle: live.map(|_| "swapped".to_string()),
     }
 }
 
@@ -511,11 +546,11 @@ fn entry(outcome: Outcome, live: Option<&str>) -> LogEntry {
 fn log_line_matches_the_documented_format() {
     assert_eq!(
         format_line(NOW, &entry(Outcome::Resumed, Some("spare"))),
-        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare\n"
+        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped\n"
     );
     assert_eq!(
         format_line(NOW, &entry(Outcome::NoCapacityTimeout, None)),
-        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=no-capacity-timeout live=-\n"
+        "2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=no-capacity-timeout live=- cycle=-\n"
     );
 }
 
@@ -537,7 +572,15 @@ fn log_fields_are_restricted_to_a_safe_alphabet() {
         &entry(Outcome::Resumed, Some("x\ny=z outcome=resumed")),
     );
     assert_eq!(line.matches('\n').count(), 1, "{line:?}");
-    assert!(line.ends_with("live=x-y-z-outcome-resumed\n"), "{line:?}");
+    assert!(
+        line.ends_with("live=x-y-z-outcome-resumed cycle=swapped\n"),
+        "{line:?}"
+    );
+    let mut e = entry(Outcome::Resumed, None);
+    e.cycle = Some("stayed cycle=x\n".into());
+    let line = format_line(NOW, &e);
+    assert_eq!(line.matches('\n').count(), 1, "{line:?}");
+    assert!(line.ends_with("cycle=stayed-cycle-x-\n"), "{line:?}");
 }
 
 #[test]
@@ -611,6 +654,9 @@ impl Deps for DiskDeps {
             live: Some("spare".into()),
         })
     }
+    fn transcript_len(&mut self, path: &Path) -> Option<u64> {
+        fs::metadata(path).ok().map(|m| m.len())
+    }
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
@@ -651,7 +697,10 @@ fn resume_state_holds_no_message_text_or_session_id() {
         assert!(!contains(&bytes, s), "{s} reached the resume state");
     }
     let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
-    assert!(log.contains("outcome=resumed live=spare"), "{log}");
+    assert!(
+        log.contains("outcome=resumed live=spare cycle=swapped"),
+        "{log}"
+    );
     assert!(log.contains(&format!(
         "session={}",
         &session_key("SESSION-SENTINEL-7781")[..12]

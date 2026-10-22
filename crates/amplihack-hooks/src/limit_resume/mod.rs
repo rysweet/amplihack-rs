@@ -12,30 +12,34 @@
 //! before, a session under its cap. Then the hook reads the rotate ledger
 //! every `POLL_INTERVAL` for up to `MAX_WAIT`, plus once at the deadline,
 //! and resumes only after [`guard::GuardStore::commit`] recorded the
-//! resume under the lock.
+//! resume under the lock. Each poll also re-checks the toggle and, when the
+//! payload names a transcript, whether the session has moved on.
 //!
-//! The hook reads only the toggle, the profile-root pointer and the rotate
-//! ledger; it never opens a login file.
+//! The hook reads only the toggle, the profile-root pointer, the rotate
+//! ledger and the transcript's size; it never opens a login file.
 
 pub mod decide;
 pub mod guard;
 pub mod log;
 
 use amplihack_types::HookInput;
-use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT, POLL_INTERVAL};
+use amplihack_utils::rotator_status::{
+    self, CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL,
+};
 use amplihack_utils::secure_files::read_bounded;
 use decide::{Facts, Gate, event_key, fresh_capacity, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
 use log::LogEntry;
+use std::fs;
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 /// What the woken model is told. Fixed text: nothing from the payload is
 /// echoed into the model's context.
-pub const RESUME_MSG: &str = "amplihack: the usage limit was cleared by switching to a login with capacity. \
-     Continue the task you were working on.";
+pub const RESUME_MSG: &str = "amplihack: the login rotator reports a login with capacity. \
+     Continue the task you were working on; if the usage limit is still in place, stop and wait.";
 
 /// Resumes allowed per session in any 24 hours.
 pub const MAX_RESUMES_PER_SESSION: u32 = 3;
@@ -53,6 +57,9 @@ pub enum Outcome {
     Resumed,
     /// No fresh cycle with capacity before the deadline.
     NoCapacityTimeout,
+    /// The transcript changed while waiting: the session went on without
+    /// this hook.
+    MovedOn,
     /// This limit event was already resumed.
     Duplicate,
     /// The session reached its resume cap.
@@ -61,7 +68,8 @@ pub enum Outcome {
     StopHookActive,
     /// The resume state could not be read or written safely.
     GuardFailed,
-    /// Auto-switch is off. Not logged.
+    /// Auto-switch is off. Logged only when it was turned off while
+    /// waiting.
     Disabled,
     /// Not a usage-limit stop, or no usable session id. Not logged.
     NotLimit,
@@ -72,6 +80,7 @@ impl Outcome {
         match self {
             Self::Resumed => "resumed",
             Self::NoCapacityTimeout => "no-capacity-timeout",
+            Self::MovedOn => "moved-on",
             Self::Duplicate => "duplicate",
             Self::Cap => "cap",
             Self::StopHookActive => "stop-hook-active",
@@ -96,6 +105,8 @@ pub trait Deps {
     fn sleep(&mut self, d: Duration);
     /// The rotate ledger's last cycle, read at `now`.
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus>;
+    /// The transcript's size in bytes; its contents are never read.
+    fn transcript_len(&mut self, path: &Path) -> Option<u64>;
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
@@ -110,6 +121,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         error_details,
         last_assistant_message,
         stop_hook_active,
+        transcript_path,
         ..
     } = input
     else {
@@ -126,7 +138,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     );
     let mut facts = Facts {
         enabled,
-        limit: is_limit(error, details, message),
+        limit: is_limit(error),
         session_ok: session_id_ok(session_id.as_deref()),
         stop_hook_active: *stop_hook_active == Some(true),
         duplicate: false,
@@ -139,15 +151,20 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     }
 
     let session_id = session_id.as_deref().unwrap_or_default();
-    let event = event_key(session_id, error, details, message);
-    let session = session_key(session_id);
     let start = deps.now();
-    let finish = |deps: &mut D, now: i64, outcome: Outcome, live: Option<String>| {
+    // The live login at the limit is part of the event: the same login
+    // limited again is the same event, a limit after a swap is a new one.
+    let first = deps.read_cycle(start);
+    let live_at_start = first.as_ref().and_then(|s| s.live.as_deref());
+    let event = event_key(session_id, error, details, message, live_at_start);
+    let session = session_key(session_id);
+    let finish = |deps: &mut D, now: i64, outcome: Outcome, status: Option<&CycleStatus>| {
         let entry = LogEntry {
             session: session[..LOG_KEY_CHARS].to_string(),
             event: event[..LOG_KEY_CHARS].to_string(),
             outcome,
-            live,
+            live: status.and_then(|s| s.live.clone()),
+            cycle: status.and_then(|s| s.outcome.clone()),
         };
         deps.log(now, &entry);
         outcome
@@ -172,9 +189,24 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         _ => {}
     }
 
+    let transcript = transcript_path.as_deref();
+    // Taken once the limit stop's own writes have landed; any later change
+    // means the session went on without this hook.
+    let mut baseline: Option<Option<u64>> = None;
     let deadline = start.saturating_add(MAX_WAIT.as_secs() as i64);
     let (now, status) = loop {
         let now = deps.now();
+        if !deps.auto_switch_on() {
+            return finish(deps, now, Outcome::Disabled, None);
+        }
+        if let Some(path) = transcript {
+            let len = deps.transcript_len(path);
+            match baseline {
+                None if now >= start.saturating_add(FRESH_MARGIN_SECS) => baseline = Some(len),
+                Some(b) if b != len => return finish(deps, now, Outcome::MovedOn, None),
+                _ => {}
+            }
+        }
         let status = deps.read_cycle(now);
         if fresh_capacity(status.as_ref(), start) || now >= deadline {
             break (now, status);
@@ -182,17 +214,21 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         let left = Duration::from_secs((deadline - now) as u64);
         deps.sleep(POLL_INTERVAL.min(left));
     };
-    let live = status.as_ref().and_then(|s| s.live.clone());
     if !fresh_capacity(status.as_ref(), start) {
-        return finish(deps, now, Outcome::NoCapacityTimeout, live);
+        return finish(deps, now, Outcome::NoCapacityTimeout, status.as_ref());
     }
-    let outcome = match deps.guard().commit(&event, &session, now) {
+    if let (Some(path), Some(b)) = (transcript, baseline)
+        && deps.transcript_len(path) != b
+    {
+        return finish(deps, now, Outcome::MovedOn, status.as_ref());
+    }
+    let outcome = match deps.guard().commit(&event, &session, start, now) {
         Ok(()) => Outcome::Resumed,
         Err(CommitError::Duplicate) => Outcome::Duplicate,
         Err(CommitError::Cap) => Outcome::Cap,
         Err(CommitError::Io) => Outcome::GuardFailed,
     };
-    finish(deps, now, outcome, live)
+    finish(deps, now, outcome, status.as_ref())
 }
 
 /// Reads at most `MAX_STDIN_BYTES` of payload from `stdin`, decides, and
@@ -248,6 +284,10 @@ impl Deps for SystemDeps {
 
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
         rotator_status::read_cycle(&self.root, now)
+    }
+
+    fn transcript_len(&mut self, path: &Path) -> Option<u64> {
+        fs::metadata(path).ok().map(|m| m.len())
     }
 
     fn guard(&mut self) -> &mut dyn GuardStore {

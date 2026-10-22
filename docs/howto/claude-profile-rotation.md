@@ -353,11 +353,13 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 2. The hook reads the rotator's ledger every 15 seconds. It waits for a cycle
    recorded more than 60 seconds after the limit hit that ended `swapped` or
    `stayed` with no ALERT. The margin skips a cycle that was already
-   measuring when the limit hit.
+   measuring when the limit hit. It stops waiting if you turn auto-switch off
+   (`disabled`) or if the session's transcript changes, for example because
+   you typed `continue` yourself (`moved-on`).
 3. When it sees one, the hook exits `2`, and the session gets this message
    and starts a new turn:
    ```
-   amplihack: the usage limit was cleared by switching to a login with capacity. Continue the task you were working on.
+   amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
    ```
 4. If no such cycle comes within 5 hours (one session-limit window), the
    hook exits quietly and the session stays stopped. A weekly limit on every
@@ -381,19 +383,22 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 
 ```
-2026-10-21T14:12:46Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare
-2026-10-21T16:40:02Z resume session=3f9a1c2b7e04 event=a0c55e1f9d38 outcome=no-capacity-timeout live=work
+2026-10-21T14:12:46Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
+2026-10-21T16:40:02Z resume session=3f9a1c2b7e04 event=a0c55e1f9d38 outcome=no-capacity-timeout live=work cycle=alerted
 ```
 
 `no-capacity-timeout` usually means every login was at capacity, so the
 rotator wrote `ALERT: no profile has capacity`, or the rotator was not running.
-The other outcomes are listed in the
+`moved-on` means the session went on without the hook. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
 ### Why it cannot loop
 
-- **One resume per limit event.** A second hook run for the same session and
-  the same error text logs `duplicate`.
+- **One resume per limit event.** A second hook run for the same session, the
+  same error text and the same live login logs `duplicate`. A limit after the
+  rotator swapped to another login is a new event.
+- **One wake per wait.** When two hooks wait for the same session, only the
+  first to see capacity wakes it; the other logs `duplicate`.
 - **A fresh cycle every time.** Each resume needs a rotator cycle recorded
   after the limit hit, so one session resumes at most once per `--interval`.
 - **No resume without capacity.** When every login is at its limit the
@@ -603,7 +608,9 @@ again with `amplihack profile login <name>`.
   or when every login is at capacity, a session stopped by a limit is never
   resumed. The resume also waits for at most 5 hours; a shorter
   `--interval` resumes sooner. If you continue the session by hand during
-  the wait, the later wake still arrives as one extra continue message. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
+  the wait, the hook sees the transcript change and stops without waking it
+  (`moved-on`); a change in the first 60 seconds after the limit is not
+  noticed. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
   above about 50 seconds, a cycle measured before the limit can still count,
   and one resume may be spent on a login that is still at its limit.
 - **Each cycle starts `claude` once per profile.** The probes run

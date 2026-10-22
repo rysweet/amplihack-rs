@@ -9,13 +9,14 @@
 //! (a) limit + auto-switch on + fresh swapped/stayed cycle → resume once
 //! (b) no capacity / stale cycle / alert → no resume
 //! (c) repeated distinct limit events → bounded by the per-session cap
-//! (d) non-limit error or no match → no action
+//! (d) non-limit error → no action
 //! (e) auto-switch off → exit 0, no output, ledger never read
 //! loop: 50 invocations on one event → at most 1 resume
+//! moved-on: the transcript changed while waiting → no resume
+//! one wake per session: concurrent waiters with distinct events → 1 resume
 
 use amplihack_hooks::limit_resume::decide::{
-    Facts, Gate, MAX_MATCH_BYTES, event_key, fresh_capacity, gate, is_limit, session_id_ok,
-    session_key,
+    Facts, Gate, event_key, fresh_capacity, gate, is_limit, session_id_ok, session_key,
 };
 use amplihack_hooks::limit_resume::guard::{CommitError, GuardStore};
 use amplihack_hooks::limit_resume::log::LogEntry;
@@ -27,6 +28,7 @@ use amplihack_utils::rotator_status::{CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, 
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 
 const START: i64 = 1_792_592_000;
@@ -63,7 +65,13 @@ impl GuardStore for MemGuard {
         }))
     }
 
-    fn commit(&mut self, event: &str, session: &str, now: i64) -> Result<(), CommitError> {
+    fn commit(
+        &mut self,
+        event: &str,
+        session: &str,
+        start: i64,
+        now: i64,
+    ) -> Result<(), CommitError> {
         self.calls += 1;
         if let Some(e) = self.force_commit.take() {
             return Err(e);
@@ -72,6 +80,9 @@ impl GuardStore for MemGuard {
             return Err(CommitError::Duplicate);
         }
         let v = self.sessions.entry(session.to_string()).or_default();
+        if v.iter().any(|t| *t >= start) {
+            return Err(CommitError::Duplicate);
+        }
         if v.iter().filter(|t| now - **t < 86_400).count() as u32 >= MAX_RESUMES_PER_SESSION {
             return Err(CommitError::Cap);
         }
@@ -82,9 +93,13 @@ impl GuardStore for MemGuard {
 }
 
 type CycleFn = Box<dyn Fn(i64) -> Option<CycleStatus>>;
+/// Transcript size, given seconds since START.
+type LenFn = Box<dyn FnMut(i64) -> Option<u64>>;
 
 struct Fake {
     on: bool,
+    /// Auto-switch turns off this many seconds into the wait.
+    off_at: Option<i64>,
     clock: i64,
     /// What the ledger shows, given seconds since START.
     cycle: CycleFn,
@@ -93,12 +108,15 @@ struct Fake {
     sleeps: Vec<Duration>,
     logs: Vec<LogEntry>,
     panic_on_now: bool,
+    transcript: LenFn,
+    transcript_reads: u32,
 }
 
 impl Fake {
     fn new(on: bool, cycle: CycleFn) -> Self {
         Self {
             on,
+            off_at: None,
             clock: START,
             cycle,
             guard: MemGuard::default(),
@@ -106,6 +124,8 @@ impl Fake {
             sleeps: Vec::new(),
             logs: Vec::new(),
             panic_on_now: false,
+            transcript: Box::new(|_| Some(1000)),
+            transcript_reads: 0,
         }
     }
 
@@ -116,7 +136,7 @@ impl Fake {
 
 impl Deps for Fake {
     fn auto_switch_on(&mut self) -> bool {
-        self.on
+        self.on && self.off_at.is_none_or(|t| self.clock - START < t)
     }
     fn now(&mut self) -> i64 {
         assert!(!self.panic_on_now, "injected panic");
@@ -129,6 +149,10 @@ impl Deps for Fake {
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
         self.reads.push(now);
         (self.cycle)(now - START)
+    }
+    fn transcript_len(&mut self, _path: &Path) -> Option<u64> {
+        self.transcript_reads += 1;
+        (self.transcript)(self.clock - START)
     }
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
@@ -172,6 +196,16 @@ fn limit_input(session: &str, msg: &str) -> HookInput {
     .unwrap()
 }
 
+fn limit_with_transcript(session: &str) -> HookInput {
+    serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": session,
+        "error": "rate_limit",
+        "transcript_path": "/nonexistent/transcript.jsonl",
+    }))
+    .unwrap()
+}
+
 fn input(v: serde_json::Value) -> HookInput {
     serde_json::from_value(v).unwrap()
 }
@@ -182,8 +216,8 @@ fn input(v: serde_json::Value) -> HookInput {
 fn resume_message_is_the_documented_text() {
     assert_eq!(
         RESUME_MSG,
-        "amplihack: the usage limit was cleared by switching to a login with capacity. \
-         Continue the task you were working on."
+        "amplihack: the login rotator reports a login with capacity. \
+         Continue the task you were working on; if the usage limit is still in place, stop and wait."
     );
     assert!(!RESUME_MSG.contains('\n'));
 }
@@ -193,6 +227,7 @@ fn outcome_strings_and_exit_codes() {
     let table = [
         (Outcome::Resumed, "resumed", 2),
         (Outcome::NoCapacityTimeout, "no-capacity-timeout", 0),
+        (Outcome::MovedOn, "moved-on", 0),
         (Outcome::Duplicate, "duplicate", 0),
         (Outcome::Cap, "cap", 0),
         (Outcome::StopHookActive, "stop-hook-active", 0),
@@ -213,105 +248,40 @@ fn per_session_cap_is_three() {
 
 // ── is_limit (IV-3) ─────────────────────────────────────────────────────────
 
-/// error, error_details, last_assistant_message, expected.
-type LimitCase = (
-    Option<&'static str>,
-    Option<&'static str>,
-    Option<&'static str>,
-    bool,
-);
-
 #[test]
-fn is_limit_table() {
-    let cases: &[LimitCase] = &[
-        // error, error_details, last_assistant_message, expected
-        (Some("rate_limit"), None, None, true),
-        (
-            Some("rate_limit"),
-            Some("nothing useful"),
-            Some("bye"),
-            true,
-        ),
-        (
-            None,
-            None,
-            Some("You've hit your weekly limit · resets 9am"),
-            true,
-        ),
-        (None, None, Some("You've hit your session limit"), true),
-        (None, None, Some("You've hit your usage limit"), true),
-        (None, None, Some("You've hit your limit"), true),
-        (
-            None,
-            None,
-            Some("You've hit your org's monthly spend limit"),
-            true,
-        ),
-        (None, Some("Claude AI usage: hit your limit"), None, true),
-        (Some(""), None, Some("hit your limit"), true),
-        (
-            Some("unknown"),
-            None,
-            Some("Stop and wait for limit to reset"),
-            true,
-        ),
-        (
-            None,
-            Some("1. Stop and wait for limit to reset\n2. Wait"),
-            None,
-            true,
-        ),
-        // A known non-limit error overrides the text.
-        (
-            Some("overloaded"),
-            None,
-            Some("You've hit your weekly limit"),
-            false,
-        ),
-        (
-            Some("authentication_failed"),
-            Some("hit your limit"),
-            None,
-            false,
-        ),
-        (
-            Some("server_error"),
-            None,
-            Some("Stop and wait for limit to reset"),
-            false,
-        ),
-        (Some("RATE_LIMIT"), None, None, false),
-        // No match.
-        (None, None, Some("All done."), false),
-        (None, None, None, false),
-        (Some(""), Some(""), Some(""), false),
-        (None, None, Some("limit"), false),
-    ];
-    for (e, d, m, want) in cases {
-        assert_eq!(
-            is_limit(*e, *d, *m),
-            *want,
-            "error={e:?} details={d:?} msg={m:?}"
-        );
+fn is_limit_is_exactly_rate_limit() {
+    assert!(is_limit(Some("rate_limit")));
+    for e in [
+        None,
+        Some(""),
+        Some("unknown"),
+        Some("overloaded"),
+        Some("authentication_failed"),
+        Some("server_error"),
+        Some("RATE_LIMIT"),
+        Some("rate_limit "),
+    ] {
+        assert!(!is_limit(e), "{e:?}");
     }
 }
 
 #[test]
-fn is_limit_matches_only_the_first_64_kib_of_each_field() {
-    assert_eq!(MAX_MATCH_BYTES, 64 * 1024);
-    let phrase = "hit your limit";
-    let inside = format!("{}{phrase}", "x".repeat(MAX_MATCH_BYTES - phrase.len()));
-    assert!(is_limit(None, None, Some(inside.as_str())));
-    let outside = format!("{}{phrase}", "x".repeat(MAX_MATCH_BYTES));
-    assert!(!is_limit(None, None, Some(outside.as_str())));
-    assert!(!is_limit(None, Some(outside.as_str()), None));
-}
-
-#[test]
-fn is_limit_does_not_panic_on_a_char_split_at_the_cap() {
-    // 'é' is two bytes; an odd prefix puts the cap in the middle of one.
-    let s = format!("x{}", "é".repeat(MAX_MATCH_BYTES));
-    assert!(!is_limit(None, Some(s.as_str()), Some(s.as_str())));
+fn limit_text_without_rate_limit_error_is_not_a_limit() {
+    for error in [json!(null), json!(""), json!("unknown")] {
+        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let out = run_with(
+            &input(json!({
+                "hook_event_name": "StopFailure",
+                "session_id": "s",
+                "error": error,
+                "error_details": "Stop and wait for limit to reset",
+                "last_assistant_message": "You've hit your weekly limit"
+            })),
+            &mut d,
+        );
+        assert_eq!(out, Outcome::NotLimit, "{error}");
+        assert_untouched(&d);
+    }
 }
 
 // ── Keys ────────────────────────────────────────────────────────────────────
@@ -322,19 +292,24 @@ fn is_hex64(s: &str) -> bool {
 
 #[test]
 fn event_key_is_stable_lowercase_sha256_hex() {
-    let k = event_key("s", Some("rate_limit"), Some("d"), Some("m"));
+    let k = event_key("s", Some("rate_limit"), Some("d"), Some("m"), Some("p"));
     assert!(is_hex64(&k), "{k}");
-    assert_eq!(k, event_key("s", Some("rate_limit"), Some("d"), Some("m")));
+    assert_eq!(
+        k,
+        event_key("s", Some("rate_limit"), Some("d"), Some("m"), Some("p"))
+    );
 }
 
 #[test]
 fn event_key_changes_with_every_field() {
-    let base = event_key("s", Some("rate_limit"), Some("d"), Some("m"));
+    let base = event_key("s", Some("rate_limit"), Some("d"), Some("m"), Some("p"));
     for other in [
-        event_key("t", Some("rate_limit"), Some("d"), Some("m")),
-        event_key("s", Some("rate_limited"), Some("d"), Some("m")),
-        event_key("s", Some("rate_limit"), Some("e"), Some("m")),
-        event_key("s", Some("rate_limit"), Some("d"), Some("n")),
+        event_key("t", Some("rate_limit"), Some("d"), Some("m"), Some("p")),
+        event_key("s", Some("rate_limited"), Some("d"), Some("m"), Some("p")),
+        event_key("s", Some("rate_limit"), Some("e"), Some("m"), Some("p")),
+        event_key("s", Some("rate_limit"), Some("d"), Some("n"), Some("p")),
+        event_key("s", Some("rate_limit"), Some("d"), Some("m"), Some("q")),
+        event_key("s", Some("rate_limit"), Some("d"), Some("m"), None),
     ] {
         assert_ne!(base, other);
     }
@@ -343,12 +318,16 @@ fn event_key_changes_with_every_field() {
 #[test]
 fn event_key_fields_are_separated_unambiguously() {
     assert_ne!(
-        event_key("ab", Some("c"), None, None),
-        event_key("a", Some("bc"), None, None)
+        event_key("ab", Some("c"), None, None, None),
+        event_key("a", Some("bc"), None, None, None)
     );
     assert_ne!(
-        event_key("s", None, Some("xy"), Some("z")),
-        event_key("s", None, Some("x"), Some("yz"))
+        event_key("s", None, Some("xy"), Some("z"), None),
+        event_key("s", None, Some("x"), Some("yz"), None)
+    );
+    assert_ne!(
+        event_key("s", None, None, Some("mp"), None),
+        event_key("s", None, None, Some("m"), Some("p"))
     );
 }
 
@@ -358,7 +337,7 @@ fn session_key_is_hex_and_hides_the_session_id() {
     let k = session_key(id);
     assert!(is_hex64(&k));
     assert!(!k.contains(id));
-    assert_ne!(k, event_key(id, None, None, None));
+    assert_ne!(k, event_key(id, None, None, None, None));
     assert_ne!(k, session_key("session-ABC-124"));
 }
 
@@ -476,8 +455,15 @@ fn a_log_entry_holds_hash_prefixes_only() {
     assert_eq!(e.session, session_key("secret-session-id")[..12]);
     assert_eq!(
         e.event,
-        event_key("secret-session-id", Some("rate_limit"), None, Some("msg"))[..12]
+        event_key(
+            "secret-session-id",
+            Some("rate_limit"),
+            None,
+            Some("msg"),
+            Some("spare")
+        )[..12]
     );
+    assert_eq!(e.cycle.as_deref(), Some("swapped"));
 }
 
 // ── (b) no capacity → no resume ─────────────────────────────────────────────
@@ -498,6 +484,7 @@ fn assert_timeout(d: &Fake, out: Outcome) {
     }
     assert_eq!(d.logs.len(), 1);
     assert_eq!(d.logs[0].outcome, Outcome::NoCapacityTimeout);
+    assert!(d.guard.sessions.is_empty(), "no resume recorded");
 }
 
 #[test]
@@ -569,7 +556,9 @@ fn c_distinct_limit_events_stop_at_the_session_cap() {
     let mut d = Fake::new(true, never());
     let mut resumed = 0;
     for i in 0..6 {
-        // Each event: a fresh cycle 61 s after this hook's start.
+        // Each event: a fresh cycle 61 s after this hook's start, which is
+        // after the previous resume.
+        d.clock += 1;
         let t0 = d.clock - START;
         d.cycle = appears_at("swapped", t0 + 61, false);
         let out = run_with(&limit_input("s1", &format!("hit your limit #{i}")), &mut d);
@@ -590,9 +579,10 @@ fn c_capped_session_exits_without_waiting() {
         .insert(session_key("s1"), vec![START - 10, START - 20, START - 30]);
     let out = run_with(&limit_input("s1", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::Cap);
-    assert!(
-        d.reads.is_empty(),
-        "a capped session must not poll the ledger"
+    assert_eq!(
+        d.reads.len(),
+        1,
+        "a capped session reads the ledger once, at start, and never polls"
     );
     assert!(d.sleeps.is_empty());
     assert_eq!(d.logs[0].outcome, Outcome::Cap);
@@ -636,7 +626,7 @@ fn d_non_limit_error_is_ignored_even_with_matching_text() {
 }
 
 #[test]
-fn d_prime_no_error_and_no_match_is_ignored() {
+fn d_prime_no_error_is_ignored() {
     let mut d = Fake::new(true, appears_at("swapped", 61, false));
     let out = run_with(
         &input(json!({
@@ -722,7 +712,7 @@ fn stop_hook_active_never_resumes_and_touches_no_guard_state() {
     );
     assert_eq!(out, Outcome::StopHookActive);
     assert_eq!(d.guard.calls, 0, "checked before any guard I/O");
-    assert!(d.reads.is_empty());
+    assert_eq!(d.reads.len(), 1, "start read only, no polling");
     assert_eq!(d.logs.len(), 1);
     assert_eq!(d.logs[0].outcome, Outcome::StopHookActive);
 }
@@ -735,7 +725,7 @@ fn duplicate_event_exits_without_waiting() {
     let reads_before = d.reads.len();
     let second = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(second, Outcome::Duplicate);
-    assert_eq!(d.reads.len(), reads_before, "duplicate must not poll");
+    assert_eq!(d.reads.len(), reads_before + 1, "duplicate must not poll");
 }
 
 #[test]
@@ -749,8 +739,9 @@ fn guard_failure_before_waiting_is_guard_failed() {
         let out = run_with(&limit_input("s", "hit your limit"), &mut d);
         assert_eq!(out, Outcome::GuardFailed, "{which}");
         assert_eq!(out.exit_code(), 0);
-        assert!(
-            d.reads.is_empty(),
+        assert_eq!(
+            d.reads.len(),
+            1,
             "{which}: must not poll after a guard failure"
         );
     }
@@ -894,4 +885,134 @@ fn run_with_io_turns_a_panic_into_a_silent_exit_zero() {
     let mut stderr = Vec::new();
     assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 0);
     assert!(stderr.is_empty());
+}
+
+// ── Moved on: the session went on without this hook ─────────────────────────
+
+#[test]
+fn transcript_change_while_waiting_is_moved_on() {
+    let mut d = Fake::new(true, appears_at("swapped", 300, false));
+    // Baseline at the 60 s poll; the user continues at 120 s.
+    d.transcript = Box::new(|t| Some(if t < 120 { 1000 } else { 1500 }));
+    let out = run_with(&limit_with_transcript("s"), &mut d);
+    assert_eq!(out, Outcome::MovedOn);
+    assert_eq!(out.exit_code(), 0);
+    assert!(d.guard.events.is_empty() && d.guard.sessions.is_empty());
+    assert_eq!(d.logs.len(), 1);
+    assert_eq!(d.logs[0].outcome, Outcome::MovedOn);
+    assert_eq!(d.clock - START, 120, "stops at the first poll that sees it");
+}
+
+#[test]
+fn transcript_writes_before_the_margin_are_not_moving_on() {
+    // The limit stop itself writes to the transcript in the first seconds.
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.transcript = Box::new(|t| Some(if t < 45 { 900 } else { 1000 }));
+    assert_eq!(
+        run_with(&limit_with_transcript("s"), &mut d),
+        Outcome::Resumed
+    );
+}
+
+#[test]
+fn transcript_change_just_before_commit_is_moved_on() {
+    // Polls at 0, 15, 30, 45, 60 (baseline), 75 (capacity); the seventh
+    // read is the one right before the commit.
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    let mut n = 0;
+    d.transcript = Box::new(move |_| {
+        n += 1;
+        Some(if n < 7 { 1000 } else { 1001 })
+    });
+    let out = run_with(&limit_with_transcript("s"), &mut d);
+    assert_eq!(out, Outcome::MovedOn);
+    assert_eq!(d.transcript_reads, 7);
+    assert!(d.guard.events.is_empty());
+}
+
+#[test]
+fn transcript_disappearing_is_moved_on() {
+    let mut d = Fake::new(true, appears_at("swapped", 300, false));
+    d.transcript = Box::new(|t| if t < 90 { Some(1000) } else { None });
+    assert_eq!(
+        run_with(&limit_with_transcript("s"), &mut d),
+        Outcome::MovedOn
+    );
+}
+
+#[test]
+fn without_a_transcript_path_the_check_is_skipped() {
+    let mut d = Fake::new(true, appears_at("swapped", 300, false));
+    d.transcript = Box::new(|t| Some(t as u64));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert_eq!(d.transcript_reads, 0);
+}
+
+// ── Auto-switch turned off while waiting ────────────────────────────────────
+
+#[test]
+fn auto_switch_turned_off_while_waiting_stops_and_is_logged() {
+    let mut d = Fake::new(true, appears_at("swapped", 600, false));
+    d.off_at = Some(150);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::Disabled);
+    assert_eq!(out.exit_code(), 0);
+    assert_eq!(d.clock - START, 150);
+    assert!(d.guard.events.is_empty());
+    assert_eq!(d.logs.len(), 1);
+    assert_eq!(d.logs[0].outcome, Outcome::Disabled);
+}
+
+// ── Event key: the live login at the limit ──────────────────────────────────
+
+fn on_login(live: &'static str, at: i64) -> CycleFn {
+    Box::new(move |elapsed| {
+        let mut c = cycle("swapped", if elapsed >= at { at } else { at - 600 }, false);
+        c.live = Some(live.into());
+        Some(c)
+    })
+}
+
+#[test]
+fn same_login_limited_again_is_the_same_event() {
+    let mut d = Fake::new(true, on_login("spare", 61));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    d.clock += 1;
+    let t0 = d.clock - START;
+    d.cycle = on_login("spare", t0 + 61);
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
+}
+
+#[test]
+fn limit_after_a_swap_is_a_new_event() {
+    let mut d = Fake::new(true, on_login("spare", 61));
+    let msg = "You've hit your session limit";
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    // The rotator swapped to `work`; the same text again is a new limit.
+    d.clock += 1;
+    let t0 = d.clock - START;
+    d.cycle = on_login("work", t0 + 61);
+    assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
+    assert_eq!(d.guard.events.len(), 2);
+}
+
+// ── One wake per session ────────────────────────────────────────────────────
+
+#[test]
+fn two_waiters_for_one_session_with_distinct_events_resume_once() {
+    // Waiter A starts at START, waiter B ten seconds later with a different
+    // event; both see capacity. B commits first, then A.
+    let mut d = Fake::new(true, appears_at("swapped", 120, false));
+    d.clock = START + 10;
+    let b = run_with(&limit_input("s", "first limit text"), &mut d);
+    d.clock = START;
+    let a = run_with(&limit_input("s", "second limit text"), &mut d);
+    let outs = [a, b];
+    assert_eq!(outs.iter().filter(|o| **o == Outcome::Resumed).count(), 1);
+    assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
+    assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
 }

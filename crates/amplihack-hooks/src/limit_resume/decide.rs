@@ -3,56 +3,16 @@
 //! whether the rotator has recorded a fresh cycle with capacity.
 
 use amplihack_utils::rotator_status::{CycleStatus, FRESH_MARGIN_SECS};
-use regex::Regex;
 use sha2::{Digest, Sha256};
-use std::sync::OnceLock;
 
-/// Only this many leading bytes of `error_details` and
-/// `last_assistant_message` are matched.
-pub const MAX_MATCH_BYTES: usize = 64 * 1024;
 /// The longest session id accepted.
 const MAX_SESSION_ID_BYTES: usize = 256;
 
-/// The limit texts the tmux nudger matched, plus the limit menu's first
-/// option.
-const LIMIT_PATTERN: &str = "You['\u{2019}]ve hit your (org['\u{2019}]s )?(monthly spend |usage |session |weekly )?limit\
-     |hit your limit\
-     |Stop and wait for limit to reset";
-
-fn limit_regex() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(LIMIT_PATTERN).expect("LIMIT_PATTERN is a valid regex"))
-}
-
-/// Whether the stop was a usage limit.
-///
-/// `error == "rate_limit"` is a limit. Any other non-empty `error` except
-/// `unknown` is not, whatever the text says, so model output alone cannot
-/// trigger a resume. Only when `error` is missing, empty or `unknown` do the
-/// limit texts decide, matched in the first `MAX_MATCH_BYTES` of
-/// `error_details` and `last_assistant_message`.
-pub fn is_limit(error: Option<&str>, details: Option<&str>, message: Option<&str>) -> bool {
-    match error {
-        Some("rate_limit") => true,
-        None | Some("") | Some("unknown") => [details, message]
-            .into_iter()
-            .flatten()
-            .any(|text| limit_regex().is_match(prefix(text, MAX_MATCH_BYTES))),
-        Some(_) => false,
-    }
-}
-
-/// The longest prefix of `s` that is at most `max` bytes and ends on a
-/// character boundary.
-fn prefix(s: &str, max: usize) -> &str {
-    if s.len() <= max {
-        return s;
-    }
-    let mut end = max;
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
+/// Whether the stop was a usage limit: `error == "rate_limit"`, exactly.
+/// With matcher `rate_limit` Claude Code runs the hook only for that error,
+/// so nothing else, and no message text, is treated as a limit.
+pub fn is_limit(error: Option<&str>) -> bool {
+    error == Some("rate_limit")
 }
 
 fn hex_digest(domain: &str, fields: &[Option<&str>]) -> String {
@@ -74,17 +34,19 @@ fn hex_digest(domain: &str, fields: &[Option<&str>]) -> String {
 }
 
 /// The limit event: SHA-256 (lowercase hex) of the session id, `error`,
-/// `error_details` and `last_assistant_message`. The same limit reported
-/// again gives the same key.
+/// `error_details`, `last_assistant_message` and the live profile the
+/// ledger named when the hook started. The same limit on the same login
+/// gives the same key; a limit after the rotator swapped logins does not.
 pub fn event_key(
     session_id: &str,
     error: Option<&str>,
     details: Option<&str>,
     message: Option<&str>,
+    live: Option<&str>,
 ) -> String {
     hex_digest(
-        "amplihack-limit-resume-event-v1",
-        &[Some(session_id), error, details, message],
+        "amplihack-limit-resume-event-v2",
+        &[Some(session_id), error, details, message, live],
     )
 }
 

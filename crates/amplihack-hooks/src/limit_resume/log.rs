@@ -2,11 +2,11 @@
 //! auto-switch and limit checks.
 //!
 //! ```text
-//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare
+//! 2026-10-21T14:13:20Z resume session=3f9a1c2b7e04 event=7d41e0a9c2b1 outcome=resumed live=spare cycle=swapped
 //! ```
 //!
-//! Every field is a hash prefix, a fixed outcome name or a checked profile
-//! name, and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches
+//! Every field is a hash prefix, a fixed outcome name, a checked profile
+//! name or the ledger's cycle outcome, and is reduced to `[A-Za-z0-9._:-]`, so no message text reaches
 //! the file. Past `LOG_MAX_BYTES` the file is moved to `resume.log.1`.
 //! Logging is best effort: a failure never changes the outcome or prints.
 
@@ -37,6 +37,8 @@ pub struct LogEntry {
     pub outcome: Outcome,
     /// The live profile the ledger named, if any.
     pub live: Option<String>,
+    /// The ledger's cycle outcome (`swapped`, `stayed`, ...), if any.
+    pub cycle: Option<String>,
 }
 
 /// `s` with every character outside `[A-Za-z0-9._:-]` replaced by `-`, cut
@@ -59,12 +61,13 @@ pub fn sanitize(s: &str) -> String {
 /// The log line for `entry` at `now` (epoch seconds), newline included.
 pub fn format_line(now: i64, entry: &LogEntry) -> String {
     format!(
-        "{} resume session={} event={} outcome={} live={}\n",
+        "{} resume session={} event={} outcome={} live={} cycle={}\n",
         utc_timestamp(now),
         sanitize(&entry.session),
         sanitize(&entry.event),
         sanitize(entry.outcome.as_str()),
         sanitize(entry.live.as_deref().unwrap_or("")),
+        sanitize(entry.cycle.as_deref().unwrap_or("")),
     )
 }
 
