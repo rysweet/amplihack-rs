@@ -12,7 +12,7 @@
 //! (d) non-limit error → no action
 //! (e) auto-switch off → exit 0, no output, ledger never read
 //! loop: 50 invocations on one event → at most 1 resume
-//! moved-on: the transcript changed while waiting → no resume
+//! moved-on: the user sent a prompt while waiting → no resume
 //! one wake per session: concurrent waiters with distinct events → 1 resume
 
 use amplihack_hooks::limit_resume::decide::{
@@ -28,7 +28,6 @@ use amplihack_utils::rotator_status::{CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, 
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io;
-use std::path::Path;
 use std::time::Duration;
 
 const START: i64 = 1_792_592_000;
@@ -40,7 +39,13 @@ const START: i64 = 1_792_592_000;
 struct MemGuard {
     events: HashSet<String>,
     sessions: HashMap<String, Vec<i64>>,
+    /// Last prompt per session, given seconds since START.
+    prompted: HashMap<String, i64>,
     fail_seen: bool,
+    fail_prompted: bool,
+    /// From this `prompted_at` call on, report a prompt at START + 75.
+    prompt_from_call: Option<u32>,
+    prompted_calls: u32,
     fail_resumes: bool,
     force_commit: Option<CommitError>,
     calls: u32,
@@ -65,6 +70,20 @@ impl GuardStore for MemGuard {
         }))
     }
 
+    fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>> {
+        if self.fail_prompted {
+            return Err(io::Error::other("injected"));
+        }
+        self.prompted_calls += 1;
+        if self
+            .prompt_from_call
+            .is_some_and(|n| self.prompted_calls >= n)
+        {
+            return Ok(Some(START + 75));
+        }
+        Ok(self.prompted.get(session).map(|t| START + t))
+    }
+
     fn commit(
         &mut self,
         event: &str,
@@ -80,7 +99,7 @@ impl GuardStore for MemGuard {
             return Err(CommitError::Duplicate);
         }
         let v = self.sessions.entry(session.to_string()).or_default();
-        if v.iter().any(|t| *t >= start) {
+        if v.iter().any(|t| *t > start) {
             return Err(CommitError::Duplicate);
         }
         if v.iter().filter(|t| now - **t < 86_400).count() as u32 >= MAX_RESUMES_PER_SESSION {
@@ -93,8 +112,6 @@ impl GuardStore for MemGuard {
 }
 
 type CycleFn = Box<dyn Fn(i64) -> Option<CycleStatus>>;
-/// Transcript size, given seconds since START.
-type LenFn = Box<dyn FnMut(i64) -> Option<u64>>;
 
 struct Fake {
     on: bool,
@@ -108,8 +125,8 @@ struct Fake {
     sleeps: Vec<Duration>,
     logs: Vec<LogEntry>,
     panic_on_now: bool,
-    transcript: LenFn,
-    transcript_reads: u32,
+    /// The user sends a prompt at this many seconds since START.
+    prompt_at: Option<i64>,
 }
 
 impl Fake {
@@ -124,8 +141,7 @@ impl Fake {
             sleeps: Vec::new(),
             logs: Vec::new(),
             panic_on_now: false,
-            transcript: Box::new(|_| Some(1000)),
-            transcript_reads: 0,
+            prompt_at: None,
         }
     }
 
@@ -145,14 +161,16 @@ impl Deps for Fake {
     fn sleep(&mut self, d: Duration) {
         self.sleeps.push(d);
         self.clock += d.as_secs() as i64;
+        if let Some(t) = self.prompt_at
+            && self.clock - START >= t
+        {
+            // What the UserPromptSubmit hook records for every session here.
+            self.guard.prompted.insert(session_key("s"), t);
+        }
     }
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
         self.reads.push(now);
         (self.cycle)(now - START)
-    }
-    fn transcript_len(&mut self, _path: &Path) -> Option<u64> {
-        self.transcript_reads += 1;
-        (self.transcript)(self.clock - START)
     }
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
@@ -192,16 +210,6 @@ fn limit_input(session: &str, msg: &str) -> HookInput {
         "session_id": session,
         "error": "rate_limit",
         "last_assistant_message": msg,
-    }))
-    .unwrap()
-}
-
-fn limit_with_transcript(session: &str) -> HookInput {
-    serde_json::from_value(json!({
-        "hook_event_name": "StopFailure",
-        "session_id": session,
-        "error": "rate_limit",
-        "transcript_path": "/nonexistent/transcript.jsonl",
     }))
     .unwrap()
 }
@@ -556,9 +564,7 @@ fn c_distinct_limit_events_stop_at_the_session_cap() {
     let mut d = Fake::new(true, never());
     let mut resumed = 0;
     for i in 0..6 {
-        // Each event: a fresh cycle 61 s after this hook's start, which is
-        // after the previous resume.
-        d.clock += 1;
+        // Each event: a fresh cycle 61 s after this hook's start.
         let t0 = d.clock - START;
         d.cycle = appears_at("swapped", t0 + 61, false);
         let out = run_with(&limit_input("s1", &format!("hit your limit #{i}")), &mut d);
@@ -887,14 +893,30 @@ fn run_with_io_turns_a_panic_into_a_silent_exit_zero() {
     assert!(stderr.is_empty());
 }
 
-// ── Moved on: the session went on without this hook ─────────────────────────
+// ── Moved on: the user sent a prompt while waiting ──────────────────────────
 
 #[test]
-fn transcript_change_while_waiting_is_moved_on() {
+fn no_prompt_marker_resumes() {
+    // Transcript or background-task activity is not looked at: only a
+    // recorded user prompt counts.
     let mut d = Fake::new(true, appears_at("swapped", 300, false));
-    // Baseline at the 60 s poll; the user continues at 120 s.
-    d.transcript = Box::new(|t| Some(if t < 120 { 1000 } else { 1500 }));
-    let out = run_with(&limit_with_transcript("s"), &mut d);
+    let out = run_with(
+        &input(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "transcript_path": "/nonexistent/transcript.jsonl"
+        })),
+        &mut d,
+    );
+    assert_eq!(out, Outcome::Resumed);
+}
+
+#[test]
+fn prompt_after_the_start_is_moved_on() {
+    let mut d = Fake::new(true, appears_at("swapped", 300, false));
+    d.prompt_at = Some(120);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_eq!(out, Outcome::MovedOn);
     assert_eq!(out.exit_code(), 0);
     assert!(d.guard.events.is_empty() && d.guard.sessions.is_empty());
@@ -904,51 +926,56 @@ fn transcript_change_while_waiting_is_moved_on() {
 }
 
 #[test]
-fn transcript_writes_before_the_margin_are_not_moving_on() {
-    // The limit stop itself writes to the transcript in the first seconds.
+fn prompt_before_the_start_still_resumes() {
+    // The prompt that started the limited turn is older than the hook.
     let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    d.transcript = Box::new(|t| Some(if t < 45 { 900 } else { 1000 }));
-    assert_eq!(
-        run_with(&limit_with_transcript("s"), &mut d),
-        Outcome::Resumed
-    );
-}
-
-#[test]
-fn transcript_change_just_before_commit_is_moved_on() {
-    // Polls at 0, 15, 30, 45, 60 (baseline), 75 (capacity); the seventh
-    // read is the one right before the commit.
-    let mut d = Fake::new(true, appears_at("swapped", 75, false));
-    let mut n = 0;
-    d.transcript = Box::new(move |_| {
-        n += 1;
-        Some(if n < 7 { 1000 } else { 1001 })
-    });
-    let out = run_with(&limit_with_transcript("s"), &mut d);
-    assert_eq!(out, Outcome::MovedOn);
-    assert_eq!(d.transcript_reads, 7);
-    assert!(d.guard.events.is_empty());
-}
-
-#[test]
-fn transcript_disappearing_is_moved_on() {
-    let mut d = Fake::new(true, appears_at("swapped", 300, false));
-    d.transcript = Box::new(|t| if t < 90 { Some(1000) } else { None });
-    assert_eq!(
-        run_with(&limit_with_transcript("s"), &mut d),
-        Outcome::MovedOn
-    );
-}
-
-#[test]
-fn without_a_transcript_path_the_check_is_skipped() {
-    let mut d = Fake::new(true, appears_at("swapped", 300, false));
-    d.transcript = Box::new(|t| Some(t as u64));
+    d.guard.prompted.insert(session_key("s"), -30);
     assert_eq!(
         run_with(&limit_input("s", "hit your limit"), &mut d),
         Outcome::Resumed
     );
-    assert_eq!(d.transcript_reads, 0);
+}
+
+#[test]
+fn prompt_in_the_start_second_is_not_moved_on() {
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.guard.prompted.insert(session_key("s"), 0);
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+}
+
+#[test]
+fn prompt_marker_of_another_session_is_ignored() {
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.guard.prompted.insert(session_key("other"), 30);
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+}
+
+#[test]
+fn prompt_just_before_the_commit_is_moved_on() {
+    // Polls at 0, 15, 30, 45, 60, 75 (capacity); the seventh check is the
+    // one right before the commit.
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.guard.prompt_from_call = Some(7);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::MovedOn);
+    assert_eq!(d.guard.prompted_calls, 7);
+    assert!(d.guard.events.is_empty());
+    assert_eq!(d.logs[0].cycle.as_deref(), Some("swapped"));
+}
+
+#[test]
+fn unreadable_prompt_marker_is_guard_failed() {
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.guard.fail_prompted = true;
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::GuardFailed);
+    assert!(d.guard.events.is_empty());
 }
 
 // ── Auto-switch turned off while waiting ────────────────────────────────────
@@ -981,7 +1008,6 @@ fn same_login_limited_again_is_the_same_event() {
     let mut d = Fake::new(true, on_login("spare", 61));
     let msg = "You've hit your session limit";
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
-    d.clock += 1;
     let t0 = d.clock - START;
     d.cycle = on_login("spare", t0 + 61);
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Duplicate);
@@ -993,7 +1019,6 @@ fn limit_after_a_swap_is_a_new_event() {
     let msg = "You've hit your session limit";
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);
     // The rotator swapped to `work`; the same text again is a new limit.
-    d.clock += 1;
     let t0 = d.clock - START;
     d.cycle = on_login("work", t0 + 61);
     assert_eq!(run_with(&limit_input("s", msg), &mut d), Outcome::Resumed);

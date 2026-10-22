@@ -12,25 +12,24 @@
 //! before, a session under its cap. Then the hook reads the rotate ledger
 //! every `POLL_INTERVAL` for up to `MAX_WAIT`, plus once at the deadline,
 //! and resumes only after [`guard::GuardStore::commit`] recorded the
-//! resume under the lock. Each poll also re-checks the toggle and, when the
-//! payload names a transcript, whether the session has moved on.
+//! resume under the lock. Each poll also re-checks the toggle and whether
+//! the user sent a prompt in the session since the hook started (see
+//! [`record_prompt`], called by the `UserPromptSubmit` hook).
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
-//! ledger and the transcript's size; it never opens a login file.
+//! ledger and its own resume state; it never opens a login file or the
+//! transcript.
 
 pub mod decide;
 pub mod guard;
 pub mod log;
 
 use amplihack_types::HookInput;
-use amplihack_utils::rotator_status::{
-    self, CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL,
-};
+use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT, POLL_INTERVAL};
 use amplihack_utils::secure_files::read_bounded;
 use decide::{Facts, Gate, event_key, fresh_capacity, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
 use log::LogEntry;
-use std::fs;
 use std::io::{Read, Write};
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::{Path, PathBuf};
@@ -57,8 +56,7 @@ pub enum Outcome {
     Resumed,
     /// No fresh cycle with capacity before the deadline.
     NoCapacityTimeout,
-    /// The transcript changed while waiting: the session went on without
-    /// this hook.
+    /// The user sent a prompt in the session while the hook waited.
     MovedOn,
     /// This limit event was already resumed.
     Duplicate,
@@ -105,8 +103,6 @@ pub trait Deps {
     fn sleep(&mut self, d: Duration);
     /// The rotate ledger's last cycle, read at `now`.
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus>;
-    /// The transcript's size in bytes; its contents are never read.
-    fn transcript_len(&mut self, path: &Path) -> Option<u64>;
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
@@ -121,7 +117,6 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         error_details,
         last_assistant_message,
         stop_hook_active,
-        transcript_path,
         ..
     } = input
     else {
@@ -189,23 +184,23 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         _ => {}
     }
 
-    let transcript = transcript_path.as_deref();
-    // Taken once the limit stop's own writes have landed; any later change
-    // means the session went on without this hook.
-    let mut baseline: Option<Option<u64>> = None;
+    // A prompt sent after the hook started means the session went on
+    // without it. The hook's own wake is not a prompt, so it never counts.
+    let moved_on = |deps: &mut D| {
+        deps.guard()
+            .prompted_at(&session)
+            .map(|t| t.is_some_and(|t| t > start))
+    };
     let deadline = start.saturating_add(MAX_WAIT.as_secs() as i64);
     let (now, status) = loop {
         let now = deps.now();
         if !deps.auto_switch_on() {
             return finish(deps, now, Outcome::Disabled, None);
         }
-        if let Some(path) = transcript {
-            let len = deps.transcript_len(path);
-            match baseline {
-                None if now >= start.saturating_add(FRESH_MARGIN_SECS) => baseline = Some(len),
-                Some(b) if b != len => return finish(deps, now, Outcome::MovedOn, None),
-                _ => {}
-            }
+        match moved_on(deps) {
+            Ok(false) => {}
+            Ok(true) => return finish(deps, now, Outcome::MovedOn, None),
+            Err(_) => return finish(deps, now, Outcome::GuardFailed, None),
         }
         let status = deps.read_cycle(now);
         if fresh_capacity(status.as_ref(), start) || now >= deadline {
@@ -217,10 +212,10 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
     if !fresh_capacity(status.as_ref(), start) {
         return finish(deps, now, Outcome::NoCapacityTimeout, status.as_ref());
     }
-    if let (Some(path), Some(b)) = (transcript, baseline)
-        && deps.transcript_len(path) != b
-    {
-        return finish(deps, now, Outcome::MovedOn, status.as_ref());
+    match moved_on(deps) {
+        Ok(false) => {}
+        Ok(true) => return finish(deps, now, Outcome::MovedOn, status.as_ref()),
+        Err(_) => return finish(deps, now, Outcome::GuardFailed, status.as_ref()),
     }
     let outcome = match deps.guard().commit(&event, &session, start, now) {
         Ok(()) => Outcome::Resumed,
@@ -273,9 +268,7 @@ impl Deps for SystemDeps {
     }
 
     fn now(&mut self) -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64)
+        epoch_now()
     }
 
     fn sleep(&mut self, d: Duration) {
@@ -284,10 +277,6 @@ impl Deps for SystemDeps {
 
     fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
         rotator_status::read_cycle(&self.root, now)
-    }
-
-    fn transcript_len(&mut self, path: &Path) -> Option<u64> {
-        fs::metadata(path).ok().map(|m| m.len())
     }
 
     fn guard(&mut self) -> &mut dyn GuardStore {
@@ -301,6 +290,33 @@ impl Deps for SystemDeps {
             log::append(&dir, &log::format_line(now, entry));
         }
     }
+}
+
+/// Notes a user prompt in `session_id` for a waiting `limit-resume` hook.
+/// Called by the `UserPromptSubmit` hook; silent, never fails, takes no
+/// lock, and writes nothing unless `<root>/.auto-switch.d/resume/` already
+/// exists and is private.
+pub fn record_prompt(session_id: Option<&str>) {
+    // Unit tests of other hooks must never touch the real profile root.
+    if cfg!(test) && std::env::var_os(rotator_status::ROOT_ENV).is_none() {
+        return;
+    }
+    if let Some(root) = rotator_status::resolve_root() {
+        record_prompt_at(&root, session_id, epoch_now());
+    }
+}
+
+/// [`record_prompt`] for a given profile root and time.
+pub fn record_prompt_at(root: &Path, session_id: Option<&str>, now: i64) {
+    if let Some(id) = session_id.filter(|id| session_id_ok(Some(id))) {
+        let _ = FsGuard::new(root).record_prompt(&session_key(id), now);
+    }
+}
+
+fn epoch_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// The `limit-resume` subcommand. Exits 0 at once, without reading stdin,

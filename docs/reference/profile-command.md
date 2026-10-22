@@ -2161,9 +2161,10 @@ restarts a session which stopped on a usage limit, once the rotator has put a
 login with capacity in `~/.claude`. `amplihack install` registers it; see
 [StopFailure in the hook reference](hook-specifications.md#8-stopfailure--limit-resume).
 The [how-to](../howto/claude-profile-rotation.md#resume-sessions-stopped-by-a-usage-limit)
-shows how to use it. The hook only reads the rotate ledger and the size of the
-session's transcript. It never moves a login, and never opens
-`.credentials.json`, a token file or anything under a profile directory.
+shows how to use it. The hook only reads the rotate ledger and its own
+[resume state](#resume-state-directory). It never moves a login, never reads
+the session's transcript, and never opens `.credentials.json`, a token file
+or anything under a profile directory.
 
 The hook exits `2` with the resume message on stderr, or `0` with nothing on
 stdout or stderr. It never writes to stdout and never exits with any other
@@ -2214,8 +2215,8 @@ The checks run in this order. The first one that fails decides the outcome.
 | 3 | `stop_hook_active` is absent or `false`. The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
-| 6 | A [fresh cycle with capacity](#capacity-for-a-resume) appears within 5 hours. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if the transcript changed. |
-| 7 | The transcript, if any, still has the size noted while waiting. Then, under the resume lock, steps 4 and 5 still pass, the session has no resume at or after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `moved-on` if the transcript changed; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 6 | A [fresh cycle with capacity](#capacity-for-a-resume) appears within 5 hours. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if you sent a prompt in that session; `guard-failed` if the prompt marker cannot be read safely. |
+| 7 | No prompt was sent in the session since the hook started (checked once more). Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 8 | — | Exit `2` with the resume message, outcome `resumed`. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
@@ -2226,17 +2227,25 @@ repeats.
 
 A session is woken at most once per waiting period. When two hooks wait for
 the same session with different events, the first to commit wakes it; the
-other finds a resume at or after its own start time and ends as `duplicate`.
+other finds a resume after its own start time and ends as `duplicate`. A
+new limit that starts in the same second as the previous resume may still
+resume.
 
 ##### Moved on
 
-When the payload has `transcript_path`, the hook notes the transcript's size
-at the first ledger read at least 60 seconds after it started (the limit stop
-itself may still be writing before that). If the size changes at any later
-read, or right before the commit in step 7, the session went on without the
-hook, for example because you typed `continue` yourself, and the hook exits
-`0` with outcome `moved-on`. Only the size is read, never the contents.
-Without `transcript_path` the check is skipped.
+The session moved on when you sent a prompt in that session during the wait.
+amplihack's `UserPromptSubmit` hook (`amplihack-hooks user-prompt-submit`)
+records the time of each prompt in `resume/prompted/<sha256 hex>`; the waiting
+hook reads it at every ledger read and right before the commit in step 7, and
+exits `0` with outcome `moved-on` when the time is after its own start. The
+hook's own wake is not a prompt, so the woken turn does not count. Background
+task reports and local commands such as `/usage` are not prompts either, so
+they never end the wait.
+
+The prompt hook writes the marker only when the profile root resolves and
+`resume/` already exists as a private directory, so nothing is created for a
+user who never had a limit resumed. It takes no lock and ignores every error,
+so it never fails or holds up a prompt.
 
 #### Limit detection
 
@@ -2293,6 +2302,7 @@ and epoch seconds.
 | `lock` | Lock file for steps 4, 5 and 7. Waited on for at most 5 seconds. |
 | `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the ledger's `live` profile when the hook started, each written with its length, so no two different payloads share a name. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
+| `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
 | `resume.log` | One line per decision from step 3 on, and for auto-switch turned off while waiting. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
 
@@ -2315,7 +2325,7 @@ account IDs or tokens. Failing to write it does not change the outcome.
 |---------|---------|
 | `resumed` | The hook exited `2` and the session was told to continue. |
 | `no-capacity-timeout` | No fresh cycle with capacity within 5 hours. |
-| `moved-on` | The transcript changed while waiting: the session went on without the hook. |
+| `moved-on` | You sent a prompt in that session during the wait, so the hook did not wake it. |
 | `disabled` | Auto-switch was turned off while waiting. |
 | `duplicate` | This limit event, or this session since the hook started, was already resumed. |
 | `cap` | The session already resumed 3 times in 24 hours. |

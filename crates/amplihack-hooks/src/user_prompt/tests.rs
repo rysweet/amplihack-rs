@@ -544,3 +544,51 @@ fn is_workflow_active_returns_true_with_live_pid() {
     .unwrap();
     assert!(is_workflow_active(&dirs));
 }
+
+#[cfg(unix)]
+#[test]
+fn prompt_is_noted_for_a_waiting_limit_resume_hook_only_when_resume_dir_exists() {
+    use crate::limit_resume::decide::session_key;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let _root_env = EnvVarGuard::set("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.path());
+    let cwd_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::test_support::CwdGuard::set(cwd_dir.path()).unwrap();
+
+    let submit = || {
+        UserPromptSubmitHook
+            .process(HookInput::UserPromptSubmit {
+                user_prompt: Some("keep going".to_string()),
+                session_id: Some("prompt-session".to_string()),
+                extra: Value::Null,
+            })
+            .unwrap();
+    };
+
+    submit();
+    assert_eq!(
+        fs::read_dir(root.path()).unwrap().count(),
+        0,
+        "nothing is created without resume/"
+    );
+
+    let resume = root.path().join(".auto-switch.d").join("resume");
+    for d in [root.path().join(".auto-switch.d"), resume.clone()] {
+        fs::create_dir(&d).unwrap();
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    submit();
+    drop(cwd);
+
+    let marker = resume.join("prompted").join(session_key("prompt-session"));
+    let text = fs::read_to_string(&marker).unwrap();
+    assert!(text.trim_end().parse::<i64>().unwrap() > 0, "{text:?}");
+    assert!(!text.contains("prompt-session"));
+}

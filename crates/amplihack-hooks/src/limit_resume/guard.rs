@@ -7,6 +7,7 @@
 //! lock                  flock taken around every commit
 //! events/<sha256 hex>   one empty marker per resumed event, kept 7 days
 //! sessions/<sha256 hex> one line per resume: epoch seconds
+//! prompted/<sha256 hex> epoch seconds of the session's last user prompt
 //! resume.log            see log.rs
 //! ```
 //!
@@ -32,6 +33,7 @@ pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 const MARKER_RETENTION_SECS: i64 = 7 * DAY_SECS;
 const DAY_SECS: i64 = 86_400;
 const MAX_SESSION_BYTES: u64 = 4096;
+const MAX_PROMPTED_BYTES: u64 = 64;
 
 /// Why a commit did not record a resume.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,8 +41,8 @@ pub enum CommitError {
     /// The session already has `MAX_RESUMES_PER_SESSION` resumes in the last
     /// 24 hours, or its record is malformed.
     Cap,
-    /// The event already has a marker, or the session was resumed at or
-    /// after this hook's start.
+    /// The event already has a marker, or the session was resumed after
+    /// this hook's start.
     Duplicate,
     /// The state could not be read or written safely.
     Io,
@@ -60,9 +62,11 @@ pub trait GuardStore {
     fn seen(&mut self, event: &str) -> io::Result<bool>;
     /// Resumes recorded for `session` in the 24 hours before `now`.
     fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32>;
+    /// When the user last sent a prompt in `session`, if recorded.
+    fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>>;
     /// Records a resume of `event` in `session` at `now`, for a hook that
-    /// started at `start`. A session already resumed at or after `start`
-    /// was woken by a newer or concurrent hook and is `Duplicate`.
+    /// started at `start`. A session already resumed after `start` was
+    /// woken by a newer or concurrent hook and is `Duplicate`.
     fn commit(
         &mut self,
         event: &str,
@@ -128,16 +132,15 @@ impl FsGuard {
         Ok(dir)
     }
 
-    /// `resume/<sub>` when it and every directory above it up to the root
-    /// exist and are private; `None` when one is missing; an error when one
+    /// `resume/<sub>` (`resume/` itself for an empty `sub`) when it and every
+    /// directory above it up to the root exist and are private; `None` when one is missing; an error when one
     /// is unsafe. Creates nothing.
     fn existing_subdir(&self, sub: &str) -> io::Result<Option<PathBuf>> {
         self.check_root()?;
-        let dirs = [
-            self.state_dir(),
-            self.resume_dir(),
-            self.resume_dir().join(sub),
-        ];
+        let mut dirs = vec![self.state_dir(), self.resume_dir()];
+        if !sub.is_empty() {
+            dirs.push(self.resume_dir().join(sub));
+        }
         for d in &dirs {
             match fs::symlink_metadata(d) {
                 Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -145,7 +148,7 @@ impl FsGuard {
                 Ok(_) => check_private_dir(d)?,
             }
         }
-        Ok(Some(dirs[2].clone()))
+        Ok(dirs.pop())
     }
 
     /// The session's resume times; `Ok(None)` when it has no record and
@@ -161,6 +164,19 @@ impl FsGuard {
             ));
         }
         Ok(Some(parse_session(&raw)))
+    }
+
+    /// Records that the user sent a prompt in `session` at `now`. Writes only
+    /// when `resume/` already exists and is private, so nothing is created
+    /// for a user who never had a limit resumed; may create `prompted/`.
+    pub fn record_prompt(&self, session: &str, now: i64) -> io::Result<()> {
+        check_key(session)?;
+        let Some(dir) = self.existing_subdir("")? else {
+            return Ok(());
+        };
+        let prompted = dir.join("prompted");
+        ensure_private_dir(&prompted)?;
+        write_private_atomic(&prompted, session, format!("{now}\n").as_bytes())
     }
 
     /// Deletes markers older than `MARKER_RETENTION_SECS`: only regular
@@ -252,6 +268,30 @@ impl GuardStore for FsGuard {
         })
     }
 
+    fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>> {
+        check_key(session)?;
+        let Some(prompted) = self.existing_subdir("prompted")? else {
+            return Ok(None);
+        };
+        let Some((raw, meta)) = read_bounded_nofollow(&prompted.join(session), MAX_PROMPTED_BYTES)?
+        else {
+            return Ok(None);
+        };
+        if !owned_by_euid(&meta) || meta.mode() & 0o077 != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "prompt marker is not private",
+            ));
+        }
+        match parse_session(&raw).as_deref() {
+            Some([t]) => Ok(Some(*t)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "prompt marker is malformed",
+            )),
+        }
+    }
+
     fn commit(
         &mut self,
         event: &str,
@@ -278,7 +318,7 @@ impl GuardStore for FsGuard {
         let times = match self.read_session(&sessions.join(session))? {
             None => Vec::new(),
             Some(None) => return Err(CommitError::Cap),
-            Some(Some(times)) if times.iter().any(|t| *t >= start) => {
+            Some(Some(times)) if times.iter().any(|t| *t > start) => {
                 return Err(CommitError::Duplicate);
             }
             Some(Some(times)) => recent(&times, now),

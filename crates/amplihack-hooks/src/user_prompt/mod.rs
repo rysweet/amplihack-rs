@@ -5,6 +5,8 @@
 //! 2. Injects native Rust memory context for referenced agents
 //! 3. Detects framework injection needs (AMPLIHACK.md vs CLAUDE.md)
 //! 4. Returns modified prompt with injected context
+//!
+//! It also notes the prompt for a waiting `limit-resume` hook (Unix only).
 
 mod memory;
 mod preferences;
@@ -45,6 +47,10 @@ impl Hook for UserPromptSubmitHook {
             } => (user_prompt, session_id, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Tells a waiting limit-resume hook that the session moved on.
+        #[cfg(unix)]
+        crate::limit_resume::record_prompt(session_id.as_deref());
 
         let prompt = extract_user_prompt(user_prompt.as_deref(), &extra);
         if prompt.is_empty() {

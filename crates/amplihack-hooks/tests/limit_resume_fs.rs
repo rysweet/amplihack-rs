@@ -15,7 +15,9 @@
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
 use amplihack_hooks::limit_resume::guard::{CommitError, FsGuard, GuardStore};
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
-use amplihack_hooks::limit_resume::{Deps, MAX_RESUMES_PER_SESSION, Outcome, run_with};
+use amplihack_hooks::limit_resume::{
+    Deps, MAX_RESUMES_PER_SESSION, Outcome, record_prompt_at, run_with,
+};
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::CycleStatus;
 use amplihack_utils::secure_files::{lock_exclusive_timeout, open_private_nofollow};
@@ -483,11 +485,12 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
 }
 
 #[test]
-fn a_waiter_that_started_after_the_last_resume_may_commit() {
+fn a_waiter_that_started_in_the_second_of_the_last_resume_may_commit() {
+    // A new limit right after a wake, in the same second, is genuine.
     let r = root();
     let mut g = FsGuard::new(r.path());
     g.commit(&ev(1), &sess(), NOW, NOW + 100).unwrap();
-    g.commit(&ev(2), &sess(), NOW + 101, NOW + 200).unwrap();
+    g.commit(&ev(2), &sess(), NOW + 100, NOW + 200).unwrap();
     assert_eq!(g.resumes(&sess(), NOW + 200).unwrap(), 2);
 }
 
@@ -654,9 +657,6 @@ impl Deps for DiskDeps {
             live: Some("spare".into()),
         })
     }
-    fn transcript_len(&mut self, path: &Path) -> Option<u64> {
-        fs::metadata(path).ok().map(|m| m.len())
-    }
     fn guard(&mut self) -> &mut dyn GuardStore {
         &mut self.guard
     }
@@ -705,4 +705,124 @@ fn resume_state_holds_no_message_text_or_session_id() {
         "session={}",
         &session_key("SESSION-SENTINEL-7781")[..12]
     )));
+}
+
+// ── Prompt markers (UserPromptSubmit side) ──────────────────────────────────
+
+fn prompted_file(root: &Path, id: &str) -> PathBuf {
+    resume_dir(root).join("prompted").join(session_key(id))
+}
+
+#[test]
+fn prompt_marker_is_written_only_when_the_resume_dir_exists() {
+    let r = root();
+    record_prompt_at(r.path(), Some("s1"), NOW);
+    assert!(
+        !resume_dir(r.path()).exists(),
+        "resume/ must not be created for a user without the feature"
+    );
+
+    // No .auto-switch.d either: nothing is created.
+    let bare = tempfile::tempdir().unwrap();
+    fs::set_permissions(bare.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    record_prompt_at(bare.path(), Some("s1"), NOW);
+    assert_eq!(fs::read_dir(bare.path()).unwrap().count(), 0);
+
+    private_dir(&resume_dir(r.path()));
+    record_prompt_at(r.path(), Some("s1"), NOW);
+    let f = prompted_file(r.path(), "s1");
+    assert_eq!(fs::read_to_string(&f).unwrap(), format!("{NOW}\n"));
+    assert_eq!(mode(&f), 0o600);
+    assert_eq!(mode(f.parent().unwrap()), 0o700);
+    let mut g = FsGuard::new(r.path());
+    assert_eq!(g.prompted_at(&session_key("s1")).unwrap(), Some(NOW));
+    assert_eq!(g.prompted_at(&session_key("s2")).unwrap(), None);
+
+    record_prompt_at(r.path(), Some("s1"), NOW + 30);
+    assert_eq!(g.prompted_at(&session_key("s1")).unwrap(), Some(NOW + 30));
+}
+
+#[test]
+fn prompt_marker_holds_no_session_id() {
+    let r = root();
+    private_dir(&resume_dir(r.path()));
+    record_prompt_at(r.path(), Some("SESSION-SENTINEL-5521"), NOW);
+    let bytes = all_bytes_under(&resume_dir(r.path()));
+    assert!(!contains(&bytes, "SESSION-SENTINEL-5521"));
+    assert!(prompted_file(r.path(), "SESSION-SENTINEL-5521").is_file());
+}
+
+#[test]
+fn prompt_marker_skips_bad_session_ids_and_unsafe_dirs() {
+    let r = root();
+    private_dir(&resume_dir(r.path()));
+    let long = "x".repeat(257);
+    for bad in [None, Some(""), Some(long.as_str())] {
+        record_prompt_at(r.path(), bad, NOW);
+    }
+    assert!(!resume_dir(r.path()).join("prompted").exists());
+
+    // A non-private resume/ is never written into or chmod-ed.
+    let r = root();
+    let d = resume_dir(r.path());
+    fs::create_dir(&d).unwrap();
+    fs::set_permissions(&d, fs::Permissions::from_mode(0o755)).unwrap();
+    record_prompt_at(r.path(), Some("s1"), NOW);
+    assert_eq!(fs::read_dir(&d).unwrap().count(), 0);
+    assert_eq!(mode(&d), 0o755);
+
+    // A symlinked prompted/ is refused.
+    let r = root();
+    let d = resume_dir(r.path());
+    private_dir(&d);
+    let elsewhere = r.path().join("elsewhere");
+    private_dir(&elsewhere);
+    symlink(&elsewhere, d.join("prompted")).unwrap();
+    record_prompt_at(r.path(), Some("s1"), NOW);
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+    assert!(FsGuard::new(r.path()).prompted_at(&sess()).is_err());
+}
+
+#[test]
+fn malformed_or_public_prompt_marker_is_an_error() {
+    let r = root();
+    private_dir(&resume_dir(r.path()));
+    record_prompt_at(r.path(), Some("s1"), NOW);
+    let f = prompted_file(r.path(), "s1");
+    let mut g = FsGuard::new(r.path());
+    for junk in [&b"abc\n"[..], b"", b"1\n2\n", b"-5\n"] {
+        fs::write(&f, junk).unwrap();
+        assert!(g.prompted_at(&sess()).is_err(), "{junk:?}");
+    }
+    fs::write(&f, format!("{NOW}\n")).unwrap();
+    fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(g.prompted_at(&sess()).is_err());
+}
+
+#[test]
+fn prompt_after_the_hook_started_ends_the_wait_on_disk() {
+    for (prompt, want) in [
+        (None, Outcome::Resumed),
+        (Some(NOW + 10), Outcome::MovedOn),
+        (Some(NOW - 10), Outcome::Resumed),
+    ] {
+        let r = root();
+        private_dir(&resume_dir(r.path()));
+        if let Some(t) = prompt {
+            record_prompt_at(r.path(), Some("s1"), t);
+        }
+        let mut d = DiskDeps {
+            root: r.path().to_path_buf(),
+            guard: FsGuard::new(r.path()),
+            clock: NOW,
+            start: NOW,
+        };
+        let input: HookInput = serde_json::from_value(json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s1",
+            "error": "rate_limit"
+        }))
+        .unwrap();
+        assert_eq!(run_with(&input, &mut d), want, "{prompt:?}");
+    }
 }

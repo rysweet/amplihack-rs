@@ -354,8 +354,9 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    recorded more than 60 seconds after the limit hit that ended `swapped` or
    `stayed` with no ALERT. The margin skips a cycle that was already
    measuring when the limit hit. It stops waiting if you turn auto-switch off
-   (`disabled`) or if the session's transcript changes, for example because
-   you typed `continue` yourself (`moved-on`).
+   (`disabled`) or if you send a prompt in that session during the wait, for
+   example `continue` (`moved-on`). Background task reports and `/usage` are
+   not prompts and do not stop it.
 3. When it sees one, the hook exits `2`, and the session gets this message
    and starts a new turn:
    ```
@@ -389,7 +390,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 
 `no-capacity-timeout` usually means every login was at capacity, so the
 rotator wrote `ALERT: no profile has capacity`, or the rotator was not running.
-`moved-on` means the session went on without the hook. The other outcomes are listed in the
+`moved-on` means you sent a prompt in that session during the wait. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
 ### Why it cannot loop
@@ -607,10 +608,11 @@ again with `amplihack profile login <name>`.
 - **Resume needs the rotator and a fresh cycle.** Without a running rotator,
   or when every login is at capacity, a session stopped by a limit is never
   resumed. The resume also waits for at most 5 hours; a shorter
-  `--interval` resumes sooner. If you continue the session by hand during
-  the wait, the hook sees the transcript change and stops without waking it
-  (`moved-on`); a change in the first 60 seconds after the limit is not
-  noticed. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
+  `--interval` resumes sooner. If you send a prompt in the session during
+  the wait, the hook stops without waking it (`moved-on`). With no rotator
+  running, each limited session still leaves a hook process sleeping for up
+  to 5 hours ([#1659](https://github.com/rysweet/amplihack-rs/issues/1659)).
+  With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
   above about 50 seconds, a cycle measured before the limit can still count,
   and one resume may be spent on a login that is still at its limit.
 - **Each cycle starts `claude` once per profile.** The probes run

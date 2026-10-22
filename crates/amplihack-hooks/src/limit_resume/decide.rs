@@ -37,6 +37,9 @@ fn hex_digest(domain: &str, fields: &[Option<&str>]) -> String {
 /// `error_details`, `last_assistant_message` and the live profile the
 /// ledger named when the hook started. The same limit on the same login
 /// gives the same key; a limit after the rotator swapped logins does not.
+/// With no ledger at the start `live` is `None`, so a later limit seen with
+/// a ledger is a new event; the session cap and one wake per session still
+/// bound it.
 pub fn event_key(
     session_id: &str,
     error: Option<&str>,

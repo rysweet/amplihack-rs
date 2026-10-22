@@ -248,6 +248,8 @@ The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification
 
 The **second** of two `UserPromptSubmit` hooks. Injects user preferences and native Rust memory context for referenced agents into the prompt. Runs via `amplihack-hooks`. 10-second timeout.
 
+On Unix it also records the prompt's time for a waiting [`limit-resume`](#8-stopfailure--limit-resume) hook, in `<root>/.auto-switch.d/resume/prompted/`, keyed by a hash of the session id. It writes only when that `resume/` directory already exists and is private, takes no lock, and ignores every error.
+
 ### 7. PreCompact — `pre-compact`
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
@@ -263,11 +265,11 @@ the error is a usage limit, the hook waits up to 5 hours for
 `amplihack profile rotate` to record a cycle with capacity more than 60 seconds
 after the hook started, then exits `2` with
 a one-line continue message on stderr, which wakes the session. It stops
-waiting if auto-switch is turned off or the session's transcript changes (the
-session moved on). In every other case it exits `0` and prints nothing; stdout
-is always empty. It resumes at most once per limit event, once per session per
-wait, and 3 times per session in 24 hours, and never reads a credentials or
-token file; of the transcript it reads only the size. The 18600-second timeout covers the 5-hour wait
+waiting if auto-switch is turned off or you send a prompt in that session (the
+session moved on; see hook 6). In every other case it exits `0` and prints
+nothing; stdout is always empty. It resumes at most once per limit event, once
+per session per wait, and 3 times per session in 24 hours, and never reads a
+credentials or token file or the transcript. The 18600-second timeout covers the 5-hour wait
 plus one 15-second ledger read. Requires Claude Code 2.1.306 or later. Full
 rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 

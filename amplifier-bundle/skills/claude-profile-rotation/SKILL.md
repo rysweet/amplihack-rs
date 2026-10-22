@@ -171,7 +171,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 |---------|-----------------------|
 | `resumed` | The session was told to continue. |
 | `no-capacity-timeout` | No login had capacity within 5 hours, or the rotator was not running. |
-| `moved-on` | The session's transcript changed while waiting (for example the user typed `continue`), so the hook did not wake it. |
+| `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
 | `disabled` | Auto-switch was turned off while the hook was waiting. |
 | `duplicate` | That limit event (same session, text and live login) was already resumed, or another hook woke the session first. |
 | `cap` | The session resumed 3 times in 24 hours; it will not resume again until older resumes age out. |
