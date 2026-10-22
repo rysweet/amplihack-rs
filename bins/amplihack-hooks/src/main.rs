@@ -72,7 +72,7 @@ fn main() {
             run_hook(SessionStopHook)
         }
         "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
-        "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
+        "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook::default()),
         "pre-compact" => run_hook(PreCompactHook),
         // No-op pre-commit hook. Drains stdin and exits 0 — see
         // precommit_prefs::run docs for the security contract (no logging, no

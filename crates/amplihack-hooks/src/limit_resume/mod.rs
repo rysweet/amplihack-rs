@@ -184,6 +184,10 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         _ => {}
     }
 
+    // Lets the prompt hook record a prompt even during the first-ever wait.
+    if deps.guard().prepare(start).is_err() {
+        return finish(deps, start, Outcome::GuardFailed, None);
+    }
     // A prompt sent after the hook started means the session went on
     // without it. The hook's own wake is not a prompt, so it never counts.
     let moved_on = |deps: &mut D| {
@@ -293,17 +297,11 @@ impl Deps for SystemDeps {
 }
 
 /// Notes a user prompt in `session_id` for a waiting `limit-resume` hook.
-/// Called by the `UserPromptSubmit` hook; silent, never fails, takes no
-/// lock, and writes nothing unless `<root>/.auto-switch.d/resume/` already
-/// exists and is private.
-pub fn record_prompt(session_id: Option<&str>) {
-    // Unit tests of other hooks must never touch the real profile root.
-    if cfg!(test) && std::env::var_os(rotator_status::ROOT_ENV).is_none() {
-        return;
-    }
-    if let Some(root) = rotator_status::resolve_root() {
-        record_prompt_at(&root, session_id, epoch_now());
-    }
+/// Called by the `UserPromptSubmit` hook with the resolved profile root;
+/// silent, never fails, takes no lock, and writes nothing unless
+/// `<root>/.auto-switch.d/resume/` already exists and is private.
+pub fn record_prompt(root: &Path, session_id: Option<&str>) {
+    record_prompt_at(root, session_id, epoch_now());
 }
 
 /// [`record_prompt`] for a given profile root and time.

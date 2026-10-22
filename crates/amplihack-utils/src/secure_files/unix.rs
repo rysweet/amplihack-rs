@@ -109,7 +109,16 @@ pub fn fsync_dir(dir: &Path) -> io::Result<()> {
 /// owned by someone else.
 pub fn write_private_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     check_replaceable(&dir.join(name))?;
-    write_atomic(dir, name, bytes, 0o600)
+    write_atomic(dir, name, bytes, 0o600, true)
+}
+
+/// Like `write_private_atomic`, but syncs neither the file nor `dir`: a
+/// crash may lose the write, never half-write it. For small hints written
+/// on a latency-sensitive path, such as a prompt hook, where losing one is
+/// harmless and two fsyncs per call are not.
+pub fn write_private_atomic_nosync(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
+    check_replaceable(&dir.join(name))?;
+    write_atomic(dir, name, bytes, 0o600, false)
 }
 
 /// Like `write_private_atomic`, but an existing file keeps its permission
@@ -118,7 +127,7 @@ pub fn write_private_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<
 /// setuid, setgid and sticky bits are dropped: a JSON file never needs them.
 pub fn write_atomic_keep_mode(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     let mode = check_replaceable(&dir.join(name))?.map_or(0o600, |m| m.mode() & 0o777);
-    write_atomic(dir, name, bytes, mode)
+    write_atomic(dir, name, bytes, mode, true)
 }
 
 /// The target's metadata, or `None` when it does not exist; an error when it
@@ -134,7 +143,7 @@ fn check_replaceable(target: &Path) -> io::Result<Option<fs::Metadata>> {
     }
 }
 
-fn write_atomic(dir: &Path, name: &str, bytes: &[u8], mode: u32) -> io::Result<()> {
+fn write_atomic(dir: &Path, name: &str, bytes: &[u8], mode: u32, sync: bool) -> io::Result<()> {
     let target = dir.join(name);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -150,9 +159,11 @@ fn write_atomic(dir: &Path, name: &str, bytes: &[u8], mode: u32) -> io::Result<(
         // `mode` on open is filtered by the umask; set it exactly.
         f.set_permissions(fs::Permissions::from_mode(mode))?;
         f.write_all(bytes)?;
-        f.sync_all()?;
+        if sync {
+            f.sync_all()?;
+        }
         fs::rename(&tmp, &target)?;
-        fsync_dir(dir)
+        if sync { fsync_dir(dir) } else { Ok(()) }
     })();
     if result.is_err() {
         let _ = fs::remove_file(&tmp);

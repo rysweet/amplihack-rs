@@ -7,7 +7,8 @@
 //! lock                  flock taken around every commit
 //! events/<sha256 hex>   one empty marker per resumed event, kept 7 days
 //! sessions/<sha256 hex> one line per resume: epoch seconds
-//! prompted/<sha256 hex> epoch seconds of the session's last user prompt
+//! prompted/<sha256 hex> epoch seconds of the session's last user prompt,
+//!                       kept MAX_WAIT + 1 hour
 //! resume.log            see log.rs
 //! ```
 //!
@@ -16,10 +17,11 @@
 //! or followed. Only hashes and integers are written.
 
 use super::MAX_RESUMES_PER_SESSION;
+use amplihack_utils::rotator_status::MAX_WAIT;
 use amplihack_utils::secure_files::{
     check_private_dir, ensure_private_dir, fsync_dir, lock_exclusive_timeout,
     open_private_nofollow, owned_by_euid, read_bounded_nofollow, writable_by_others,
-    write_private_atomic,
+    write_private_atomic, write_private_atomic_nosync,
 };
 use std::fs;
 use std::io;
@@ -31,6 +33,8 @@ use std::time::Duration;
 pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an event marker is kept.
 const MARKER_RETENTION_SECS: i64 = 7 * DAY_SECS;
+/// How long a prompt marker is kept: no waiter is older than `MAX_WAIT`.
+pub const PROMPTED_RETENTION_SECS: i64 = MAX_WAIT.as_secs() as i64 + 3600;
 const DAY_SECS: i64 = 86_400;
 const MAX_SESSION_BYTES: u64 = 4096;
 const MAX_PROMPTED_BYTES: u64 = 64;
@@ -62,6 +66,10 @@ pub trait GuardStore {
     fn seen(&mut self, event: &str) -> io::Result<bool>;
     /// Resumes recorded for `session` in the 24 hours before `now`.
     fn resumes(&mut self, session: &str, now: i64) -> io::Result<u32>;
+    /// Creates `resume/` and `resume/prompted/` before a wait, so a prompt
+    /// sent during the first-ever wait is recorded, and prunes old prompt
+    /// markers.
+    fn prepare(&mut self, now: i64) -> io::Result<()>;
     /// When the user last sent a prompt in `session`, if recorded.
     fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>>;
     /// Records a resume of `event` in `session` at `now`, for a hook that
@@ -176,14 +184,16 @@ impl FsGuard {
         };
         let prompted = dir.join("prompted");
         ensure_private_dir(&prompted)?;
-        write_private_atomic(&prompted, session, format!("{now}\n").as_bytes())
+        // Not synced: this runs on every prompt, and a marker lost in a
+        // crash costs at most one extra wake.
+        write_private_atomic_nosync(&prompted, session, format!("{now}\n").as_bytes())
     }
 
-    /// Deletes markers older than `MARKER_RETENTION_SECS`: only regular
-    /// files of the current user named like a key. Best effort: a marker
-    /// that cannot be removed now is tried again on the next commit.
-    fn prune(&self, events: &Path, now: i64) {
-        let Ok(entries) = fs::read_dir(events) else {
+    /// Deletes entries of `dir` older than `retention` seconds: only regular
+    /// files of the current user named like a key. Best effort: one that
+    /// cannot be removed now is tried again next time.
+    fn prune(&self, dir: &Path, now: i64, retention: i64) {
+        let Ok(entries) = fs::read_dir(dir) else {
             return;
         };
         for entry in entries.flatten() {
@@ -195,7 +205,7 @@ impl FsGuard {
             let Ok(m) = fs::symlink_metadata(&path) else {
                 continue;
             };
-            if m.is_file() && owned_by_euid(&m) && m.mtime() < now - MARKER_RETENTION_SECS {
+            if m.is_file() && owned_by_euid(&m) && m.mtime() < now - retention {
                 let _ = fs::remove_file(&path);
             }
         }
@@ -268,6 +278,13 @@ impl GuardStore for FsGuard {
         })
     }
 
+    fn prepare(&mut self, now: i64) -> io::Result<()> {
+        let prompted = self.ensure_resume_dir()?.join("prompted");
+        ensure_private_dir(&prompted)?;
+        self.prune(&prompted, now, PROMPTED_RETENTION_SECS);
+        Ok(())
+    }
+
     fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>> {
         check_key(session)?;
         let Some(prompted) = self.existing_subdir("prompted")? else {
@@ -308,7 +325,8 @@ impl GuardStore for FsGuard {
         let _lock =
             lock_exclusive_timeout(open_private_nofollow(&dir.join("lock"))?, self.lock_timeout)?;
 
-        self.prune(&events, now);
+        self.prune(&events, now, MARKER_RETENTION_SECS);
+        self.prune(&dir.join("prompted"), now, PROMPTED_RETENTION_SECS);
         let marker = events.join(event);
         match fs::symlink_metadata(&marker) {
             Ok(_) => return Err(CommitError::Duplicate),

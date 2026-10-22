@@ -11,6 +11,7 @@
 use amplihack_utils::secure_files::{
     check_private_dir, ensure_private_dir, euid, lock_exclusive_timeout, open_private_nofollow,
     owned_by_euid, read_bounded, read_bounded_nofollow, writable_by_others, write_private_atomic,
+    write_private_atomic_nosync,
 };
 use std::fs;
 use std::io::{self, Read, Write};
@@ -70,6 +71,22 @@ fn write_private_atomic_writes_0600_and_refuses_symlink_target() {
     fs::write(&other, b"keep").unwrap();
     symlink(&other, tmp.path().join("l")).unwrap();
     assert!(write_private_atomic(tmp.path(), "l", b"x").is_err());
+    assert_eq!(fs::read(&other).unwrap(), b"keep");
+}
+
+#[test]
+fn write_private_atomic_nosync_replaces_0600_and_refuses_symlink_target() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_private_atomic_nosync(tmp.path(), "f", b"one").unwrap();
+    write_private_atomic_nosync(tmp.path(), "f", b"two").unwrap();
+    assert_eq!(fs::read(tmp.path().join("f")).unwrap(), b"two");
+    assert_eq!(mode(&tmp.path().join("f")), 0o600);
+    assert_eq!(fs::read_dir(tmp.path()).unwrap().count(), 1, "no temp left");
+
+    let other = tmp.path().join("other");
+    fs::write(&other, b"keep").unwrap();
+    symlink(&other, tmp.path().join("l")).unwrap();
+    assert!(write_private_atomic_nosync(tmp.path(), "l", b"x").is_err());
     assert_eq!(fs::read(&other).unwrap(), b"keep");
 }
 

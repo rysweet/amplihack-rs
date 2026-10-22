@@ -43,6 +43,8 @@ struct MemGuard {
     prompted: HashMap<String, i64>,
     fail_seen: bool,
     fail_prompted: bool,
+    fail_prepare: bool,
+    prepared: u32,
     /// From this `prompted_at` call on, report a prompt at START + 75.
     prompt_from_call: Option<u32>,
     prompted_calls: u32,
@@ -68,6 +70,14 @@ impl GuardStore for MemGuard {
         Ok(self.sessions.get(session).map_or(0, |v| {
             v.iter().filter(|t| now - **t < 86_400).count() as u32
         }))
+    }
+
+    fn prepare(&mut self, _now: i64) -> io::Result<()> {
+        self.prepared += 1;
+        if self.fail_prepare {
+            return Err(io::Error::other("injected"));
+        }
+        Ok(())
     }
 
     fn prompted_at(&mut self, session: &str) -> io::Result<Option<i64>> {
@@ -967,6 +977,27 @@ fn prompt_just_before_the_commit_is_moved_on() {
     assert_eq!(d.guard.prompted_calls, 7);
     assert!(d.guard.events.is_empty());
     assert_eq!(d.logs[0].cycle.as_deref(), Some("swapped"));
+}
+
+#[test]
+fn resume_state_is_prepared_once_before_waiting() {
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert_eq!(d.guard.prepared, 1);
+}
+
+#[test]
+fn failing_to_prepare_resume_state_is_guard_failed_without_waiting() {
+    let mut d = Fake::new(true, appears_at("swapped", 75, false));
+    d.guard.fail_prepare = true;
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::GuardFailed);
+    assert_eq!(d.reads.len(), 1, "start read only, no polling");
+    assert!(d.sleeps.is_empty());
+    assert_eq!(d.logs[0].outcome, Outcome::GuardFailed);
 }
 
 #[test]

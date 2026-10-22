@@ -166,7 +166,7 @@ fn run_hook(hook_type: &str, input: HookInput) -> anyhow::Result<Value> {
         "session_start" => SessionStartHook.process(input),
         "session_stop" => SessionStopHook.process(input),
         "stop" => StopHook.process(input),
-        "user_prompt_submit" => UserPromptSubmitHook.process(input),
+        "user_prompt_submit" => UserPromptSubmitHook::with_prompt_root(|| None).process(input),
         "pre_compact" => PreCompactHook.process(input),
         _ => anyhow::bail!("unknown hook type: {hook_type}"),
     }

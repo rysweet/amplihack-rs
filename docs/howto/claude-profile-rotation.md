@@ -422,7 +422,10 @@ pkill -f limit-nudger.sh
 Newer Claude Code versions show a `What do you want to do?` menu at a limit.
 Whether the hook's wake gets past that menu has not been tested yet. If a
 session stays on the menu after `resume.log` shows `resumed`, press Esc and
-type `continue` yourself, or keep the nudger for that case.
+type `continue` yourself, or keep the nudger for that case. If you pick the
+menu's own "Wait here, then continue automatically" option, both it and this
+hook may continue the session: at most one extra short turn, bounded by the
+per-session cap.
 
 ### Turn it off
 

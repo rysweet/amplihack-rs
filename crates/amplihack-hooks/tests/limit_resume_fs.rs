@@ -13,7 +13,9 @@
 #![cfg(unix)]
 
 use amplihack_hooks::limit_resume::decide::{event_key, session_key};
-use amplihack_hooks::limit_resume::guard::{CommitError, FsGuard, GuardStore};
+use amplihack_hooks::limit_resume::guard::{
+    CommitError, FsGuard, GuardStore, PROMPTED_RETENTION_SECS,
+};
 use amplihack_hooks::limit_resume::log::{LOG_MAX_BYTES, LogEntry, append, format_line, sanitize};
 use amplihack_hooks::limit_resume::{
     Deps, MAX_RESUMES_PER_SESSION, Outcome, record_prompt_at, run_with,
@@ -637,6 +639,8 @@ struct DiskDeps {
     guard: FsGuard,
     clock: i64,
     start: i64,
+    /// The user sends a prompt in `s1` this many seconds into the wait.
+    prompt_after: Option<i64>,
 }
 
 impl Deps for DiskDeps {
@@ -648,8 +652,18 @@ impl Deps for DiskDeps {
     }
     fn sleep(&mut self, d: Duration) {
         self.clock += d.as_secs() as i64;
+        if self
+            .prompt_after
+            .is_some_and(|t| self.clock - self.start >= t)
+        {
+            record_prompt_at(&self.root, Some("s1"), self.clock);
+        }
     }
-    fn read_cycle(&mut self, _now: i64) -> Option<CycleStatus> {
+    fn read_cycle(&mut self, now: i64) -> Option<CycleStatus> {
+        // The rotator records its cycle 61 s into the wait.
+        if now < self.start + 61 {
+            return None;
+        }
         Some(CycleStatus {
             at: Some(self.start + 61),
             outcome: Some("swapped".into()),
@@ -673,6 +687,7 @@ fn resume_state_holds_no_message_text_or_session_id() {
         guard: FsGuard::new(r.path()),
         clock: NOW,
         start: NOW,
+        prompt_after: None,
     };
     let input: HookInput = serde_json::from_value(json!({
         "hook_event_name": "StopFailure",
@@ -816,6 +831,7 @@ fn prompt_after_the_hook_started_ends_the_wait_on_disk() {
             guard: FsGuard::new(r.path()),
             clock: NOW,
             start: NOW,
+            prompt_after: None,
         };
         let input: HookInput = serde_json::from_value(json!({
             "hook_event_name": "StopFailure",
@@ -824,5 +840,77 @@ fn prompt_after_the_hook_started_ends_the_wait_on_disk() {
         }))
         .unwrap();
         assert_eq!(run_with(&input, &mut d), want, "{prompt:?}");
+    }
+}
+
+#[test]
+fn first_ever_waiter_sees_a_prompt_sent_during_the_wait() {
+    // A fresh root: no resume/ until the waiter prepares it.
+    let r = root();
+    assert!(!resume_dir(r.path()).exists());
+    let mut d = DiskDeps {
+        root: r.path().to_path_buf(),
+        guard: FsGuard::new(r.path()),
+        clock: NOW,
+        start: NOW,
+        prompt_after: Some(30),
+    };
+    let input: HookInput = serde_json::from_value(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s1",
+        "error": "rate_limit"
+    }))
+    .unwrap();
+    assert_eq!(run_with(&input, &mut d), Outcome::MovedOn);
+    assert_eq!(mode(&resume_dir(r.path()).join("prompted")), 0o700);
+    assert!(prompted_file(r.path(), "s1").is_file());
+    let log = fs::read_to_string(resume_dir(r.path()).join("resume.log")).unwrap();
+    assert!(log.contains("outcome=moved-on"), "{log}");
+}
+
+#[test]
+fn prepare_creates_the_layout_and_refuses_unsafe_paths() {
+    let r = root();
+    FsGuard::new(r.path()).prepare(NOW).unwrap();
+    assert_eq!(mode(&resume_dir(r.path())), 0o700);
+    assert_eq!(mode(&resume_dir(r.path()).join("prompted")), 0o700);
+
+    let r = root();
+    let elsewhere = r.path().join("elsewhere");
+    private_dir(&elsewhere);
+    symlink(&elsewhere, resume_dir(r.path())).unwrap();
+    assert!(FsGuard::new(r.path()).prepare(NOW).is_err());
+    assert_eq!(fs::read_dir(&elsewhere).unwrap().count(), 0);
+}
+
+#[test]
+fn old_prompt_markers_are_pruned_on_prepare_and_commit() {
+    assert_eq!(PROMPTED_RETENTION_SECS, 5 * 3600 + 3600);
+    for on_commit in [false, true] {
+        let r = root();
+        private_dir(&resume_dir(r.path()));
+        let now = real_now();
+        record_prompt_at(r.path(), Some("old"), now);
+        record_prompt_at(r.path(), Some("young"), now);
+        let old = prompted_file(r.path(), "old");
+        let young = prompted_file(r.path(), "young");
+        set_mtime(&old, now - PROMPTED_RETENTION_SECS - 10);
+        set_mtime(&young, now - PROMPTED_RETENTION_SECS + 600);
+        let odd = resume_dir(r.path()).join("prompted").join("not-a-hash");
+        fs::write(&odd, b"").unwrap();
+        set_mtime(&odd, now - 30 * DAY);
+
+        let mut g = FsGuard::new(r.path());
+        if on_commit {
+            g.commit(&ev(1), &sess(), now, now).unwrap();
+        } else {
+            g.prepare(now).unwrap();
+        }
+        assert!(!old.exists(), "on_commit={on_commit}: old marker kept");
+        assert!(
+            young.exists(),
+            "on_commit={on_commit}: young marker removed"
+        );
+        assert!(odd.exists(), "non-hash names are left alone");
     }
 }
