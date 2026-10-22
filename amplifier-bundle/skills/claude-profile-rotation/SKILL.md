@@ -25,6 +25,8 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 - The user hits session or weekly usage limits and asks to switch accounts.
 - The user mentions rotating, swapping or balancing Claude logins, or the
   `claude-rotator` tmux session.
+- A session stopped with "You've hit your ... limit" and did not resume, or
+  the user asks about the tmux limit nudger.
 
 ## Rules
 
@@ -133,6 +135,58 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |
 | `auto-switch recovery is inconsistent` | Run `amplihack profile auto-switch repair`. |
+
+## Resuming sessions stopped by a limit
+
+`amplihack install` registers the `amplihack-hooks limit-resume` hook on
+Claude Code's `StopFailure` event (matcher `rate_limit`, `asyncRewake: true`).
+When a turn ends on a usage limit and auto-switch is on, it waits up to 5
+hours for a rotator cycle recorded more than 60 seconds after the limit that
+ended `swapped` or `stayed` with no ALERT, then exits `2` with a continue
+message, which wakes the session. That wake, and Claude Code running
+`StopFailure` instead of `Stop` on a limit, were verified live on Claude Code
+2.1.306 and 2.1.307; if a session does not wake, read `resume.log` first.
+The tmux limit nudger (`limit-nudger.sh`) is no longer needed once this hook
+is installed.
+
+Tell the user it needs:
+
+- Claude Code 2.1.306 or later, and `amplihack install` run again after
+  upgrading amplihack;
+- auto-switch on and `amplihack profile rotate start` running.
+
+Check it is registered:
+
+```bash
+jq '.hooks.StopFailure' ~/.claude/settings.json
+```
+
+Read its decisions (no message text or tokens are logged):
+
+```bash
+tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
+```
+
+| Outcome | What to tell the user |
+|---------|-----------------------|
+| `resumed` | The session was told to continue. |
+| `no-capacity-timeout` | No login had capacity within 5 hours, or the rotator was not running. |
+| `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
+| `disabled` | Auto-switch was turned off while the hook was waiting. |
+| `duplicate` | That limit event (same session, text and live login) was already resumed, or another hook woke the session first. |
+| `cap` | The session resumed 3 times in 24 hours; it will not resume again until older resumes age out. |
+| `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |
+| `guard-failed` | The resume state under `<root>/.auto-switch.d/resume/` could not be used safely. Check its owner and mode (`0700`). |
+
+It never resumes when every login is at capacity, at most once per limit
+event and once per wait, and at most 3 times per session per day. Each
+`resume.log` line also has `cycle=`, the rotator's last cycle outcome.
+
+The tmux limit nudger (`~/.claude-profiles/.backups/limit-nudger.sh`) is no
+longer needed once the hook is registered. Ask the user before stopping it.
+Whether the wake gets past Claude Code's `What do you want to do?` limit menu
+has not been tested; if a session stays on the menu after `resumed`, the user
+presses Esc and types `continue`.
 
 ## Manual recovery
 

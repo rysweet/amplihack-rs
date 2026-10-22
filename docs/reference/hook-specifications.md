@@ -1,6 +1,6 @@
 # Hook Specifications Reference
 
-amplihack registers 7 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
+amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack install`. This page documents each hook: its Claude Code event, the binary or script that runs, and its timeout.
 
 ## Canonical Hook Table
 
@@ -13,6 +13,7 @@ amplihack registers 7 hooks in `~/.claude/settings.json` when you run `amplihack
 | 5 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks workflow-classification-reminder` | 5 s |
 | 6 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks user-prompt-submit` | 10 s |
 | 7 | `PreCompact` | Binary subcommand | `amplihack-hooks pre-compact` | 30 s |
+| 8 | `StopFailure` | Binary subcommand, matcher `rate_limit`, `asyncRewake` | `amplihack-hooks limit-resume` | 18600 s |
 
 ## Hook Format in settings.json
 
@@ -67,11 +68,43 @@ Each hook is written as a wrapper object under the event key:
 }
 ```
 
+The `StopFailure` entry is the only one with a matcher other than `"*"` and
+the only one with `asyncRewake`:
+
+```json
+{
+  "hooks": {
+    "StopFailure": [
+      {
+        "matcher": "rate_limit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/home/alice/.local/bin/amplihack-hooks limit-resume",
+            "timeout": 18600,
+            "asyncRewake": true
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
 **Key points:**
 
 - `PreToolUse` and `PostToolUse` have no `timeout` field. Absence means fail-open (no timeout enforced by Claude Code).
 - Both `PreToolUse` and `PostToolUse` use matcher `"*"` to intercept all tool calls.
 - The two `UserPromptSubmit` entries must appear in order: `workflow-classification-reminder` first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
+- `asyncRewake: true` is written only on the `StopFailure` entry. Claude Code
+  runs that hook in the background, and an exit status of `2` is expected to
+  start a new turn with the hook's stderr shown to the model; this was
+  verified live on Claude Code 2.1.306 and 2.1.307. Every other wrapper is
+  written exactly as before. When the installer checks whether an existing
+  wrapper is amplihack's, a missing `asyncRewake` counts as `false`, so a
+  `StopFailure` wrapper without it is replaced.
+- The Claude Code plugin manifest `claude-plugin/hooks.json` registers the same
+  `StopFailure` entry through `amplihack-hook limit-resume`.
 - Hook commands are written with the **absolute path** to `amplihack-hooks` resolved at install time. If the binary moves, re-run `amplihack install` to update the paths.
 
 ## Hook Input JSON Contract
@@ -125,9 +158,12 @@ Equivalent camelCase input:
 | `tool_input` | `toolInput` | `PreToolUse`, `PostToolUse` |
 | `tool_result` | `toolResult` | `PostToolUse` |
 | `session_id` | `sessionId` | All events with session context |
-| `stop_hook_active` | `stopHookActive` | `Stop` |
+| `stop_hook_active` | `stopHookActive` | `Stop`, `StopFailure` |
 | `transcript_path` | `transcriptPath` | `Stop`, `SessionStop`, `PreCompact` |
 | `user_prompt` | `userPrompt` | `UserPromptSubmit` |
+| `error` | — | `StopFailure` |
+| `error_details` | `errorDetails` | `StopFailure` |
+| `last_assistant_message` | `lastAssistantMessage` | `StopFailure` |
 
 Unknown additional fields are ignored unless a variant explicitly captures them
 as extra event data.
@@ -146,11 +182,29 @@ fields remain strict at both the typed boundary and the hook executable entry.
 | `SessionStop` | none beyond event name | `session_id`, `transcript_path`, extra fields |
 | `UserPromptSubmit` | none beyond event name | `user_prompt`, `session_id`, extra fields |
 | `PreCompact` | none beyond event name | `session_id`, `transcript_path`, extra fields |
+| `StopFailure` | none beyond event name | `error`, `error_details`, `last_assistant_message`, `stop_hook_active`, `session_id`, `transcript_path`, extra fields |
 
 Malformed JSON, a missing event discriminator, or a missing required field for a
 tool event is invalid input. The compatibility layer is intentionally narrow: it
 accepts known host schema drift without treating incomplete tool payloads as
 valid or silently mapping them to `Unknown`.
+
+A `StopFailure` payload whose `error`, `error_details` or
+`last_assistant_message` is present but not a string is invalid input.
+
+Example `StopFailure` input from Claude Code:
+
+```json
+{
+  "hook_event_name": "StopFailure",
+  "session_id": "0f6d3c2e-7a41-4b8e-9c1d-5e2f8a9b0c34",
+  "transcript_path": "/home/alice/.claude/projects/-home-alice-src-app/0f6d3c2e-7a41-4b8e-9c1d-5e2f8a9b0c34.jsonl",
+  "cwd": "/home/alice/src/app",
+  "error": "rate_limit",
+  "error_details": "429",
+  "last_assistant_message": "You've hit your session limit · resets 3pm (Europe/London)"
+}
+```
 
 ### Unknown events
 
@@ -194,9 +248,30 @@ The **first** of two `UserPromptSubmit` hooks. Injects a workflow classification
 
 The **second** of two `UserPromptSubmit` hooks. Injects user preferences and native Rust memory context for referenced agents into the prompt. Runs via `amplihack-hooks`. 10-second timeout.
 
+On Unix it also records the prompt's time for a waiting [`limit-resume`](#8-stopfailure--limit-resume) hook, in `<root>/.auto-switch.d/resume/prompted/`, keyed by a hash of the session id. It writes only when that `resume/` directory already exists and is private (a waiting `limit-resume` hook creates it), takes no lock, does not sync to disk, and ignores every error.
+
 ### 7. PreCompact — `pre-compact`
 
 Runs before Claude Code compacts the context window. Exports the current transcript so it can be referenced after compaction.
+
+### 8. StopFailure — `limit-resume`
+
+Runs in the background when a turn ends on an API error that matches
+`rate_limit`. Claude Code is expected to run `StopFailure` instead of `Stop`
+for these turns, so the `Stop` hook never sees a usage-limit stop; this, the
+`stop_hook_active` field on `StopFailure`, and the wake on exit `2` were verified
+on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false). When auto-switch is on and
+the error is a usage limit, the hook waits up to 5 hours for
+`amplihack profile rotate` to record a cycle with capacity more than 60 seconds
+after the hook started, then exits `2` with
+a one-line continue message on stderr, which wakes the session. It stops
+waiting if auto-switch is turned off or you send a prompt in that session (the
+session moved on; see hook 6). In every other case it exits `0` and prints
+nothing; stdout is always empty. It resumes at most once per limit event, once
+per session per wait, and 3 times per session in 24 hours, and never reads a
+credentials or token file or the transcript. The 18600-second timeout covers the 5-hour wait
+plus one 15-second ledger read. Requires Claude Code 2.1.306 or later. Full
+rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 
 ## Hook Runtime Location
 

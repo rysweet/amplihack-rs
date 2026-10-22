@@ -521,6 +521,9 @@ fn settings_with(specs: &[&types::HookSpec]) -> tempfile::NamedTempFile {
         if let Some(matcher) = spec.matcher {
             wrapper["matcher"] = serde_json::json!(matcher);
         }
+        if spec.async_rewake {
+            wrapper["hooks"][0]["asyncRewake"] = serde_json::json!(true);
+        }
         hooks
             .entry(spec.event.to_string())
             .or_insert_with(|| serde_json::json!([]))

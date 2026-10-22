@@ -53,6 +53,8 @@ mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
+mod tests_status_drift;
+#[cfg(all(test, unix))]
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;

@@ -15,6 +15,7 @@ fn wrapper_matches_returns_true_for_matching_binary_subcmd_wrapper() {
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     };
 
     let wrapper = hooks::build_hook_wrapper(&spec, &hooks_bin);
@@ -36,12 +37,14 @@ fn wrapper_matches_returns_false_for_different_binary_subcmd() {
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     };
     let spec_stop = HookSpec {
         event: "Stop",
         cmd: HookCommandKind::BinarySubcmd { subcmd: "stop" },
         timeout: Some(120),
         matcher: None,
+        async_rewake: false,
     };
 
     let wrapper = hooks::build_hook_wrapper(&spec_session, &hooks_bin);
@@ -63,6 +66,7 @@ fn wrapper_matches_returns_true_for_legacy_python_hook_wrapper() {
         },
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     };
 
     let wrapper = serde_json::json!({
@@ -101,6 +105,7 @@ fn update_hook_paths_replaces_legacy_python_hook_in_place() {
         },
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     }];
     hooks::update_hook_paths(&mut settings, "amplihack", &specs, &hooks_bin);
 
@@ -124,6 +129,7 @@ fn wrapper_matches_recognizes_legacy_xpia_python_hook() {
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     };
 
     let wrapper = serde_json::json!({
@@ -162,6 +168,7 @@ fn update_hook_paths_replaces_legacy_xpia_python_hook_in_place() {
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     }];
     hooks::update_hook_paths(&mut settings, "xpia", &specs, &hooks_bin);
 

@@ -15,6 +15,8 @@ mod issue_1526_implicit_mode;
 mod issue_1526_launch_bootstrap;
 mod issue_527_tests;
 mod issue_911_durable_hooks_path;
+#[cfg(unix)]
+mod limit_resume_install;
 mod mermaid_cli_tests;
 mod output_regression_tests;
 mod path_conflict_tests;
