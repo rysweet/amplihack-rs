@@ -10,7 +10,7 @@ use std::path::Path;
 /// The variable that overrides the toggle file.
 pub const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 /// The toggle file, in the profile root.
-pub const TOGGLE_FILE: &str = ".auto-switch";
+const TOGGLE_FILE: &str = ".auto-switch";
 const MAX_TOGGLE_BYTES: u64 = 4096;
 const MAX_NAME: usize = 64;
 const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];

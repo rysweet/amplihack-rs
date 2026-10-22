@@ -43,10 +43,10 @@ fn private_file(p: &Path, bytes: &[u8]) {
 
 #[test]
 fn constants_match_the_documented_limits() {
-    assert_eq!(MAX_WAIT, Duration::from_secs(20 * 60));
+    assert_eq!(MAX_WAIT, Duration::from_secs(5 * 60 * 60));
     assert_eq!(POLL_INTERVAL, Duration::from_secs(15));
     assert_eq!(FRESH_MARGIN_SECS, 60);
-    assert_eq!(LIMIT_RESUME_TIMEOUT_SECS, 1800);
+    assert_eq!(LIMIT_RESUME_TIMEOUT_SECS, 18_600);
 }
 
 #[test]

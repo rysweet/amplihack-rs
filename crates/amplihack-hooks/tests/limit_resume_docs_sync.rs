@@ -61,7 +61,7 @@ fn reference_lists_every_logged_outcome() {
 fn reference_limits_table_matches_the_constants() {
     assert_eq!(
         limits_row("Wait for capacity"),
-        format!("{} s (20 minutes)", MAX_WAIT.as_secs())
+        format!("{} s (5 hours)", MAX_WAIT.as_secs())
     );
     assert_eq!(
         limits_row("Ledger read interval"),

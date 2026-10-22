@@ -2192,6 +2192,14 @@ Code 2.1.306 confirmed. It used a stub `StopFailure` hook with
   [event marker](#resume-state-directory) instead: the event key leaves out
   `prompt_id`, so the same error text in the same session gives the same key.
 
+A second live check, on Claude Code 2.1.307 with a real weekly limit, showed
+the usage-limit path itself: the stop ran `StopFailure` with
+`error: "rate_limit"`, `last_assistant_message` set to the limit text
+("You've hit your weekly limit · resets …") and no `stop_hook_active`; the
+hook's exit `2` closed the "What do you want to do?" limit menu and started a
+new turn. That turn hit the same limit and sent an identical payload, which
+is why a repeated event is a `duplicate` and never resumes again.
+
 Not verified: that a real usage limit arrives with `error` set to
 `rate_limit`, and that the new turn gets past the limit menu
 (`What do you want to do?`). Neither can be triggered on demand.
@@ -2207,12 +2215,12 @@ The checks run in this order. The first one that fails decides the outcome.
 | 3 | `stop_hook_active` is absent or `false`. | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
-| 6 | A [fresh cycle with capacity](#capacity-for-a-resume) appears within 20 minutes. The ledger is read every 15 seconds, and once more at the deadline. | Exit `0`, outcome `no-capacity-timeout`. |
+| 6 | A [fresh cycle with capacity](#capacity-for-a-resume) appears within 5 hours. The ledger is read every 15 seconds, and once more at the deadline. | Exit `0`, outcome `no-capacity-timeout`. |
 | 7 | Under the resume lock, steps 4 and 5 still pass, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `duplicate` or `cap` if another hook won, `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 8 | — | Exit `2` with the resume message, outcome `resumed`. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
-exits at once instead of waiting 20 minutes, and again under the lock in
+exits at once instead of waiting 5 hours, and again under the lock in
 step 7. The lock is not held while waiting in step 6. The marker and session record
 are on disk before the hook exits `2`, so a resume that is cut short never
 repeats.
@@ -2299,7 +2307,7 @@ account IDs or tokens. Failing to write it does not change the outcome.
 | Outcome | Meaning |
 |---------|---------|
 | `resumed` | The hook exited `2` and the session was told to continue. |
-| `no-capacity-timeout` | No fresh cycle with capacity within 20 minutes. |
+| `no-capacity-timeout` | No fresh cycle with capacity within 5 hours. |
 | `duplicate` | This limit event was already resumed. |
 | `cap` | The session already resumed 3 times in 24 hours. |
 | `stop-hook-active` | Claude Code reported a stop hook already running. |
@@ -2309,10 +2317,10 @@ account IDs or tokens. Failing to write it does not change the outcome.
 
 | Constant | Value |
 |----------|-------|
-| Wait for capacity | 1200 s (20 minutes) |
+| Wait for capacity | 18000 s (5 hours) |
 | Ledger read interval | 15 s |
 | Freshness margin after hook start | 60 s |
-| Registered hook timeout | 1800 s |
+| Registered hook timeout | 18600 s |
 | Resumes per session | 3 per 24 hours |
 | Resumes per limit event | 1 |
 | Resume lock wait | 5 s |

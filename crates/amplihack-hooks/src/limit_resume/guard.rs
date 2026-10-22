@@ -28,7 +28,7 @@ use std::time::Duration;
 /// How long a commit waits for the lock.
 pub const LOCK_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long an event marker is kept.
-pub const MARKER_RETENTION_SECS: i64 = 7 * DAY_SECS;
+const MARKER_RETENTION_SECS: i64 = 7 * DAY_SECS;
 const DAY_SECS: i64 = 86_400;
 const MAX_SESSION_BYTES: u64 = 4096;
 

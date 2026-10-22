@@ -13,14 +13,16 @@ mod gate;
 mod ledger;
 mod root;
 
-pub use gate::{TOGGLE_ENV, TOGGLE_FILE, auto_switch_on, auto_switch_on_from, valid_live_name};
+pub use gate::{TOGGLE_ENV, auto_switch_on, auto_switch_on_from, valid_live_name};
 pub use ledger::{CycleStatus, ledger_path, parse_cycle, read_cycle};
 pub use root::{ROOT_ENV, resolve_root, resolve_root_from};
 
 use std::time::Duration;
 
-/// How long the hook waits for a fresh rotator cycle with capacity.
-pub const MAX_WAIT: Duration = Duration::from_secs(20 * 60);
+/// How long the hook waits for a fresh rotator cycle with capacity: one
+/// session-limit window, so a session stopped while every login is spent
+/// resumes when the first one resets. Weekly limits outlast it.
+pub const MAX_WAIT: Duration = Duration::from_secs(5 * 60 * 60);
 
 /// How often the hook reads the ledger while it waits.
 pub const POLL_INTERVAL: Duration = Duration::from_secs(15);
@@ -34,6 +36,6 @@ pub const FRESH_MARGIN_SECS: i64 = 60;
 /// `MAX_WAIT + POLL_INTERVAL`, so the hook always decides before Claude Code
 /// stops it. Here rather than in the hooks crate because the CLI installs
 /// the hook and does not depend on that crate.
-pub const LIMIT_RESUME_TIMEOUT_SECS: u64 = 1800;
+pub const LIMIT_RESUME_TIMEOUT_SECS: u64 = 18_600;
 
 const _: () = assert!(MAX_WAIT.as_secs() + POLL_INTERVAL.as_secs() < LIMIT_RESUME_TIMEOUT_SECS);

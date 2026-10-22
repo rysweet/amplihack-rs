@@ -11,7 +11,7 @@ use std::sync::OnceLock;
 /// `last_assistant_message` are matched.
 pub const MAX_MATCH_BYTES: usize = 64 * 1024;
 /// The longest session id accepted.
-pub const MAX_SESSION_ID_BYTES: usize = 256;
+const MAX_SESSION_ID_BYTES: usize = 256;
 
 /// The limit texts the tmux nudger matched, plus the limit menu's first
 /// option.

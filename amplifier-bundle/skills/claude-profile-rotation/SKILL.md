@@ -140,12 +140,14 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 
 `amplihack install` registers the `amplihack-hooks limit-resume` hook on
 Claude Code's `StopFailure` event (matcher `rate_limit`, `asyncRewake: true`).
-When a turn ends on a usage limit and auto-switch is on, it waits up to 20
-minutes for a rotator cycle recorded more than 60 seconds after the limit that
+When a turn ends on a usage limit and auto-switch is on, it waits up to 5
+hours for a rotator cycle recorded more than 60 seconds after the limit that
 ended `swapped` or `stayed` with no ALERT, then exits `2` with a continue
 message, which wakes the session. That wake, and Claude Code running
-`StopFailure` instead of `Stop` on a limit, are checked against Claude Code
-2.1.306 before release; if a session does not wake, read `resume.log` first.
+`StopFailure` instead of `Stop` on a limit, were verified live on Claude Code
+2.1.306 and 2.1.307; if a session does not wake, read `resume.log` first.
+The tmux limit nudger (`limit-nudger.sh`) is no longer needed once this hook
+is installed.
 
 Tell the user it needs:
 
@@ -168,7 +170,7 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | Outcome | What to tell the user |
 |---------|-----------------------|
 | `resumed` | The session was told to continue. |
-| `no-capacity-timeout` | No login had capacity within 20 minutes, or the rotator was not running. |
+| `no-capacity-timeout` | No login had capacity within 5 hours, or the rotator was not running. |
 | `duplicate` | That limit event was already resumed once. |
 | `cap` | The session resumed 3 times in 24 hours; it will not resume again until older resumes age out. |
 | `stop-hook-active` | Claude Code reported a stop hook already running; nothing was done. |

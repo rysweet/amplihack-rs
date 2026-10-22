@@ -13,7 +13,7 @@ amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack
 | 5 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks workflow-classification-reminder` | 5 s |
 | 6 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks user-prompt-submit` | 10 s |
 | 7 | `PreCompact` | Binary subcommand | `amplihack-hooks pre-compact` | 30 s |
-| 8 | `StopFailure` | Binary subcommand, matcher `rate_limit`, `asyncRewake` | `amplihack-hooks limit-resume` | 1800 s |
+| 8 | `StopFailure` | Binary subcommand, matcher `rate_limit`, `asyncRewake` | `amplihack-hooks limit-resume` | 18600 s |
 
 ## Hook Format in settings.json
 
@@ -81,7 +81,7 @@ the only one with `asyncRewake`:
           {
             "type": "command",
             "command": "/home/alice/.local/bin/amplihack-hooks limit-resume",
-            "timeout": 1800,
+            "timeout": 18600,
             "asyncRewake": true
           }
         ]
@@ -98,8 +98,8 @@ the only one with `asyncRewake`:
 - The two `UserPromptSubmit` entries must appear in order: `workflow-classification-reminder` first, then `user-prompt-submit`. The installer preserves this order on both fresh install and idempotent update.
 - `asyncRewake: true` is written only on the `StopFailure` entry. Claude Code
   runs that hook in the background, and an exit status of `2` is expected to
-  start a new turn with the hook's stderr shown to the model; this is checked
-  against Claude Code 2.1.306 before release. Every other wrapper is
+  start a new turn with the hook's stderr shown to the model; this was
+  verified live on Claude Code 2.1.306 and 2.1.307. Every other wrapper is
   written exactly as before. When the installer checks whether an existing
   wrapper is amplihack's, a missing `asyncRewake` counts as `false`, so a
   `StopFailure` wrapper without it is replaced.
@@ -257,15 +257,15 @@ Runs before Claude Code compacts the context window. Exports the current transcr
 Runs in the background when a turn ends on an API error that matches
 `rate_limit`. Claude Code is expected to run `StopFailure` instead of `Stop`
 for these turns, so the `Stop` hook never sees a usage-limit stop; this, the
-`stop_hook_active` field on `StopFailure`, and the wake on exit `2` are checked
-against Claude Code 2.1.306 before release. When auto-switch is on and
-the error is a usage limit, the hook waits up to 20 minutes for
+`stop_hook_active` field on `StopFailure`, and the wake on exit `2` were verified
+on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false). When auto-switch is on and
+the error is a usage limit, the hook waits up to 5 hours for
 `amplihack profile rotate` to record a cycle with capacity more than 60 seconds
 after the hook started, then exits `2` with
 a one-line continue message on stderr, which wakes the session. In every other
 case it exits `0` and prints nothing; stdout is always empty. It resumes at
 most once per limit event and 3 times per session in 24 hours, and never reads
-a credentials or token file. The 1800-second timeout covers the 20-minute wait
+a credentials or token file. The 18600-second timeout covers the 5-hour wait
 plus one 15-second ledger read. Requires Claude Code 2.1.306 or later. Full
 rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 

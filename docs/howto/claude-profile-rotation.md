@@ -338,7 +338,7 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
       {
         "type": "command",
         "command": "/home/you/.local/bin/amplihack-hooks limit-resume",
-        "timeout": 1800,
+        "timeout": 18600,
         "asyncRewake": true
       }
     ]
@@ -359,12 +359,15 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
    ```
    amplihack: the usage limit was cleared by switching to a login with capacity. Continue the task you were working on.
    ```
-4. If no such cycle comes within 20 minutes, the hook exits quietly and the
-   session stays stopped.
+4. If no such cycle comes within 5 hours (one session-limit window), the
+   hook exits quietly and the session stays stopped. A weekly limit on every
+   login outlasts the wait; the rotator's no-capacity notice covers that case.
 
 Steps 1 and 3 depend on Claude Code running `StopFailure` instead of `Stop`
 for a limit stop and starting a turn when an `asyncRewake` hook exits `2`.
-Both are checked against Claude Code 2.1.306 before release.
+Verified on Claude Code 2.1.307: a weekly-limit stop runs `StopFailure` with
+`error: "rate_limit"` and the limit text in `last_assistant_message`, and an
+`asyncRewake` exit `2` closes the limit menu and starts a new turn.
 
 The hook trusts the rotator's verdict. It never applies the thresholds itself
 and never reads a login.
@@ -598,8 +601,9 @@ again with `amplihack profile login <name>`.
   keep using the outgoing account until it next reads its credentials.
 - **Resume needs the rotator and a fresh cycle.** Without a running rotator,
   or when every login is at capacity, a session stopped by a limit is never
-  resumed. The resume also waits for at most 20 minutes; a shorter
-  `--interval` resumes sooner. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
+  resumed. The resume also waits for at most 5 hours; a shorter
+  `--interval` resumes sooner. If you continue the session by hand during
+  the wait, the later wake still arrives as one extra continue message. With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
   above about 50 seconds, a cycle measured before the limit can still count,
   and one resume may be spent on a login that is still at its limit.
 - **Each cycle starts `claude` once per profile.** The probes run
