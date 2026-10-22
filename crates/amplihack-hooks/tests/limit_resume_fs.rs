@@ -805,10 +805,13 @@ fn malformed_or_public_prompt_marker_is_an_error() {
     record_prompt_at(r.path(), Some("s1"), NOW);
     let f = prompted_file(r.path(), "s1");
     let mut g = FsGuard::new(r.path());
-    for junk in [&b"abc\n"[..], b"", b"1\n2\n", b"-5\n"] {
+    for junk in [&b"abc\n"[..], b"1\n2\n", b"-5\n"] {
         fs::write(&f, junk).unwrap();
         assert!(g.prompted_at(&sess()).is_err(), "{junk:?}");
     }
+    // An unsynced write cut short by a crash leaves an empty file: no prompt.
+    fs::write(&f, b"").unwrap();
+    assert_eq!(g.prompted_at(&sess()).unwrap(), None);
     fs::write(&f, format!("{NOW}\n")).unwrap();
     fs::set_permissions(&f, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(g.prompted_at(&sess()).is_err());

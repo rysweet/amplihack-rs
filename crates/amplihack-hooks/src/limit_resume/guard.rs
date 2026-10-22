@@ -300,8 +300,11 @@ impl GuardStore for FsGuard {
                 "prompt marker is not private",
             ));
         }
+        // The marker is written without fsync, so a crash can leave it
+        // empty; that is a lost prompt, not a malformed one.
         match parse_session(&raw).as_deref() {
             Some([t]) => Ok(Some(*t)),
+            Some([]) => Ok(None),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "prompt marker is malformed",

@@ -113,9 +113,9 @@ pub fn write_private_atomic(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<
 }
 
 /// Like `write_private_atomic`, but syncs neither the file nor `dir`: a
-/// crash may lose the write, never half-write it. For small hints written
-/// on a latency-sensitive path, such as a prompt hook, where losing one is
-/// harmless and two fsyncs per call are not.
+/// crash may lose the write or, on some filesystems, leave the file empty.
+/// For small hints written on a latency-sensitive path, such as a prompt
+/// hook, where losing one is harmless and two fsyncs per call are not.
 pub fn write_private_atomic_nosync(dir: &Path, name: &str, bytes: &[u8]) -> io::Result<()> {
     check_replaceable(&dir.join(name))?;
     write_atomic(dir, name, bytes, 0o600, false)
