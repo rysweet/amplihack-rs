@@ -23,9 +23,11 @@ The exact flags, files, exit codes and log lines are in the
 - [Preview a rotation](#preview-a-rotation)
 - [Rotate once](#rotate-once)
 - [Run rotation in the background](#run-rotation-in-the-background)
+- [Start the rotator automatically](#start-the-rotator-automatically)
 - [Which root the rotator uses](#which-root-the-rotator-uses)
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
+- [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
@@ -143,6 +145,7 @@ amplihack profile rotate status
 ```
 root: /home/you/.claude-profiles (source: config)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -166,13 +169,166 @@ probes are stopped and nothing is moved. If the pid file names a process that ha
 some other program, `status` reports `stale`, and `stop` removes the pid file
 without signalling anything.
 
-The background process keeps running after you log out. It does not start
-again after a reboot; run `amplihack profile rotate start` again, or add it to
-your login scripts.
+The background process keeps running after you log out. It does not survive
+a reboot, but with auto-switch on the next `amplihack claude`,
+`amplihack launch` or `amplihack profile run` starts it again; see
+[Start the rotator automatically](#start-the-rotator-automatically).
 
 To run the loop in the foreground instead, for example under your own
 supervisor, use `amplihack profile rotate watch`. It takes the same flags as
 `start` and stops on Ctrl-C.
+
+## Start the rotator automatically
+
+When auto-switch is on, every amplihack launch of Claude checks whether the
+rotator is running and starts it if it is not. You no longer need to run
+`rotate start` after a reboot.
+
+```bash
+amplihack profile auto-switch on
+amplihack claude
+```
+
+```
+amplihack: started Claude login rotator (pid 48213); 'amplihack profile rotate autostart off' to disable
+```
+
+That line goes to stderr, and only from the launch that started the rotator.
+A launch that finds it already running prints nothing. Claude then starts as
+usual; the check never waits, never changes the launch's exit status and
+never writes to stdout.
+
+### What starts it
+
+These commands check, before they start Claude:
+
+- `amplihack claude`
+- `amplihack launch`
+- `amplihack profile run <name> -- ...`
+
+The Claude Code `SessionStart` hook does not start the rotator, and neither
+does any other `profile` command.
+
+A launch with `--profile <name>` also starts it. The rotator always manages
+`~/.claude`, whichever profile the launch itself uses.
+
+### When it does not start
+
+A launch starts the rotator only when all of these hold:
+
+- Auto-switch is **on**: you have run `amplihack profile auto-switch on`, or
+  `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` is set. With no auto-switch setting at all,
+  nothing starts automatically, even though a rotator you start by hand still
+  rotates.
+- Autostart is on (it is by default; see
+  [Turn autostart off](#turn-autostart-off)).
+- The profile root exists, is not a symlink, is owned by you and is not
+  writable by other users.
+- You are not running as root.
+- The launch is not under Docker: no `--docker`, and Docker not turned on
+  through the environment. The environment turns it on only when
+  `AMPLIHACK_USE_DOCKER` has a true value, the launch is not already inside a
+  container, and Docker is running; `AMPLIHACK_USE_DOCKER=0` does not stop the
+  rotator starting. `--auto` launches do start it.
+- amplihack can tell whether a rotator is already running, which needs
+  `/proc`. Without it nothing starts.
+- No rotator is running for that root.
+- `rotate start` would not refuse: the
+  [tmux prototype](#move-from-the-tmux-prototype) is not holding its lock.
+
+When auto-switch is off, a launch does nothing extra: it creates no file,
+takes no lock and prints nothing.
+
+### Many launches at once
+
+Recipe runs and `multitask` start many Claude sessions in parallel, and
+nested launches inside a recipe run check like any other launch. Only one
+rotator ever runs: a launch that finds the rotator running stops there, and
+otherwise it tries the state lock without waiting. If another launch holds
+the lock, it gives up silently. The launch that gets the lock checks again
+before it starts the rotator and writes the pid file while it still holds the
+lock.
+
+### What the started rotator uses
+
+An automatically started rotator is the same background process `rotate
+start` runs, with the same pid file, log and
+[root record](#which-root-the-rotator-uses). The differences:
+
+- It uses the profile root the launch resolved.
+- It keeps the `AMPLIHACK_ROTATE_*` [thresholds](#change-the-thresholds) set
+  in the environment of the launch that started it, and that launch's
+  `amplihack` binary. To change them, run `rotate stop`, then
+  `rotate start` with the settings you want.
+- It does not run [recovery](#recovery) before it starts; its first cycle
+  does that under the lock.
+
+If a `AMPLIHACK_ROTATE_*` value in the launch's environment is invalid, the
+rotator is not started. The launch carries on, and the reason is written to
+`<root>/.auto-switch.d/rotate/rotate.err`, as is every other failure to
+start. Each start adds a line naming the pid and binary:
+
+```
+2026-10-20T08:02:11Z autostart: started pid 48213 exe /home/you/.cargo/bin/amplihack
+```
+
+A rotator started from a development build (`target/debug/amplihack`) keeps
+running that binary after you remove the worktree it came from. Check the
+`exe` in `rotate.err` and restart it from your installed binary if needed.
+
+### Turn autostart off
+
+```bash
+amplihack profile rotate autostart off
+```
+
+```
+autostart: off (setting)
+```
+
+This stops launches from starting the rotator. It does not stop one that is
+already running. To stop rotation for good, turn autostart off first, then
+stop the rotator, so that no launch in between starts it again:
+
+```bash
+amplihack profile rotate autostart off
+amplihack profile rotate stop
+```
+
+Turn it back on with `amplihack profile rotate autostart on`. With no
+argument, the command prints the current state:
+
+```bash
+amplihack profile rotate autostart
+```
+
+```
+autostart: on (default)
+```
+
+To turn it off for one shell or one CI job, which overrides the setting:
+
+```bash
+export AMPLIHACK_ROTATE_AUTOSTART=0     # or off
+export AMPLIHACK_ROTATE_AUTOSTART=1     # or on
+```
+
+`rotate status` and `auto-switch status` both show the state:
+
+```
+rotate: running
+autostart: on (default)
+```
+
+```
+switch: off (file)
+autostart: on (default) — inactive (auto-switch off)
+```
+
+The source in brackets is `default` (no setting), `setting` (from
+`rotate autostart on|off`), `env` (from `AMPLIHACK_ROTATE_AUTOSTART`) or
+`corrupt` (the setting file cannot be trusted; autostart counts as off until
+you run `rotate autostart on` or `off` again).
 
 ## Which root the rotator uses
 
@@ -194,6 +350,7 @@ env -i HOME="$HOME" PATH="$PATH" amplihack profile rotate status
 ```
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -247,9 +404,10 @@ On each cycle the rotator compares the live account with the candidate that
 has the most headroom (ties go to the name that sorts first):
 
 1. **Threshold swap.** If the live session use is at or above `--session-at`,
-   the weekly use is at or above `--week-at`, or the live account could not be
-   measured, it swaps when the candidate has at least `--margin` more headroom.
-   A live account that could not be measured counts as headroom 0.
+   or the weekly use is at or above `--week-at`, it swaps when the candidate
+   has at least `--margin` more headroom. A live account that could not be
+   measured counts as headroom 0, but is swapped only as described in
+   [When the live login cannot be measured](#when-the-live-login-cannot-be-measured).
 2. **ALERT.** If a threshold swap is needed but no candidate has that margin,
    it writes one `ALERT` line and leaves `~/.claude` alone.
 3. **Upgrade.** If no threshold is reached, it swaps when the candidate has at
@@ -258,7 +416,44 @@ has the most headroom (ties go to the name that sorts first):
 
 The hold stops flapping. Just after a swap, the account that was swapped out
 often has its session window reset and looks fresh; without the hold the next
-cycle would swap straight back. Threshold swaps are never held back.
+cycle would swap straight back. Threshold swaps on a measured reading are
+never held back.
+
+## When the live login cannot be measured
+
+If the probe of the live login fails, the rotator cannot tell whether the
+account is near its limit. A failure that follows whichever login is live
+would otherwise make it swap on every cycle. So a failed live probe leads to
+a swap only when:
+
+- it is the **third failure in a row**, and
+- at least `--hold` seconds have passed since the last swap.
+
+Until then the rotator stays and logs why. In this example the new live
+login fails too. The count starts again after the swap, and the third failure
+comes inside the hold:
+
+```
+2026-10-20T09:00:05Z cycle live=work work:failed personal:s=20%,w=35% spare:s=0%,w=12%
+2026-10-20T09:00:05Z stay: live probe failed (1/3)
+2026-10-20T09:10:05Z stay: live probe failed (2/3)
+2026-10-20T09:20:05Z swap work->spare live failed target s=0% w=12% reason=failed-probe
+2026-10-20T09:30:05Z stay: live probe failed (1/3)
+2026-10-20T09:40:05Z stay: live probe failed (2/3)
+2026-10-20T09:50:05Z stay: live probe failed; held after last swap (1800s left)
+```
+
+The count is kept by the running `watch` process. It goes back to zero when
+the live login is measured, after any swap, and when the rotator restarts.
+The one-shot `amplihack profile rotate` counts every failure as the first, so
+it never swaps because of a failed probe alone. Even with `--hold 0`, the
+rotator swaps for this reason at most once every three cycles.
+
+A failed probe of a *candidate* only stops that candidate being chosen, as
+before. When every account is at or above a threshold, the rotator writes
+one `ALERT` and stays, as before.
+
+To see why a probe fails, run `amplihack profile usage --raw`.
 
 ## Which profiles can take over
 
@@ -291,6 +486,7 @@ the previous one.
 2026-10-18T17:10:05Z swap spare->personal live s=86% w=30% target s=0% w=36% reason=threshold
 2026-10-18T19:40:05Z ALERT: no profile has capacity live=personal s=97% w=52%
 2026-10-18T19:50:05Z skip: state lock busy
+2026-10-20T09:00:05Z stay: live probe failed (1/3)
 ```
 
 To see only swaps and alerts:

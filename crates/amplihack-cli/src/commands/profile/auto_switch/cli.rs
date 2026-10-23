@@ -273,6 +273,16 @@ fn status(store: &ProfileStore) -> Result<String> {
         if eff.on { "on" } else { "off" },
         eff.source
     )?;
+    #[cfg(unix)]
+    {
+        let inactive = if eff.on {
+            ""
+        } else {
+            " — inactive (auto-switch off)"
+        };
+        let line = crate::commands::profile::rotate::autostart_line(root);
+        writeln!(out, "{line}{inactive}")?;
+    }
     writeln!(out, "threshold: {}%", eff.config.threshold)?;
     writeln!(out, "exclude: {}", list(&eff.config.exclude))?;
     let names = profile_names(store)?;

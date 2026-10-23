@@ -97,6 +97,7 @@ pub(super) fn login(store: &ProfileStore, name: &ProfileName) -> Result<()> {
 
 pub(super) fn run(store: &ProfileStore, name: &ProfileName, args: Vec<String>) -> Result<()> {
     super::reject_docker_env()?;
+    super::autostart_on_launch(false);
     let dir = store.resolve(name).map_err(super::with_hint)?;
     launch::run_launch_profiled(
         "claude",

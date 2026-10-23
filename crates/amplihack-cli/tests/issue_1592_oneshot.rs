@@ -382,7 +382,12 @@ fn profile_usage_attributes_home_to_the_rotated_in_profile() {
 #[test]
 fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
     let f = Fixture::new();
-    f.ok(&["profile", "rotate", "--hold", "0"]);
+    // The fixture's autostart opt-out is itself an `AMPLIHACK_ROTATE*`
+    // variable; the one-shot form never autostarts, so drop it here.
+    let mut c = f.cmd(&["profile", "rotate", "--hold", "0"]);
+    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+    let out = c.output().unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
     let envs = f.probe_envs();
     assert!(
         envs.iter().any(|e| e.contains("CLAUDE_CONFIG_DIR=<unset>")),
