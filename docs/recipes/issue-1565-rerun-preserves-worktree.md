@@ -356,8 +356,9 @@ the branch name a helper can hand back to step3; they do not limit what the
 helper does while it runs. This is the same exposure step-04 already has.
 
 To pin the helper to an installed copy, set `AMPLIHACK_HOME` to the installed
-bundle (the directory that contains `amplifier-bundle/`). Its helper is then
-tried first and wins over any copy in the repository; test
+bundle (the directory that contains `amplifier-bundle/`). If that bundle
+contains the helper, it is tried first and wins over any copy in the
+repository; if it does not, the lookup moves on as step-04's does. Test
 [S11](#testing-step3) checks this.
 
 If no helper is found, step3 prints
