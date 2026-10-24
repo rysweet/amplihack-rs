@@ -32,13 +32,13 @@ amplihack launch|claude --profile <name> [...]
 
 | Command | Behavior |
 |---------|----------|
-| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. The first `add` also saves the root it used; see [Saved on the first add](#saved-on-the-first-add). |
+| `add <name>` | Copy allowlisted shared assets from `~/.claude` into a private staging directory, then atomically publish `<root>/<name>/` (mode `0700` on Unix; Windows uses its inherited ACL). Errors if a profile exists whose name matches case-insensitively, on every platform. Does not run Claude. Then links `projects/`, `file-history/` and `session-env/` to `~/.claude` when it exists; see [Shared session directories](#shared-session-directories). The first `add` also saves the root it used; see [Saved on the first add](#saved-on-the-first-add). |
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Writes the default pointer. The profile must exist. |
-| `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks. |
-| `login <name>` | Always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
+| `switch <name>` | Writes the default pointer. The profile must exist. Then checks the profile's [shared session links](#shared-session-directories); messages go to stderr. |
+| `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
+| `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
@@ -606,6 +606,9 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | Default root | `~/.amplihack/claude-profiles/`, used when neither the variable nor the saved root is set. |
 | `AMPLIHACK_CLAUDE_PROFILE` | Profile name a launch passes to its children so nested launches use the same profile. Set by amplihack on the child process; may also be set by hand. Empty means unset. See [Resolution and environment](#resolution-and-environment). |
 | `<root>/<name>/` | Profile directory (mode `0700` on Unix; Windows uses its inherited ACL). |
+| `<root>/<name>/{projects,file-history,session-env}` | Symlinks to `~/.claude/<same name>`. See [Shared session directories](#shared-session-directories). |
+| `<root>/<name>/<dir>.pre-share-<YYYYMMDDTHHMMSSZ>` | What a migration of `<dir>` left behind. Never deleted automatically. |
+| `<root>/<name>/.no-shared-sessions` | Opt-out marker. When present, any file type, the profile's session directories are never linked or migrated. See [Preconditions](#preconditions). |
 | Root directory | Created with mode `0700` on Unix; Windows uses its inherited ACL. A symlinked root is refused. An existing custom root is trusted input. |
 | `<root>/.default` | Pointer file: only the profile name (mode `0600` on Unix, max 256 bytes). Windows uses its inherited ACL. Written by creating a new temp file (`create_new`, never through a symlink) and renaming it over the pointer. |
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | `1` turns auto-switch on and `0` turns it off for this process and its children, overriding `<root>/.auto-switch`. Empty means unset. See [Toggle and precedence](#toggle-and-precedence). |
@@ -665,14 +668,301 @@ Rules:
   64 MiB, and `settings.json` to 1 MiB; exceeding a cap is an error. Special
   files are skipped without being opened, so a FIFO cannot block the copy.
 - Excluded entirely: `.credentials.json`, `.claude.json`, `history*`,
-  `projects`, `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
+  `sessions`, `todos`, `statsig`, `shell-snapshots`, `ide`,
   and every other entry not on the allowlists (so plugins and MCP server
-  settings are not carried over).
+  settings are not carried over). `projects`, `file-history` and
+  `session-env` are not copied; they are linked after the add (see
+  [Shared session directories](#shared-session-directories)).
 - Invalid `settings.json` yields `InvalidSharedSettings`. A seeding error
   removes the private staging directory so no profile is published; if cleanup
   also fails, the error reports both failures (never a pre-existing profile).
 - Values are never logged; messages contain paths and counts only.
 - No sync after creation: later edits to `~/.claude` do not update profiles.
+  The three shared session directories are links, not copies, so they are
+  always current.
+
+## Shared session directories
+
+Every profile shares one session store with `~/.claude`. Logins stay per
+profile. See the [how-to](../howto/claude-profiles.md#share-sessions-across-profiles)
+for a walkthrough.
+
+### Shared names
+
+| Constant | Contents |
+|----------|----------|
+| `SHARED_SESSION_DIRS` | `projects`, `file-history`, `session-env` |
+
+The *canonical root* is `$HOME/.claude` (the same `shared_assets` path
+seeding reads). The canonical directory for a name is
+`<canonical root>/<name>`. In each profile, `<root>/<profile>/<name>` is an
+absolute symbolic link to it. The link target is always the canonicalized
+canonical root joined with the constant name; no other input reaches it.
+
+`file-history/` and `session-env/` hold one entry per session id, and
+`--resume` reads them, so they are shared with `projects/`. No other
+directory is shared. `.credentials.json` and `.claude.json` are top-level
+files of the profile directory, outside all three names, so neither rotate
+nor auto-switch can reach the shared store when it moves a login.
+
+### Entry point
+
+The module is `profile::shared_dirs`; every item is `pub(super)`.
+
+```rust
+pub(super) const SHARED_SESSION_DIRS: [&str; 3] = ["projects", "file-history", "session-env"];
+
+pub(super) enum Deferred { LiveSession, LivenessCheckFailed, LivenessUnknown, Raced }
+
+pub(super) enum Mode { Migrate, LinkOnly(Deferred) }
+
+pub(super) fn ensure_shared_session_dirs(
+    profile_dir: &Path,
+    profile: &ProfileName,
+    canonical_root: &Path,
+    mode: impl FnOnce() -> Mode,
+) -> Report;
+
+pub(super) fn ensure_for(store: &ProfileStore, name: &ProfileName);
+```
+
+- `ensure_shared_session_dirs` never returns an error. Every problem becomes
+  a warning in the `Report`.
+- `mode` is called at most once, and only when a name is a real directory.
+  When every name is already a correct link it is not called, so no `/proc`
+  scan happens.
+- `ensure_for` picks the mode from liveness (below), then prints the
+  report to stderr. It prints nothing when the report is a no-op. It never
+  writes to stdout, so `switch` output and every `--json` output are
+  unchanged.
+
+Liveness comes from the auto-switch `/proc` scan for a process with
+`CLAUDE_CONFIG_DIR=<root>/<name>`. In doubt nothing is migrated:
+
+| Scan result | Mode |
+|-------------|------|
+| No such process | `Migrate` |
+| A matching process, or the scan sees everything as running | `LinkOnly(LiveSession)` |
+| The scan failed (Linux) | `LinkOnly(LivenessCheckFailed)`; the error is logged at debug level and the next call retries |
+| `Unsupported` (every Unix except Linux) | `LinkOnly(LivenessUnknown)` |
+
+`Deferred::Raced` is never passed in; the helper sets it itself (see the
+[state table](#per-name-state-table)).
+
+`Report` has one list per outcome: `linked`, `already_ok`, `migrated`,
+`deferred` (with its `Deferred` reason), `conflicts` and `warnings`, plus
+`unsupported: bool`. Each name appears in exactly one of `linked`,
+`already_ok`, `migrated`, `deferred` or a warning.
+
+### Call sites
+
+| Caller | When | Mode |
+|--------|------|------|
+| `ProfileStore::add` | After the profile is published. Also covers profiles that rotate's `adopt` creates. The `linked` line is not printed; only warnings, and the not-supported warning. | `Migrate` (a new directory has nothing to migrate) |
+| `profile switch <name>` | After the pointer is written. | from liveness |
+| `profile login <name>` | Before `claude` is spawned. | from liveness |
+| Launch with a profile (`--profile`, inherited `AMPLIHACK_CLAUDE_PROFILE`, default pointer, `profile run`, usage-limit reruns) | In the [pre-spawn check](#pre-spawn-check), after the directory check passes and while holding the launch hold. | from liveness |
+| `profile rotate`, rotate cycles | After a swap that ran, for `to` and `from`, once the cycle is recorded and the auto-switch lock is released, so a long merge never stalls a launch. Not after `--dry-run` or a refused swap. | from liveness |
+
+Auto-switch has no call site. Its [in-session swap](#in-session-swap) moves
+only the top-level login files, and a [usage-limit rerun](#usage-limit-reruns)
+is a launch, so `verify_launch_profile_dir` in the pre-spawn check covers
+it. The swap code of rotate (`rotate/swap.rs`) and of auto-switch is
+unchanged.
+
+### Preconditions
+
+Checked in this order. The first one that fails ends the call with nothing
+changed.
+
+| Condition | Result |
+|-----------|--------|
+| `<profile>/.no-shared-sessions` exists (any file type; `symlink_metadata`, not followed) | No-op, debug log only. |
+| Not a Unix system | No-op with `Report.unsupported` set. `ProfileStore::add` prints the not-supported warning; every other caller logs it at debug level. |
+| `$HOME` unset (`shared_assets` is `None`) | No-op, no message. |
+| `~/.claude` doesn't exist | No-op, debug log only. `~/.claude` is never created. |
+| `~/.claude` is a symlink or not a directory | Warning, no-op. |
+| `~/.claude` is not owned by the effective user, or is writable by others, or is group-writable when the group is not your own private group (a group named like your user with no listed members, the usual layout with a umask of `002`) | Warning, no-op. |
+| The profile directory is not owned by the effective user, or `mode & 0o077 != 0` (any group or other bit; the same mask as the [pre-spawn check](#pre-spawn-check)) | Warning, no-op. |
+| The profile directory is the canonical root (canonicalized) | No-op, debug log only. `~/.claude/projects` is never replaced with a link. |
+| The profile directory is inside the canonical root (canonicalized, compared by path components) | Warning, no-op. |
+
+Then each name is checked on its own. If `<canonical root>/<name>` is
+missing it is created with mode `0700`. If it is a symlink, not a
+directory, not owned by the effective user, or writable by group or others
+(the same private-group rule as the root, checked with `fstat` on the opened
+directory), that name is refused with a warning and the other names go on.
+Modes of existing directories are never changed.
+
+### Per-name state table
+
+| What exists at `<profile>/<name>` | Action |
+|-----------------------------------|--------|
+| Nothing | Create the link with `symlink()`, even when the profile is live. `EEXIST` means something appeared meanwhile: the name is deferred (`raced`). |
+| A symlink whose canonicalized target is the canonical directory | Nothing (`already_ok`). |
+| Any other symlink, dangling ones included | Warning; never followed or replaced. |
+| A real directory, `Mode::Migrate` | [Migrate](#migration), then swap in the link. |
+| A real directory, `Mode::LinkOnly(reason)` | Deferred with that reason. |
+| Any other file type | Warning; left alone. |
+
+### Migration
+
+The walk is descriptor-based, like [seeding](#seeding): each directory is
+opened with `openat(…, O_NOFOLLOW|O_DIRECTORY)`, file types come from `fstat`
+on the opened descriptor, and every move is a `renameat2` relative to the
+directory descriptors. A path swapped for a symlink during the walk is never
+followed. Depth is capped at 16; there is no entry or size cap.
+
+Skipped, and left in the source (so they end up in the backup):
+
+- names matching `.credentials*` or `.claude.json`, at any depth, compared
+  as bytes before anything is opened (so non-UTF-8 names and
+  `.credentials.json.bak` are caught), with a warning;
+- nested symlinks and special files;
+- reserved temporary names (`.amplihack-share-tmp-*`).
+
+For each regular file at relative path `p`:
+
+| In canonical | Action |
+|--------------|--------|
+| Absent | Set the source's mode to `mode & 0o700` with `fchmod` on the opened file, then move it in with `renameat2(RENAME_NOREPLACE)`. |
+| Same bytes (size compared first, then a streamed comparison) | Leave the source copy; it ends up in the backup. |
+| Different bytes | Canonical always wins. Move the source to the [conflict name](#migration) with `renameat2(RENAME_NOREPLACE)`. |
+
+Canonical always wins because renaming a canonical file could split a session
+that another profile's `claude` has open, and would leave a moment with the
+real name missing. Size and mtime are not compared. A user who wants the
+profile's copy swaps the two by hand
+([how-to](../howto/claude-profiles.md#resume-the-losing-copy-of-a-conflict)).
+
+New directories in canonical are created `0700`. No file in canonical is ever
+renamed, overwritten or deleted: every write into canonical uses
+`RENAME_NOREPLACE` or `O_EXCL`, apart from the memory-index append below.
+
+**Memory index.** In a directory at relative path `<project>/memory` of
+`projects/`, `MEMORY.md` is handled after every other entry. It merges like
+any file. If that made a conflict, the source's lines missing from the
+canonical `MEMORY.md` (compared after trimming trailing white space; blank
+lines and lines starting with `#` are left out; `](<file>)` is rewritten to
+`](<saved name>)` for every file in the same directory saved under a
+conflict name) are appended to the canonical file with
+`O_WRONLY|O_APPEND|O_NOFOLLOW` and `fsync`ed. The conflict copy is saved
+before the append. An index over 1 MiB, or one that isn't UTF-8, is not
+appended to, and the "entries not added" warning says so. Every link is rewritten at most once. A repeat run appends
+nothing, because every line is then present. If the append fails (the shared
+index is read-only, or was replaced by a rename while the entries were
+written), the merge goes on and a warning names the conflict copy to add the
+entries from by hand.
+
+**Other filesystem.** When a rename fails with `EXDEV`, the file is copied:
+check free space with `statvfs` (if the file doesn't fit, stop migrating this
+name, leave it a real directory, and warn), create
+`.amplihack-share-tmp-<pid>-<n>` in the destination directory with `O_EXCL`
+and mode `0600`, copy, `fsync`, set the mode to the source's `& 0o700` and its
+modification time, `renameat2(RENAME_NOREPLACE)` into place, `fsync` the
+directory, and only then unlink the source. If the source's size or
+modification time changed during the copy, the temporary file is removed
+before the rename and the source is kept: the merge stops with
+`copy failed: <path> changed during the copy; kept`, and the next run copies
+the file again. The same check runs once more before the unlink; a change
+caught there keeps the source too, and the next run saves it under a
+conflict name.
+
+**Conflict names.** `<file>.conflict-<profile>`, beside the winner. If that
+name already holds identical bytes nothing more is done. If it holds
+different bytes the next free name of `.conflict-<profile>-2`, `-3`, … is
+used. `<profile>` is always a validated profile name. The suffix breaks the
+`.jsonl` extension on purpose, so Claude doesn't list the loser as a session.
+Every conflict is reported. Nested symlinks and special files are counted
+and reported in one line per name.
+
+### Link swap
+
+After a name's merge:
+
+1. Create `<profile>/.<name>.share-tmp` as a symlink to the canonical
+   directory, replacing a stale symlink of that name. If `<name>` is no
+   longer a directory (another process swapped it meanwhile), stop with the
+   `could not swap in the link` warning.
+2. On Linux, exchange it with the real directory using
+   `renameat2(RENAME_EXCHANGE)`, then rename the real directory (now at the
+   temporary name) to the backup name.
+3. Without an atomic exchange (`EINVAL`, `ENOSYS`, or not Linux): rename the
+   real directory to the backup name, then rename the temporary link to
+   `<name>`. If the second rename fails, the backup is renamed back. If that
+   also fails, the warning prints the exact `mv` that restores it; nothing is
+   deleted.
+
+The backup is `<profile>/<name>.pre-share-<YYYYMMDDTHHMMSSZ>` (UTC), with
+`-2`, `-3`, … if the name exists. Backups are never deleted automatically.
+`profile remove` deletes them with the profile directory.
+
+### Repeat runs and recovery
+
+A run on a profile whose three names are correct links changes nothing on
+disk. An interrupted run is resumed by the next one:
+
+- files already moved are no longer in the source;
+- `.amplihack-share-tmp-*` files are removed, but only when they are regular
+  files owned by the effective user and the process whose pid is in the name
+  is no longer running, so a merge running at the same time in another
+  process keeps its copy (`unlinkat`);
+- a stale `.<name>.share-tmp` is replaced, but only when it is a symlink;
+- if both a backup and a real `<name>` exist, the real `<name>` is migrated
+  again.
+
+Those two reserved names are the only things the helper ever deletes.
+
+### Messages
+
+All output goes to stderr, prefixed `amplihack: profile <name>: `. Paths are
+shortened with `~`; only paths, counts and OS error text are printed, never
+file contents. This is the complete list; nothing else is printed at the
+default log level.
+
+| Message | Meaning |
+|---------|---------|
+| `merging session history into ~/.claude (one-time; may take a while)` | Printed once per call, before the first merge starts, so a long merge doesn't look hung. Every other line is printed when the call finishes. |
+| `linked projects, file-history, session-env` | Links created (not printed by `add`). Lists only the names linked. |
+| `projects: moved <n> files into ~/.claude/projects, <n> identical, <n> conflict` | A merge finished. |
+| `projects: conflict: <path> kept the shared copy; this profile's copy saved as ~/.claude/projects/<path>.conflict-<profile>` | A conflict. Canonical always wins. |
+| `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy` | The profile's memory index lost a conflict; its missing entries were appended to the shared index. |
+| `projects: memory index <project>/memory/MEMORY.md: entries not added (<error>); add them by hand from <conflict copy>` | The append failed, or either index is over 1 MiB or not UTF-8; the profile's index is safe under its conflict name. |
+| `projects: skipped credential file <path>; left in <backup>` | A credential-named file was found in a shared directory. |
+| `projects: skipped <n> symbolic links or special files; left in <backup>` | Nested entries that are never moved. |
+| `projects: old directory kept as <backup>` | The backup name. |
+| `projects: migration deferred: live session` | `Deferred::LiveSession`. The merge runs on a later call. |
+| `projects: migration deferred: could not check for running sessions (retried next launch)` | `Deferred::LivenessCheckFailed`: on Linux the `/proc` scan failed, so no session was seen either way. The merge runs on a later call. |
+| `projects: not merged: running sessions can't be checked on this system; merge by hand, see docs/howto/claude-profiles.md#merge-by-hand-on-macos` | `Deferred::LivenessUnknown`. Printed on every call while the name is a real directory. |
+| `projects: link not created: the name appeared during the check; retried next launch` | `Deferred::Raced` (`EEXIST` from `symlink()`). |
+| `projects is a symlink to <target>; left alone` | A foreign or dangling link at the profile's name. |
+| `projects is not a directory or a link; left alone` | Any other file type at the profile's name. |
+| `~/.claude/projects is a symlink or not a directory; projects not shared` | The canonical name is refused; the other names go on. |
+| `~/.claude/projects is not owned by you or is writable by group or others; projects not shared` | The canonical name fails the ownership/permission check; the other names go on. |
+| `~/.claude is a symlink or not a directory; sessions not shared` | Canonical root refused. |
+| `~/.claude is not owned by you or is writable by group or others; sessions not shared` | Canonical root fails the ownership/permission check (group write is accepted only for your own private group, as for `install`). |
+| `profile directory is not owned by you or has group or other permissions; sessions not shared` | Profile directory fails the `0o077` check. |
+| `projects: not enough free space to copy <path> (<n> bytes) to ~/.claude/projects; merge stopped, nothing removed` | `EXDEV` copy refused by the `statvfs` check. The name stays a real directory and the next call retries. |
+| `projects: could not swap in the link (<OS error>); <profile dir>/projects was not replaced; files already merged are in ~/.claude/projects` | The link swap failed and the rollback worked. The profile's directory is still real, but the files moved before the swap are already in the shared store. The next call merges what is left and retries the swap. |
+| `projects: could not restore the old directory (<OS error>); run: mv '<backup>' '<profile dir>/projects'` | The link swap and its rollback both failed. The `mv` is printed with the real absolute paths, shell-quoted. |
+| `projects: rename failed: <OS error>; nothing removed, the old directory is at <profile dir>/.projects.share-tmp` | The link is in place but the old directory could not be renamed to its backup name. Printed once; remove the leftover by hand after checking it (see the how-to). While it exists, a later swap of the same name refuses. |
+| `projects: <step> failed: <OS error>; nothing removed` | Any other I/O error during the merge. `<step>` is `open`, `read`, `copy`, `rename`, `mkdir`, `chmod` or `link`. The same line is printed when creating, opening or linking the name fails before any merge. The name stays a real directory. |
+| `<profile dir> is inside ~/.claude; sessions not shared` | The profile root is under `~/.claude`; move it elsewhere to share sessions. |
+| `<path>: <OS error>; sessions not shared` | The opt-out marker, `~/.claude` or the profile directory could not be checked. Nothing changed. |
+| `shared session dirs not supported on this platform; profiles keep separate projects/` | Not a Unix system. Printed by `add` only. |
+
+The `projects` in each message is replaced by the name concerned. A
+`moved` line is printed only when a merge completes; apart from the
+`merging session history` line printed before it starts, there is no
+progress output.
+
+### Shared directories platform support
+
+| Platform | Links | Automatic merge |
+|----------|-------|-----------------|
+| Linux | Yes | Yes, when the profile is not live |
+| Other Unix (macOS) | Yes | No: liveness is `Unsupported`, so the mode is always `LinkOnly(LivenessUnknown)`. Each call prints the `not merged` message until the directory is merged by hand ([how-to](../howto/claude-profiles.md#merge-by-hand-on-macos)). |
+| Windows and other non-Unix | No | No. `add` prints one warning; other callers log at debug level. |
 
 ## Name rules
 
@@ -1001,7 +1291,10 @@ it must be owned by the current user with no group/other permission mode bits
 (`mode & 0o077 == 0`: `0700` passes; `0755`, `0750` and `0705` fail). ACLs are
 not inspected. Only the profile directory is checked, not its parents.
 If the check fails, run `chmod go-rwx <profile-directory>` on Unix.
-Any failure aborts the launch. This check applies only to profile launches;
+Any failure aborts the launch. Once the check passes, the profile's
+[shared session links](#shared-session-directories) are checked and fixed
+while the launch hold is held; that step never aborts the launch.
+This check applies only to profile launches;
 Claude and Copilot launches without a profile are unchanged.
 Ownership and group/other mode-bit checks are available on Unix. On other
 platforms, profile launches still require a real, contained directory, but
@@ -1421,6 +1714,11 @@ back, so a move already done in step 2 stays done. The journal is kept with
 journal, so launches and logins of both profiles fail with
 `AutoSwitchInvariant` until it is [repaired by hand](../howto/claude-profiles.md#recovery).
 
+The swap does not check the [shared session links](#shared-session-directories).
+It moves only the top-level login files, which are outside the shared
+names. Both profiles are checked the next time they are launched, including
+the usage-limit rerun, by the [pre-spawn check](#pre-spawn-check).
+
 If the filesystem cannot do the move (`EXDEV`, `EINVAL`, `ENOSYS`), the swap
 rolls back any move already done, deletes the journal, and disables swaps for
 that directory; `status` says so. A login is never copied as a fallback.
@@ -1750,7 +2048,9 @@ Every non-dry-run cycle runs these steps in order:
    [Signals](#rotate-signals)). Take the lock again. If the live account, the
    candidate list, the running sessions, the auto-switch ledger or the parked
    logins changed since step 3, log `skip: state changed during measurement`
-   and end the cycle. Otherwise run the [swap](#rotate-swap).
+   and end the cycle. Otherwise run the [swap](#rotate-swap). After a swap
+   that ran, check the [shared session links](#shared-session-directories)
+   of `to` and `from`.
 7. **Record.** Write the log lines and the ledger's `last_cycle`. When the
    cycle stays or raises the no-capacity ALERT and the live profile is known,
    also record it as `live`, with its `account`.
