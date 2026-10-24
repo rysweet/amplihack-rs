@@ -258,6 +258,56 @@ fn rotate_log_grammar_is_documented() {
     }
 }
 
+/// Rotator autostart and failed-probe damping: the reference names the
+/// variable, the command, the status line and the new log lines as the code
+/// prints them, and the how-tos describe autostart.
+#[test]
+fn rotate_autostart_and_failed_probe_damping_are_documented() {
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "rotate autostart",
+        "autostart:",
+        "autostart: on (default)",
+        "autostart: off (setting)",
+        "autostart: off (env)",
+        "autostart: off (corrupt)",
+        "— inactive (auto-switch off)",
+        "<root>/.auto-switch.d/rotate/autostart",
+        "amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable",
+        "autostart: started pid <pid> exe <path>",
+        "autostart: failed: <error>",
+        "reason=failed-probe",
+        "live probe failed",
+        "stay: live probe failed (<k>/3)",
+        "stay: live probe failed; held after last swap (<N>s left)",
+    ] {
+        assert!(REFERENCE.contains(s), "reference is missing `{s}`");
+    }
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "amplihack profile rotate autostart off",
+        "autostart: on (default)",
+        "stay: live probe failed (1/3)",
+        "reason=failed-probe",
+        "stay: live probe failed; held after last swap (",
+    ] {
+        assert!(ROTATE_HOWTO.contains(s), "rotate how-to is missing `{s}`");
+    }
+    assert!(
+        !ROTATE_HOWTO.contains("does not start again after a reboot"),
+        "the reboot caveat is replaced by the autostart section"
+    );
+    assert!(
+        !REFERENCE.contains("held after failed-probe swap")
+            && !ROTATE_HOWTO.contains("held after failed-probe swap"),
+        "the hold message was renamed"
+    );
+    assert!(
+        HOWTO.contains("autostart"),
+        "claude-profiles.md notes autostart under auto-switch"
+    );
+}
+
 /// The how-to quotes each refusal and recovery reason as the code prints it,
 /// and its examples are the code's `Display` output.
 #[cfg(unix)]

@@ -330,3 +330,68 @@ fn two_starts_at_once_leave_one_rotator() {
         !alive(pid)
     });
 }
+
+/// `rotate autostart [on|off]` and the `autostart:` status line. No rotator
+/// is started: the fixture sets `AMPLIHACK_ROTATE_AUTOSTART=0`, and these
+/// commands never launch Claude.
+#[test]
+fn rotate_autostart_setting_and_status_line() {
+    let f = Fixture::new();
+    let bare = |args: &[&str]| {
+        let mut c = f.cmd(args);
+        c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+        c.output().unwrap()
+    };
+    let setting = f.rotate_dir().join("autostart");
+
+    let out = bare(&["profile", "rotate", "autostart"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "autostart: on (default)\n");
+    assert!(!setting.exists(), "reading the state writes nothing");
+
+    let out = bare(&["profile", "rotate", "autostart", "off"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "autostart: off (setting)\n");
+    assert_eq!(fs::read_to_string(&setting).unwrap(), "off\n");
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(
+        fs::metadata(&setting).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+
+    // `status` puts the autostart line right after `rotate:`.
+    let lines: Vec<String> = text(&bare(&["profile", "rotate", "status"]).stdout)
+        .lines()
+        .map(str::to_string)
+        .collect();
+    let i = lines
+        .iter()
+        .position(|l| l.starts_with("rotate: "))
+        .unwrap();
+    assert_eq!(
+        lines.get(i + 1).map(String::as_str),
+        Some("autostart: off (setting)"),
+        "{lines:?}"
+    );
+
+    // The variable wins over the file, and says so when the file is written.
+    assert!(
+        status(&f).contains("\nautostart: off (env)\n"),
+        "{}",
+        status(&f)
+    );
+    let out = f.run(&["profile", "rotate", "autostart", "on"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(text(&out.stdout), "autostart: on (setting)\n");
+    assert!(
+        text(&out.stderr).contains("AMPLIHACK_ROTATE_AUTOSTART=0 overrides it"),
+        "{}",
+        text(&out.stderr)
+    );
+    assert_eq!(fs::read_to_string(&setting).unwrap(), "on\n");
+
+    let out = bare(&["profile", "rotate", "autostart", "maybe"]);
+    assert_eq!(out.status.code(), Some(2), "a usage error");
+    assert_eq!(fs::read_to_string(&setting).unwrap(), "on\n");
+    assert!(!pid_file(&f).exists(), "no rotator was started");
+}

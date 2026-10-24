@@ -64,7 +64,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         }
         None => "-".into(),
     };
-    println!("rotate: {word}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    let auto = super::autostart_line(store.root());
+    println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
         Ok(Some(j)) => println!("journal: pending (phase {})", j.phase.as_str()),

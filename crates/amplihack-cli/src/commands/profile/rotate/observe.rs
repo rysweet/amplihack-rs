@@ -3,6 +3,7 @@
 //! them without a lock or a write.
 
 use super::cycle::{Ctx, CycleOutcome};
+use super::damp::{damp, next_failed};
 use super::decide::{Decision, Measured, Reading, decide};
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
 use super::ledger::Phase;
@@ -78,7 +79,16 @@ pub fn reading_of(others: &[(ProfileName, Reading)], name: &ProfileName) -> Read
         .map_or(Reading::Failed, |(_, r)| *r)
 }
 
-pub type Measurement = (Reading, Vec<(ProfileName, Reading)>, Decision);
+/// One cycle's measurements and its decision, after failed-probe damping.
+pub struct Measurement {
+    pub live: Reading,
+    pub others: Vec<(ProfileName, Reading)>,
+    pub decision: Decision,
+    /// The log line for a damped stay.
+    pub note: Option<String>,
+    /// Consecutive failed live probes, including this cycle's.
+    pub failed: u32,
+}
 
 pub fn measure_and_decide(
     ctx: &Ctx,
@@ -99,8 +109,17 @@ pub fn measure_and_decide(
         })
         .collect();
     let swapped_at = ctx.rs.load_ledger()?.and_then(|l| l.swapped_at);
-    let decision = decide(&ctx.settings, &reading, &measured, swapped_at, now());
-    Ok((reading, others, decision))
+    let t = now();
+    let raw = decide(&ctx.settings, &reading, &measured, swapped_at, t);
+    let failed = next_failed(ctx.failed_live, &reading);
+    let (decision, note) = damp(raw, &reading, failed, swapped_at, t, &ctx.settings);
+    Ok(Measurement {
+        live: reading,
+        others,
+        decision,
+        note,
+        failed,
+    })
 }
 
 /// The outcome a live cycle would record for `decision`. `--dry-run` returns
@@ -146,12 +165,24 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         out.emit(0, &format!("would alert: {text}"));
         return Ok(CycleOutcome::Alerted);
     }
-    let (live, others, decision) = measure_and_decide(ctx, &binary, &snap)?;
+    let Measurement {
+        live,
+        others,
+        decision,
+        note,
+        ..
+    } = measure_and_decide(ctx, &binary, &snap)?;
     let name = live_name(&snap.live);
     out.emit(0, &msg::cycle(name, &live, &others));
     let outcome = would(&decision);
     match decision {
-        Decision::Stay => out.emit(0, "would stay"),
+        Decision::Stay => match note {
+            Some(n) => out.emit(
+                0,
+                &format!("would stay ({})", n.strip_prefix("stay: ").unwrap_or(&n)),
+            ),
+            None => out.emit(0, "would stay"),
+        },
         Decision::Alert => {
             let line = msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live);
             out.emit(
