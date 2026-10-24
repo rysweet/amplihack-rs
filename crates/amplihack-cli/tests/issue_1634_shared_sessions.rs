@@ -194,10 +194,9 @@ impl Fixture {
 
     fn cmd(&self, args: &[&str]) -> Command {
         self.assert_isolated();
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
-            .env_clear()
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),
