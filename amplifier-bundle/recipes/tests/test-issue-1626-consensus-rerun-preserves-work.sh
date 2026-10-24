@@ -705,11 +705,20 @@ fi
 BUSY="${ORIG}-busy"
 STUB_BUSY="$(make_stub busy "printf '%s\\n' '${BUSY}'")"
 
+# s13_sums: checksums of the tracked, modified and untracked files in W and,
+# when it exists, BW.
+s13_sums() {
+    local d
+    for d in "${W}" "${BW}"; do
+        [[ -d "${d}" ]] || continue
+        printf '%s %s %s ' "$(file_sum "${d}/ahead.txt")" "$(file_sum "${d}/README.md")" "$(file_sum "${d}/untracked.txt")"
+    done
+}
+
 # s13_check <id> <changes yes|no>: R, W (ORIG worktree) and BW (BUSY path) set.
 s13_check() {
     local id="$1" changes="$2" sums_b heads_b wts_b remote_b orig_head busy_head busy_wt_head=""
-    sums_b="$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")"
-    [[ -d "${BW}" ]] && sums_b+=" $(file_sum "${BW}/ahead.txt") $(file_sum "${BW}/README.md") $(file_sum "${BW}/untracked.txt")"
+    sums_b="$(s13_sums)"
     heads_b="$(heads "${R}")"; wts_b="$(wt_list "${R}")"
     remote_b="$(git -C "${R}" ls-remote origin 2>/dev/null)"
     orig_head="$(git -C "${W}" rev-parse HEAD)"
@@ -730,10 +739,7 @@ s13_check() {
     else
         fail "${id}-error" "stderr lacks the refusal for '${BUSY}' (changes: ${changes}): $(last_lines 2 "${RUN_STDERR}")"
     fi
-    local sums_a
-    sums_a="$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")"
-    [[ -d "${BW}" ]] && sums_a+=" $(file_sum "${BW}/ahead.txt") $(file_sum "${BW}/README.md") $(file_sum "${BW}/untracked.txt")"
-    if [[ "${sums_a}" == "${sums_b}" ]]; then
+    if [[ "$(s13_sums)" == "${sums_b}" ]]; then
         pass "${id}-files" "untracked, modified and committed files in both worktrees are byte-identical"
     else
         fail "${id}-files" "a file in '${ORIG}' or '${BUSY}' was changed or deleted"
