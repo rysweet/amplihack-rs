@@ -68,10 +68,9 @@ impl Fixture {
     }
 
     fn cmd(&self, args: &[&str], toggle: &str) -> Command {
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
-            .env_clear()
             .env("PATH", "/usr/local/bin:/usr/bin:/bin")
             .env("HOME", &self.home)
             .env("TZ", "UTC")

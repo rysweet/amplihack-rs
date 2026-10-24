@@ -22,7 +22,7 @@ fn start(session: &str) -> Value {
 }
 
 fn prompt(session: &str) -> Value {
-    UserPromptSubmitHook
+    UserPromptSubmitHook::with_prompt_root(|| None)
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("first prompt".to_string()),
             session_id: Some(session.to_string()),

@@ -17,7 +17,7 @@ fn lock() -> std::sync::MutexGuard<'static, ()> {
 }
 
 fn prompt(text: &str, session: Option<&str>) -> Value {
-    UserPromptSubmitHook
+    UserPromptSubmitHook::with_prompt_root(|| None)
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some(text.to_string()),
             session_id: session.map(str::to_string),
