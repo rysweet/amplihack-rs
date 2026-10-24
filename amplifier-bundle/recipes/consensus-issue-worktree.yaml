@@ -260,21 +260,19 @@ steps:
       # reset or deleted: the helper returns a NEW free suffixed name for this run, or
       # the candidate unchanged. If work still turns up at the guard below (helper
       # missing, or new work since), the step refuses with an error instead.
-      # Helper lookup order differs from step-04 on purpose: the installed copies
-      # (AMPLIHACK_HOME, then HOME/.amplihack) are tried before the copy inside the
-      # repository being worked on, so a helper committed there is not preferred.
+      # Helper lookup: step-04's 5-tier ladder, checking for the deconflict helper
+      # (step3 never runs the sweep helper), then step-04's two DECONFLICT_HELPER
+      # lines. Set AMPLIHACK_HOME to an installed bundle to make that copy win.
       # Its answer is untrusted and validated before any ref or worktree changes.
-      DECONFLICT_HELPER=""
-      for _candidate in \
-        ${AMPLIHACK_HOME:+"$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_worktree_deconflict.sh"} \
-        "${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh" \
-        "${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"; do
-        if [ -f "$_candidate" ]; then
-          DECONFLICT_HELPER="$_candidate"
-          break
-        fi
-      done
-      if [ -n "$DECONFLICT_HELPER" ]; then
+      DECONFLICT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      TOOLS_DIR="$(dirname "$DECONFLICT_HELPER")"
+      DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
+      [ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+      if [ -f "$DECONFLICT_HELPER" ]; then
         if ! RESOLVED_BRANCH="$(bash "$DECONFLICT_HELPER" resolve --base "$BASE_REF" "$BRANCH_NAME" "$WORKTREE_DIR/$BRANCH_NAME" "$(pwd)")"; then
           echo "ERROR: worktree branch deconfliction failed for '$BRANCH_NAME' (retries exhausted or helper misconfig; see stderr). Aborting to avoid clobbering a concurrent foreign worktree or a branch that holds work." >&2
           exit 1

@@ -311,21 +311,70 @@ control character, so the JSON passed to later steps can't be forged.
 
 ### Where the helper is found
 
-Step3 takes the first of these that exists:
+Step3 uses the same five-place lookup order as step-04 of
+`workflow-worktree.yaml`. It first sets `TOOLS_DIR` to the first of these
+directories that contains `workflow_worktree_deconflict.sh` (each path below
+is followed by `/amplifier-bundle/tools`):
 
-1. `$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_worktree_deconflict.sh` (only when `AMPLIHACK_HOME` is set and non-empty)
-2. `$HOME/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh`
-3. `${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh`
+1. `${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}`
+2. `${REPO_PATH:-$(pwd)}`
+3. `$(pwd)`
+4. `${HOME:-/root}/.copilot`
+5. `${HOME:-/root}/.amplihack`
 
-This order differs from step-04 on purpose. The installed copies are tried
-before the copy inside the repository being worked on, so a helper committed
-to that repository is not preferred over the installed one. Even a planted
-helper can do no harm: its answer is validated (below), so the most it can do
-is pick a suffixed branch name or make the step refuse.
+Then it runs step-04's two lines unchanged:
 
-If no helper is found, deconfliction is skipped and the guard decides: work
-present means `refuse_reset` and exit 1; a clean branch is reused; a missing
-branch is created. A missing helper never blocks a fresh or clean run.
+```bash
+DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"
+[ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"
+```
+
+and calls the helper only when `[ -f "$DECONFLICT_HELPER" ]` holds.
+
+If none of the five contains the helper, `TOOLS_DIR` is left at the last
+one (`~/.amplihack/amplifier-bundle/tools`), the `REPO_PATH` fallback line
+is tried, and if that file is missing too the step prints the
+missing-helper warning shown below.
+
+This is the one deliberate difference from step-04: step-04 tests each
+directory for `workflow_worktree_sweep.sh`, step3 tests for
+`workflow_worktree_deconflict.sh`. Step3 never runs the sweep helper, and a
+directory that holds only a stray sweep helper must not be chosen as the
+place to load the deconflict helper from.
+
+Step3 never sets `REPO_PATH` itself, but inherits it when it is set in the
+environment. When `AMPLIHACK_HOME` is unset, the order in practice is:
+`REPO_PATH` if set in the environment, otherwise the current directory; then
+`~/.copilot`; then `~/.amplihack`. When `AMPLIHACK_HOME` is set and contains
+the helper, that copy wins.
+
+Every place in this order is a place code is run from. The helper runs as
+the user, with the user's privileges, before the guard, so a helper committed
+to the repository can run any command. The checks in
+[Validating the helper's answer](#validating-the-helpers-answer) limit only
+the branch name a helper can hand back to step3; they do not limit what the
+helper does while it runs. This is the same exposure step-04 already has.
+
+To pin the helper to an installed copy, set `AMPLIHACK_HOME` to the installed
+bundle (the directory that contains `amplifier-bundle/`). Its helper is then
+tried first and wins over any copy in the repository; test
+[S11](#testing-step3) checks this.
+
+If no helper is found, step3 prints
+
+```text
+WARNING: workflow_worktree_deconflict.sh not found — skipping deconfliction; the guard below refuses if '<branch>' holds work.
+```
+
+on stderr and the guard decides:
+
+| Branch state without a helper | Result |
+|---|---|
+| Dirty or ahead (State 1 or State 2) | `refuse_reset`: `ERROR` on stderr, exit 1, nothing changed |
+| Clean | Reused unchanged, exit 0 |
+| Missing | Created from `BASE_REF`, exit 0 |
+
+A missing helper never blocks a fresh or clean run, and never leads to a reset.
 
 Without the helper, the Foreign state gets no fresh branch. Step3 tries to
 attach a worktree to the branch, `git worktree add` fails because another
@@ -403,7 +452,10 @@ step attaches a clean branch or refuses, and never resets.
 extracts the real step3 bash block (the first ` ```bash ` fence after
 `- id: "step3-setup-worktree"`) and runs it under `env -i` against scratch
 repos with a local bare `origin`. Scratch lives under `$TMPDIR`; nothing
-touches the network or `/tmp`.
+touches the network or `/tmp`. `HOME` points at a scratch directory, and the
+test checks that neither `$HOME/.amplihack` nor `$HOME/.copilot` exists before
+any scenario runs, so a real installed helper can never be picked up by
+lookup steps 4 and 5.
 
 | Case | Checks |
 |---|---|
@@ -411,6 +463,7 @@ touches the network or `/tmp`.
 | A1 | No destructive or forced command anywhere in the step3 block, with a self-check that the pattern matches `git worktree add -B x` and `git push --force` |
 | A2–A6 | The block contains `resolve --base "$BASE_REF"`, `check-ref-format --branch "$RESOLVED_BRANCH"`, `deconfliction failed`, `refuse_reset` and the final `printf` JSON line |
 | A7 | Branch existence uses `show-ref --verify`, never `git branch --list` (which matches globs) |
+| A8 | The helper lookup matches step-04: the block contains `${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}`, `DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"`, the repo-local fallback line and `if [ -f "$DECONFLICT_HELPER" ]`, and does not contain `[ -n "$DECONFLICT_HELPER" ]`, `for _candidate` or the old "differs from step-04 on purpose" comment |
 | S0 | Helper present, fresh repo: creates `<branch>` at `WORKTREE_DIR/<branch>`; stdout is exactly one JSON line |
 | S1 | Helper present, State 1 dirty and ahead: untracked file, modified file and unpushed commit survive byte-for-byte; original branch SHA unchanged; new `branch_name` starts with `<original>-`; its worktree is registered; `origin` lacks the unpushed commit |
 | S2 | Helper present, State 2 ahead: original branch at the same SHA; new suffixed branch |
@@ -422,7 +475,8 @@ touches the network or `/tmp`.
 | S8 | Stub helper prints `main`: non-zero exit, no ref or worktree changed |
 | S9 | Stub helper prints `<original>-a"b`: non-zero exit, no ref changed |
 | S10 | Stub helper exits non-zero: non-zero exit, stderr names `deconfliction failed`, no ref changed |
-| S11 | The installed helper (`AMPLIHACK_HOME`) is used before a copy planted in the repo |
+| S11 | `AMPLIHACK_HOME` first: with `AMPLIHACK_HOME` set, its helper is used before the repo-local copy |
+| S11b | `AMPLIHACK_HOME` empty, dirty State 1, helper planted in the repo: (a) a helper that prints `<original>-planted` is used: exit 0, `branch_name` is `<original>-planted`, `worktree_path` is `WORKTREE_DIR/<original>-planted` and is registered, and the original worktree's files and `HEAD` are unchanged; (b) a helper that prints `other` (no `<original>` prefix): non-zero exit, `ERROR` on stderr, files, branch heads and `git worktree list` unchanged |
 | S12 | `WORKTREE_DIR` contains `"`: non-zero exit with `refusing to emit setup JSON`, and no branch, worktree or pushed ref exists |
 
 Run it:
@@ -438,7 +492,8 @@ git show origin/main:amplifier-bundle/recipes/consensus-issue-worktree.yaml \
   > "$TMPDIR/consensus-issue-worktree.main.yaml"
 WORKTREE_YAML="$TMPDIR/consensus-issue-worktree.main.yaml" \
   bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
-# exits non-zero against a YAML that still resets
+# exits 1: 10 passed, 38 failed — including A1 (destructive commands present),
+# A8 (old helper lookup), S1–S4 and S11b(a)/(b)
 ```
 
 CI runs it in the step after the #1565 test.

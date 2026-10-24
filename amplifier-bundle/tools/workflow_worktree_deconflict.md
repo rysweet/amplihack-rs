@@ -335,8 +335,19 @@ whose bash lives inside a natural-language `prompt:` block. Since #1626 it
 calls `resolve --base "$BASE_REF"` like step-04, validates the answer (it must
 pass `check-ref-format`, use only `[A-Za-z0-9._/-]`, and equal the candidate or
 start with `<candidate>-`), and never resets or deletes a branch that holds
-work: its guard refuses instead. It looks for the helper in `$AMPLIHACK_HOME`,
-then `$HOME/.amplihack`, then the repository. The prompt bash is extracted and
+work: its guard refuses instead. It finds the helper with step-04's
+five-place `$TOOLS_DIR` order (`$AMPLIHACK_HOME`, `$REPO_PATH`, the current
+directory, `~/.copilot`, `~/.amplihack`), then the `${REPO_PATH:-$(pwd)}`
+fallback. Unlike step-04, which probes each place for
+`workflow_worktree_sweep.sh`, step3 probes for
+`workflow_worktree_deconflict.sh`, so a stray sweep helper cannot pick the
+directory. `REPO_PATH` is used only when inherited from the environment;
+step3 never sets it. Every place in that
+order is a place code is run from: the answer checks limit the branch name a
+helper can return, not what it does while it runs. Set `AMPLIHACK_HOME` to an
+installed bundle to make that copy win over one in the repository. If no helper
+is found, step3 warns; it then refuses when the branch holds work and reuses a
+clean branch. The prompt bash is extracted and
 run end to end by
 `amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh`;
 see [issue-1565-rerun-preserves-worktree.md](../../docs/recipes/issue-1565-rerun-preserves-worktree.md).

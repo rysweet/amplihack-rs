@@ -16,6 +16,12 @@
 #   - If work still turns up after deconfliction, or the helper is missing and
 #     there is work, the step refuses (ERROR, non-zero) instead of resetting.
 #   - A clean existing branch is reused unchanged.
+#   - The helper is located the way step-04 does it: the 5-place ladder
+#     (AMPLIHACK_HOME, else REPO_PATH, else $(pwd); REPO_PATH; $(pwd);
+#     ~/.copilot; ~/.amplihack), then TOOLS_DIR and step-04's two
+#     DECONFLICT_HELPER lines, gated by `if [ -f "$DECONFLICT_HELPER" ]` (A8).
+#     With AMPLIHACK_HOME empty, a helper in the repo is used, and its answer
+#     is still validated (S11b).
 #   - The slug path prints exactly one JSON line on stdout that carries the
 #     resolved branch_name and worktree_path.
 #
@@ -74,6 +80,11 @@ trap cleanup EXIT
 mkdir -p "${SCRATCH}/home" "${SCRATCH}/tmp"
 
 export HOME="${SCRATCH}/home"
+# Isolation pre-flight: step-04's ladder also looks in ~/.copilot and
+# ~/.amplihack. Neither may exist, or a real helper could answer for the test.
+for _d in "${HOME}/.amplihack" "${HOME}/.copilot"; do
+    [[ ! -e "${_d}" ]] || harness "scratch HOME must not contain ${_d##*/}"
+done
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_CONFIG_NOSYSTEM=1
 export GIT_TERMINAL_PROMPT=0 GIT_ALLOW_PROTOCOL=file
 export GIT_AUTHOR_NAME="Test" GIT_AUTHOR_EMAIL="t@example.com"
@@ -157,8 +168,10 @@ make_dirty() {
 
 # run_step <repo> [amplihack_home] [worktree_dir] -> RUN_RC, RUN_STDOUT,
 # RUN_STDERR, RUN_JSON. worktree_dir defaults to <repo>-wts.
+# amplihack_home defaults to AHOME_OK only when OMITTED: an explicit "" is
+# passed through as an empty AMPLIHACK_HOME (S11b needs that).
 run_step() {
-    local repo="$1" ahome="${2:-${AHOME_OK}}" wtd="${3:-$(wtdir "$1")}"
+    local repo="$1" ahome="${2-${AHOME_OK}}" wtd="${3:-$(wtdir "$1")}"
     local out="${SCRATCH}/run.out" err="${SCRATCH}/run.err"
     RUN_RC=0
     (
@@ -317,6 +330,38 @@ if grep -qE 'git[[:space:]]+branch[[:space:]]+--list' <<<"${STEP3}"; then
 else
     pass "A7-no-branch-list" "step3 does not use 'git branch --list'"
 fi
+
+# A8: the helper is located exactly the way workflow-worktree.yaml step-04
+# locates it, and the old installed-copies-first loop is gone.
+A8_OK=1
+for _want in \
+    '${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+    '${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+    '$(pwd)/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+    '${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+    '${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+    'DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"' \
+    '[ -f "$DECONFLICT_HELPER" ] || DECONFLICT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh"' \
+    'if [ -f "$DECONFLICT_HELPER" ]'; do
+    if ! grep -qF -- "${_want}" <<<"${STEP3}"; then
+        A8_OK=0; fail "A8-step04-lookup" "step3 lacks step-04 lookup text: ${_want}"
+    fi
+done
+for _bad in '[ -n "$DECONFLICT_HELPER" ]' 'for _candidate' 'on purpose'; do
+    if grep -qF -- "${_bad}" <<<"${STEP3}"; then
+        A8_OK=0; fail "A8-step04-lookup" "step3 still contains the old lookup: ${_bad}"
+    fi
+done
+# The ladder must be in step-04's order: AMPLIHACK_HOME tier first, ~/.amplihack last.
+_order="$(grep -nF -e '${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+                 -e '/.copilot/amplifier-bundle/tools/workflow_worktree_deconflict.sh' \
+                 -e '/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh' <<<"${STEP3}" \
+          | cut -d: -f1 | tr '\n' ' ')"
+read -r _o1 _o2 _o3 _rest <<<"${_order}"
+if [[ -z "${_o3:-}" || -n "${_rest:-}" ]] || ! (( _o1 < _o2 && _o2 < _o3 )); then
+    A8_OK=0; fail "A8-step04-lookup" "lookup tiers missing, repeated or out of step-04 order (lines: ${_order})"
+fi
+[[ ${A8_OK} -eq 1 ]] && pass "A8-step04-lookup" "step3 locates the helper with step-04's ladder and DECONFLICT_HELPER lines"
 
 # ===========================================================================
 # Part S — the real step3 bash against scratch repos.
@@ -542,6 +587,72 @@ if [[ ${RUN_RC} -eq 0 && "$(json_field branch_name)" == "${ORIG}" ]]; then
     pass "S11-trusted-first" "AMPLIHACK_HOME's helper is used before the repo-local copy"
 else
     fail "S11-trusted-first" "repo-local helper took precedence or the run failed: rc=${RUN_RC} json='${RUN_JSON}'"
+fi
+
+# --- S11b: AMPLIHACK_HOME empty -> step-04's ladder reaches the helper in the
+# repo. (a) it is really used; (b) its answer is still validated.
+PLANTED_BRANCH="feat/consensus-fix-issue-1626-planted"
+[[ "${PLANTED_BRANCH}" == "${ORIG}-planted" ]] || harness "S11b planted name drifted from ORIG"
+
+# s11b_repo <id> -> dirty+ahead State 1 repo with the planted helper written by
+# the caller; sets R, W, SUM_ALL, HEAD_BEFORE, HEADS_BEFORE, WTS_BEFORE.
+s11b_repo() {
+    R="$(build_repo "$1")"; state1 "${R}"
+    W="$(wtdir "${R}")/${ORIG}"
+    commit_ahead "${W}"; make_dirty "${W}"
+    mkdir -p "${R}/amplifier-bundle/tools"
+}
+s11b_snapshot() {
+    SUM_ALL="$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")"
+    HEAD_BEFORE="$(git -C "${W}" rev-parse HEAD)"
+    HEADS_BEFORE="$(heads "${R}")"; WTS_BEFORE="$(wt_list "${R}")"
+}
+s11b_orig_intact() {
+    [[ "$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")" == "${SUM_ALL}" \
+       && "$(git -C "${W}" rev-parse HEAD)" == "${HEAD_BEFORE}" \
+       && "$(git -C "${R}" rev-parse "refs/heads/${ORIG}")" == "${HEAD_BEFORE}" ]]
+}
+
+# S11b(a): the planted helper answers <ORIG>-planted.
+s11b_repo s11ba
+cat > "${R}/${HELPER_REL}" <<'HELPER_EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'feat/consensus-fix-issue-1626-planted'
+HELPER_EOF
+s11b_snapshot
+run_step "${R}" ""
+if [[ ${RUN_RC} -eq 0 && "$(json_field branch_name)" == "${PLANTED_BRANCH}" \
+      && "$(json_field worktree_path)" == "$(wtdir "${R}")/${PLANTED_BRANCH}" ]] \
+   && wt_registered "${R}" "$(wtdir "${R}")/${PLANTED_BRANCH}" \
+   && [[ "$(git -C "$(wtdir "${R}")/${PLANTED_BRANCH}" branch --show-current 2>/dev/null)" == "${PLANTED_BRANCH}" ]]; then
+    pass "S11b-a-repo-helper-used" "AMPLIHACK_HOME empty: the repo's helper is used and the outputs follow '${PLANTED_BRANCH}'"
+else
+    fail "S11b-a-repo-helper-used" "AMPLIHACK_HOME empty, repo helper: rc=${RUN_RC} json='${RUN_JSON}' stderr: $(last_lines 2 "${RUN_STDERR}")"
+fi
+if s11b_orig_intact; then
+    pass "S11b-a-intact" "original worktree's files and HEAD are unchanged"
+else
+    fail "S11b-a-intact" "original worktree's files or HEAD changed"
+fi
+
+# S11b(b): the planted helper answers a name without the ORIG prefix.
+s11b_repo s11bb
+cat > "${R}/${HELPER_REL}" <<'HELPER_EOF'
+#!/usr/bin/env bash
+printf '%s\n' 'other'
+HELPER_EOF
+s11b_snapshot
+run_step "${R}" ""
+if [[ ${RUN_RC} -ne 0 ]] && grep -q 'ERROR' <<<"${RUN_STDERR}"; then
+    pass "S11b-b-rejected" "repo helper answer 'other' is refused: exit ${RUN_RC} with ERROR"
+else
+    fail "S11b-b-rejected" "repo helper answer 'other': rc=${RUN_RC}, expected non-zero with ERROR"
+fi
+if s11b_orig_intact && [[ "$(heads "${R}")" == "${HEADS_BEFORE}" && "$(wt_list "${R}")" == "${WTS_BEFORE}" ]] \
+   && ! git -C "${R}" show-ref --verify --quiet refs/heads/other; then
+    pass "S11b-b-intact" "files, branch heads and worktree list are unchanged"
+else
+    fail "S11b-b-intact" "work, a branch or the worktree list changed although the step refused"
 fi
 
 # --- S12: a worktree path that could forge the JSON line is refused before
