@@ -26,6 +26,8 @@ another account automatically when one runs out of quota, see
 [Switch accounts automatically](#switch-accounts-automatically). To keep the
 default `~/.claude` login on the account with the most capacity, see
 [Rotate Claude logins automatically](claude-profile-rotation.md).
+To be told when every account is out of capacity, see
+[When no account has capacity](#when-no-account-has-capacity).
 
 ## What a new profile inherits
 
@@ -1252,6 +1254,59 @@ signal number.
 A rerun starts the step from the beginning, so anything the failed attempt
 had already done (a push, a comment) may be done again.
 
+### When no account has capacity
+
+When every account is at or above the threshold, auto-switch has nowhere to
+go and stops switching. amplihack then tells you instead of letting Claude go
+quiet:
+
+- **Status line.** A line is added below your usual status line:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+  ```
+
+  It reads `at limit` instead of `≥90%` when every account has hit its hard
+  limit.
+- **Claude Code.** At session start, or on the next prompt, Claude Code shows
+  the same line followed by `— run 'amplihack profile usage'`. It is shown
+  once per session for each state, and again if things get worse (from
+  `≥90%` to `at limit`). Claude is also told that capacity is low, so it
+  prefers small sequential steps over large parallel workflows.
+- **`amplihack claude`.** One line on stderr when it starts:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'
+  ```
+
+- **`amplihack recipe run`.** One line on stderr before the recipe starts.
+  The recipe still runs; you may know an account is about to reset.
+
+  ```
+  amplihack recipe run: ⚠ all Claude accounts at limit · next reset Oct 22 2am — run 'amplihack profile usage' (continuing anyway)
+  ```
+
+The reset time is the earliest one across your accounts, in local time. To
+see every account's numbers:
+
+```bash
+amplihack profile usage
+```
+
+The notice clears by itself when the first account's window resets. If no
+reset time is known, it clears 5 hours after it was last confirmed. A profile
+in the exclusion list does not count, and a profile with no reading yet
+counts as having capacity, so it never causes a notice.
+
+The state is worked out from readings amplihack already has: the status-line
+wrapper, `amplihack profile usage` and the
+[rotator](claude-profile-rotation.md#when-no-account-has-capacity) each
+update it when they record usage. It is kept in
+`<root>/.auto-switch.d/capacity.json`, which holds profile names and times,
+never logins. Nothing is shown, and nothing is written, while auto-switch is
+off. The file format and exact rules are in the
+[capacity notice reference](../reference/profile-command.md#capacity-notice).
+
 ### Turn it off
 
 ```bash
@@ -1384,6 +1439,10 @@ do not depend on these two behaviours.
   happen twice.
 - **File modes are kept.** Patching `.claude.json` or `settings.json` keeps
   the file's mode; a `settings.json` that `install` creates is `0600`.
+- **The capacity notice can lag by one reading.** It is updated only when
+  the status line, `profile usage` or the rotator records usage. A step that
+  fails with a usage limit and finds no profile left to rerun on does not
+  update it.
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.

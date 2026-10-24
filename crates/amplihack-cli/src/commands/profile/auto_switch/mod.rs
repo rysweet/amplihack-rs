@@ -12,6 +12,8 @@
 #[cfg(unix)]
 mod candidate;
 #[cfg(unix)]
+pub(super) mod capacity;
+#[cfg(unix)]
 mod cli;
 #[cfg(unix)]
 mod config;
@@ -36,6 +38,8 @@ mod usage;
 
 #[cfg(all(test, unix))]
 mod tests_candidate;
+#[cfg(all(test, unix))]
+mod tests_capacity;
 #[cfg(all(test, unix))]
 mod tests_config;
 #[cfg(test)]
@@ -288,6 +292,24 @@ pub fn supervise(store: &ProfileStore, inherited: &str) -> anyhow::Result<Option
     }
 }
 
+/// `amplihack claude` / launch: the one-line no-capacity warning on stderr
+/// when every account is over the threshold. Never changes the launch.
+pub fn launch_warning(args: &[String]) {
+    #[cfg(unix)]
+    capacity::launch_warning(args, &mut std::io::stderr());
+    #[cfg(not(unix))]
+    let _ = args;
+}
+
+/// `amplihack recipe run`: the one-line no-capacity warning, with the reset
+/// time, to `out`. Never refuses the run.
+pub fn recipe_warning(out: &mut dyn std::io::Write) {
+    #[cfg(unix)]
+    capacity::recipe_warning(out);
+    #[cfg(not(unix))]
+    let _ = out;
+}
+
 /// Who holds which login, from the ledger: directory → account live there.
 /// Read for marks and attribution in `profile usage`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -440,6 +462,7 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         }
         if let Some(file) = file {
             state.save_usage(&file)?;
+            capacity::refresh(&state, &file, &ledger, "usage");
         }
         Ok(RecordOutcome::Recorded { written, moved })
     }

@@ -31,6 +31,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
+- [When no account has capacity](#when-no-account-has-capacity)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
 - [Swap refused](#swap-refused)
@@ -631,6 +632,43 @@ background rotation and auto-switch. With auto-switch off the hook exits at
 once, prints nothing, and reads only the saved root and the toggle. To keep rotation but not
 the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
 `amplihack install` adds it again.
+
+## When no account has capacity
+
+When the `ALERT: no profile has capacity` line is written, the rotator has
+nowhere to move the login, so it stays put. The log is not the only place you
+hear about it. When a cycle gets as far as deciding to swap, stay or raise
+the ALERT, the rotator updates the shared capacity state from that cycle's
+measurements, and the status line, Claude Code, `amplihack claude` and
+`amplihack recipe run` show a warning such as:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+```
+
+The capacity state uses the auto-switch threshold and exclusion list, not
+`--session-at` and `--week-at`, so it agrees with what the status line and
+`profile usage` record. The rotator's `ALERT` can therefore appear at
+different percentages from the warning. A profile whose probe failed counts
+as having capacity, so it does not cause a warning.
+
+The warning needs auto-switch to be on. The rotator rotates with no
+auto-switch setting at all, but then it writes only the `ALERT` to its log
+and no warning appears. To get the warning as well, run:
+
+```bash
+amplihack profile auto-switch on
+```
+
+A cycle that stops early, for example on `skip: state lock busy` or
+`skip: state changed during measurement`, does not update the warning; the
+next full cycle does.
+
+The warning clears by itself when the first account resets. Where it
+appears and how it is deduplicated is in
+[When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
+the file and the exact rules are in the
+[capacity notice reference](../reference/profile-command.md#capacity-notice).
 
 ## Move from the tmux prototype
 

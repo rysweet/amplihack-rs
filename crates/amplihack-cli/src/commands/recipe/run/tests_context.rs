@@ -664,3 +664,146 @@ mod issue_1570_context_sources {
         );
     }
 }
+
+// --- the no-capacity warning before the run ---------------------------------
+
+#[cfg(unix)]
+mod capacity_warning {
+    use super::super::*;
+    use amplihack_utils::claude_capacity::{self as cap, CapacityFile, State};
+    use amplihack_utils::root_sandbox::SkipPermissionsEnv;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::Path;
+
+    fn claude(_: &Path) -> amplihack_utils::agent_binary::Resolution {
+        amplihack_utils::agent_binary::Resolution {
+            binary: "claude".to_string(),
+            source: amplihack_utils::agent_binary::ResolutionSource::Env,
+            context_file: None,
+            unusable_contexts: Vec::new(),
+            session_marker: None,
+        }
+    }
+
+    fn private_dir(p: &Path) {
+        std::fs::create_dir_all(p).unwrap();
+        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    /// Runs a one-step bash recipe through a stub runner with a temporary
+    /// HOME and profile root holding `state`. Returns the pre-flight output
+    /// and whether the runner ran.
+    fn run_with_capacity(state: Option<State>, toggle: &str, depth: &str) -> (String, bool) {
+        let _guard = crate::test_support::env_lock()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path().join("home");
+        let root = tmp.path().join("profiles");
+        private_dir(&home);
+        private_dir(&root);
+        private_dir(&root.join(cap::STATE_DIR));
+        if let Some(state) = state {
+            let t = chrono::Utc::now().timestamp();
+            let f = CapacityFile {
+                version: 1,
+                state,
+                threshold: 90,
+                over: vec!["a".into()],
+                earliest_reset: chrono::DateTime::from_timestamp(t + 7200, 0),
+                written_at: chrono::DateTime::from_timestamp(t, 0).unwrap(),
+                writer: "statusline".into(),
+            };
+            let p = cap::path(&root);
+            std::fs::write(&p, serde_json::to_vec(&f).unwrap()).unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let ran = tmp.path().join("ran");
+        let runner = tmp.path().join("recipe-runner-rs");
+        std::fs::write(
+            &runner,
+            format!(
+                "#!/bin/sh\n: > '{}'\n\
+                 printf '%s' '{{\"recipe_name\":\"probe\",\"success\":true,\"step_results\":[],\"context\":{{}}}}'\n",
+                ran.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&runner, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let recipe = tmp.path().join("probe.yaml");
+        std::fs::write(
+            &recipe,
+            "name: probe\nsteps:\n  - id: echo\n    type: bash\n    command: echo hi\n",
+        )
+        .unwrap();
+        let _orchestration = crate::test_support::EnvGuard::unset([
+            "AMPLIHACK_SESSION_TREE_DIR",
+            "AMPLIHACK_TREE_ID",
+            "AMPLIHACK_MAX_DEPTH",
+            "AMPLIHACK_RECIPE_RUN_ID",
+        ]);
+        let _env = crate::test_support::EnvGuard::set([
+            ("HOME", home.to_str().unwrap()),
+            ("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.to_str().unwrap()),
+            ("AMPLIHACK_CLAUDE_AUTO_SWITCH", toggle),
+            ("AMPLIHACK_SESSION_DEPTH", depth),
+            ("RECIPE_RUNNER_RS_PATH", runner.to_str().unwrap()),
+            ("TZ", "UTC"),
+        ]);
+        let mut out = Vec::new();
+        let _ = run_recipe_with(
+            recipe.to_str().unwrap(),
+            &[],
+            false,
+            false,
+            "table",
+            Some(tmp.path().to_str().unwrap()),
+            None,
+            &RootSandboxPreflight {
+                agent_binary: claude,
+                decision: || SkipPermissionsEnv::NotRoot,
+            },
+            &mut out,
+        );
+        (String::from_utf8(out).unwrap(), ran.exists())
+    }
+
+    #[test]
+    fn low_capacity_warns_with_the_reset_and_still_runs() {
+        let (out, ran) = run_with_capacity(Some(State::Low), "1", "0");
+        assert!(
+            out.contains("amplihack recipe run: ⚠ all Claude accounts ≥90% · next reset "),
+            "{out}"
+        );
+        assert!(out.contains("run 'amplihack profile usage'"), "{out}");
+        assert!(out.contains("(continuing anyway)"), "{out}");
+        assert!(
+            !out.contains("next reset unknown"),
+            "the reset is known: {out}"
+        );
+        assert!(ran, "never refuses");
+    }
+
+    #[test]
+    fn exhausted_capacity_warns_and_still_runs() {
+        let (out, ran) = run_with_capacity(Some(State::Exhausted), "1", "0");
+        assert!(
+            out.contains("amplihack recipe run: ⚠ all Claude accounts at limit · next reset "),
+            "{out}"
+        );
+        assert!(ran);
+    }
+
+    #[test]
+    fn no_warning_when_off_ok_missing_or_nested() {
+        for (state, toggle, depth, why) in [
+            (Some(State::Exhausted), "0", "0", "off"),
+            (Some(State::Ok), "1", "0", "ok"),
+            (None, "1", "0", "missing"),
+            (Some(State::Exhausted), "1", "1", "nested recipe run"),
+        ] {
+            let (out, _) = run_with_capacity(state, toggle, depth);
+            assert!(!out.contains("Claude accounts"), "{why}: {out}");
+        }
+    }
+}

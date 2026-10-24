@@ -2,7 +2,7 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::decide::Decision;
+use super::decide::{Decision, Reading};
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
@@ -12,7 +12,9 @@ use super::observe::{
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{State, exists, now, recover_auto_switch};
+use crate::commands::profile::auto_switch::kit::{
+    Rotated, State, capacity_from_rotation, exists, now, recover_auto_switch,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -360,6 +362,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             CycleOutcome::Alerted
         }
     };
+    capacity_from_rotation(
+        ctx.store.root(),
+        &rotated(live_name(&first.live), &live, &others),
+        t,
+    );
     record(ctx, &mut l, outcome, now())?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
@@ -368,4 +375,22 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         shared_dirs::ensure_for(&ctx.store, p);
     }
     Ok(outcome)
+}
+
+/// This cycle's readings for the no-capacity file: the live profile's and
+/// every other candidate's, as measured.
+fn rotated(
+    live: Option<&ProfileName>,
+    reading: &Reading,
+    others: &[(ProfileName, Reading)],
+) -> Vec<(ProfileName, Rotated)> {
+    let of = |r: &Reading| match *r {
+        Reading::Measured { session, week } => Rotated::Measured { session, week },
+        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Failed => Rotated::Failed,
+    };
+    live.map(|n| (n.clone(), of(reading)))
+        .into_iter()
+        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .collect()
 }
