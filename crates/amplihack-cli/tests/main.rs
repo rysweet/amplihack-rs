@@ -108,6 +108,8 @@ mod issue_1592_root_rotator;
 mod issue_1606_config_cli;
 #[path = "issue_1606_detach.rs"]
 mod issue_1606_detach;
+#[path = "issue_1634_shared_sessions.rs"]
+mod issue_1634_shared_sessions;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

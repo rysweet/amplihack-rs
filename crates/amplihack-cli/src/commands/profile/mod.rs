@@ -14,6 +14,7 @@ mod root_cmd;
 mod root_config;
 mod rotate;
 mod run;
+mod shared_dirs;
 mod store;
 mod usage_cmd;
 mod usage_parse;
@@ -36,6 +37,8 @@ mod tests_root_save;
 mod tests_run;
 #[cfg(test)]
 mod tests_seed;
+#[cfg(all(test, unix))]
+mod tests_shared_dirs;
 #[cfg(test)]
 mod tests_store;
 #[cfg(test)]
@@ -353,6 +356,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             store.resolve(&name)?;
             pointer::write(store.root(), &name)?;
             println!("default profile: {name}");
+            shared_dirs::ensure_for(&store, &name);
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;
@@ -366,6 +370,8 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             let name = ProfileName::parse(&name)?;
             store.resolve(&name)?;
             auto_switch::guard(&store, &name, auto_switch::Action::Login)?;
+            // Login spawns claude itself, not through the pre-spawn check.
+            shared_dirs::ensure_for(&store, &name);
             run::login(&store, &name)?
         }
         ProfileCommands::Run { name, args } => {
@@ -479,7 +485,10 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_sw
     }
     let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
         && auto_switch::inside_session(dir);
-    auto_switch::guard_launch(&store, &name, join).map_err(with_hint)
+    let hold = auto_switch::guard_launch(&store, &name, join).map_err(with_hint)?;
+    // Issue #1634: the shared session links, under the hold. Never fails.
+    shared_dirs::ensure_for(&store, &name);
+    Ok(hold)
 }
 
 /// Set when this process's launch profile was inherited (tier 2), the only
