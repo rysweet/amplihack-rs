@@ -10,7 +10,7 @@ amplihack profile add <name>
 amplihack profile list
 amplihack profile root [<dir>]
 amplihack profile show
-amplihack profile switch <name>
+amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
@@ -25,6 +25,7 @@ amplihack profile auto-switch repair
 amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate stop|status
+amplihack profile rotate autostart [on|off]
 amplihack launch|claude --profile <name> [...]
 ```
 
@@ -37,12 +38,13 @@ amplihack launch|claude --profile <name> [...]
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
 | `switch <name>` | Writes the default pointer. The profile must exist. Then checks the profile's [shared session links](#shared-session-directories); messages go to stderr. |
+| `switch --none` | Removes the default pointer. Prints `Default profile cleared.`, or `No default profile was set.` when there was none; exits 0 either way. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
-| `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. |
+| `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
-| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`. See [Rotate](#rotate). |
+| `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
 
 `remove` and `login` are also refused while auto-switch has an account's
 login away from home; see [Leases](#leases).
@@ -439,6 +441,7 @@ status, and none marks a profile live when there is doubt.
 | `warning: the login rotator's ledger names a profile that still has its own login; it is not marked live in ~/.claude` | The ledger names a profile whose directory still has a `.credentials.json`. |
 | `warning: could not list profiles; no profile is marked live in ~/.claude` | No ledger, and the profile root could not be listed (for example, it is not readable), so no account match was tried. |
 | `warning: the login in ~/.claude changed while profile "<name>" was probed; its usage was not recorded` | The evidence for the live profile changed during the probe. See [Swaps during the probe](#swaps-during-the-probe). |
+| `warning: profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: …` | Two logins are the same account. One line per pair, after the other warnings. See [Duplicate-login warning](#duplicate-login-warning). |
 
 #### JSON output
 
@@ -560,6 +563,9 @@ quiet period after a swap does not apply: `/usage` asks the live login
 directly, so its answer is current. Any failure while recording prints one
 `auto-switch:` warning to stderr and the exit status stays 0.
 
+After `usage.json` is written, `profile usage` also updates the
+[capacity file](#capacity-file) when the switch is on.
+
 On platforms without auto-switch (Windows and other non-Unix), there are no
 lease marks, `account` is always the profile's own name, and nothing is
 recorded or noted.
@@ -614,6 +620,7 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `AMPLIHACK_CLAUDE_AUTO_SWITCH` | `1` turns auto-switch on and `0` turns it off for this process and its children, overriding `<root>/.auto-switch`. Empty means unset. See [Toggle and precedence](#toggle-and-precedence). |
 | `<root>/.auto-switch` | Auto-switch settings. See [Settings file](#settings-file). |
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
+| `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
 
 ### Seeding
 
@@ -1389,7 +1396,9 @@ With the switch off and no `<root>/.auto-switch.d/` directory:
   `<root>/.auto-switch.d/` exist?) and stop;
 - launches, nested substitution and the rerun supervisor read
   `AMPLIHACK_CLAUDE_AUTO_SWITCH` once and, unless it decides the setting, make
-  at most one bounded read of `<root>/.auto-switch` (4096 bytes).
+  at most one bounded read of `<root>/.auto-switch` (4096 bytes);
+- launches do not [start the rotator](#rotate-autostart) and do not read its
+  autostart setting.
 
 Nothing else happens. No directory is created, no lock is taken, no usage is
 recorded, no profile is substituted, no output is buffered and no step is
@@ -1411,6 +1420,16 @@ so a login moved while the switch was on stays protected after `off`.
 | `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled` and `threshold`. |
 | `auto-switch install` | Adds the [status-line wrapper](#status-line-wrapper) to every profile that does not have it. Leaves a stale wrapper alone and reports it. Prints the root it acts on. |
 | `auto-switch repair` | If `<root>/.auto-switch.d/` exists, takes the global lock and runs [recovery](#session-end-and-recovery). Then does everything `install` does, and also rewrites stale wrappers (old or moved binary path, wrapped twice, edited by hand) to the canonical one. Prints the install lines, then one `recovery:` line per thing recovery did, or `recovery: nothing to do`. This is the only command whose purpose is recovery. |
+
+On Unix, `status` prints an `autostart:` line right after the `switch:`
+line, in the format described in [Rotate status](#rotate-status). When
+auto-switch is off it ends with ` — inactive (auto-switch off)`, because
+launches start the rotator only while auto-switch is on:
+
+```
+switch: off (file)
+autostart: on (default) — inactive (auto-switch off)
+```
 
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
 edited wrapper command, one wrapped twice, or one pointing at a different
@@ -1454,7 +1473,7 @@ Both `install` and `repair` are idempotent: a second run leaves every
 | `ignored AMPLIHACK_CLAUDE_AUTO_SWITCH value (use 1 or 0); the file decides` | The variable is set to something other than `1`, `0` or empty. |
 | `profiles without the wrapper: <names> — run: amplihack profile auto-switch install` | A profile's wrapper is `missing` or `stale`. |
 | `excluded but missing: <names>` | An exclusion names no existing profile. |
-| `profiles <a> and <b> are signed in to the same account; their readings are not reliable` | Two profiles' `oauthAccount.accountUuid` values are equal: from the profile's own `.claude.json`, or from its saved block while its directory hosts another account. The UUID itself is not printed. |
+| `profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.` | Two logins are the [same account](#account-identity): from each profile's own `.claude.json`, from its saved block while its directory hosts another account, or `$HOME/.claude.json` (shown as `~/.claude`). See [Duplicate-login warning](#duplicate-login-warning). No uuid, organization or e-mail is printed. |
 
 Every command takes the global state lock only when it needs it, and exits
 with status 1 on error with the usual `error:`/`hint:` lines.
@@ -1641,6 +1660,10 @@ When Claude runs the wrapper, it:
    byte for byte;
 4. runs the [in-session swap](#in-session-swap) check.
 
+While the [capacity notice](#capacity-notice) is due, step 3 adds one line
+after the original output, and step 2 also updates the
+[capacity file](#capacity-file) after recording the reading.
+
 The saved original in `statusline/<name>.json` is run only if it passes the
 [state directory](#state-directory) checks (a regular file owned by you,
 mode `0600`, not a symlink, at most 64 KiB, valid JSON). If it fails them, the
@@ -1665,7 +1688,8 @@ covered instead by [nested substitution](#nested-launches-and-auto-switch)
 when they start and by [usage-limit reruns](#usage-limit-reruns) when they
 fail.
 
-The wrapper never writes to standard output itself. Its exit code is the
+The wrapper writes to standard output itself only to add the
+[capacity notice](#capacity-notice) after the original output. Its exit code is the
 original command's, or `0` if there is none or it was not run. Its own errors, including a
 panic, are one line on stderr naming paths only.
 
@@ -1910,6 +1934,241 @@ A rerun starts the step again from the beginning, so anything the attempt
 that hit the limit had already done (a commit, a push, a comment) may be done
 again.
 
+### Capacity notice
+
+When auto-switch is on and every eligible account is at or above the
+threshold, amplihack says so in the status line, in Claude Code (through the
+hooks), and when `amplihack claude` or `amplihack recipe run` starts. The
+notice only informs: it makes no swap, refuses nothing and changes no exit
+status. With the switch off, none of this runs and behaviour is unchanged.
+
+#### Capacity file
+
+The state lives in `<root>/.auto-switch.d/capacity.json`:
+
+```json
+{
+  "version": 1,
+  "state": "low",
+  "threshold": 90,
+  "over": ["personal", "work"],
+  "earliest_reset": "2026-10-22T09:00:00Z",
+  "written_at": "2026-10-20T14:03:11Z",
+  "writer": "statusline"
+}
+```
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `version` | integer | Always `1`. |
+| `state` | `"ok"`, `"low"` or `"exhausted"` | See [Capacity states](#capacity-states). |
+| `threshold` | integer `1`–`100` | The auto-switch threshold the state was computed with. |
+| `over` | array of profile names | The eligible accounts at or above the threshold, sorted, no duplicates. |
+| `earliest_reset` | RFC 3339 UTC string or `null` | When the first of the `over` accounts gets capacity back. `null` when no reset time is known. |
+| `written_at` | RFC 3339 UTC string | When the file was written. |
+| `writer` | `"statusline"`, `"usage"` or `"rotate"` | Which command wrote it. |
+
+The file holds profile names, the state, the threshold and times only. It
+never holds account IDs, e-mail addresses, tokens or credential paths, and
+no reader ever shows `over` or `writer` to you or to the model.
+
+#### Capacity states
+
+The *eligible* accounts are the profiles that `profile list` shows, minus the
+[exclusion list](#settings-file). Listing reads the root directory; it runs
+no probe.
+
+- An account is *over* when it has a reading and the higher of its two
+  adjusted windows is at or above the threshold. This is the same test that
+  makes an account exhausted in [Candidate selection](#candidate-selection).
+- An account is *at its limit* when the same test passes at 100%, when it has
+  a `usage_limit_failure` [reading](#readings) whose window has not reset
+  yet, or, for the rotator only, when its probe reported `session_exhausted`
+  or `weekly_exhausted`.
+- An account with no reading, or whose probe failed, is not over. Missing
+  data never raises a notice.
+
+| State | When |
+|-------|------|
+| `exhausted` | Every eligible account is at its limit. |
+| `low` | Every eligible account is over, and at least one is not at its limit. |
+| `ok` | Anything else, including no eligible profiles. |
+
+With a single eligible profile, the state is `low` as soon as that account
+crosses the threshold.
+
+An account's reset time is the time it gets capacity back: the later of the
+two `resets_at` values when both windows are over, otherwise the `resets_at`
+of the window that is over. Only reset times in the future count.
+`earliest_reset` is the earliest known reset time among the `over` accounts,
+or `null` when none is known.
+
+#### When the notice clears
+
+Readers do not trust the stored state forever. The state they act on is:
+
+1. `ok` when the stored state is `ok`;
+2. `ok` once `earliest_reset` has passed. The first account to reset means
+   not every account is over any more, so the notice stops without anyone
+   rewriting the file;
+3. when `earliest_reset` is `null`, the stored state until 5 hours after
+   `written_at`, then `ok`.
+
+The 5-hour bound is the only time-based expiry, and it applies only when the
+reset time is unknown, so a notice can never stay up indefinitely. 5 hours is
+the length of the session window. A writer that keeps seeing the same state
+rewrites the file at least hourly in that case, so the bound does not clear a
+state that is still true.
+
+#### Capacity writers
+
+Only the three commands that already evaluate capacity write the file. None
+of them makes an extra network call or probe for it.
+
+| `writer` | Written | Readings used |
+|----------|---------|---------------|
+| `statusline` | By the [status-line wrapper](#status-line-wrapper), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
+| `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as 100%; a failed probe counts as no reading. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
+
+All three use the auto-switch threshold and exclusion list, not the
+rotator's `--session-at` and `--week-at`, so they agree on the state. The
+rotator's own `ALERT` line still follows its own thresholds. All three
+write while holding the global state lock, so writes never interleave and
+the last one wins. A writer that cannot get the lock records nothing and
+writes no capacity file. The three take reset times from the same
+`usage.json` entries, so a later write differs from an earlier one only by
+the readings taken in between.
+
+[Usage-limit reruns](#usage-limit-reruns) do not write the file. A step that
+runs out of profiles shows no notice until one of the three writers next
+runs.
+
+Write rules:
+
+- The file is written only while the [effective setting](#toggle-and-precedence)
+  is on. With the switch off it is neither written nor read, and a file left
+  from before is ignored. This gate applies to the rotator too: with no
+  `<root>/.auto-switch` and no `AMPLIHACK_CLAUDE_AUTO_SWITCH`, the rotator
+  still rotates and writes its `ALERT`, but no notice appears anywhere. Turn
+  auto-switch on to get the notice.
+- Writes go through a private temp file, are synced and renamed into place.
+  The file is `0600` in the `0700` state directory, and is never written
+  through a symlink.
+- The write is skipped when `state`, `over`, `threshold` and
+  `earliest_reset` are all unchanged, so the status line does not sync a file
+  every turn. The exception: when `earliest_reset` is `null` and `written_at`
+  is more than 1 hour old, the file is rewritten to keep the 5-hour bound
+  from expiring a state that still holds.
+- An `ok` result never creates the file. It only replaces an existing one.
+- A failed write is logged at debug level, naming only the operation and the
+  error kind. It never changes the writer's output or exit status.
+
+#### Reading the capacity file
+
+The hooks, the status-line wrapper, launches and `recipe run` read the file
+the same way. They take no lock, start no process and use no network.
+
+1. **Root.** Chosen in the same order as the [profile root](#profile-root):
+   `AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then
+   `~/.amplihack/claude-profiles`, with the same checks on each value. A value
+   that fails them means no notice; the reader never falls back to the
+   default root.
+2. **Gate.** The notice is shown only when the
+   [effective setting](#toggle-and-precedence) is on:
+   `AMPLIHACK_CLAUDE_AUTO_SWITCH=1` or `0` wins, any other value is ignored,
+   and otherwise `<root>/.auto-switch` must be a valid
+   [settings file](#settings-file) with `enabled=on`. Nothing is printed
+   about a bad variable on this path.
+3. **File.** It is opened without following symlinks and without blocking,
+   so a FIFO cannot hang a hook. It must be a regular file owned by you, at
+   most 16 KiB, valid JSON with `"version": 1`, a `threshold` from `1` to
+   `100`, and a `written_at` no more than 5 minutes in the future. Unknown
+   fields are accepted. An `earliest_reset` more than 8 days after
+   `written_at` is treated as unknown.
+
+If any step fails, the reader acts as if the state were `ok`: no notice, no
+error, and the caller's output is unchanged.
+
+#### Notice text
+
+The line has two forms, built only from fixed text, the state, the threshold
+and the reset time:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+⚠ all Claude accounts at limit · next reset Oct 22 2:30am
+```
+
+The first is `low` and shows the configured threshold; the second is
+`exhausted`. The reset time is in local time, with minutes only when they
+are not zero. When the reset time is unknown, the end reads
+`next reset unknown`.
+
+| Where | When | What is shown |
+|-------|------|---------------|
+| Status line | Every render while the state is `low` or `exhausted`. | The line, below the original status line. |
+| Claude Code, through the `SessionStart` and `UserPromptSubmit` hooks | Once per state per session, and again when the state gets worse. | The line plus `— run 'amplihack profile usage'` as a user-visible message, and a note to the model. See [Hook specifications](hook-specifications.md#capacity-notice-in-hooks). |
+| `amplihack claude` and `amplihack launch` | At start, on stderr. | The line plus ` — run 'amplihack profile usage'`. |
+| `amplihack recipe run` | At start, on stderr, before the recipe runs. | `amplihack recipe run: ` + the line + ` — run 'amplihack profile usage' (continuing anyway)`. |
+
+Examples:
+
+```
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'
+amplihack recipe run: ⚠ all Claude accounts at limit · next reset Oct 22 2am — run 'amplihack profile usage' (continuing anyway)
+```
+
+`amplihack claude` and `launch` print nothing when the arguments contain
+`-p` or `--print`, or when they run inside a recipe (`AMPLIHACK_SESSION_DEPTH`
+is a number above 0), so recipe agent steps do not repeat the warning.
+`recipe run` prints nothing when it is itself nested. Neither ever prompts,
+refuses to run or changes the exit status.
+
+**Status line.** When the state is `low` or `exhausted`, the wrapper passes
+the original command's standard output through unchanged, with no size cap,
+then writes the line on its own line: a newline first only if the original
+output was not empty and did not end with one, then the line, then a
+newline. The original command's standard error and exit status, including
+death by a signal, pass through unchanged. When the switch is off or the
+state is `ok`, the wrapper runs exactly as it did before this notice
+existed and its output is byte-identical.
+
+```
+work · opus 4 · 5h 93%
+⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+```
+
+#### Notice records
+
+The hooks remember the last state they showed for each session in
+`<root>/.auto-switch.d/notice/<session id>`. The file name is the session
+ID with unsafe characters replaced, cut to 128 bytes. The file holds one
+word, `low` or `exhausted`, and is read up to 64 bytes; anything else counts
+as no record.
+
+| Current state | Last shown | Result |
+|---------------|------------|--------|
+| `low` or `exhausted` | none | Show, record the state. |
+| `low` | `low` or `exhausted` | Nothing. |
+| `exhausted` | `low` | Show again, record `exhausted`. |
+| `exhausted` | `exhausted` | Nothing. |
+| `ok` | anything | Nothing, and delete the record, so a later drop shows again. |
+
+A hook call without a session ID shows the notice every time the state is
+`low` or `exhausted`, because there is nothing to key a record on.
+
+Records are written only when `.auto-switch.d/` and `notice/` are real
+directories owned by you with no group or other permissions (`notice/` is
+created `0700`). Each record is a `0600` temp file renamed into place. If the
+directories fail the check, nothing is written and the notice is still
+shown. When the state goes back to ok, the session's record is removed only if
+both directories already pass that check; otherwise it is left alone. Each
+write also deletes records older than 7 days, looking at no more
+than 256 entries, never following a symlink and removing only regular files
+you own. Two hooks in the same session racing on a record can at worst show
+the notice twice.
+
 ### State directory
 
 Everything is under `<root>/.auto-switch.d/` (directories `0700`, files
@@ -1926,9 +2185,11 @@ profile and never appears in `profile list`.
 | `accounts/<name>.json` | The profile's saved `oauthAccount` block. No tokens. |
 | `statusline/<name>.json` | The profile's original `statusLine` object. |
 | `rerun/` | Buffered stdout of supervised steps, `<pid>-<n>.out`; see [Usage-limit reruns](#usage-limit-reruns) for how long each is kept. |
+| `capacity.json` | Whether any account has capacity left; see [Capacity file](#capacity-file). Unlike the other state files, it accepts unknown fields and is capped at 16 KiB. |
+| `notice/<session>` | The last capacity state shown in a Claude session; see [Notice records](#notice-records). Unlike the other state files, it is a bare word, not JSON, and is read up to 64 bytes. |
 
-Every state file has `"version": 1` and rejects unknown fields. State files
-are capped at 64 KiB. Each name in them is checked with the
+Apart from `capacity.json` and `notice/<session>`, every state file has
+`"version": 1`, rejects unknown fields and is capped at 64 KiB. Each name in them is checked with the
 [name rules](#name-rules) before it is used in a path. A damaged
 `accounts/` or `statusline/` file is ignored with a warning and not
 overwritten.
@@ -1969,6 +2230,7 @@ amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--u
 amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
 amplihack profile rotate stop
 amplihack profile rotate status
+amplihack profile rotate autostart [on|off]
 ```
 
 | Command | Behaviour |
@@ -1979,6 +2241,8 @@ amplihack profile rotate status
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
 | `rotate status` | **Read-only.** Prints the [status lines](#rotate-status) and exits 0. |
+| `rotate autostart` | **Read-only.** Prints the effective [autostart](#rotate-autostart) state, for example `autostart: on (default)`. |
+| `rotate autostart on\|off` | Writes the autostart setting and prints `autostart: on (setting)` or `autostart: off (setting)`. Does not start or stop a rotator. Any other value is a usage error (status 2). |
 
 `--dry-run` belongs to the one-shot form only. Tuning flags go after `start`
 or `watch`; `amplihack profile rotate --margin 3 start` is a usage error and
@@ -2012,7 +2276,9 @@ hint: run `amplihack profile rotate --help` for the accepted values
 ```
 
 `start` resolves every setting and passes them to the background process as
-explicit flags, so the variables are read once, when `start` runs. The
+explicit flags, so the variables are read once, when `start` runs. A rotator
+started by [autostart](#rotate-autostart) takes them from the environment of
+the launch that started it. The
 background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
 the `claude` processes it starts.
 
@@ -2055,6 +2321,17 @@ Every non-dry-run cycle runs these steps in order:
    cycle stays or raises the no-capacity ALERT and the live profile is known,
    also record it as `live`, with its `account`.
 
+Between steps 6 and 7, after the swap, stay or ALERT and still under the
+lock taken in step 6, the cycle updates the
+[capacity file](#capacity-file) from that cycle's readings. This writes
+nothing under `rotate/` and does not change the decision. A cycle that ends
+before then does not update it: the lock busy in step 3 or 6, `skip: state
+changed during measurement`, a pending signal or stop, an inconsistent
+recovery, an ALERT about the live login, or a refused swap. The update is
+also skipped when the [effective setting](#toggle-and-precedence) is off,
+which includes having no setting at all, even though rotation still runs
+then.
+
 ### Rotate decision rule
 
 *Headroom* is `100 - max(session_used, week_used)`, rounded down to a whole
@@ -2073,22 +2350,48 @@ highest headroom; ties go to the name that sorts first by byte value.
 
 | Condition (all comparisons inclusive) | Outcome |
 |---------------------------------------|---------|
-| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`. |
+| Live probe failed, or `session_used >= session-at`, or `week_used >= week-at`; and `best - live >= margin` | Swap to best, `reason=threshold`. A failed live probe counts as headroom `0`, and the swap is then subject to [failed-probe damping](#rotate-failed-live-probes). |
 | As above, but no candidate meets the margin, or there are no candidates | ALERT `no-capacity`. No swap. |
 | No threshold reached, `now - swapped_at >= hold` (or no earlier swap), and `best - live >= upgrade-margin` and `best - live > 0` | Swap to best, `reason=upgrade`. |
 | Otherwise | Stay. |
 
 `swapped_at` and `previous` (the profile swapped out) come from the
 [ledger](#rotate-state-directory). During the hold no upgrade happens at
-all, so `previous` cannot come straight back by upgrade. Threshold swaps are
-never held.
+all, so `previous` cannot come straight back by upgrade. Threshold swaps on
+a measured reading are never held.
+
+#### Rotate failed live probes
+
+When the table above gives a threshold swap only because the live probe
+failed, the rotator applies these rules in order. `k` is the number of
+consecutive cycles, including this one, whose live probe failed.
+
+| Condition | Outcome | Log line |
+|-----------|---------|----------|
+| `k < 3` | Stay. | `stay: live probe failed (<k>/3)` |
+| `k >= 3` and `now - swapped_at < hold` | Stay. | `stay: live probe failed; held after last swap (<N>s left)`, where `N = hold - (now - swapped_at)`, or `hold` if `swapped_at` is in the future |
+| Otherwise | Swap to best. | `swap <from>-><to> live failed target s=<n>% w=<n>% reason=failed-probe` |
+
+`k` is kept in memory by `watch`. It is reset to `0` by a cycle whose live
+probe does not fail, by a completed swap, and by restarting the rotator. The
+one-shot `rotate` always uses `k = 1`, so it never swaps on a failed live
+probe alone. With `--hold 0` the second rule never applies, but the first
+still limits these swaps to one every three cycles.
+
+Nothing else changes: an ALERT when no candidate meets the margin, swaps on
+a measured threshold, swaps on an exhausted live login and upgrade swaps
+behave as in the table above. A damped stay counts as a stay without an
+alert, so it clears the stored ALERT key.
 
 ### Rotate live profile
 
 The live profile is the one whose login is in `~/.claude`. Accounts are
-compared by `oauthAccount.accountUuid`, or by `emailAddress` (case-insensitive)
-when either side has no uuid, read from `$HOME/.claude.json` and from each
-`<root>/<name>/.claude.json`. No credentials file is read. An account value
+compared by the [account identity rule](#account-identity) (user and
+organization), read from `$HOME/.claude.json` and from each
+`<root>/<name>/.claude.json`. The rotate ledger's `account` field is still
+the user only (or the e-mail address when there is no uuid), so the
+`hand-change` check does not notice a new login to the same user in
+another organization. No credentials file is read. An account value
 over 320 bytes or containing control characters counts as missing. Account
 values are never logged or printed.
 
@@ -2255,7 +2558,8 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
-| `rotate.err` | The background process's own stdout and stderr. Not rotated. |
+| `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
+| `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -2283,7 +2587,9 @@ stdout only, without the time.
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). |
+| `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
+| `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
 | `ALERT: no login in ~/.claude; no swap` | `~/.claude/.credentials.json` is missing or not a regular file. |
 | `ALERT: the account in ~/.claude is not the one the ledger names (live=<name>); no swap` | Hand change. |
@@ -2297,7 +2603,7 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
-| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
+| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
 `hand-change`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
@@ -2320,7 +2626,8 @@ account IDs, e-mail addresses, tokens, environment values or Claude's output.
 
 ### Rotate daemon
 
-`start` launches `amplihack profile rotate watch <resolved flags> --spawned`
+`start`, and a launch that [autostarts](#rotate-autostart) the rotator,
+launch `amplihack profile rotate watch <resolved flags> --spawned`
 with the same `amplihack` binary, in a new session (`setsid`) with `SIGHUP`
 ignored, stdin from `/dev/null`, and stdout and stderr appended to
 `rotate.err` (`0600`) beside the log. The log itself is written only by the
@@ -2330,8 +2637,10 @@ prints outside a cycle, such as start-up notices or a crash.
 pid file. No shell is involved.
 
 The child's environment is the parent's, with every `AMPLIHACK_ROTATE*`
-variable removed and `AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root
-`start` resolved. The child validates that value again when it starts, and
+variable, `CLAUDE_CONFIG_DIR` and `AMPLIHACK_CLAUDE_PROFILE` removed and
+`AMPLIHACK_CLAUDE_PROFILE_ROOT` set to the absolute root `start` resolved.
+Removing the profile variables means a rotator started from a
+`--profile` launch still probes and swaps `~/.claude`. The child validates that value again when it starts, and
 never reads `~/.amplihack/profile-root`. Changing the variable or the saved
 root, or closing the shell that ran `start`, does not move a running rotator.
 To move it to another root, stop it and start it again.
@@ -2405,6 +2714,7 @@ the process is not responding, not that a cycle was slow.
 ```
 root: /home/you/.claude-profiles (source: config)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -2415,6 +2725,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 |-----|-------|
 | `root` | Always the first line. `<path> (source: env\|config\|default)` for the resolved root, or `<path> (pinned by running rotator)` when the rotator was found through the [rotate root record](#rotate-root-record). The lines after it describe that root. |
 | `rotate` | `running`, `stopped`, `stale` or `unverifiable`. |
+| `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
@@ -2426,6 +2737,7 @@ no saved root, `status` finds the running rotator through the record:
 ```
 root: /home/you/.claude-profiles (pinned by running rotator)
 rotate: running
+autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
@@ -2435,6 +2747,78 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 A pending or inconsistent journal adds a line `journal: pending (phase <phase>)`
 or `journal: inconsistent`, and one that cannot be read `journal: damaged`. A
 ledger that cannot be read shows `live: - (ledger unreadable)`.
+
+### Rotate autostart
+
+On Unix, `amplihack claude`, `amplihack launch` and `amplihack profile run`
+start the background rotator when auto-switch is on and no rotator is
+running. The check runs after the launch has resolved its profile and before
+Claude starts. It never fails the launch, never changes its exit status and
+never writes to stdout. On other platforms it does nothing.
+
+It checks, in order, and stops silently at the first that fails. Nothing is
+created on disk before step 8.
+
+| Step | Check | When it fails |
+|------|-------|---------------|
+| 1 | Auto-switch is on: `<root>/.auto-switch` says `enabled=on`, or `AMPLIHACK_CLAUDE_AUTO_SWITCH=1`. A missing, damaged or `off` setting counts as off. | No effect. |
+| 2 | The root exists, is a real directory (not a symlink) owned by you, and is not writable by other users. | Skipped. Nothing else under the root is read; in particular the autostart setting is not. |
+| 3 | The effective uid is not `0`. | Skipped. `rotate start` still works as root. |
+| 4 | Autostart is on (see the precedence table below). | No effect. |
+| 5 | Not Docker: no `--docker` flag, and Docker not activated through the environment. The environment activates it only when `AMPLIHACK_USE_DOCKER` is truthy, the process is not already inside a container, and Docker is running. `--auto` launches are not skipped. | Skipped. |
+| 6 | The [daemon state](#rotate-daemon) is not `running` or `unverifiable`. | Already running, or skipped. |
+| 7 | The [prototype lock](#rotate-prototype-coexistence) is free and the root is private, as `start` requires. | Skipped. |
+| 8 | Creates the state directory if needed and tries `<root>/.auto-switch.d/lock` once, without waiting. | Busy: another process holds it. |
+| 9 | Under the lock, the daemon state is still not `running`. | Already running. |
+| 10 | The `AMPLIHACK_ROTATE_*` [settings](#rotate-settings) in the launch's environment are valid. | Failed; no rotator started. |
+| 11 | Starts the [daemon](#rotate-daemon), writes `rotate.pid` and the [root record](#rotate-root-record), then releases the lock. | Failed. If the pid file cannot be written, the child is sent `SIGTERM`. |
+
+Steps 8 to 11 run under the state lock, and `start` and other launches check
+under the same lock, so at most one rotator runs per root. Unlike `start`,
+autostart runs no recovery; the daemon's first cycle does.
+
+After step 11 the launch prints one line to stderr:
+
+```
+amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable
+```
+
+and appends `autostart: started pid <pid> exe <path>` to `rotate.err`. A
+failure at step 10 or 11, or an I/O error at step 8, is appended to
+`rotate.err` as one `autostart: failed: <error>` line, when that file can be
+written, and is otherwise ignored. Every `rotate.err` line has the
+[log](#rotate-log) time prefix and its control characters removed.
+
+Nested launches inside a recipe run take the same steps, so they start a
+rotator only when none is running. The Claude Code `SessionStart` hook does
+not start the rotator.
+
+#### Autostart setting
+
+| `AMPLIHACK_ROTATE_AUTOSTART` | `<root>/.auto-switch.d/rotate/autostart` | Effective | Status line |
+|------------------------------|------------------------------------------|-----------|-------------|
+| `1` or `on` | any | on | `autostart: on (env)` |
+| `0` or `off` | any | off | `autostart: off (env)` |
+| unset, empty or invalid | missing | on | `autostart: on (default)` |
+| unset, empty or invalid | `on` | on | `autostart: on (setting)` |
+| unset, empty or invalid | `off` | off | `autostart: off (setting)` |
+| unset, empty or invalid | anything else | off | `autostart: off (corrupt)` |
+
+The variable is case-insensitive. Any other value is ignored, and a process
+that reads it prints `warning: ignored AMPLIHACK_ROTATE_AUTOSTART value (use
+on, off, 1 or 0); the setting decides` to stderr once, without repeating the
+value.
+
+The setting file is read without following symlinks and only up to 64 bytes.
+It counts as `corrupt` when it is a symlink, is not a regular file, is not
+owned by you, is longer than 64 bytes, cannot be read, or holds anything but
+`on` or `off` and an optional newline. `rotate autostart on|off` replaces it
+atomically with mode `0600`, creating `<root>/.auto-switch.d/rotate/` first
+if needed.
+
+When the variable is set to a valid value, `rotate autostart on|off` still
+writes the file, and then warns on stderr that
+`AMPLIHACK_ROTATE_AUTOSTART=<value>` overrides it in this environment.
 
 ### Rotate prototype coexistence
 
@@ -2667,6 +3051,9 @@ failures use this format.
 | Pointer dangling (names a missing profile) | `amplihack profile switch <name>` |
 | Pointer corrupt or oversized | Re-run `profile switch <name>` |
 | `remove` without `--yes` | Re-run with `--yes` |
+| `login` produced a duplicate login | `sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.` See [Login check](#login-check). |
+| `login` found a new or previous login that is not a private regular file, or a `.rejected-logins` entry that already exists | Nothing was moved; follow the paths in the message. See [Login check](#login-check). |
+| `login` named the rotator's live profile | `log in with plain 'claude', or stop the rotator first.` See [Login check](#login-check). |
 | `--profile` with `--docker`/`--auto` | Launch without the flag combination |
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` with `--docker`, `--auto` or env-activated Docker | `unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto` |
 | Inherited `AMPLIHACK_CLAUDE_PROFILE` is an invalid name or not found | Unset `AMPLIHACK_CLAUDE_PROFILE`, or create the profile with `amplihack profile add <name>` |
@@ -2751,6 +3138,14 @@ makes no network calls. The status-line wrapper runs the original command
 with `sh -c`, which is what Claude itself does with it; the supervisor for
 reruns starts amplihack directly with no shell.
 
+Autostart reads only the auto-switch setting, its own setting file and
+`/proc`; it never opens a login file. It prints only the pid, and its status
+line only `on`, `off` and the source. It refuses a root writable by others
+and runs nothing as root, so another user cannot use the setting or the pid
+file to start a process for you. The rotator it starts keeps the
+`AMPLIHACK_ROTATE_*` values and the binary of the launch that started it;
+`rotate.err` records which binary that was.
+
 Residual risks of auto-switch:
 
 - Processes running as you, and root, are out of scope. They can read,
@@ -2766,3 +3161,184 @@ Residual risks of auto-switch:
   to print (for example by prompt injection) can cost one extra attempt per
   profile, but only for a step that already failed with a non-zero exit and
   was not killed.
+
+## Identity and duplicate logins
+
+How amplihack decides that two logins are the same account, how
+`profile login` refuses a duplicate, how a launch of the rotator's live
+profile is redirected, and how the default is cleared. The walkthrough is
+in [Accounts, organizations and duplicate logins](../howto/claude-profiles.md#accounts-organizations-and-duplicate-logins).
+
+### Account identity
+
+An account is read from the `oauthAccount` object of a `.claude.json`:
+`accountUuid` (the user), `organizationUuid` (the organization) and
+`emailAddress`. A value that is not a string, is over 320 bytes or contains
+control characters counts as missing. Only these fields are read.
+
+| Left | Right | Same account |
+|------|-------|--------------|
+| uuid `u`, org `o1` | uuid `u`, org `o1` | yes |
+| uuid `u`, org `o1` | uuid `u`, org `o2` | no |
+| uuid `u`, org `o1` | uuid `u`, no org | no |
+| uuid `u`, no org | uuid `u`, no org | yes |
+| different uuids | (any) | no |
+| uuid on one side only | (any) | no |
+| no uuid on either side | — | the e-mail addresses match, ignoring case |
+
+Every account-to-account comparison uses this rule: the `login` check, the
+[duplicate-login warning](#duplicate-login-warning), the
+[rotate live profile](#rotate-live-profile) match, auto-switch's account
+checks and the rotator's candidate checks. Two profiles with the same uuid
+and different organizations are two accounts, so they do not make the live
+profile `ambiguous`.
+
+The rotate ledger and auto-switch state files are unchanged. They still
+record the user only, and checks against them (the rotate ledger match,
+swap verification and auto-switch's observed-account check) still compare
+the user only. Where a full account is needed, the organization is read
+from the profile's `.claude.json`.
+
+### Login check
+
+`amplihack profile login <name>` runs in three steps. The usual
+[lease](#leases) refusals apply first. A login to the rotator's
+[live profile](#logins-in-claude) is refused before step 1, with nothing
+moved, because its login is `~/.claude` and the rotator refuses to swap back
+into a profile that has a login of its own:
+
+```
+error: profile '<name>' is the rotator's live profile; its login is ~/.claude. Nothing was moved.
+hint: log in with plain 'claude', or stop the rotator first.
+```
+
+1. **Before Claude starts.** If `<root>/<name>/.credentials.json` exists, it
+   is renamed into a new directory
+   `<root>/.rejected-logins/.pending-<name>-<time>/`, and the profile's
+   current `oauthAccount` block is written there as `oauthAccount.json`.
+   The path is printed first:
+   `note: holding the previous login of profile '<name>' in <path> while you log in`.
+   A previous login that is a symlink, has more than one link or is not
+   private stops the command here, before Claude starts, with nothing moved.
+2. **Claude runs.** amplihack ignores SIGINT while it waits, so Ctrl-C ends
+   Claude and the restore in step 3 still runs. No lock is held.
+3. **After Claude exits.** amplihack takes the state lock again and checks
+   leases again; if the profile is now leased or hosting another account,
+   or the rotator made it the live profile while Claude ran (the rotator
+   takes no lease), it stops, moves nothing, and prints where each login
+   is. If cleanup fails after Claude itself failed, the message starts with
+   `claude exited with an error first: ` and Claude's error. Otherwise:
+
+| Outcome | What happens | Exit |
+|---------|--------------|------|
+| Claude exited non-zero | Any new `.credentials.json` goes to `<name>-<time>/`. The previous login and `oauthAccount` are restored. No duplicate check. | Claude's status |
+| Claude exited 0, no new `.credentials.json`, a previous login was held | The login did not finish. The previous login and `oauthAccount` are restored: `Claude exited without writing a login file; the previous login of profile '<name>' was restored`. | 1 |
+| Claude exited 0, no `.credentials.json` before or after | The macOS Keychain case. `oauthAccount` is left as Claude wrote it, even for a duplicate: restoring the old block would make `.claude.json` disagree with the login in the Keychain. If `.claude.json` names a duplicate account, the refusal is printed but there is no file to move. | 0, or 1 for a duplicate |
+| New login is not a private regular file | Nothing is moved and its mode is not changed. The error reports the mode and says the login may be exposed; the previous login stays in the `.pending-…` directory, and the hint prints that path. | 1 |
+| New login duplicates another login | Refused; see below. | 1 |
+| The profiles cannot be listed, or the auto-switch state cannot be opened | The check fails closed: the new login is set aside and the previous one restored as for a refusal, with `could not check profile '<name>' for duplicate logins: <reason>`. | 1 |
+| New login is accepted | The previous login, if any, moves to `<name>-<time>-replaced/` and its path is printed. The empty `.pending-…` directory is removed. | 0 |
+
+The new login is compared with every other profile (its own `.claude.json`,
+or its saved block while it hosts another account) and with
+`$HOME/.claude.json`. The rotator's live profile is never compared with
+`~/.claude`, because it is refused before Claude starts.
+
+A refusal:
+
+1. prints `note: moving the new login of profile '<name>' to <path>`;
+2. renames the new `.credentials.json` into `<root>/.rejected-logins/<name>-<time>/`
+   and writes its `oauthAccount` block there as `oauthAccount.json`;
+3. renames the previous login back, if there was one;
+4. sets only the `oauthAccount` key of `<root>/<name>/.claude.json` back to
+   the saved block, or removes the key if there was none, keeping the file's
+   mode. Other keys stay as Claude left them. `.claude.json` is never
+   created. If a block has to go back but the file is missing, unparsable
+   or not a JSON object, amplihack stops and keeps the `.pending-…`
+   directory, whose `oauthAccount.json` is then the only copy of the block;
+5. removes the empty `.pending-…` directory and prints:
+
+```
+error: profile '<name>' was signed in to the same account and organization as <holder>. The new login was moved to <path>; '<name>' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login <name>' again.
+```
+
+`<holder>` is `profile '<other>'`, `~/.claude (rotator live profile '<live>')`
+when the live profile is known, or `~/.claude`.
+
+If a step fails part-way, amplihack stops and prints the path of every
+login it has moved. It never copies or deletes one.
+
+`<time>` is UTC as `YYYYMMDDTHHMMSSZ`. `.rejected-logins/` is created `0700`
+under a profile root that is not a symlink; each entry directory is created
+new (an existing one is an error, nothing moves) and is `0700`; files are
+`0600`. amplihack never deletes anything under `.rejected-logins/` except
+its own empty `.pending-…` directory and that directory's
+`oauthAccount.json`. Logins there are not listed by `profile list` and are
+never rotation or auto-switch candidates.
+
+The check never opens, reads, copies, changes the mode of or deletes a
+`.credentials.json`; it only checks its metadata without following symlinks
+and renames it with `renameat2(RENAME_NOREPLACE)`, syncing both directories.
+Messages contain profile names and paths only, never uuids, organization IDs
+or e-mail addresses. On platforms without Unix file semantics, `login` runs
+Claude as before, with no check.
+
+### Duplicate-login warning
+
+```
+profiles '<a>' and '<b>' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login <b>' with the browser signed out of claude.ai or in a private window.
+```
+
+`auto-switch status` prints it as a [status note](#status-notes) on stdout.
+`profile usage` prints it on stderr prefixed with `warning: `, after its
+other warnings, and it does not change the table, the JSON or the exit
+status. Both cover every profile under the root, whatever names `usage` was
+given.
+
+One line is printed per pair. Pairs of profiles follow `profile list` order;
+a pair with the login in `~/.claude` comes last, with `'~/.claude'` as
+`<a>` and the profile as `<b>`, so the fix always names a profile. The
+rotator's live profile is never paired with `~/.claude`. Names are cleaned
+of control characters.
+
+### Live profile launch
+
+When `amplihack claude` or `amplihack launch` resolves a profile (from
+`--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`, or the default
+pointer) and that profile is the one [rotate live profile](#rotate-live-profile)
+detection names, the launch runs with no profile: `CLAUDE_CONFIG_DIR` and
+`AMPLIHACK_CLAUDE_PROFILE` are not set for the child, so Claude uses
+`~/.claude`. One line goes to stderr:
+
+```
+note: profile '<name>' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+| Case | Result |
+|------|--------|
+| The resolved profile is the live profile | Redirected, one note. The pre-spawn check, the auto-switch launch checks and the launch hold do not run, as for a launch with no profile. |
+| Detection finds no live profile, is ambiguous, or fails | Not redirected, no note. |
+| Windows or another platform without Unix file semantics | Not redirected, no note. |
+| `--docker`, `--auto`, env-activated Docker | Unchanged; these are handled before this check. |
+| `profile run <name>` | Not redirected. It uses `<root>/<name>/`. |
+
+A plain `amplihack claude` with an ambient `CLAUDE_CONFIG_DIR` you exported
+yourself and no profile selected is unchanged.
+
+### Clearing the default
+
+```
+amplihack profile switch --none
+```
+
+| `.default` before | Output | Exit |
+|-------------------|--------|------|
+| exists (valid, corrupt or dangling) | `Default profile cleared.` | 0 |
+| missing | `No default profile was set.` | 0 |
+| a name and `--none` together, or neither | clap usage error | 2 |
+
+`--none` removes `<root>/.default` and nothing else; it does not need the
+named profile to exist. There is no `switch default` alias: `default` is a
+valid [profile name](#name-rules), so `switch default` selects the profile
+called `default`.

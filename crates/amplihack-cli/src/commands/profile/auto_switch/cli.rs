@@ -11,6 +11,7 @@ use super::usage::Window;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::profile::{default_live, duplicates, usage_cmd};
 use anyhow::Result;
 use clap::Subcommand;
 use std::fmt::Write as _;
@@ -273,6 +274,16 @@ fn status(store: &ProfileStore) -> Result<String> {
         if eff.on { "on" } else { "off" },
         eff.source
     )?;
+    #[cfg(unix)]
+    {
+        let inactive = if eff.on {
+            ""
+        } else {
+            " — inactive (auto-switch off)"
+        };
+        let line = crate::commands::profile::rotate::autostart_line(root);
+        writeln!(out, "{line}{inactive}")?;
+    }
     writeln!(out, "threshold: {}%", eff.config.threshold)?;
     writeln!(out, "exclude: {}", list(&eff.config.exclude))?;
     let names = profile_names(store)?;
@@ -356,7 +367,8 @@ fn status(store: &ProfileStore) -> Result<String> {
 }
 
 /// The status notes, in the documented order. Every input is already read;
-/// only the saved and current `oauthAccount` blocks are read here.
+/// only the saved and current `oauthAccount` blocks, `$HOME/.claude.json`
+/// and the rotator ledgers (for the live profile) are read here.
 fn notes(
     store: &ProfileStore,
     state: &State,
@@ -401,21 +413,11 @@ fn notes(
         let gone: Vec<&str> = gone.iter().map(|n| n.as_str()).collect();
         notes.push(format!("excluded but missing: {}", gone.join(", ")));
     }
-    let uuids: Vec<(&ProfileName, String)> = names
-        .iter()
-        .filter_map(|n| {
-            let hosting = ledger.is_some_and(|l| l.hosts.contains_key(n.as_str()));
-            swap::account_uuid(state, n.as_str(), hosting).map(|u| (n, u))
-        })
-        .collect();
-    for (i, (a, ua)) in uuids.iter().enumerate() {
-        for (b, ub) in &uuids[i + 1..] {
-            if ua == ub {
-                notes.push(format!(
-                    "profiles {a} and {b} are signed in to the same account; their readings are not reliable"
-                ));
-            }
-        }
+    let home = usage_cmd::home_dir();
+    let live_profile = default_live::live_name(store, home.as_deref());
+    let accounts = duplicates::accounts_with(state, ledger, names, home.as_deref(), live_profile);
+    for (a, b) in duplicates::pairs(&accounts) {
+        notes.push(duplicates::warning(&a, &b));
     }
     notes
 }

@@ -99,6 +99,8 @@ impl Fixture {
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
+            // Launches never start a real background rotator here (autostart).
+            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1");
         // Belt and braces: `env_clear` already removed these.
         for var in [

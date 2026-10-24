@@ -2,17 +2,19 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::decide::Decision;
+use super::decide::{Decision, Reading};
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
-    Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
+    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
 };
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{State, exists, now, recover_auto_switch};
+use crate::commands::profile::auto_switch::kit::{
+    Rotated, State, capacity_from_rotation, exists, now, recover_auto_switch,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -54,8 +56,9 @@ impl CycleOutcome {
     }
 }
 
-/// What a cycle needs, and what `watch` remembers between cycles so a
-/// `skip:` line is written only when it changes.
+/// What a cycle needs, and what `watch` remembers between cycles: the last
+/// skips, so a `skip:` line is written only when it changes, and the count
+/// of consecutive failed live probes for failed-probe damping.
 pub struct Ctx {
     pub store: ProfileStore,
     pub rs: RotateState,
@@ -64,6 +67,7 @@ pub struct Ctx {
     pub stop: Option<Arc<AtomicBool>>,
     last_skips: Option<Vec<(ProfileName, Skip)>>,
     last_proto: Option<&'static str>,
+    pub(super) failed_live: u32,
 }
 
 impl Ctx {
@@ -77,6 +81,7 @@ impl Ctx {
             stop: None,
             last_skips: None,
             last_proto: None,
+            failed_live: 0,
         }
     }
 
@@ -277,7 +282,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // not need `claude`, so it is looked for only now.
     let binary = resolve_claude_binary()
         .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
-    let (live, others, decision) = measure_and_decide(ctx, &binary, &first)?;
+    let Measurement {
+        live,
+        others,
+        decision,
+        note,
+        failed,
+    } = measure_and_decide(ctx, &binary, &first)?;
+    ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
@@ -329,11 +341,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
+            ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
         }
         Decision::Stay => {
+            if let Some(n) = &note {
+                out.emit(t, n);
+            }
             note_live(&mut l, &first, t);
+            // A damped stay is a stay: no alert applies, so it clears one.
             clear_alert(&mut l);
             CycleOutcome::Stayed
         }
@@ -345,6 +362,11 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             CycleOutcome::Alerted
         }
     };
+    capacity_from_rotation(
+        ctx.store.root(),
+        &rotated(live_name(&first.live), &live, &others),
+        t,
+    );
     record(ctx, &mut l, outcome, now())?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
@@ -353,4 +375,22 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         shared_dirs::ensure_for(&ctx.store, p);
     }
     Ok(outcome)
+}
+
+/// This cycle's readings for the no-capacity file: the live profile's and
+/// every other candidate's, as measured.
+fn rotated(
+    live: Option<&ProfileName>,
+    reading: &Reading,
+    others: &[(ProfileName, Reading)],
+) -> Vec<(ProfileName, Rotated)> {
+    let of = |r: &Reading| match *r {
+        Reading::Measured { session, week } => Rotated::Measured { session, week },
+        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Failed => Rotated::Failed,
+    };
+    live.map(|n| (n.clone(), of(reading)))
+        .into_iter()
+        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .collect()
 }

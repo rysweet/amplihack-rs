@@ -74,6 +74,11 @@ pub fn write(root: &Path, name: &ProfileName) -> Result<(), ProfileError> {
     Ok(())
 }
 
+/// Whether anything (valid or not) is at the pointer's path.
+pub fn exists(root: &Path) -> bool {
+    fs::symlink_metadata(root.join(FILE)).is_ok()
+}
+
 pub fn clear(root: &Path) -> Result<(), ProfileError> {
     check_root_not_symlink(root)?;
     match fs::remove_file(root.join(FILE)) {

@@ -1,6 +1,7 @@
 //! `default_live::detect`: the rotator ledger first, then the account match.
 use super::default_live::{
-    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, still_live,
+    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, live_name,
+    still_live,
 };
 use super::name::ProfileName;
 use super::store::ProfileStore;
@@ -176,9 +177,115 @@ fn without_a_ledger_the_matching_account_is_live() {
     e.claude_json("b", &account("u1", "other@example.com"));
     assert_eq!(e.live(), (Some("b".into()), None), "uuids decide");
 
+    // Without a uuid on either side the e-mails decide (D2).
     let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"me@example.com"}}"#,
+    );
     e.claude_json("a", &account("", "ME@Example.com"));
     assert_eq!(e.live(), (Some("a".into()), None), "e-mail, any case");
+}
+
+#[test]
+fn a_uuid_on_one_side_only_does_not_match() {
+    // `~/.claude.json` has u1; a profile with only an e-mail is not the
+    // same account (D2).
+    let e = env();
+    e.claude_json("a", &account("", "ME@Example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+fn account_org(uuid: &str, org: &str, email: &str) -> String {
+    serde_json::json!({"oauthAccount": {
+        "accountUuid": uuid,
+        "organizationUuid": org,
+        "emailAddress": email,
+    }})
+    .to_string()
+}
+
+#[test]
+fn one_user_in_two_orgs_marks_the_matching_org_live_without_a_warning() {
+    // D22: ryan-mistt-org and ryan-mistt-personal.
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o-personal", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o-team", "me@example.com"));
+    e.claude_json("b", &account_org("u1", "o-personal", "me@example.com"));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn one_user_in_two_orgs_with_neither_matching_marks_none() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o-third", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o-team", "me@example.com"));
+    e.claude_json("b", &account_org("u1", "o-personal", "me@example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+#[test]
+fn the_same_user_and_org_twice_is_still_ambiguous() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o1", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o1", ""));
+    e.claude_json("b", &account_org("u1", "o1", ""));
+    assert_eq!(e.live(), (None, Some(AMBIGUOUS_WARNING)));
+}
+
+#[test]
+fn an_org_on_one_side_only_does_not_match() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o1", "me@example.com"),
+    );
+    e.claude_json("a", &account("u1", "me@example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+#[test]
+fn the_default_dir_account_is_read_through_the_safe_filter() {
+    // D4: the shared `identify::Account` replaces the private copy, so an
+    // over-long uuid counts as missing here too.
+    let e = env();
+    let long = "u".repeat(321);
+    private(&e.home.join(".claude.json"), &account(&long, ""));
+    e.claude_json("a", &account(&long, ""));
+    assert_eq!(e.live(), (None, None));
+}
+
+// --- live_name (bug 3) ------------------------------------------------------
+
+#[test]
+fn live_name_is_the_detected_profile() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    assert_eq!(
+        live_name(&e.store, Some(&e.home)).map(|n| n.as_str().to_string()),
+        Some("a".into())
+    );
+}
+
+#[test]
+fn live_name_is_none_without_home_detection_or_when_ambiguous() {
+    let e = env();
+    assert_eq!(live_name(&e.store, None), None, "no $HOME");
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "nothing matches");
+    e.claude_json("a", &account("u1", ""));
+    e.claude_json("b", &account("u1", ""));
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "ambiguous");
+    e.ledger("not json");
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "bad ledger");
 }
 
 #[test]

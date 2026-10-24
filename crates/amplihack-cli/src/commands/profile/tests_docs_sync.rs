@@ -258,6 +258,56 @@ fn rotate_log_grammar_is_documented() {
     }
 }
 
+/// Rotator autostart and failed-probe damping: the reference names the
+/// variable, the command, the status line and the new log lines as the code
+/// prints them, and the how-tos describe autostart.
+#[test]
+fn rotate_autostart_and_failed_probe_damping_are_documented() {
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "rotate autostart",
+        "autostart:",
+        "autostart: on (default)",
+        "autostart: off (setting)",
+        "autostart: off (env)",
+        "autostart: off (corrupt)",
+        "— inactive (auto-switch off)",
+        "<root>/.auto-switch.d/rotate/autostart",
+        "amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable",
+        "autostart: started pid <pid> exe <path>",
+        "autostart: failed: <error>",
+        "reason=failed-probe",
+        "live probe failed",
+        "stay: live probe failed (<k>/3)",
+        "stay: live probe failed; held after last swap (<N>s left)",
+    ] {
+        assert!(REFERENCE.contains(s), "reference is missing `{s}`");
+    }
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "amplihack profile rotate autostart off",
+        "autostart: on (default)",
+        "stay: live probe failed (1/3)",
+        "reason=failed-probe",
+        "stay: live probe failed; held after last swap (",
+    ] {
+        assert!(ROTATE_HOWTO.contains(s), "rotate how-to is missing `{s}`");
+    }
+    assert!(
+        !ROTATE_HOWTO.contains("does not start again after a reboot"),
+        "the reboot caveat is replaced by the autostart section"
+    );
+    assert!(
+        !REFERENCE.contains("held after failed-probe swap")
+            && !ROTATE_HOWTO.contains("held after failed-probe swap"),
+        "the hold message was renamed"
+    );
+    assert!(
+        HOWTO.contains("autostart"),
+        "claude-profiles.md notes autostart under auto-switch"
+    );
+}
+
 /// The how-to quotes each refusal and recovery reason as the code prints it,
 /// and its examples are the code's `Display` output.
 #[cfg(unix)]
@@ -333,4 +383,115 @@ fn docs_describe_the_saved_profile_root() {
     }
     assert!(HOWTO.contains("amplihack profile root"));
     assert!(ROTATE_HOWTO.contains("pinned by running rotator"));
+}
+
+// ---------------------------------------------------------------------------
+// Account identity, duplicate logins and the live default (bugs 1-3).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reference_quotes_the_switch_none_messages() {
+    for m in [super::CLEARED, super::NOT_SET] {
+        assert!(
+            REFERENCE.contains(&format!("`{m}`")),
+            "reference is missing {m:?}"
+        );
+        assert!(HOWTO.contains(m), "howto is missing {m:?}");
+    }
+    for doc in [REFERENCE, HOWTO, ROTATE_HOWTO] {
+        assert!(doc.contains("profile switch --none"));
+    }
+}
+
+#[test]
+fn docs_quote_the_live_launch_note() {
+    let note = super::live_launch_note("<name>");
+    assert!(REFERENCE.contains(&note), "reference is missing {note:?}");
+    let team = super::live_launch_note("team");
+    assert!(HOWTO.contains(&team), "howto is missing {team:?}");
+    assert!(
+        ROTATE_HOWTO.contains(&team),
+        "rotation howto is missing {team:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reference_quotes_the_login_refusal() {
+    use super::login_check::{refusal_hint, refusal_message};
+    let msg = format!("error: {}", refusal_message("<name>", "<holder>", "<path>"));
+    let hint = format!("hint: {}", refusal_hint("<name>"));
+    for line in [&msg, &hint] {
+        assert!(
+            REFERENCE.contains(line.as_str()),
+            "reference is missing {line:?}"
+        );
+    }
+    let howto_hint = format!("hint: {}", refusal_hint("rssourcelabs"));
+    assert!(
+        HOWTO.contains(&howto_hint),
+        "howto is missing {howto_hint:?}"
+    );
+    let howto_msg = refusal_message("rssourcelabs", "profile 'ryan-ryansweet'", "");
+    let head = howto_msg.split(" The new login").next().unwrap();
+    assert!(
+        HOWTO.contains(&format!("error: {head}")),
+        "howto is missing {head:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_live_profile_login_refusal() {
+    use super::login_check::{LIVE_REFUSAL_HINT, live_refusal_message};
+    let hint = format!("hint: {LIVE_REFUSAL_HINT}");
+    for (doc, name) in [(REFERENCE, "<name>"), (HOWTO, "team")] {
+        let msg = format!("error: {}", live_refusal_message(name));
+        assert!(doc.contains(&msg), "docs are missing {msg:?}");
+        assert!(doc.contains(&hint), "docs are missing {hint:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_duplicate_login_warning() {
+    use super::duplicates::{Holder, warning};
+    let p = |s: &str| Holder::Profile(super::name::ProfileName::parse(s).unwrap());
+    let template = warning(&p("aaa"), &p("bbb"))
+        .replace("aaa", "<a>")
+        .replace("bbb", "<b>");
+    assert!(
+        REFERENCE.contains(&template),
+        "reference is missing {template:?}"
+    );
+    let example = format!(
+        "note: {}",
+        warning(&p("rssourcelabs"), &p("ryan-ryansweet"))
+    );
+    assert!(HOWTO.contains(&example), "howto is missing {example:?}");
+}
+
+#[test]
+fn the_old_same_account_note_is_gone_from_the_docs() {
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("howto", HOWTO),
+        ("rotation howto", ROTATE_HOWTO),
+    ] {
+        assert!(
+            !doc.contains("their readings are not reliable"),
+            "{name} still quotes the old note"
+        );
+    }
+}
+
+#[test]
+fn docs_state_the_identity_rule() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        assert!(
+            doc.contains("organizationUuid"),
+            "{name} must name organizationUuid"
+        );
+    }
+    assert!(REFERENCE.contains("| uuid on one side only | (any) | no |"));
 }

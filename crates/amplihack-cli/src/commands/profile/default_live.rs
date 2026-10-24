@@ -43,26 +43,8 @@ enum Evidence {
     /// The same, from the `profile rotate` ledger.
     Rotate(Option<serde_json::Value>),
     /// The account in `~/.claude.json` the profile matched.
-    Account(Account),
-}
-
-#[cfg_attr(not(unix), allow(dead_code))]
-#[derive(Debug, Clone, PartialEq)]
-struct Account {
-    uuid: Option<String>,
-    /// Lower-cased.
-    email: Option<String>,
-}
-
-#[cfg_attr(not(unix), allow(dead_code))]
-impl Account {
-    /// The uuids decide when both have one; otherwise the e-mails do.
-    fn same(&self, other: &Self) -> bool {
-        match (&self.uuid, &other.uuid) {
-            (Some(a), Some(b)) => a == b,
-            _ => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
-        }
-    }
+    #[cfg(unix)]
+    Account(super::rotate::identify::Account),
 }
 
 /// Whether `live` is still the live profile, by the same evidence. A
@@ -90,6 +72,16 @@ pub(super) fn could_be_live(store: &ProfileStore, name: &super::name::ProfileNam
         let _ = (store, name);
         false
     }
+}
+
+/// The live profile's name, without the warning: `None` when nothing is
+/// live, detection is ambiguous or fails, `home` is `None`, or on platforms
+/// without the login file.
+pub(super) fn live_name(
+    store: &ProfileStore,
+    home: Option<&Path>,
+) -> Option<super::name::ProfileName> {
+    detect(store, home).0.map(|l| l.name)
 }
 
 /// The live profile, if any, and at most one warning to print. `home` is
@@ -138,13 +130,13 @@ mod since;
 #[cfg(unix)]
 mod unix {
     use super::super::auto_switch::{
-        CREDS, check_root_private, euid, exists, read_bounded_nofollow, read_claude_json,
-        writable_by_others,
+        CREDS, check_root_private, euid, exists, read_bounded_nofollow, writable_by_others,
     };
     use super::super::name::ProfileName;
+    use super::super::rotate::identify::Account;
     use super::super::store::ProfileStore;
     use super::{
-        AMBIGUOUS_WARNING, Account, Evidence, LEDGER_WARNING, LIST_WARNING, Live, OWN_LOGIN_WARNING,
+        AMBIGUOUS_WARNING, Evidence, LEDGER_WARNING, LIST_WARNING, Live, OWN_LOGIN_WARNING,
     };
     use serde::Deserialize;
     use std::fs;
@@ -220,12 +212,7 @@ mod unix {
         let Some(key) = l.account.as_ref().and_then(serde_json::Value::as_str) else {
             return true;
         };
-        account(home).is_some_and(|a| {
-            a.uuid.as_deref() == Some(key)
-                || a.email
-                    .as_deref()
-                    .is_some_and(|e| e.eq_ignore_ascii_case(key))
-        })
+        Account::of_dir(home).is_some_and(|a| a.matches_key(key))
     }
 
     fn since(l: &RotatorLedger) -> Option<f64> {
@@ -348,26 +335,8 @@ mod unix {
         }))
     }
 
-    /// `oauthAccount` in `dir/.claude.json`. An empty or non-string value
-    /// counts as missing.
-    fn account(dir: &Path) -> Option<Account> {
-        let (v, _) = read_claude_json(dir)?;
-        let block = v.get("oauthAccount")?;
-        let field = |k: &str| {
-            block
-                .get(k)
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-        };
-        Some(Account {
-            uuid: field("accountUuid"),
-            email: field("emailAddress").map(|e| e.to_lowercase()),
-        })
-    }
-
     fn from_account(store: &ProfileStore, home: &Path) -> (Option<Live>, Option<&'static str>) {
-        let Some(home_account) = account(home) else {
+        let Some(home_account) = Account::of_dir(home) else {
             return (None, None);
         };
         let Ok(names) = store.list() else {
@@ -378,7 +347,7 @@ mod unix {
             .filter_map(|n| ProfileName::parse(n).ok())
             .filter(|n| {
                 login_less_dir(store, n)
-                    .and_then(|dir| account(&dir))
+                    .and_then(|dir| Account::of_dir(&dir))
                     .is_some_and(|a| a.same(&home_account))
             });
         match (matched.next(), matched.next()) {
