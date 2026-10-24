@@ -331,11 +331,15 @@ further changes.
 ### `consensus-issue-worktree.yaml` — mirror (guidance)
 
 The consensus setup step is an `agent:` step (`amplihack:worktree-manager`)
-whose bash lives inside a natural-language `prompt:` block. The equivalent
-deconfliction guidance and helper-invocation snippet are inserted into that
-prompt **before** its own `git branch -D` (~L286). This mirror is verified by a
-**static parity assertion** (grep-based) rather than a behavioral test, because
-the recipe-runner does not execute prompt bash directly.
+whose bash lives inside a natural-language `prompt:` block. Since #1626 it
+calls `resolve --base "$BASE_REF"` like step-04, validates the answer (it must
+pass `check-ref-format`, use only `[A-Za-z0-9._/-]`, and equal the candidate or
+start with `<candidate>-`), and never resets or deletes a branch that holds
+work: its guard refuses instead. It looks for the helper in `$AMPLIHACK_HOME`,
+then `$HOME/.amplihack`, then the repository. The prompt bash is extracted and
+run end to end by
+`amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh`;
+see [issue-1565-rerun-preserves-worktree.md](../../docs/recipes/issue-1565-rerun-preserves-worktree.md).
 
 ## Examples
 

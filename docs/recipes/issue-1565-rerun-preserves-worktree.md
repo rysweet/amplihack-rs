@@ -8,9 +8,10 @@ gives the new run its own fresh branch and worktree.
 
 **Affects:**
 - `amplifier-bundle/recipes/workflow-worktree.yaml`: `step-04-setup-worktree`
+- `amplifier-bundle/recipes/consensus-issue-worktree.yaml`: `step3-setup-worktree` ([issue #1626](#consensus-issue-worktreeyaml-step3-issue-1626))
 - `amplifier-bundle/tools/workflow_worktree_deconflict.sh`: `resolve --base`
 
-**Closes:** #1565
+**Closes:** #1565, #1626
 
 ---
 
@@ -25,6 +26,7 @@ gives the new run its own fresh branch and worktree.
 - [Fail-loud guard](#fail-loud-guard)
 - [Cleaning up kept worktrees](#cleaning-up-kept-worktrees)
 - [Testing](#testing)
+- [consensus-issue-worktree.yaml step3 (issue #1626)](#consensus-issue-worktreeyaml-step3-issue-1626)
 - [Related](#related)
 
 ---
@@ -250,6 +252,196 @@ WORKTREE_YAML="$TMPDIR/workflow-worktree.main.yaml" \
 `WORKTREE_YAML` must be a regular file. CI runs the test against the in-repo
 YAML in the step "Recipes — re-run never destroys an existing worktree's work
 (issue #1565)".
+
+---
+
+## consensus-issue-worktree.yaml step3 (issue #1626)
+
+`step3-setup-worktree` in `consensus-issue-worktree.yaml` follows the same
+contract as step-04: a re-run never resets, cleans or deletes a branch or
+worktree that holds work. When the derived branch is dirty or ahead of
+`BASE_REF`, the run moves to a fresh suffixed branch. If the work is still
+there after deconfliction, or the helper can't be found and there is work, the
+step stops with an error. A clean existing branch is reused as before.
+
+This applies to the slug path only (branch `feat/consensus-<slug>`). The
+`existing_branch`/`pr_number` path (#342) adopts the named branch as it stands
+and is unchanged.
+
+### Behaviour by state
+
+| State | Situation | Result | `commands_executed` |
+|---|---|---|---|
+| 1, clean | Branch and worktree exist at this run's path, no changes, 0 commits ahead | Reused unchanged | `["reuse-clean-worktree"]` |
+| 1, dirty or ahead | Branch and worktree exist, with changes and/or commits ahead | Kept untouched. This run gets `<branch>-<suffix>` from `BASE_REF` in its own worktree. | `["create-from-base"]` |
+| 2, not ahead | Branch exists, no worktree, 0 commits ahead | Worktree attached to the existing branch (no `-b`) | `["attach-clean-branch"]` |
+| 2, ahead | Branch exists, no worktree, commits ahead | Branch kept at the same SHA. This run gets a fresh branch. | `["create-from-base"]` |
+| 3 | Branch does not exist | Branch and worktree created from `BASE_REF` | `["create-from-base"]` |
+| Foreign | Branch is checked out by a worktree at another path | This run gets a fresh branch | `["create-from-base"]` |
+
+Step3 contains no destructive or forced git command. The full list is
+checked by test [A1](#testing-step3): `checkout -- .`, `clean` with any `-f`
+flag, `reset --hard`, `rm -rf`, `branch -D`, `branch -f`/`--force`,
+`worktree add -B`/`--force`, `worktree remove`, `worktree prune`,
+`update-ref`, and any forced push (`--force`, `-f`, `--force-with-lease` or a
+`+<refspec>`).
+Branch existence is tested with
+`git show-ref --verify --quiet refs/heads/<branch>`, not the glob-matching
+`git branch --list`. A concurrent run that creates the same branch between the
+helper call and `git worktree add -b` makes the add fail, and the step exits
+non-zero rather than retrying with `-B`.
+
+The push at the end of step3 (`git push -u origin "$BRANCH_NAME"`, never
+forced) runs after `BRANCH_NAME` has been reassigned, so the kept branch and
+its unpushed commits never reach `origin`.
+
+### Step output
+
+The slug path prints exactly one JSON line on stdout, the same shape as the
+#342 path. All git output goes to stderr. The step's prompt tells the agent to
+return that line verbatim, so `{{worktree_setup.branch_name}}` and
+`{{worktree_setup.worktree_path}}` in later steps follow the resolved branch.
+
+```json
+{"branch_name": "feat/consensus-fix-issue-1626-1761300000-1-48213-4821", "worktree_path": "/repo/worktrees/feat/consensus-fix-issue-1626-1761300000-1-48213-4821", "commands_executed": ["create-from-base"], "setup_complete": true}
+```
+
+Before printing, step3 refuses a worktree path that contains `"`, `\` or a
+control character, so the JSON passed to later steps can't be forged.
+
+### Where the helper is found
+
+Step3 takes the first of these that exists:
+
+1. `$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_worktree_deconflict.sh` (only when `AMPLIHACK_HOME` is set and non-empty)
+2. `$HOME/.amplihack/amplifier-bundle/tools/workflow_worktree_deconflict.sh`
+3. `${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_worktree_deconflict.sh`
+
+This order differs from step-04 on purpose. The installed copies are tried
+before the copy inside the repository being worked on, so a helper committed
+to that repository is not preferred over the installed one. Even a planted
+helper can do no harm: its answer is validated (below), so the most it can do
+is pick a suffixed branch name or make the step refuse.
+
+If no helper is found, deconfliction is skipped and the guard decides: work
+present means `refuse_reset` and exit 1; a clean branch is reused; a missing
+branch is created. A missing helper never blocks a fresh or clean run.
+
+Without the helper, the Foreign state gets no fresh branch. Step3 tries to
+attach a worktree to the branch, `git worktree add` fails because another
+worktree already has it checked out, and the step exits non-zero without
+changing any ref or worktree.
+
+### Validating the helper's answer
+
+Step3 calls:
+
+```bash
+bash "$DECONFLICT_HELPER" resolve --base "$BASE_REF" \
+  "$BRANCH_NAME" "$WORKTREE_DIR/$BRANCH_NAME" "$(pwd)"
+```
+
+and treats the output as untrusted. Each check fails closed with exit 1,
+before any ref or worktree is created:
+
+| Check | Failure message |
+|---|---|
+| Helper exits 0 | `ERROR: worktree branch deconfliction failed for '<branch>' …` |
+| `git check-ref-format --branch "$RESOLVED_BRANCH"` passes | `ERROR: deconflict helper returned an invalid branch name …` |
+| Only `[A-Za-z0-9._/-]` characters (`check-ref-format` accepts `"`, so this check is needed) | `ERROR: deconflict helper returned an unexpected branch name …` |
+| Equals `<branch>` or starts with `<branch>-` | `ERROR: deconflict helper returned an unexpected branch name …` |
+
+Once the branch name is settled, step3 also refuses a worktree path that
+contains `"`, `\` or a control character, because that path goes into the JSON
+line later steps read. This check runs before any branch, worktree or push is
+made:
+
+| Check | Failure message |
+|---|---|
+| `WORKTREE_DIR/<branch>` has no `"`, `\` or control character | `ERROR: worktree path contains a quote, backslash or control character — refusing to emit setup JSON.` |
+
+After a rename, step3 prints
+`INFO: branch '<old>' holds work or is owned by a foreign worktree — deconflicting to '<new>'.`
+on stderr.
+
+Step3's own messages differ from step-04's in the [Messages](#messages)
+table: step3 prints the `deconflicting to` line above instead of
+`INFO: using branch '<new>' instead of '<old>'.`, and adds the
+`unexpected branch name` check, which also covers the character check. The helper's `WARNING: keeping …` and
+`INFO: … foreign worktree …` lines are the same for both, and the
+`refuse_reset` line uses the same format as step-04's.
+
+### Fail-loud guard
+
+The guard re-checks the resolved branch just before acting. If State 1 is
+dirty or ahead, or State 2 is ahead, it prints:
+
+```text
+ERROR: refusing to reset existing_branch=feat/consensus-fix-issue-1626 at /repo/worktrees/feat/consensus-fix-issue-1626 (uncommitted/untracked changes: yes, commits ahead of origin/main: 1). Re-run with existing_branch=feat/consensus-fix-issue-1626 to continue it, or move the work aside.
+```
+
+and exits 1. The format matches step-04's guard message. The changes field is
+`yes`, `no` or `unknown`.
+
+When the check can't give an answer, it assumes work and refuses: a failed
+`git rev-list --count` is treated as 1 commit ahead, and a failed
+`git status --porcelain` is treated as work and printed as
+`uncommitted/untracked changes: unknown`.
+
+To continue a kept branch, name it with `existing_branch` (the #342 path), as
+in [Continuing an earlier branch on purpose](#continuing-an-earlier-branch-on-purpose).
+
+### Known limitation
+
+A relative `WORKTREE_DIR` is not normalised, so the worktree lookup can miss an
+existing worktree and treat State 1 as State 2. The outcome is still safe: the
+step attaches a clean branch or refuses, and never resets.
+
+### Testing step3
+
+`amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh`
+extracts the real step3 bash block (the first ` ```bash ` fence after
+`- id: "step3-setup-worktree"`) and runs it under `env -i` against scratch
+repos with a local bare `origin`. Scratch lives under `$TMPDIR`; nothing
+touches the network or `/tmp`.
+
+| Case | Checks |
+|---|---|
+| A0 | The extracted block passes `bash -n` |
+| A1 | No destructive or forced command anywhere in the step3 block, with a self-check that the pattern matches `git worktree add -B x` and `git push --force` |
+| A2–A6 | The block contains `resolve --base "$BASE_REF"`, `check-ref-format --branch "$RESOLVED_BRANCH"`, `deconfliction failed`, `refuse_reset` and the final `printf` JSON line |
+| A7 | Branch existence uses `show-ref --verify`, never `git branch --list` (which matches globs) |
+| S0 | Helper present, fresh repo: creates `<branch>` at `WORKTREE_DIR/<branch>`; stdout is exactly one JSON line |
+| S1 | Helper present, State 1 dirty and ahead: untracked file, modified file and unpushed commit survive byte-for-byte; original branch SHA unchanged; new `branch_name` starts with `<original>-`; its worktree is registered; `origin` lacks the unpushed commit |
+| S2 | Helper present, State 2 ahead: original branch at the same SHA; new suffixed branch |
+| S3 | Helper present, clean State 1: same `branch_name`, same `worktree_path`, exit 0 |
+| S4 | Helper present, clean State 2: same `branch_name`, worktree re-attached to the existing branch at the same SHA, exit 0 |
+| S5, S6 | Helper hidden, dirty or ahead in State 1 / State 2: non-zero exit, `ERROR` on stderr, all work, SHAs and branches intact |
+| S7 | Helper hidden, clean branch: reused, exit 0 |
+| S7b | Helper hidden, fresh repo: created, exit 0 |
+| S8 | Stub helper prints `main`: non-zero exit, no ref or worktree changed |
+| S9 | Stub helper prints `<original>-a"b`: non-zero exit, no ref changed |
+| S10 | Stub helper exits non-zero: non-zero exit, stderr names `deconfliction failed`, no ref changed |
+| S11 | The installed helper (`AMPLIHACK_HOME`) is used before a copy planted in the repo |
+| S12 | `WORKTREE_DIR` contains `"`: non-zero exit with `refusing to emit setup JSON`, and no branch, worktree or pushed ref exists |
+
+Run it:
+
+```bash
+bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+```
+
+Confirm it fails against the old step3:
+
+```bash
+git show origin/main:amplifier-bundle/recipes/consensus-issue-worktree.yaml \
+  > "$TMPDIR/consensus-issue-worktree.main.yaml"
+WORKTREE_YAML="$TMPDIR/consensus-issue-worktree.main.yaml" \
+  bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+# exits non-zero against a YAML that still resets
+```
+
+CI runs it in the step after the #1565 test.
 
 ---
 
