@@ -16,6 +16,9 @@
 #   - If work still turns up after deconfliction, or the helper is missing and
 #     there is work, the step refuses (ERROR, non-zero) instead of resetting.
 #   - A clean existing branch is reused unchanged.
+#   - The guard runs on the RESOLVED name: if the helper's suffixed answer
+#     itself holds work, the step refuses and nothing is pushed (S13, both
+#     states). The push follows the resolved branch, never the original (S1/S2).
 #   - The helper is located the way step-04 does it: the 5-place ladder
 #     (AMPLIHACK_HOME, else REPO_PATH, else $(pwd); REPO_PATH; $(pwd);
 #     ~/.copilot; ~/.amplihack), then TOOLS_DIR and step-04's two
@@ -437,6 +440,26 @@ if ! git -C "${R}-origin.git" cat-file -e "${KEPT_SHA}^{commit}" 2>/dev/null; th
 else
     fail "S1-not-pushed" "unpushed commit ${KEPT_SHA:0:12} was pushed to origin"
 fi
+# push_checks <id> <repo> <new-branch>: the push follows the resolved branch.
+# The suffixed branch reaches origin at BASE_REF; the original never does.
+push_checks() {
+    local id="$1" r="$2" nb="$3" remote_new remote_orig base
+    base="$(git -C "${r}" rev-parse origin/main)"
+    remote_new=""
+    [[ -n "${nb}" ]] && remote_new="$(git -C "${r}" ls-remote origin "refs/heads/${nb}" 2>/dev/null | awk '{print $1}')"
+    remote_orig="$(git -C "${r}" ls-remote origin "refs/heads/${ORIG}" 2>/dev/null)"
+    if [[ -n "${nb}" && "${nb}" != "${ORIG}" && "${remote_new}" == "${base}" ]]; then
+        pass "${id}-push-suffixed" "origin has refs/heads/${nb} at BASE_REF"
+    else
+        fail "${id}-push-suffixed" "origin refs/heads/${nb:-<new>} is '${remote_new}', expected BASE_REF ${base:0:12}"
+    fi
+    if [[ -z "${remote_orig}" ]]; then
+        pass "${id}-push-not-orig" "origin has no refs/heads/${ORIG}"
+    else
+        fail "${id}-push-not-orig" "the original branch was pushed to origin: ${remote_orig}"
+    fi
+}
+push_checks S1 "${R}" "${NEW_BRANCH}"
 
 # --- S2: State 2 (branch ahead, worktree removed), helper present.
 R="$(build_repo s2)"; state1 "${R}"
@@ -457,6 +480,7 @@ if [[ ${RUN_RC} -eq 0 && "${NEW_BRANCH}" == "${ORIG}-"* && "${NEW_BRANCH}" != "$
 else
     fail "S2-new-branch" "expected a '${ORIG}-<suffix>' branch, got '${NEW_BRANCH}' rc=${RUN_RC}"
 fi
+push_checks S2 "${R}" "${NEW_BRANCH}"
 
 # --- S3: clean State 1, helper present -> reused unchanged.
 R="$(build_repo s3)"; state1 "${R}"
@@ -674,6 +698,96 @@ if ! git -C "${R}" show-ref --verify --quiet "refs/heads/${ORIG}" \
 else
     fail "S12-before-change" "the step created a branch, worktree or pushed ref before refusing the path"
 fi
+
+# --- S13: work still turns up after deconfliction. The helper answers a valid
+# suffixed name, <ORIG>-busy, that itself holds work. The guard runs on the
+# resolved name and must refuse; neither branch is touched or pushed.
+BUSY="${ORIG}-busy"
+STUB_BUSY="$(make_stub busy "printf '%s\\n' '${BUSY}'")"
+
+# s13_check <id> <changes yes|no>: R, W (ORIG worktree) and BW (BUSY path) set.
+s13_check() {
+    local id="$1" changes="$2" sums_b heads_b wts_b remote_b orig_head busy_head busy_wt_head=""
+    sums_b="$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")"
+    [[ -d "${BW}" ]] && sums_b+=" $(file_sum "${BW}/ahead.txt") $(file_sum "${BW}/README.md") $(file_sum "${BW}/untracked.txt")"
+    heads_b="$(heads "${R}")"; wts_b="$(wt_list "${R}")"
+    remote_b="$(git -C "${R}" ls-remote origin 2>/dev/null)"
+    orig_head="$(git -C "${W}" rev-parse HEAD)"
+    busy_head="$(git -C "${R}" rev-parse "refs/heads/${BUSY}")"
+    [[ -d "${BW}" ]] && busy_wt_head="$(git -C "${BW}" rev-parse HEAD)"
+
+    run_step "${R}" "${STUB_BUSY}"
+
+    if [[ ${RUN_RC} -ne 0 ]]; then
+        pass "${id}-exit" "deconflicted branch holding work: step exits ${RUN_RC}"
+    else
+        fail "${id}-exit" "deconflicted branch holding work: step exited 0 (json='${RUN_JSON}')"
+    fi
+    if grep -qF 'ERROR' <<<"${RUN_STDERR}" \
+       && grep -qF "existing_branch=${BUSY} " <<<"${RUN_STDERR}" \
+       && grep -qF "uncommitted/untracked changes: ${changes}, commits ahead of origin/main: 1" <<<"${RUN_STDERR}"; then
+        pass "${id}-error" "ERROR names '${BUSY}' with changes: ${changes}, ahead: 1"
+    else
+        fail "${id}-error" "stderr lacks the refusal for '${BUSY}' (changes: ${changes}): $(last_lines 2 "${RUN_STDERR}")"
+    fi
+    local sums_a
+    sums_a="$(file_sum "${W}/ahead.txt") $(file_sum "${W}/README.md") $(file_sum "${W}/untracked.txt")"
+    [[ -d "${BW}" ]] && sums_a+=" $(file_sum "${BW}/ahead.txt") $(file_sum "${BW}/README.md") $(file_sum "${BW}/untracked.txt")"
+    if [[ "${sums_a}" == "${sums_b}" ]]; then
+        pass "${id}-files" "untracked, modified and committed files in both worktrees are byte-identical"
+    else
+        fail "${id}-files" "a file in '${ORIG}' or '${BUSY}' was changed or deleted"
+    fi
+    if [[ "$(heads "${R}")" == "${heads_b}" \
+          && "$(git -C "${W}" rev-parse HEAD)" == "${orig_head}" \
+          && "$(git -C "${R}" rev-parse "refs/heads/${BUSY}" 2>/dev/null)" == "${busy_head}" ]] \
+       && { [[ -z "${busy_wt_head}" ]] || [[ "$(git -C "${BW}" rev-parse HEAD 2>/dev/null)" == "${busy_wt_head}" ]]; }; then
+        pass "${id}-refs" "branch heads and worktree HEADs are unchanged"
+    else
+        fail "${id}-refs" "a branch or worktree HEAD moved although the step refused"
+    fi
+    if [[ "$(wt_list "${R}")" == "${wts_b}" ]]; then
+        pass "${id}-wts" "git worktree list is unchanged"
+    else
+        fail "${id}-wts" "a worktree was added or removed although the step refused"
+    fi
+    if [[ "$(git -C "${R}" ls-remote origin 2>/dev/null)" == "${remote_b}" ]] \
+       && [[ -z "$(git -C "${R}" ls-remote origin "refs/heads/${ORIG}" "refs/heads/${BUSY}" 2>/dev/null)" ]]; then
+        pass "${id}-no-push" "git ls-remote origin is identical; neither branch was pushed"
+    else
+        fail "${id}-no-push" "origin's refs changed although the step refused"
+    fi
+    if ! grep -qF 'setup_complete' <<<"${RUN_STDOUT}"; then
+        pass "${id}-no-json" "no setup JSON line on stdout"
+    else
+        fail "${id}-no-json" "stdout carries a setup JSON line although the step refused: '${RUN_JSON}'"
+    fi
+}
+
+# S13-state1: <ORIG>-busy has a worktree at exactly WORKTREE_DIR/<ORIG>-busy,
+# one commit ahead, a modified tracked file and an untracked file.
+R="$(build_repo s13-state1)"; state1 "${R}"
+W="$(wtdir "${R}")/${ORIG}"
+commit_ahead "${W}"; make_dirty "${W}"
+BW="$(wtdir "${R}")/${BUSY}"
+git -C "${R}" worktree add -q -b "${BUSY}" -- "${BW}" origin/main
+commit_ahead "${BW}"; make_dirty "${BW}"
+wt_registered "${R}" "${BW}" || harness "S13-state1 busy worktree is not at WORKTREE_DIR/${BUSY}"
+s13_check S13-state1 yes
+
+# S13-state2: <ORIG>-busy is a branch only, one commit ahead.
+R="$(build_repo s13-state2)"; state1 "${R}"
+W="$(wtdir "${R}")/${ORIG}"
+commit_ahead "${W}"; make_dirty "${W}"
+BW="$(wtdir "${R}")/${BUSY}"
+_tmpwt="${SCRATCH}/s13-state2-tmpwt"
+git -C "${R}" worktree add -q -b "${BUSY}" -- "${_tmpwt}" origin/main
+commit_ahead "${_tmpwt}"
+git -C "${R}" worktree remove -- "${_tmpwt}"
+if wt_list "${R}" | grep -qF -- "${BUSY}" || wt_registered "${R}" "${_tmpwt}" || [[ -e "${BW}" ]]; then
+    harness "S13-state2 busy branch still has a worktree; scenario would not be state 2"
+fi
+s13_check S13-state2 no
 
 # ===========================================================================
 echo ""

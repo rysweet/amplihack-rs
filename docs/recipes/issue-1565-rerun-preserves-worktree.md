@@ -433,6 +433,25 @@ ERROR: refusing to reset existing_branch=feat/consensus-fix-issue-1626 at /repo/
 and exits 1. The format matches step-04's guard message. The changes field is
 `yes`, `no` or `unknown`.
 
+The guard runs on the **resolved** branch, after deconfliction has reassigned
+`BRANCH_NAME` and recomputed `WORKTREE_PATH`. If the helper hands back a
+suffixed name that itself holds work (for example `<branch>-busy`, already
+ahead of `BASE_REF`, with or without a worktree), the guard refuses that name
+the same way, and the message names it:
+
+```text
+ERROR: refusing to reset existing_branch=feat/consensus-fix-issue-1626-busy at /repo/worktrees/feat/consensus-fix-issue-1626-busy (uncommitted/untracked changes: yes, commits ahead of origin/main: 1). Re-run with existing_branch=feat/consensus-fix-issue-1626-busy to continue it, or move the work aside.
+```
+
+Neither the original branch nor the suffixed one is changed or pushed, and no
+JSON line is printed.
+
+State 1 for the suffixed name means a worktree registered at exactly
+`WORKTREE_DIR/<branch>-busy` (an exact path match against
+`git worktree list --porcelain`). A `-busy` worktree anywhere else is treated
+as state 2: it is still refused, but only because the branch is ahead, and the
+message reads `uncommitted/untracked changes: no`.
+
 When the check can't give an answer, it assumes work and refuses: a failed
 `git rev-list --count` is treated as 1 commit ahead, and a failed
 `git status --porcelain` is treated as work and printed as
@@ -466,8 +485,8 @@ lookup steps 4 and 5.
 | A7 | Branch existence uses `show-ref --verify`, never `git branch --list` (which matches globs) |
 | A8 | The helper lookup matches step-04: the block contains `${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}`, `DECONFLICT_HELPER="$TOOLS_DIR/workflow_worktree_deconflict.sh"`, the repo-local fallback line and `if [ -f "$DECONFLICT_HELPER" ]`, and does not contain `[ -n "$DECONFLICT_HELPER" ]`, `for _candidate` or the old "differs from step-04 on purpose" comment |
 | S0 | Helper present, fresh repo: creates `<branch>` at `WORKTREE_DIR/<branch>`; stdout is exactly one JSON line |
-| S1 | Helper present, State 1 dirty and ahead: untracked file, modified file and unpushed commit survive byte-for-byte; original branch SHA unchanged; new `branch_name` starts with `<original>-`; its worktree is registered; `origin` lacks the unpushed commit |
-| S2 | Helper present, State 2 ahead: original branch at the same SHA; new suffixed branch |
+| S1 | Helper present, State 1 dirty and ahead: untracked file, modified file and unpushed commit survive byte-for-byte; original branch SHA unchanged; new `branch_name` starts with `<original>-`; its worktree is registered; `origin` lacks the unpushed commit; `origin` has `refs/heads/<new>` at `BASE_REF` and no `refs/heads/<original>` |
+| S2 | Helper present, State 2 ahead: original branch at the same SHA; new suffixed branch; `origin` has `refs/heads/<new>` at `BASE_REF` and no `refs/heads/<original>` |
 | S3 | Helper present, clean State 1: same `branch_name`, same `worktree_path`, exit 0 |
 | S4 | Helper present, clean State 2: same `branch_name`, worktree re-attached to the existing branch at the same SHA, exit 0 |
 | S5, S6 | Helper hidden, dirty or ahead in State 1 / State 2: non-zero exit, `ERROR` on stderr, all work, SHAs and branches intact |
@@ -479,6 +498,8 @@ lookup steps 4 and 5.
 | S11 | `AMPLIHACK_HOME` first: with `AMPLIHACK_HOME` set, its helper is used before the repo-local copy |
 | S11b | `AMPLIHACK_HOME` empty, dirty State 1, helper planted in the repo: (a) a helper that prints `<original>-planted` is used: exit 0, `branch_name` is `<original>-planted`, `worktree_path` is `WORKTREE_DIR/<original>-planted` and is registered, and the original worktree's files and `HEAD` are unchanged; (b) a helper that prints `other` (no `<original>` prefix): non-zero exit, `ERROR` on stderr, files, branch heads and `git worktree list` unchanged |
 | S12 | `WORKTREE_DIR` contains `"`: non-zero exit with `refusing to emit setup JSON`, and no branch, worktree or pushed ref exists |
+| S13-state1 | `<original>` dirty and ahead; stub helper answers `<original>-busy`, whose worktree is at exactly `WORKTREE_DIR/<original>-busy`, is dirty, holds an untracked file and is 1 commit ahead: non-zero exit, stderr has `ERROR` naming `<original>-busy` with `uncommitted/untracked changes: yes, commits ahead of origin/main: 1`; branch heads, `git worktree list`, file checksums and each worktree's `HEAD` unchanged; `git ls-remote origin` output identical before and after (so neither `refs/heads/<original>` nor `refs/heads/<original>-busy` is pushed); no `setup_complete` line on stdout |
+| S13-state2 | As S13-state1, but `<original>-busy` is a branch only (1 commit ahead, temporary worktree removed and checked absent from `git worktree list` before the run): same assertions, except the `ERROR` line reads `uncommitted/untracked changes: no, commits ahead of origin/main: 1` |
 
 Run it:
 
@@ -493,8 +514,8 @@ git show origin/main:amplifier-bundle/recipes/consensus-issue-worktree.yaml \
   > "$TMPDIR/consensus-issue-worktree.main.yaml"
 WORKTREE_YAML="$TMPDIR/consensus-issue-worktree.main.yaml" \
   bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
-# exits 1: 10 passed, 38 failed — including A1 (destructive commands present),
-# A8 (old helper lookup), S1–S4 and S11b(a)/(b)
+# exits 1 — failures include A1 (destructive commands present),
+# A8 (old helper lookup), S1–S4, S11b(a)/(b) and S13
 ```
 
 CI runs it in the step after the #1565 test.
