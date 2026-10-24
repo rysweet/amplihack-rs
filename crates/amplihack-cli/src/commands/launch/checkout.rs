@@ -82,3 +82,28 @@ fn is_valid_github_segment(segment: &str) -> bool {
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
 }
+
+#[cfg(test)]
+mod issue_1642_tests {
+    use super::parse_github_repo_uri;
+
+    /// Issue #1642 (D4): `parse_github_repo_uri` has no userinfo branch, so
+    /// the hostile origins from the issue, whose userinfo before
+    /// `@github.com/` holds '/', '?', '#' or a backslash, must stay errors.
+    /// Pins that behaviour so a later "accept tokens" change cannot reopen it.
+    #[test]
+    fn rejects_issue_1642_hostile_origins() {
+        for uri in [
+            "https://evil.example/x@github.com/a/b",
+            "https://evil.example#@github.com/o/r",
+            "https://evil.example?@github.com/o/r",
+            r"https://evil.example\@github.com/o/r",
+            "https://a@github.com/x@github.com/o/r",
+        ] {
+            assert!(
+                parse_github_repo_uri(uri).is_err(),
+                "{uri:?} must not parse as a GitHub repository"
+            );
+        }
+    }
+}

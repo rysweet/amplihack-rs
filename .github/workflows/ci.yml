@@ -338,6 +338,15 @@ jobs:
             sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
             shellcheck -S warning amplifier-bundle/tools/workflow_worktree_deconflict.sh
           fi
+      - name: Recipes — shellcheck GitHub repo identity parser (issue #1642)
+        shell: bash
+        run: |
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck -S warning amplifier-bundle/tools/workflow_github_repo.sh
+          else
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+            shellcheck -S warning amplifier-bundle/tools/workflow_github_repo.sh
+          fi
       - name: Plugin — shellcheck claude-plugin/bin
         shell: bash
         run: |

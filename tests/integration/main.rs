@@ -450,3 +450,5 @@ mod auto_drive_to_merge;
 // real validator against a private git repo and a stub gh.
 #[path = "issue_1641_finalization_open_pr.rs"]
 mod issue_1641_finalization_open_pr;
+#[path = "issue_1642_github_origin_parsing.rs"]
+mod issue_1642_github_origin_parsing;

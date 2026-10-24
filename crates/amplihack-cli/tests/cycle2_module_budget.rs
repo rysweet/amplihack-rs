@@ -50,6 +50,7 @@ fn cycle2_new_test_targets_and_extracted_helpers_obey_300_line_boundary() {
         "src/commands/install/tests/codex_alias_paths.rs",
         "../../tests/integration/issue_1538_context_transport.rs",
         "../../tests/integration/issue_1538_startup_provider.rs",
+        "../../tests/integration/issue_1642_github_origin_parsing.rs",
     ] {
         let root = cli.join(relative);
         inspect(&root, &mut violations);

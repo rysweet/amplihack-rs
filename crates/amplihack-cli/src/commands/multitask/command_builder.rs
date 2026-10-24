@@ -29,7 +29,8 @@ pub(super) fn detect_delegate() -> String {
 }
 
 pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, base_ref: &str) {
-    let repository = parse_github_repo_identity(repo_url).unwrap_or_else(|| repo_url.to_string());
+    let repository = parse_github_repo_identity(repo_url)
+        .map_or_else(|| repository_fallback(repo_url), str::to_string);
     let repo_root = normalize_path(&ws.work_dir);
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
@@ -53,36 +54,70 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
     };
 }
 
-fn parse_github_repo_identity(url: &str) -> Option<String> {
-    let mut path = if let Some(rest) = url.strip_prefix("git@github.com:") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("https://github.com/") {
-        rest.to_string()
+/// Parse a github.com origin or PR URL into `owner/repo`.
+///
+/// Same contract as `parse_github_repo_identity` in
+/// `amplifier-bundle/tools/workflow_github_repo.sh` (issue #1642): exact,
+/// case-sensitive prefixes; the userinfo is the text before the FIRST
+/// `@github.com/` and must be non-empty RFC 3986 userinfo characters without
+/// `@`; cut `?` then `#`, strip one trailing `/` then one `.git`; each
+/// segment is `[A-Za-z0-9._-]+`, not `.` or `..`, and the owner does not
+/// start with `-`. Anything else would let git contact another host
+/// (`https://evil.example/x@github.com/o/r`), so it is `None`.
+fn parse_github_repo_identity(url: &str) -> Option<&str> {
+    let path = if let Some(rest) = url.strip_prefix("https://github.com/") {
+        rest
     } else if let Some(rest) = url.strip_prefix("http://github.com/") {
-        rest.to_string()
-    } else if (url.starts_with("https://") || url.starts_with("http://"))
-        && url.contains("@github.com/")
-    {
-        url.split("@github.com/").nth(1)?.to_string()
+        rest
+    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
+        rest
+    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
+        rest
     } else {
-        return None;
+        let rest = url
+            .strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))?;
+        let (userinfo, path) = rest.split_once("@github.com/")?;
+        if userinfo.is_empty() || !userinfo.bytes().all(is_userinfo_byte) {
+            return None;
+        }
+        path
     };
-    if let Some((before, _)) = path.split_once('?') {
-        path = before.to_string();
+    let path = path.split_once('?').map_or(path, |(before, _)| before);
+    let path = path.split_once('#').map_or(path, |(before, _)| before);
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, rest) = path.split_once('/')?;
+    let repo = rest.split_once('/').map_or(rest, |(repo, _)| repo);
+    if owner.starts_with('-') || !is_identity_segment(owner) || !is_identity_segment(repo) {
+        return None;
     }
-    if let Some((before, _)) = path.split_once('#') {
-        path = before.to_string();
-    }
-    path = path.trim_end_matches(".git").to_string();
-    let mut parts = path.split('/');
-    let owner = parts.next()?.trim();
-    let repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        None
+    Some(&path[..owner.len() + 1 + repo.len()])
+}
+
+/// RFC 3986 userinfo characters (unreserved, pct-encoded, sub-delims, ':')
+/// without '@'.
+fn is_userinfo_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b"._~%!$&'()*+,;=:-".contains(&b)
+}
+
+fn is_identity_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && segment != "."
+        && segment != ".."
+        && segment
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+}
+
+/// The scope's repository when the URL is not a github.com repository: a URL
+/// loses its userinfo (it may be a token) before it is stored; anything else,
+/// such as a local path, is kept as is.
+fn repository_fallback(repo_url: &str) -> String {
+    if repo_url.contains("://") {
+        crate::runner_ancestry::redact_url(repo_url)
     } else {
-        Some(format!("{owner}/{repo}"))
+        repo_url.to_string()
     }
 }
 

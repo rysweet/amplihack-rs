@@ -304,6 +304,10 @@ fn run_terminal_state_with_issue(
             "WORKFLOW_PR_SCOPE_HELPER",
             workspace_helper_path("workflow_pr_scope.sh"),
         )
+        .env(
+            "WORKFLOW_GITHUB_REPO_HELPER",
+            workspace_helper_path("workflow_github_repo.sh"),
+        )
         .env("GOAL_ALREADY_MET", "false");
     if let Some(worktree_path) = worktree_path {
         cmd.env("RECIPE_VAR_worktree_setup__worktree_path", worktree_path);

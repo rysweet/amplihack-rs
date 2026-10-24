@@ -106,6 +106,14 @@ if [ -f "$GH_RETRY_HELPER" ]; then
   # shellcheck source=/dev/null
   . "$GH_RETRY_HELPER"
 fi
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-${SCRIPT_DIR}/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo "ERROR: workflow_terminal_evidence.sh requires the shared GitHub repo identity parser at $GITHUB_REPO_HELPER" >&2
+  exit 2
+fi
+# Defines parse_github_repo_identity (issue #1642).
+# shellcheck source=workflow_github_repo.sh disable=SC1090
+. "$GITHUB_REPO_HELPER"
 
 gh_read() {
   local label="$1"; shift
@@ -114,23 +122,6 @@ gh_read() {
   else
     gh "$@"
   fi
-}
-
-parse_github_repo_identity() {
-  local url="$1" path owner repo
-  case "$url" in
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"; path="${path%%#*}"; path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"; repo="${path#*/}"; repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
 }
 
 resolve_base_ref() {
