@@ -412,6 +412,7 @@ fn launch_with_inherited_resolves_the_inherited_dir() {
         false,
         false,
         false,
+        None,
         || Ok(s),
     )
     .unwrap();
@@ -429,6 +430,7 @@ fn launch_with_empty_inherited_uses_pointer() {
         false,
         false,
         false,
+        None,
         || Ok(s),
     )
     .unwrap();
@@ -458,7 +460,7 @@ fn inherited_with_auto_or_docker_is_refused_without_opening_the_store() {
     for value in ["work", "../x", "Missing"] {
         let v = Some(std::ffi::OsStr::new(value));
         for (docker, docker_env, auto) in UNSUPPORTED_MODES {
-            let r = launch_profile_dir_with(None, v, docker, docker_env, auto, no_store);
+            let r = launch_profile_dir_with(None, v, docker, docker_env, auto, None, no_store);
             assert!(
                 is_inherited_unsupported(&r),
                 "{value:?} docker={docker} docker_env={docker_env} auto={auto}: {r:?}"
@@ -473,7 +475,7 @@ fn non_utf8_inherited_under_docker_or_auto_is_refused_before_parsing() {
     use std::os::unix::ffi::OsStrExt;
     let raw = std::ffi::OsStr::from_bytes(b"\xff");
     for (docker, docker_env, auto) in UNSUPPORTED_MODES {
-        let r = launch_profile_dir_with(None, Some(raw), docker, docker_env, auto, no_store);
+        let r = launch_profile_dir_with(None, Some(raw), docker, docker_env, auto, None, no_store);
         assert!(
             is_inherited_unsupported(&r),
             "must be UnsupportedMode, not InvalidName: {r:?}"
@@ -487,7 +489,7 @@ fn empty_inherited_under_docker_or_auto_counts_as_unset() {
     // --docker and --auto never open the store when nothing is pinned.
     for (docker, auto) in [(true, false), (false, true)] {
         assert!(
-            launch_profile_dir_with(None, empty, docker, false, auto, no_store)
+            launch_profile_dir_with(None, empty, docker, false, auto, None, no_store)
                 .unwrap()
                 .is_none()
         );
@@ -498,7 +500,7 @@ fn empty_inherited_under_docker_or_auto_counts_as_unset() {
 fn pointer_alone_under_docker_or_auto_is_still_skipped() {
     for (docker, auto) in [(true, false), (false, true)] {
         assert!(
-            launch_profile_dir_with(None, None, docker, false, auto, no_store)
+            launch_profile_dir_with(None, None, docker, false, auto, None, no_store)
                 .unwrap()
                 .is_none()
         );
@@ -507,7 +509,7 @@ fn pointer_alone_under_docker_or_auto_is_still_skipped() {
     let (_d, s) = store_with(&["ptr"]);
     pointer::write(s.root(), &n("ptr")).unwrap();
     assert!(
-        launch_profile_dir_with(None, None, false, true, false, || Ok(s))
+        launch_profile_dir_with(None, None, false, true, false, None, || Ok(s))
             .unwrap()
             .is_none()
     );
@@ -516,7 +518,7 @@ fn pointer_alone_under_docker_or_auto_is_still_skipped() {
 #[test]
 fn inherited_unsupported_mode_error_names_the_variable_and_hint() {
     let v = Some(std::ffi::OsStr::new("work"));
-    let err = launch_profile_dir_with(None, v, false, false, true, no_store).unwrap_err();
+    let err = launch_profile_dir_with(None, v, false, false, true, None, no_store).unwrap_err();
     let msg = err.to_string();
     assert!(!msg.contains('\n'), "{msg}");
     assert!(msg.contains("AMPLIHACK_CLAUDE_PROFILE"), "{msg}");
@@ -537,7 +539,8 @@ fn inherited_unsupported_mode_error_escapes_and_cuts_the_value() {
     raw.push_str(&"a".repeat(200));
     let v = Some(std::ffi::OsStr::new(&raw));
     for (docker, docker_env, auto) in UNSUPPORTED_MODES {
-        let err = launch_profile_dir_with(None, v, docker, docker_env, auto, no_store).unwrap_err();
+        let err =
+            launch_profile_dir_with(None, v, docker, docker_env, auto, None, no_store).unwrap_err();
         let msg = err.to_string();
         assert!(
             !msg.bytes().any(|b| b < 0x20 || b == 0x7f),
@@ -580,7 +583,7 @@ fn explicit_flag_with_docker_or_auto_is_still_unsupported() {
         (false, false, true),
     ] {
         assert!(matches!(
-            launch_profile_dir_with(Some("w"), inh, docker, docker_env, auto, no_store),
+            launch_profile_dir_with(Some("w"), inh, docker, docker_env, auto, None, no_store),
             Err(ProfileError::UnsupportedMode(_))
         ));
     }
@@ -593,7 +596,269 @@ fn non_utf8_inherited_value_is_an_inherited_error() {
     let (_d, s) = store_with(&["ptr"]);
     pointer::write(s.root(), &n("ptr")).unwrap();
     let raw = std::ffi::OsStr::from_bytes(b"w\xffx");
-    let err = launch_profile_dir_with(None, Some(raw), false, false, false, || Ok(s)).unwrap_err();
+    let err =
+        launch_profile_dir_with(None, Some(raw), false, false, false, None, || Ok(s)).unwrap_err();
     assert!(matches!(err, ProfileError::Inherited { .. }), "{err:?}");
     assert!(err.to_string().contains("AMPLIHACK_CLAUDE_PROFILE"));
+}
+
+// --- Bug 3: launching the rotator's live profile ----------------------------
+//
+// Contract: `launch_profile_dir_with(flag, inherited, docker, docker_env,
+// auto, home: Option<&Path>, open_store)`. When the resolved profile is the
+// one `default_live::detect` names, it prints `live_launch_note(name)` once on
+// stderr and returns `Ok(None)`: the child gets no `CLAUDE_CONFIG_DIR` and no
+// profile pin, so Claude uses `~/.claude`, where that profile's login is.
+
+#[cfg(unix)]
+mod live_launch {
+    use super::super::live_launch_note;
+    use super::{launch_profile_dir_with, n, no_store, pointer, store_with};
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+
+    fn private(path: &Path, body: &str) {
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(path, body).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    fn acct(uuid: &str, org: &str) -> String {
+        serde_json::json!({"oauthAccount": {"accountUuid": uuid, "organizationUuid": org}})
+            .to_string()
+    }
+
+    /// `team` is live: no login of its own, and its account is the one in
+    /// `~/.claude.json`. `work` has its own login.
+    fn env() -> (
+        tempfile::TempDir,
+        super::super::store::ProfileStore,
+        PathBuf,
+    ) {
+        let (d, s) = store_with(&["team", "work"]);
+        let home = d.path().join("home");
+        private(&home.join(".claude/.credentials.json"), "{}");
+        private(&home.join(".claude.json"), &acct("u-team", "o1"));
+        private(&s.root().join("team/.claude.json"), &acct("u-team", "o1"));
+        private(&s.root().join("work/.claude.json"), &acct("u-work", "o1"));
+        private(&s.root().join("work/.credentials.json"), "{}");
+        (d, s, home)
+    }
+
+    #[test]
+    fn the_live_default_pointer_launches_against_the_default_dir() {
+        let (_d, s, home) = env();
+        pointer::write(s.root(), &n("team")).unwrap();
+        let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
+        assert_eq!(got.unwrap(), None);
+    }
+
+    #[test]
+    fn a_live_profile_flag_launches_against_the_default_dir() {
+        let (_d, s, home) = env();
+        let got =
+            launch_profile_dir_with(Some("team"), None, false, false, false, Some(&home), || {
+                Ok(s)
+            });
+        assert_eq!(got.unwrap(), None);
+    }
+
+    #[test]
+    fn a_live_inherited_profile_launches_against_the_default_dir() {
+        let (_d, s, home) = env();
+        let got = launch_profile_dir_with(
+            None,
+            Some(std::ffi::OsStr::new("team")),
+            false,
+            false,
+            false,
+            Some(&home),
+            || Ok(s),
+        );
+        assert_eq!(got.unwrap(), None);
+    }
+
+    #[test]
+    fn a_default_that_is_not_live_still_sets_its_dir() {
+        let (_d, s, home) = env();
+        pointer::write(s.root(), &n("work")).unwrap();
+        let want = s.resolve(&n("work")).unwrap();
+        let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
+        assert_eq!(got.unwrap(), Some(want));
+    }
+
+    #[test]
+    fn the_same_user_in_another_org_is_not_live_and_is_not_redirected() {
+        let (_d, s, home) = env();
+        private(
+            &s.root().join("team/.claude.json"),
+            &acct("u-team", "o-other"),
+        );
+        pointer::write(s.root(), &n("team")).unwrap();
+        let want = s.resolve(&n("team")).unwrap();
+        let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
+        assert_eq!(got.unwrap(), Some(want));
+    }
+
+    #[test]
+    fn without_home_nothing_is_redirected() {
+        let (_d, s, _home) = env();
+        pointer::write(s.root(), &n("team")).unwrap();
+        let want = s.resolve(&n("team")).unwrap();
+        let got = launch_profile_dir_with(None, None, false, false, false, None, || Ok(s));
+        assert_eq!(got.unwrap(), Some(want));
+    }
+
+    #[test]
+    fn ambiguous_detection_is_not_redirected() {
+        let (_d, s, home) = env();
+        s.add(&n("twin")).unwrap();
+        private(&s.root().join("twin/.claude.json"), &acct("u-team", "o1"));
+        pointer::write(s.root(), &n("team")).unwrap();
+        let want = s.resolve(&n("team")).unwrap();
+        let got = launch_profile_dir_with(None, None, false, false, false, Some(&home), || Ok(s));
+        assert_eq!(got.unwrap(), Some(want));
+    }
+
+    #[test]
+    fn docker_and_auto_are_unchanged() {
+        let (_d, s, home) = env();
+        pointer::write(s.root(), &n("team")).unwrap();
+        for (docker, auto) in [(true, false), (false, true)] {
+            assert_eq!(
+                launch_profile_dir_with(None, None, docker, false, auto, Some(&home), no_store)
+                    .unwrap(),
+                None
+            );
+        }
+        assert_eq!(
+            launch_profile_dir_with(None, None, false, true, false, Some(&home), || Ok(s)).unwrap(),
+            None,
+            "env-activated Docker still skips the pointer"
+        );
+    }
+
+    #[test]
+    fn the_note_is_the_documented_line() {
+        assert_eq!(
+            live_launch_note("team"),
+            "note: profile 'team' is the rotator's live login, which is in ~/.claude; \
+             launching against ~/.claude."
+        );
+        assert!(!live_launch_note("team").contains('\n'), "exactly one line");
+    }
+}
+
+// --- `profile switch --none` (D6-D8) ----------------------------------------
+//
+// Contract: `clear_default(&ProfileStore) -> Result<&'static str, ProfileError>`
+// removes `<root>/.default` and returns `CLEARED` when something was there
+// (valid, corrupt or dangling), `NOT_SET` when nothing was.
+
+mod switch_none {
+    use super::super::{CLEARED, NOT_SET, ProfileCommands, clear_default};
+    use super::{n, pointer, store_with};
+    use clap::Parser;
+    use std::fs;
+
+    #[derive(Parser, Debug)]
+    struct Cli {
+        #[command(subcommand)]
+        cmd: ProfileCommands,
+    }
+
+    fn parse(args: &[&str]) -> Result<ProfileCommands, clap::Error> {
+        let mut v = vec!["profile"];
+        v.extend_from_slice(args);
+        Cli::try_parse_from(v).map(|c| c.cmd)
+    }
+
+    #[test]
+    fn the_messages_are_the_documented_ones() {
+        assert_eq!(CLEARED, "Default profile cleared.");
+        assert_eq!(NOT_SET, "No default profile was set.");
+    }
+
+    #[test]
+    fn none_clears_a_valid_default() {
+        let (_d, s) = store_with(&["work"]);
+        pointer::write(s.root(), &n("work")).unwrap();
+        assert_eq!(clear_default(&s).unwrap(), CLEARED);
+        assert!(!s.root().join(".default").exists());
+        assert_eq!(pointer::read(s.root()).unwrap(), None);
+        assert!(s.root().join("work").is_dir(), "the profile itself stays");
+    }
+
+    #[test]
+    fn none_clears_a_corrupt_or_dangling_default() {
+        for body in ["../outside", "missing\n"] {
+            let (_d, s) = store_with(&["work"]);
+            fs::write(s.root().join(".default"), body).unwrap();
+            assert_eq!(clear_default(&s).unwrap(), CLEARED, "{body:?}");
+            assert!(fs::symlink_metadata(s.root().join(".default")).is_err());
+        }
+    }
+
+    #[test]
+    fn none_without_a_default_is_a_quiet_success() {
+        let (_d, s) = store_with(&["work"]);
+        assert_eq!(clear_default(&s).unwrap(), NOT_SET);
+        assert_eq!(clear_default(&s).unwrap(), NOT_SET, "idempotent");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn none_refuses_a_symlinked_root() {
+        let (d, s) = store_with(&["work"]);
+        let link = d.path().join("link");
+        std::os::unix::fs::symlink(s.root(), &link).unwrap();
+        let linked = super::super::store::ProfileStore::new(link);
+        pointer::write(s.root(), &n("work")).unwrap();
+        assert!(clear_default(&linked).is_err());
+        assert!(s.root().join(".default").exists());
+    }
+
+    #[test]
+    fn switch_parses_a_name_or_none() {
+        match parse(&["switch", "--none"]).unwrap() {
+            ProfileCommands::Switch { name, none } => {
+                assert_eq!(name, None);
+                assert!(none);
+            }
+            other => panic!("{other:?}"),
+        }
+        match parse(&["switch", "work"]).unwrap() {
+            ProfileCommands::Switch { name, none } => {
+                assert_eq!(name.as_deref(), Some("work"));
+                assert!(!none);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn default_is_a_profile_name_not_an_alias() {
+        // D6: `default` is a valid profile name.
+        match parse(&["switch", "default"]).unwrap() {
+            ProfileCommands::Switch { name, none } => {
+                assert_eq!(name.as_deref(), Some("default"));
+                assert!(!none);
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_name_with_none_or_neither_is_a_usage_error() {
+        let both = parse(&["switch", "work", "--none"]).unwrap_err();
+        assert_eq!(both.kind(), clap::error::ErrorKind::ArgumentConflict);
+        assert_eq!(both.exit_code(), 2);
+        let neither = parse(&["switch"]).unwrap_err();
+        assert_eq!(
+            neither.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+        assert_eq!(neither.exit_code(), 2);
+    }
 }
