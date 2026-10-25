@@ -167,9 +167,6 @@ fn amplihack_install_command_with_binary(
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
-        // This test verifies bundle staging. Select a provider explicitly so
-        // a Codex binary on the host PATH cannot change the install path.
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd
