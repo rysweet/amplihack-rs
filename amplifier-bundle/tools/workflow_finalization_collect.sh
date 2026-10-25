@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# This library is sourced; the variables it sets are read by its caller.
+# shellcheck disable=SC2034
 # Deterministic repository and completion evidence collection.
 # parse_github_repo_identity comes from the shared parser next to this file
 # (issue #1642). When it is missing the function stays undefined, every call

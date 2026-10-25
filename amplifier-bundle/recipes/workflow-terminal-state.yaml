@@ -317,23 +317,55 @@ steps:
         github_repo_helper_candidates+=("$(pwd)/amplifier-bundle/tools")
         github_repo_helper_candidates+=("${HOME:-/root}/.copilot/amplifier-bundle/tools")
         github_repo_helper_candidates+=("${HOME:-/root}/.amplihack/amplifier-bundle/tools")
-        for candidate_dir in "${github_repo_helper_candidates[@]}"; do
-          [ -f "$candidate_dir/workflow_github_repo.sh" ] || continue
-          [ -r "$candidate_dir/workflow_github_repo.sh" ] || continue
-          candidate_phys="$(physical_dir "$candidate_dir")" || continue
-          case "$candidate_phys" in
-            "$TARGET_REPO_PHYS"|"$TARGET_REPO_PHYS"/*) continue ;;
+        # Every rejected candidate is recorded once (keyed by its physical
+        # directory when it resolves) so the failure says exactly where it
+        # looked and why each path was not used.
+        github_repo_helper_searched=""
+        github_repo_helper_seen=""
+        note_searched() {
+          case "$github_repo_helper_seen" in
+            *"|$1|"*) return 0 ;;
           esac
-          candidate_file="$(physical_file "$candidate_phys/workflow_github_repo.sh")" || continue
+          github_repo_helper_seen="${github_repo_helper_seen}|$1|"
+          github_repo_helper_searched="${github_repo_helper_searched:+$github_repo_helper_searched; }$2 ($3)"
+        }
+        for candidate_dir in "${github_repo_helper_candidates[@]}"; do
+          candidate_shown="$candidate_dir/workflow_github_repo.sh"
+          candidate_key="$(physical_dir "$candidate_dir" 2>/dev/null)" || candidate_key="$candidate_dir"
+          if [ ! -f "$candidate_shown" ]; then
+            note_searched "$candidate_key" "$candidate_shown" "missing"
+            continue
+          fi
+          if [ ! -r "$candidate_shown" ]; then
+            note_searched "$candidate_key" "$candidate_shown" "unreadable"
+            continue
+          fi
+          if ! candidate_phys="$(physical_dir "$candidate_dir")"; then
+            note_searched "$candidate_key" "$candidate_shown" "unreadable"
+            continue
+          fi
+          case "$candidate_phys" in
+            "$TARGET_REPO_PHYS"|"$TARGET_REPO_PHYS"/*)
+              note_searched "$candidate_key" "$candidate_shown" "skipped: inside target checkout"
+              continue
+              ;;
+          esac
+          if ! candidate_file="$(physical_file "$candidate_phys/workflow_github_repo.sh")"; then
+            note_searched "$candidate_key" "$candidate_shown" "unreadable"
+            continue
+          fi
           case "$candidate_file" in
-            "$TARGET_REPO_PHYS"/*) continue ;;
+            "$TARGET_REPO_PHYS"/*)
+              note_searched "$candidate_key" "$candidate_shown" "skipped: inside target checkout"
+              continue
+              ;;
           esac
           GITHUB_REPO_HELPER="$candidate_file"
           break
         done
+        [ -n "$GITHUB_REPO_HELPER" ] \
+          || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_github_repo.sh not found; run 'amplihack install' to install or update the amplihack bundle (or set WORKFLOW_GITHUB_REPO_HELPER). Searched: $github_repo_helper_searched"
       fi
-      [ -n "$GITHUB_REPO_HELPER" ] \
-        || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_github_repo.sh is required for GitHub repo identity; none found outside the target checkout (set WORKFLOW_GITHUB_REPO_HELPER or AMPLIHACK_HOME)"
       # shellcheck source=/dev/null
       . "$GITHUB_REPO_HELPER"
       declare -F parse_github_repo_identity >/dev/null 2>&1 \

@@ -21,6 +21,7 @@ run_finalization_cleanup() {
   [ -n "$repo_root" ] || repo_root="$(pwd)"
   worktree="$(workflow_finalization_metadata worktree_path || :)"
   intended="$(workflow_finalization_metadata branch_name || :)"
+  # shellcheck source=/dev/null
   ( . "$helper" 2>/dev/null && finalize_workflow_cleanup_entry "$repo_root" "$worktree" "$intended" ) >&2 || true
   return 0
 }
