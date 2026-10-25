@@ -190,7 +190,9 @@ aborting the recipe after work is complete and pushed.
 
 Late-stage steps use a three-tier directory resolution:
 
-1. `WORKTREE_SETUP_WORKTREE_PATH` — preferred (worktree still exists)
+1. `WORKTREE_SETUP_WORKTREE_PATH` — preferred (worktree still exists). The
+   step assigns it from `RECIPE_VAR_worktree_setup__worktree_path` first, so a
+   value inherited from the launching shell is never used
 2. `REPO_PATH` — fallback (repo root, available via context propagation)
 3. `$(pwd)` — final (current directory)
 

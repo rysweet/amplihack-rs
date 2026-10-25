@@ -121,6 +121,7 @@ run_step16() {
         export GH_INVOCATIONS_LOG="${WORK}/gh.log"
         export GH_PR_LIST_RESULT="${pr_list_result}"
         export WORKTREE_SETUP_WORKTREE_PATH="${worktree}"
+        export RECIPE_VAR_worktree_setup__worktree_path="${worktree}"
         export REMOTE_HOST_TYPE="github"
         export ISSUE_NUMBER="1060"
         export AMPLIHACK_HOME="${REPO_ROOT}"

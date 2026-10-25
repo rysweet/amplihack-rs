@@ -763,7 +763,8 @@ mod finalize_runtime {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree)
+                    .env("RECIPE_VAR_worktree_setup__worktree_path", worktree);
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1006,8 +1007,11 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     }
 }
 
+// #1561: a plain assignment from RECIPE_VAR_, so an inherited
+// WORKTREE_SETUP_WORKTREE_PATH never outranks the recipe's own worktree (the
+// `: "${X:=…}"` form kept a stale inherited value).
 const STEP_20B_CONTEXT_DEFAULT: &str =
-    r#": "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}""#;
+    r#"WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}""#;
 
 fn step_20b_warning(reason: &str) -> String {
     format!(
@@ -1174,7 +1178,8 @@ mod finalize_skip_reasons {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree)
+                    .env("RECIPE_VAR_worktree_setup__worktree_path", worktree);
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1330,7 +1335,8 @@ mod phase1_commit_runtime {
             .env("REPO_PATH", launch)
             .env("AMPLIHACK_HOME", workspace_root());
         if let Some(worktree) = worktree {
-            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree)
+                .env("RECIPE_VAR_worktree_setup__worktree_path", worktree);
         }
         run.output().expect("run step")
     }

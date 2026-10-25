@@ -316,7 +316,7 @@ The preflight adds `repo` (the worktree) to its JSON. It does not emit
 
 | Step | Uses `repo` for |
 | --- | --- |
-| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` through the same `${X:-${RECIPE_VAR_x:-}}` fallback as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, `qa-team` run and its `head_sha`, CI wait, crusty review and fixes, round records, loop baseline. |
+| step-02, both loops | The starting point of the [#1528 resolution](#where-phases-2-and-3-run): `review-dir "$REPO"` and `autodrive_pr_worktree.sh resolve --repo "$REPO"`, whose result is `autodrive_loop.sh --repo` and `--context repo_path=`. It reads `repo` as `${RECIPE_VAR_repo:-}`, the same way as `state_dir`. If `repo` is missing, the step refuses to run; it never falls back to `REPO_PATH`. Every round step therefore runs in the PR worktree: base sync, `qa-team` run and its `head_sha`, CI wait, crusty review and fixes, round records, loop baseline. |
 | merge-loop step-04, crusty-loop step-03 | **Nothing.** These steps write only inside `state_dir`, so they do not depend on the working directory. |
 | merge-loop step-03 (merge gate) | **Nothing.** The gate stays on the launch side and binds to `headRefOid` from `gh`. Resolver output never reaches it. |
 
@@ -578,27 +578,32 @@ did not converge.
 
 ### How a step output reaches bash
 
-recipe-runner 0.3.8 stores a step output that parses as JSON as an object, and
-exports it to later bash steps as `RECIPE_VAR_<output>` only
-(`context.rs`, `shell_env_vars`). The bare upper-case name, such as
+The pinned runner (`claude-plugin/recipe-runner.rev`, rev `4d5187ea`) stores a
+step output that parses as JSON as an object, and exports it to later bash
+steps as `RECIPE_VAR_<output>` only (`src/context.rs:357`, `shell_env_vars`). The bare upper-case name, such as
 `QA_EVIDENCE`, is added for scalar outputs alone. A bash step that read
 `${QA_EVIDENCE:-}` would see an empty string and fail closed every round:
 `MERGE_READY` downgraded, an empty `qa_evidence_sha` in the record, and no
 crusty round record at all. Every step-output read in
 `autodrive-crusty-round.yaml`, `autodrive-merge-round.yaml` and
 `autodrive_round_evidence.sh` (which holds merge-round step bodies) is therefore
-written `"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}"`, the form the work on issue
-#1511 uses, and `round_recipes_read_step_outputs_through_recipe_var` fails
-the build on a read without the fallback. The shell tests pass these values as
-`RECIPE_VAR_<output>` with the upper-case names removed, as the runner does.
+written `"${RECIPE_VAR_qa_evidence:-}"`, and
+`round_recipes_read_step_outputs_through_recipe_var` fails the build on a read
+that does not go through `RECIPE_VAR_`. The bare name is not read at all, so a
+stale `QA_EVIDENCE` inherited from whatever launched the runner cannot replace
+the round's own evidence (#1561; see
+[Step outputs ignore inherited bare variables](#step-outputs-ignore-inherited-bare-variables)).
+The shell tests pass these values as `RECIPE_VAR_<output>` with the upper-case
+names removed, as the runner does.
 The step-output reads in the loop recipes (`autodrive-build.yaml`,
 `autodrive-crusty-loop.yaml`, `autodrive-merge-loop.yaml`) were converted to
-the same form by issue #1511 (PR #1563), which landed on `main` first; see
-[Reading step outputs](#reading-step-outputs).
+a dual-name form by issue #1511 (PR #1563), and to the `RECIPE_VAR_`-only
+form by #1561; see [Reading step outputs](#reading-step-outputs).
 
 **Overlap with #1511.** PR #1520 changed the reads in the two round recipes
 before #1511 landed, because its rebuilt steps read outputs that did not exist
-before, and it used the same `${UPPER:-${RECIPE_VAR_lower:-}}` form. Merging
+before, and it used the dual-name `${UPPER:-${RECIPE_VAR_lower:-}}` form of the
+time, which #1561 later replaced. Merging
 `main` after #1563 conflicted in six files (the three round and loop recipes,
 `test-auto-drive-to-merge.sh`, this page, and
 `tests/integration/auto_drive_to_merge_test.rs`). Both sides used the same
@@ -661,8 +666,14 @@ toplevel, `~/.copilot`, then `~/.amplihack` that holds every one of
 `autodrive_round_evidence.sh`, `autodrive_state.sh`, `autodrive_trust.sh` and
 `git-identity.sh`, so the tools never come from two installs. It prints the
 physical path, which later bash steps read as
-`"${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}"` and step-04's
-prompt uses to source `git-identity.sh`. A path holding a quote, backslash,
+`"${RECIPE_VAR_autodrive_tools_dir:-}"` and step-04's prompt uses to source
+`git-identity.sh`. An `AUTODRIVE_TOOLS_DIR` inherited from an outer run is
+never read, so a nested auto-drive run cannot take its tools from the outer
+run's tree (#1607). If `RECIPE_VAR_autodrive_tools_dir` is empty, the step
+stops before it builds any path, with
+`ERROR: autodrive-tools-not-found: RECIPE_VAR_autodrive_tools_dir is empty`;
+it never falls back to another tree (see
+[The tools directory comes from step-00 only](#the-tools-directory-comes-from-step-00-only)). A path holding a quote, backslash,
 `$`, backtick, control byte or template brace is skipped, because it reaches
 that prompt. No complete root fails the step with
 `ERROR: autodrive-tools-not-found: ... (searched <paths>)`, and a later step
@@ -1281,58 +1292,69 @@ set, and a bare `${CRUSTY_LOOP_PREFLIGHT:-}` read is always empty. Before issue
 #1511 was fixed, every read missed, every loop lost its state directory, and
 every run stopped as `STUCK`.
 
-Every step-output read in the autodrive recipes uses both names, on one line,
-inside double quotes:
+Every step-output read in the autodrive recipes uses the `RECIPE_VAR_` name
+alone, on one line, inside double quotes:
 
 ```bash
-PREFLIGHT="${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"
+PREFLIGHT="${RECIPE_VAR_crusty_loop_preflight:-}"
 ```
 
-If a read ever needs a default, it goes in the inner expansion as a literal.
-There are no quotes inside the braces, so the integration test can match the
-`${<NAME>:-${RECIPE_VAR_<name>:-` text exactly.
+If a read ever needs a default, it goes after `:-` as a literal. There are no
+quotes inside the braces, so the integration test can match the
+`${RECIPE_VAR_<name>:-` text exactly.
 
-The bare name is tried first, the same idiom as `workflow-publish`,
-`workflow-finalize` and the [loop-health evaluator](loop-health-evaluator.md#reading-step-outputs-the-dual-name-idiom).
+No step reads a bare upper-case name in place of its `RECIPE_VAR_` partner,
+in these recipes, anywhere else in `amplifier-bundle/recipes` or in
+`amplifier-bundle/tools`. The few bare names that are still read are listed
+under [What is still read through a bare name](#what-is-still-read-through-a-bare-name). The same holds for
+`workflow-publish`, `workflow-finalize` and the [loop-health evaluator](loop-health-evaluator.md#reading-step-outputs-recipe_var-only).
+For an object output the runner never sets the bare name, so reading it could
+only ever pick up a value inherited from outside the run; see
+[Step outputs ignore inherited bare variables](#step-outputs-ignore-inherited-bare-variables).
 `:-` treats an empty value as unset, so an empty context default such as
-`build_result: ""` still falls through to `RECIPE_VAR_build_result`. The
+`build_result: ""` reads as empty and the step fails closed. The
 `RECIPE_VAR_` value is read only through `extract-json` / `extract-field`; it
 is never sourced, `eval`'d or exported.
 
 The difference shows without the runner. With only the `RECIPE_VAR_` name
 set, as the runner leaves an object output, the bare read is empty and the
-dual-name read returns the object, which the helpers accept:
+`RECIPE_VAR_` read returns the object, which the helpers accept:
 
 ```console
 $ unset MY_OUT; export RECIPE_VAR_my_out='{"a":"1"}'
-$ echo "[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"
+$ echo "[${MY_OUT:-}] [${RECIPE_VAR_my_out:-}]"
 [] [{"a":"1"}]
-$ printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" | amplihack orch helper extract-json --require-field a
+$ printf '%s' "${RECIPE_VAR_my_out:-}" | amplihack orch helper extract-json --require-field a
 {"a":"1"}
-$ printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" | amplihack orch helper extract-field --field a --default MISSING
+$ printf '%s' "${RECIPE_VAR_my_out:-}" | amplihack orch helper extract-field --field a --default MISSING
 1
 ```
 
 The shell test `1511-repro` runs these reads and both helpers, and passes only
-when all of this output matches and `extract-json` exits `0`.
+when all of this output matches and `extract-json` exits `0`. It also sets a
+conflicting `MY_OUT` and checks that the `RECIPE_VAR_` read still returns
+`{"a":"1"}`.
 
 The rule covers **step outputs only**. Context variables (`REPO_PATH`, `PR_*`,
-`AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) are read as
-before. The exception is `AUTODRIVE_PR_INPUT`: the composer's
-`autodrive-pr-input` step produces it as a step output (#1543), so each loop
-preflight reads it once in the dual-name form, and the composer's
-`autodrive-check-unmerged` step reads `build_result` (#1551). `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
+`AUTODRIVE_*`) and shell locals (`COUNT`, `RC`, `PENDING`, …) that are read
+through their bare name alone, never paired with a `RECIPE_VAR_` read, are
+read as before. `AUTODRIVE_TOOLS_DIR` is the exception: it is never read (see
+[The tools directory comes from step-00 only](#the-tools-directory-comes-from-step-00-only)). The exceptions are `AUTODRIVE_PR_INPUT`, which the composer's
+`autodrive-pr-input` step produces as a step output (#1543), so each loop
+preflight reads it once as `${RECIPE_VAR_autodrive_pr_input:-}`, and
+`build_result`, which the composer's `autodrive-check-unmerged` step reads
+(#1551). `autodrive-build.yaml`'s `no_merge_directive` output (#1551) is read only
 as a template in step-02's sub-recipe `context:`, never in a shell, so it adds
 no row here. Its name joins the checked output set, so a later shell read
-must use the dual-name form, and [check 3](#the-static-check) forbids
-templating it into a `command:`. `autodrive-merge-evidence.yaml` and `loop-health-evaluator.yaml` need
-no change: the first declares step outputs but reads none, and the second
-already used the dual-name form.
+must use the `RECIPE_VAR_` form, and [check 3](#the-static-check) forbids
+templating it into a `command:`. `autodrive-merge-evidence.yaml` declares
+step outputs but reads none, so it has no row.
 
-A read is one `${<NAME>:-` occurrence, so a line that reads the same output
-twice counts twice. Reads made inside a bundled tool, such as the merge
-round's evidence reads in `autodrive_round_evidence.sh`, are not counted
-here; that file uses the same form. There are 35 in all:
+A read is one `${RECIPE_VAR_<name>:-` occurrence for a name in the checked
+output set, so a line that reads the same output twice counts twice. Reads
+made inside a bundled tool, such as the merge round's evidence reads in
+`autodrive_round_evidence.sh`, are not counted here; that file uses the same
+form. There are 35 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
@@ -1343,41 +1365,298 @@ here; that file uses the same form. There are 35 in all:
 | `autodrive-merge-loop.yaml` | 6 |
 | `autodrive-merge-round.yaml` | 9 |
 
-### A stale bare variable wins
+### Step outputs ignore inherited bare variables
 
-Because the bare name is tried first, a non-empty variable of that name
-already in the runner's environment hides the step output. The example sets
-both variables for one child shell only, so it leaves your shell unchanged:
+A recipe's own value always wins over a variable of the same upper-case name
+inherited from whatever launched the runner: a parent recipe run, an
+interactive shell, or a CI job. Every step body in
+`amplifier-bundle/recipes/*.yaml` and every bundled tool in
+`amplifier-bundle/tools/*.sh` reads a recipe value as
+`${RECIPE_VAR_<key>:-<default>}`, and never reads a bare name in place of its
+`RECIPE_VAR_` partner. A stale bare value is ignored even when the recipe's own
+value is empty. The only bare name still read next to its partner is the
+[`NO_MERGE` override](#no_merge-override), which can only stop a merge. Bare
+names with no partner, such as the `$AMPLIHACK_HOME` and `$REPO_PATH` roots
+that step-00 searches, are listed under
+[What is still read through a bare name](#what-is-still-read-through-a-bare-name).
+
+The example sets both variables for one child shell only, so your shell is
+left unchanged:
 
 ```console
 $ CRUSTY_LOOP_PREFLIGHT='{"state_dir":"/old"}' \
   RECIPE_VAR_crusty_loop_preflight='{"state_dir":"/new"}' \
-  bash -c 'echo "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}"'
-{"state_dir":"/old"}
+  bash -c 'echo "${RECIPE_VAR_crusty_loop_preflight:-}"'
+{"state_dir":"/new"}
+$ CRUSTY_LOOP_PREFLIGHT='{"state_dir":"/old"}' \
+  RECIPE_VAR_crusty_loop_preflight='' \
+  bash -c 'echo "[${RECIPE_VAR_crusty_loop_preflight:-}]"'
+[]
 ```
 
-This is a known residual risk. It is not specific to these recipes: every
-bundle recipe that uses the dual-name idiom, including `workflow-publish` and
-`workflow-finalize`, shares it, so the fix belongs to the bundle as a whole
-and is not made here. Reversing the order in the autodrive recipes alone
-would make them disagree with the rest of the bundle.
+#### Setting a value on purpose
 
-The exposure is bounded:
+A bare variable in the launching shell never sets a recipe value. To set one,
+pass it as context:
 
-- Nothing in this workflow exports a step output's upper-case name, so the
-  variable has to come from the environment that launched the run.
-- A shadowed value still goes through `extract-json --require-field` or
-  `extract-field`, and a shadowed `state_dir` still goes through the
-  [check below](#state_dir-is-checked-before-use).
-- `autodrive-merge-evidence.yaml` reads no step outputs, so the
-  [merge gate](#no-silent-merge) cannot be fed through this path.
+```bash
+amplihack recipe run amplifier-bundle/recipes/auto-drive-to-merge.yaml \
+  -c task_description="Fix issue #1561" -c no_merge=true
+```
 
-Do not launch auto-drive with an upper-case variable named after a step output
-(`CRUSTY_LOOP_PREFLIGHT`, `BUILD_RESULT`, …) in the environment.
+`-c` (long form `--context`) overrides `--context-file` and
+`--context-from-file`. Called directly, the runner takes the same pair as
+`recipe-runner-rs <recipe> --set no_merge=true`. A parent recipe passes a value
+to a sub-recipe through that sub-recipe's `context:` block, never through an
+exported bare variable.
+
+#### Why the bare read is dropped, not moved
+
+The bare read was removed rather than moved after the `RECIPE_VAR_` read.
+With `${RECIPE_VAR_x:-${UPPER:-}}`, an empty step output would still fall
+through to the stale value. Without the bare read, an empty value takes the
+read's own default, and every default that a gate depends on fails closed.
+
+The pinned runner (`claude-plugin/recipe-runner.rev`, rev `4d5187ea`) shows
+that the bare name never carries anything `RECIPE_VAR_<key>` does not already
+hold. It holds a stale value only when the key is undeclared, or when a step
+body runs outside the runner, as the shell tests run it:
+
+- `src/context.rs:357` always exports `RECIPE_VAR_<key>` for every context
+  value, and `RECIPE_VAR_<key>__<field>` for each nested field of an object.
+- `src/context.rs:372-379` and `:399` add the bare upper-case alias only for a
+  top-level, non-reserved **scalar**. An object output, such as `qa_evidence`
+  or `worktree_setup`, never gets one.
+- `src/context.rs:383` never sets a flattened nested name such as
+  `PR_PUBLISH_RESULT_PR_URL` or `TERMINAL_STATE_TERMINAL_STATE`. Before #1561,
+  any read of such a name could only pick up an inherited value.
+- `src/adapters/cli_subprocess.rs:1361-1371` and `:603` start each step from
+  the runner's inherited environment and lay the recipe's values over it. A
+  bare name the recipe did not set is therefore whatever the launcher had.
+
+So inside a run, for a key the recipe declares in its `context:`,
+`RECIPE_VAR_<key>` always holds the recipe's value, and a step that reads only
+`RECIPE_VAR_<key>` loses no input it could legitimately receive. For a declared
+scalar the bare alias holds the same value, so dropping the bare read changes
+nothing; for an object, or an undeclared key, the bare name could only ever be
+inherited. Undeclared keys are covered
+[below](#every-key-read-is-declared-in-context).
+
+#### How each spelling was rewritten
+
+| Before | After |
+| --- | --- |
+| `${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}` | `${RECIPE_VAR_qa_evidence:-}` |
+| `${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}` | `${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}` |
+| `${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}` | `${RECIPE_VAR_branch_name:-${RECIPE_VAR_worktree_setup__branch_name:-}}` |
+| `${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}}` | `${RECIPE_VAR_terminal_state__terminal_state:-}` |
+| `X="${UPPER:-}"` then `[ -n "$X" ] \|\| X="${RECIPE_VAR_x:-}"` | `X="${RECIPE_VAR_x:-}"` |
+| `${UPPER:=${RECIPE_VAR_x:-}}`, `${UPPER-${RECIPE_VAR_x:-}}` | `${RECIPE_VAR_x:-}` |
+
+The rules behind the table:
+
+- A flattened nested bare name (`PR_PUBLISH_RESULT_PR_URL`) is removed; the
+  runner never sets it.
+- A top-level bare alias (`PR_URL`, `BRANCH_NAME`, `REPO_PATH`,
+  `TASK_DESCRIPTION`) that is paired with its `RECIPE_VAR_` partner in the same
+  read becomes that partner (`RECIPE_VAR_pr_url`), and the recipe declares the
+  key in its `context:`. For example, step-01b of `autodrive-build.yaml` reads
+  `${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}`, which becomes
+  `${RECIPE_VAR_task_description:-}`.
+- A bare name that nothing in the bundle produces (`TERMINAL_STATE`,
+  `TERMINAL_REASON`, `ALLOW_NO_OP`, `WORKFLOW_TERMINAL_AGENT_VERDICT`) is
+  removed. It is not renamed, so it does not survive as an undocumented input.
+- `RECIPE_VAR_` names in a chain keep their order, and a trailing literal
+  default (`MISSING`, `false`, `TERMINAL_FAILURE`) stays.
+- The `{{template}}` fallback lines after a `RECIPE_VAR_` read stay, and so
+  does every output check after the read (`extract-json --require-field`,
+  hashes, verdict parsing).
+
+#### An empty recipe value wins
+
+An empty `RECIPE_VAR_<key>` no longer falls through to a bare value. This is
+deliberate. `autodrive-merge-round.yaml` declares its gate keys with `""`
+defaults precisely to shadow a parent's values, and the read now honours that
+shadow. No parent recipe in the bundle passes a value only as a bare
+environment variable; every one passes it through `context:` or `-c`.
+
+#### What was exposed before #1561
+
+Before #1561, reads were `${UPPER:-${RECIPE_VAR_lower:-}}`, so a non-empty
+bare variable hid the recipe's value:
+
+- **Object outputs were exposed in production.** `CI_EVIDENCE`,
+  `QA_EVIDENCE`, `QA_EVIDENCE_HASH`, `MERGE_SYNC`, `PLATFORM_FACTS`,
+  `CRUSTY_EVIDENCE`, `MERGE_READY_VERDICT` and `WORKTREE_SETUP_WORKTREE_PATH`
+  never get a runner alias, so an inherited value of any of them reached the
+  step unchanged. This included the merge round's evidence reads in
+  `autodrive_round_evidence.sh` and the terminal-evidence reads in
+  `workflow_final_status.sh`.
+- **Scalar outputs leaked in two cases.** For a scalar such as
+  `autodrive_tools_dir`, the runner's alias overwrites a stale inherited
+  `AUTODRIVE_TOOLS_DIR` once the recipe sets the key. The stale value leaked
+  only when the key was missing from the context, or when a step body ran
+  outside the runner, as the shell tests run it. That is the #1607 case: a
+  round whose own tools directory had no round tool kept the outer run's
+  `AUTODRIVE_TOOLS_DIR` and reported `MERGE_READY` (PR #1588's QA case
+  `MERGEREADY-no-round-tool`).
+
+#### The tools directory comes from step-00 only
+
+`AUTODRIVE_TOOLS_DIR` decides which code the merge round runs, so it is never
+read. The six steps of `autodrive-merge-round.yaml` that run a tool
+(`step-00-merge-ready-files`, `step-00d-qa-evidence-hash`,
+`step-01-platform-facts`, `step-01b-crusty-evidence`,
+`step-03-extract-merge-ready-verdict` and `step-05-write-round-record`) read
+`RECIPE_VAR_autodrive_tools_dir`, which only `step-00-tools-dir` produces after
+its path checks. Each step copies it into a local named `TOOLS_D`, never
+`AUTODRIVE_TOOLS_DIR`, and checks it before it builds any path:
+
+```bash
+TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
+[ -n "$TOOLS_D" ] || { echo 'ERROR: autodrive-tools-not-found: RECIPE_VAR_autodrive_tools_dir is empty' >&2; exit 1; }
+[ -d "$TOOLS_D" ] || { echo 'ERROR: autodrive-tools-not-found: RECIPE_VAR_autodrive_tools_dir is not a directory' >&2; exit 1; }
+T="$TOOLS_D/autodrive_round_evidence.sh"
+[ -f "$T" ] || { echo 'ERROR: autodrive-tools-not-found: autodrive_round_evidence.sh' >&2; exit 1; }
+```
+
+A failed check exits non-zero, writes no round record and reports no
+`MERGE_READY`. The message names the key or the tool, never the path's value.
+The step never tries another tree (`$PWD`, `$HOME`, `/` or a bare variable),
+and it never builds `/autodrive_<tool>.sh` from an empty directory.
+
+`step-00-merge-ready-files` also asks `autodrive_trust.sh` whether gadugi-test
+is required, and treats a failed call as `G=""`. That stays fail-closed: any
+answer other than `false` requires gadugi-test.
+
+#### What is still read through a bare name
+
+- **Context variables with no `RECIPE_VAR_` partner in the read.** For example,
+  `${AMPLIHACK_HOME:-${REPO_PATH:-}}` (and the `$AMPLIHACK_HOME`, `$REPO_PATH`
+  roots that step-00 searches), `${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-}}`,
+  `EXPECTED_PR_TITLE_PREFIX`, `${PR:-${BRANCH:-}}`, `REMOTE_HOST_TYPE`, and a
+  lone `$TASK_DESCRIPTION` or `${TASK_DESCRIPTION:-}` as in
+  `workflow-prep.yaml`, `workflow-worktree.yaml` and
+  `workflow_branch_name.sh`. No recipe value competes with them in the same
+  read, so #1561 does not change them. For a declared scalar such as
+  `task_description`, the runner's alias already holds the recipe's value.
+  Where `TASK_DESCRIPTION` is paired with `RECIPE_VAR_task_description` in one
+  read, the read is rewritten as in the table above.
+- **A tool's own locals.** `workflow_final_status.sh` assigns `PUBLISH_STATE`
+  from `RECIPE_VAR_pr_publish_result__state` and `ISSUE_NUMBER` from
+  `RECIPE_VAR_issue_number` near the top of the script, then reuses them as
+  defaults further down. They are computed in the same script, not inherited,
+  and each carries a comment saying so. `TASK_DESC` is the same kind of local:
+  every recipe step and tool that uses it assigns it from `$TASK_DESCRIPTION`
+  or `{{task_description}}` first, and `workflow_issue_tracking.sh` reads the
+  `TASK_DESC` its caller in `workflow-prep.yaml` set. It is never a
+  `RECIPE_VAR_` alias, so #1561 does not touch it.
+- **`NO_MERGE`**, as the [override](#no_merge-override) below.
+- **Test harnesses.** `amplifier-bundle/recipes/tests/` stands in for the
+  runner and sets names on purpose; the guard does not scan it.
+
+#### Every key read is declared in `context:`
+
+The runner also passes inherited `RECIPE_VAR_*` variables through. A nested run
+that does not declare a key in its `context:` still sees a `RECIPE_VAR_<key>`
+inherited from its parent. Only a `context:` declaration replaces that value
+when the run starts. A key declared only as a step's `output:` is replaced when
+that step runs, not before, so two reads still see the parent's value:
+
+- a read in a step that runs before the producer;
+- any read after a producer that was skipped by its `condition:` or did not
+  run.
+
+Each recipe therefore declares every `RECIPE_VAR_` key it reads in its
+`context:`, with a `""` default when it has no better one. An `output:` alone
+is accepted only when every read of the key comes after its producer in the
+same recipe and the producer has no `condition:`. `autodrive-merge-round.yaml`, for example, declares
+`ci_evidence`, `qa_evidence`, `merge_sync`, `qa_evidence_hash`,
+`merge_ready_verdict`, `platform_facts`, `crusty_evidence` and
+`autodrive_tools_dir` as `""`. A key that no step fills stays empty and takes
+the read's deny default (`MISSING` or `unreadable`), never the parent's value.
+The [bundle-wide guard](#the-bundle-wide-guard) checks these declarations.
+
+The bounds that applied before still apply. A value still goes through
+`extract-json --require-field` or `extract-field`, a `state_dir` still goes
+through the [check below](#state_dir-is-checked-before-use), and
+`autodrive-merge-evidence.yaml` reads no step outputs, so the
+[merge gate](#no-silent-merge) cannot be fed through this path.
+
+### `NO_MERGE` override
+
+`NO_MERGE` is the one bare name that is still read, and only as an explicit
+override. A bare `NO_MERGE` is combined with the recipe's `no_merge` value as a
+logical OR, after the recipe value has been resolved. It can switch merging
+off, but it can never switch it on. A stale `NO_MERGE=true` can only stop a
+merge. Ignoring an operator's no-merge request would be a worse failure than
+the one #1561 fixes.
+
+The override is read in three places:
+
+| Recipe | Step |
+| --- | --- |
+| `autodrive-build.yaml` | `step-01b-no-merge-directive` |
+| `autodrive-build.yaml` | `step-03-resolve-pr` |
+| `workflow-terminal-state.yaml` | `probe-terminal-state`, the no-merge block |
+
+Each site normalises both values the same way: it trims surrounding
+whitespace, lower-cases the value, and treats `true`, `1`, `yes` and `on` as
+true. Anything else, including an unset, empty or unknown value such as
+`maybe`, is false. The normaliser uses only parameter expansion and `case`: no
+`eval`, no `declare -n`, and no command built from the value. Each step runs
+in its own process, so each one defines the normaliser locally. The
+`${v,,}` lower-casing needs bash 4.0 or later; recipe steps must run under a
+bash 4+ interpreter, not macOS's `/bin/bash` 3.2:
+
+```bash
+normalise_no_merge_flag() {
+  local v="${1:-}"
+  v="${v#"${v%%[![:space:]]*}"}"; v="${v%"${v##*[![:space:]]}"}"
+  case "${v,,}" in true|1|yes|on) echo true ;; *) echo false ;; esac
+}
+NM="$(normalise_no_merge_flag "${RECIPE_VAR_no_merge:-}")"
+# NO_MERGE override (#1561): a bare NO_MERGE can only switch merging off.
+# See docs/reference/auto-drive-to-merge.md#no_merge-override
+[ "$(normalise_no_merge_flag "${NO_MERGE:-}")" = "true" ] && { NM=true; echo "INFO: no_merge=true from bare NO_MERGE env (override, #1561)" >&2; }
+```
+
+The `INFO` line goes to stderr whenever the bare value normalises to true. It
+is a fixed string: it names the source and prints no inherited value.
+
+| Recipe `no_merge` | Bare `NO_MERGE` | Merging |
+| --- | --- | --- |
+| `true` | unset | off, no `INFO` line |
+| `true` | `false` | off: a bare `false` cannot re-enable it |
+| `true` | `true` | off, with the `INFO` line |
+| `false` | `true` | off, with the `INFO` line |
+| `false` | `maybe` | on: an unknown value is false |
+| `false` | unset | on, no `INFO` line |
+| `""` | `true` | off, with the `INFO` line |
+| `""` | ` On ` | off, with the `INFO` line |
+| `""` | `false` | on |
+| `""` | unset | on |
+
+`autodrive-build.yaml` sets `no_merge: "true"`, so phase 1 never merges,
+whatever `NO_MERGE` holds; the override in its two steps is defensive, for a
+caller that passes `-c no_merge=` empty. To turn no-merge on for a run, prefer
+`-c no_merge=true`. The bare variable exists for operators and CI jobs that
+already export it.
+
+The [bundle-wide guard](#the-bundle-wide-guard) allows `NO_MERGE` only in this
+exact shape: a separate statement after the `RECIPE_VAR_no_merge` read that
+passes `"${NO_MERGE:-}"` to the normaliser, tests `= true`, and acts only
+through `&&`. The line may not contain `RECIPE_VAR_`, `false`, `||` or `!=`.
+The `# ... override (#1561)` comment linking this anchor sits on the two lines
+above it, and the `INFO` line naming the bare `NO_MERGE` env is within three
+lines.
+
+`autodrive-build.yaml` resolves `NM` once per step; the later merge decision in
+`step-03-resolve-pr` tests `"$NM"` and does not read `NO_MERGE` again.
 
 ### `state_dir` is checked before use
 
-With the fallback in place, the preflight's `state_dir` reaches later steps
+With the `RECIPE_VAR_` read in place, the preflight's `state_dir` reaches later steps
 for the first time. Every step that uses it checks it before any `mkdir`,
 `rm` or write, and refuses:
 
@@ -1419,7 +1698,7 @@ Any future step that does must also require an absolute path under the
 
 ### The static check
 
-The test `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` in
+The test `autodrive_step_outputs_are_read_from_recipe_var_only` in
 `tests/integration/auto_drive_to_merge_test.rs` enforces this section. It
 collects the `output:` names declared across all seven autodrive recipes
 (`auto-drive-to-merge.yaml` and the six `autodrive-*.yaml` files) into one
@@ -1443,31 +1722,33 @@ matches `qa_evidence`.
 Two sanity checks come first, so the test cannot pass by looking at nothing:
 
 - fewer than 20 output names fails;
-- a reader recipe with no `${<NAME_UPPER>:-` read fails, and the failure
-  names the recipe. This runs while the reads are counted, before check 1.
+- a reader recipe with no `${RECIPE_VAR_<name>:-` read fails, and the
+  failure names the recipe. This runs while the reads are counted, before
+  check 1.
 
 Then four checks run, in this order, so a failure reports its most specific
 cause:
 
-1. **Every read has the fallback.** In the six reader recipes, each
-   `${<NAME_UPPER>:-` must be immediately followed by
-   `${RECIPE_VAR_<name>:-`, the two names back to back:
-   `${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-`. A `RECIPE_VAR_qa_evidence`
-   read elsewhere on the line does not count. The failure lists each read
-   that lacks its fallback by file, line and output.
-2. **No read skips the fallback.** On every line of the same six recipes,
-   `${<NAME_UPPER>` must be followed by `:-`, and `${#<NAME_UPPER>`,
-   `${!<NAME_UPPER>` and `$<NAME_UPPER>` must not appear. Each of these is
-   a violation, because it never reaches `RECIPE_VAR_qa_evidence`:
+1. **No read uses the bare name.** On every line of the six reader recipes,
+   `${<NAME_UPPER>` in any form, `${#<NAME_UPPER>`, `${!<NAME_UPPER>` and
+   `$<NAME_UPPER>` must not appear. Each of these is a violation, because it
+   can read a value inherited from outside the run instead of
+   `RECIPE_VAR_qa_evidence`:
 
    ```bash
-   ${QA_EVIDENCE}  ${QA_EVIDENCE-}  ${QA_EVIDENCE:=}  ${QA_EVIDENCE:+x}
-   ${QA_EVIDENCE:?}  ${QA_EVIDENCE#*}  ${QA_EVIDENCE%x}  ${QA_EVIDENCE/a/b}
+   ${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}  ${QA_EVIDENCE:-}  ${QA_EVIDENCE}
+   ${QA_EVIDENCE-}  ${QA_EVIDENCE:=}  ${QA_EVIDENCE:+x}  ${QA_EVIDENCE:?}
+   ${QA_EVIDENCE#*}  ${QA_EVIDENCE%x}  ${QA_EVIDENCE/a/b}
    ${#QA_EVIDENCE}  ${!QA_EVIDENCE}  $QA_EVIDENCE
    ```
 
-   None of these counts as a read. The failure names the file, line and
-   output.
+   The failure lists each bare read by file, line and output.
+2. **Every `RECIPE_VAR_` read has a default and no bare tail.** Each
+   `${RECIPE_VAR_<name>` must be followed by `:-`, and its default must not
+   be a bare read of the same output: `${RECIPE_VAR_qa_evidence:-${QA_EVIDENCE:-}}`
+   is a violation, because an empty step output would fall through to the
+   inherited value. A literal default such as `${RECIPE_VAR_x:-MISSING}` is
+   allowed. The failure names the file, line and output.
 3. **No step output is templated into a `command:`.** This check walks the
    parsed YAML of all seven recipes, not their text lines. In each step
    whose `command:` is a string, `{{` followed by optional spaces and an
@@ -1520,6 +1801,141 @@ sentence only together with the parser.
 The shell contract test `test-auto-drive-to-merge.sh` runs the two sanity
 checks (`1511-output-set`, `1511-reads-<recipe>`) and check 1
 (`1511-static-audit`). Checks 2–4 run only in the Rust test.
+
+### The bundle-wide guard
+
+The checks above cover the seven autodrive recipes and their declared outputs.
+`crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs`
+covers the whole bundle, with no output list. It flags any spelling in which a
+bare upper-case name can win over the `RECIPE_VAR_` name it is paired with. Run
+it with:
+
+```bash
+cargo test -p amplihack-cli --test cli_integration issue_1561
+```
+
+It scans, read-only and non-recursively:
+
+- every `amplifier-bundle/recipes/*.yaml`, and fails if it finds fewer than 20.
+  `recipes/tests/` is not scanned: it holds harnesses that stand in for the
+  runner and set bare names on purpose;
+- every `amplifier-bundle/tools/*.sh`, and fails if it finds fewer than 40.
+
+The minimum counts stop the guard from passing because it scanned nothing.
+Five detectors run on each line. In the table, `UPPER` is the upper-case form
+of any `RECIPE_VAR_` name on the same line, so
+`RECIPE_VAR_worktree_setup__worktree_path` pairs with
+`WORKTREE_SETUP_WORKTREE_PATH`:
+
+| Detector | Flags |
+| --- | --- |
+| `nested-default` | `${UPPER:-${RECIPE_VAR_x:-…}}`, `${UPPER:=${RECIPE_VAR_x:-…}}` and `${UPPER-${RECIPE_VAR_x:-…}}`, with any default, at any depth of a chain |
+| `candidate-loop` | a `for` list with `"${UPPER:-}"` ahead of `"${RECIPE_VAR_x:-}"` |
+| `two-line-fallback` | `X="${UPPER:-}"` followed, for the same local `X`, by `[ -n "$X" ] \|\| X="${RECIPE_VAR_x:-}"` |
+| `single-line-or` | `X="${UPPER:-}" \|\| X="${RECIPE_VAR_x:-}"` and other `\|\|` chains that try `UPPER` first |
+| `bare-last` | `${RECIPE_VAR_x:-${UPPER:-}}`, where an empty recipe value would still fall through |
+
+A bare read with no `RECIPE_VAR_` partner is not flagged. Examples are
+`${REPO_PATH:-}`, `: "${TMPDIR:=/tmp}"`, a lone `X="${UPPER:-}"` that no
+`RECIPE_VAR_` fallback follows, and a tool local such as `${PUBLISH_STATE:-…}`
+in `workflow_final_status.sh`, whose name is not the upper-case form of the
+`RECIPE_VAR_` name it follows.
+
+Self-tests run each detector on inline strings, one for each flagged spelling
+and one for each accepted spelling, so a detector that stops matching fails the
+test. They include a four-level chain that interleaves bare and `RECIPE_VAR_`
+names, and a `:=` read followed by `${REPO_PATH:-}`. A captured bare name
+ends at a word boundary, so the `RECIPE_VAR_` prefix of a lower-case name is
+never taken for a bare name: `${RECIPE_VAR_x:-${RECIPE_VAR_y:-}}` is accepted,
+and `${FOO_BAR:-${RECIPE_VAR_x:-}}` is flagged.
+
+The guard also checks:
+
+- **The repository-wide grep finds nothing.** Outside the allowlist,
+  `grep -rnE '\$\{[A-Z_][A-Z0-9_]*:-\$\{RECIPE_VAR_'` over both trees must
+  return no line.
+- **No `AUTODRIVE_TOOLS_DIR` read is left.** The name may appear in a comment,
+  but no recipe or tool may read it.
+- **Every `RECIPE_VAR_<key>` a recipe reads is declared in `context:`.** The
+  key must be in the recipe's `context:`. A key that is only a step's `output:`
+  passes only when every reading step comes after its producer and the
+  producer has no `condition:`; see
+  [Every key read is declared in `context:`](#every-key-read-is-declared-in-context).
+  Negative fixtures prove that each of these fails: an undeclared read, a read
+  in a step before the only producer, and a read after a producer with a
+  `condition:`.
+- **`ALLOWED_OVERRIDES` holds `NO_MERGE` only.** Each entry is a name and a
+  justification, and the justification must name a page under `docs/` that
+  exists and mentions the variable. The entry exempts only the
+  [override shape](#no_merge-override).
+- **`no_merge_override_can_only_tighten`.** Each `NO_MERGE` read must have
+  the [override shape](#no_merge-override) exactly, in one of the three steps
+  listed there. Negative fixtures prove that each of these fails: a nested
+  `${NO_MERGE:-${RECIPE_VAR_no_merge:-}}`, a `${NO_MERGE:-false}` default, a
+  `${NO_MERGE:=…}` read, and a bare-last `${RECIPE_VAR_no_merge:-${NO_MERGE:-}}`.
+- **The test-only opt-out.** `AUTODRIVE_TEST_KEEP_INHERITED` may appear only
+  under `amplifier-bundle/recipes/tests/` and `tests/`; see
+  [The inherited-variable rows](#the-inherited-variable-rows).
+
+A failure prints one line per read, as source text only, never an environment
+value:
+
+```
+amplifier-bundle/tools/workflow_pr_ready.sh:5: nested-default: PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-}}"
+```
+
+### The inherited-variable rows
+
+`test-auto-drive-to-merge.sh` proves the precedence by running the step bodies
+with a conflicting bare variable set:
+
+| Row | Sets | Asserts |
+| --- | --- | --- |
+| `1561-stale-CI_EVIDENCE`, `1561-stale-QA_EVIDENCE`, `1561-stale-MERGE_READY_REVIEW`, each with `-reverse` and `-empty` (stale values carry `# deliberately stale (#1561)`) | the bare name to a passing value while the `RECIPE_VAR_` value fails; then the reverse; then a passing bare value with an empty `RECIPE_VAR_` value | `step-03-extract-merge-ready-verdict` reports the `RECIPE_VAR_` value in every direction. An empty `RECIPE_VAR_` value gives the deny default (`NOT_MERGE_READY`, `MISSING`, `unknown` or `unreadable`), never `MERGE_READY` |
+| `1561-record-stale-CI_EVIDENCE`, `1561-record-stale-QA_EVIDENCE`, `1561-stale-MERGE_READY_VERDICT`, each with `-empty` (and `-reverse` for the verdict) | the same stale bare values, with the round record written by `step-05-write-round-record` through `autodrive_round_evidence.sh` | the record's verdict, blocker count and evidence fields come from `RECIPE_VAR_`; a passing stale bare value with an empty `RECIPE_VAR_` value never yields a passing gate |
+| `1561-stale-MERGE_SYNC-empty`, `1561-stale-PLATFORM_FACTS-empty`, `1561-stale-CRUSTY_EVIDENCE-empty`, `1561-stale-QA_EVIDENCE_HASH-empty` | a passing bare value and an empty `RECIPE_VAR_` value | `NOT_MERGE_READY`, with the deny default named in the downgrade reason |
+| `1607-stale-tools-dir-<step>`, one per tool-running step | `AUTODRIVE_TOOLS_DIR` to a decoy directory whose tools append their name to a marker file, print a sentinel and exit `0` | the marker file is never written and the sentinel is never printed; the step runs its tool from `RECIPE_VAR_autodrive_tools_dir`. A positive control first sets the decoy as `RECIPE_VAR_autodrive_tools_dir` and requires the marker file, so a step that stopped early cannot pass. Because a decoy exits `0`, a step's exit status shows nothing; only the marker does |
+| `1607-stale-tools-dir-empty-<step>`, `1561-empty-tools-dir-fails-closed` | the decoy as `AUTODRIVE_TOOLS_DIR` and an empty `RECIPE_VAR_autodrive_tools_dir` | each step exits non-zero with `autodrive-tools-not-found`, runs no decoy tool, reports no `MERGE_READY`, and never builds an `/autodrive_*.sh` path |
+| `MERGEREADY-no-round-tool-inherited` | the outer run's real `amplifier-bundle/tools` as `AUTODRIVE_TOOLS_DIR`, not scrubbed, and a round tools directory with no round tool | `NOT_MERGE_READY` with `measured_evidence=unreadable`; the inherited tools do not rescue the round |
+| `1561-NO_MERGE-bare-true-blocks`, `1561-NO_MERGE-bare-1-blocks`, `1561-NO_MERGE-bare-On-blocks` | bare `NO_MERGE` true in some spelling, recipe `no_merge` `false` or empty | merging is off |
+| `1561-NO_MERGE-bare-false-does-not-override-recipe-true`, `1561-NO_MERGE-bare-empty-does-not-override-recipe-true` | recipe `no_merge=true`, bare `NO_MERGE` `false` or empty | merging is off |
+| `1561-NO_MERGE-recipe-true`, `1561-NO_MERGE-recipe-YES-normalised` | recipe `no_merge` true in some spelling, no bare value | merging is off |
+| `1561-NO_MERGE-recipe-true-no-info` | recipe `no_merge=true`, no bare value | no `INFO` line is printed |
+| `1561-NO_MERGE-both-true-blocks` | recipe `no_merge=true` and bare `NO_MERGE=true` | merging is off |
+| `1561-NO_MERGE-override-info`, `1561-NO_MERGE-override-info-line` | recipe `no_merge=false`, bare `NO_MERGE=true` | merging is off, and stderr has the `INFO` line naming the bare `NO_MERGE` env |
+| `1561-NO_MERGE-neither`, `1561-NO_MERGE-neither-empty`, `1561-NO_MERGE-bare-false-alone` | neither value true | merging is on |
+| `1561-NO_MERGE-bare-junk-ignored` | recipe `no_merge=false`, bare `NO_MERGE=maybe` | merging is on: an unknown value is false |
+| `1561-NO_MERGE-no-info-when-unset`, `1561-NO_MERGE-no-info-when-unset-line` | recipe `no_merge=false`, no bare value | merging is on and no `INFO` line is printed |
+
+The test normally removes every inherited `AUTODRIVE_*` and `RECIPE_VAR_*`
+variable before it starts, so a developer's shell cannot change its result.
+`AUTODRIVE_TEST_KEEP_INHERITED=1` skips that removal only. The #1551 merge
+guard and the `gh` stubs stay in place, so no row can merge a real PR. Every
+scratch file goes under `$TMPDIR`. The decoy tools directory and its marker
+file sit in the test's work tree, which is itself `mktemp -d` under
+`${TMPDIR:?}`; the decoy is mode `0700` and is removed with the work tree by
+the `EXIT` trap. Every line that sets a stale bare value carries the comment
+`# deliberately stale (#1561)`, so a reader cannot mistake it for a fixture
+leak. With the opt-out, the whole suite still
+passes when the outer variables point at the real tools; this is the #1607
+reproduction:
+
+```bash
+T="$PWD/amplifier-bundle/tools"
+AUTODRIVE_TEST_KEEP_INHERITED=1 AUTODRIVE_TOOLS_DIR="$T" RECIPE_VAR_autodrive_tools_dir="$T" \
+  bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
+```
+
+`tests/integration/auto_drive_to_merge_test.rs` runs the suite in CI three
+times, once per `Inherited` mode. None of the three tests is `#[ignore]`.
+Each sets the child's environment only through `.env()` and `.env_remove()`,
+and asserts exit `0`, no `FAIL` line, and `PASS: MERGEREADY-no-round-tool`:
+
+| Mode | Test | Environment |
+| --- | --- | --- |
+| `Inherited::Scrubbed` | `auto_drive_contract_shell_test_passes` | the script's own scrub |
+| `Inherited::Conflicting` | `auto_drive_contract_shell_test_passes_with_conflicting_inherited_tools_dir` | `AUTODRIVE_TEST_KEEP_INHERITED=1`, `AUTODRIVE_TOOLS_DIR` at a decoy made with `tempfile::Builder::tempdir_in(env!("CARGO_TARGET_TMPDIR"))`, and `RECIPE_VAR_autodrive_tools_dir` at the round's own tools |
+| `Inherited::Same` | `auto_drive_contract_shell_test_passes_with_same_inherited_tools_dir` | `AUTODRIVE_TEST_KEEP_INHERITED=1` and both variables at the real `amplifier-bundle/tools` |
 
 ## Reading the loop-health line
 
@@ -2187,9 +2603,10 @@ AUTO_DRIVE_TO_MERGE: MERGED — PR #27 (crusty loop: unknown, merge gate: MERGED
 {"outcome":"MERGED","pr":"27","crusty_loop":"unknown","merge_result":"MERGED"}
 ```
 
-Each phase result is read from its environment variable, then from the
-`RECIPE_VAR_` form: `${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}`, and the
-same for `MERGE_GATE_RESULT` and `CRUSTY_LOOP_RESULT`. A skipped phase leaves
+Each phase result is read from its `RECIPE_VAR_` name only:
+`${RECIPE_VAR_build_result:-}`, and the same for `merge_gate_result` and
+`crusty_loop_result`. An inherited `BUILD_RESULT`, `MERGE_GATE_RESULT` or
+`CRUSTY_LOOP_RESULT` is ignored. A skipped phase leaves
 its own result empty, so the report does not depend on it. These fallbacks,
 and with them the `merge_result` read that the #1543 incident showed as
 `NOT_MERGED` after a real merge, came from #1511 (PR #1563). #1543 changes
@@ -2201,9 +2618,10 @@ and a merge gate that merges.
 
 `pr` is the first non-empty value of:
 
-1. `PR_NUMBER`, then `RECIPE_VAR_pr_number`. By this step these hold the
-   build phase's PR, because the loops hand back the `build_result.pr` they
-   were given; on a run given `pr_number` that is the same PR;
+1. `RECIPE_VAR_pr_number`. By this step it holds the build phase's PR,
+   because the loops hand back the `build_result.pr` they were given; on a
+   run given `pr_number` that is the same PR. An inherited bare `PR_NUMBER`
+   is not a candidate;
 2. the merge gate result's `pr`;
 3. the build result's `pr`.
 
@@ -2682,10 +3100,11 @@ Every recipe and tool here stays inside the 400-line brick budget.
 
 | Test | Location |
 | --- | --- |
-| Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
+| Executable contract test: loop, verdicts, forbidden-flag scan, merge-gate refusals, qa evidence against stub `cargo` and `gadugi-test`, crusty records and range; a step output read through `RECIPE_VAR_` only, the [#1511 repro](#reading-step-outputs) (`1511-repro`), the `state_dir` refusals and their silence on a safe value, the static `RECIPE_VAR_` check, the [inherited-variable rows](#the-inherited-variable-rows) (`1561-stale-*`, `1561-empty-tools-dir-fails-closed`, `1561-no-merge-*`, `MERGEREADY-no-round-tool-inherited`), and every row of the [loop-health line table](#reading-the-loop-health-line) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
 | PR head and worktree resolution, refusal, relative `repo_path`, run report, and two runs of the composed recipe through `recipe-runner-rs` (a fresh build whose stand-in default-workflow builds in its own worktree, as the real one does, where both loops must get that worktree and not the launch checkout; skipped build and crusty phases followed by a merge), and the `pr-worktree-stale` refusal (#1543). It needs `recipe-runner-rs` on `PATH` or in `RECIPE_RUNNER_RS_PATH`, and stops with a harness error without it | `amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh` |
 | QA command selection (#1516): `AUTODRIVE_QA_DIR` with `AUTODRIVE_QA_COMMAND`, root Cargo, nested and nested-workspace Cargo, pruned `target`/`worktrees`/`node_modules`/`.git` crates, ambiguous and depth-4 crates, mixed Node/Python roots, the jamestown shape (root `pytest` beside a nested crate), `package.json` beside a nested crate, a root `requirements.txt`, `go.mod` or other unhandled project file beside a nested crate (BLOCKED, never `cargo test` in the crate), the `./<word>` installed check, an `AUTODRIVE_QA_DIR` that does not exist, parity scenarios under the detected workspace directory (including `AUTODRIVE_QA_COMMAND` with `AUTODRIVE_QA_DIR=sub` in a nested-Cargo repository), the space-separated ambiguous candidate list, symlinked and unsafely named directories, a `cargo` in the workspace that is off `PATH` and never runs, an in-repository `cargo` on `PATH` that runs (the check is a `PATH` lookup, not a sandbox), a `.venv/bin/pytest` on `PATH` that runs whether detected or set with `AUTODRIVE_QA_COMMAND=pytest`, and a crate in a directory named `-` or an exported `CDPATH` that never moves the suite outside the checkout. Stub `cargo`, `pytest`, `npm` and `gadugi-test` record their directory and arguments | `amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh` |
-| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, and `autodrive_step_outputs_are_read_with_the_recipe_var_fallback` (the four [static checks](#the-static-check), with the read counts taken from this page) | `tests/integration/auto_drive_to_merge_test.rs` |
+| Structural and wiring guards, brick budget, skill-invocation guard, state-directory sentence, `tests/gadugi/recipe-step-command.sh` compared with serde_yaml over every bundled recipe step, the PR-head resolver read-only guard, `autodrive_step_outputs_are_read_from_recipe_var_only` (the four [static checks](#the-static-check), with the read counts taken from this page), `autodrive_round_with_inherited_stale_tools_dir_uses_its_own` (#1607), and the contract shell suite run once per [`Inherited` mode](#the-inherited-variable-rows): scrubbed, conflicting and same | `tests/integration/auto_drive_to_merge_test.rs` |
+| [The bundle-wide guard](#the-bundle-wide-guard) (#1561): no recipe in `amplifier-bundle/recipes/*.yaml` and no tool in `amplifier-bundle/tools/*.sh` lets a bare upper-case name win over its `RECIPE_VAR_` name, with minimum file counts, self-tests for each detector, the repository-wide grep, no `AUTODRIVE_TOOLS_DIR` read, declared `RECIPE_VAR_` keys, the `NO_MERGE`-only allowlist with `no_merge_override_can_only_tighten`, and the test-only opt-out | `crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs` |
 | Where phases 2 and 3 run (issue #1528): resolver behaviour and refusals (including a local branch or worktree behind, ahead of or diverged from origin), loop `step-02` resolution and forwarding, round `step-04` commit blocks, a forced-add reproduction the guard refuses, and a commit from the pull request worktree that leaves the launch checkout's index clean | `tests/integration/autodrive_pr_worktree_tests.rs` |
 | [Merges outside the gate](#merges-outside-the-gate-are-refused-1551) (#1551): every merge form refused with exit `3` and the PR left open (T1); forged gates, a copied gate and the real gate run without `-p` refused (T2, T3); the real gate run as `/bin/bash -p` still merges (T3); pass-through of non-merge calls (T4); exit `127` cases (T5); `export -f gh`, `BASH_ENV`, a `PPID` mismatch, a non-digit depth and every non-canonical endpoint form, mixed-case `Pulls` and `Merge` included, refused (SEC); the step-01b directive and its fail-closed branches, the phase-1 `MERGED` check and the unreadable-state exit (T6); static checks (S). CI runs it in a Linux job. | `amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh` |
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
@@ -2702,6 +3121,7 @@ bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh
 cargo test -p amplihack-cli --test cli_integration issue_1551
+cargo test -p amplihack-cli --test cli_integration issue_1561
 bash amplifier-bundle/recipes/tests/test-issue-1516-qa-command-selection.sh
 gadugi-test validate -d tests/gadugi/scenarios
 bash tests/gadugi/run-autodrive-crusty-rereview-scenario.sh   # and the other run-autodrive-*-scenario.sh

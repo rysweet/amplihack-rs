@@ -530,11 +530,16 @@ fn verdict_resolution_uses_the_canonical_orch_helper_pipeline() {
 /// are simply ABSENT at runtime. Reading them bare made every run resolve to
 /// STUCK and fabricate an exit-79 policy refusal as the reason.
 ///
+/// Issue #1561: the #1337 fix read them as `${LOOP_EVIDENCE:-${RECIPE_VAR_…}}`,
+/// so a `LOOP_EVIDENCE` inherited from whatever launched the runner (a parent
+/// recipe run, a shell, a CI job) outranked this run's own evidence. Every read
+/// is now `RECIPE_VAR_<name>` alone, and the bare name is never read.
+///
 /// The end-to-end probe in the shell test is what proves this at runtime; this
-/// test is the cheap static guard that keeps a future edit from dropping a
-/// fallback again in a repo where the runner may not be installed.
+/// test is the cheap static guard that keeps a future edit from bringing a bare
+/// read back in a repo where the runner may not be installed.
 #[test]
-fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
+fn object_valued_step_outputs_are_read_from_recipe_var_only() {
     let recipe = recipe_yaml();
     // (env name, runner name) for every step output this brick reads back.
     let object_outputs = [
@@ -545,31 +550,43 @@ fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
             "RECIPE_VAR_loop_health_assessment",
         ),
     ];
+    // `${NAME`, `${#NAME`, `${!NAME` or `$NAME`, ending at a name boundary, so
+    // `LOOP_HEALTH` never matches `LOOP_HEALTH_ASSESSMENT` and the
+    // `LOOP_HEALTH: DONE` marker text is not a read.
+    let reads_bare = |line: &str, name: &str| {
+        ["${", "${#", "${!", "$"].iter().any(|pre| {
+            let pat = format!("{pre}{name}");
+            line.match_indices(&pat).any(|(i, _)| {
+                line[i + pat.len()..]
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'))
+            })
+        })
+    };
     for s in steps(&recipe) {
         let id = s.get("id").and_then(Value::as_str).unwrap_or("<unnamed>");
         let Some(cmd) = s.get("command").and_then(Value::as_str) else {
             continue;
         };
         for (plain, recipe_var) in object_outputs {
-            let needle = format!("${{{plain}:-");
             for (n, line) in cmd.lines().enumerate() {
-                if !line.contains(&needle) {
+                if line.trim_start().starts_with('#') {
                     continue;
                 }
                 assert!(
-                    line.contains(recipe_var),
-                    "{id} line {}: `${{{plain}:-...}}` is read without its \
-                     `{recipe_var}` fallback. The runner never sets `{plain}` for a \
-                     JSON-object step output, so this read is silently empty and the \
-                     gate fabricates a STUCK. Use \
-                     `${{{plain}:-${{{recipe_var}:-}}}}`.\n  {line}",
+                    !reads_bare(line, plain),
+                    "{id} line {}: reads the bare `{plain}`. The runner never sets it for \
+                     a JSON-object step output, so it can only hold a value inherited from \
+                     outside this run, which would outrank this run's own output (#1561). \
+                     Read `${{{recipe_var}:-}}` only.\n  {line}",
                     n + 1
                 );
             }
         }
     }
-    // And at least one such dual-name read must actually be present, so the
-    // guard cannot pass vacuously if the reads are renamed away.
+    // Every output must actually be read through RECIPE_VAR_, so the guard
+    // cannot pass vacuously if the reads are renamed away.
     let all: String = steps(&recipe)
         .iter()
         .filter_map(|s| s.get("command").and_then(Value::as_str))
@@ -577,8 +594,8 @@ fn object_valued_step_outputs_are_read_with_the_recipe_var_fallback() {
         .join("\n");
     for (_, recipe_var) in object_outputs {
         assert!(
-            all.contains(recipe_var),
-            "no step reads `{recipe_var}`; the brick cannot see its own step outputs"
+            all.contains(&format!("${{{recipe_var}:-")),
+            "no step reads `${{{recipe_var}:-`; the brick cannot see its own step outputs"
         );
     }
 }

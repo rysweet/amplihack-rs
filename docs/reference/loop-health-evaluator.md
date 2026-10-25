@@ -922,26 +922,35 @@ None of these catches a verdict copied from the round output. See the residual
 risks under [The alternate key is final](#the-alternate-key-is-final) and
 [Prose token rules](#prose-token-rules).
 
-### Reading step outputs: the dual-name idiom
+### Reading step outputs: RECIPE_VAR only
 
 `recipe-runner-rs` exports every step output as `RECIPE_VAR_<name>`, but it
 only adds the plain-uppercase alias (`LOOP_EVIDENCE`) for **scalar** outputs.
 `loop_evidence` and `loop_health` declare `parse_json: true`, and an evaluator
 that obeys the "emit only the JSON object" contract makes
 `loop_health_assessment` an object too. All three plain names are therefore
-**absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty.
+**absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty,
+or worse, holds a stale value inherited from whatever launched the runner.
 
-Every read in these bricks uses the dual-name form, the same idiom as
-`workflow-publish` / `workflow-finalize` / `workflow-terminal-state`:
+Every read in these bricks uses the `RECIPE_VAR_` name alone, as every other
+bundle recipe does:
 
 ```bash
-EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+EV="${RECIPE_VAR_loop_evidence:-}"
 ```
 
-Dropping a fallback makes the recipe inert: the reads miss, `--default true`
-fires, and every run reports a `terminal_policy_refusal` that never happened.
-An integration test guards the invariant statically and the contract test
-proves it end to end through the real runner.
+The bare name is never read, so an inherited `LOOP_EVIDENCE` or `LOOP_HEALTH`
+cannot replace the brick's own evidence or verdict (see
+[Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
+Dropping the `RECIPE_VAR_` read makes the recipe inert: the reads miss,
+`--default true` fires, and every run reports a `terminal_policy_refusal` that
+never happened. `tests/integration/issue_1337_loop_health_evaluator_test.rs`
+guards the invariant statically: it fails on any read of `LOOP_EVIDENCE`,
+`LOOP_HEALTH` or `LOOP_HEALTH_ASSESSMENT` in a step command, and it fails if
+any of the three `RECIPE_VAR_` reads is missing, so it cannot pass vacuously.
+The [bundle-wide guard](auto-drive-to-merge.md#the-bundle-wide-guard) rejects a
+bare-first read, and the contract test proves it end to end through the real
+runner.
 
 ### Which JSON object is the verdict
 
@@ -1012,7 +1021,7 @@ and reports what is not converging instead of consuming the remaining budget.
 | Helper unit tests (synonyms including `CONVERGING` / `PROGRESSING`, canonical pass-through, malformed → `STUCK`, negation-adjacent equality regression including `NOT_PROGRESSING`, opposite-default guard) | `crates/amplihack-cli/src/commands/orch.rs` |
 | Executable contract test (STUCK path, malformed-verdict path, exit-79 terminal path, the 2h47m worked example, no-cap and no-timeout guards, and a hand-written `check_rs` line, run through `resolve_verdict_and_source`, for every row of the [step-03 examples](#examples) — the test does not read the table, so a new row needs its own `check_rs` line — plus the round-trip guard, `LOOP_NAME` cleaning, prompt-marker and [contract-position](#where-the-prompt-states-the-contract) cases, and step-04's stdout being at most one `LOOP_HEALTH: ` line for `CONTINUE`, `DONE` and `STUCK`) | `amplifier-bundle/recipes/tests/test-issue-1337-loop-health-evaluator.sh` |
 | **End-to-end probe** — the real recipe files run through the real `recipe-runner-rs` with only step-02 stubbed as a bash step: `CONTINUE` → exit 0, `STUCK` → exit 1, verdict selection, exit-79 terminal, self-poisoning | same file, section 7 (skipped with a loud notice when `recipe-runner-rs` is not installed; set `RECIPE_RUNNER_RS_PATH` to force it) |
-| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
+| Structural + end-to-end wiring, including `evaluator_prompt_states_the_contract_first_and_last` and the [RECIPE_VAR-only read check](#reading-step-outputs-recipe_var-only) for `loop_evidence`, `loop_health` and `loop_health_assessment` | `tests/integration/issue_1337_loop_health_evaluator_test.rs` |
 | Collector terminal detectors ignore agent output lines: the real step-01 command run through `bash` in an isolated environment, one test per row of the [agent output table](#agent-output-lines-are-not-refusals), each checking both `terminal_refusal` and, where the table lists one, the `terminal_reason` substring, plus the unfiltered duration count and an agent line followed by a real guard line. Two tests guard the filter itself: `issue_1510_near_miss_prefixes_are_not_filtered` checks that a short timestamp, another tag or a different case is not dropped, and `issue_1510_filter_ere_matches_autodrive_loop_byte_for_byte` fails if the collector and `terminal_refusal()` in `autodrive_loop.sh` drift apart on either half of the rule (the agent-line ERE or the full marker). The round-tail tests run `amplifier-bundle/tools/autodrive_round_tail.sh` and check that a log cut inside an agent line yields only whole lines and no refusal, and that a summary longer than the window keeps its header. The run-summary tests feed a copy of a real successful round log (`tests/integration/fixtures/issue_1510_crusty_round_tail.txt`, with the review quoting the marker and "exit 79" and a `resolved_concerns` id containing `exit-79`) through both detectors and expect no refusal; they keep a guard line placed before the summary terminal, pin the header pair the cut needs, and `issue_1510_summary_cut_awk_is_shared_byte_for_byte` fails if the cut drifts between the collector, `terminal_refusal()` and `autodrive_round_tail.sh` | `tests/integration/issue_1510_collector_agent_prose_test.rs` |
 
 Run them with:

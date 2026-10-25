@@ -608,7 +608,7 @@ assert_resolved_worktree_pr() {
 for state in main detached; do
     read -r repo wt < <(make_layout "c15-$state" "$state")
     run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-        WORKTREE_SETUP_WORKTREE_PATH="$wt"
+        WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt"
     assert_resolved_worktree_pr "15-$state: step-22b, REPO_PATH $state, run branch in worktree with open PR -> EXISTING_OPEN_PR from the worktree branch"
 done
 
@@ -622,7 +622,7 @@ assert_resolved_worktree_pr "15-recipevar: step-22b resolves the worktree from R
 # run's own branch has none. The unrelated PR must never be credited.
 read -r repo wt < <(make_layout c15-unrelated unrelated)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt"
+    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt"
 assert_unchanged_failure "15-unrelated: step-22b, REPO_PATH on an unrelated branch with its own PR, run branch has none -> unchanged failure"
 if ! grep -qF -- "--head $UNRELATED" "$GH_LOG"; then
     record_pass "15-unrelated-a: the unrelated REPO_PATH branch is never looked up"
@@ -648,7 +648,7 @@ assert_no_lookup "15-gone: WORKTREE_SETUP_WORKTREE_PATH set but missing -> no lo
 assert_unchanged_failure "15-gone-a: missing worktree + unrelated cwd PR -> unchanged failure"
 
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree"
+    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree" RECIPE_VAR_worktree_setup__worktree_path="$TMPROOT/no-such-worktree"
 assert_no_lookup "15-gone-step: step-22b with the worktree gone -> no lookup against REPO_PATH's branch"
 assert_unchanged_failure "15-gone-step-a: step-22b with the worktree gone -> unchanged failure"
 
@@ -656,7 +656,7 @@ assert_unchanged_failure "15-gone-step-a: step-22b with the worktree gone -> unc
 # on an unrelated branch with its own open PR. That branch must never be
 # looked up or credited (crusty round-2 on PR #1623).
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH=
+    WORKTREE_SETUP_WORKTREE_PATH= RECIPE_VAR_worktree_setup__worktree_path=
 assert_no_lookup "15-unset-step: step-22b with the worktree path unset -> no lookup against REPO_PATH's branch"
 assert_unchanged_failure "15-unset-step-a: step-22b with the worktree path unset, REPO_PATH on an unrelated branch with an open PR -> unchanged failure"
 if ! grep -qF -- "--head $UNRELATED" "$GH_LOG" && grep -qF "worktree path unset or gone" "$ERR"; then
@@ -683,13 +683,13 @@ fi
 # Observed branch disagrees with the run's recorded branch -> no lookup.
 read -r repo wt < <(make_layout c15-mismatch main)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt" WORKTREE_SETUP_BRANCH_NAME="feat/some-other-run"
+    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt" WORKTREE_SETUP_BRANCH_NAME="feat/some-other-run"
 assert_no_lookup "15-mismatch: worktree branch differs from WORKTREE_SETUP_BRANCH_NAME -> no lookup"
 assert_unchanged_failure "15-mismatch-a: branch mismatch -> unchanged failure"
 
 read -r repo wt < <(make_layout c15-match main)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt" WORKTREE_SETUP_BRANCH_NAME="$BRANCH"
+    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt" WORKTREE_SETUP_BRANCH_NAME="$BRANCH"
 assert_resolved_worktree_pr "15-match: WORKTREE_SETUP_BRANCH_NAME agrees with the worktree branch -> EXISTING_OPEN_PR"
 
 # --- 14. lookup does not depend on caller credentials -----------------------

@@ -8,7 +8,8 @@ reported `outputs.report` path exists whenever the recipe succeeds.
 
 - `output_dir` must be non-empty and must not contain `..`.
 - Context values are read from the recipe runner's environment exports
-  (`UPPER_CASE` with `RECIPE_VAR_<name>` fallback); they are never inserted
+  (`RECIPE_VAR_<name>` only; an inherited `UPPER_CASE` name such as
+  `INVESTIGATION_TYPE` is ignored); they are never inserted
   into shell source. This matters for both paths and generated synthesis.
 - The synthesis is untrusted text: it is written with `printf` to a temp file
   in `output_dir`, validated before publication, then atomically `mv`'d into

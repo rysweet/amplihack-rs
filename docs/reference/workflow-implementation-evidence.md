@@ -162,6 +162,20 @@ bash "$H"
 > quotes. Helpers are resolved by explicit absolute path only — never a bare
 > filename or `PATH` lookup — to prevent helper hijack.
 
+### How the evidence reaches the final-status helper
+
+`workflow_final_status.sh` reads this step's evidence only from the nested
+`RECIPE_VAR_` names the runner exports, such as
+`RECIPE_VAR_implementation_terminal_evidence__implementation_completed` and
+`RECIPE_VAR_implementation_terminal_evidence__terminal_no_op`. The flattened
+bare names (`IMPLEMENTATION_COMPLETED`,
+`IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED`, `TERMINAL_NO_OP`)
+are not read: the runner never sets them, so a value under one of them could
+only be inherited from the launching shell. An empty value fails closed as
+missing evidence. To run the helper by hand, pass the PR and issue as
+`RECIPE_VAR_pr_number`, `RECIPE_VAR_pr_url` and `RECIPE_VAR_issue_number`; see
+[Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables).
+
 ---
 
 ## Terminal-action policy: FATAL vs DEGRADE

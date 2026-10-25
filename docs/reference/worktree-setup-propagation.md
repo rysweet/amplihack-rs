@@ -109,19 +109,32 @@ This is why every consuming sub-recipe must explicitly declare `worktree_setup` 
 
 ## Shell variable expansion
 
-Inside shell steps, `worktree_setup` is a JSON string. The recipe runner flattens it using `parse_json` into individual environment variables:
+Inside shell steps, `worktree_setup` is a JSON object. The recipe runner
+exports each nested field as `RECIPE_VAR_<key>__<field>`; it sets no
+upper-case alias for an object, so `WORKTREE_SETUP_WORKTREE_PATH` is never
+set by the runner:
 
 | JSON path | Environment variable | Example value |
 |-----------|---------------------|---------------|
-| `worktree_setup.worktree_path` | `WORKTREE_SETUP_WORKTREE_PATH` | `/tmp/worktrees/feat-auth-1234` |
-| `worktree_setup.branch_name` | `WORKTREE_SETUP_BRANCH_NAME` | `feat/add-auth-1234` |
-| `worktree_setup.is_new_worktree` | `WORKTREE_SETUP_IS_NEW_WORKTREE` | `true` |
+| `worktree_setup.worktree_path` | `RECIPE_VAR_worktree_setup__worktree_path` | `/tmp/worktrees/feat-auth-1234` |
+| `worktree_setup.branch_name` | `RECIPE_VAR_worktree_setup__branch_name` | `feat/add-auth-1234` |
+| `worktree_setup.is_new_worktree` | `RECIPE_VAR_worktree_setup__is_new_worktree` | `true` |
 
-The flattening convention is: uppercase the parent key, replace dots with underscores, and uppercase each nested key. `worktree_setup.worktree_path` becomes `WORKTREE_SETUP_WORKTREE_PATH`.
+Each step that needs the worktree assigns a local copy first, then uses it:
+
+```bash
+WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+```
+
+The assignment always replaces the variable, so a `WORKTREE_SETUP_WORKTREE_PATH`
+inherited from the shell or a parent run is never used (issue #1561; see
+[Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
+Steps in `workflow-publish` fall back to `${REPO_PATH:-}` after the
+`RECIPE_VAR_` read.
 
 ### Directory access tiers
 
-Not all steps that consume `WORKTREE_SETUP_WORKTREE_PATH` treat a missing
+Not all steps that consume the worktree path treat a missing
 directory the same way. Steps are classified into three tiers:
 
 | Tier | Steps | Guard pattern | Missing directory behavior |

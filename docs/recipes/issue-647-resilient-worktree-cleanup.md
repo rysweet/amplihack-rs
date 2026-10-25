@@ -108,6 +108,13 @@ its refusal to commit on `main` or `master`.
 
 ### Fallback Pattern
 
+Each step first assigns the local copy from the recipe's own step output, so
+an inherited `WORKTREE_SETUP_WORKTREE_PATH` is never used (issue #1561):
+
+```bash
+WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+```
+
 **Compact form** (used in `workflow-pr-review.yaml` which is at 399/400 LOC brick limit):
 
 ```bash

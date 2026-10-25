@@ -590,7 +590,7 @@ propagated outputs
 
 This blocks the entire issue-fixing loop. Any task routed through `smart-orchestrator` → `default-workflow` → `workflow-tdd` fails at the no-op guard.
 
-**Cause:** A sub-recipe in the default-workflow chain has `context: {}` instead of declaring `worktree_setup` in its context block. The recipe runner only forwards context variables that the child recipe explicitly declares. Without the declaration, `worktree_setup` is silently dropped at the recipe boundary, and step-08c cannot read `WORKTREE_SETUP_WORKTREE_PATH`.
+**Cause:** A sub-recipe in the default-workflow chain has `context: {}` instead of declaring `worktree_setup` in its context block. The recipe runner only forwards context variables that the child recipe explicitly declares. Without the declaration, `worktree_setup` is silently dropped at the recipe boundary, and step-08c finds `RECIPE_VAR_worktree_setup__worktree_path` empty. Setting `WORKTREE_SETUP_WORKTREE_PATH` in your shell does not work around it: steps read only the `RECIPE_VAR_` name and ignore an inherited bare name.
 
 **Fix:** Every post-worktree sub-recipe (`workflow-tdd`, `workflow-refactor-review`, `workflow-precommit-test`, `workflow-publish`, `workflow-pr-review`, `workflow-finalize`) declares `worktree_setup: ""` and `allow_no_op: false` in its `context:` block. This ensures the recipe runner threads the value from `default-workflow` through to the step that needs it.
 

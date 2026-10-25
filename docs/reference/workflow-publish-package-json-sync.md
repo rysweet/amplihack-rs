@@ -59,7 +59,7 @@ following invariants:
 | Robust JSON edit | Sets `package.json` `.version` via `jq` (with a `python3`/`node` fallback), never `sed`/`grep` on JSON. Preserves indentation and a trailing newline. |
 | Guarded | Runs only when `package.json` exists; non-JS workspaces are skipped, not errored. Also skips cleanly (`exit 0`) if the version cannot be read. |
 | Idempotent | Safe to run when the value already matches; re-running produces no diff. |
-| Worktree resolution | Resolves the target tree with the same `WORKTREE_SETUP_WORKTREE_PATH` fallback chain as the sibling `step-14b-sync-lockfile`. |
+| Worktree resolution | Resolves the target tree from `RECIPE_VAR_worktree_setup__worktree_path`, then `REPO_PATH`, the same chain as the sibling `step-14b-sync-lockfile`. An inherited `WORKTREE_SETUP_WORKTREE_PATH` is ignored: the step assigns that name as a local copy and never reads it as an input. |
 | No double-staging | The step does not `git add` `package.json`. `step-15-commit-push` stages it via `git add -A`. |
 | Condition guard | Shares the same `condition` as its sibling steps so it only runs when publishing. |
 | No `--locked` change | The step never weakens, removes, or bypasses a `--locked` flag. |
@@ -68,7 +68,7 @@ following invariants:
 
 ```bash
 set -euo pipefail
-: "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}"
 cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
 
 # Issue #925: step-14 bumps [workspace.package].version in Cargo.toml and
@@ -182,8 +182,7 @@ The step needs no feature-specific flag. It uses the standard publish context:
 
 | Context key / variable | Required | How the step uses it |
 | --- | --- | --- |
-| `worktree_setup.worktree_path` (via `WORKTREE_SETUP_WORKTREE_PATH`) | Yes | Directory to `cd` into before reading `Cargo.toml` and rewriting `package.json`. Populated by the `workflow-worktree` sub-recipe (step-04). |
-| `RECIPE_VAR_worktree_setup__worktree_path` | Fallback | Secondary source for the worktree path. |
+| `worktree_setup.worktree_path` (via `RECIPE_VAR_worktree_setup__worktree_path`) | Yes | Directory to `cd` into before reading `Cargo.toml` and rewriting `package.json`. Populated by the `workflow-worktree` sub-recipe (step-04). |
 | `REPO_PATH` | Fallback | Final fallback if the worktree path is unavailable. |
 | `condition` (`goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'`) | Yes | Gates the step to publish-only runs, matching its sibling steps verbatim. |
 
