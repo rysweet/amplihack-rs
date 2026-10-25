@@ -105,4 +105,20 @@ test "$(git -C "$WORK/task" rev-parse HEAD)" = "$before" \
   || fail 'scope expansion created a commit'
 test -f "$WORK/task/stray.rs" || fail 'scope failure discarded the new file'
 
+rm "$WORK/task/stray.rs"
+cat > "$WORK/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+printf 'stray\n' > staged-stray.txt
+git add staged-stray.txt
+rm staged-stray.txt
+SH
+chmod +x "$WORK/bin/cargo"
+if checkpoint; then fail 'staged-only scope expansion passed'; fi
+grep -q 'checkpoint scope changed before staging' "$WORK/stderr" \
+  || fail 'staged-only scope expansion did not explain the failure'
+test "$(git -C "$WORK/task" rev-parse HEAD)" = "$before" \
+  || fail 'staged-only scope expansion created a commit'
+git -C "$WORK/task" diff --cached --name-only | grep -qx 'staged-stray.txt' \
+  || fail 'staged-only scope failure discarded the staged file'
+
 echo 'PASS: checkpoint formats read-only and stages only captured paths'

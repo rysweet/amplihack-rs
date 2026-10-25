@@ -966,22 +966,27 @@ fn every_guard_call_in_every_recipe_can_stop_its_step() {
 }
 
 #[test]
-fn recipes_at_the_line_budget_recheck_on_the_add_line() {
-    // D3: workflow-tdd and workflow-pr-review sit at 399 lines, so their
-    // post-add guard shares the `git add -A` line. `;` (not `&&`) keeps a
-    // failed add binding under `set -e`.
-    for (recipe, step) in [
-        ("workflow-tdd.yaml", "checkpoint-after-implementation"),
-        ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
-    ] {
-        let recipe_doc = load_recipe(recipe);
-        let command = step_text(&recipe_doc, step, "command");
-        assert!(
-            command.lines().any(|line| line.trim()
-                == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
-            "{recipe} {step}: expected `git add -A; {GUARD} --repo . --mode pre-publish`:\n{command}"
-        );
-    }
+fn checkpoint_and_review_recheck_after_staging() {
+    let tdd = load_recipe("workflow-tdd.yaml");
+    let command = step_text(&tdd, "checkpoint-after-implementation", "command");
+    let scoped_add = command
+        .find("git --literal-pathspecs add -A --pathspec-from-file")
+        .expect("TDD checkpoint must stage only captured paths");
+    assert!(
+        command[scoped_add..]
+            .contains("amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "TDD checkpoint must recheck artifacts after scoped staging: {command}"
+    );
+
+    // Review feedback still uses broad staging and keeps the guard on the
+    // same line, so `set -e` binds a failed add before the guard can run.
+    let review = load_recipe("workflow-pr-review.yaml");
+    let command = step_text(&review, "step-18c-push-feedback-changes", "command");
+    assert!(
+        command.lines().any(|line| line.trim()
+            == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "workflow-pr-review.yaml must recheck artifacts after broad staging: {command}"
+    );
 }
 
 #[test]
