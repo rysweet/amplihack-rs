@@ -21,18 +21,8 @@ use amplihack_utils::agent_binary::{
     self, ALLOWED_BINARIES, DEFAULT_BINARY, ResolveError, resolve,
 };
 
-/// A temp directory the resolver's walk-up cannot leave.
-///
-/// The walk-up stops at a `.git` boundary. Without one at the root, it
-/// carries on above the system temp directory, and a fresh
-/// `.claude/runtime/launcher_context.json` in any ancestor (a session started
-/// in a parent of `TMPDIR`, for instance) answers instead of the case under
-/// test, so the suite passes or fails with the host it runs on.
-fn bounded_tempdir() -> tempfile::TempDir {
-    let dir = tempfile::TempDir::new().unwrap();
-    std::fs::create_dir(dir.path().join(".git")).unwrap();
-    dir
-}
+mod common;
+use common::bounded_tempdir;
 
 /// Serialize tests that mutate `AMPLIHACK_AGENT_BINARY`. `cargo test` runs
 /// integration tests in parallel by default, which races env mutation across
@@ -337,7 +327,6 @@ fn launcher_context_without_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    fs::create_dir_all(tmp.path().join(".git")).unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     fs::write(
@@ -364,7 +353,6 @@ fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    fs::create_dir_all(tmp.path().join(".git")).unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     let local = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S");
@@ -391,7 +379,6 @@ fn an_explicit_value_keeps_the_session_marker_it_overrode() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    fs::create_dir_all(tmp.path().join(".git")).unwrap();
     set_env("copilot");
     let without_marker = agent_binary::resolve_detailed(tmp.path()).unwrap();
     // SAFETY: serialized by env_lock; cleared again below.
@@ -419,7 +406,6 @@ fn a_tagged_default_guess_is_skipped_by_the_resolver() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
     let tmp = bounded_tempdir();
-    fs::create_dir_all(tmp.path().join(".git")).unwrap();
     write_launcher_context(tmp.path(), "codex");
 
     set_env("copilot");

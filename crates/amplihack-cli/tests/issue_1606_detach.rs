@@ -13,7 +13,7 @@ use crate::support::amplihack_bin::amplihack_bin;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -39,7 +39,8 @@ steps:
 
 struct Fx {
     _tmp: tempfile::TempDir,
-    _tmux_tmp: tempfile::TempDir,
+    /// Set only when the socket directory had to leave `TMPDIR`.
+    _tmux_tmp: Option<tempfile::TempDir>,
     home: PathBuf,
     project: PathBuf,
     tools: PathBuf,
@@ -56,19 +57,13 @@ impl Fx {
     fn with_runner(runner: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
-        // A tmux socket path must fit in 108 bytes, and TMPDIR can be long
-        // enough on its own to exceed that (a nested workflow runtime directory
-        // does), so the socket directory lives directly under /tmp.
-        let tmux_tmp = tempfile::Builder::new()
-            .prefix("t")
-            .tempdir_in("/tmp")
-            .unwrap();
+        let (tmux_dir, tmux_tmp) = tmux_socket_dir(&root);
         let fx = Self {
             home: root.join("home"),
             project: root.join("project"),
             tools: root.join("tools"),
             records: root.join("records"),
-            tmux_dir: tmux_tmp.path().canonicalize().unwrap(),
+            tmux_dir,
             recipe: root.join("issue-1606-detach.yaml"),
             _tmp: tmp,
             _tmux_tmp: tmux_tmp,
@@ -138,6 +133,21 @@ impl Fx {
             "-w".into(),
             self.project.to_str().unwrap().into(),
         ]
+    }
+
+    /// False, with a message, when no socket directory short enough was
+    /// found, so a test that starts a tmux server cannot run here.
+    fn tmux_socket_usable(&self) -> bool {
+        let fits = tmux_socket_fits(&self.tmux_dir);
+        if !fits {
+            eprintln!(
+                "skipping: the tmux socket under {} would exceed the {SUN_PATH_MAX}-byte \
+                 sun_path limit and XDG_RUNTIME_DIR offers no shorter directory; \
+                 run with a shorter TMPDIR",
+                self.tmux_dir.display()
+            );
+        }
+        fits
     }
 
     fn tmux(&self, args: &[&str]) -> Output {
@@ -216,6 +226,46 @@ impl Drop for Fx {
             }
         }
     }
+}
+
+/// Bytes in `sun_path` (unix(7)), including the terminating NUL.
+const SUN_PATH_MAX: usize = 108;
+
+/// Whether tmux's socket, `<dir>/tmux-<uid>/default`, fits in `sun_path`.
+fn tmux_socket_fits(dir: &Path) -> bool {
+    // SAFETY: getuid has no preconditions and cannot fail.
+    let uid = unsafe { libc::getuid() };
+    let socket = dir.join(format!("tmux-{uid}")).join("default");
+    socket.as_os_str().len() < SUN_PATH_MAX
+}
+
+/// The directory to use as `TMUX_TMPDIR`.
+///
+/// The fixture's own directory under `TMPDIR` is used whenever the socket
+/// path fits. A long `TMPDIR` (a nested workflow runtime directory, for
+/// instance) can push it past the limit; only then is a directory made under
+/// `XDG_RUNTIME_DIR`, the per-user directory meant for sockets. The test
+/// never writes to `/tmp`. If neither fits, the in-`TMPDIR` path is returned
+/// anyway and the tests that start a tmux server skip themselves (see
+/// [`Fx::tmux_socket_usable`]).
+fn tmux_socket_dir(root: &Path) -> (PathBuf, Option<tempfile::TempDir>) {
+    let local = root.join("t");
+    if tmux_socket_fits(&local) {
+        return (local, None);
+    }
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from)
+        && let Ok(runtime) = runtime.canonicalize()
+        && runtime.is_dir()
+    {
+        // tempfile's random suffix is six characters; check the final length.
+        let budget = runtime.join("t000000");
+        if tmux_socket_fits(&budget)
+            && let Ok(dir) = tempfile::Builder::new().prefix("t").tempdir_in(&runtime)
+        {
+            return (dir.path().to_path_buf(), Some(dir));
+        }
+    }
+    (local, None)
 }
 
 fn tmux_available() -> bool {
@@ -300,6 +350,9 @@ fn configured_detach_starts_a_tmux_run_that_stop_ends() {
         return;
     }
     let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
     let set = fx.run(&["config", "set", "recipe.detach", "tmux"], &[]);
     assert!(set.status.success(), "{}", text(&set.stderr));
     let set = fx.run(&["config", "set", "agent.binary", "claude"], &[]);
@@ -507,6 +560,9 @@ fn a_session_pattern_without_ts_keeps_working_across_runs() {
         return;
     }
     let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
     let set = fx.run(
         &["config", "set", "recipe.tmux_session_pattern", "fixed"],
         &[],
@@ -597,6 +653,9 @@ fn stop_refuses_a_session_it_did_not_start() {
         return;
     }
     let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
     assert!(
         fx.tmux(&["new-session", "-d", "-s", "someone-elses", "sleep", "300"])
             .status
@@ -715,6 +774,9 @@ fn a_pane_start_up_error_is_reported_by_the_launch() {
     .trim()
     .to_string();
     let fx = Fx::new();
+    if !fx.tmux_socket_usable() {
+        return;
+    }
     let caller = fx.records.join("caller");
     fs::create_dir_all(&caller).unwrap();
     crate::support::exec_stub::write_executable(
