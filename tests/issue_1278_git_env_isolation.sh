@@ -182,6 +182,19 @@ else
     record_pass "guard rejects a raw Command::new(\"git\")"
 fi
 
+# Other branches' checkouts live under the gitignored worktrees/ directory of
+# the main checkout and carry their own copy of crates/amplihack-git, which
+# names git directly. They are not this tree's source and must not fail it.
+nested="$TMPROOT/clean/worktrees/feat/other/crates/amplihack-git/src"
+mkdir -p "$nested"
+cat > "$nested/lib.rs" <<'RS'
+pub fn command() -> std::process::Command {
+    std::process::Command::new("git")
+}
+RS
+assert "guard ignores other checkouts under worktrees/" \
+    "$GUARD" "$TMPROOT/clean"
+
 assert "guard passes on the real repository" "$GUARD"
 
 # ---------------------------------------------------------------------------
