@@ -4,6 +4,9 @@ use super::models::{Workstream, WorkstreamScope};
 use super::process_scope::normalize_path;
 use super::utils::rand_u32;
 use amplihack_types::workflow;
+use amplihack_workflows::remote_repository::{
+    github_repository_from_remote_url, redact_remote_url,
+};
 use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -28,9 +31,12 @@ pub(super) fn detect_delegate() -> String {
     "amplihack claude".to_string()
 }
 
+/// The scope's repository is `owner/repo` for a GitHub origin (issue #1642).
+/// Any other URL is stored with its userinfo, which may be a token, redacted;
+/// a local path is stored as is.
 pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, base_ref: &str) {
-    let repository = parse_github_repo_identity(repo_url)
-        .map_or_else(|| repository_fallback(repo_url), str::to_string);
+    let repository =
+        github_repository_from_remote_url(repo_url).unwrap_or_else(|| redact_remote_url(repo_url));
     let repo_root = normalize_path(&ws.work_dir);
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
@@ -52,91 +58,6 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
         expected_title_prefix: ws.description.clone(),
         started_at: Utc::now().to_rfc3339(),
     };
-}
-
-/// Parse a github.com origin or PR URL into `owner/repo`.
-///
-/// Same contract as `parse_github_repo_identity` in
-/// `amplifier-bundle/tools/workflow_github_repo.sh` (issue #1642): exact,
-/// case-sensitive prefixes; the userinfo is the text before the FIRST
-/// `@github.com/` and must be non-empty RFC 3986 userinfo characters without
-/// `@`; cut `?` then `#`, strip one trailing `/`; the path is exactly
-/// `owner/repo` (one `.git` stripped) or `owner/repo/pull/<n>` with `<n>`
-/// matching `^[1-9][0-9]{0,9}$` and no `.git` on the repo; each segment is
-/// `[A-Za-z0-9._-]+`, not `.` or `..`, and the owner does not start with
-/// `-`. Anything else would let git contact another host
-/// (`https://evil.example/x@github.com/o/r`) or another repository
-/// (`o/r/../../x/y`), so it is `None`.
-fn parse_github_repo_identity(url: &str) -> Option<&str> {
-    let path = if let Some(rest) = url.strip_prefix("https://github.com/") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("git@github.com:") {
-        rest
-    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
-        rest
-    } else {
-        let rest = url
-            .strip_prefix("https://")
-            .or_else(|| url.strip_prefix("http://"))?;
-        let (userinfo, path) = rest.split_once("@github.com/")?;
-        if userinfo.is_empty() || !userinfo.bytes().all(is_userinfo_byte) {
-            return None;
-        }
-        path
-    };
-    let path = path.split_once('?').map_or(path, |(before, _)| before);
-    let path = path.split_once('#').map_or(path, |(before, _)| before);
-    let path = path.strip_suffix('/').unwrap_or(path);
-    let (owner, rest) = path.split_once('/')?;
-    let repo = match rest.split_once('/') {
-        Some((repo, pr)) => {
-            let number = pr.strip_prefix("pull/")?;
-            if !is_pr_number(number) || repo.ends_with(".git") {
-                return None;
-            }
-            repo
-        }
-        None => rest.strip_suffix(".git").unwrap_or(rest),
-    };
-    if owner.starts_with('-') || !is_identity_segment(owner) || !is_identity_segment(repo) {
-        return None;
-    }
-    Some(&path[..owner.len() + 1 + repo.len()])
-}
-
-/// `^[1-9][0-9]{0,9}$`
-fn is_pr_number(number: &str) -> bool {
-    (1..=10).contains(&number.len())
-        && !number.starts_with('0')
-        && number.bytes().all(|b| b.is_ascii_digit())
-}
-
-/// RFC 3986 userinfo characters (unreserved, pct-encoded, sub-delims, ':')
-/// without '@'.
-fn is_userinfo_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b"._~%!$&'()*+,;=:-".contains(&b)
-}
-
-fn is_identity_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && segment != "."
-        && segment != ".."
-        && segment
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
-}
-
-/// The scope's repository when the URL is not a github.com repository: a URL
-/// loses its userinfo (it may be a token) before it is stored; anything else,
-/// such as a local path, is kept as is.
-fn repository_fallback(repo_url: &str) -> String {
-    if repo_url.contains("://") {
-        crate::runner_ancestry::redact_url(repo_url)
-    } else {
-        repo_url.to_string()
-    }
 }
 
 /// Build context map for recipe-based resume.

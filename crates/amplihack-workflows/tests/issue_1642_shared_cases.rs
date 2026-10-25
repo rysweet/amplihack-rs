@@ -9,7 +9,9 @@
 
 include!("../../../tests/integration/issue_1642_github_origin_parsing/cases.rs");
 
-use amplihack_workflows::remote_repository::repository_identity_from_remote_url;
+use amplihack_workflows::remote_repository::{
+    github_repository_from_remote_url, repository_identity_from_remote_url,
+};
 use amplihack_workflows::workflow_contract::RepositoryProvider;
 
 const FALLBACK: &str = "fallback-name";
@@ -25,15 +27,19 @@ const SR6_EXEMPT: &[&str] = &[
     "ssh://git@github.com:22/o/r",
 ];
 
+/// Both public entry points, which must agree on every row: the classifier
+/// and `github_repository_from_remote_url`, used by multitask.
 fn classify(url: &str) -> Option<String> {
     let (provider, id) = repository_identity_from_remote_url(Some(url), FALLBACK);
-    if provider != RepositoryProvider::GitHub {
-        return None;
-    }
-    if (id.owner.as_str(), id.name.as_str()) == ("unknown", FALLBACK) {
-        return None;
-    }
-    Some(format!("{}/{}", id.owner, id.name))
+    let classified = (provider == RepositoryProvider::GitHub
+        && (id.owner.as_str(), id.name.as_str()) != ("unknown", FALLBACK))
+        .then(|| format!("{}/{}", id.owner, id.name));
+    assert_eq!(
+        github_repository_from_remote_url(url),
+        classified,
+        "{url:?}: the two entry points disagree"
+    );
+    classified
 }
 
 #[test]

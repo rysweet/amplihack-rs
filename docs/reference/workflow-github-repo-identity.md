@@ -156,21 +156,25 @@ the guard test permits exactly that one occurrence. It is safe because:
 Each Rust site that derives a GitHub identity follows the contract above with
 ASCII byte predicates only (`is_ascii_alphanumeric`):
 
-| Function                                                          | File                                                      | Shared vectors                                                  | Exemptions                                                                     |
-| ----------------------------------------------------------------- | --------------------------------------------------------- | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `parse_github_repo_identity`                                      | `amplihack-cli/src/commands/multitask/command_builder.rs` | `include!`s `cases.rs` (`issue_1642_repo_identity.rs`)          | none                                                                           |
-| `provider_from_remote_url`, `repository_identity_from_remote_url` | `amplihack-workflows/src/remote_repository.rs`            | `include!`s `cases.rs` (`tests/issue_1642_shared_cases.rs`)     | SR6 host rows only                                                             |
-| `parse_github_repo_uri`                                           | `amplihack-cli/src/commands/launch/checkout.rs`           | hostile, path-shape and real-form vectors in its unit tests     | accepts only `https://github.com/` and `git@github.com:`, exactly two segments |
-| `parse_github_uri`                                                | `amplihack-launcher/src/repo_checkout.rs`                 | hostile, path-shape and real-form vectors in its unit tests     | as above, plus bare `o/r`                                                      |
+| Function                                                                                               | File                                            | Shared vectors                                              | Exemptions                                                                     |
+| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `provider_from_remote_url`, `repository_identity_from_remote_url`, `github_repository_from_remote_url` | `amplihack-workflows/src/remote_repository.rs`  | `include!`s `cases.rs` (`tests/issue_1642_shared_cases.rs`) | SR6 host rows only                                                             |
+| `parse_github_repo_uri`                                                                                | `amplihack-cli/src/commands/launch/checkout.rs` | hostile, path-shape and real-form vectors in its unit tests | accepts only `https://github.com/` and `git@github.com:`, exactly two segments |
+| `parse_github_uri`                                                                                     | `amplihack-launcher/src/repo_checkout.rs`       | hostile, path-shape and real-form vectors in its unit tests | as above, plus bare `o/r`                                                      |
+
+Multitask's `populate_workstream_scope` calls
+`github_repository_from_remote_url` and has no parser of its own.
 
 **SR6.** The workflows classifier matches `github.com` and its subdomains in
 any case and with any port, so it may accept `https://GitHub.com/o/r`,
 `https://www.github.com/o/r`, `HTTPS://github.com/o/r` and the port rows that
-bash rejects, but only with the `owner/repo` the URL names. It only labels the
-provider and never hands a repository to `gh`. The exempt rows are listed by
+bash rejects, but only with the `owner/repo` the URL names. Neither caller
+hands the result to `gh`: the classifier labels the provider, and multitask
+compares the stored `owner/repo` to decide which processes belong to a
+workstream. The exempt rows are listed by
 name in `SR6_EXEMPT`; any other difference fails the test. It does not trim
-the URL, so whitespace rows are rejected as in bash; its one production
-caller, `provider_detection.rs`, trims at the git-config boundary.
+the URL, so whitespace rows are rejected as in bash;
+`provider_detection.rs` trims at the git-config boundary.
 
 These files contain `@github.com` but do not derive an identity, and were
 audited and left unchanged: `provider_detection.rs`, `runner_ancestry.rs`,
@@ -179,15 +183,15 @@ and `reflection/prompt.rs`.
 
 ## Tests
 
-| Test                                                           | Covers                                                                              |
-| -------------------------------------------------------------- | ----------------------------------------------------------------------------------- |
-| `tests/integration/issue_1642_github_origin_parsing/parser.rs` | `cases.rs` against the bash helper                                                  |
+| Test                                                           | Covers                                                                             |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `tests/integration/issue_1642_github_origin_parsing/parser.rs` | `cases.rs` against the bash helper                                                 |
 | `…/hostile.rs`, `…/real_forms.rs`                              | each caller with each origin: no stray `gh` call, `--repo o/r`, no token in output |
-| `…/missing_helper.rs`                                          | missing and unreadable helper, including a broken override                          |
-| `…/recipe.rs`, `…/recipe_lookup*.rs`                           | recipe rejection, the PR URL exception, the lookup message and skips                |
-| `…/guard.rs`                                                   | one parser definition, every caller sources it, no other `@github.com` parsing      |
-| `…/install.rs`                                                 | `amplihack install --local` ships the helper next to the callers                    |
-| `crates/amplihack-workflows/tests/issue_1642_*.rs`             | `cases.rs` against the classifier; classifier and redaction                         |
+| `…/missing_helper.rs`                                          | missing and unreadable helper, including a broken override                         |
+| `…/recipe.rs`, `…/recipe_lookup.rs`                            | recipe rejection, the PR URL exception, a missing helper and a broken override     |
+| `…/guard.rs`                                                   | one parser definition, every caller sources it, no other `@github.com` parsing     |
+| `…/install.rs`                                                 | `amplihack install --local` ships the helper next to the callers                   |
+| `crates/amplihack-workflows/tests/issue_1642_*.rs`             | `cases.rs` against the classifier; classifier and redaction                        |
 
 ```bash
 cargo test -p amplihack --test integration issue_1642

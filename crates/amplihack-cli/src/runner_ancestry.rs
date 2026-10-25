@@ -331,7 +331,7 @@ fn create_private_dir_all(path: &Path) -> std::io::Result<()> {
 }
 
 /// `url` with any `user:password@` removed, for logging.
-pub(crate) fn redact_url(url: &str) -> String {
+fn redact_url(url: &str) -> String {
     let Some((scheme, rest)) = url.split_once("://") else {
         return url.chars().take(64).collect();
     };

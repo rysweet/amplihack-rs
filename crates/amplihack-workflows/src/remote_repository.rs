@@ -179,16 +179,37 @@ fn repository_owner_name(
     }
 }
 
+fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
+    github_owner_name(path).map_or_else(
+        || ("unknown".into(), fallback_name.into()),
+        |(owner, name)| (owner.into(), name.into()),
+    )
+}
+
+/// `owner/repo` when `remote_url` names a GitHub repository, else `None`.
+///
+/// Same rules as `parse_github_repo_identity` in
+/// `amplifier-bundle/tools/workflow_github_repo.sh` (issue #1642), except
+/// that the host is matched as in exception SR6 (any case, `github.com`
+/// subdomains, any port). Callers trim at their I/O boundary.
+pub fn github_repository_from_remote_url(remote_url: &str) -> Option<String> {
+    let parts = remote_url_parts(remote_url)?;
+    if provider_from_remote_parts(Some(parts)) != RepositoryProvider::GitHub {
+        return None;
+    }
+    github_owner_name(parts.path).map(|(owner, name)| format!("{owner}/{name}"))
+}
+
 /// Mirrors the bash parser: cut `?` and `#`, strip one trailing `/`, require
 /// `owner/repo` or `owner/repo/pull/<n>`, strip one `.git` from the repo, and
-/// check both segments with no trim. Failure gives `("unknown", fallback)`.
-fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
+/// check both segments with no trim.
+fn github_owner_name(path: &str) -> Option<(&str, &str)> {
     let path = path.split(['?', '#']).next().unwrap_or("");
     let path = path.strip_suffix('/').unwrap_or(path);
     let mut parts = path.split('/');
     let owner = parts
         .next()
-        .filter(|value| is_identity_segment(value) && !value.starts_with('-'));
+        .filter(|value| is_identity_segment(value) && !value.starts_with('-'))?;
     let raw_name = parts.next().unwrap_or("");
     // Path shape (issue #1642): only `owner/repo` or `owner/repo/pull/<n>`
     // names a repository; anything else (`extra`, `tree/main`, `../../x/y`,
@@ -196,16 +217,13 @@ fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
     // segments are removed. `.git` is only a suffix of the whole path, so
     // `r.git/pull/5` is refused.
     let name = match parts.collect::<Vec<_>>().as_slice() {
-        [] => Some(raw_name.strip_suffix(".git").unwrap_or(raw_name)),
-        ["pull", number] if is_pr_number(number) && !raw_name.ends_with(".git") => Some(raw_name),
-        _ => None,
+        [] => raw_name.strip_suffix(".git").unwrap_or(raw_name),
+        ["pull", number] if is_pr_number(number) && !raw_name.ends_with(".git") => raw_name,
+        _ => return None,
     };
     // Checked after `.git` stripping, so `..git` (-> `.`) is refused while
     // `.git.git` (-> `.git`) is a valid name, as in bash.
-    match (owner, name.filter(|value| is_identity_segment(value))) {
-        (Some(owner), Some(name)) => (owner.into(), name.into()),
-        _ => ("unknown".into(), fallback_name.into()),
-    }
+    is_identity_segment(name).then_some((owner, name))
 }
 
 /// `^[1-9][0-9]{0,9}$`, as in the bash parser.
