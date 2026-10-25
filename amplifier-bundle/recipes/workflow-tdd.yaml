@@ -273,14 +273,11 @@ steps:
       fi
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: checkpoint-after-implementation: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
       echo "=== Checkpoint: Staging Implementation ==="
-      # NOTE (#1075): if `cargo fmt --all` below fails with
+      # NOTE (#1075): if the Rust formatting check below fails with
       # `couldn't read .../tests/*.rs: No such file or directory`, a prior step
       # almost certainly deleted a test source file but left a
       # dangling [[test]] stanza in the owning crate's Cargo.toml. Fix = remove
       # that stanza (see step-08-implement Rule 9). Do NOT auto-parse Cargo.toml here.
-      if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
-        cargo fmt --all
-      fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -288,9 +285,38 @@ steps:
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      # Capture the task worktree's existing edits before any validation. A
+      # workspace-wide mutating formatter used to create unrelated Rust edits
+      # here, which `git add -A` then swept into the checkpoint.
+      checkpoint_paths=$(mktemp -t checkpoint-paths-XXXXXX)
+      trap 'rm -f "$checkpoint_paths"' EXIT
+      git diff --name-only -z HEAD > "$checkpoint_paths"
+      git ls-files --others --exclude-standard -z >> "$checkpoint_paths"
+      declare -A checkpoint_scope=()
+      rust_changed=false
+      while IFS= read -r -d '' path; do
+        checkpoint_scope["$path"]=1
+        case "$path" in *.rs) rust_changed=true ;; esac
+      done < "$checkpoint_paths"
+      if [ "$rust_changed" = true ] && [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
+        cargo fmt --all -- --check
+      fi
+      # A concurrent or tool-created path must be reviewed in a later run;
+      # never expand this checkpoint's scope after the snapshot.
+      while IFS= read -r -d '' path; do
+        if [ -z "${checkpoint_scope[$path]+set}" ]; then
+          printf 'ERROR: checkpoint scope changed before staging: %q; no commit created\n' "$path" >&2
+          exit 1
+        fi
+      done < <(git diff --name-only -z HEAD; git ls-files --others --exclude-standard -z)
+      if [ -s "$checkpoint_paths" ]; then
+        git add -A --pathspec-from-file="$checkpoint_paths" --pathspec-file-nul
+      fi
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        echo "Checkpoint staged paths (review against the task scope):"
+        git --no-pager diff --cached --name-status
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         CHECKPOINT_COMMIT_HELPER="${GIT_IDENTITY_HELPER%/*}/workflow_checkpoint_commit.sh"
         [ -f "$CHECKPOINT_COMMIT_HELPER" ] || { echo "ERROR: checkpoint commit helper not found: $CHECKPOINT_COMMIT_HELPER" >&2; exit 2; }

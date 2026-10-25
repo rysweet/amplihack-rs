@@ -190,7 +190,7 @@ fn known_safe_bundle_symlinks_are_handled_without_generic_warning() {
 }
 
 #[test]
-fn tdd_checkpoint_formats_rust_workspace_before_staging() {
+fn tdd_checkpoint_checks_rust_format_without_expanding_staging_scope() {
     let recipe = load_recipe("amplifier-bundle/recipes/workflow-tdd.yaml");
     let step = find_step(&recipe, "checkpoint-after-implementation");
     let command = step
@@ -199,15 +199,18 @@ fn tdd_checkpoint_formats_rust_workspace_before_staging() {
         .expect("checkpoint-after-implementation must have a command");
 
     let fmt_pos = command
-        .find("cargo fmt --all")
-        .expect("checkpoint-after-implementation must run `cargo fmt --all`");
+        .find("cargo fmt --all -- --check")
+        .expect("checkpoint-after-implementation must check Rust formatting without mutation");
     let add_pos = command
-        .find("git add")
-        .expect("checkpoint-after-implementation must stage changes");
+        .find("git add -A --pathspec-from-file")
+        .expect("checkpoint-after-implementation must stage only captured paths");
     assert!(
         fmt_pos < add_pos,
-        "`cargo fmt --all` must run before git add/commit so pre-commit hooks do not fail on unstaged formatting diffs"
+        "Rust formatting validation must run before staging and committing"
     );
+    assert!(command.contains("git diff --name-only -z HEAD > \"$checkpoint_paths\""));
+    assert!(command.contains("if [ \"$rust_changed\" = true ]"));
+    assert!(!command.contains("\n  cargo fmt --all\n"));
 }
 
 #[test]
