@@ -677,6 +677,9 @@ impl Deps for DiskDeps {
     fn log(&mut self, now: i64, entry: &LogEntry) {
         append(&resume_dir(&self.root), &format_line(now, entry));
     }
+    fn session_alive(&mut self) -> bool {
+        true
+    }
 }
 
 #[test]
@@ -888,7 +891,7 @@ fn prepare_creates_the_layout_and_refuses_unsafe_paths() {
 
 #[test]
 fn old_prompt_markers_are_pruned_on_prepare_and_commit() {
-    assert_eq!(PROMPTED_RETENTION_SECS, 5 * 3600 + 3600);
+    assert_eq!(PROMPTED_RETENTION_SECS, 7 * 24 * 3600 + 3600);
     for on_commit in [false, true] {
         let r = root();
         private_dir(&resume_dir(r.path()));

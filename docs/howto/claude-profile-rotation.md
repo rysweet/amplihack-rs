@@ -536,7 +536,7 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
       {
         "type": "command",
         "command": "/home/you/.local/bin/amplihack-hooks limit-resume",
-        "timeout": 18600,
+        "timeout": 608400,
         "asyncRewake": true
       }
     ]
@@ -551,18 +551,21 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 2. The hook reads the rotator's ledger every 15 seconds. It waits for a cycle
    recorded more than 60 seconds after the limit hit that ended `swapped` or
    `stayed` with no ALERT. The margin skips a cycle that was already
-   measuring when the limit hit. It stops waiting if you turn auto-switch off
-   (`disabled`) or if you send a prompt in that session during the wait, for
-   example `continue` (`moved-on`). Background task reports and `/usage` are
-   not prompts and do not stop it.
+   measuring when the limit hit. After the first hour it reads the ledger
+   every 5 minutes instead. It stops waiting if you turn auto-switch off
+   (`disabled`), if you send a prompt in that session during the wait, for
+   example `continue` (`moved-on`), or if the session exits
+   (`session-gone`). Background task reports and `/usage` are not prompts
+   and do not stop it.
 3. When it sees one, the hook exits `2`, and the session gets this message
    and starts a new turn:
    ```
    amplihack: the login rotator reports a login with capacity. Continue the task you were working on; if the usage limit is still in place, stop and wait.
    ```
-4. If no such cycle comes within 5 hours (one session-limit window), the
-   hook exits quietly and the session stays stopped. A weekly limit on every
-   login outlasts the wait; the rotator's no-capacity notice covers that case.
+4. If no such cycle comes within 7 days, the longest any usage limit lasts,
+   the hook exits quietly and the session stays stopped. So a session that
+   stops while every login is spent resumes when the first login resets,
+   even a weekly limit days away.
 
 Steps 1 and 3 depend on Claude Code running `StopFailure` instead of `Stop`
 for a limit stop and starting a turn when an `asyncRewake` hook exits `2`.
@@ -874,11 +877,14 @@ full rule is in
   keep using the outgoing account until it next reads its credentials.
 - **Resume needs the rotator and a fresh cycle.** Without a running rotator,
   or when every login is at capacity, a session stopped by a limit is never
-  resumed. The resume also waits for at most 5 hours; a shorter
-  `--interval` resumes sooner. If you send a prompt in the session during
-  the wait, the hook stops without waking it (`moved-on`). With no rotator
-  running, each limited session still leaves a hook process sleeping for up
-  to 5 hours ([#1659](https://github.com/rysweet/amplihack-rs/issues/1659)).
+  resumed. The resume waits for at most 7 days; a shorter `--interval`
+  resumes sooner. If you send a prompt in the session during the wait, the
+  hook stops without waking it (`moved-on`). With no rotator running, each
+  limited session still leaves a hook process that reads the ledger every
+  5 minutes until its session exits or the 7 days run out
+  ([#1659](https://github.com/rysweet/amplihack-rs/issues/1659)). A session
+  is treated as exited when the hook's parent process changes; if Claude Code
+  runs the hook under a shell that outlives it, the hook waits out the 7 days.
   With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
   above about 50 seconds, a cycle measured before the limit can still count,
   and one resume may be spent on a login that is still at its limit.

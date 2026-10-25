@@ -10,10 +10,12 @@
 //! Order of checks (see [`decide::gate`]): auto-switch on, a limit stop
 //! with a usable session id, no `stop_hook_active`, an event not resumed
 //! before, a session under its cap. Then the hook reads the rotate ledger
-//! every `POLL_INTERVAL` for up to `MAX_WAIT`, plus once at the deadline,
+//! every `POLL_INTERVAL` for the first hour and every `SLOW_POLL_INTERVAL`
+//! after that, for up to `MAX_WAIT` (a week), plus once at the deadline,
 //! and resumes only after [`guard::GuardStore::commit`] recorded the
-//! resume under the lock. Each poll also re-checks the toggle and whether
-//! the user sent a prompt in the session since the hook started (see
+//! resume under the lock. Each poll also re-checks the toggle, that the
+//! Claude Code session that started the hook still runs, and whether the
+//! user sent a prompt in the session since the hook started (see
 //! [`record_prompt`], called by the `UserPromptSubmit` hook).
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
@@ -25,7 +27,7 @@ pub mod guard;
 pub mod log;
 
 use amplihack_types::HookInput;
-use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT, POLL_INTERVAL};
+use amplihack_utils::rotator_status::{self, CycleStatus, MAX_WAIT};
 use amplihack_utils::secure_files::read_bounded;
 use decide::{Facts, Gate, event_key, fresh_capacity, gate, is_limit, session_id_ok, session_key};
 use guard::{CommitError, FsGuard, GuardStore};
@@ -64,6 +66,8 @@ pub enum Outcome {
     Cap,
     /// The payload had `stop_hook_active: true`.
     StopHookActive,
+    /// The Claude Code session that started the hook has exited.
+    SessionGone,
     /// The resume state could not be read or written safely.
     GuardFailed,
     /// Auto-switch is off. Logged only when it was turned off while
@@ -82,6 +86,7 @@ impl Outcome {
             Self::Duplicate => "duplicate",
             Self::Cap => "cap",
             Self::StopHookActive => "stop-hook-active",
+            Self::SessionGone => "session-gone",
             Self::GuardFailed => "guard-failed",
             Self::Disabled => "disabled",
             Self::NotLimit => "not-limit",
@@ -106,6 +111,8 @@ pub trait Deps {
     fn guard(&mut self) -> &mut dyn GuardStore;
     /// Records a decision; must never fail or print.
     fn log(&mut self, now: i64, entry: &LogEntry);
+    /// Whether the Claude Code session that started the hook still runs.
+    fn session_alive(&mut self) -> bool;
 }
 
 /// Decides one hook invocation.
@@ -201,6 +208,10 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         if !deps.auto_switch_on() {
             return finish(deps, now, Outcome::Disabled, None);
         }
+        // A week-long wait must not outlive its session.
+        if !deps.session_alive() {
+            return finish(deps, now, Outcome::SessionGone, None);
+        }
         match moved_on(deps) {
             Ok(false) => {}
             Ok(true) => return finish(deps, now, Outcome::MovedOn, None),
@@ -211,7 +222,7 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
             break (now, status);
         }
         let left = Duration::from_secs((deadline - now) as u64);
-        deps.sleep(POLL_INTERVAL.min(left));
+        deps.sleep(decide::poll_interval(now - start).min(left));
     };
     if !fresh_capacity(status.as_ref(), start) {
         return finish(deps, now, Outcome::NoCapacityTimeout, status.as_ref());
@@ -264,6 +275,8 @@ pub fn run_with_io<D: Deps + ?Sized>(
 struct SystemDeps {
     root: PathBuf,
     guard: FsGuard,
+    /// The hook's parent when it started: the Claude Code process.
+    parent: u32,
 }
 
 impl Deps for SystemDeps {
@@ -293,6 +306,12 @@ impl Deps for SystemDeps {
         if let Ok(dir) = self.guard.ensure_resume_dir() {
             log::append(&dir, &log::format_line(now, entry));
         }
+    }
+
+    fn session_alive(&mut self) -> bool {
+        // When Claude Code exits, the hook is re-parented (to init or a
+        // subreaper), so a changed parent means the session is gone.
+        self.parent != 1 && std::os::unix::process::parent_id() == self.parent
     }
 }
 
@@ -328,6 +347,7 @@ pub fn run(stdin: impl Read) -> i32 {
     let mut deps = SystemDeps {
         guard: FsGuard::new(&root),
         root,
+        parent: std::os::unix::process::parent_id(),
     };
     run_with_io(stdin, &mut std::io::stderr().lock(), &mut deps)
 }

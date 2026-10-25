@@ -6,7 +6,7 @@
 
 use super::helpers::create_exe_stub;
 use super::*;
-use amplihack_utils::rotator_status::{LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL};
+use amplihack_utils::rotator_status::{LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, SLOW_POLL_INTERVAL};
 use serde_json::{Value, json};
 
 const PLUGIN_HOOKS: &str = include_str!("../../../../../../claude-plugin/hooks.json");
@@ -106,7 +106,7 @@ fn spec_list_and_contract_agree_entry_for_entry() {
 
 #[test]
 fn wait_plus_one_poll_is_shorter_than_the_registered_timeout() {
-    assert!((MAX_WAIT + POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS);
+    assert!((MAX_WAIT + SLOW_POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS);
 }
 
 // ── Wrapper JSON ────────────────────────────────────────────────────────────
