@@ -51,7 +51,6 @@ const REAL_FORMS: &[&str] = &[
     "ssh://git@github.com/o/r.git",
     "https://tok@github.com/o/r",
     concat!("https://x:", "tok@github.com/o/r"),
-    // Split so secret scanners do not read the fake token as a credential.
     concat!(
         "https://x-access-token:",
         "ghp_FAKE1642",
