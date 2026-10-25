@@ -279,8 +279,9 @@ steps:
 
       # Shared GitHub repo identity parser (issue #1642), found with the same
       # resolution ladder as the strict terminal gate below (issue #962). The
-      # WORKFLOW_GITHUB_REPO_HELPER override is a test-only setting; a
-      # set-but-broken value fails closed instead of falling through.
+      # WORKFLOW_GITHUB_REPO_HELPER override, used mainly by tests, works in
+      # every run and is trusted like PATH; a set-but-broken value fails
+      # closed instead of falling through.
       if [ -n "${WORKFLOW_GITHUB_REPO_HELPER:-}" ]; then
         GITHUB_REPO_HELPER="$WORKFLOW_GITHUB_REPO_HELPER"
         if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
