@@ -122,20 +122,117 @@ impl Env {
 
 // --- Accounts --------------------------------------------------------------
 
+fn acct_org(uuid: &str, org: &str, email: &str) -> String {
+    serde_json::json!({"oauthAccount": {
+        "accountUuid": uuid,
+        "organizationUuid": org,
+        "emailAddress": email,
+    }})
+    .to_string()
+}
+
+fn parse(body: &str) -> Account {
+    Account::from_claude_json(body.as_bytes()).unwrap()
+}
+
+// --- Identity rule (D2, bug 1) ----------------------------------------------
+// One user can belong to several organizations, each with its own
+// subscription and limits: the same uuid in a different org is another
+// account.
+
 #[test]
-fn accounts_match_by_uuid_then_email() {
-    let a = Account::from_claude_json(acct("u1", "Me@Example.com").as_bytes()).unwrap();
-    let same_uuid = Account::from_claude_json(acct("u1", "other@example.com").as_bytes()).unwrap();
-    let other_uuid = Account::from_claude_json(acct("u2", "me@example.com").as_bytes()).unwrap();
-    let email_only =
-        Account::from_claude_json(br#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#)
-            .unwrap();
-    assert!(a.same(&same_uuid));
-    assert!(!a.same(&other_uuid), "uuids decide when both have one");
-    assert!(
-        a.same(&email_only),
-        "e-mail, case-insensitive, when one has no uuid"
+fn same_uuid_and_same_org_is_the_same_account() {
+    let a = parse(&acct_org("u1", "o1", "me@example.com"));
+    let b = parse(&acct_org("u1", "o1", "other@example.com"));
+    assert!(a.same(&b));
+    assert!(b.same(&a), "symmetric");
+}
+
+#[test]
+fn same_uuid_in_another_org_is_another_account() {
+    let team = parse(&acct_org("u1", "o-team", "me@example.com"));
+    let personal = parse(&acct_org("u1", "o-personal", "me@example.com"));
+    assert!(!team.same(&personal));
+    assert!(!personal.same(&team));
+}
+
+#[test]
+fn an_org_on_one_side_only_is_another_account() {
+    let with_org = parse(&acct_org("u1", "o1", "me@example.com"));
+    let without = parse(&acct("u1", "me@example.com"));
+    assert!(!with_org.same(&without));
+    assert!(!without.same(&with_org));
+}
+
+#[test]
+fn same_uuid_and_no_org_on_either_side_is_the_same_account() {
+    let a = parse(&acct("u1", "me@example.com"));
+    let b = parse(&acct("u1", "other@example.com"));
+    assert!(a.same(&b));
+}
+
+#[test]
+fn different_uuids_are_different_accounts_whatever_the_org() {
+    for (oa, ob) in [("o1", "o1"), ("o1", "o2"), ("", "")] {
+        let a = parse(&acct_org("u1", oa, "me@example.com"));
+        let b = parse(&acct_org("u2", ob, "me@example.com"));
+        assert!(!a.same(&b), "orgs {oa:?}/{ob:?}");
+    }
+}
+
+#[test]
+fn without_uuids_the_emails_decide_ignoring_case() {
+    let a = parse(r#"{"oauthAccount":{"emailAddress":"Me@Example.com"}}"#);
+    let b = parse(r#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#);
+    let c = parse(r#"{"oauthAccount":{"emailAddress":"you@example.com"}}"#);
+    assert!(a.same(&b));
+    assert!(!a.same(&c));
+}
+
+#[test]
+fn a_uuid_on_one_side_only_is_another_account() {
+    // Was an e-mail fallback before D2: a missing uuid never makes two
+    // logins look like one account.
+    let a = parse(&acct("u1", "me@example.com"));
+    let email_only = parse(r#"{"oauthAccount":{"emailAddress":"me@EXAMPLE.com"}}"#);
+    assert!(!a.same(&email_only));
+    assert!(!email_only.same(&a));
+}
+
+#[test]
+fn the_org_does_not_change_the_ledger_key() {
+    // D3: the ledger still records the user only.
+    let a = parse(&acct_org("u1", "o1", "me@example.com"));
+    assert_eq!(a.key(), "u1");
+    assert!(a.matches_key("u1"));
+    assert!(a.matches_key("ME@example.com"));
+    assert!(!a.matches_key("o1"), "an org id is never a key");
+}
+
+#[test]
+fn an_unsafe_org_counts_as_missing() {
+    let plain = parse(&acct("u1", "me@example.com"));
+    for bad in ["o".repeat(321), "o\u{1b}1".to_string(), String::new()] {
+        let a = parse(&acct_org("u1", &bad, "me@example.com"));
+        assert!(a.same(&plain), "org {bad:?} must count as missing");
+    }
+    let non_string = parse(
+        r#"{"oauthAccount":{"accountUuid":"u1","organizationUuid":7,"emailAddress":"me@example.com"}}"#,
     );
+    assert!(
+        non_string.same(&plain),
+        "a non-string org counts as missing"
+    );
+}
+
+#[test]
+fn from_block_reads_a_bare_oauth_account_block() {
+    let block = serde_json::json!({"accountUuid": "u1", "organizationUuid": "o1"});
+    let a = Account::from_block(&block).unwrap();
+    assert!(a.same(&parse(&acct_org("u1", "o1", ""))));
+    assert!(!a.same(&parse(&acct_org("u1", "o2", ""))));
+    assert!(Account::from_block(&serde_json::json!("not an object")).is_none());
+    assert!(Account::from_block(&serde_json::json!({})).is_none());
 }
 
 #[test]
@@ -150,11 +247,12 @@ fn missing_or_unsafe_account_values_count_as_missing() {
 
 #[test]
 fn account_debug_output_hides_the_values() {
-    let a =
-        Account::from_claude_json(acct("uuid-secret", "secret@example.com").as_bytes()).unwrap();
+    let a = parse(&acct_org("uuid-secret", "org-secret", "secret@example.com"));
     let shown = format!("{a:?}");
     assert!(
-        !shown.contains("uuid-secret") && !shown.contains("secret@"),
+        !shown.contains("uuid-secret")
+            && !shown.contains("secret@")
+            && !shown.contains("org-secret"),
         "{shown}"
     );
 }
@@ -198,6 +296,58 @@ fn a_ledger_account_that_does_not_match_is_a_hand_change() {
 fn without_a_ledger_the_single_login_less_match_is_live() {
     let e = env();
     assert_eq!(e.live(), (LiveId::Known(n("work")), None));
+}
+
+#[test]
+fn login_less_profiles_of_one_user_in_two_orgs_are_not_ambiguous() {
+    // ryan-mistt-org and ryan-mistt-personal: one user, two subscriptions.
+    let e = env();
+    e.store.add(&n("personal")).unwrap();
+    private(
+        &e.root().join("work/.claude.json"),
+        &acct_org("u-work", "o-team", "work@example.com"),
+    );
+    private(
+        &e.root().join("personal/.claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    assert_eq!(e.live(), (LiveId::Known(n("personal")), None));
+}
+
+#[test]
+fn login_less_profiles_with_the_same_user_and_org_are_ambiguous() {
+    let e = env();
+    e.store.add(&n("twin")).unwrap();
+    for p in ["work", "twin"] {
+        private(
+            &e.root().join(p).join(".claude.json"),
+            &acct_org("u-work", "o1", "work@example.com"),
+        );
+    }
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o1", "work@example.com"),
+    );
+    assert_eq!(e.live().0, LiveId::Ambiguous);
+}
+
+#[test]
+fn a_prototype_ledger_whose_profile_is_in_another_org_is_ignored() {
+    let e = env();
+    private(
+        &e.root().join("work/.claude.json"),
+        &acct_org("u-work", "o-team", "work@example.com"),
+    );
+    private(
+        &e.home.join(".claude.json"),
+        &acct_org("u-work", "o-personal", "work@example.com"),
+    );
+    e.prototype(r#"{"live":"work","since":1}"#);
+    assert_eq!(e.live().1, Some("account does not match"));
 }
 
 #[test]

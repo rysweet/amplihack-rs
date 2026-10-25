@@ -1,0 +1,395 @@
+//! The preconditions and the per-name state table of the shared session
+//! store (issue #1634), Unix only.
+
+use super::link::{Swap, shell_quote, swap_in_link, symlink_at};
+use super::merge::{DIR_FLAGS, MergeError, merge_tree, stat_at};
+use super::{Conflict, Deferred, Migrated, Mode, Report, SHARED_SESSION_DIRS};
+use crate::commands::profile::auto_switch::{euid, writable_by_others};
+use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::store::fdwalk;
+use std::cell::LazyCell;
+use std::ffi::OsStr;
+use std::fs::{self, File};
+use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::unix::fs::MetadataExt;
+use std::path::{Path, PathBuf};
+
+/// The two sides every name is checked against.
+struct Sides<'a> {
+    profile: &'a ProfileName,
+    profile_dir: &'a Path,
+    dir: OwnedFd,
+    /// As given (messages); `canon` is canonicalized (link targets).
+    shown_root: &'a Path,
+    canon: PathBuf,
+    canon_fd: OwnedFd,
+}
+
+pub(super) fn ensure(
+    profile_dir: &Path,
+    canonical_root: &Path,
+    profile: &ProfileName,
+    mode: impl FnOnce() -> Mode,
+    r: &mut Report,
+) {
+    let Some((canon, canon_fd)) = check_canonical_root(canonical_root, r) else {
+        return;
+    };
+    let Some(dir) = check_profile_dir(profile_dir, &canon, profile, r) else {
+        return;
+    };
+    let sides = Sides {
+        profile,
+        profile_dir,
+        dir,
+        shown_root: canonical_root,
+        canon,
+        canon_fd,
+    };
+    // Evaluated once, and only when a name is a real directory.
+    let mode = LazyCell::new(mode);
+    for name in SHARED_SESSION_DIRS {
+        one_name(&sides, name, &mode, r);
+    }
+}
+
+fn check_canonical_root(root: &Path, r: &mut Report) -> Option<(PathBuf, OwnedFd)> {
+    let refused = |r: &mut Report| {
+        r.warn(format!(
+            "{} is a symlink or not a directory; sessions not shared",
+            root.display()
+        ));
+    };
+    let meta = match fs::symlink_metadata(root) {
+        Ok(m) => m,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            tracing::debug!("{} does not exist; sessions not shared", root.display());
+            return None;
+        }
+        Err(e) => {
+            r.warn(format!("{}: {e}; sessions not shared", root.display()));
+            return None;
+        }
+    };
+    if meta.file_type().is_symlink() || !meta.is_dir() {
+        refused(r);
+        return None;
+    }
+    let not_safe = |r: &mut Report| {
+        r.warn(format!(
+            "{} is not owned by you or is writable by group or others; sessions not shared",
+            root.display()
+        ));
+    };
+    if !root_ok(&meta) {
+        not_safe(r);
+        return None;
+    }
+    let opened = root.canonicalize().and_then(|canon| {
+        fdwalk::openat(libc::AT_FDCWD, canon.as_os_str(), DIR_FLAGS, 0).map(|fd| (canon, fd))
+    });
+    match opened.and_then(|(canon, fd)| opened_meta(fd).map(|(fd, m)| (canon, fd, m))) {
+        // The path check above can be raced; the opened directory is what
+        // the merge writes into, so it is checked again.
+        Ok((canon, fd, m)) if root_ok(&m) => Some((canon, fd)),
+        Ok(_) => {
+            not_safe(r);
+            None
+        }
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+            refused(r);
+            None
+        }
+        Err(e) => {
+            r.warn(format!("{}: {e}; sessions not shared", root.display()));
+            None
+        }
+    }
+}
+
+fn check_profile_dir(
+    dir: &Path,
+    canon: &Path,
+    profile: &ProfileName,
+    r: &mut Report,
+) -> Option<OwnedFd> {
+    let unsafe_dir = |r: &mut Report| {
+        r.warn(
+            "profile directory is not owned by you or has group or other permissions; sessions not shared"
+                .to_string(),
+        );
+    };
+    let io_err = |r: &mut Report, e| r.warn(format!("{}: {e}; sessions not shared", dir.display()));
+    let meta = fs::symlink_metadata(dir).map_err(|e| io_err(r, e)).ok()?;
+    if meta.file_type().is_symlink() || !profile_ok(&meta) {
+        unsafe_dir(r);
+        return None;
+    }
+    let real = dir.canonicalize().map_err(|e| io_err(r, e)).ok()?;
+    // Path::starts_with compares whole components, so `~/.claude-profiles`
+    // is not inside `~/.claude`.
+    if real == canon {
+        tracing::debug!("profile {profile}: is the shared store; never linked");
+        return None;
+    }
+    if real.starts_with(canon) {
+        r.warn(format!(
+            "{} is inside {}; sessions not shared",
+            dir.display(),
+            canon.display()
+        ));
+        return None;
+    }
+    match fdwalk::openat(libc::AT_FDCWD, dir.as_os_str(), DIR_FLAGS, 0).and_then(opened_meta) {
+        // Checked again on the opened directory, as for the canonical root.
+        Ok((fd, m)) if profile_ok(&m) => Some(fd),
+        Err(e) if !matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+            io_err(r, e);
+            None
+        }
+        _ => {
+            unsafe_dir(r);
+            None
+        }
+    }
+}
+
+/// A directory you own that only you (or your private group) can write.
+fn root_ok(m: &fs::Metadata) -> bool {
+    m.is_dir() && m.uid() == euid() && !writable_by_others(m)
+}
+
+/// A directory you own with no group or other permissions.
+fn profile_ok(m: &fs::Metadata) -> bool {
+    m.is_dir() && m.uid() == euid() && m.mode() & 0o077 == 0
+}
+
+/// `fstat` on an opened directory, handing the descriptor back.
+fn opened_meta(fd: OwnedFd) -> std::io::Result<(OwnedFd, fs::Metadata)> {
+    let file = File::from(fd);
+    let meta = file.metadata()?;
+    Ok((OwnedFd::from(file), meta))
+}
+
+/// `<canonical root>/<name>`, created `0700` when missing. `None` (with a
+/// warning) when it is a symlink, not a directory, not owned by you or
+/// writable by others, or cannot be made.
+fn canonical_subdir(s: &Sides, name: &'static str, r: &mut Report) -> Option<OwnedFd> {
+    let n = OsStr::new(name);
+    let c = fdwalk::cstr(n).expect("static name has no NUL");
+    // SAFETY: a valid directory descriptor and NUL-terminated name.
+    if unsafe { libc::mkdirat(s.canon_fd.as_raw_fd(), c.as_ptr(), 0o700) } != 0 {
+        let e = std::io::Error::last_os_error();
+        if e.raw_os_error() != Some(libc::EEXIST) {
+            r.warn(format!("{name}: mkdir failed: {e}; nothing removed"));
+            return None;
+        }
+    }
+    let file = match fdwalk::openat(s.canon_fd.as_raw_fd(), n, DIR_FLAGS, 0) {
+        Ok(fd) => File::from(fd),
+        Err(e) if matches!(e.raw_os_error(), Some(libc::ELOOP | libc::ENOTDIR)) => {
+            r.warn(format!(
+                "{} is a symlink or not a directory; {name} not shared",
+                s.shown_root.join(name).display()
+            ));
+            return None;
+        }
+        Err(e) => {
+            r.warn(format!("{name}: open failed: {e}; nothing removed"));
+            return None;
+        }
+    };
+    // The opened descriptor, not the path, is what the merge writes into.
+    match file.metadata() {
+        Ok(m) if m.uid() == euid() && !writable_by_others(&m) => Some(OwnedFd::from(file)),
+        Ok(_) => {
+            r.warn(format!(
+                "{} is not owned by you or is writable by group or others; {name} not shared",
+                s.shown_root.join(name).display()
+            ));
+            None
+        }
+        Err(e) => {
+            r.warn(format!("{name}: open failed: {e}; nothing removed"));
+            None
+        }
+    }
+}
+
+fn one_name<F: FnOnce() -> Mode>(
+    s: &Sides,
+    name: &'static str,
+    mode: &LazyCell<Mode, F>,
+    r: &mut Report,
+) {
+    let Some(shared_fd) = canonical_subdir(s, name, r) else {
+        return;
+    };
+    let target = s.canon.join(name);
+    let at = s.profile_dir.join(name);
+    let st = match stat_at(s.dir.as_raw_fd(), OsStr::new(name)) {
+        Ok(st) => st,
+        Err(e) if e.raw_os_error() == Some(libc::ENOENT) => {
+            match symlink_at(&target, &s.dir, OsStr::new(name)) {
+                Ok(()) => r.linked.push(name),
+                Err(e) if e.raw_os_error() == Some(libc::EEXIST) => r.defer(name, Deferred::Raced),
+                Err(e) => r.warn(format!("{name}: link failed: {e}; nothing removed")),
+            }
+            return;
+        }
+        Err(e) => {
+            r.warn(format!("{name}: open failed: {e}; nothing removed"));
+            return;
+        }
+    };
+    match st.st_mode & libc::S_IFMT {
+        libc::S_IFLNK => {
+            if at.canonicalize().is_ok_and(|p| p == target) {
+                r.already_ok.push(name);
+            } else {
+                let shown = fs::read_link(&at)
+                    .map_or_else(|e| format!("({e})"), |t| t.display().to_string());
+                r.warn(format!("{name} is a symlink to {shown}; left alone"));
+            }
+        }
+        libc::S_IFDIR => match **mode {
+            Mode::Migrate => migrate(s, name, &shared_fd, r),
+            Mode::LinkOnly(why) => r.defer(name, why),
+        },
+        _ => r.warn(format!("{name} is not a directory or a link; left alone")),
+    }
+}
+
+fn migrate(s: &Sides, name: &'static str, shared_fd: &OwnedFd, r: &mut Report) {
+    let target = s.canon.join(name);
+    let shown = s.shown_root.join(name);
+    let src = match fdwalk::openat(s.dir.as_raw_fd(), OsStr::new(name), DIR_FLAGS, 0) {
+        Ok(fd) => fd,
+        Err(e) => {
+            r.warn(format!("{name}: open failed: {e}; nothing removed"));
+            return;
+        }
+    };
+    if !r.announced {
+        r.announced = true;
+        eprintln!("{}", super::migration_notice(s.profile, s.shown_root));
+    }
+    let outcome = match merge_tree(&src, shared_fd, &target, s.profile) {
+        Ok(o) => o,
+        Err(MergeError::Io { step, err }) => {
+            r.warn(format!("{name}: {step} failed: {err}; nothing removed"));
+            return;
+        }
+        Err(MergeError::NoSpace { path, bytes }) => {
+            r.warn(format!(
+                "{name}: not enough free space to copy {} ({bytes} bytes) to {}; merge stopped, nothing removed",
+                path.display(),
+                shown.display()
+            ));
+            return;
+        }
+    };
+    drop(src);
+    let real = s.profile_dir.join(name);
+    let backup = match swap_in_link(&s.dir, s.profile_dir, name, &target) {
+        Swap::Done(backup) => Some(backup),
+        Swap::RolledBack(e) => {
+            r.warn(format!(
+                "{name}: could not swap in the link ({e}); {} was not replaced; files already merged are in {}",
+                real.display(),
+                shown.display()
+            ));
+            None
+        }
+        Swap::Stranded { err, backup } => {
+            // Real absolute paths, so the printed command works as is.
+            r.warn_with(
+                format!(
+                    "{name}: could not restore the old directory ({err}); run: mv {} {}",
+                    shell_quote(&backup),
+                    shell_quote(&real)
+                ),
+                false,
+            );
+            None
+        }
+        Swap::Leftover { err, at } => {
+            r.warn(format!(
+                "{name}: rename failed: {err}; nothing removed, the old directory is at {}",
+                at.display()
+            ));
+            None
+        }
+    };
+    let left_in = backup.clone().unwrap_or(real);
+    for (path, saved_as) in &outcome.conflicts {
+        r.note(format!(
+            "{name}: conflict: {} kept the shared copy; this profile's copy saved as {}",
+            path.display(),
+            saved_as.display()
+        ));
+        r.conflicts.push(Conflict {
+            name,
+            path: path.clone(),
+            saved_as: saved_as.clone(),
+        });
+    }
+    for (path, added) in &outcome.indexes {
+        match added {
+            Ok(n) => r.note(format!(
+                "{name}: memory index {}: added {n} entries from this profile to the shared copy",
+                path.display()
+            )),
+            Err(e) => {
+                let saved = outcome
+                    .conflicts
+                    .iter()
+                    .rfind(|(p, _)| p == path)
+                    .map_or_else(|| shown.join(path), |(_, saved)| saved.clone());
+                r.warn(format!(
+                    "{name}: memory index {}: entries not added ({e}); add them by hand from {}",
+                    path.display(),
+                    saved.display()
+                ))
+            }
+        }
+    }
+    for path in &outcome.logins {
+        r.warn(format!(
+            "{name}: skipped credential file {}; left in {}",
+            path.display(),
+            left_in.display()
+        ));
+    }
+    if outcome.skipped > 0 {
+        r.note(format!(
+            "{name}: skipped {} symbolic links or special files; left in {}",
+            outcome.skipped,
+            left_in.display()
+        ));
+    }
+    r.note(format!(
+        "{name}: moved {} files into {}, {} identical, {} conflict",
+        outcome.moved,
+        shown.display(),
+        outcome.identical,
+        outcome.conflicts.len()
+    ));
+    if let Some(backup) = backup {
+        r.note(format!(
+            "{name}: old directory kept as {}",
+            backup.display()
+        ));
+        r.migrated.push(Migrated {
+            name,
+            moved: outcome.moved,
+            identical: outcome.identical,
+            conflicts: outcome.conflicts.len(),
+            backup,
+        });
+    }
+}
+
+#[cfg(test)]
+#[path = "tests_unix.rs"]
+mod tests;
