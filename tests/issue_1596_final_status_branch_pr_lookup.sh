@@ -237,7 +237,7 @@ run_final_status() {
             WORKFLOW_PR_SCOPE_HELPER="$BINDIR/scope-helper" \
             REMOTE_HOST_TYPE=github \
             TASK_DESCRIPTION="issue 1596 regression" \
-            ISSUE_NUMBER=1596 \
+            RECIPE_VAR_issue_number=1596 \
             "$@" \
             bash "$FINAL_STATUS"
     ) >"$OUT" 2>"$ERR"
@@ -391,7 +391,7 @@ fi
 
 # --- 7. PR_URL already known -> no lookup -----------------------------------
 repo="$(make_repo c7)"
-run_final_status "$repo" FAKE_GH_MODE=open PR_URL="$PR_URL_OK" PR_NUMBER="$PR_NUM"
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_pr_url="$PR_URL_OK" RECIPE_VAR_pr_number="$PR_NUM"
 if [ "$RC" -eq 0 ] && [ "$(lookup_calls)" = "0" ] && ! grep -q "#1596" "$ERR"; then
     record_pass "7: PR_URL preset -> no '--state open' lookup"
 else
@@ -399,18 +399,18 @@ else
 fi
 
 repo="$(make_repo c7b)"
-run_final_status "$repo" FAKE_GH_MODE=open PR_PUBLISH_RESULT_PR_URL="$PR_URL_OK"
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_pr_publish_result__pr_url="$PR_URL_OK"
 assert_no_lookup "7b: PR_PUBLISH_RESULT_PR_URL preset -> no lookup"
 
 # --- 8. publish already reached a success state -> no lookup ----------------
 for state in FOLLOWUP_CREATED EXISTING_OPEN_PR MERGED; do
     repo="$(make_repo "c8-$state")"
-    run_final_status "$repo" FAKE_GH_MODE=open PR_PUBLISH_RESULT_STATE="$state"
+    run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_pr_publish_result__state="$state"
     assert_no_lookup "8: PR_PUBLISH_RESULT_STATE=$state -> no lookup"
 done
 
 repo="$(make_repo c8b)"
-run_final_status "$repo" FAKE_GH_MODE=open PUBLISH_STATE_REACHED=true
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_publish_terminal_evidence__publish_state_reached=true
 assert_no_lookup "8b: PUBLISH_STATE_REACHED=true -> no lookup"
 
 # --- 9. detached HEAD -> no lookup ------------------------------------------
@@ -428,7 +428,7 @@ assert_unchanged_failure "9c: base branch -> unchanged failure"
 # --- 10. non-success publish state + open PR -> EXISTING_OPEN_PR (D1) -------
 for state in unknown create-new-pr; do
     repo="$(make_repo "c10-$state")"
-    run_final_status "$repo" FAKE_GH_MODE=open PR_PUBLISH_RESULT_STATE="$state"
+    run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_pr_publish_result__state="$state"
     if [ "$RC" -eq 0 ] \
         && grep -qx "terminal_state=EXISTING_OPEN_PR" "$OUT" \
         && grep -qx "terminal_status=EXISTING_OPEN_PR" "$OUT" \
@@ -441,7 +441,7 @@ done
 
 # --- 10b. explicit PUBLISH_STATE_REACHED=false does not block the lookup (D2)
 repo="$(make_repo c10b)"
-run_final_status "$repo" FAKE_GH_MODE=open PUBLISH_STATE_REACHED=false
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_publish_terminal_evidence__publish_state_reached=false
 if [ "$RC" -eq 0 ] && grep -qx "publish_state_reached=true" "$OUT" && grep -qx "terminal_status=EXISTING_OPEN_PR" "$OUT"; then
     record_pass "10b: explicit PUBLISH_STATE_REACHED=false + open PR -> EXISTING_OPEN_PR"
 else
@@ -459,7 +459,7 @@ fi
 
 # --- 11. explicit terminal failure wins; no lookup --------------------------
 repo="$(make_repo c11)"
-run_final_status "$repo" FAKE_GH_MODE=open TERMINAL_FAILURE=true
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_terminal_state__terminal_failure=true
 if [ "$RC" -eq 1 ] && grep -qx "terminal_failure=true" "$OUT" && [ "$(lookup_calls)" = "0" ] && ! grep -q "^terminal_status=" "$OUT"; then
     record_pass "11: TERMINAL_FAILURE=true + open PR -> exit 1, no lookup"
 else
@@ -467,7 +467,7 @@ else
 fi
 
 repo="$(make_repo c11b)"
-run_final_status "$repo" FAKE_GH_MODE=open IMPLEMENTATION_COMPLETED=maybe
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_implementation_terminal_evidence__implementation_completed=maybe
 if [ "$RC" -eq 2 ] && grep -qx "terminal_state=FAILED_INVALID_EVIDENCE" "$OUT" && [ "$(lookup_calls)" = "0" ]; then
     record_pass "11b: invalid evidence -> exit 2, no lookup"
 else
@@ -476,7 +476,7 @@ fi
 
 # --- 11c. implementation+verification evidence already closes the run ------
 repo="$(make_repo c11c)"
-run_final_status "$repo" FAKE_GH_MODE=open IMPLEMENTATION_COMPLETED=true VERIFICATION_COMPLETED=true
+run_final_status "$repo" FAKE_GH_MODE=open RECIPE_VAR_implementation_terminal_evidence__implementation_completed=true RECIPE_VAR_verification_terminal_evidence__verification_completed=true
 if [ "$RC" -eq 0 ] && grep -qx "terminal_state=IMPLEMENTED_VERIFIED" "$OUT" \
     && [ "$(lookup_calls)" = "0" ] && [ ! -s "$SCOPE_LOG" ]; then
     record_pass "11c: implementation+verification evidence + open PR -> IMPLEMENTED_VERIFIED, exit 0, no lookup"
@@ -608,7 +608,7 @@ assert_resolved_worktree_pr() {
 for state in main detached; do
     read -r repo wt < <(make_layout "c15-$state" "$state")
     run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-        WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt"
+        RECIPE_VAR_worktree_setup__worktree_path="$wt"
     assert_resolved_worktree_pr "15-$state: step-22b, REPO_PATH $state, run branch in worktree with open PR -> EXISTING_OPEN_PR from the worktree branch"
 done
 
@@ -618,11 +618,19 @@ run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
     RECIPE_VAR_worktree_setup__worktree_path="$wt"
 assert_resolved_worktree_pr "15-recipevar: step-22b resolves the worktree from RECIPE_VAR_worktree_setup__worktree_path"
 
+# #1561: the bare WORKTREE_SETUP_WORKTREE_PATH is no longer read. A stale one
+# inherited by the helper, naming a worktree whose branch has an open PR,
+# credits nothing: cwd is on main, so there is no branch to look up.
+run_final_status "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    WORKTREE_SETUP_WORKTREE_PATH="$wt"
+assert_no_lookup "15-1561-bare-ignored: a stale bare WORKTREE_SETUP_WORKTREE_PATH is not read -> no lookup"
+assert_unchanged_failure "15-1561-bare-ignored-a: a stale bare WORKTREE_SETUP_WORKTREE_PATH -> unchanged failure"
+
 # Negative: REPO_PATH sits on an unrelated branch that HAS an open PR; the
 # run's own branch has none. The unrelated PR must never be credited.
 read -r repo wt < <(make_layout c15-unrelated unrelated)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt"
+    RECIPE_VAR_worktree_setup__worktree_path="$wt"
 assert_unchanged_failure "15-unrelated: step-22b, REPO_PATH on an unrelated branch with its own PR, run branch has none -> unchanged failure"
 if ! grep -qF -- "--head $UNRELATED" "$GH_LOG"; then
     record_pass "15-unrelated-a: the unrelated REPO_PATH branch is never looked up"
@@ -633,7 +641,7 @@ fi
 # The helper on its own, run from the unrelated main checkout (as a caller
 # that does not cd, like strict-terminal-state): the worktree branch is used.
 run_final_status "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt"
+    RECIPE_VAR_worktree_setup__worktree_path="$wt"
 assert_unchanged_failure "15-helper-cwd: helper run from an unrelated checkout reads the worktree branch, not cwd"
 if grep -E -- '^pr list .*--head .*--state open' "$GH_LOG" | grep -qF -- "--head $BRANCH"; then
     record_pass "15-helper-cwd-a: lookup used --head $BRANCH (the worktree's branch)"
@@ -643,12 +651,12 @@ fi
 
 # Worktree path given but gone: never fall back to cwd's branch.
 run_final_status "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree"
-assert_no_lookup "15-gone: WORKTREE_SETUP_WORKTREE_PATH set but missing -> no lookup"
+    RECIPE_VAR_worktree_setup__worktree_path="$TMPROOT/no-such-worktree"
+assert_no_lookup "15-gone: RECIPE_VAR_worktree_setup__worktree_path set but missing -> no lookup"
 assert_unchanged_failure "15-gone-a: missing worktree + unrelated cwd PR -> unchanged failure"
 
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH="$TMPROOT/no-such-worktree" RECIPE_VAR_worktree_setup__worktree_path="$TMPROOT/no-such-worktree"
+    RECIPE_VAR_worktree_setup__worktree_path="$TMPROOT/no-such-worktree"
 assert_no_lookup "15-gone-step: step-22b with the worktree gone -> no lookup against REPO_PATH's branch"
 assert_unchanged_failure "15-gone-step-a: step-22b with the worktree gone -> unchanged failure"
 
@@ -656,7 +664,7 @@ assert_unchanged_failure "15-gone-step-a: step-22b with the worktree gone -> unc
 # on an unrelated branch with its own open PR. That branch must never be
 # looked up or credited (crusty round-2 on PR #1623).
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$UNRELATED" \
-    WORKTREE_SETUP_WORKTREE_PATH= RECIPE_VAR_worktree_setup__worktree_path=
+    RECIPE_VAR_worktree_setup__worktree_path=
 assert_no_lookup "15-unset-step: step-22b with the worktree path unset -> no lookup against REPO_PATH's branch"
 assert_unchanged_failure "15-unset-step-a: step-22b with the worktree path unset, REPO_PATH on an unrelated branch with an open PR -> unchanged failure"
 if ! grep -qF -- "--head $UNRELATED" "$GH_LOG" && grep -qF "worktree path unset or gone" "$ERR"; then
@@ -683,13 +691,13 @@ fi
 # Observed branch disagrees with the run's recorded branch -> no lookup.
 read -r repo wt < <(make_layout c15-mismatch main)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt" WORKTREE_SETUP_BRANCH_NAME="feat/some-other-run"
-assert_no_lookup "15-mismatch: worktree branch differs from WORKTREE_SETUP_BRANCH_NAME -> no lookup"
+    RECIPE_VAR_worktree_setup__worktree_path="$wt" RECIPE_VAR_worktree_setup__branch_name="feat/some-other-run"
+assert_no_lookup "15-mismatch: worktree branch differs from RECIPE_VAR_worktree_setup__branch_name -> no lookup"
 assert_unchanged_failure "15-mismatch-a: branch mismatch -> unchanged failure"
 
 read -r repo wt < <(make_layout c15-match main)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
-    WORKTREE_SETUP_WORKTREE_PATH="$wt" RECIPE_VAR_worktree_setup__worktree_path="$wt" WORKTREE_SETUP_BRANCH_NAME="$BRANCH"
+    RECIPE_VAR_worktree_setup__worktree_path="$wt" RECIPE_VAR_worktree_setup__branch_name="$BRANCH"
 assert_resolved_worktree_pr "15-match: WORKTREE_SETUP_BRANCH_NAME agrees with the worktree branch -> EXISTING_OPEN_PR"
 
 # --- 14. lookup does not depend on caller credentials -----------------------

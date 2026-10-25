@@ -109,7 +109,7 @@ echo wip > "$FS/worktrees/sibling/wip.txt"
 fs_rc=0
 (
     cd "$FS"
-    env -u PR_URL -u PR_NUMBER PR_PUBLISH_RESULT_STATE=no-diff WORKFLOW_RUNTIME_ARTIFACT_HELPER="$ARTIFACTS" \
+    env -u RECIPE_VAR_pr_url -u RECIPE_VAR_pr_number RECIPE_VAR_pr_publish_result__state=no-diff WORKFLOW_RUNTIME_ARTIFACT_HELPER="$ARTIFACTS" \
         bash "$FINAL_STATUS"
 ) >"$WORK/final.out" 2>&1 || fs_rc=$?
 check 1494-j "the gate confirms the no-diff state (rc 0)" test "$fs_rc" -eq 0

@@ -404,9 +404,10 @@ fn every_step_that_reads_context_through_a_helper_sources_it() {
 fn no_production_recipe_evaluates_a_recipe_var_value() {
     // A test harness that stands in for the runner may export the variable it
     // simulates; nothing else may.
-    const ALLOWED: [&str; 2] = [
+    const ALLOWED: [&str; 3] = [
         "amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh",
         "amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh",
+        "amplifier-bundle/recipes/tests/test-issue-1060-existing-pr-is-idempotent.sh",
     ];
     let misuse = [
         re(r"\beval\b[^#]*RECIPE_VAR_"),

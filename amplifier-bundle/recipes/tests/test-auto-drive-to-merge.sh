@@ -55,7 +55,8 @@ set -uo pipefail
 
 # This test runs inside auto-drive's own qa-team step, whose recipe runner
 # exports every step output as AUTODRIVE_*/upper-case and RECIPE_VAR_* names.
-# The step bodies once read `${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir}}`,
+# The step bodies once read the bare AUTODRIVE_TOOLS_DIR first and
+# RECIPE_VAR_autodrive_tools_dir second,
 # so an inherited AUTODRIVE_TOOLS_DIR overrode the per-case tools dir and
 # MERGEREADY-no-round-tool found the real tool (PR #1588 round-1 QA, #1607).
 # They now read RECIPE_VAR_ only (#1561), and every case sets what it needs.
@@ -1921,11 +1922,11 @@ for spec in autodrive-crusty-round:step-02-crusty-review:step-02b-review-dir-unc
   COND_CHECK="$(step_condition "${RECIPES}/${r}.yaml" "${check}")"
   IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
   STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"; rc0=$?
-  env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
+  env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
   printf 'x\n' > "${IX_FILE}"; git -C "${LAUNCH}" add -f -- "${IX_FILE}" >/dev/null 2>&1
-  IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
+  IX_ERR="$(env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
   git -C "${LAUNCH}" rm -q --cached -- "${IX_FILE}" >/dev/null 2>&1; rm -f -- "${IX_FILE}"
-  env -u REVIEW_INDEX "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
+  env -u RECIPE_VAR_review_index "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
   if [ -n "${G2}" ] && [ "$rc0" -eq 0 ] && [ -n "${STAMP}" ] && [ "$rc_same" -eq 0 ] && [ "$rc_staged" -ne 0 ] && [ "$rc_nostamp" -ne 0 ] \
      && printf '%s' "${IX_ERR}" | grep -qF "STOP: ${agent} changed the index or HEAD of the review dir" \
      && printf '%s' "${AFTER}" | grep -qF "id: \"${check}\"" \
@@ -1943,7 +1944,7 @@ G2="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-02b-rev
 STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"
 IX_GD="$(git -C "${LAUNCH}" rev-parse --absolute-git-dir)"
 cp -p -- "${IX_GD}/index" "${WORK}/launch-index.bak" && printf 'not an index' > "${IX_GD}/index"
-IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc=$?
+IX_ERR="$(env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc=$?
 cp -p -- "${WORK}/launch-index.bak" "${IX_GD}/index"
 if [ "$rc" -ne 0 ] && printf '%s' "${IX_ERR}" | grep -qF "could not be stamped again, so its index was not compared and no change is claimed" \
    && ! printf '%s' "${IX_ERR}" | grep -qF "changed the index or HEAD"; then
@@ -2402,14 +2403,14 @@ s1561_record_row() { # s1561_record_row <row> <jq-expected> [VAR=value ...]; jq-
   fi
 }
 s1561_record_row "1561-record-baseline" "MERGE_READY 0 PASS GREEN green"
+# deliberately stale (#1561): the bare MERGE_READY_VERDICT below
 s1561_record_row "1561-stale-MERGE_READY_VERDICT" "NOT_MERGE_READY 2 PASS GREEN green" \
-  # deliberately stale (#1561): the bare value on the next line
   MERGE_READY_VERDICT='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
   RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","verdict_source":"assessment","blocker_count":2}'
 s1561_record_row "1561-stale-MERGE_READY_VERDICT-reverse" "MERGE_READY 0 PASS GREEN green" \
   MERGE_READY_VERDICT='{"merge_ready_verdict":"NOT_MERGE_READY","verdict_source":"assessment","blocker_count":2}'  # deliberately stale (#1561)
+# deliberately stale (#1561): the bare MERGE_READY_VERDICT below
 s1561_record_row "1561-stale-MERGE_READY_VERDICT-empty" "NOT_MERGE_READY 0 PASS GREEN green" \
-  # deliberately stale (#1561): the bare value on the next line
   MERGE_READY_VERDICT='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
   RECIPE_VAR_merge_ready_verdict=''
 s1561_record_row "1561-record-stale-CI_EVIDENCE" "MERGE_READY 0 PASS RED red" \
@@ -2859,12 +2860,21 @@ else
   else
     fail "STEP00-skill-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
-  # No root has the resolver at all.
-  s00_run "${WORK_PHYS}/no-such-root"
+  # The tools dir exists but holds no resolver.
+  EMPTY_ROOT="${WORK_PHYS}/empty-root"; mkdir -p "${EMPTY_ROOT}/amplifier-bundle/tools"
+  s00_run "${EMPTY_ROOT}"
   if [ "${S00_RC}" -ne 0 ] && printf '%s' "${S00_ERR}" | grep -qF 'merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found'; then
     pass "STEP00-resolver-missing-fails" "a missing resolver fails step-00 with the named error"
   else
     fail "STEP00-resolver-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # No tools dir at all: refused by name before any path is built from it (#1607).
+  s00_run "${WORK_PHYS}/no-such-root"
+  if [ "${S00_RC}" -ne 0 ] && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found:' \
+     && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found: autodrive_tools_dir is not a directory [autodrive-merge-round/step-00-merge-ready-files]'; then
+    pass "STEP00-tools-dir-missing-fails" "a tools dir that does not exist fails step-00 with the named error"
+  else
+    fail "STEP00-tools-dir-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
   # gadugi-test is not on PATH in a Node repository, where criterion 1 needs
   # it: the round stops here by name, before any test run, instead of
@@ -4809,12 +4819,20 @@ s01_run() { # s01_run <tools dir> -> PF_OUT, PF_RC (#1518 case: non-admin 404, n
 }
 s01_run "${TOOLS}"
 pf_expect "PF-step-01-uses-tool" MET merge-state "" "merge-round step-01 reports the tool's facts" pr=42 head_sha="${PF_HEAD_SHA}"
-s01_run "${WORK_PHYS}/no-such-tools"
+mkdir -p "${WORK_PHYS}/empty-tools"
+s01_run "${WORK_PHYS}/empty-tools"
 if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
-   && grep -q '^ERROR: autodrive-tools-not-found: .*/no-such-tools/autodrive_platform_facts.sh$' "${WORK_PHYS}/pf-${PF_N}.err"; then
+   && grep -q '^ERROR: autodrive-tools-not-found: .*/empty-tools/autodrive_platform_facts.sh$' "${WORK_PHYS}/pf-${PF_N}.err"; then
   pass "PF-step-01-no-tool" "without the tool step-01 fails by name and reports no facts"
 else
   fail "PF-step-01-no-tool" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+fi
+s01_run "${WORK_PHYS}/no-such-tools"
+if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
+   && grep -qx 'ERROR: autodrive-tools-not-found: autodrive_tools_dir is not a directory \[autodrive-merge-round/step-01-platform-facts\]' "${WORK_PHYS}/pf-${PF_N}.err"; then
+  pass "PF-step-01-no-tools-dir" "a tools dir that does not exist fails step-01 by name and reports no facts"
+else
+  fail "PF-step-01-no-tools-dir" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
 fi
 PF_MUTE="${WORK_PHYS}/pf-mute-tools"; mkdir -p "${PF_MUTE}"; printf '#!/bin/sh\nexit 0\n' > "${PF_MUTE}/autodrive_platform_facts.sh"
 s01_run "${PF_MUTE}"
@@ -5100,7 +5118,7 @@ for r in "${READ_RECIPES[@]}"; do
   for name in "${OUT_NAMES[@]}"; do
     up="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
     # Issue #1561: a read is ${RECIPE_VAR_<output>:- alone. Any read of the
-    # bare name (${UP, ${#UP, ${!UP, $UP at a name boundary) is a violation:
+    # bare name (plain, length or indirect expansion, or $UP at a name boundary) is a violation:
     # an inherited variable of that name would outrank the recipe's value.
     n_reads="$(grep -oE "\\\$\{RECIPE_VAR_${name}:-" "$f" | grep -c . || true)"
     file_reads=$((file_reads + n_reads))

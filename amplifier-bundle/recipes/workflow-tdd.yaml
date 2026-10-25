@@ -263,7 +263,7 @@ steps:
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
       # Issue #1528: stage and commit only at the top of the linked task worktree; no REPO_PATH fallback.
       # Hard-fail rather than skip: a skipped commit here would lose work silently.
       cd -P "${WORKTREE_SETUP_WORKTREE_PATH:?checkpoint-after-implementation requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"

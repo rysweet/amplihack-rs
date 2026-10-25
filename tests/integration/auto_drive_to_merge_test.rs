@@ -1971,7 +1971,7 @@ fn merge_round_reads_crusty_evidence_through_autodrive_crusty_final() {
     // The measured downgrade covers crusty, UNTRUSTED included.
     let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
     for needle in [
-        "CRUSTY_EVIDENCE",
+        "RECIPE_VAR_crusty_evidence",
         "crusty_status",
         "DONE_CLEAN",
         "UNTRUSTED",
@@ -3054,24 +3054,37 @@ fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
 }
 
 /// The subcommands of autodrive_round_evidence.sh and the function each runs.
-const ROUND_SUBCOMMANDS: [(&str, &str); 6] = [
+const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("crusty-range", "crusty_range"),
     ("qa-evidence-sha", "qa_evidence_sha"),
+    ("qa-evidence-hash", "qa_evidence_hash"),
     ("crusty-evidence", "crusty_evidence"),
     ("measured-downgrade", "measured_downgrade"),
+    ("merge-ready-verdict", "merge_ready_verdict"),
     ("findings", "round_findings"),
     ("round-record", "round_record"),
 ];
 
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
-/// of the function that subcommand dispatches to. The step bodies moved into
-/// that tool when the recipe reached its brick budget (PR #1520 review), so a
-/// check on what a step does reads both.
+/// of the function that subcommand dispatches to, and of every subcommand
+/// function that body calls in turn. The step bodies moved into that tool when
+/// the recipe reached its brick budget (PR #1520 review, #1561), so a check on
+/// what a step does reads both.
 fn round_step_bash(recipe: &Value, id: &str) -> String {
     let cmd = step_command(recipe, id);
     let tool = read(&tool_path("autodrive_round_evidence.sh"));
+    let body_of = |func: &str| -> String {
+        let start = tool
+            .find(&format!("\n{func}() {{\n"))
+            .unwrap_or_else(|| panic!("autodrive_round_evidence.sh has no {func}()"));
+        let len = tool[start + 1..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{func}() has no closing brace"));
+        tool[start + 1..start + 1 + len + 2].to_string()
+    };
     let mut out = cmd.to_string();
+    let mut pending: Vec<&str> = Vec::new();
     for (sub, func) in ROUND_SUBCOMMANDS {
         let call = format!("bash \"$T\" {sub}");
         if !cmd.contains(&call) {
@@ -3085,14 +3098,27 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
             tool.contains(&format!("  {sub}) {func}")),
             "autodrive_round_evidence.sh must dispatch `{sub}` to {func}"
         );
-        let start = tool
-            .find(&format!("\n{func}() {{\n"))
-            .unwrap_or_else(|| panic!("autodrive_round_evidence.sh has no {func}()"));
-        let len = tool[start + 1..]
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("{func}() has no closing brace"));
+        pending.push(func);
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(func) = pending.pop() {
+        if seen.contains(&func) {
+            continue;
+        }
+        seen.push(func);
+        let body = body_of(func);
+        for (_, callee) in ROUND_SUBCOMMANDS {
+            let called = body
+                .lines()
+                .skip(1)
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+            if called && !seen.contains(&callee) {
+                pending.push(callee);
+            }
+        }
         out.push('\n');
-        out.push_str(&tool[start + 1..start + 1 + len + 2]);
+        out.push_str(&body);
     }
     out
 }
@@ -3147,8 +3173,9 @@ fn merge_round_finds_its_tools_once() {
         "autodrive-merge-round.yaml must search the tool roots in one place only"
     );
     // RECIPE_VAR_ only: an AUTODRIVE_TOOLS_DIR inherited from an outer run
-    // must never pick the round's tools (#1607).
-    let read = "\"${RECIPE_VAR_autodrive_tools_dir:-}/";
+    // must never pick the round's tools (#1607). Each step copies the value
+    // into TOOLS_D and refuses an empty or missing directory (#1561).
+    let read = "TOOLS_D=\"${RECIPE_VAR_autodrive_tools_dir:-}\"";
     for id in [
         "step-00-merge-ready-files",
         "step-00d-qa-evidence-hash",

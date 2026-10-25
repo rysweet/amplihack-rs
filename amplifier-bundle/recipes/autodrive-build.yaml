@@ -100,7 +100,17 @@ steps:
       # merge guard on PATH is the control. Values come from the environment
       # and leave through jq, so no text is pasted into this script.
       DIRECTIVE='[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive'"'"'s merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.'
-      NM="${NO_MERGE:-${RECIPE_VAR_no_merge:-}}"
+      normalise_no_merge_flag() {
+        # $1 structured flag value. Truthy tokens suppress auto-merge; anything
+        # else (including empty/false) preserves the default merge behavior.
+        local flag
+        flag="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+        case "$flag" in true|1|yes|on) printf 'true\n' ;; *) printf 'false\n' ;; esac
+      }
+      NM="$(normalise_no_merge_flag "${RECIPE_VAR_no_merge:-}")"
+      # NO_MERGE override (#1561): a bare NO_MERGE can only switch merging off.
+      # See docs/reference/auto-drive-to-merge.md#no_merge-override
+      [ "$(normalise_no_merge_flag "${NO_MERGE:-}")" = "true" ] && { NM=true; echo "INFO: autodrive-build/step-01b-no-merge-directive: no_merge=true from bare NO_MERGE env (override, #1561)" >&2; }
       with_directive() {
         if [ "$NM" != "true" ]; then printf '%s' "$1"; return; fi
         case "$1" in
@@ -110,8 +120,8 @@ steps:
         esac
       }
       # jq is a hard dependency: both branches emit their output through it.
-      TD="$(with_directive "${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}"; printf x)"
-      RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
+      TD="$(with_directive "${RECIPE_VAR_task_description:-}"; printf x)"
+      RQ="$(with_directive "${RECIPE_VAR_requirements:-}"; printf x)"
       OUT="$(jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}')"
       RC=$?
       if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
@@ -151,7 +161,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-build/step-03]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      g() { printf '%s' "${BUILD_PREFLIGHT:-${RECIPE_VAR_build_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${RECIPE_VAR_build_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
       # An empty state_dir means there is nothing to record; an unsafe one is
@@ -180,8 +190,19 @@ steps:
       [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
       # Issue #1551: a phase 1 that built under no_merge must leave its PR
       # unmerged. MERGED here means something merged around the gh merge guard.
+      normalise_no_merge_flag() {
+        # $1 structured flag value. Truthy tokens suppress auto-merge; anything
+        # else (including empty/false) preserves the default merge behavior.
+        local flag
+        flag="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
+        case "$flag" in true|1|yes|on) printf 'true\n' ;; *) printf 'false\n' ;; esac
+      }
+      NM="$(normalise_no_merge_flag "${RECIPE_VAR_no_merge:-}")"
+      # NO_MERGE override (#1561): a bare NO_MERGE can only switch merging off.
+      # See docs/reference/auto-drive-to-merge.md#no_merge-override
+      [ "$(normalise_no_merge_flag "${NO_MERGE:-}")" = "true" ] && { NM=true; echo "INFO: autodrive-build/step-03-resolve-pr: no_merge=true from bare NO_MERGE env (override, #1561)" >&2; }
       PRE_STATE="$(g pr_state)"
-      if [ "$(g should_run)" = "true" ] && [ "${NO_MERGE:-${RECIPE_VAR_no_merge:-}}" = "true" ]; then
+      if [ "$(g should_run)" = "true" ] && [ "$NM" = "true" ]; then
         [ "$HAVE_HELPER" = "true" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check that phase 1 left PR #${PR} unmerged [autodrive-build/step-03]" >&2; exit 1; }
         autodrive_require_unmerged "$PR" "phase 1 (build)" || exit 1
       fi

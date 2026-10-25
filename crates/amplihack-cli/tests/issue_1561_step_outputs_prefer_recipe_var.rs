@@ -1029,8 +1029,9 @@ fn every_merge_round_tools_dir_read_fails_closed_when_empty() {
                 continue;
             };
             let d = regex::escape(&c[1]);
+            // `[ -n "$D" ] || …`, or `[ -n "$D" ] && [ -d "$D" ] || …` on one line.
             let guard = Regex::new(&format!(
-                r#"\[\[?\s+-n\s+"\$\{{?{d}\}}?"\s*\]\]?\s*\|\|.*autodrive-tools-not-found.*exit\s+[1-9]"#
+                r#"\[\[?\s+-n\s+"\$\{{?{d}\}}?"\s*\]\]?\s*(?:&&\s*\[\[?\s+-d\s+"\$\{{?{d}\}}?"\s*\]\]?\s*)?\|\|.*autodrive-tools-not-found.*exit\s+[1-9]"#
             ))
             .unwrap();
             if !lines.get(i + 1).is_some_and(|n| guard.is_match(n)) {
@@ -1106,6 +1107,10 @@ fn tools_dir_problems(id: &str, body: &str) -> Vec<String> {
         r#"\[\[?\s+-d\s+"\$\{{?{de}\}}?"\s*\]\]?\s*\|\|.*autodrive-tools-not-found.*exit\s+[1-9]"#
     ))
     .unwrap();
+    let both_check = Regex::new(&format!(
+        r#"\[\[?\s+-n\s+"\$\{{?{de}\}}?"\s*\]\]?\s*&&\s*\[\[?\s+-d\s+"\$\{{?{de}\}}?"\s*\]\]?\s*\|\|.*autodrive-tools-not-found.*exit\s+[1-9]"#
+    ))
+    .unwrap();
     let lines: Vec<&str> = body.lines().collect();
     let at = lines
         .iter()
@@ -1113,12 +1118,15 @@ fn tools_dir_problems(id: &str, body: &str) -> Vec<String> {
             !l.trim_start().starts_with('#') && l.contains("RECIPE_VAR_autodrive_tools_dir")
         })
         .unwrap();
-    if lines.get(at + 2).is_some_and(|l| dir_check.is_match(l)) {
+    if lines.get(at + 1).is_some_and(|l| both_check.is_match(l))
+        || lines.get(at + 2).is_some_and(|l| dir_check.is_match(l))
+    {
         Vec::new()
     } else {
         vec![format!(
-            "{id}: two lines after the tools-dir read must be `[ -d \"${d}\" ] || {{ echo \"ERROR: \
-             autodrive-tools-not-found: …\" >&2; exit 1; }}`"
+            "{id}: the line after the tools-dir read must be `[ -n \"${d}\" ] && [ -d \"${d}\" ] || \
+             {{ echo \"ERROR: autodrive-tools-not-found: …\" >&2; exit 1; }}`, or a `-n` check and \
+             then a `[ -d \"${d}\" ] || …` check"
         )]
     }
 }
@@ -1224,6 +1232,25 @@ fn the_tools_dir_checks_accept_the_fixed_step_and_refuse_each_gap() {
     assert_eq!(
         tools_dir_problems("good", GOOD_TOOLS_STEP),
         Vec::<String>::new()
+    );
+    let one_line = GOOD_TOOLS_STEP.replace(
+        "[ -n \"$TOOLS_D\" ] || { echo \"ERROR: autodrive-tools-not-found: RECIPE_VAR_autodrive_tools_dir is empty\" >&2; exit 1; }\n\
+         [ -d \"$TOOLS_D\" ] || { echo \"ERROR: autodrive-tools-not-found: the tools dir is not a directory\" >&2; exit 1; }\n",
+        "[ -n \"$TOOLS_D\" ] && [ -d \"$TOOLS_D\" ] || { echo \"ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory\" >&2; exit 1; }\n",
+    );
+    assert_ne!(
+        one_line, GOOD_TOOLS_STEP,
+        "the one-line fixture must differ"
+    );
+    assert_eq!(
+        tools_dir_problems("one-line", &one_line),
+        Vec::<String>::new()
+    );
+    let one_line_no_d = one_line.replace(" && [ -d \"$TOOLS_D\" ]", "");
+    assert_eq!(
+        tools_dir_problems("one-line-no-d", &one_line_no_d).len(),
+        1,
+        "a one-line check without -d must be refused"
     );
     assert_eq!(
         unchecked_tool_uses("good", GOOD_TOOLS_STEP),
@@ -1588,4 +1615,712 @@ fn names_pair_across_the_nested_field_separator() {
     assert!(!pairs("QA_EVIDENCE", "qa_evidence_hash"));
     assert!(!pairs("QA_EVIDENCE_HASH", "qa_evidence"));
     assert!(!pairs("REPO_PATH", "worktree_setup__worktree_path"));
+}
+
+// ── Step 7 (TDD): the remaining contract for #1561 ───────────────────────────
+//
+// These tests pin the design decisions that the first guard did not yet cover:
+// the cascade spelling (`if [ -z ]; then X=RECIPE_VAR_…; fi`), template
+// self-comparisons, the per-site NO_MERGE directive and INFO line, the
+// byte-identical normaliser, the probe's RECIPE_VAR_-only inputs, and the
+// literal acceptance grep over the whole bundle.
+
+/// The INFO line each NO_MERGE override site prints, and the variable it sets.
+/// Mirrors the table in `docs/reference/auto-drive-to-merge.md#no_merge-override`.
+const NO_MERGE_SITE_CONTRACT: &[(&str, &str, &str, &str)] = &[
+    (
+        "amplifier-bundle/recipes/autodrive-build.yaml",
+        "step-01b-no-merge-directive",
+        "NM",
+        "INFO: autodrive-build/step-01b-no-merge-directive: no_merge=true from bare NO_MERGE env (override, #1561)",
+    ),
+    (
+        "amplifier-bundle/recipes/autodrive-build.yaml",
+        "step-03-resolve-pr",
+        "NM",
+        "INFO: autodrive-build/step-03-resolve-pr: no_merge=true from bare NO_MERGE env (override, #1561)",
+    ),
+    (
+        "amplifier-bundle/recipes/workflow-terminal-state.yaml",
+        "probe-terminal-state",
+        "NO_MERGE_DIRECTIVE",
+        "INFO: workflow-terminal-state/probe-terminal-state: no_merge=true from bare NO_MERGE env (override, #1561)",
+    ),
+];
+
+const TERMINAL_RECIPE: &str = "amplifier-bundle/recipes/workflow-terminal-state.yaml";
+const PROBE_STEP: &str = "probe-terminal-state";
+
+/// `(local, RECIPE_VAR_ key, bare names it must no longer read)` for every
+/// input of `probe-terminal-state`.
+const PROBE_INPUTS: &[(&str, &str, &[&str])] = &[
+    (
+        "WORKTREE_INPUT",
+        "worktree_setup__worktree_path",
+        &["WORKTREE_SETUP_WORKTREE_PATH"],
+    ),
+    ("REPO_DIR", "repo_path", &["REPO_PATH"]),
+    ("BRANCH_INPUT", "branch_name", &["BRANCH_NAME"]),
+    ("BASE_INPUT", "base_ref", &["BASE_REF"]),
+    ("PR_NUMBER_INPUT", "pr_number", &["PR_NUMBER"]),
+    ("PR_URL_INPUT", "pr_url", &["PR_URL"]),
+    (
+        "GOAL_ALREADY_MET_INPUT",
+        "goal_already_met",
+        &["GOAL_ALREADY_MET"],
+    ),
+    ("fail_mode", "terminal_fail_mode", &["TERMINAL_FAIL_MODE"]),
+];
+
+fn read_repo_file(rel: &str) -> String {
+    std::fs::read_to_string(repo_root().join(rel)).unwrap_or_else(|e| panic!("read {rel}: {e}"))
+}
+
+fn site_body(file: &str, id: &str) -> String {
+    let yaml = read_repo_file(file);
+    step_body(&yaml, id).unwrap_or_else(|| panic!("{file} has no step {id}"))
+}
+
+fn is_comment(line: &str) -> bool {
+    line.trim_start().starts_with('#')
+}
+
+/// Strips the common indentation so normalisers in steps nested at different
+/// depths compare equal when, and only when, their text is the same.
+fn dedent(text: &str) -> String {
+    let indent = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| l.len() - l.trim_start().len())
+        .min()
+        .unwrap_or(0);
+    text.lines()
+        .map(|l| {
+            if l.len() >= indent {
+                &l[indent..]
+            } else {
+                l.trim_start()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+// ── Cascade detector (S3) ────────────────────────────────────────────────────
+
+/// `(line, bare)` of every cascade: `X="${UPPER…}"` (or `X=$UPPER`) where UPPER
+/// has a `RECIPE_VAR_<lower>` partner, followed within three non-comment lines
+/// by any assignment of X from `RECIPE_VAR_<lower>` (after `||`, `&&`, `then`,
+/// or on its own line inside an `if`). Whatever the connective, the bare name
+/// was read first and wins whenever it is non-empty.
+fn cascades(text: &str) -> Vec<(usize, String)> {
+    let bare_assign = Regex::new(
+        r#"^\s*(?:local\s+|export\s+)?([A-Za-z_][A-Za-z0-9_]*)="?\$\{?([A-Z][A-Z0-9_]*)\b"#,
+    )
+    .unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut found = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if is_comment(line) {
+            continue;
+        }
+        let Some(c) = bare_assign.captures(line) else {
+            continue;
+        };
+        let (local, bare) = (c[1].to_string(), c[2].to_string());
+        if line.contains("RECIPE_VAR_") {
+            continue; // a nested read: the main guard's detectors own it
+        }
+        let later = Regex::new(&format!(
+            r#"(?:^|[\s;&|]){}="?\$\{{?RECIPE_VAR_([A-Za-z0-9_]+)"#,
+            regex::escape(&local)
+        ))
+        .unwrap();
+        let mut seen = 0;
+        for next in lines.iter().skip(i + 1) {
+            if is_comment(next) || next.trim().is_empty() {
+                continue;
+            }
+            seen += 1;
+            if seen > 3 {
+                break;
+            }
+            if let Some(m) = later.captures(next)
+                && pairs(&bare, &m[1])
+            {
+                found.push((i + 1, bare.clone()));
+                break;
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn the_cascade_detector_flags_every_connective() {
+    for (text, what) in [
+        (
+            "X=\"${FOO:-}\"\n[ -n \"$X\" ] || X=\"${RECIPE_VAR_foo:-}\"\n",
+            "`[ -n ] ||`",
+        ),
+        (
+            "X=\"${FOO:-}\"\n[ -z \"$X\" ] && X=\"${RECIPE_VAR_foo:-}\"\n",
+            "`[ -z ] &&`",
+        ),
+        (
+            "X=\"${FOO:-}\"\nif [ -z \"$X\" ]; then\n  X=\"${RECIPE_VAR_foo:-}\"\nfi\n",
+            "an if block",
+        ),
+        (
+            "X=\"${FOO:-}\"\nif [ -z \"$X\" ]; then X=\"${RECIPE_VAR_foo:-}\"; fi\n",
+            "a one-line if",
+        ),
+        (
+            "X=$FOO\n# a comment does not count\n\n[ -n \"$X\" ] || X=$RECIPE_VAR_foo\n",
+            "unbraced, with a comment and a blank line between",
+        ),
+        (
+            "WORKTREE_INPUT=\"${WORKTREE_SETUP_WORKTREE_PATH:-}\"\n[ -n \"$WORKTREE_INPUT\" ] || WORKTREE_INPUT=\"${RECIPE_VAR_worktree_setup__worktree_path:-}\"\n",
+            "the pre-#1561 terminal-state worktree read",
+        ),
+        (
+            "NO_MERGE_FLAG_INPUT=\"${NO_MERGE:-}\"\n[ -n \"$NO_MERGE_FLAG_INPUT\" ] || NO_MERGE_FLAG_INPUT=\"${RECIPE_VAR_no_merge:-}\"\n",
+            "the pre-#1561 terminal-state NO_MERGE cascade",
+        ),
+    ] {
+        assert!(
+            !cascades(text).is_empty(),
+            "{what} must be flagged as a cascade:\n{text}"
+        );
+    }
+}
+
+#[test]
+fn the_cascade_detector_accepts_the_fixed_and_unrelated_spellings() {
+    for text in [
+        // The fix: one read, from RECIPE_VAR_ only.
+        "X=\"${RECIPE_VAR_foo:-}\"\n[ -n \"$X\" ] || X=default\n",
+        // A bare name with no partner (AMPLIHACK_HOME, TMPDIR) is out of scope.
+        "X=\"${AMPLIHACK_HOME:-}\"\n[ -n \"$X\" ] || X=\"${RECIPE_VAR_foo:-}\"\n",
+        // A RECIPE_VAR_-to-RECIPE_VAR_ chain stays.
+        "X=\"${RECIPE_VAR_a:-}\"\n[ -n \"$X\" ] || X=\"${RECIPE_VAR_b:-}\"\n",
+        // Too far apart to be one decision.
+        "X=\"${FOO:-}\"\na=1\nb=2\nc=3\n[ -n \"$X\" ] || X=\"${RECIPE_VAR_foo:-}\"\n",
+        // The NO_MERGE override: a separate OR after the recipe value.
+        GOOD_OVERRIDE,
+    ] {
+        assert!(
+            cascades(text).is_empty(),
+            "must not be flagged: {:?}\n{text}",
+            cascades(text)
+        );
+    }
+}
+
+#[test]
+fn no_step_cascades_from_a_bare_name_to_its_recipe_var() {
+    let hits: Vec<String> = scanned_files()
+        .iter()
+        .flat_map(|(path, text)| {
+            let lines: Vec<&str> = text.lines().collect();
+            cascades(text)
+                .into_iter()
+                .map(|(n, bare)| format!("{path}:{n}: {bare}: {}", lines[n - 1].trim()))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "{} step-output reads try the inherited bare name before RECIPE_VAR_ (#1561 S3):\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
+}
+
+// ── Template self-comparison detector (S1/S2) ────────────────────────────────
+
+/// Lines whose shell compares a value with `"{{key}}"`. `render_shell` turns
+/// `{{key}}` into `"$RECIPE_VAR_key"` outside a heredoc, so the comparison is
+/// with the recipe's own value and discards every recipe-supplied input.
+fn self_comparisons(text: &str) -> Vec<(usize, String)> {
+    let tmpl = r#""?\{\{[A-Za-z0-9_.]+\}\}"?"#;
+    let case_pat = Regex::new(&format!(r#"\bcase\s+\S+\s+in\b[^)]*{tmpl}[^)]*\)"#)).unwrap();
+    let test_cmp = Regex::new(&format!(
+        r#"(?:\[\[?|\btest)\s[^\]]*(?:!=|==|=)\s*{tmpl}\s*\]?\]?"#
+    ))
+    .unwrap();
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| !is_comment(l) && (case_pat.is_match(l) || test_cmp.is_match(l)))
+        .map(|(i, l)| (i + 1, l.trim().to_string()))
+        .collect()
+}
+
+#[test]
+fn the_self_comparison_detector_flags_each_shape() {
+    for text in [
+        r#"case "$BRANCH_INPUT" in "{{branch_name}}"|"''") BRANCH_INPUT="" ;; esac"#,
+        r#"case "$fail_mode" in "{{terminal_fail_mode}}"|"") fail_mode="exit" ;; esac"#,
+        r#"case "$X" in {{x}}) X="" ;; esac"#,
+        r#"[ "$REPO_DIR" != "{{repo_path}}" ] || REPO_DIR=".""#,
+        r#"[ "$X" = "{{x}}" ] && X="""#,
+        r#"[[ "$X" == "{{x}}" ]] && X="""#,
+        r#"if test "$X" != "{{x}}"; then :; fi"#,
+    ] {
+        assert_eq!(
+            self_comparisons(text).len(),
+            1,
+            "a comparison with a rendered template must be flagged: {text}"
+        );
+    }
+}
+
+#[test]
+fn the_self_comparison_detector_accepts_plain_empty_checks() {
+    for text in [
+        r#"case "$BRANCH_INPUT" in ""|"''") BRANCH_INPUT="" ;; esac"#,
+        r#"[ -n "$X" ] || X="{{x}}""#,
+        r#"[ "$fail_mode" = "report" ] && exit 0"#,
+        r#"# case "$X" in "{{x}}") is how it used to look"#,
+        r#"echo "{{x}}""#,
+    ] {
+        assert!(
+            self_comparisons(text).is_empty(),
+            "must not be flagged: {text}"
+        );
+    }
+}
+
+#[test]
+fn no_recipe_compares_a_value_with_its_own_template() {
+    let hits: Vec<String> = recipe_files()
+        .iter()
+        .flat_map(|(path, text)| {
+            self_comparisons(text)
+                .into_iter()
+                .map(|(n, l)| format!("{path}:{n}: {l}"))
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    assert!(
+        hits.is_empty(),
+        "{} shell comparisons test a value against its own rendered template \
+         (render_shell turns \"{{{{x}}}}\" into \"\"$RECIPE_VAR_x\"\", so every \
+         recipe-supplied value matches and is discarded). Test for empty or the \
+         literal '' instead:\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
+}
+
+// ── The NO_MERGE sites, one by one (C3) ──────────────────────────────────────
+
+#[test]
+fn every_no_merge_site_sets_its_directive_and_prints_its_info_line() {
+    for (file, id, directive, info) in NO_MERGE_SITE_CONTRACT {
+        let body = site_body(file, id);
+        let lines: Vec<&str> = body.lines().collect();
+        let reads = no_merge_reads(&body);
+        assert_eq!(
+            reads.len(),
+            1,
+            "{file} {id}: exactly one bare NO_MERGE read, the override"
+        );
+        let line = lines[reads[0]];
+        let sets = Regex::new(&format!(
+            r#"&&\s*\{{?\s*{}=("?)true("?)\s*[;}}]"#,
+            regex::escape(directive)
+        ))
+        .unwrap();
+        assert!(
+            sets.is_match(line),
+            "{file} {id}: the override must switch `{directive}` to true through `&&`: {}",
+            line.trim()
+        );
+        let to = (reads[0] + 4).min(lines.len());
+        assert!(
+            lines[reads[0]..to].iter().any(|l| l.contains(info)),
+            "{file} {id}: within three lines of the override, the INFO line must be exactly\n  {info}"
+        );
+        assert!(
+            body.contains(&format!(
+                "{directive}=\"$(normalise_no_merge_flag \"${{RECIPE_VAR_no_merge:-}}\")\""
+            )),
+            "{file} {id}: `{directive}` must start as the normalised RECIPE_VAR_no_merge, \
+             read directly (no intermediate copy, no template fallback)"
+        );
+        assert!(
+            !body.contains("{{no_merge}}"),
+            "{file} {id}: the `{{{{no_merge}}}}` template fallback must be gone; it rendered to the \
+             same RECIPE_VAR_no_merge value"
+        );
+        assert!(
+            !body.contains("NO_MERGE_FLAG_INPUT"),
+            "{file} {id}: the bare-first NO_MERGE_FLAG_INPUT cascade must be gone"
+        );
+    }
+}
+
+#[test]
+fn no_merge_info_lines_print_no_inherited_value() {
+    let raw = Regex::new(r"\$\{?NO_MERGE\b").unwrap();
+    for (file, id, _, info) in NO_MERGE_SITE_CONTRACT {
+        let body = site_body(file, id);
+        let line = body
+            .lines()
+            .find(|l| l.contains(info))
+            .unwrap_or_else(|| panic!("{file} {id}: no INFO line"));
+        assert!(
+            !raw.is_match(
+                // The override line itself reads NO_MERGE once, inside the
+                // normaliser call; the echo part must not.
+                line.split("echo").nth(1).unwrap_or(line)
+            ),
+            "{file} {id}: the INFO line must not print the raw NO_MERGE value (S8): {}",
+            line.trim()
+        );
+    }
+}
+
+#[test]
+fn the_no_merge_directive_is_never_cleared_after_the_override() {
+    for (file, id, directive, _) in NO_MERGE_SITE_CONTRACT {
+        let body = site_body(file, id);
+        let lines: Vec<&str> = body.lines().collect();
+        let at = no_merge_reads(&body)
+            .first()
+            .copied()
+            .unwrap_or_else(|| panic!("{file} {id}: no override"));
+        let assign = Regex::new(&format!(
+            r#"(?:^|[\s;&|{{]){}=("?)([^\s;"}}]*)"#,
+            regex::escape(directive)
+        ))
+        .unwrap();
+        for (i, l) in lines.iter().enumerate().skip(at + 1) {
+            if is_comment(l) {
+                continue;
+            }
+            for c in assign.captures_iter(l) {
+                assert_eq!(
+                    &c[2],
+                    "true",
+                    "{file} {id}:{}: `{directive}` may only be set to true after the \
+                     override, or a stale value could re-enable merging: {}",
+                    i + 1,
+                    l.trim()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_three_no_merge_normalisers_are_byte_identical() {
+    let mut first: Option<(String, String)> = None;
+    for (file, id, _, _) in NO_MERGE_SITE_CONTRACT {
+        let body = site_body(file, id);
+        let func = dedent(
+            &normaliser_in(&body)
+                .unwrap_or_else(|| panic!("{file} {id} defines no normalise_no_merge_flag()")),
+        );
+        match &first {
+            None => first = Some((format!("{file} {id}"), func)),
+            Some((where0, f0)) => assert_eq!(
+                &func, f0,
+                "{file} {id}: normalise_no_merge_flag differs from the copy in {where0}; \
+                 copy it byte for byte"
+            ),
+        }
+    }
+}
+
+#[test]
+fn every_site_defines_the_normaliser_before_reading_the_recipe_value() {
+    for (file, id, _, _) in NO_MERGE_SITE_CONTRACT {
+        let body = site_body(file, id);
+        let lines: Vec<&str> = body.lines().collect();
+        let def = lines
+            .iter()
+            .position(|l| l.trim_start().starts_with("normalise_no_merge_flag()"))
+            .unwrap_or_else(|| panic!("{file} {id}: no normaliser"));
+        let first_read = lines
+            .iter()
+            .position(|l| !is_comment(l) && l.contains("RECIPE_VAR_no_merge"))
+            .unwrap_or_else(|| panic!("{file} {id}: never reads RECIPE_VAR_no_merge"));
+        assert!(
+            def < first_read,
+            "{file} {id}: define normalise_no_merge_flag above the RECIPE_VAR_no_merge read"
+        );
+    }
+    // In the probe the normaliser also moves above the input block.
+    let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
+    let lines: Vec<&str> = body.lines().collect();
+    let def = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("normalise_no_merge_flag()"))
+        .expect("probe normaliser");
+    let input = lines
+        .iter()
+        .position(|l| {
+            !is_comment(l)
+                && Regex::new(r"^\s*(WORKTREE_INPUT|REPO_DIR|BRANCH_INPUT)=")
+                    .unwrap()
+                    .is_match(l)
+        })
+        .expect("probe input block");
+    assert!(
+        def < input,
+        "{TERMINAL_RECIPE} {PROBE_STEP}: the normaliser must be defined above the input reads"
+    );
+}
+
+// ── The terminal-state probe reads RECIPE_VAR_ only (C1a) ───────────────────
+
+#[test]
+fn the_terminal_probe_reads_each_input_once_from_recipe_var() {
+    let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
+    let code: Vec<&str> = body.lines().filter(|l| !is_comment(l)).collect();
+    for (local, key, bares) in PROBE_INPUTS {
+        let first = format!("{local}=\"${{RECIPE_VAR_{key}:-}}\"");
+        let assigns: Vec<&&str> = code
+            .iter()
+            .filter(|l| {
+                Regex::new(&format!(r"(?:^|[\s;&|]){}=", regex::escape(local)))
+                    .unwrap()
+                    .is_match(l)
+            })
+            .collect();
+        assert!(
+            assigns.iter().any(|l| l.trim() == first),
+            "{PROBE_STEP}: `{local}` must be read as `{first}`; assignments now:\n{}",
+            assigns
+                .iter()
+                .map(|l| l.trim())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        for l in &assigns {
+            assert!(
+                !l.contains(&format!("{{{{{key}}}}}")),
+                "{PROBE_STEP}: `{local}` must not fall back to the `{{{{{key}}}}}` template, \
+                 which renders to the same RECIPE_VAR_{key}: {}",
+                l.trim()
+            );
+            for bare in *bares {
+                assert!(
+                    !Regex::new(&format!(r"\$\{{?{bare}\b")).unwrap().is_match(l),
+                    "{PROBE_STEP}: `{local}` must not read the inherited bare `{bare}`: {}",
+                    l.trim()
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn the_terminal_probe_blanks_inputs_only_when_empty_or_quoted_empty() {
+    let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
+    for local in [
+        "BRANCH_INPUT",
+        "BASE_INPUT",
+        "PR_NUMBER_INPUT",
+        "PR_URL_INPUT",
+    ] {
+        let blank = Regex::new(&format!(
+            r#"case "\${local}" in ""\|"''"\) {local}="" ;; esac"#
+        ))
+        .unwrap();
+        assert!(
+            blank.is_match(&body),
+            "{PROBE_STEP}: `{local}` must be blanked by `case \"${local}\" in \"\"|\"''\") {local}=\"\" ;; esac` \
+             and by nothing that names its template"
+        );
+    }
+    assert!(
+        Regex::new(r#"case "\$GOAL_ALREADY_MET_INPUT" in ""\|"''"\) GOAL_ALREADY_MET_INPUT="false" ;; esac"#)
+            .unwrap()
+            .is_match(&body),
+        "{PROBE_STEP}: an empty goal_already_met must default to false, and only an empty one"
+    );
+    assert!(
+        !body.contains("{{repo_path}}"),
+        "{PROBE_STEP}: `[ \"$REPO_DIR\" != \"{{{{repo_path}}}}\" ]` replaced every recipe repo_path with `.`"
+    );
+    assert!(
+        !body.contains("{{terminal_fail_mode}}"),
+        "{PROBE_STEP}: the `{{{{terminal_fail_mode}}}}` case reset `report` to `exit`"
+    );
+}
+
+/// The probe step runs as `render_shell` would render it, with nothing but
+/// RECIPE_VAR_ inputs and inherited bare decoys: the recipe values win.
+#[test]
+fn the_rendered_probe_input_block_uses_recipe_values_over_bare_decoys() {
+    let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
+    // Run only the input-resolution prefix: up to `TARGET_REPO_DIR` selection.
+    let lines: Vec<&str> = body.lines().collect();
+    let end = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("[ -n \"$TARGET_REPO_DIR\" ]"))
+        .expect("probe selects TARGET_REPO_DIR");
+    let start = lines
+        .iter()
+        .position(|l| l.trim_start().starts_with("normalise_no_merge_flag()"))
+        .expect("probe normaliser");
+    let start = start.min(
+        lines
+            .iter()
+            .position(|l| Regex::new(r"^\s*WORKTREE_INPUT=").unwrap().is_match(l))
+            .expect("probe input block"),
+    );
+    let prefix = lines[start..end].join("\n");
+    let rendered = Regex::new(r"\{\{([A-Za-z0-9_]+)\}\}")
+        .unwrap()
+        .replace_all(&prefix, "\"$$RECIPE_VAR_$1\"")
+        .to_string();
+    let script = format!(
+        "set -euo pipefail\n{rendered}\n\
+         printf '%s|%s|%s|%s|%s|%s|%s|%s\\n' \"$TARGET_REPO_DIR\" \"$BRANCH_INPUT\" \"$BASE_INPUT\" \
+         \"$PR_NUMBER_INPUT\" \"$PR_URL_INPUT\" \"$GOAL_ALREADY_MET_INPUT\" \"$NO_MERGE_DIRECTIVE\" \
+         \"$(active_should_merge)\"\n"
+    );
+    let out = Command::new("bash")
+        .arg("-c")
+        .arg(&script)
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("RECIPE_VAR_repo_path", "/recipe/repo")
+        .env("RECIPE_VAR_branch_name", "feat/recipe-1561")
+        .env("RECIPE_VAR_base_ref", "recipe-base")
+        .env("RECIPE_VAR_pr_number", "4242")
+        .env("RECIPE_VAR_pr_url", "https://github.com/o/r/pull/4242")
+        .env("RECIPE_VAR_goal_already_met", "true")
+        .env("RECIPE_VAR_no_merge", "true")
+        .env("REPO_PATH", "/stale/repo")
+        .env("WORKTREE_SETUP_WORKTREE_PATH", "/stale/worktree")
+        .env("BRANCH_NAME", "stale-branch")
+        .env("BASE_REF", "stale-base")
+        .env("PR_NUMBER", "1")
+        .env("PR_URL", "https://github.com/stale/stale/pull/1")
+        .env("GOAL_ALREADY_MET", "false")
+        .env("NO_MERGE", "false")
+        .output()
+        .expect("run bash");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        out.status.success(),
+        "rendered input block failed: {}\n{}",
+        stdout,
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        stdout.trim(),
+        "/recipe/repo|feat/recipe-1561|recipe-base|4242|https://github.com/o/r/pull/4242|true|true|false",
+        "the recipe's own values must reach the probe, a bare NO_MERGE=false must not clear \
+         a recipe no_merge=true, and no inherited bare value may be used"
+    );
+}
+
+// ── Acceptance grep and docs (step 4) ────────────────────────────────────────
+
+/// The literal acceptance criterion: no `${UPPER:-${RECIPE_VAR_` anywhere under
+/// `amplifier-bundle/`, comments and test scripts included.
+#[test]
+fn the_literal_acceptance_grep_finds_nothing_in_the_bundle() {
+    let re = Regex::new(r"\$\{[A-Z_][A-Z0-9_]*:-\$\{RECIPE_VAR_").unwrap();
+    let mut hits = Vec::new();
+    let mut stack = vec![repo_root().join("amplifier-bundle")];
+    let root = repo_root();
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read dir") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue; // binary
+            };
+            for (i, l) in text.lines().enumerate() {
+                if re.is_match(l) {
+                    hits.push(format!(
+                        "{}:{}: {}",
+                        p.strip_prefix(&root).unwrap().display(),
+                        i + 1,
+                        l.trim()
+                    ));
+                }
+            }
+        }
+    }
+    hits.sort();
+    assert!(
+        hits.is_empty(),
+        "the acceptance grep still matches {} lines under amplifier-bundle/ (comments \
+         count: describe the old order in words instead):\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
+}
+
+#[test]
+fn the_docs_describe_the_new_precedence_and_drop_the_old_anchor() {
+    let page = read_repo_file(DOCS_PAGE);
+    let anchors: BTreeSet<String> = page
+        .lines()
+        .filter_map(|l| l.strip_prefix('#'))
+        .map(|l| anchor_of(l.trim_start_matches('#')))
+        .collect();
+    for want in [
+        "step-outputs-ignore-inherited-bare-variables",
+        NO_MERGE_ANCHOR,
+        "template-fallbacks-compared-a-value-with-itself",
+    ] {
+        assert!(
+            anchors.contains(want),
+            "{DOCS_PAGE} has no heading with anchor #{want}"
+        );
+    }
+    assert!(
+        !anchors.contains("a-stale-bare-variable-wins"),
+        "{DOCS_PAGE} still has the old \"A stale bare variable wins\" section"
+    );
+    for (_, _, _, info) in NO_MERGE_SITE_CONTRACT {
+        assert!(
+            page.contains(info),
+            "{DOCS_PAGE} must list the INFO line `{info}`"
+        );
+    }
+    // No page links to the removed anchor.
+    let mut stack = vec![repo_root().join("docs")];
+    let mut stale = Vec::new();
+    while let Some(dir) = stack.pop() {
+        for e in std::fs::read_dir(&dir).expect("read docs") {
+            let p = e.expect("entry").path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.extension().is_some_and(|x| x == "md")
+                && std::fs::read_to_string(&p)
+                    .unwrap_or_default()
+                    .contains("a-stale-bare-variable-wins")
+            {
+                stale.push(p.display().to_string());
+            }
+        }
+    }
+    assert!(
+        stale.is_empty(),
+        "pages still link to #a-stale-bare-variable-wins: {stale:?}"
+    );
+    // Every same-page link to the new anchors resolves.
+    let link = Regex::new(r"\]\(#([A-Za-z0-9_-]+)\)").unwrap();
+    let broken: Vec<String> = link
+        .captures_iter(&page)
+        .map(|c| c[1].to_string())
+        .filter(|a| !anchors.contains(a))
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "{DOCS_PAGE} links to anchors it does not have: {broken:?}"
+    );
 }

@@ -32,6 +32,14 @@ context:
   terminal_adjudication: ""
   finalizer_step_status: ""
   workflow_result: ""
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  issue_number: ""
+  pr_number: ""
+  pr_url: ""
+  pr_publish_result: ""
+  implementation_terminal_evidence: ""
+  verification_terminal_evidence: ""
+  publish_terminal_evidence: ""
 
 steps:
   - id: "finalize-terminal-state"
@@ -77,7 +85,7 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
       # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20a $1; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
       wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
@@ -92,7 +100,7 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
       # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20b $1; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
       wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
@@ -215,21 +223,17 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
       if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
-      PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
+      PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
+      PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
       if [ -z "$PR_URL" ]; then :; fi
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
-      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      READY_HELPER=""; for root in "${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}" "${REPO_PATH:-$(pwd)}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do if [ -f "$root/amplifier-bundle/tools/workflow_pr_ready.sh" ]; then READY_HELPER="$root/amplifier-bundle/tools/workflow_pr_ready.sh"; break; fi; done
+      [ -n "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper workflow_pr_ready.sh not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack); cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER"
     output: "pr_ready_result"
 
@@ -263,23 +267,19 @@ steps:
       # Issue #1596: the final status reads the run's branch and HEAD from cwd
       # (branch PR lookup, scoped PR match). REPO_PATH is the main checkout, not
       # the run's branch, so enter the run's worktree first, as step-21 does.
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
       if [ -n "${WORKTREE_SETUP_WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_SETUP_WORKTREE_PATH" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b worktree path unset or gone, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
       export WORKTREE_SETUP_WORKTREE_PATH
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
+      PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
       if [ -z "$PR_URL" ]; then : "N/A"; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
-      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
+      FINAL_STATUS_HELPER=""; for root in "${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}" "${REPO_PATH:-$(pwd)}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do if [ -f "$root/amplifier-bundle/tools/workflow_final_status.sh" ]; then FINAL_STATUS_HELPER="$root/amplifier-bundle/tools/workflow_final_status.sh"; break; fi; done
+      [ -n "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper workflow_final_status.sh not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack); cwd=$(pwd)" >&2; exit 1; }
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"
 

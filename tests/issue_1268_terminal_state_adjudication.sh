@@ -152,10 +152,10 @@ run_final_status() {
         export PATH="$BINDIR:$PATH"
         export FAKE_GH_DIR="$fakedir"
         export REMOTE_HOST_TYPE="github"
-        export PR_URL="https://github.com/octo/example/pull/1128"
-        export PR_PUBLISH_RESULT_STATE="FOLLOWUP_CREATED"
+        export RECIPE_VAR_pr_url="https://github.com/octo/example/pull/1128"
+        export RECIPE_VAR_pr_publish_result__state="FOLLOWUP_CREATED"
         export TASK_DESCRIPTION="issue 1268 fixture"
-        export ISSUE_NUMBER="1268"
+        export RECIPE_VAR_issue_number="1268"
         export GH_RETRY_MAX_TRANSIENT=1
         export GH_RETRY_MAX_RL_WINDOWS=0
         export HOME="$TMPROOT/home"
@@ -237,7 +237,7 @@ else
     printf '%s\n' "$out" | sed 's/^/    | /'
 fi
 
-run_final_status "$repo" "$fake" WORKFLOW_TERMINAL_AGENT_VERDICT=SUCCESS
+run_final_status "$repo" "$fake" RECIPE_VAR_terminal_adjudication__agent_verdict=SUCCESS
 out="$(cat "$RUN_OUT")"
 rc=$RUN_RC
 if [ "$rc" -ne 0 ]; then
@@ -269,7 +269,7 @@ repo="$(make_repo downgrade)"
 fake="$TMPROOT/fake-downgrade"; mkdir -p "$fake"
 jq -nc --argjson a "$(pr_json 1128 MERGED fix/1268-example 'fix: the deliverable')" '[$a]' > "$fake/pr_list_head.json"
 echo '[]' > "$fake/pr_list_open.json"
-run_final_status "$repo" "$fake" WORKFLOW_TERMINAL_AGENT_VERDICT=FAILED
+run_final_status "$repo" "$fake" RECIPE_VAR_terminal_adjudication__agent_verdict=FAILED
 out="$(cat "$RUN_OUT")"
 rc=$RUN_RC
 if [ "$rc" -ne 0 ]; then
@@ -331,7 +331,7 @@ else
 fi
 
 # Unreadable evidence must stay UNCERTAIN even when SUCCESS is asserted.
-run_final_status "$repo" "$fake" WORKFLOW_TERMINAL_AGENT_VERDICT=SUCCESS
+run_final_status "$repo" "$fake" RECIPE_VAR_terminal_adjudication__agent_verdict=SUCCESS
 out="$(cat "$RUN_OUT")"
 if printf '%s' "$out" | grep -q 'All 23 workflow steps completed successfully'; then
     record_fail "RUBBER STAMP: unreadable evidence was stamped SUCCESS on assertion"
@@ -391,7 +391,7 @@ fi
 # The agent's prose is prose. Only the token line crosses over, and prose that
 # merely mentions success must not be mistaken for a verdict.
 narrative_case() {
-    TERMINAL_ADJUDICATION_NARRATIVE="$1" bash "$EVIDENCE" verdict-token 2>/dev/null | jq -r '.agent_verdict'
+    RECIPE_VAR_terminal_adjudication_narrative="$1" bash "$EVIDENCE" verdict-token 2>/dev/null | jq -r '.agent_verdict'
 }
 v="$(narrative_case 'PR #1128 merged.
 TERMINAL_VERDICT: SUCCESS')"
@@ -411,7 +411,7 @@ v="$(narrative_case 'TERMINAL_VERDICT: DEFINITELY_MERGED')"
 [ -z "$v" ] && record_pass "an unrecognised verdict token is dropped, not coerced to approval" \
     || record_fail "unrecognised token '$v' leaked through verdict-token"
 
-v="$(TERMINAL_ADJUDICATION_NARRATIVE="" bash "$EVIDENCE" verdict-token 2>/dev/null | jq -r '.agent_verdict')"
+v="$(RECIPE_VAR_terminal_adjudication_narrative="" bash "$EVIDENCE" verdict-token 2>/dev/null | jq -r '.agent_verdict')"
 [ -z "$v" ] && record_pass "a skipped adjudicator step offers no judgement (empty verdict)" \
     || record_fail "empty narrative produced a verdict '$v'"
 

@@ -304,7 +304,7 @@ echo "== T1-LOOP: step-02 hands the PR worktree to the loop =="
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
-  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=MERGE_LOOP_PREFLIGHT; else body="$CRUSTY_LOOP"; var=CRUSTY_LOOP_PREFLIGHT; fi
+  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=RECIPE_VAR_merge_loop_preflight; else body="$CRUSTY_LOOP"; var=RECIPE_VAR_crusty_loop_preflight; fi
   : > "$WORK/argv"; : > "$WORK/home-seen"
   run_body "$body" REPO_PATH="$MAIN" "$var=$PF" AMPLIHACK_HOME="$FAKE_HOME" \
     LOOP_ARGV_FILE="$WORK/argv" LOOP_HOME_FILE="$WORK/home-seen" PR_URL= TASK_DESCRIPTION=t
@@ -323,7 +323,7 @@ mv "$FAKE_HOME/amplifier-bundle/recipes" "$FAKE_HOME/amplifier-bundle/recipes.of
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
-  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=MERGE_LOOP_PREFLIGHT; else body="$CRUSTY_LOOP"; var=CRUSTY_LOOP_PREFLIGHT; fi
+  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=RECIPE_VAR_merge_loop_preflight; else body="$CRUSTY_LOOP"; var=RECIPE_VAR_crusty_loop_preflight; fi
   : > "$WORK/argv"
   run_body "$body" REPO_PATH="$MAIN" "$var=$PF" AMPLIHACK_HOME="$FAKE_HOME" \
     LOOP_ARGV_FILE="$WORK/argv" LOOP_HOME_FILE=/dev/null PR_URL= TASK_DESCRIPTION=t
@@ -390,7 +390,7 @@ install_fake_tools "$WT/amplifier-bundle/tools"
 for loop in merge crusty; do
   preflight "$loop"
   PF="$OUT"
-  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=MERGE_LOOP_PREFLIGHT; else body="$CRUSTY_LOOP"; var=CRUSTY_LOOP_PREFLIGHT; fi
+  if [[ "$loop" == merge ]]; then body="$MERGE_LOOP"; var=RECIPE_VAR_merge_loop_preflight; else body="$CRUSTY_LOOP"; var=RECIPE_VAR_crusty_loop_preflight; fi
   : > "$WORK/home-seen"
   run_body "$body" REPO_PATH="$MAIN" "$var=$PF" \
     LOOP_ARGV_FILE="$WORK/argv" LOOP_HOME_FILE="$WORK/home-seen" PR_URL= TASK_DESCRIPTION=t

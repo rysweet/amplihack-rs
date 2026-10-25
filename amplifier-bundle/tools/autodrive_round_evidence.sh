@@ -19,6 +19,11 @@
 #       autodrive_qa_evidence_sha computes it, or nothing when the file is not
 #       a regular file.
 #
+#   autodrive_round_evidence.sh qa-evidence-hash <file>
+#       step-00d-qa-evidence-hash itself: qa-evidence-sha as the step's one JSON
+#       line, {"qa_evidence_sha":"..."}, empty unless whole 40- or 64-digit
+#       lowercase hex. Moved here from the step at its brick budget (#1561).
+#
 #   autodrive_round_evidence.sh crusty-evidence
 #       step-01b-crusty-evidence, criterion 3: autodrive_crusty_final (the
 #       merge gate runs it too), then the range from the reviewed head to HEAD.
@@ -29,6 +34,14 @@
 #       step-03-extract-merge-ready-verdict: every measurement that disagrees
 #       with MERGE_READY, as `name=value ` tokens on one line, or `none` when
 #       every one agrees. Missing evidence disagrees; it never passes.
+#
+#   autodrive_round_evidence.sh merge-ready-verdict <verdict> <source> < blockers.json
+#       step-03 again, after it has parsed the review: applies measured-downgrade
+#       to <verdict> (MERGE_READY or NOT_MERGE_READY) and writes the findings,
+#       then prints the step's one JSON line:
+#       {"merge_ready_verdict":"...","verdict_source":"...","blocker_count":N,"downgrade_reason":"..."}
+#       It moved here from the step when the recipe reached its brick budget
+#       (#1561); the review itself is still parsed in the step.
 #
 #   autodrive_round_evidence.sh findings [downgrade] < blockers.json
 #       step-03 too: the recurring-findings signal. The `id` of each blocker
@@ -127,6 +140,13 @@ qa_evidence_sha() {
   [ -z "$sha" ] || printf '%s\n' "$sha"
 }
 
+qa_evidence_hash() {
+  local q
+  q="$(hex_or_empty "$(qa_evidence_sha "${1:-}")")"
+  [ -n "$q" ] || echo "WARNING: the qa evidence is not a regular file; qa_evidence_sha is empty, so this round cannot reach MERGE_READY." >&2
+  printf '{"qa_evidence_sha":"%s"}\n' "$q"
+}
+
 crusty_evidence() {
   local dir="${AUTODRIVE_STATE_DIR:-}" token="crusty-loop-not-done" sha="" first="" status out head_now range
   if [ -z "$dir" ]; then
@@ -206,6 +226,35 @@ round_findings() {
   printf '%s\n' "$count"
 }
 
+merge_ready_verdict() {
+  local verdict="${1:-NOT_MERGE_READY}" source="${2:-missing_verdict}" blockers d downgrade count
+  case "$verdict" in MERGE_READY|NOT_MERGE_READY) ;; *) verdict="NOT_MERGE_READY"; source="unparseable_verdict" ;; esac
+  source="$(token "$source")"
+  blockers="$(cat)"
+  case "$blockers" in \[*\]) ;; *) blockers='[]' ;; esac
+  # Measured evidence outranks the model: measured_downgrade names every
+  # measurement that disagrees (qa, CI, conflict, threads, crusty, approval,
+  # and the qa evidence hash step-00d took), or prints `none`. Missing
+  # evidence, or no answer, disagrees.
+  d="$(measured_downgrade)" || d=""
+  case "$d" in
+    none) downgrade="" ;;
+    '') echo "WARNING: no measured evidence could be compared; it disagrees." >&2; downgrade="measured_evidence=unreadable " ;;
+    *) downgrade="$d" ;;
+  esac
+  if [ -n "$downgrade" ] && [ "$verdict" = "MERGE_READY" ]; then
+    echo "WARNING: downgrading MERGE_READY to NOT_MERGE_READY — measured evidence disagrees: ${downgrade}" >&2
+    verdict="NOT_MERGE_READY"; source="evidence_downgrade"
+  fi
+  # The recurring-findings signal for the loop evaluator: blocker ids, and
+  # measured-evidence-disagrees on a downgrade, in the record's .findings.
+  count="$(printf '%s' "$blockers" | round_findings "$downgrade")"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  echo "INFO: merge-ready ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${verdict} (source=${source}) blockers=${count}" >&2
+  printf '{"merge_ready_verdict":"%s","verdict_source":"%s","blocker_count":%s,"downgrade_reason":"%s"}\n' \
+    "$verdict" "$source" "$count" "$(printf '%s' "$downgrade" | tr -d '"')"
+}
+
 round_record() {
   local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh
   [ -n "$record" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; return 1; }
@@ -238,11 +287,14 @@ round_record() {
 case "${1:-}" in
   crusty-range) crusty_range ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
+  qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
   crusty-evidence) crusty_evidence ;;
   measured-downgrade) measured_downgrade ;;
+  merge-ready-verdict) merge_ready_verdict "${2:-}" "${3:-}" ;;
   findings) round_findings "${2:-}" ;;
   round-record) round_record ;;
   *) echo "ERROR: autodrive_round_evidence.sh: unknown subcommand '${1:-}' (crusty-range," \
-       "qa-evidence-sha <file>, crusty-evidence, measured-downgrade, findings [downgrade], round-record)" >&2
+       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-evidence, measured-downgrade, merge-ready-verdict <verdict> <source>," \
+       "findings [downgrade], round-record)" >&2
      exit 2 ;;
 esac
