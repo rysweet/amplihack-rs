@@ -46,15 +46,52 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
         "https://github.com/my-org/my.project_x.git",
         Some("my-org/my.project_x"),
     ),
-    // Segments past owner/repo are ignored: the security property is the host.
+    // ---- Path shape: exactly owner/repo, or owner/repo/pull/<n> with <n>
+    // matching ^[1-9][0-9]{0,9}$. The PR form is accepted because callers
+    // pass PR URLs; anything else is rejected so the reported identity
+    // always equals the repository git and curl fetch after removing dot
+    // segments. ----
     ("https://github.com/o/r/pull/1", Some("o/r")),
     ("https://github.com/o/r/pull/5", Some("o/r")),
     ("https://tok@github.com/o/r/pull/5", Some("o/r")),
-    ("https://github.com/o/r/tree/main", Some("o/r")),
+    ("git@github.com:o/r/pull/5", Some("o/r")),
+    ("ssh://git@github.com/o/r/pull/5", Some("o/r")),
+    ("https://github.com/o/r/pull/5/", Some("o/r")),
+    ("https://github.com/o/r/pull/5?w=1", Some("o/r")),
+    ("https://github.com/o/r/pull/5#issuecomment-1", Some("o/r")),
+    ("https://github.com/o/r/pull/1234567890", Some("o/r")),
+    ("https://github.com/o/r/tree/main", None),
+    ("https://github.com/o/r/extra", None),
+    ("https://github.com/o/r/../../x/y", None),
+    ("https://github.com/o/r/./x", None),
+    ("https://github.com/o/r/pull/../../x/y", None),
+    ("https://github.com/o/r/pull/5/../../../x/y", None),
+    ("https://github.com/o/r/pull/5/files", None),
+    ("https://github.com/o/r/pull/", None),
+    ("https://github.com/o/r/pull", None),
+    ("https://github.com/o/r/pull/0", None),
+    ("https://github.com/o/r/pull/05", None),
+    ("https://github.com/o/r/pull/-5", None),
+    ("https://github.com/o/r/pull/5a", None),
+    ("https://github.com/o/r/pull/12345678901", None),
+    ("https://github.com/o/r/pulls/5", None),
+    ("https://github.com/o/r/issues/5", None),
+    ("https://github.com/o/r/Pull/5", None),
+    ("https://github.com/o/r//", None),
+    ("https://github.com/o//r", None),
+    ("git@github.com:o/r/extra", None),
+    ("ssh://git@github.com/o/r/../../x/y", None),
+    ("https://tok@github.com/o/r/../../x/y", None),
+    // `.git` is stripped only from the end of the path, so in the PR form it
+    // would survive in the repo segment; that form is rejected rather than
+    // reported as `o/r.git`.
+    ("https://github.com/o/r.git/pull/5", None),
+    ("https://tok@github.com/o/r.git/pull/5", None),
     // ---- Accepted but safe: git still contacts github.com. ----
     ("https://github.com/o/r?x=@evil.example/a/b", Some("o/r")),
     ("https://github.com/o/r#@evil.example", Some("o/r")),
-    ("https://github.com/o/r/x@github.com/a/b", Some("o/r")),
+    // Extra segments are now a path-shape rejection, wherever the `@` sits.
+    ("https://github.com/o/r/x@github.com/a/b", None),
     // %2f stays percent-encoded inside the userinfo; the host is github.com.
     ("https://evil.example%2f@github.com/o/r", Some("o/r")),
     // ---- The four URLs from issue #1642: git contacts evil.example. ----

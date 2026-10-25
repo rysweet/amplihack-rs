@@ -198,6 +198,39 @@ mod tests {
         }
     }
 
+    // Path shape and segments (docs/reference/workflow-github-repo-identity.md):
+    // exactly two segments, never `.` or `..`, owner never starting with `-`,
+    // in the bare form and both URL forms.
+    const ISSUE_1642_PATH_SHAPE: &[&str] = &[
+        "o/r/extra",
+        "https://github.com/o/r/extra",
+        "https://github.com/o/r/../../x/y",
+        "https://github.com/o/r/pull/5",
+        "git@github.com:o/r/tree/main",
+        "./r",
+        "../r",
+        "o/.",
+        "o/..",
+        "-o/r",
+        "https://github.com/./r",
+        "https://github.com/../r",
+        "https://github.com/o/..",
+        "https://github.com/o/.",
+        "https://github.com/-o/r",
+        "https://github.com/o/...git",
+        "git@github.com:../r",
+        "git@github.com:o/..",
+        "git@github.com:-o/r",
+        "git@github.com:o/..git",
+    ];
+
+    #[test]
+    fn issue_1642_path_shape_and_segment_rules_are_enforced() {
+        for uri in ISSUE_1642_PATH_SHAPE {
+            assert!(parse_github_uri(uri).is_err(), "{uri:?} must be rejected");
+        }
+    }
+
     #[test]
     fn issue_1642_supported_forms_parse_to_owner_repo() {
         for uri in [

@@ -90,3 +90,43 @@ fn collect_does_not_treat_a_hostile_pr_url_as_a_github_remote() {
     }
     assert!(failures.is_empty(), "{}", failures.join("\n\n"));
 }
+
+/// Path-shape origins: github.com is the host, but the path is neither
+/// `owner/repo` nor `owner/repo/pull/<n>`, so the identity the parser would
+/// report can differ from the repository git fetches once dot segments are
+/// removed. Every caller must treat them as unrecognised, like a hostile host.
+const PATH_SHAPE_ORIGINS: &[&str] = &[
+    "https://github.com/o/r/../../x/y",
+    "https://github.com/o/r/extra",
+    "https://github.com/o/r/tree/main",
+    "https://github.com/o/r.git/pull/5",
+];
+
+#[test]
+fn every_caller_rejects_path_shape_origins_without_calling_gh() {
+    let mut failures = Vec::new();
+    for caller in callers::ALL {
+        for origin in PATH_SHAPE_ORIGINS {
+            check(*caller, origin, &mut failures);
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+#[test]
+fn collect_does_not_treat_a_path_shape_pr_url_as_a_github_remote() {
+    let mut failures = Vec::new();
+    for pr_url in [
+        "https://github.com/o/r/pull/5/../../../x/y",
+        "https://github.com/o/r/pull/0",
+        "https://github.com/o/r/pull/5/files",
+        "https://github.com/o/r.git/pull/5",
+    ] {
+        let fx = Fixture::with_origin("/srv/git/not-github/repo.git");
+        let outcome = callers::run_collect(&fx, Some(pr_url));
+        if callers::github_remote(&outcome) != "false" {
+            failures.push(format!("{pr_url:?}\n{}", outcome.describe()));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}

@@ -106,4 +106,47 @@ mod issue_1642_tests {
             );
         }
     }
+
+    /// Path shape and segments: exactly `owner/repo`, never `.` or `..`, and
+    /// an owner that does not start with `-` (it reaches `git clone` and `gh`
+    /// as an argument).
+    #[test]
+    fn rejects_path_shape_and_invalid_segments() {
+        for uri in [
+            "https://github.com/o/r/extra",
+            "https://github.com/o/r/../../x/y",
+            "https://github.com/o/r/pull/5",
+            "git@github.com:o/r/tree/main",
+            "o/r/extra",
+            "https://github.com/./r",
+            "https://github.com/../r",
+            "https://github.com/o/..",
+            "https://github.com/o/.",
+            "https://github.com/o/..git",
+            "https://github.com/-o/r",
+            "git@github.com:-o/r",
+            "git@github.com:../r",
+            "../r",
+            "-o/r",
+        ] {
+            assert!(
+                parse_github_repo_uri(uri).is_err(),
+                "{uri:?} must not parse as a GitHub repository"
+            );
+        }
+    }
+
+    #[test]
+    fn real_forms_still_parse_to_owner_repo() {
+        for uri in [
+            "https://github.com/o/r",
+            "https://github.com/o/r.git",
+            "git@github.com:o/r",
+            "git@github.com:o/r.git",
+            "o/r",
+        ] {
+            let (owner, name) = parse_github_repo_uri(uri).expect(uri);
+            assert_eq!((owner.as_str(), name.as_str()), ("o", "r"), "{uri:?}");
+        }
+    }
 }

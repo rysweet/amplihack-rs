@@ -154,6 +154,45 @@ fn invalid_owner_segments_fall_back() {
 }
 
 #[test]
+fn paths_past_owner_repo_fall_back_unless_they_are_a_pr() {
+    // Path shape: only `owner/repo` or `owner/repo/pull/<n>`, with `<n>`
+    // matching ^[1-9][0-9]{0,9}$, names a repository; anything else could
+    // resolve to another repository once git removes dot segments.
+    for url in [
+        "https://github.com/o/r/extra",
+        "https://github.com/o/r/tree/main",
+        "https://github.com/o/r/../../x/y",
+        "https://github.com/o/r/pull/5/../../../x/y",
+        "https://github.com/o/r/pull/5/files",
+        "https://github.com/o/r/pull/0",
+        "https://github.com/o/r/pull/05",
+        "https://github.com/o/r/pull/12345678901",
+        "https://github.com/o/r/issues/5",
+        "https://github.com/o/r.git/pull/5",
+        "git@github.com:o/r/extra",
+        "ssh://git@github.com/o/r/../../x/y",
+        "https://tok@github.com/o/r/../../x/y",
+    ] {
+        assert_github_unknown(url);
+    }
+}
+
+#[test]
+fn pr_urls_keep_classifying_as_github_o_r() {
+    for url in [
+        "https://github.com/o/r/pull/5",
+        "https://github.com/o/r/pull/5/",
+        "https://github.com/o/r/pull/1234567890",
+        "https://tok@github.com/o/r/pull/5",
+        "git@github.com:o/r/pull/5",
+    ] {
+        let (provider, owner, name) = classify(url);
+        assert_eq!(provider, RepositoryProvider::GitHub, "{url:?} provider");
+        assert_eq!((owner.as_str(), name.as_str()), ("o", "r"), "{url:?}");
+    }
+}
+
+#[test]
 fn scp_forms_with_backslash_or_leading_dash_are_never_github() {
     for url in [r"evil.example\@github.com:o/r", "-oProxyCommand=x:o/r"] {
         assert_ne!(
