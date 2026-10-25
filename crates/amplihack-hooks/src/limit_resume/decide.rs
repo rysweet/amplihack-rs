@@ -2,7 +2,9 @@
 //! keys that identify the event and the session, the gate order, and
 //! whether the rotator has recorded a fresh cycle with capacity.
 
-use amplihack_utils::rotator_status::{CycleStatus, FRESH_MARGIN_SECS};
+use amplihack_utils::rotator_status::{
+    CycleStatus, FRESH_MARGIN_SECS, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
+};
 use sha2::{Digest, Sha256};
 
 /// The longest session id accepted.
@@ -119,4 +121,14 @@ pub fn fresh_capacity(status: Option<&CycleStatus>, start: i64) -> bool {
             && s.at
                 .is_some_and(|at| at > start.saturating_add(FRESH_MARGIN_SECS))
     })
+}
+
+/// How long to sleep between ledger reads, `elapsed` seconds into a wait:
+/// `POLL_INTERVAL` for the first `SLOW_POLL_AFTER`, then `SLOW_POLL_INTERVAL`.
+pub fn poll_interval(elapsed: i64) -> std::time::Duration {
+    if elapsed < SLOW_POLL_AFTER.as_secs() as i64 {
+        POLL_INTERVAL
+    } else {
+        SLOW_POLL_INTERVAL
+    }
 }

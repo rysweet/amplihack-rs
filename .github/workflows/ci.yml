@@ -280,6 +280,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1565-rerun-preserves-dirty-worktree.sh
+      - name: Recipes — consensus step3 re-run preserves a branch's work (issue #1626)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh

@@ -44,9 +44,42 @@ mod tests {
         assert!(!shutdown.load(Ordering::Relaxed));
     }
 
+    /// Set in the child that [`signal_sets_flag`] spawns.
+    #[cfg(unix)]
+    const SIGNAL_CHILD_ENV: &str = "AMPLIHACK_SIGNALS_TEST_CHILD";
+
+    /// The SIGTERM below reaches the whole process. In the shared lib test
+    /// binary that includes the recipe-run stop handler, whose flag never
+    /// clears, so every recipe run any other test started afterwards failed
+    /// with "stopped by signal 15", depending on test order. The signal is
+    /// therefore sent in a child running only this test.
     #[cfg(unix)]
     #[test]
     fn signal_sets_flag() {
+        if std::env::var_os(SIGNAL_CHILD_ENV).is_some() {
+            signal_sets_flag_in_this_process();
+            return;
+        }
+        let module = module_path!();
+        let name = format!(
+            "{}::signal_sets_flag",
+            module.split_once("::").map_or(module, |(_, rest)| rest)
+        );
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &name, "--nocapture", "--test-threads=1"])
+            .env(SIGNAL_CHILD_ENV, "1")
+            .output()
+            .expect("failed to spawn the signal test child");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "signal test child failed or ran nothing:\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(unix)]
+    fn signal_sets_flag_in_this_process() {
         let _guard = SIGNAL_TEST_LOCK.lock().expect("signal test lock poisoned");
         let shutdown = register_handlers().unwrap();
         assert!(!shutdown.load(Ordering::Relaxed));

@@ -13,7 +13,7 @@ amplihack registers 8 hooks in `~/.claude/settings.json` when you run `amplihack
 | 5 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks workflow-classification-reminder` | 5 s |
 | 6 | `UserPromptSubmit` | Binary subcommand | `amplihack-hooks user-prompt-submit` | 10 s |
 | 7 | `PreCompact` | Binary subcommand | `amplihack-hooks pre-compact` | 30 s |
-| 8 | `StopFailure` | Binary subcommand, matcher `rate_limit`, `asyncRewake` | `amplihack-hooks limit-resume` | 18600 s |
+| 8 | `StopFailure` | Binary subcommand, matcher `rate_limit`, `asyncRewake` | `amplihack-hooks limit-resume` | 608400 s |
 
 ## Hook Format in settings.json
 
@@ -81,7 +81,7 @@ the only one with `asyncRewake`:
           {
             "type": "command",
             "command": "/home/alice/.local/bin/amplihack-hooks limit-resume",
-            "timeout": 18600,
+            "timeout": 608400,
             "asyncRewake": true
           }
         ]
@@ -265,16 +265,17 @@ Runs in the background when a turn ends on an API error that matches
 for these turns, so the `Stop` hook never sees a usage-limit stop; this, the
 `stop_hook_active` field on `StopFailure`, and the wake on exit `2` were verified
 on Claude Code 2.1.307 (`stop_hook_active` is absent there and treated as false). When auto-switch is on and
-the error is a usage limit, the hook waits up to 5 hours for
+the error is a usage limit, the hook waits up to 7 days for
 `amplihack profile rotate` to record a cycle with capacity more than 60 seconds
 after the hook started, then exits `2` with
-a one-line continue message on stderr, which wakes the session. It stops
-waiting if auto-switch is turned off or you send a prompt in that session (the
-session moved on; see hook 6). In every other case it exits `0` and prints
+a one-line continue message on stderr, which wakes the session. It reads the
+ledger every 15 seconds for the first hour, then every 5 minutes. It stops
+waiting if auto-switch is turned off, you send a prompt in that session (the
+session moved on; see hook 6), or the session exits. In every other case it exits `0` and prints
 nothing; stdout is always empty. It resumes at most once per limit event, once
 per session per wait, and 3 times per session in 24 hours, and never reads a
-credentials or token file or the transcript. The 18600-second timeout covers the 5-hour wait
-plus one 15-second ledger read. Requires Claude Code 2.1.306 or later. Full
+credentials or token file or the transcript. The 608400-second timeout covers the 7-day wait
+plus one 5-minute ledger read; Claude Code 2.1.307 accepts it. Requires Claude Code 2.1.306 or later. Full
 rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 
 ## Capacity notice in hooks

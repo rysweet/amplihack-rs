@@ -22,7 +22,7 @@ cd "${1:-$(dirname "$0")/..}"
 allowed_prefix="crates/amplihack-git/"
 
 hits=$(grep -rn --include='*.rs' 'Command::new("git")' . \
-    --exclude-dir=target --exclude-dir=.git \
+    --exclude-dir=target --exclude-dir=.git --exclude-dir=worktrees \
     | sed 's|^\./||' \
     | grep -v "^${allowed_prefix}" \
     || true)

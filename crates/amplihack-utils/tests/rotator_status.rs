@@ -10,7 +10,8 @@
 
 use amplihack_utils::rotator_status::{
     CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL,
-    auto_switch_on_from, ledger_path, parse_cycle, read_cycle, resolve_root_from, valid_live_name,
+    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, ledger_path, parse_cycle, read_cycle,
+    resolve_root_from, valid_live_name,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -43,16 +44,18 @@ fn private_file(p: &Path, bytes: &[u8]) {
 
 #[test]
 fn constants_match_the_documented_limits() {
-    assert_eq!(MAX_WAIT, Duration::from_secs(5 * 60 * 60));
+    assert_eq!(MAX_WAIT, Duration::from_secs(7 * 24 * 60 * 60));
     assert_eq!(POLL_INTERVAL, Duration::from_secs(15));
+    assert_eq!(SLOW_POLL_AFTER, Duration::from_secs(60 * 60));
+    assert_eq!(SLOW_POLL_INTERVAL, Duration::from_secs(5 * 60));
     assert_eq!(FRESH_MARGIN_SECS, 60);
-    assert_eq!(LIMIT_RESUME_TIMEOUT_SECS, 18_600);
+    assert_eq!(LIMIT_RESUME_TIMEOUT_SECS, 608_400);
 }
 
 #[test]
 fn wait_plus_one_poll_fits_inside_the_registered_timeout() {
     assert!(
-        (MAX_WAIT + POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS,
+        (MAX_WAIT + SLOW_POLL_INTERVAL).as_secs() < LIMIT_RESUME_TIMEOUT_SECS,
         "the hook must decide before Claude Code kills it"
     );
 }
