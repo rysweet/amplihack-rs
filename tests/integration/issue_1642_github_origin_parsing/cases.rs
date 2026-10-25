@@ -38,6 +38,10 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
     ("https://github.com/o/r?tab=readme", Some("o/r")),
     ("https://github.com/o/r#readme", Some("o/r")),
     ("https://github.com/o/r.git.git", Some("o/r.git")),
+    // Validation runs after .git stripping: `..git` gives `.`, rejected;
+    // `.git.git` strips once to `.git`, a valid segment (SR3).
+    ("https://github.com/o/..git", None),
+    ("https://github.com/o/.git.git", Some("o/.git")),
     (
         "https://github.com/my-org/my.project_x.git",
         Some("my-org/my.project_x"),

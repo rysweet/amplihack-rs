@@ -29,3 +29,7 @@ mod real_forms;
 mod recipe;
 #[path = "issue_1642_github_origin_parsing/recipe_lookup.rs"]
 mod recipe_lookup;
+// SR2: the "helper not found" reason names `amplihack install` and lists
+// every searched path with an exact marker.
+#[path = "issue_1642_github_origin_parsing/recipe_lookup_message.rs"]
+mod recipe_lookup_message;

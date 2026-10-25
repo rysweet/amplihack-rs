@@ -30,7 +30,7 @@ fn plant_helper(fx: &Fixture, path: &Path) -> PathBuf {
 
 /// The probe with no override, no AMPLIHACK_HOME unless given, and a HOME
 /// holding no installed bundle.
-fn run_probe_bare(fx: &Fixture, envs: &[(&str, &std::ffi::OsStr)]) -> Outcome {
+pub(super) fn run_probe_bare(fx: &Fixture, envs: &[(&str, &std::ffi::OsStr)]) -> Outcome {
     let empty_home = fx.path("empty-home");
     fs::create_dir_all(&empty_home).expect("empty home");
     let mut cmd = fx.command("bash");

@@ -175,4 +175,39 @@ mod tests {
         assert!(result.is_some());
         assert_eq!(result.unwrap(), target);
     }
+
+    // Issue #1642: this parser already rejects every hostile origin; these
+    // tests pin that so a later loosening (userinfo, other hosts) fails CI.
+    const ISSUE_1642_HOSTILE: &[&str] = &[
+        "https://evil.example/x@github.com/a/b",
+        "https://evil.example#@github.com/o/r",
+        "https://evil.example?@github.com/o/r",
+        r"https://evil.example\@github.com/o/r",
+        "https://a@b@github.com/o/r",
+        "https://a@github.com/x@github.com/o/r",
+        "https://tok@github.com/o/r",
+        "https://x:tok@github.com/o/r",
+        r"evil.example\@github.com:o/r",
+        "-oProxyCommand=x:o/r",
+    ];
+
+    #[test]
+    fn issue_1642_hostile_origins_are_rejected() {
+        for uri in ISSUE_1642_HOSTILE {
+            assert!(parse_github_uri(uri).is_err(), "{uri:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn issue_1642_supported_forms_parse_to_owner_repo() {
+        for uri in [
+            "o/r",
+            "https://github.com/o/r",
+            "https://github.com/o/r.git",
+            "git@github.com:o/r",
+            "git@github.com:o/r.git",
+        ] {
+            assert_eq!(parse_github_uri(uri).unwrap(), "o/r", "{uri:?}");
+        }
+    }
 }
