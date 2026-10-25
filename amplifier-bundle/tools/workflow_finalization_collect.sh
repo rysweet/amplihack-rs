@@ -6,11 +6,11 @@
 # (issue #1642). When it is missing the function stays undefined, every call
 # fails, and collect (github_remote=false) fails closed; this file is sourced, so it never exits.
 _finalization_collect_repo_helper="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
-if [ -f "$_finalization_collect_repo_helper" ]; then
+if [ -f "$_finalization_collect_repo_helper" ] && [ -r "$_finalization_collect_repo_helper" ]; then
   # shellcheck source=workflow_github_repo.sh disable=SC1090
   . "$_finalization_collect_repo_helper"
 else
-  echo "WARNING: shared GitHub repo identity parser not found at $_finalization_collect_repo_helper" >&2
+  echo "WARNING: shared GitHub repo identity parser not found or unreadable at $_finalization_collect_repo_helper" >&2
 fi
 unset _finalization_collect_repo_helper
 collect_evidence() {

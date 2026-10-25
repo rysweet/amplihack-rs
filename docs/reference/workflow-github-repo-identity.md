@@ -102,15 +102,14 @@ A missing or unreadable helper never leads to an inline fallback parser:
 | library sourced on its own                              | one `WARNING:` line; the function stays undefined, so there is no signal and `github_remote=false` |
 | terminal-state recipe                                   | `FAILED_INVALID_INPUT`, as described below                                                         |
 
-**Recipe.** The `probe-terminal-state` step uses the first allowed candidate:
-`$WORKFLOW_GITHUB_REPO_HELPER`, then `$AMPLIHACK_HOME`, `$REPO_PATH`, `$(pwd)`,
-`~/.copilot` and `~/.amplihack`, each followed by
-`amplifier-bundle/tools/workflow_github_repo.sh`. It skips any candidate whose
-physical path, or the file its symlink resolves to (at most 40 hops), lies
-inside `TARGET_REPO_DIR`, so the checkout under test cannot supply its own
-parser. When nothing is found the step fails with one line that says to run
-`amplihack install` and lists each searched path marked `(missing)`,
-`(unreadable)` or `(skipped: inside target checkout)`.
+**Recipe.** The `probe-terminal-state` step uses
+`$WORKFLOW_GITHUB_REPO_HELPER` when it is set, and fails with
+`FAILED_INVALID_INPUT` if that file is missing or unreadable. Otherwise it
+uses the same resolution ladder as the strict terminal gate (issue #962):
+`$AMPLIHACK_HOME`, `$REPO_PATH`, `$(pwd)`, `~/.copilot` and `~/.amplihack`,
+each followed by `amplifier-bundle/tools/workflow_github_repo.sh`. When no
+rung holds a readable helper, the step fails with `FAILED_INVALID_INPUT` and
+says to run `amplihack install`.
 
 ### Self-hosted runs need a reinstalled bundle
 

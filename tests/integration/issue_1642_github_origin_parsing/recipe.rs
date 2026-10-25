@@ -1,6 +1,6 @@
 //! Group (d): `workflow-terminal-state.yaml` step `probe-terminal-state`
-//! sources the shared helper, rejects hostile origins and PR URLs, and never
-//! loads a helper from inside the checkout it is judging (`recipe_lookup.rs`).
+//! sources the shared helper and rejects hostile origins and PR URLs. Helper
+//! lookup is covered in `recipe_lookup.rs`.
 
 use super::fixture::{Fixture, Outcome, helper_path, tool_path, workspace_root};
 use std::fs;

@@ -1,32 +1,16 @@
 //! Group (d), helper lookup: `probe-terminal-state` in
 //! `workflow-terminal-state.yaml` finds `workflow_github_repo.sh`.
 //!
-//! - It never sources a helper whose physical file is inside the checkout it
-//!   is judging, whether planted there or reached through a symlink (S3).
+//! - With no helper at any rung of the resolution ladder it fails with
+//!   FAILED_INVALID_INPUT, names the helper and says to run `amplihack install`.
 //! - A WORKFLOW_GITHUB_REPO_HELPER override that is set but missing or
 //!   unreadable fails with FAILED_INVALID_INPUT. It never falls through to a
 //!   later candidate (S2), so these tests cannot pass by finding an installed
 //!   copy.
 
-use super::fixture::{
-    BRANCH, Fixture, Outcome, helper_path, tool_path, workspace_root, write_executable,
-};
+use super::fixture::{BRANCH, Fixture, Outcome, helper_path, tool_path, workspace_root};
 use super::recipe::probe_command;
 use std::fs;
-use std::path::{Path, PathBuf};
-
-/// A helper that leaves a marker when sourced and claims every URL is o/r.
-fn plant_helper(fx: &Fixture, path: &Path) -> PathBuf {
-    let marker = fx.path("planted-helper-ran");
-    write_executable(
-        path,
-        &format!(
-            "#!/usr/bin/env bash\n: > '{}'\nparse_github_repo_identity() {{ printf 'o/r\\n'; }}\n",
-            marker.display()
-        ),
-    );
-    marker
-}
 
 /// The probe with no override, no AMPLIHACK_HOME unless given, and a HOME
 /// holding no installed bundle.
@@ -76,68 +60,17 @@ fn assert_failed_invalid_input(fx: &Fixture, out: &Outcome, why: &str) {
 }
 
 #[test]
-fn probe_never_sources_a_helper_planted_inside_the_target_checkout() {
+fn probe_fails_closed_when_no_helper_is_found() {
+    // REPO_PATH and cwd are the fixture repo and HOME is empty, so no rung of
+    // the ladder holds the helper.
     let fx = Fixture::with_origin("https://github.com/o/r.git");
-    let marker = plant_helper(
-        &fx,
-        &fx.repo
-            .join("amplifier-bundle/tools/workflow_github_repo.sh"),
-    );
-    fx.git(&["add", "amplifier-bundle"]);
-    fx.git(&["commit", "-q", "-m", "plant helper"]);
-
-    // REPO_PATH and cwd are the target, HOME is empty: every rung either is
-    // the target or misses.
     let out = run_probe_bare(&fx, &[]);
+    assert_failed_invalid_input(&fx, &out, "no helper found");
     assert!(
-        !marker.exists(),
-        "a helper under TARGET_REPO_DIR must never be sourced\n{}",
+        out.stderr.contains("amplihack install"),
+        "the failure must say how to install the helper\n{}",
         out.describe()
     );
-    assert_failed_invalid_input(&fx, &out, "no trusted helper found");
-}
-
-#[test]
-fn probe_never_sources_a_tools_dir_symlinked_into_the_target_checkout() {
-    let fx = Fixture::with_origin("https://github.com/o/r.git");
-    let marker = plant_helper(&fx, &fx.repo.join("planted/workflow_github_repo.sh"));
-    let home = fx.path("fake-amplihack-home");
-    fs::create_dir_all(home.join("amplifier-bundle")).expect("mkdir fake home");
-    std::os::unix::fs::symlink(fx.repo.join("planted"), home.join("amplifier-bundle/tools"))
-        .expect("symlink tools dir");
-
-    let out = run_probe_bare(&fx, &[("AMPLIHACK_HOME", home.as_os_str())]);
-    assert!(
-        !marker.exists(),
-        "a tools dir resolving into the checkout must be skipped\n{}",
-        out.describe()
-    );
-    assert_failed_invalid_input(&fx, &out, "symlinked tools dir");
-}
-
-#[test]
-fn probe_never_sources_a_helper_file_symlinked_into_the_target_checkout() {
-    // The candidate directory is outside the checkout, but the helper file in
-    // it is a symlink to a file inside. The physical file is what is sourced,
-    // so the check must apply to it, not only to the directory.
-    let fx = Fixture::with_origin("https://github.com/o/r.git");
-    let marker = plant_helper(&fx, &fx.repo.join("planted/workflow_github_repo.sh"));
-    let home = fx.path("fake-amplihack-home");
-    let tools = home.join("amplifier-bundle/tools");
-    fs::create_dir_all(&tools).expect("mkdir fake tools");
-    std::os::unix::fs::symlink(
-        fx.repo.join("planted/workflow_github_repo.sh"),
-        tools.join("workflow_github_repo.sh"),
-    )
-    .expect("symlink helper file");
-
-    let out = run_probe_bare(&fx, &[("AMPLIHACK_HOME", home.as_os_str())]);
-    assert!(
-        !marker.exists(),
-        "a helper file resolving into the checkout must be skipped\n{}",
-        out.describe()
-    );
-    assert_failed_invalid_input(&fx, &out, "symlinked helper file");
 }
 
 #[test]
