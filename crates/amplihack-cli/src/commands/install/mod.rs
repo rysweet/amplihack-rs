@@ -689,7 +689,13 @@ fn local_install_scoped(
                 effective_scope.display_name(),
                 settings_target.display()
             );
-            ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?
+            let configured =
+                ensure_settings_json(&settings_target, &claude_dir, timestamp, &durable_hooks_bin)?;
+            // Profiles copy the user's settings, not a repo's (issue #1661).
+            if effective_scope == interactive::HookScope::Global {
+                refresh_profile_hooks(&durable_hooks_bin);
+            }
+            configured
         }
         InstallMode::Implicit => {
             warn_implicit_hook_drift(&mut std::io::stderr(), &settings_target);

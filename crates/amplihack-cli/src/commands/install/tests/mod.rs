@@ -21,6 +21,8 @@ mod mermaid_cli_tests;
 mod output_regression_tests;
 mod path_conflict_tests;
 mod path_precedence_tests;
+#[cfg(unix)]
+mod profile_refresh_install;
 mod same_path_tests;
 mod settings_tests;
 mod stale_wrapper_repair;
