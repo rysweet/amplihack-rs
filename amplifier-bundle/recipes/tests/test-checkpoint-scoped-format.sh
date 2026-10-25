@@ -90,6 +90,24 @@ paths="$(git -C "$WORK/task" show --format= --name-only --no-renames HEAD | sort
 test "$paths" = $'file[1].txt\nnew.txt\nold.txt' \
   || fail 'rename or literal pathspec checkpoint included the wrong files'
 
+# A file that moves from staged to unstaged during validation changes scope.
+# Its path appears in both snapshots, so the Git state boundaries matter.
+printf 'pub fn value() -> i32 {\n    3\n}\n' > "$WORK/task/src/lib.rs"
+git -C "$WORK/task" add src/lib.rs
+cat > "$WORK/bin/cargo" <<'SH'
+#!/usr/bin/env bash
+git reset -q -- src/lib.rs
+SH
+chmod +x "$WORK/bin/cargo"
+before="$(git -C "$WORK/task" rev-parse HEAD)"
+if checkpoint; then fail 'staged-to-unstaged transition passed'; fi
+grep -q 'checkpoint scope changed before staging' "$WORK/stderr" \
+  || fail 'staged-to-unstaged transition did not explain the failure'
+test "$(git -C "$WORK/task" rev-parse HEAD)" = "$before" \
+  || fail 'staged-to-unstaged transition created a commit'
+test "$(git -C "$WORK/task" status --short -- src/lib.rs)" = ' M src/lib.rs' \
+  || fail 'validation did not unstage the captured file'
+
 # Even a tool that creates a new path after the snapshot cannot extend it.
 printf 'pub fn value() -> i32 {\n    3\n}\n' > "$WORK/task/src/lib.rs"
 cat > "$WORK/bin/cargo" <<'SH'

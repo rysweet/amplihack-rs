@@ -295,8 +295,12 @@ steps:
       stage_paths=$(mktemp -t checkpoint-stage-paths-XXXXXX)
       after_paths=$(mktemp -t checkpoint-after-paths-XXXXXX)
       trap 'rm -f "$checkpoint_paths" "$stage_paths" "$after_paths"' EXIT
+      # Empty NUL entries separate staged, unstaged, and untracked paths, so
+      # moving a path between Git states changes the snapshot bytes.
       git -c diff.renames=false diff --cached --name-only -z HEAD > "$checkpoint_paths"
+      printf '\0' >> "$checkpoint_paths"
       git -c diff.renames=false diff --name-only -z >> "$checkpoint_paths"
+      printf '\0' >> "$checkpoint_paths"
       git ls-files --others --exclude-standard -z >> "$checkpoint_paths"
       # Paths already staged (including git mv's old name) need no second add.
       git -c diff.renames=false diff --name-only -z > "$stage_paths"
@@ -312,7 +316,9 @@ steps:
       # a tool stages and then removes from the worktree. Byte comparison is
       # NUL-safe and works on macOS Bash 3.2 without associative arrays.
       git -c diff.renames=false diff --cached --name-only -z HEAD > "$after_paths"
+      printf '\0' >> "$after_paths"
       git -c diff.renames=false diff --name-only -z >> "$after_paths"
+      printf '\0' >> "$after_paths"
       git ls-files --others --exclude-standard -z >> "$after_paths"
       if ! cmp -s "$checkpoint_paths" "$after_paths"; then
         echo "ERROR: checkpoint scope changed before staging; no commit created" >&2
