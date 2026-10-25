@@ -92,13 +92,18 @@ struct RemoteUrlParts<'a> {
     path: &'a str,
 }
 
+/// No trim (issue #1642): surrounding whitespace is never part of a GitHub
+/// origin, so it is rejected as in the bash parser. Callers trim at the I/O
+/// boundary.
 fn remote_url_parts(remote_url: &str) -> Option<RemoteUrlParts<'_>> {
-    let trimmed = remote_url.trim();
-    if trimmed.is_empty() {
+    if remote_url.is_empty() {
         return None;
     }
 
-    if let Some(after_scheme) = trimmed.split_once("://").map(|(_, rest)| rest) {
+    if let Some((scheme, after_scheme)) = remote_url.split_once("://") {
+        if !is_scheme(scheme) {
+            return None;
+        }
         let (authority, path) = after_scheme.split_at(authority_end_for_parse(after_scheme));
         if authority.is_empty() {
             return None;
@@ -114,11 +119,13 @@ fn remote_url_parts(remote_url: &str) -> Option<RemoteUrlParts<'_>> {
             });
         return (!host.is_empty()).then_some(RemoteUrlParts {
             host,
-            path: path.trim_start_matches('/'),
+            // One `/` separates authority and path; a second would be an
+            // empty owner segment, so leave it for the shape check.
+            path: path.strip_prefix('/').unwrap_or(path),
         });
     }
 
-    let (host_part, path) = trimmed.split_once(':')?;
+    let (host_part, path) = remote_url.split_once(':')?;
     // scp form: a leading `-` would reach ssh as an option, and a backslash
     // makes the userinfo/host split ambiguous; neither is ever a provider.
     if host_part.starts_with('-') || host_part.contains('\\') {
@@ -126,6 +133,18 @@ fn remote_url_parts(remote_url: &str) -> Option<RemoteUrlParts<'_>> {
     }
     let host = split_userinfo(host_part)?;
     (!host.is_empty()).then_some(RemoteUrlParts { host, path })
+}
+
+/// RFC 3986: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`, so leading
+/// whitespace or other bytes never pass as a scheme.
+fn is_scheme(scheme: &str) -> bool {
+    scheme
+        .bytes()
+        .next()
+        .is_some_and(|byte| byte.is_ascii_alphabetic())
+        && scheme
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'+' | b'-' | b'.'))
 }
 
 fn host_matches_provider_domain(host: &str, provider_domain: &str) -> bool {
@@ -160,27 +179,31 @@ fn repository_owner_name(
     }
 }
 
+/// Mirrors the bash parser: cut `?` and `#`, strip one trailing `/`, require
+/// `owner/repo` or `owner/repo/pull/<n>`, strip one `.git` from the repo, and
+/// check both segments with no trim. Failure gives `("unknown", fallback)`.
 fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
     let path = path.split(['?', '#']).next().unwrap_or("");
-    let mut parts = path.trim_matches('/').split('/');
+    let path = path.strip_suffix('/').unwrap_or(path);
+    let mut parts = path.split('/');
     let owner = parts
         .next()
         .filter(|value| is_identity_segment(value) && !value.starts_with('-'));
     let raw_name = parts.next().unwrap_or("");
     // Path shape (issue #1642): only `owner/repo` or `owner/repo/pull/<n>`
-    // names a repository; anything else (`extra`, `tree/main`, `../../x/y`)
-    // could resolve to another repository once dot segments are removed.
-    // `.git` is only a suffix of the whole path, so `r.git/pull/5` is refused.
-    let shape_ok = match parts.collect::<Vec<_>>().as_slice() {
-        [] => true,
-        ["pull", number] => is_pr_number(number) && !raw_name.ends_with(".git"),
-        _ => false,
+    // names a repository; anything else (`extra`, `tree/main`, `../../x/y`,
+    // an empty segment) could resolve to another repository once dot
+    // segments are removed. `.git` is only a suffix of the whole path, so
+    // `r.git/pull/5` is refused.
+    let name = match parts.collect::<Vec<_>>().as_slice() {
+        [] => Some(raw_name.strip_suffix(".git").unwrap_or(raw_name)),
+        ["pull", number] if is_pr_number(number) && !raw_name.ends_with(".git") => Some(raw_name),
+        _ => None,
     };
-    // Checked after all normalisation, so `..git` (-> `.`) and `.git.git`
-    // (-> empty) never become a repository name.
-    let name = Some(trim_repo_suffix(raw_name)).filter(|value| is_identity_segment(value));
-    match (owner, name) {
-        (Some(owner), Some(name)) if shape_ok => (owner.into(), name),
+    // Checked after `.git` stripping, so `..git` (-> `.`) is refused while
+    // `.git.git` (-> `.git`) is a valid name, as in bash.
+    match (owner, name.filter(|value| is_identity_segment(value))) {
+        (Some(owner), Some(name)) => (owner.into(), name.into()),
         _ => ("unknown".into(), fallback_name.into()),
     }
 }

@@ -10,8 +10,8 @@
 //!   non-empty and use only `[A-Za-z0-9._~%!$&'()*+,;=:-]`, otherwise the
 //!   provider is `Manual`;
 //! - scp form: a host part containing `\` or starting with `-` is never GitHub;
-//! - GitHub owner/name are checked after all normalisation; failure gives
-//!   `("unknown", fallback)`;
+//! - GitHub paths strip one trailing `/` and one `.git`, with no trim, and
+//!   owner/name are checked afterwards; failure gives `("unknown", fallback)`;
 //! - host matching is unchanged (`github.com` and subdomains, any case, any
 //!   port): the one documented place Rust accepts what bash rejects, always
 //!   with the owner the URL names (SR6).
@@ -136,9 +136,10 @@ fn host_matching_rows_bash_rejects_keep_the_named_owner() {
 
 #[test]
 fn identity_segments_are_checked_after_git_stripping() {
-    // `..git` normalises to `.`; `.git.git` strips (repeatedly) to empty.
+    // `..git` normalises to `.`; `.git.git` strips once, to `.git`, as in bash.
     assert_github_unknown("https://github.com/o/..git");
-    assert_github_unknown("https://github.com/o/.git.git");
+    let (_, owner, name) = classify("https://github.com/o/.git.git");
+    assert_eq!((owner.as_str(), name.as_str()), ("o", ".git"));
 }
 
 #[test]
