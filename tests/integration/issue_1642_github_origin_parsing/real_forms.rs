@@ -16,31 +16,45 @@ fn resolved(caller: Caller, fx: &Fixture, outcome: &Outcome) -> bool {
 
 #[test]
 fn every_caller_resolves_every_real_origin_to_o_r() {
+    // The callers are independent and each run is a fresh fixture, so they
+    // run on one thread each; serially this test took over a minute.
+    let failures: Vec<String> = std::thread::scope(|scope| {
+        let handles: Vec<_> = callers::ALL
+            .iter()
+            .map(|caller| scope.spawn(move || caller_failures(*caller)))
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|handle| handle.join().expect("caller thread panicked"))
+            .collect()
+    });
+    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+}
+
+fn caller_failures(caller: Caller) -> Vec<String> {
     let mut failures = Vec::new();
-    for caller in callers::ALL {
-        for origin in REAL_ORIGINS {
-            let fx = Fixture::with_origin(origin);
-            let outcome = callers::run(&fx, *caller);
-            if !resolved(*caller, &fx, &outcome) {
-                failures.push(format!(
-                    "{caller:?} with origin {origin:?} did not resolve to o/r; gh calls:\n{}\n{}",
-                    fx.all_gh_calls(),
-                    outcome.describe()
-                ));
-            }
-            let stray: Vec<String> = fx
-                .repo_gh_calls()
-                .into_iter()
-                .filter(|call| call.contains("--repo ") && !call.contains("--repo o/r "))
-                .collect();
-            if !stray.is_empty() {
-                failures.push(format!(
-                    "{caller:?} with {origin:?} addressed another repo: {stray:?}"
-                ));
-            }
+    for origin in REAL_ORIGINS {
+        let fx = Fixture::with_origin(origin);
+        let outcome = callers::run(&fx, caller);
+        if !resolved(caller, &fx, &outcome) {
+            failures.push(format!(
+                "{caller:?} with origin {origin:?} did not resolve to o/r; gh calls:\n{}\n{}",
+                fx.all_gh_calls(),
+                outcome.describe()
+            ));
+        }
+        let stray: Vec<String> = fx
+            .repo_gh_calls()
+            .into_iter()
+            .filter(|call| call.contains("--repo ") && !call.contains("--repo o/r "))
+            .collect();
+        if !stray.is_empty() {
+            failures.push(format!(
+                "{caller:?} with {origin:?} addressed another repo: {stray:?}"
+            ));
         }
     }
-    assert!(failures.is_empty(), "{}", failures.join("\n\n"));
+    failures
 }
 
 #[test]
