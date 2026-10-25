@@ -3,8 +3,9 @@
 # shellcheck disable=SC2034
 # Deterministic repository and completion evidence collection.
 # parse_github_repo_identity comes from the shared parser next to this file
-# (issue #1642). When it is missing the function stays undefined, every call
-# fails, and collect (github_remote=false) fails closed; this file is sourced, so it never exits.
+# (issue #1642). Sourcing only warns when it is missing. collect_evidence then
+# exits 2 rather than report github_remote=false, because a false value could
+# drop gh_required and relax the gh-missing check in validate (fail open).
 _finalization_collect_repo_helper="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
 if [ -f "$_finalization_collect_repo_helper" ] && [ -r "$_finalization_collect_repo_helper" ]; then
   # shellcheck source=workflow_github_repo.sh disable=SC1090
@@ -16,6 +17,10 @@ unset _finalization_collect_repo_helper
 collect_evidence() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: collect-finalization-evidence requires jq for structured JSON evidence" >&2
+    exit 2
+  fi
+  if ! declare -F parse_github_repo_identity >/dev/null 2>&1; then
+    echo "ERROR: collect-finalization-evidence requires parse_github_repo_identity from workflow_github_repo.sh; set WORKFLOW_GITHUB_REPO_HELPER or restore the helper next to this file" >&2
     exit 2
   fi
 

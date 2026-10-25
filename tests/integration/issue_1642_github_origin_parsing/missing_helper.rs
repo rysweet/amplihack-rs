@@ -3,12 +3,13 @@
 //! - The five standalone scripts and the `workflow_agentic_finalization.sh`
 //!   entry point print an ERROR naming the helper and exit 2 before any gh
 //!   repository call (D1b).
-//! - The two sourced libraries never `exit`: they WARN, leave the parser
-//!   undefined, and classify every origin as not GitHub (D1a).
+//! - Sourcing either library never `exit`s: it WARNs and leaves the parser
+//!   undefined (D1a). The PR signal then reports no signal; `collect_evidence`
+//!   exits 2 with no evidence, because `github_remote=false` would relax the
+//!   gh-missing check in validate.
 //! - An override that names an existing but unreadable file (`chmod 000`) is
 //!   rejected up front with exit 2, not later at `.` with some other code.
 
-use super::callers;
 use super::fixture::{BRANCH, Fixture, Outcome, tools_dir};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -250,9 +251,12 @@ resolve_pr_number() { workflow_finalization_metadata pr_number || :; }
 collect_evidence"#;
 
 #[test]
-fn collect_library_sourced_alone_fails_closed_when_the_helper_is_missing() {
-    // Sourced directly, not through the entry point (which now exits 2): the
-    // library itself must never exit and must report github_remote=false.
+fn collect_library_sourced_alone_refuses_to_collect_when_the_helper_is_missing() {
+    // Sourced directly, not through the entry point (which exits 2 first).
+    // Sourcing only warns; collect_evidence must then exit 2 and emit no
+    // evidence. Reporting github_remote=false instead would fail open:
+    // gh_required could drop to false and validate would skip its gh-missing
+    // check (crusty review of PR #1662, round 1).
     let fx = Fixture::with_origin("https://github.com/o/r.git");
     let tools = tools_without_helper(&fx);
     let mut cmd = fx.command("bash");
@@ -263,13 +267,25 @@ fn collect_library_sourced_alone_fails_closed_when_the_helper_is_missing() {
     let collect = fx.run(cmd);
     assert!(
         collect.stderr.contains("WARNING") && collect.stderr.contains("workflow_github_repo.sh"),
-        "collect library must warn that the helper is missing\n{}",
+        "collect library must warn at source time that the helper is missing\n{}",
         collect.describe()
     );
     assert_eq!(
-        callers::github_remote(&collect),
-        "false",
-        "collect library without the helper must fail closed to github_remote=false\n{}",
+        collect.output.status.code(),
+        Some(2),
+        "collect_evidence without the parser must exit 2\n{}",
+        collect.describe()
+    );
+    assert!(
+        collect.stderr.contains("ERROR")
+            && collect.stderr.contains("parse_github_repo_identity")
+            && collect.stderr.contains("WORKFLOW_GITHUB_REPO_HELPER"),
+        "collect_evidence must name the missing parser and the override\n{}",
+        collect.describe()
+    );
+    assert!(
+        !collect.stdout.contains("github_remote"),
+        "collect_evidence must emit no evidence without the parser\n{}",
         collect.describe()
     );
 }

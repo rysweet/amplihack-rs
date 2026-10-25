@@ -96,11 +96,12 @@ two sourced libraries through their own `BASH_SOURCE[0]`, as they already do
 for `workflow_gh_retry.sh`. They never search `$PWD` or the target repository.
 A missing or unreadable helper never leads to an inline fallback parser:
 
-| Caller                                                  | Missing helper                                                                                     |
-| ------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| standalone script or `workflow_agentic_finalization.sh` | `ERROR:` line naming the path and `WORKFLOW_GITHUB_REPO_HELPER`, then `exit 2`                     |
-| library sourced on its own                              | one `WARNING:` line; the function stays undefined, so there is no signal and `github_remote=false` |
-| terminal-state recipe                                   | `FAILED_INVALID_INPUT`, as described below                                                         |
+| Caller                                                  | Missing helper                                                                                                    |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| standalone script or `workflow_agentic_finalization.sh` | `ERROR:` line naming the path and `WORKFLOW_GITHUB_REPO_HELPER`, then `exit 2`                                    |
+| `workflow_finalization_pr_signal.sh` sourced on its own | one `WARNING:` line; the function stays undefined, so there is no PR signal                                       |
+| `workflow_finalization_collect.sh` sourced on its own   | one `WARNING:` line at source time; `collect_evidence` then prints an `ERROR:` line and exits 2, with no evidence |
+| terminal-state recipe                                   | `FAILED_INVALID_INPUT`, as described below                                                                        |
 
 **Recipe.** The `probe-terminal-state` step uses
 `$WORKFLOW_GITHUB_REPO_HELPER` when it is set, and fails with
