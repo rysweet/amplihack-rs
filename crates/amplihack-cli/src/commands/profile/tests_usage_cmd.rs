@@ -691,8 +691,10 @@ mod probe {
     use std::time::{Duration, Instant};
 
     fn sh(script: &str) -> Command {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(script);
+        // Other unit tests change the process-wide PATH while running in
+        // parallel. Keep this probe fixture independent of those changes.
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c").arg(script).env("PATH", "/usr/bin:/bin");
         c
     }
 

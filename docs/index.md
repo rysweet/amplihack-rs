@@ -222,8 +222,8 @@ Understand the philosophy and architecture behind amplihack.
 
 Proven methodologies for consistent, high-quality results.
 
-- [Workflow Commit Identity](workflows.md) - Planned safe author and committer
-  attribution for Amplihack-created workflow commits
+- [Workflow checkpoints and commits](workflows.md) - Implementation checkpoint
+  staging and formatting, plus commit identity configuration
 
 ### Automatic Workflow Classification ⭐ NEW
 

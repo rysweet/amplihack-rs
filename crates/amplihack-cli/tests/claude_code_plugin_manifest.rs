@@ -314,6 +314,17 @@ mod shell {
         cmd.spawn().unwrap()
     }
 
+    /// Keep the shell itself alive with a builtin read. A final `sleep`
+    /// command can replace the shell, removing `install-runtime` from the
+    /// process command line that the lock owner check inspects.
+    fn live_installer() -> std::process::Child {
+        Command::new("/bin/sh")
+            .args(["-c", "read -r _", "install-runtime"])
+            .stdin(Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
     fn write_exe(path: &Path, body: &str) {
         crate::support::exec_stub::write_executable(path, body, 0o755);
     }
@@ -820,10 +831,7 @@ mod shell {
         fs::create_dir(&lock).unwrap();
         // A process whose command line names install-runtime stands in for a
         // live installer.
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
+        let mut installer = live_installer();
         fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
         age(&lock);
         let bin = bootstrap_fixture();
@@ -1366,10 +1374,7 @@ fi
         let home_data = tempfile::tempdir().unwrap();
         let lock = home_data.path().join("install.lock");
         fs::create_dir(&lock).unwrap();
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
+        let mut installer = live_installer();
         fs::write(lock.join("pid"), format!("{}\n", installer.id())).unwrap();
         let home = tempfile::tempdir().unwrap();
         let stub = tempfile::tempdir().unwrap();
@@ -1540,10 +1545,7 @@ fi
 
     #[test]
     fn without_a_usable_ps_a_live_installers_lock_is_kept() {
-        let mut installer = Command::new("sh")
-            .args(["-c", "sleep 30", "install-runtime"])
-            .spawn()
-            .unwrap();
+        let mut installer = live_installer();
         let pid = installer.id();
         let (out, data) = manual_install_against(
             |lock| {

@@ -167,6 +167,10 @@ fn amplihack_install_command_with_binary(
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
+        // This test exercises generic framework staging. Select Claude
+        // explicitly so a host Codex session cannot trigger native plugin
+        // reconciliation inside the isolated install process.
+        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd
