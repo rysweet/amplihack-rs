@@ -335,22 +335,69 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
 // ---------------------------------------------------------------------------
 
 const GUARD: &str = "amplihack hygiene artifact-guard";
+const SCOPED_TDD_ADD: &str = "git --literal-pathspecs add -A --pathspec-from-file";
+
+/// Byte offset of a shell command at the start of an executable line.
+fn shell_command_offset(text: &str, command: &str) -> Option<usize> {
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        if line[indent..].starts_with(command) {
+            return Some(line_start + indent);
+        }
+        line_start += line.len();
+    }
+    None
+}
+
+/// End of executable shell text on one line; a `#` inside quotes is data.
+fn shell_code_end(line: &str) -> usize {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for (at, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !single => escaped = true,
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single
+                && !double
+                && line[..at]
+                    .chars()
+                    .last()
+                    .is_none_or(|prev| prev.is_whitespace() || matches!(prev, ';' | '&' | '|')) =>
+            {
+                return at;
+            }
+            _ => {}
+        }
+    }
+    line.len()
+}
 
 /// `(start, end)` byte spans of every broad add (`git add -A`, `git add --all`,
 /// `git add .`) in `text`. `git add .gitignore` and `git add -Ab` are not broad
-/// adds of the whole tree, so a needle must end at a word boundary.
+/// adds of the whole tree, so a needle must end at a word boundary. Shell
+/// comments do not count as staging commands.
 fn broad_add_spans(text: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
-    for needle in ["git add -A", "git add --all", "git add ."] {
-        for (start, _) in text.match_indices(needle) {
-            let end = start + needle.len();
-            let boundary = text[end..].chars().next().is_none_or(|c| {
-                c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '`' | '"' | '\'')
-            });
-            if boundary {
-                spans.push((start, end));
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let code = &line[..shell_code_end(line)];
+        for needle in ["git add -A", "git add --all", "git add ."] {
+            for (at, _) in code.match_indices(needle) {
+                let end = at + needle.len();
+                let boundary = code[end..].chars().next().is_none_or(|c| {
+                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '`' | '"' | '\'')
+                });
+                if boundary {
+                    spans.push((line_start + at, line_start + end));
+                }
             }
         }
+        line_start += line.len();
     }
     spans.sort_unstable();
     spans
@@ -416,6 +463,16 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
         broad_add_spans("git add .gitignore && git commit -m x").is_empty(),
         "`git add .gitignore` is not a broad add"
     );
+    assert_eq!(
+        broad_add_spans("# git add -A\necho ready # git add --all\ngit add -A\n").len(),
+        1,
+        "shell comments must not count as broad staging"
+    );
+    assert_eq!(
+        broad_add_spans("echo '# in quotes'; git add -A\n").len(),
+        1,
+        "a quoted hash must not hide a later staging command"
+    );
     assert!(
         adds_committed_without_recheck("git add -A\necho 'no commit follows'\n").is_empty(),
         "an add with no following commit is out of scope for this rule"
@@ -448,9 +505,10 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
         }
     }
 
+    // The TDD checkpoint uses a scoped add, checked separately below.
     assert!(
-        checked >= 10,
-        "expected the ten known broad-add commit sites to be scanned, found {checked}"
+        checked >= 9,
+        "expected the nine executable broad-add commit sites to be scanned, found {checked}"
     );
     assert!(
         missing.is_empty(),
@@ -966,22 +1024,32 @@ fn every_guard_call_in_every_recipe_can_stop_its_step() {
 }
 
 #[test]
-fn recipes_at_the_line_budget_recheck_on_the_add_line() {
-    // D3: workflow-tdd and workflow-pr-review sit at 399 lines, so their
-    // post-add guard shares the `git add -A` line. `;` (not `&&`) keeps a
-    // failed add binding under `set -e`.
-    for (recipe, step) in [
-        ("workflow-tdd.yaml", "checkpoint-after-implementation"),
-        ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
-    ] {
-        let recipe_doc = load_recipe(recipe);
-        let command = step_text(&recipe_doc, step, "command");
-        assert!(
-            command.lines().any(|line| line.trim()
-                == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
-            "{recipe} {step}: expected `git add -A; {GUARD} --repo . --mode pre-publish`:\n{command}"
-        );
-    }
+fn checkpoint_and_review_recheck_after_staging() {
+    let tdd = load_recipe("workflow-tdd.yaml");
+    let command = step_text(&tdd, "checkpoint-after-implementation", "command");
+    let scoped_add = shell_command_offset(command, SCOPED_TDD_ADD)
+        .expect("TDD checkpoint must stage only captured paths");
+    let commit = command
+        .find("if commit_with_pre_commit_guard -m")
+        .expect("TDD checkpoint must invoke the guarded commit helper");
+    assert!(
+        scoped_add < commit
+            && command[scoped_add + SCOPED_TDD_ADD.len()..commit]
+                .lines()
+                .any(|line| line.trim()
+                    == "amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "TDD checkpoint must recheck artifacts between scoped staging and commit: {command}"
+    );
+
+    // Review feedback still uses broad staging and keeps the guard on the
+    // same line, so `set -e` binds a failed add before the guard can run.
+    let review = load_recipe("workflow-pr-review.yaml");
+    let command = step_text(&review, "step-18c-push-feedback-changes", "command");
+    assert!(
+        command.lines().any(|line| line.trim()
+            == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "workflow-pr-review.yaml must recheck artifacts after broad staging: {command}"
+    );
 }
 
 #[test]
@@ -1225,9 +1293,13 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
     for (recipe, step) in PHASE1_COMMIT_SITES {
         let loaded = load_recipe(recipe);
         let command = step_text(&loaded, step, "command");
-        let add = command
-            .find("git add -A")
-            .unwrap_or_else(|| panic!("{step} stages"));
+        let add_command = if step == "checkpoint-after-implementation" {
+            SCOPED_TDD_ADD
+        } else {
+            "git add -A; amplihack hygiene artifact-guard"
+        };
+        let add = shell_command_offset(command, add_command)
+            .unwrap_or_else(|| panic!("{recipe}/{step} must execute `{add_command}`"));
         assert!(
             command.contains(STEP_20B_CONTEXT_DEFAULT),
             "{recipe}/{step}: the worktree default must not fall back to REPO_PATH"
