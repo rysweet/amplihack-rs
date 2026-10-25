@@ -41,15 +41,49 @@ pub fn redact_remote_url(remote_url: &str) -> String {
     let Some((scheme, after_scheme)) = remote_url.split_once("://") else {
         return remote_url.to_string();
     };
-    let authority_end = after_scheme
-        .find(['/', '?', '#'])
-        .unwrap_or(after_scheme.len());
-    let (authority, rest) = after_scheme.split_at(authority_end);
+    let (authority, rest) = after_scheme.split_at(authority_end_for_redact(after_scheme));
+    // A backslash makes the userinfo/host split ambiguous (issue #1642), so
+    // hide the whole authority rather than guess which part is the secret.
+    if authority.contains('\\') && authority.contains('@') {
+        return format!("{scheme}://[redacted]{rest}");
+    }
     let Some((_, host)) = authority.rsplit_once('@') else {
         return remote_url.to_string();
     };
 
     format!("{scheme}://[redacted]@{host}{rest}")
+}
+
+/// Redaction keeps the historical `/?#`-wide authority so it never prints a
+/// byte it hid before #1642.
+fn authority_end_for_redact(after_scheme: &str) -> usize {
+    after_scheme
+        .find(['/', '?', '#'])
+        .unwrap_or(after_scheme.len())
+}
+
+/// Parsing ends the authority at `\` too, as git does, so text after a
+/// backslash can never be read as the host.
+fn authority_end_for_parse(after_scheme: &str) -> usize {
+    after_scheme
+        .find(['/', '?', '#', '\\'])
+        .unwrap_or(after_scheme.len())
+}
+
+/// Splits `userinfo@host` at the FIRST `@`. Userinfo, when present, must be
+/// non-empty and use only allow-listed bytes, and the host must not contain
+/// another `@`; otherwise `None`.
+fn split_userinfo(authority: &str) -> Option<&str> {
+    let Some((userinfo, host)) = authority.split_once('@') else {
+        return Some(authority);
+    };
+    let valid =
+        !userinfo.is_empty() && userinfo.bytes().all(is_userinfo_byte) && !host.contains('@');
+    valid.then_some(host)
+}
+
+fn is_userinfo_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"._~%!$&'()*+,;=:-".contains(&byte)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -65,17 +99,11 @@ fn remote_url_parts(remote_url: &str) -> Option<RemoteUrlParts<'_>> {
     }
 
     if let Some(after_scheme) = trimmed.split_once("://").map(|(_, rest)| rest) {
-        let authority_end = after_scheme
-            .find(['/', '?', '#'])
-            .unwrap_or(after_scheme.len());
-        let (authority, path) = after_scheme.split_at(authority_end);
-        let authority = authority
-            .split(['/', '?', '#'])
-            .next()
-            .filter(|value| !value.is_empty())?;
-        let host_port = authority
-            .rsplit_once('@')
-            .map_or(authority, |(_, host)| host);
+        let (authority, path) = after_scheme.split_at(authority_end_for_parse(after_scheme));
+        if authority.is_empty() {
+            return None;
+        }
+        let host_port = split_userinfo(authority)?;
         let host = host_port
             .strip_prefix('[')
             .and_then(|value| value.split_once(']').map(|(host, _)| host))
@@ -90,15 +118,14 @@ fn remote_url_parts(remote_url: &str) -> Option<RemoteUrlParts<'_>> {
         });
     }
 
-    trimmed
-        .split_once(':')
-        .map(|(host_part, path)| RemoteUrlParts {
-            host: host_part
-                .rsplit_once('@')
-                .map_or(host_part, |(_, host)| host),
-            path,
-        })
-        .filter(|parts| !parts.host.is_empty())
+    let (host_part, path) = trimmed.split_once(':')?;
+    // scp form: a leading `-` would reach ssh as an option, and a backslash
+    // makes the userinfo/host split ambiguous; neither is ever a provider.
+    if host_part.starts_with('-') || host_part.contains('\\') {
+        return None;
+    }
+    let host = split_userinfo(host_part)?;
+    (!host.is_empty()).then_some(RemoteUrlParts { host, path })
 }
 
 fn host_matches_provider_domain(host: &str, provider_domain: &str) -> bool {
@@ -135,12 +162,29 @@ fn repository_owner_name(
 
 fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
     let mut parts = path.trim_matches('/').split('/');
-    let owner = parts.next().filter(|value| !value.is_empty());
-    let name = parts.next().filter(|value| !value.is_empty());
+    let owner = parts
+        .next()
+        .filter(|value| is_identity_segment(value) && !value.starts_with('-'));
+    // Checked after all normalisation, so `..git` (-> `.`) and `.git.git`
+    // (-> empty) never become a repository name.
+    let name = parts
+        .next()
+        .map(trim_repo_suffix)
+        .filter(|value| is_identity_segment(value));
     match (owner, name) {
-        (Some(owner), Some(name)) => (owner.into(), trim_repo_suffix(name)),
+        (Some(owner), Some(name)) => (owner.into(), name),
         _ => ("unknown".into(), fallback_name.into()),
     }
+}
+
+/// Same rule as the bash parser: `[A-Za-z0-9._-]+`, never `.` or `..`.
+fn is_identity_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value != "."
+        && value != ".."
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn azure_owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
