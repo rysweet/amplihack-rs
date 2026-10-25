@@ -40,9 +40,14 @@ nothing, and runs no `set -e`, `set -u`, `set -o` or `shopt`. Every variable is
 ```bash
 $ bash -c '. "$1"; parse_github_repo_identity "$2"' _ \
     amplifier-bundle/tools/workflow_github_repo.sh \
-    https://x:tok@github.com/rysweet/amplihack-rs.git
+    "https://x:${TOKEN}@github.com/rysweet/amplihack-rs.git"
 rysweet/amplihack-rs
 ```
+
+`TOKEN` stands for any credential in the userinfo; the parser discards it.
+Credential-shaped values are never written literally in this repository: the
+Rust tests build them with `concat!` so that secret scanners do not read them
+as credentials.
 
 ## Parsing rules
 

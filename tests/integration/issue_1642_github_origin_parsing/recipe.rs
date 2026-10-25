@@ -58,7 +58,7 @@ fn recipe_pr_url_parser_accepts_real_pr_urls() {
         "https://github.com/o/r/pull/5",
         "http://github.com/o/r/pull/5",
         "https://tok@github.com/o/r/pull/5",
-        "https://o:x@github.com/o/r/pull/5",
+        concat!("https://o:", "x@github.com/o/r/pull/5"),
         "https://github.com/o/r/pull/5?notification_referrer_id=1",
         "https://github.com/o/r/pull/5#discussion_r1",
         // One trailing `/`, as the shared parser allows.
@@ -193,7 +193,7 @@ fn probe_still_takes_credential_bearing_github_pr_urls() {
     let helper = helper_path();
     for pr_url in [
         "https://tok@github.com/o/r/pull/5",
-        "https://o:x@github.com/o/r/pull/5",
+        concat!("https://o:", "x@github.com/o/r/pull/5"),
     ] {
         let fx = Fixture::with_origin("https://github.com/o/r.git");
         let out = run_probe(

@@ -199,7 +199,7 @@ mod tests {
         "https://a@b@github.com/o/r",
         "https://a@github.com/x@github.com/o/r",
         "https://tok@github.com/o/r",
-        "https://x:tok@github.com/o/r",
+        concat!("https://x:", "tok@github.com/o/r"),
         r"evil.example\@github.com:o/r",
         "-oProxyCommand=x:o/r",
     ];

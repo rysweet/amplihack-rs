@@ -34,7 +34,7 @@ fn github_origins_are_stored_as_owner_repo() {
         "https://github.com/o/r.git",
         "git@github.com:o/r.git",
         "ssh://git@github.com/o/r",
-        "https://x:tok@github.com/o/r",
+        concat!("https://x:", "tok@github.com/o/r"),
         "https://github.com/o/r/pull/5",
     ] {
         assert_eq!(repository_for(url), "o/r", "{url}");
@@ -61,9 +61,9 @@ fn hostile_origins_are_not_stored_as_owner_repo() {
 #[test]
 fn rejected_urls_are_stored_without_their_userinfo() {
     for url in [
-        "https://user:tok-1642@gitlab.example/o/r.git",
+        concat!("https://user:", "tok-1642@gitlab.example/o/r.git"),
         "https://tok-1642@evil.example/o/r",
-        "https://user:tok-1642@evil.example/x@github.com/a/b",
+        concat!("https://user:", "tok-1642@evil.example/x@github.com/a/b"),
     ] {
         let repository = repository_for(url);
         assert!(

@@ -68,7 +68,7 @@ fn collect_still_treats_real_pr_and_issue_urls_as_github() {
     for pr_url in [
         "https://github.com/o/r/pull/5",
         "https://tok@github.com/o/r/pull/5",
-        "https://x:tok@github.com/o/r/pull/5",
+        concat!("https://x:", "tok@github.com/o/r/pull/5"),
         "https://github.com/o/r/pull/5/files",
         "https://github.com/o/r/issues/7",
     ] {

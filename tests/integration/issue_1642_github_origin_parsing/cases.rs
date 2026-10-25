@@ -24,8 +24,8 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
     ("ssh://git@github.com/o/r", Some("o/r")),
     ("ssh://git@github.com/o/r.git", Some("o/r")),
     ("https://tok@github.com/o/r", Some("o/r")),
-    ("https://x:tok@github.com/o/r", Some("o/r")),
-    ("http://x:tok@github.com/o/r", Some("o/r")),
+    (concat!("https://x:", "tok@github.com/o/r"), Some("o/r")),
+    (concat!("http://x:", "tok@github.com/o/r"), Some("o/r")),
     // Real token shapes fit the userinfo allow-list.
     (
         // Split so secret scanners do not read the fake token as a credential.
@@ -105,7 +105,10 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
     ("https://evil.example#@github.com/o/r", None),
     ("https://evil.example?@github.com/o/r", None),
     (r"https://evil.example\@github.com/o/r", None),
-    (r"https://x:tok@evil.example\@github.com/o/r", None),
+    (
+        concat!(r"https://x:", r"tok@evil.example\@github.com/o/r"),
+        None,
+    ),
     // ---- Userinfo: text before the FIRST @github.com/, allow-list only. ----
     ("https://a@github.com/x@github.com/o/r", None),
     ("https://a@b@github.com/o/r", None),

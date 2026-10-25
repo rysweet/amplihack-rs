@@ -32,7 +32,7 @@ const HOSTILE: &[&str] = &[
     "https://evil.example#@github.com/o/r",
     "https://evil.example?@github.com/o/r",
     r"https://evil.example\@github.com/o/r",
-    r"https://u:p@evil.example\@github.com/o/r",
+    concat!(r"https://u:", r"p@evil.example\@github.com/o/r"),
     r"https://evil.example\tok@github.com/o/r",
     "https://a@b@github.com/o/r",
     "https://@github.com/o/r",
@@ -50,7 +50,7 @@ const REAL_FORMS: &[&str] = &[
     "ssh://git@github.com/o/r",
     "ssh://git@github.com/o/r.git",
     "https://tok@github.com/o/r",
-    "https://x:tok@github.com/o/r",
+    concat!("https://x:", "tok@github.com/o/r"),
     // Split so secret scanners do not read the fake token as a credential.
     concat!(
         "https://x-access-token:",
@@ -223,7 +223,7 @@ fn azure_devops_with_plain_userinfo_still_classifies() {
 fn redaction_table_gives_exact_outputs() {
     let rows = [
         (
-            "https://x:tok@github.com/o/r.git",
+            concat!("https://x:", "tok@github.com/o/r.git"),
             "https://[redacted]@github.com/o/r.git",
         ),
         (
@@ -235,7 +235,7 @@ fn redaction_table_gives_exact_outputs() {
             "https://[redacted]/o/r",
         ),
         (
-            r"https://u:p@evil.example\@github.com/o/r",
+            concat!(r"https://u:", r"p@evil.example\@github.com/o/r"),
             "https://[redacted]/o/r",
         ),
         (
@@ -256,13 +256,19 @@ fn redaction_table_gives_exact_outputs() {
 #[test]
 fn redaction_never_prints_hidden_userinfo() {
     let rows: &[(&str, &[&str])] = &[
-        (r"https://u:p@evil.example\@github.com/o/r", &["u:p"]),
+        (
+            concat!(r"https://u:", r"p@evil.example\@github.com/o/r"),
+            &["u:p"],
+        ),
         (
             r"https://evil.example\tok@github.com/o/r",
             &["tok", "evil.example"],
         ),
         ("https://a@b@github.com/o/r", &["a@b", "a@"]),
-        ("https://x:tok@github.com/o/r.git", &["tok", "x:"]),
+        (
+            concat!("https://x:", "tok@github.com/o/r.git"),
+            &["tok", "x:"],
+        ),
     ];
     for (input, secrets) in rows {
         let out = redact_remote_url(input);

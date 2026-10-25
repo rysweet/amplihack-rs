@@ -31,7 +31,7 @@ pub const HOSTILE_ORIGINS: &[&str] = &[
     r"https://evil.example\@github.com/o/r",
     "https://a@github.com/x@github.com/o/r",
     // Carries the dummy token, so P3 is checked on a rejected origin too.
-    r"https://x:tok@evil.example\@github.com/o/r",
+    concat!(r"https://x:", r"tok@evil.example\@github.com/o/r"),
 ];
 
 /// Real origin forms; every one must keep parsing to `o/r`.
@@ -43,8 +43,8 @@ pub const REAL_ORIGINS: &[&str] = &[
     "git@github.com:o/r.git",
     "ssh://git@github.com/o/r",
     "https://tok@github.com/o/r",
-    "https://x:tok@github.com/o/r",
-    "http://x:tok@github.com/o/r",
+    concat!("https://x:", "tok@github.com/o/r"),
+    concat!("http://x:", "tok@github.com/o/r"),
 ];
 
 const GH_STUB: &str = r#"#!/usr/bin/env bash
