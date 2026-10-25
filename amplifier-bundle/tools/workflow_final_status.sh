@@ -7,11 +7,11 @@ echo ""
 export GH_PAGER=cat PAGER=cat LESS=FRX
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-PR_NUMBER="${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}"
-PUBLISH_STATE="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-}}"
+PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
+PUBLISH_STATE="${RECIPE_VAR_pr_publish_result__state:-}"
 TASK_DESC="${TASK_DESCRIPTION:-}"
-ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
 
 terminal_success="false"
 terminal_state_out=""
@@ -90,14 +90,14 @@ emit_terminal_evidence() {
   [ -z "$invalid_evidence" ] || echo "invalid_evidence=$invalid_evidence"
 }
 
-impl_input="${IMPLEMENTATION_COMPLETED:-${IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED:-${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-}}}"
-verify_input="${VERIFICATION_COMPLETED:-${VERIFICATION_TERMINAL_EVIDENCE_VERIFICATION_COMPLETED:-${RECIPE_VAR_verification_terminal_evidence__verification_completed:-}}}"
-publish_input="${PUBLISH_STATE_REACHED:-${PUBLISH_TERMINAL_EVIDENCE_PUBLISH_STATE_REACHED:-${RECIPE_VAR_publish_terminal_evidence__publish_state_reached:-}}}"
-no_op_input="${TERMINAL_NO_OP:-${IMPLEMENTATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-${VERIFICATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_verification_terminal_evidence__terminal_no_op:-}}}}}"
-failure_input="${TERMINAL_FAILURE:-${TERMINAL_STATE_TERMINAL_FAILURE:-${RECIPE_VAR_terminal_state__terminal_failure:-}}}"
-allow_no_op_input="${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}"
-probe_success_input="${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-}}"
-probe_state_input="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}}"
+impl_input="${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-}"
+verify_input="${RECIPE_VAR_verification_terminal_evidence__verification_completed:-}"
+publish_input="${RECIPE_VAR_publish_terminal_evidence__publish_state_reached:-}"
+no_op_input="${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-${RECIPE_VAR_verification_terminal_evidence__terminal_no_op:-}}"
+failure_input="${RECIPE_VAR_terminal_state__terminal_failure:-}"
+allow_no_op_input="${RECIPE_VAR_allow_no_op:-false}"
+probe_success_input="${RECIPE_VAR_terminal_state__terminal_success:-}"
+probe_state_input="${RECIPE_VAR_terminal_state__terminal_state:-}"
 
 normalize_bool "IMPLEMENTATION_COMPLETED" "$impl_input"
 implementation_completed="$normalized_bool"
@@ -130,7 +130,7 @@ case "$PUBLISH_STATE" in
   BLOCKED_PROVIDER)
     terminal_success="false"
     terminal_state_out="BLOCKED_PROVIDER"
-    terminal_reason_out="${PR_PUBLISH_RESULT_MESSAGE:-${RECIPE_VAR_pr_publish_result__message:-provider publication failed or was ambiguous}}"
+    terminal_reason_out="${RECIPE_VAR_pr_publish_result__message:-provider publication failed or was ambiguous}"
     terminal_failure="true"
     emit_terminal_evidence
     echo "ERROR: workflow publish provider is blocked: $terminal_reason_out" >&2
@@ -204,7 +204,7 @@ validate_final_pr_scope() {
     return 1
   }
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
-  scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+  scoped_issue_id="${RECIPE_VAR_issue_number:-}"
   # issue_number can carry a non-numeric local tracking reference (e.g.
   # local-5d904cff4398) when the workflow fell back to local tracking (#815,
   # #804). PR-scope matching only understands numeric ids, so coerce a
@@ -292,7 +292,7 @@ adjudicate_terminal_state() {
   # SAME lattice as any other judgement — it can downgrade freely, but it can
   # only confirm success when the collected evidence carries a positive
   # artifact, and it can never lift a hard negative.
-  agent_verdict="${WORKFLOW_TERMINAL_AGENT_VERDICT:-${TERMINAL_ADJUDICATION_AGENT_VERDICT:-${RECIPE_VAR_terminal_adjudication__agent_verdict:-}}}"
+  agent_verdict="${RECIPE_VAR_terminal_adjudication__agent_verdict:-}"
   rc=0
   adjudication="$(printf '%s' "$terminal_evidence_json" \
     | bash "$TERMINAL_EVIDENCE_HELPER" adjudicate - --agent-verdict "$agent_verdict" --report-only)" || rc=$?
@@ -351,7 +351,7 @@ resolve_open_pr_for_current_branch() {
   fi
   command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  run_dir="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+  run_dir="${RECIPE_VAR_worktree_setup__worktree_path:-}"
   if [ -n "$run_dir" ]; then
     [ -d "$run_dir" ] || return 0
   else
@@ -370,7 +370,7 @@ resolve_open_pr_for_current_branch() {
 
   branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
   [ -n "$branch" ] || return 0
-  expected_branch="${WORKTREE_SETUP_BRANCH_NAME:-${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}"
+  expected_branch="${RECIPE_VAR_worktree_setup__branch_name:-}"
   [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || return 0
   case "$branch" in -*|main|master) return 0 ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
@@ -446,8 +446,8 @@ fi
 
 if [ "$terminal_failure" = "true" ]; then
   terminal_success="false"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-TERMINAL_FAILURE}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-explicit terminal failure evidence was reported}}}"
+  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-TERMINAL_FAILURE}"
+  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-explicit terminal failure evidence was reported}"
   emit_terminal_evidence
   echo "ERROR: workflow terminal failure: $terminal_state_out: $terminal_reason_out" >&2
   exit 1
@@ -455,16 +455,16 @@ fi
 
 if [ "$terminal_no_op" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-ALLOW_NO_OP}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-allow_no_op was explicitly selected for a non-code-change path}}}"
+  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-ALLOW_NO_OP}"
+  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-allow_no_op was explicitly selected for a non-code-change path}"
 elif [ "$publish_state_reached" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-${PR_PUBLISH_RESULT_MESSAGE:-${RECIPE_VAR_pr_publish_result__message:-publish/PR state reached}}}}}"
+  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}"
+  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-${RECIPE_VAR_pr_publish_result__message:-publish/PR state reached}}"
 elif [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-IMPLEMENTED_VERIFIED}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-implementation and verification evidence present}}}"
+  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-IMPLEMENTED_VERIFIED}"
+  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-implementation and verification evidence present}"
 else
   terminal_success="false"
   terminal_state_out="FAILED_MISSING_TERMINAL_EVIDENCE"

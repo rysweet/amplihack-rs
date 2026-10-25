@@ -40,9 +40,11 @@
 #       step-05-write-round-record: writes AUTODRIVE_ROUND_RECORD, private, as
 #       one JSON line starting with {"merge_ready_verdict":", and prints it.
 #
-# Step outputs are read from the environment the way recipe-runner exports
-# them: "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" and the like (see
-# docs/reference/auto-drive-to-merge.md, "How a step output reaches bash").
+# Step outputs are read only as recipe-runner's RECIPE_VAR_<key> export:
+# "${RECIPE_VAR_qa_evidence:-}" and the like. A bare QA_EVIDENCE, CI_EVIDENCE
+# or MERGE_READY_VERDICT inherited from whatever launched the runner is never
+# read (#1561; docs/reference/auto-drive-to-merge.md, "Step outputs ignore
+# inherited bare variables").
 # AUTODRIVE_STATE_DIR, AUTODRIVE_QA_EVIDENCE, AUTODRIVE_ROUND_RECORD,
 # AUTODRIVE_ROUND_LABEL, PR_NUMBER and REPO_PATH come from there too.
 # crusty-range, qa-evidence-sha and crusty-evidence print only fixed tokens and
@@ -164,16 +166,16 @@ crusty_evidence() {
 
 measured_downgrade() {
   local qa ci conflict threads crusty approval qh qnow d=""
-  qa="$(token "$(field "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)")"
-  ci="$(token "$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)")"
-  conflict="$(token "$(field "${MERGE_SYNC:-${RECIPE_VAR_merge_sync:-}}" conflict unknown)")"
-  threads="$(token "$(field "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" unresolved_threads unreadable)")"
-  crusty="$(field "${CRUSTY_EVIDENCE:-${RECIPE_VAR_crusty_evidence:-}}" crusty_status MISSING)"
-  approval="$(field "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" approval_status MISSING)"
+  qa="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
+  ci="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
+  conflict="$(token "$(field "${RECIPE_VAR_merge_sync:-}" conflict unknown)")"
+  threads="$(token "$(field "${RECIPE_VAR_platform_facts:-}" unresolved_threads unreadable)")"
+  crusty="$(field "${RECIPE_VAR_crusty_evidence:-}" crusty_status MISSING)"
+  approval="$(field "${RECIPE_VAR_platform_facts:-}" approval_status MISSING)"
   case "$crusty" in DONE_CLEAN|ABSENT|NOT_CLEAN|UNTRUSTED|UNREVIEWED_COMMITS|MISSING) ;; *) crusty="OTHER" ;; esac
   case "$approval" in MET|NOT_MET|PENDING|UNREADABLE|MISSING) ;; *) approval="OTHER" ;; esac
   # D5: the qa evidence must still be the file step-00d hashed before any agent ran.
-  qh="$(hex_or_empty "$(field "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')")"
+  qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
   qnow="$(qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")"
   [ "$qa" = "PASS" ] || d="${d}qa_status=${qa} "
   [ "$ci" = "GREEN" ] || d="${d}ci_status=${ci} "
@@ -212,15 +214,15 @@ round_record() {
   else
     echo "[skip] not a git repo; the head sha is left empty so the merge gate refuses rather than merging unbound evidence" >&2
   fi
-  verdict="$(field "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" merge_ready_verdict NOT_MERGE_READY)"
+  verdict="$(field "${RECIPE_VAR_merge_ready_verdict:-}" merge_ready_verdict NOT_MERGE_READY)"
   case "$verdict" in MERGE_READY|NOT_MERGE_READY) ;; *) verdict="NOT_MERGE_READY" ;; esac
-  count="$(field "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" blocker_count 0)"
+  count="$(field "${RECIPE_VAR_merge_ready_verdict:-}" blocker_count 0)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
-  qa="$(field "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)"
-  ci_signal="$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_signal unreadable)"
-  ci_status="$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)"
+  qa="$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)"
+  ci_signal="$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal unreadable)"
+  ci_status="$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)"
   # step-00d's hash, whole hex or "": the gate trusts the qa evidence only at this hash (#1517 D5).
-  qh="$(hex_or_empty "$(field "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')")"
+  qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"

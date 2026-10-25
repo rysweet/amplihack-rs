@@ -2,8 +2,8 @@
 set -euo pipefail
 
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
-PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
+PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
@@ -160,7 +160,7 @@ if [[ "$PR_NUMBER" =~ [^[:space:]] ]] && ! [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; 
   exit 1
 fi
 
-scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+scoped_issue_id="${RECIPE_VAR_issue_number:-}"
 # issue_number can carry a non-numeric local tracking reference (e.g.
 # local-5d904cff4398) when the workflow fell back to local tracking (#815,
 # #804). PR-scope matching only understands numeric ids, so coerce a
