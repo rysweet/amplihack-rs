@@ -21,6 +21,10 @@ fn run_probe(test_name: &str, env_override: Option<&str>) -> String {
     let mut cmd = Command::new(&exe);
     // The fallback probes also need a cwd without persisted launcher context.
     let probe_dir = tempfile::tempdir().expect("could not create isolated probe directory");
+    // The walk-up stops at a `.git` boundary. Without one it continues above
+    // TMPDIR, where a fresh launcher context left by any session started in an
+    // ancestor directory would answer instead of the default.
+    std::fs::create_dir(probe_dir.path().join(".git")).expect("could not create .git boundary");
     cmd.current_dir(probe_dir.path());
     // Issue #1606: the resolver also reads ~/.amplihack/config.toml, so the
     // probe gets a HOME with no config in it, never the developer's.
