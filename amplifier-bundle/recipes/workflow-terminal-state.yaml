@@ -178,6 +178,7 @@ steps:
         identity="$(parse_github_repo_identity "$url")" || return 1
         rest="${url%%\?*}"
         rest="${rest%%#*}"
+        rest="${rest%/}"
         rest="${rest#*://}"
         # This strip is the one allowed exception to the single-parser rule
         # (issue #1642): it runs only after parse_github_repo_identity has

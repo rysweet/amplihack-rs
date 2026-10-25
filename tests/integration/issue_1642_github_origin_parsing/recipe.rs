@@ -61,6 +61,8 @@ fn recipe_pr_url_parser_accepts_real_pr_urls() {
         "https://o:x@github.com/o/r/pull/5",
         "https://github.com/o/r/pull/5?notification_referrer_id=1",
         "https://github.com/o/r/pull/5#discussion_r1",
+        // One trailing `/`, as the shared parser allows.
+        "https://github.com/o/r/pull/5/",
     ] {
         let out = parse_pr_url(url);
         assert!(
@@ -85,6 +87,7 @@ fn recipe_pr_url_parser_rejects_hostile_and_malformed_pr_urls() {
         "https://github.com/o/r/pull/12345678901",
         "https://github.com/o/r/pull/5x",
         "https://github.com/o/r/pull/",
+        "https://github.com/o/r/pull/5//",
         "https://github.com/o/r/issues/5",
         "https://github.com/o/r",
         "ssh://git@github.com/o/r/pull/5",
