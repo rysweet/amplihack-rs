@@ -46,6 +46,12 @@ the official [environment variable reference](https://code.claude.com/docs/en/en
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
 | `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
+The copy is made once, when the profile is added. After that, `amplihack install`
+keeps the amplihack hooks in each profile's `settings.json` current: it replaces
+amplihack's hook entries with the ones it writes to `~/.claude/settings.json`
+and leaves the rest of the file alone. A profile without a `settings.json` is
+left without one.
+
 Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
 on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other

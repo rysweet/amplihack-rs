@@ -18,6 +18,7 @@ mod root_cmd;
 mod root_config;
 mod rotate;
 mod run;
+mod settings_refresh;
 mod shared_dirs;
 mod store;
 mod usage_cmd;
@@ -46,6 +47,8 @@ mod tests_run;
 #[cfg(test)]
 mod tests_seed;
 #[cfg(all(test, unix))]
+mod tests_settings_refresh;
+#[cfg(all(test, unix))]
 mod tests_shared_dirs;
 #[cfg(test)]
 mod tests_store;
@@ -64,6 +67,7 @@ use clap::Subcommand;
 use name::ProfileName;
 use root_cmd::{render_list, render_show};
 pub(crate) use rotate::autostart_on_launch;
+pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;

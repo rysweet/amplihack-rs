@@ -639,6 +639,14 @@ Rules:
 - `settings.json` is parsed and only `SHARED_SETTINGS_KEYS` are written to the
   profile's `settings.json`. If nothing survives the filter, no file is
   written. `env`, `apiKeyHelper` and all unknown keys are dropped.
+- `amplihack install` (user scope) refreshes the hooks in every profile's
+  existing `settings.json` (issue #1661): it applies the same hook update as
+  for `~/.claude/settings.json`, so amplihack's entries are replaced and all
+  other keys and hooks are kept. Only real profile directories directly in
+  the root are visited; the file must be a regular file owned by the user
+  (never a symlink), is rewritten atomically with mode `0600` only when it
+  changes, and is never created. A file that cannot be read, parsed or
+  written is reported and skipped; the install still succeeds.
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
