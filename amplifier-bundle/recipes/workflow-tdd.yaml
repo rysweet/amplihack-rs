@@ -288,6 +288,9 @@ steps:
       # Capture the task worktree's existing edits before any validation. A
       # workspace-wide mutating formatter used to create unrelated Rust edits
       # here, which `git add -A` then swept into the checkpoint.
+      # Use a subshell so temporary-file cleanup cannot replace a runner's
+      # existing EXIT trap (for example its step observer).
+      (
       checkpoint_paths=$(mktemp -t checkpoint-paths-XXXXXX)
       stage_paths=$(mktemp -t checkpoint-stage-paths-XXXXXX)
       after_paths=$(mktemp -t checkpoint-after-paths-XXXXXX)
@@ -319,6 +322,7 @@ steps:
       if [ -s "$stage_paths" ]; then
         git --literal-pathspecs add -A --pathspec-from-file="$stage_paths" --pathspec-file-nul
       fi
+      )
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
