@@ -342,13 +342,12 @@ fallback. Unlike step-04, which probes each place for
 `workflow_worktree_sweep.sh`, step3 probes for
 `workflow_worktree_deconflict.sh`, so a stray sweep helper cannot pick the
 directory. `REPO_PATH` is used only when inherited from the environment;
-step3 never sets it. Every place in that
-order is a place code is run from: the answer checks limit the branch name a
-helper can return, not what it does while it runs. Set `AMPLIHACK_HOME` to an
-installed bundle to make that copy win over one in the repository. If no helper
-is found, step3 warns; it then refuses when the branch holds work and reuses a
-clean branch. The prompt bash is extracted and
-run end to end by
+step3 never sets it. Every place in that order is a place code is run from:
+the answer checks limit the branch name a helper can return, not what it does
+while it runs. Set `AMPLIHACK_HOME` to an installed bundle to make that copy
+win over one in the repository. If no helper is found, step3 warns; it then
+refuses when the branch holds work and reuses a clean branch. The prompt bash
+is extracted and run end to end by
 `amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh`;
 see [issue-1565-rerun-preserves-worktree.md](../../docs/recipes/issue-1565-rerun-preserves-worktree.md).
 

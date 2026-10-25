@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# test-issue-1626-consensus-rerun-preserves-work.sh — TDD spec for issue #1626.
+# test-issue-1626-consensus-rerun-preserves-work.sh: TDD spec for issue #1626.
 #
 # Issue #1626: consensus-issue-worktree.yaml step3-setup-worktree, on a re-run
 # whose branch already exists, destroyed work. State 1 (branch + worktree,
@@ -229,7 +229,7 @@ wt_list() { git -C "$1" worktree list --porcelain | awk '$1=="worktree"{print su
 wt_registered() { wt_list "$1" | grep -qFx -- "$2"; }
 
 # ===========================================================================
-# Part A — static checks on the step3 fenced bash block.
+# Part A: static checks on the step3 fenced bash block.
 # ===========================================================================
 echo "=== Part A: step3 static checks (${WORKTREE_YAML}) ==="
 
@@ -367,7 +367,7 @@ fi
 [[ ${A8_OK} -eq 1 ]] && pass "A8-step04-lookup" "step3 locates the helper with step-04's ladder and DECONFLICT_HELPER lines"
 
 # ===========================================================================
-# Part S — the real step3 bash against scratch repos.
+# Part S: the real step3 bash against scratch repos.
 # ===========================================================================
 echo "=== Part S: step3 end-to-end ==="
 
