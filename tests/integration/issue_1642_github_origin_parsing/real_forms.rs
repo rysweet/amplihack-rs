@@ -1,5 +1,6 @@
 //! Group (c): every real origin form still resolves to `o/r` through every
-//! caller, and gh is addressed with exactly `--repo o/r`.
+//! caller, gh is addressed with exactly `--repo o/r`, and the dummy token
+//! never reaches stdout or stderr (P3).
 
 use super::callers::{self, Caller};
 use super::fixture::{Fixture, Outcome, REAL_ORIGINS};
@@ -41,6 +42,11 @@ fn caller_failures(caller: Caller) -> Vec<String> {
                 "{caller:?} with origin {origin:?} did not resolve to o/r; gh calls:\n{}\n{}",
                 fx.all_gh_calls(),
                 outcome.describe()
+            ));
+        }
+        if let Some(leak) = outcome.leaked_token() {
+            failures.push(format!(
+                "{caller:?} with {origin:?} printed the token ({leak:?})"
             ));
         }
         let stray: Vec<String> = fx

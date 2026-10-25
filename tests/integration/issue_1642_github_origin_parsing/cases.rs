@@ -99,6 +99,7 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
     ("https://evil.example#@github.com/o/r", None),
     ("https://evil.example?@github.com/o/r", None),
     (r"https://evil.example\@github.com/o/r", None),
+    (r"https://x:tok@evil.example\@github.com/o/r", None),
     // ---- Userinfo: text before the FIRST @github.com/, allow-list only. ----
     ("https://a@github.com/x@github.com/o/r", None),
     ("https://a@b@github.com/o/r", None),

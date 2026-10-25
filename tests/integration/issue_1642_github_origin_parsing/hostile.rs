@@ -53,6 +53,9 @@ fn check(caller: Caller, origin: &str, failures: &mut Vec<String>) {
     if outcome.stdout.contains("evil.example") || outcome.stderr.contains("evil.example") {
         problems.push("output echoes the raw origin".into());
     }
+    if let Some(leak) = outcome.leaked_token() {
+        problems.push(format!("output prints the token ({leak:?})"));
+    }
     if !problems.is_empty() {
         failures.push(format!(
             "{caller:?} with origin {origin:?}: {}\n{}",

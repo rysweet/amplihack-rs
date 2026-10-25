@@ -30,6 +30,8 @@ pub const HOSTILE_ORIGINS: &[&str] = &[
     "https://evil.example?@github.com/o/r",
     r"https://evil.example\@github.com/o/r",
     "https://a@github.com/x@github.com/o/r",
+    // Carries the dummy token, so P3 is checked on a rejected origin too.
+    r"https://x:tok@evil.example\@github.com/o/r",
 ];
 
 /// Real origin forms; every one must keep parsing to `o/r`.
@@ -114,6 +116,13 @@ impl Outcome {
             .rev()
             .filter(|line| line.trim_start().starts_with('{'))
             .find_map(|line| serde_json::from_str(line).ok())
+    }
+
+    /// P3: the first dummy-token fragment either stream contains, if any.
+    pub fn leaked_token(&self) -> Option<&'static str> {
+        [":tok@", "tok@github", "tok@evil", "ghp_FAKE1642"]
+            .into_iter()
+            .find(|leak| self.stdout.contains(leak) || self.stderr.contains(leak))
     }
 
     pub fn describe(&self) -> String {
