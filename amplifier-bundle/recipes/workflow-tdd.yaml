@@ -289,9 +289,13 @@ steps:
       # workspace-wide mutating formatter used to create unrelated Rust edits
       # here, which `git add -A` then swept into the checkpoint.
       checkpoint_paths=$(mktemp -t checkpoint-paths-XXXXXX)
-      trap 'rm -f "$checkpoint_paths"' EXIT
-      git diff --name-only -z HEAD > "$checkpoint_paths"
+      stage_paths=$(mktemp -t checkpoint-stage-paths-XXXXXX)
+      trap 'rm -f "$checkpoint_paths" "$stage_paths"' EXIT
+      git -c diff.renames=false diff --name-only -z HEAD > "$checkpoint_paths"
       git ls-files --others --exclude-standard -z >> "$checkpoint_paths"
+      # Paths already staged (including git mv's old name) need no second add.
+      git -c diff.renames=false diff --name-only -z > "$stage_paths"
+      git ls-files --others --exclude-standard -z >> "$stage_paths"
       declare -A checkpoint_scope=()
       rust_changed=false
       while IFS= read -r -d '' path; do
@@ -308,9 +312,9 @@ steps:
           printf 'ERROR: checkpoint scope changed before staging: %q; no commit created\n' "$path" >&2
           exit 1
         fi
-      done < <(git diff --name-only -z HEAD; git ls-files --others --exclude-standard -z)
-      if [ -s "$checkpoint_paths" ]; then
-        git add -A --pathspec-from-file="$checkpoint_paths" --pathspec-file-nul
+      done < <(git -c diff.renames=false diff --name-only -z HEAD; git ls-files --others --exclude-standard -z)
+      if [ -s "$stage_paths" ]; then
+        git --literal-pathspecs add -A --pathspec-from-file="$stage_paths" --pathspec-file-nul
       fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)

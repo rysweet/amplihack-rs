@@ -77,6 +77,19 @@ checkpoint || fail 'formatted Rust checkpoint failed'
 test "$(git -C "$WORK/task" show --format= --name-only HEAD)" = 'src/lib.rs' \
   || fail 'Rust checkpoint committed unexpected paths'
 
+# A rename needs both pathspecs; a literal bracketed name must not expand.
+printf 'old\n' > "$WORK/task/old.txt"
+printf 'bracketed\n' > "$WORK/task/file[1].txt"
+printf 'plain\n' > "$WORK/task/file1.txt"
+git -C "$WORK/task" add old.txt 'file[1].txt' file1.txt
+git -C "$WORK/task" commit -qm 'fixture for rename and literal pathspec'
+git -C "$WORK/task" mv old.txt new.txt
+printf 'changed\n' > "$WORK/task/file[1].txt"
+checkpoint || fail 'rename and literal path checkpoint failed'
+paths="$(git -C "$WORK/task" show --format= --name-only --no-renames HEAD | sort)"
+test "$paths" = $'file[1].txt\nnew.txt\nold.txt' \
+  || fail 'rename or literal pathspec checkpoint included the wrong files'
+
 # Even a tool that creates a new path after the snapshot cannot extend it.
 printf 'pub fn value() -> i32 {\n    3\n}\n' > "$WORK/task/src/lib.rs"
 cat > "$WORK/bin/cargo" <<'SH'

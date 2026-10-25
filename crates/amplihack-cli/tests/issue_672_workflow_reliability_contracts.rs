@@ -202,13 +202,16 @@ fn tdd_checkpoint_checks_rust_format_without_expanding_staging_scope() {
         .find("cargo fmt --all -- --check")
         .expect("checkpoint-after-implementation must check Rust formatting without mutation");
     let add_pos = command
-        .find("git add -A --pathspec-from-file")
+        .find("git --literal-pathspecs add -A --pathspec-from-file")
         .expect("checkpoint-after-implementation must stage only captured paths");
     assert!(
         fmt_pos < add_pos,
         "Rust formatting validation must run before staging and committing"
     );
-    assert!(command.contains("git diff --name-only -z HEAD > \"$checkpoint_paths\""));
+    assert!(
+        command
+            .contains("git -c diff.renames=false diff --name-only -z HEAD > \"$checkpoint_paths\"")
+    );
     assert!(command.contains("if [ \"$rust_changed\" = true ]"));
     assert!(!command.contains("\n  cargo fmt --all\n"));
 }
