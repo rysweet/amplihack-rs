@@ -167,9 +167,6 @@ fn amplihack_install_command_with_binary(
         .env("HOME", home)
         .env("AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH", hooks_bin)
         .env("RECIPE_RUNNER_RS_PATH", recipe_runner)
-        // Framework staging is independent of the host's active agent CLI.
-        // Select Claude so a Codex session does not trigger native plugin setup.
-        .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env_remove("AMPLIHACK_HOME")
         .env_remove("CLAUDECODE");
     cmd

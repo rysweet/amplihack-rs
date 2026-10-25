@@ -163,9 +163,6 @@ fn run_publish(repo: &Path, bin_dir: &Path) -> Output {
         .arg(helper_path("workflow_publish_pr.sh"))
         .current_dir(repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
-        // The fixture already has origin/main. Its synthetic Azure URL must
-        // never reach the network during the helper's remote HEAD probe.
-        .env("GIT_ALLOW_PROTOCOL", "file")
         .env("REMOTE_HOST_TYPE", "azdo")
         .env("ISSUE_NUMBER", "765")
         .env("SYSTEM_COLLECTIONURI", "https://dev.azure.com/org/")
