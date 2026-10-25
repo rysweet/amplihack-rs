@@ -101,19 +101,25 @@ The rules run in this order. A URL that fails any of them is rejected.
    allow-list.
 
 3. **Normalise.** Cut at the first `?`, then at the first `#`. Strip one
-   trailing `/`, then one `.git` suffix.
+   trailing `/`, then one `.git` suffix from the end of the path. The suffix
+   is only stripped there, so in the PR form it is never removed from the
+   repo segment.
 4. <a id="path-shape"></a>**Path shape.** The remaining path must be exactly
    `owner/repo`, or `owner/repo/pull/<n>` with `<n>` matching
    `^[1-9][0-9]{0,9}$`. Nothing else is accepted, so
    `https://github.com/o/r/extra`, `https://github.com/o/r/tree/main` and
    `https://github.com/o/r/../../x/y` are rejected. This keeps the reported
    identity equal to the repository that git and curl fetch once they remove
-   dot segments. The PR form is accepted because three callers pass PR URLs;
-   a canonical PR number cannot contain a dot segment.
+   dot segments. The PR form is accepted because four call sites pass PR
+   URLs: `workflow_pr_ready.sh` (line 84), `workflow_finalization_collect.sh`
+   (line 97) and `workflow-terminal-state.yaml` (lines 178 and 511). A
+   canonical PR number cannot contain a dot segment.
 5. **Segments.** The owner and repo must each match `[A-Za-z0-9._-]+` and
    must not be `.` or `..`. The owner must not start with `-`. These checks
    run after every normalisation step, with `LC_ALL=C` pinned so bracket
-   ranges never match non-ASCII letters.
+   ranges never match non-ASCII letters. In the PR form the repo segment must
+   not end in `.git`, so `https://github.com/o/r.git/pull/5` is rejected
+   rather than reported as `o/r.git`.
 
 GitHub Enterprise, other hosts and percent-decoding are not supported.
 
@@ -223,8 +229,14 @@ using ASCII byte predicates only (`is_ascii_alphanumeric`):
 
 The launch and launcher parsers accept only `https://github.com/` and
 `git@github.com:` prefixes (and bare `o/r` for the launcher) with exactly two
-segments. The classifier in `remote_repository.rs` returns `Manual`, or a
-GitHub provider with owner `unknown`, for every URL the bash parser rejects.
+segments. In `parse_github_uri` this means the bare-form regex and both URL
+regexes must also reject `.` and `..` segments and an owner starting with
+`-`, which they currently accept.
+
+The classifier in `remote_repository.rs` returns `Manual`, or a GitHub
+provider with owner `unknown`, for every URL the bash parser rejects. In
+particular, `owner_name_from_path` returns owner `unknown` when any segment
+follows the second, unless the remainder is exactly `pull/<n>`.
 The one exception is that it matches `github.com` subdomains, any case and
 any port, where it may return the same `o/r` the URL names. It only labels the
 provider and never hands a repository to `gh`.
@@ -236,16 +248,23 @@ and `reflection/prompt.rs`.
 
 ## Tests
 
-| Test                                                                  | Covers                                                                                                 |
-| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `tests/integration/issue_1642_github_origin_parsing/parser.rs`        | the shared case table in `cases.rs` against the bash helper and the multitask twin                     |
-| `…/callers.rs`                                                        | each caller with each hostile origin (no repo-scoped `gh` call, no token in output) and each real form |
-| `…/missing_helper.rs`                                                 | missing and unreadable helper, including a broken override                                             |
-| `…/recipe.rs`, `…/recipe_lookup*.rs`                                  | recipe rejection, the PR URL exception and the lookup message and skips                                |
-| `…/guard.rs`                                                          | one parser definition, every caller sources it, no other `@github.com` parsing, no `set -x`            |
-| `…/install.rs`                                                        | `amplihack install --local` ships the helper next to the callers                                       |
-| `crates/amplihack-workflows/tests/issue_1642_remote_repository.rs`    | classifier and redaction                                                                               |
-| unit tests in `command_builder`, `checkout.rs` and `repo_checkout.rs` | the same hostile, path-shape and real-form vectors                                                     |
+| Test                                                                  | Covers                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `tests/integration/issue_1642_github_origin_parsing/parser.rs`        | the shared case table in `cases.rs` against the bash helper and the multitask twin          |
+| `…/hostile.rs`                                                        | each caller with each hostile origin: no repo-scoped `gh` call, no token in output          |
+| `…/real_forms.rs`                                                     | each caller with each real origin form resolves to `--repo o/r`                             |
+| `…/callers.rs`, `…/fixture.rs`                                        | how each caller is driven from a fixture repository; the origin lists                       |
+| `…/missing_helper.rs`                                                 | missing and unreadable helper, including a broken override                                  |
+| `…/recipe.rs`, `…/recipe_lookup*.rs`                                  | recipe rejection, the PR URL exception and the lookup message and skips                     |
+| `…/guard.rs`                                                          | one parser definition, every caller sources it, no other `@github.com` parsing, no `set -x` |
+| `…/install.rs`                                                        | `amplihack install --local` ships the helper next to the callers                            |
+| `crates/amplihack-workflows/tests/issue_1642_remote_repository.rs`    | classifier and redaction                                                                    |
+| unit tests in `command_builder`, `checkout.rs` and `repo_checkout.rs` | the same hostile, path-shape and real-form vectors                                          |
+
+The case table expects `None` (rejected) for each path-shape vector:
+`https://github.com/o/r/tree/main`, `https://github.com/o/r/extra`,
+`https://github.com/o/r/../../x/y` and `https://github.com/o/r.git/pull/5`.
+The `/pull/<n>` rows still expect `o/r`.
 
 ```bash
 CARGO_TARGET_DIR="$TMPDIR/cargo-1642" cargo test -p amplihack --test integration issue_1642
