@@ -94,7 +94,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/claude-plugin/bin/amplihack-hook\" limit-resume",
-            "timeout": 18600,
+            "timeout": 608400,
             "asyncRewake": true
           }
         ]

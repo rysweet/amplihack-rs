@@ -6,7 +6,7 @@
 
 use amplihack_hooks::limit_resume::{MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG};
 use amplihack_utils::rotator_status::{
-    FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL,
+    FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL, SLOW_POLL_INTERVAL,
 };
 
 const REFERENCE: &str = include_str!("../../../docs/reference/profile-command.md");
@@ -16,7 +16,7 @@ const MANAGEMENT: &str = include_str!("../../../docs/PROFILE_MANAGEMENT.md");
 const SKILL: &str =
     include_str!("../../../amplifier-bundle/skills/claude-profile-rotation/SKILL.md");
 
-const LOGGED_OUTCOMES: [Outcome; 8] = [
+const LOGGED_OUTCOMES: [Outcome; 9] = [
     Outcome::Resumed,
     Outcome::NoCapacityTimeout,
     Outcome::MovedOn,
@@ -24,6 +24,7 @@ const LOGGED_OUTCOMES: [Outcome; 8] = [
     Outcome::Duplicate,
     Outcome::Cap,
     Outcome::StopHookActive,
+    Outcome::SessionGone,
     Outcome::GuardFailed,
 ];
 
@@ -63,11 +64,15 @@ fn reference_lists_every_logged_outcome() {
 fn reference_limits_table_matches_the_constants() {
     assert_eq!(
         limits_row("Wait for capacity"),
-        format!("{} s (5 hours)", MAX_WAIT.as_secs())
+        format!("{} s (7 days)", MAX_WAIT.as_secs())
     );
     assert_eq!(
         limits_row("Ledger read interval"),
-        format!("{} s", POLL_INTERVAL.as_secs())
+        format!(
+            "{} s for the first hour, then {} s",
+            POLL_INTERVAL.as_secs(),
+            SLOW_POLL_INTERVAL.as_secs()
+        )
     );
     assert_eq!(
         limits_row("Freshness margin after hook start"),

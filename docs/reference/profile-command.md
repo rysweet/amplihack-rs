@@ -2907,12 +2907,12 @@ The checks run in this order. The first one that fails decides the outcome.
 | 3 | `stop_hook_active` is absent or `false`. The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
-| 6 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 6 hours are removed. Then a [fresh cycle with capacity](#capacity-for-a-resume) appears within 5 hours. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if you sent a prompt in that session; `guard-failed` if `resume/` cannot be prepared or the prompt marker cannot be read safely. |
+| 6 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. Then a [fresh cycle with capacity](#capacity-for-a-resume) appears within 7 days. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if you sent a prompt in that session; `guard-failed` if `resume/` cannot be prepared or the prompt marker cannot be read safely. |
 | 7 | No prompt was sent in the session since the hook started (checked once more). Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
 | 8 | — | Exit `2` with the resume message, outcome `resumed`. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
-exits at once instead of waiting 5 hours, and again under the lock in
+exits at once instead of waiting up to 7 days, and again under the lock in
 step 7. The lock is not held while waiting in step 6. The marker and session record
 are on disk before the hook exits `2`, so a resume that is cut short never
 repeats.
@@ -2996,7 +2996,7 @@ and epoch seconds.
 | `lock` | Lock file for steps 4, 5 and 7. Waited on for at most 5 seconds. |
 | `events/<sha256 hex>` | One empty marker per limit event. The name is the SHA-256 of a fixed prefix followed by `session_id`, `error`, `error_details`, `last_assistant_message` and the ledger's `live` profile when the hook started, each written with its length, so no two different payloads share a name. The same login hitting its limit again is the same event; a limit after the rotator swapped to another login is a new one. Markers older than 7 days are removed. |
 | `sessions/<sha256 hex>` | One file per session, named by the SHA-256 of a different fixed prefix and its `session_id`, with one epoch-seconds line per resume in the last 24 hours. A file that cannot be parsed counts as the cap being reached and is left unchanged. |
-| `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 6 hours (the 5-hour wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
+| `prompted/<sha256 hex>` | One file per session, named like `sessions/`, holding the epoch seconds of your last prompt in it. Written by the `UserPromptSubmit` hook, replaced atomically. Removed after 7 days and 1 hour (the longest wait plus 1 hour) when a hook starts waiting or commits. A file that cannot be parsed or is not private makes a waiting hook end as `guard-failed`. |
 | `resume.log` | One line per decision from step 3 on, and for auto-switch turned off while waiting. |
 | `resume.log.1` | The previous log. `resume.log` is renamed to it when it passes 64 KiB. |
 
@@ -3018,22 +3018,23 @@ account IDs or tokens. Failing to write it does not change the outcome.
 | Outcome | Meaning |
 |---------|---------|
 | `resumed` | The hook exited `2` and the session was told to continue. |
-| `no-capacity-timeout` | No fresh cycle with capacity within 5 hours. |
+| `no-capacity-timeout` | No fresh cycle with capacity within 7 days. |
 | `moved-on` | You sent a prompt in that session during the wait, so the hook did not wake it. |
 | `disabled` | Auto-switch was turned off while waiting. |
 | `duplicate` | This limit event, or this session since the hook started, was already resumed. |
 | `cap` | The session already resumed 3 times in 24 hours. |
 | `stop-hook-active` | Claude Code reported a stop hook already running. |
+| `session-gone` | The Claude Code session that started the hook exited during the wait (the hook's parent process changed). |
 | `guard-failed` | `resume/`, the lock, a marker or the session record could not be used safely. |
 
 #### Resume limits
 
 | Constant | Value |
 |----------|-------|
-| Wait for capacity | 18000 s (5 hours) |
-| Ledger read interval | 15 s |
+| Wait for capacity | 604800 s (7 days) |
+| Ledger read interval | 15 s for the first hour, then 300 s |
 | Freshness margin after hook start | 60 s |
-| Registered hook timeout | 18600 s |
+| Registered hook timeout | 608400 s |
 | Resumes per session | 3 per 24 hours |
 | Resumes per limit event | 1 |
 | Resume lock wait | 5 s |
