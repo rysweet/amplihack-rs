@@ -134,12 +134,14 @@ impl Detectors {
             // not, whatever the RECIPE_VAR_ name and default.
             nested_default: Regex::new(r#"\$\{([A-Z][A-Z0-9_]*):?[-=]"?\$\{?RECIPE_VAR_"#).unwrap(),
             bare_last: Regex::new(
-                r#"\$\{RECIPE_VAR_([A-Za-z0-9_]+):?[-=]"?\$\{?([A-Z][A-Z0-9_]*)"#,
+                r#"\$\{RECIPE_VAR_([A-Za-z0-9_]+):?[-=]"?\$\{?([A-Z][A-Z0-9_]*)\b"#,
             )
             .unwrap(),
             // Any bare name in the default of a RECIPE_VAR_ read, at any depth.
+            // `\b` ends the name: `RECIPE_VAR_` before a lower-case key is
+            // another recipe value, not a bare name (M4).
             bare_in_chain: Regex::new(
-                r#"\$\{RECIPE_VAR_[A-Za-z0-9_]+:?[-=]"?\$\{?([A-Z][A-Z0-9_]*)"#,
+                r#"\$\{RECIPE_VAR_[A-Za-z0-9_]+:?[-=]"?\$\{?([A-Z][A-Z0-9_]*)\b"#,
             )
             .unwrap(),
             // `NAME=…`, `local NAME=…`: a name this script or step sets itself.
