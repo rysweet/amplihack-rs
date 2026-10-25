@@ -28,7 +28,6 @@ pub const ORIGIN_CASES: &[(&str, Option<&str>)] = &[
     (concat!("http://x:", "tok@github.com/o/r"), Some("o/r")),
     // Real token shapes fit the userinfo allow-list.
     (
-        // Split so secret scanners do not read the fake token as a credential.
         concat!(
             "https://x-access-token:",
             "ghp_FAKE1642",

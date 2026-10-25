@@ -45,9 +45,6 @@ rysweet/amplihack-rs
 ```
 
 `TOKEN` stands for any credential in the userinfo; the parser discards it.
-Credential-shaped values are never written literally in this repository: the
-Rust tests build them with `concat!` so that secret scanners do not read them
-as credentials.
 
 ## Parsing rules
 
