@@ -8,9 +8,9 @@
 # This is the ONLY bash copy of this parsing. Every bundle caller sources this
 # file (standalone scripts via their SCRIPT_DIR, sourced libraries via
 # BASH_SOURCE, workflow-terminal-state.yaml via its helper lookup), and a guard
-# test fails on any other copy. The Rust twin in
-# crates/amplihack-cli/src/commands/multitask/command_builder.rs follows the
-# same contract. See docs/reference/workflow-github-repo-identity.md.
+# test fails on any other copy. Rust twins follow the same contract; see the
+# twin list in docs/reference/workflow-github-repo-identity.md, and the shared
+# vectors in tests/integration/issue_1642_github_origin_parsing/cases.rs.
 #
 # Accepted prefixes (exact, case-sensitive):
 #   https://github.com/  http://github.com/  git@github.com:

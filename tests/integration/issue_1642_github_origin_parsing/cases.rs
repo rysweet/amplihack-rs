@@ -1,10 +1,13 @@
-// Issue #1642: the one case table for both GitHub origin parsers.
+// Issue #1642: the one case table for the GitHub origin parsers.
 //
 // `include!`d by the integration tests (bash parser,
-// amplifier-bundle/tools/workflow_github_repo.sh) and by the unit tests of the
-// Rust twin (crates/amplihack-cli/src/commands/multitask/
-// issue_1642_repo_identity.rs). If either parser is changed without a matching
-// row, one of the two suites fails, so they cannot drift apart.
+// amplifier-bundle/tools/workflow_github_repo.sh), by the unit tests of the
+// multitask twin (crates/amplihack-cli/src/commands/multitask/
+// issue_1642_repo_identity.rs) and by the workflows twin's test
+// (crates/amplihack-workflows/tests/issue_1642_shared_cases.rs, which exempts
+// only the SR6 host rows). If any parser is changed without a matching row,
+// one of the suites fails, so they cannot drift apart. The twin list is in
+// docs/reference/workflow-github-repo-identity.md.
 //
 // Plain `//` comments only: this file is `include!`d as items, where inner
 // doc comments are not allowed. Every token here is fake.

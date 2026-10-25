@@ -26,7 +26,7 @@
 # (issue #1642). When it is missing the function stays undefined, every call
 # fails, and the open-PR signal fails closed; this file is sourced, so it never exits.
 _finalization_pr_signal_repo_helper="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
-if [ -f "$_finalization_pr_signal_repo_helper" ]; then
+if [ -f "$_finalization_pr_signal_repo_helper" ] && [ -r "$_finalization_pr_signal_repo_helper" ]; then
   # shellcheck source=workflow_github_repo.sh disable=SC1090
   . "$_finalization_pr_signal_repo_helper"
 else

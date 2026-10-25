@@ -2,8 +2,8 @@
 //! makes git contact another host as a GitHub repository, and redaction must
 //! never print a byte it hid before #1642.
 //!
-//! Contract (docs/reference/workflow-github-repo-identity.md, "Remote
-//! repository classifier"):
+//! Contract (docs/reference/workflow-github-repo-identity.md, "Rust
+//! twins"):
 //!
 //! - the parse authority ends at the first `/`, `?`, `#` or `\`;
 //! - userinfo is the text before the FIRST `@`; if present it must be
