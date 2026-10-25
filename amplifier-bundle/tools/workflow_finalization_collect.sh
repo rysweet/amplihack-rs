@@ -92,9 +92,18 @@ collect_evidence() {
     publish_state_reached="true"
   fi
   # A PR URL is always http(s); the shared parser checks host and userinfo.
-  case "$pr_url" in
+  # A PR or issue page may carry a subpath (/pull/5/files, /issues/7), which
+  # the parser does not accept, so check the owner/repo before it. The
+  # subpath may not contain dot segments, so it cannot name another repo, and
+  # a repo ending in .git is refused, as the parser refuses r.git/pull/5.
+  local pr_page_re='^(https?://[^?#]*)/(pull|issues)/[1-9][0-9]{0,9}(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?([?#].*)?$'
+  local pr_repo_url="$pr_url"
+  if [[ "$pr_url" =~ $pr_page_re ]] && [[ "${BASH_REMATCH[1]}" != *.git ]]; then
+    pr_repo_url="${BASH_REMATCH[1]}"
+  fi
+  case "$pr_repo_url" in
     http://*|https://*)
-      if parse_github_repo_identity "$pr_url" >/dev/null 2>&1; then
+      if parse_github_repo_identity "$pr_repo_url" >/dev/null 2>&1; then
         github_remote="true"
       fi ;;
   esac

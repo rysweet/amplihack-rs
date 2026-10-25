@@ -122,8 +122,9 @@ fn collect_does_not_treat_a_path_shape_pr_url_as_a_github_remote() {
     for pr_url in [
         "https://github.com/o/r/pull/5/../../../x/y",
         "https://github.com/o/r/pull/0",
-        "https://github.com/o/r/pull/5/files",
+        "https://github.com/o/r/pull/5/.hidden",
         "https://github.com/o/r.git/pull/5",
+        "https://github.com/o/r.git/issues/7",
     ] {
         let fx = Fixture::with_origin("/srv/git/not-github/repo.git");
         let outcome = callers::run_collect(&fx, Some(pr_url));

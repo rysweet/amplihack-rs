@@ -64,11 +64,13 @@ fn caller_failures(caller: Caller) -> Vec<String> {
 }
 
 #[test]
-fn collect_still_treats_real_pr_urls_as_github() {
+fn collect_still_treats_real_pr_and_issue_urls_as_github() {
     for pr_url in [
         "https://github.com/o/r/pull/5",
         "https://tok@github.com/o/r/pull/5",
         "https://x:tok@github.com/o/r/pull/5",
+        "https://github.com/o/r/pull/5/files",
+        "https://github.com/o/r/issues/7",
     ] {
         let fx = Fixture::with_origin("/srv/git/not-github/repo.git");
         let outcome = callers::run_collect(&fx, Some(pr_url));
