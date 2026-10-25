@@ -293,7 +293,14 @@ non-zero rather than retrying with `-B`.
 
 The push at the end of step3 (`git push -u origin "$BRANCH_NAME"`, never
 forced) runs after `BRANCH_NAME` has been reassigned, so the kept branch and
-its unpushed commits never reach `origin`.
+its unpushed commits never reach `origin`. The push's stdout and stderr go to
+`/dev/null`, so a remote URL that carries credentials cannot appear in the
+transcript. A failed push does not stop the step; it prints
+`WARNING: Initial push of '<branch>' failed — will retry at PR creation.` and
+the push is attempted again when the PR is created. The step keeps a
+`BOOTSTRAP: Skipping push` branch, but `BOOTSTRAP` is always `false` in step3,
+because the step exits earlier when there is no `origin` remote or no
+resolvable base ref (issue #858).
 
 ### Step output
 
@@ -465,6 +472,13 @@ in [Continuing an earlier branch on purpose](#continuing-an-earlier-branch-on-pu
 A relative `WORKTREE_DIR` is not normalised, so the worktree lookup can miss an
 existing worktree and treat State 1 as State 2. The outcome is still safe: the
 step attaches a clean branch or refuses, and never resets.
+
+An empty `WORKTREE_DIR` is not rejected either. The worktree path then becomes
+`/<branch>`, at the filesystem root. For a user without write access to `/`,
+`git worktree add` fails and the step exits non-zero; for root, the worktree is
+created there. In neither case is an existing branch or worktree changed. The recipe's default is `./worktrees`, so this happens only when a
+caller passes an empty value explicitly. Handling it is outside the scope of
+#1626.
 
 ### Testing step3
 
