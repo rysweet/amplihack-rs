@@ -514,7 +514,7 @@ git show origin/main:amplifier-bundle/recipes/consensus-issue-worktree.yaml \
   > "$TMPDIR/consensus-issue-worktree.main.yaml"
 WORKTREE_YAML="$TMPDIR/consensus-issue-worktree.main.yaml" \
   bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
-# exits 1 — failures include A1 (destructive commands present),
+# exits 1; failures include A1 (destructive commands present),
 # A8 (old helper lookup), S1–S4, S11b(a)/(b) and S13
 ```
 
