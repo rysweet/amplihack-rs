@@ -39,6 +39,7 @@ steps:
 
 struct Fx {
     _tmp: tempfile::TempDir,
+    _tmux_tmp: tempfile::TempDir,
     home: PathBuf,
     project: PathBuf,
     tools: PathBuf,
@@ -55,15 +56,22 @@ impl Fx {
     fn with_runner(runner: &str) -> Self {
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path().canonicalize().unwrap();
+        // A tmux socket path must fit in 108 bytes, and TMPDIR can be long
+        // enough on its own to exceed that (a nested workflow runtime directory
+        // does), so the socket directory lives directly under /tmp.
+        let tmux_tmp = tempfile::Builder::new()
+            .prefix("t")
+            .tempdir_in("/tmp")
+            .unwrap();
         let fx = Self {
             home: root.join("home"),
             project: root.join("project"),
             tools: root.join("tools"),
             records: root.join("records"),
-            // Short: a tmux socket path must fit in 108 bytes.
-            tmux_dir: root.join("t"),
+            tmux_dir: tmux_tmp.path().canonicalize().unwrap(),
             recipe: root.join("issue-1606-detach.yaml"),
             _tmp: tmp,
+            _tmux_tmp: tmux_tmp,
         };
         for dir in [&fx.home, &fx.project, &fx.tools, &fx.records, &fx.tmux_dir] {
             fs::create_dir_all(dir).unwrap();

