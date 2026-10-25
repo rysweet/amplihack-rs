@@ -20,7 +20,7 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
     // Already in owner/repo format
     let simple_re = regex::Regex::new(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$").unwrap();
     if simple_re.is_match(uri) {
-        return Ok(uri.to_string());
+        return checked_owner_repo(uri, uri);
     }
 
     // HTTPS URL
@@ -28,7 +28,7 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
         regex::Regex::new(r"^https://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
             .unwrap();
     if let Some(caps) = https_re.captures(uri) {
-        return Ok(caps[1].to_string());
+        return checked_owner_repo(&caps[1], uri);
     }
 
     // SSH URL
@@ -36,10 +36,23 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
         regex::Regex::new(r"^git@github\.com:([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
             .unwrap();
     if let Some(caps) = ssh_re.captures(uri) {
-        return Ok(caps[1].to_string());
+        return checked_owner_repo(&caps[1], uri);
     }
 
     anyhow::bail!("Invalid GitHub URI: {uri}")
+}
+
+/// Reject `.` and `..` segments and an owner starting with `-` (issue #1642):
+/// the former name another path once resolved, the latter reaches `git clone`
+/// as an option.
+fn checked_owner_repo(owner_repo: &str, uri: &str) -> anyhow::Result<String> {
+    let (owner, repo) = owner_repo
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Invalid GitHub URI: {uri}"))?;
+    if matches!(owner, "." | "..") || matches!(repo, "." | "..") || owner.starts_with('-') {
+        anyhow::bail!("Invalid GitHub URI: {uri}");
+    }
+    Ok(owner_repo.to_string())
 }
 
 /// Checkout a GitHub repository.

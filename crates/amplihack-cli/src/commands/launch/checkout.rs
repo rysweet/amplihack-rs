@@ -69,15 +69,23 @@ pub(super) fn parse_github_repo_uri(repo_uri: &str) -> Result<(String, String)> 
     let mut parts = repo.split('/');
     let owner = parts.next().unwrap_or_default();
     let name = parts.next().unwrap_or_default();
-    if parts.next().is_some() || !is_valid_github_segment(owner) || !is_valid_github_segment(name) {
+    if parts.next().is_some()
+        || owner.starts_with('-')
+        || !is_valid_github_segment(owner)
+        || !is_valid_github_segment(name)
+    {
         bail!("invalid GitHub repository URI: {repo_uri}");
     }
 
     Ok((owner.to_string(), name.to_string()))
 }
 
+/// `.` and `..` are rejected because they name another path once resolved
+/// (issue #1642).
 fn is_valid_github_segment(segment: &str) -> bool {
     !segment.is_empty()
+        && segment != "."
+        && segment != ".."
         && segment
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))

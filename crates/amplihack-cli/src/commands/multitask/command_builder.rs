@@ -60,10 +60,13 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
 /// `amplifier-bundle/tools/workflow_github_repo.sh` (issue #1642): exact,
 /// case-sensitive prefixes; the userinfo is the text before the FIRST
 /// `@github.com/` and must be non-empty RFC 3986 userinfo characters without
-/// `@`; cut `?` then `#`, strip one trailing `/` then one `.git`; each
-/// segment is `[A-Za-z0-9._-]+`, not `.` or `..`, and the owner does not
-/// start with `-`. Anything else would let git contact another host
-/// (`https://evil.example/x@github.com/o/r`), so it is `None`.
+/// `@`; cut `?` then `#`, strip one trailing `/`; the path is exactly
+/// `owner/repo` (one `.git` stripped) or `owner/repo/pull/<n>` with `<n>`
+/// matching `^[1-9][0-9]{0,9}$` and no `.git` on the repo; each segment is
+/// `[A-Za-z0-9._-]+`, not `.` or `..`, and the owner does not start with
+/// `-`. Anything else would let git contact another host
+/// (`https://evil.example/x@github.com/o/r`) or another repository
+/// (`o/r/../../x/y`), so it is `None`.
 fn parse_github_repo_identity(url: &str) -> Option<&str> {
     let path = if let Some(rest) = url.strip_prefix("https://github.com/") {
         rest
@@ -86,13 +89,28 @@ fn parse_github_repo_identity(url: &str) -> Option<&str> {
     let path = path.split_once('?').map_or(path, |(before, _)| before);
     let path = path.split_once('#').map_or(path, |(before, _)| before);
     let path = path.strip_suffix('/').unwrap_or(path);
-    let path = path.strip_suffix(".git").unwrap_or(path);
     let (owner, rest) = path.split_once('/')?;
-    let repo = rest.split_once('/').map_or(rest, |(repo, _)| repo);
+    let repo = match rest.split_once('/') {
+        Some((repo, pr)) => {
+            let number = pr.strip_prefix("pull/")?;
+            if !is_pr_number(number) || repo.ends_with(".git") {
+                return None;
+            }
+            repo
+        }
+        None => rest.strip_suffix(".git").unwrap_or(rest),
+    };
     if owner.starts_with('-') || !is_identity_segment(owner) || !is_identity_segment(repo) {
         return None;
     }
     Some(&path[..owner.len() + 1 + repo.len()])
+}
+
+/// `^[1-9][0-9]{0,9}$`
+fn is_pr_number(number: &str) -> bool {
+    (1..=10).contains(&number.len())
+        && !number.starts_with('0')
+        && number.bytes().all(|b| b.is_ascii_digit())
 }
 
 /// RFC 3986 userinfo characters (unreserved, pct-encoded, sub-delims, ':')

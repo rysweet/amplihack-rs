@@ -20,6 +20,9 @@
 # '?', '#', '\', whitespace, control or non-ASCII bytes - means git would
 # contact another host (https://evil.example/x@github.com/o/r), so the URL is
 # rejected.
+# The path must be exactly owner/repo (optionally .git and one trailing /) or
+# owner/repo/pull/<n> with <n> matching ^[1-9][0-9]{0,9}$; ?query and
+# #fragment are dropped first.
 #
 # This file only DEFINES a function: no set -e/-u/-o, no shopt, no globals,
 # nothing printed when sourced. bash 3.2 compatible.
@@ -48,11 +51,23 @@ parse_github_repo_identity() {
   path="${path%%\?*}"
   path="${path%%#*}"
   path="${path%/}"
-  path="${path%.git}"
   case "$path" in */*) ;; *) return 1 ;; esac
   owner="${path%%/*}"
-  repo="${path#*/}"
-  repo="${repo%%/*}"
+  rest="${path#*/}"
+  # Path shape: exactly owner/repo, or owner/repo/pull/<n> because callers
+  # pass PR URLs. Any other trailing segment (extra, tree/main, ../../x/y)
+  # could name another repository once dot segments are removed.
+  case "$rest" in
+    */*)
+      repo="${rest%%/*}"
+      rest="${rest#*/}"
+      case "$rest" in pull/*) ;; *) return 1 ;; esac
+      [[ "${rest#pull/}" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+      # .git is only stripped from the end of the path, so o/r.git/pull/5
+      # would report o/r.git; reject it instead.
+      case "$repo" in *.git) return 1 ;; esac ;;
+    *) repo="${rest%.git}" ;;
+  esac
   case "$owner" in .|..|-*) return 1 ;; esac
   case "$repo" in .|..) return 1 ;; esac
   [[ "$owner" =~ $segment_re ]] || return 1

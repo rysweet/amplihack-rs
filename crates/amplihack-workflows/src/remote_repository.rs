@@ -161,20 +161,35 @@ fn repository_owner_name(
 }
 
 fn owner_name_from_path(path: &str, fallback_name: &str) -> (String, String) {
+    let path = path.split(['?', '#']).next().unwrap_or("");
     let mut parts = path.trim_matches('/').split('/');
     let owner = parts
         .next()
         .filter(|value| is_identity_segment(value) && !value.starts_with('-'));
+    let raw_name = parts.next().unwrap_or("");
+    // Path shape (issue #1642): only `owner/repo` or `owner/repo/pull/<n>`
+    // names a repository; anything else (`extra`, `tree/main`, `../../x/y`)
+    // could resolve to another repository once dot segments are removed.
+    // `.git` is only a suffix of the whole path, so `r.git/pull/5` is refused.
+    let shape_ok = match parts.collect::<Vec<_>>().as_slice() {
+        [] => true,
+        ["pull", number] => is_pr_number(number) && !raw_name.ends_with(".git"),
+        _ => false,
+    };
     // Checked after all normalisation, so `..git` (-> `.`) and `.git.git`
     // (-> empty) never become a repository name.
-    let name = parts
-        .next()
-        .map(trim_repo_suffix)
-        .filter(|value| is_identity_segment(value));
+    let name = Some(trim_repo_suffix(raw_name)).filter(|value| is_identity_segment(value));
     match (owner, name) {
-        (Some(owner), Some(name)) => (owner.into(), name),
+        (Some(owner), Some(name)) if shape_ok => (owner.into(), name),
         _ => ("unknown".into(), fallback_name.into()),
     }
+}
+
+/// `^[1-9][0-9]{0,9}$`, as in the bash parser.
+fn is_pr_number(number: &str) -> bool {
+    (1..=10).contains(&number.len())
+        && !number.starts_with('0')
+        && number.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 /// Same rule as the bash parser: `[A-Za-z0-9._-]+`, never `.` or `..`.
