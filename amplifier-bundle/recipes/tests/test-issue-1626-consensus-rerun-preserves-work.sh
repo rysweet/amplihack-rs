@@ -570,6 +570,32 @@ else
     fail "S7b-nohelper-fresh" "missing helper + fresh repo: rc=${RUN_RC} json='${RUN_JSON}'"
 fi
 
+# --- S7c: the worktree at ORIG's path has switched to another branch (or a
+# detached HEAD). The step must refuse rather than report ORIG as reused.
+for _mode in branch detached; do
+    R="$(build_repo "s7c-${_mode}")"; state1 "${R}"
+    W="$(wtdir "${R}")/${ORIG}"
+    if [[ "${_mode}" == branch ]]; then
+        git -C "${W}" switch -q -c other
+        commit_ahead "${W}"
+    else
+        git -C "${W}" switch -q --detach
+    fi
+    HEADS_BEFORE="$(heads "${R}")"; WTS_BEFORE="$(wt_list "${R}")"
+    run_step "${R}"
+    if [[ ${RUN_RC} -ne 0 ]] && grep -qF 'is not on branch' <<<"${RUN_STDERR}" \
+       && [[ -z "${RUN_JSON}" ]]; then
+        pass "S7c-${_mode}-refuses" "worktree off ORIG (${_mode}) exits ${RUN_RC} with no setup JSON"
+    else
+        fail "S7c-${_mode}-refuses" "worktree off ORIG (${_mode}): rc=${RUN_RC} json='${RUN_JSON}'"
+    fi
+    if [[ "$(heads "${R}")" == "${HEADS_BEFORE}" && "$(wt_list "${R}")" == "${WTS_BEFORE}" ]]; then
+        pass "S7c-${_mode}-intact" "branch SHAs unchanged and no worktree added"
+    else
+        fail "S7c-${_mode}-intact" "a branch moved or a worktree was added although the step refused"
+    fi
+done
+
 # --- Untrusted helper output.
 # s8_check <id> <ahome> <what> -> the step must refuse and change nothing.
 s8_check() {

@@ -323,6 +323,13 @@ steps:
       case "$KEPT_AHEAD" in ''|*[!0-9]*) KEPT_AHEAD=1 ;; esac
 
       if [ "$BRANCH_EXISTS" = "true" ] && [ -n "$WORKTREE_EXISTS" ]; then
+        # The worktree registered at this path must have BRANCH_NAME checked out;
+        # otherwise later steps would commit to another branch or a detached HEAD.
+        WT_HEAD=$(git -C "$WORKTREE_PATH" symbolic-ref -q HEAD || true)
+        if [ "$WT_HEAD" != "refs/heads/$BRANCH_NAME" ]; then
+          echo "ERROR: worktree '$WORKTREE_PATH' is not on branch '$BRANCH_NAME' (HEAD: ${WT_HEAD:-detached or unreadable}). Nothing was reset or deleted; switch it back or move it aside." >&2
+          exit 1
+        fi
         KEPT_DIRTY=$(git --no-optional-locks -C "$WORKTREE_PATH" status --porcelain || echo unknown)
         [ "$KEPT_DIRTY" != "unknown" ] || refuse_reset unknown
         [ -z "$KEPT_DIRTY" ] || refuse_reset yes

@@ -274,6 +274,7 @@ and is unchanged.
 |---|---|---|---|
 | 1, clean | Branch and worktree exist at this run's path, no changes, 0 commits ahead | Reused unchanged | `["reuse-clean-worktree"]` |
 | 1, dirty or ahead | Branch and worktree exist, with changes and/or commits ahead | Kept untouched. This run gets `<branch>-<suffix>` from `BASE_REF` in its own worktree. | `["create-from-base"]` |
+| 1, wrong branch | A worktree exists at this run's path but has another branch or a detached HEAD checked out | Refused: `ERROR: worktree '<path>' is not on branch '<branch>'`, exit 1, nothing changed (test S7c) | none |
 | 2, not ahead | Branch exists, no worktree, 0 commits ahead | Worktree attached to the existing branch (no `-b`) | `["attach-clean-branch"]` |
 | 2, ahead | Branch exists, no worktree, commits ahead | Branch kept at the same SHA. This run gets a fresh branch. | `["create-from-base"]` |
 | 3 | Branch does not exist | Branch and worktree created from `BASE_REF` | `["create-from-base"]` |
