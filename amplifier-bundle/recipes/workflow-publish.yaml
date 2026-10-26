@@ -284,7 +284,7 @@ steps:
         if hook_repair_run push step-15-commit-push \
           --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
           --output "$push_stderr_file" -- git push; then
-          cat "$push_stderr_file" >&2  # already redacted by hook_repair_run; kept for the step log
+          redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
           # FIX (#1269): confirm the published commit is the tested one. A missing
           # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
           V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
