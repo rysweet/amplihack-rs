@@ -4941,10 +4941,14 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         Ok(p) => format!("{}:{}:{p}", guard.display(), bin_dir.display()),
         Err(_) => format!("{}:{}", guard.display(), bin_dir.display()),
     };
-    // The script refuses to run without TMPDIR rather than fall back to /tmp.
+    // The script refuses to run without TMPDIR rather than fall back to /tmp,
+    // so pass one explicitly. Its resolver cases need scratch space outside
+    // every git work tree; CARGO_TARGET_TMPDIR is inside this checkout, so an
+    // unset TMPDIR falls back to the system temp dir instead.
     let tmpdir = std::env::var_os("TMPDIR")
         .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| env!("CARGO_TARGET_TMPDIR").into());
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
 
     let decoy = (inherited == Inherited::Conflicting).then(|| decoy_tools_dir(&root));
     let mut context = inherited_autodrive_context(&root);

@@ -165,6 +165,13 @@ echo "=== auto-drive-to-merge contract ==="
 WORK="$(mktemp -d "${TMPDIR:?TMPDIR must point at scratch space, never /tmp}/adm-test.XXXXXX")"
 trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
 WORK_PHYS="$(cd "${WORK}" && pwd -P)"
+# The resolver cases run from a directory that must not be inside any git work
+# tree; scratch space under a checkout (say <repo>/target/tmp) would let them
+# find that checkout's bundle and fail for the wrong reason.
+if git -C "${WORK_PHYS}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "HARNESS-ERROR: TMPDIR (${TMPDIR}) is inside a git work tree; point it at scratch space outside any repository" >&2
+  exit 2
+fi
 # Every step body runs with HOME here, never the real one (issue #1517).
 TEST_HOME="${WORK_PHYS}/home"; mkdir -p "${TEST_HOME}"
 STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"

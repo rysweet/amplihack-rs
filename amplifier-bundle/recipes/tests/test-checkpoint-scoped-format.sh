@@ -40,7 +40,10 @@ git -C "$WORK/main" commit -qm initial
 git -C "$WORK/main" worktree add -qb task "$WORK/task"
 
 checkpoint() {
-  WORKTREE_SETUP_WORKTREE_PATH="$WORK/task" REPO_PATH="$WORK/task" \
+  # The step reads the run's own worktree_setup JSON, never a bare
+  # WORKTREE_SETUP_WORKTREE_PATH (#1561); the path must be a resolved root.
+  RECIPE_VAR_worktree_setup="$(jq -nc --arg p "$(realpath -- "$WORK/task")" '{worktree_path: $p}')" \
+    REPO_PATH="$WORK/task" \
     AMPLIHACK_HOME="$ROOT" PATH="$WORK/bin:$PATH" \
     bash "$WORK/checkpoint.sh" > "$WORK/stdout" 2> "$WORK/stderr"
 }
