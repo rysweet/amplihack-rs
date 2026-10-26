@@ -66,23 +66,6 @@ pub(crate) fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     }
 }
 
-/// What a wait may do after limits `earlier` and `later` from attempts of
-/// the same step (#1618). The retry runs under the inherited profile, and
-/// the attempts that hit a limit may have run under other profiles whose
-/// windows reset at other times, so the wait is for the latest reset seen:
-/// only then has every account this step tried reset, the inherited one
-/// included. A limit no wait lifts (a spend limit, a reset too far away)
-/// stops the wait whichever attempt saw it, the earlier one naming why.
-pub(crate) fn later(earlier: WaitFor, later: WaitFor) -> WaitFor {
-    match (earlier, later) {
-        (WaitFor::Skip(why), _) | (_, WaitFor::Skip(why)) => WaitFor::Skip(why),
-        (WaitFor::Reset { reset: a, .. }, WaitFor::Reset { harness, reset: b }) => WaitFor::Reset {
-            harness,
-            reset: a.max(b),
-        },
-    }
-}
-
 /// The wait for a limit read from the auto-switch readings rather than an
 /// attempt's output: the inherited account was already exhausted, so the
 /// step never ran under it. `reset` is when its exhausted window resets.

@@ -5,9 +5,10 @@
 //! - A2: with auto-switch off, the step waits and retries under the same
 //!   profile, and its scratch files go in `$HOME/.amplihack/rerun/`, not
 //!   under the profile root.
-//! - With auto-switch out of profiles, the wait is for the latest reset
-//!   any attempt saw, in either order, so the retry under the inherited
-//!   profile starts only after that profile's own limit has reset.
+//! - With auto-switch out of profiles, the wait is for the inherited
+//!   profile's own reset, whether the candidate resets before or after it,
+//!   because the retry runs under the inherited profile. A candidate's
+//!   weekly or spend limit does not cancel that wait.
 //! - D7: with the wait disabled, auto-switch's last failure is passed up
 //!   with one `skipped reason=disabled` line.
 //! - With no inherited profile but a `.default` pointer, the wait watches
@@ -19,7 +20,9 @@
 
 #![cfg(unix)]
 
-use crate::issue_1618_fixture::{Fixture, describe, events, private_file, text, wait_lines};
+use crate::issue_1618_fixture::{
+    Fixture, SPEND_TEXT, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
+};
 use std::process::Command;
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
@@ -126,7 +129,7 @@ const RESET_0830: &str = "You've hit your session limit · resets 8:30am (Americ
 const RESET_0930: &str = "You've hit your session limit · resets 9:30am (America/Los_Angeles)";
 
 /// X and Y both limited, X with `x_limit` and Y with `y_limit`: the step
-/// waits once, for the later of the two resets, then retries under X.
+/// waits once, for X's reset, then retries under X.
 fn wait_after_both_profiles(x_limit: &str, y_limit: &str) -> Vec<String> {
     let f = with_profiles();
     switch_on(&f);
@@ -150,28 +153,45 @@ fn wait_after_both_profiles(x_limit: &str, y_limit: &str) -> Vec<String> {
     events(&out)
 }
 
-/// Both orders of resets: the wait is for 9:30 whether X or Y saw it, so
-/// the retry under X never starts before X's own limit has reset.
-#[test]
-fn after_the_last_auto_switch_candidate_the_step_waits_for_the_later_reset_then_retries_its_own_profile()
- {
-    let waited_for_0930 = vec![
-        "start reason=usage_limit harness=claude reset=2026-10-18 09:30:00 -07:00 \
-         until=2026-10-18 09:32:00 -07:00 bound=reset+margin"
-            .to_string(),
+fn waited_for(reset: &str, until: &str) -> Vec<String> {
+    vec![
+        format!(
+            "start reason=usage_limit harness=claude reset=2026-10-18 {reset} -07:00 \
+             until=2026-10-18 {until} -07:00 bound=reset+margin"
+        ),
         "end reason=reset reached".to_string(),
         "resume attempt=3".to_string(),
-    ];
+    ]
+}
+
+/// The retry runs under X, so the wait is for X's reset in both orders:
+/// not cut short when Y resets earlier, not stretched when Y resets later.
+#[test]
+fn after_the_last_auto_switch_candidate_the_step_waits_for_its_own_profiles_reset() {
     assert_eq!(
         wait_after_both_profiles(RESET_0930, RESET_0830),
-        waited_for_0930,
+        waited_for("09:30:00", "09:32:00"),
         "X resets after Y: the wait is for X's reset, not Y's"
     );
     assert_eq!(
         wait_after_both_profiles(RESET_0830, RESET_0930),
-        waited_for_0930,
-        "Y resets after X: the wait is for Y's reset, the later one"
+        waited_for("08:30:00", "08:32:00"),
+        "Y resets after X: X has capacity from 8:30, so the wait ends then"
     );
+}
+
+/// A candidate's limit that no wait lifts (a weekly reset days away, an
+/// organisation spend limit) says nothing about X: X's 8:30 reset is still
+/// waited out and the retry under X runs.
+#[test]
+fn a_candidates_weekly_or_spend_limit_does_not_cancel_the_inherited_profiles_wait() {
+    for y_limit in [WEEKLY_TEXT, SPEND_TEXT] {
+        assert_eq!(
+            wait_after_both_profiles(RESET_0830, y_limit),
+            waited_for("08:30:00", "08:32:00"),
+            "Y limited with {y_limit:?}"
+        );
+    }
 }
 
 #[test]

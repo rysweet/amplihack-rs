@@ -78,13 +78,16 @@ fn limit_reason(r: &Reading, now: i64) -> String {
     format!("at {pct:.0}% of its {window} limit")
 }
 
-/// When the exhausted windows of `r` reset: the latest of them, as a wait
-/// would need (#1618). `None` when no window is exhausted.
-pub(super) fn exhausted_reset(r: &Reading, threshold: u8, now: i64) -> Option<i64> {
+/// When the windows of `r` that are used up reset: the latest of them, as a
+/// wait would need (#1618). Only a window at 100% counts. A window over the
+/// auto-switch threshold but under 100% is a reason to prefer another
+/// profile, not proof that this one refuses work, so it neither times nor
+/// cancels a wait. `None` when no window is used up.
+pub(super) fn exhausted_reset(r: &Reading, now: i64) -> Option<i64> {
     [r.five_hour.as_ref(), r.seven_day.as_ref()]
         .into_iter()
         .flatten()
-        .filter(|w| candidate::adjusted(Some(w), now) >= f64::from(threshold))
+        .filter(|w| candidate::adjusted(Some(w), now) >= 100.0)
         .map(|w| w.resets_at)
         .max()
 }
@@ -104,7 +107,8 @@ pub struct Substitute {
     pub profile: ProfileName,
     /// For the note: why the inherited profile was passed over.
     pub reason: String,
-    /// When the inherited account's exhausted windows reset (ledger clock).
+    /// When the inherited account's used-up windows reset (ledger clock);
+    /// `None` when it was passed over only for being over the threshold.
     pub inherited_reset: Option<i64>,
 }
 
@@ -134,7 +138,7 @@ pub fn substitute(
         return None;
     }
     let reason = limit_reason(reading, now);
-    let inherited_reset = exhausted_reset(reading, cfg.threshold, now);
+    let inherited_reset = exhausted_reset(reading, now);
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
     nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
@@ -252,10 +256,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.
     let mut profile: Option<ProfileName> = None;
-    // Every limit this step has met, folded with `plan::later`: a wait is
-    // for the latest reset, because its retry runs under the inherited
-    // profile, not under whichever profile was limited last (#1618).
-    let mut seen: Option<WaitFor> = None;
+    // The inherited profile's own limit. The retry after a wait always runs
+    // under that profile, so only its reset times the wait; the limits of
+    // the profiles auto-switch tried matter only to its choice of candidate,
+    // which `next_profile` records (#1618).
+    let mut inherited_wait: Option<WaitFor> = None;
     if let Some(sw) = &switch {
         let eff = config::effective(sw.store.root());
         if let Some(sub) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
@@ -266,7 +271,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // The inherited account never runs before the retry, so its
             // reset comes from the readings, moved onto the wait's clock.
             let wait_now = waiter.now();
-            seen = sub.inherited_reset.map(|r| {
+            inherited_wait = sub.inherited_reset.map(|r| {
                 let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
                 plan::from_reading(Harness::Claude, reset, wait_now)
             });
@@ -294,8 +299,15 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
-        let wait = seen.map_or(lim.wait, |s| plan::later(s, lim.wait));
-        seen = Some(wait);
+        if profile.is_none() {
+            // This attempt ran under the inherited profile: its limit is the
+            // freshest word on that profile.
+            inherited_wait = Some(lim.wait);
+        }
+        // Unset only when the step was moved off the inherited profile before
+        // the first attempt for being over the threshold, with no window used
+        // up: then the last limit met is the best guess at when work resumes.
+        let wait = inherited_wait.unwrap_or(lim.wait);
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
             tried.push(current.to_string());

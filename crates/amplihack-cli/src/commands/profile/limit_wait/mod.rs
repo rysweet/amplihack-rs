@@ -29,7 +29,7 @@ mod tests_log;
 #[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
-mod tests_plan_later;
+mod tests_plan_reading;
 #[cfg(test)]
 mod tests_scratch;
 #[cfg(test)]
@@ -174,11 +174,15 @@ impl Waiter {
     }
 
     /// After attempt `n` hit its usage limit and no auto-switch rerun is
-    /// left: pass the result up, or wait once and ask for a retry. `seen` is
-    /// every limit this step met folded with [`plan::later`], so the retry,
-    /// which runs under the inherited profile, is not timed from another
-    /// profile's reset.
-    pub(crate) fn after_limit(&mut self, seen: WaitFor, n: u32, signals: &Signals) -> AfterLimit {
+    /// left: pass the result up, or wait once and ask for a retry. `inherited`
+    /// is the inherited profile's own limit: the retry runs under that
+    /// profile, so other profiles' limits do not time or cancel the wait.
+    pub(crate) fn after_limit(
+        &mut self,
+        inherited: WaitFor,
+        n: u32,
+        signals: &Signals,
+    ) -> AfterLimit {
         let Some(settings) = self.settings else {
             return AfterLimit::Finish(None);
         };
@@ -197,7 +201,7 @@ impl Waiter {
             log(&Event::Skipped(Skip::AlreadyWaited));
             return AfterLimit::Finish(None);
         }
-        let wait = self.blocked.map_or(seen, WaitFor::Skip);
+        let wait = self.blocked.map_or(inherited, WaitFor::Skip);
         let (harness, reset) = match wait {
             WaitFor::Reset { harness, reset } => (harness, reset),
             WaitFor::Skip(why) => {
