@@ -122,6 +122,8 @@ mod issue_1618_wait_recipe;
 mod issue_1618_wait_settings;
 #[path = "issue_1618_wait_signals.rs"]
 mod issue_1618_wait_signals;
+#[path = "issue_1618_wait_stdin.rs"]
+mod issue_1618_wait_stdin;
 #[path = "issue_1618_wait_step.rs"]
 mod issue_1618_wait_step;
 #[path = "issue_1634_shared_sessions.rs"]

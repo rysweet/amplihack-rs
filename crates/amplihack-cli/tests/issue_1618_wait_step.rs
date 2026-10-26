@@ -5,9 +5,10 @@
 //! Covers AC1 (one retry, identical argv, cwd and stdin, only the retry's
 //! stdout), AC7 (a second limit is passed up), AC10 (exact log lines), the
 //! epoch and past-reset forms, the limits that are never waited out (spend,
-//! a far or unreadable reset, model prose), a held-open stdin pipe, and ST7
-//! (a marker on exit 0 or a failure that is not a usage limit never waits).
-//! See `issue_1618_fixture`.
+//! a far or unreadable reset, model prose), and ST7 (a marker on exit 0 or a
+//! failure that is not a usage limit never waits). The stdin cases (a piped
+//! prompt, a held-open pipe) are in `issue_1618_wait_stdin`. See
+//! `issue_1618_fixture`.
 
 #![cfg(unix)]
 
@@ -17,7 +18,6 @@ use crate::issue_1618_fixture::{
 };
 use std::fs;
 use std::process::Stdio;
-use std::time::Duration;
 
 /// Runs a step whose stdin is `input`.
 fn step_with_stdin(f: &Fixture, input: &[u8], extra: &[(&str, &str)]) -> std::process::Output {
@@ -164,71 +164,6 @@ fn a_spend_limit_that_states_a_session_reset_waits_for_it() {
             "resume attempt=2",
         ]
     );
-}
-
-#[test]
-fn a_prompt_piped_on_stdin_is_not_waited_for() {
-    // `-p` with no prompt text: the prompt is on the pipe. The value of a
-    // hidden option (`--max-thinking-tokens`) or of an option this version
-    // does not know is not a prompt either, so these skip the wait too.
-    for claude_args in [
-        &["-p"][..],
-        &["-p", "--max-thinking-tokens", "8000"],
-        &["-p", "--some-new-opt", "value"],
-    ] {
-        let f = Fixture::new();
-        let mut args = vec!["claude", "--subprocess-safe", "--"];
-        args.extend_from_slice(claude_args);
-        let mut c = f.cmd(&args);
-        c.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = c.spawn().expect("start amplihack");
-        {
-            use std::io::Write;
-            let mut stdin = child.stdin.take().unwrap();
-            stdin.write_all(b"the piped prompt\n").unwrap();
-        }
-        let out = child.wait_with_output().unwrap();
-        assert_eq!(
-            out.status.code(),
-            Some(1),
-            "{claude_args:?}: {}",
-            describe(&out)
-        );
-        assert_eq!(
-            f.count("0"),
-            1,
-            "{claude_args:?}: no rerun with an empty prompt"
-        );
-        assert_eq!(
-            events(&out),
-            ["skipped reason=piped_prompt"],
-            "{claude_args:?}"
-        );
-    }
-}
-
-#[test]
-fn a_held_open_stdin_pipe_does_not_hang_the_step() {
-    let f = Fixture::new();
-    let mut c = f.step();
-    c.env("SKIP_STDIN", "1")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = c.spawn().expect("start amplihack");
-    // Held open, never written or closed, until the step has finished.
-    let held = child.stdin.take();
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || tx.send(child.wait_with_output()));
-    let out = rx
-        .recv_timeout(Duration::from_secs(60))
-        .expect("the step hung on a held-open stdin pipe")
-        .unwrap();
-    drop(held);
-    assert!(out.status.success(), "{}", describe(&out));
-    assert_eq!(f.count("0"), 2, "the retry ran");
 }
 
 #[test]
