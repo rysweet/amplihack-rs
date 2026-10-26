@@ -3099,11 +3099,14 @@ group and others cannot write (created at `0700` when missing, never
 
 **Stdin.** The supervisor never reads stdin. The first attempt inherits it
 unchanged. A rerun gets a regular file again from the offset the step
-started at, a terminal unchanged, and anything else (a pipe, a socket, a
-closed descriptor) `/dev/null`: a pipe's contents went to the first attempt.
-Recipe agent steps get their prompt as `-p` argv, so this changes nothing
-for them; a step that inherited a pipe the recipe run never closes no
-longer hangs.
+started at (on Linux through its own open of `/proc/self/fd/0`, so no read
+offset is shared with other processes), a terminal unchanged, and anything
+else (a pipe, a socket, a closed descriptor) `/dev/null`: a pipe's contents
+went to the first attempt. Recipe agent steps get their prompt as `-p`
+argv, so this changes nothing for them, and a step that inherited a pipe
+the recipe run never closes no longer hangs. When stdin is a pipe and no
+prompt text follows `-p`/`--print`, the prompt is on the pipe, so the step
+is never waited for: `skipped reason=piped_prompt`.
 
 ### Order of attempts
 
@@ -3112,7 +3115,8 @@ After an attempt hits a usage limit, in this order:
 1. a stop signal already received ends the step with `128` plus the signal;
 2. auto-switch on, the wait unused, and an eligible profile left: rerun
    under that profile at once;
-3. the wait disabled: `skipped reason=disabled`, and the result is passed up;
+3. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
+   is passed up;
 4. the wait already used: `skipped reason=already_waited`, and the result
    is passed up;
 5. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
@@ -3142,7 +3146,9 @@ starts with `Claude AI usage limit reached|` and Unix seconds, or with
 |---------|---------|--------|
 | Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | wait, when the reset is at most five hours away |
 | Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far` |
-| Spend limit | `You've hit your org's monthly spend limit · run /usage-credits …` | `skipped reason=spend_limit`: no reset lifts it |
+| Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
+| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far` |
+| Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | `skipped reason=spend_limit`: no reset lifts it |
 | Epoch | `Claude AI usage limit reached\|1792335000` | wait, when at most five hours away |
 | Shape, no readable reset | `You've hit your session limit · try again later` | `skipped reason=no_reset` |
 | No message in the shape | model prose, `credit balance is too low` | `skipped reason=no_limit_message`, or not a usage limit at all |
@@ -3218,7 +3224,7 @@ then the event and `key=value` fields. Times are local,
 | `progress` | `remaining=<secs>s`, every 60 s |
 | `end` | `reason=<end reason>` from the table above |
 | `resume` | `attempt=<n>`, counting every attempt in the step |
-| `skipped` | `reason=disabled\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message` |
+| `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message\|piped_prompt` |
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
@@ -3234,7 +3240,7 @@ from Claude's output.
 
 | Setting | `config.toml` key | Environment variable | Default |
 |---------|-------------------|----------------------|---------|
-| Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` under `CI=true` |
+| Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` in CI |
 | Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | none |
 
 Both are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
@@ -3242,10 +3248,13 @@ keys: set them with `amplihack config set recipe.usage_limit_wait false`, in
 the user or project `config.toml`, or with the variable, which outranks the
 files. The variable takes `true`, `false`, `1` or `0`; an invalid value is
 reported by the config loader and ignored. A project file may only lower
-the maximum. With no explicit setting anywhere, `CI=true` turns the wait
-off: a CI job has no second login to wait for, and its own timeout bounds
-it better. Settings are read only when `AMPLIHACK_NONINTERACTIVE` is
-exactly `1`.
+the maximum. With no setting in the environment or a file, the wait is off
+in CI, meaning any non-empty `CI` other than `false` or `0`: a CI job has no
+second login to wait for, and its own timeout bounds it better. A limit
+then writes `skipped reason=ci` where a supervisor runs. Setting
+`recipe.usage_limit_wait = true` in the user or project `config.toml`, or
+the variable, turns it back on in CI. Settings are read only when
+`AMPLIHACK_NONINTERACTIVE` is exactly `1`.
 
 ### Limit-resume hook
 

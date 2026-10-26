@@ -969,14 +969,14 @@ backend configuration reference.
 
 **Type:** string (boolean)
 **Values:** `true` or `1` (on) | `false` or `0` (off)
-**Default:** on; off under `CI=true` when nothing sets it
+**Default:** on; off in CI (non-empty `CI` other than `false` or `0`) when nothing sets it
 **Config key:** [`recipe.usage_limit_wait`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
 Turns the usage-limit wait on or off: a recipe agent step that fails on a
 Claude usage limit waits for the reset, or for a login with capacity, and
-runs once more instead of ending the run. A spend limit, a reset more than
-five hours away or an unreadable reset is not waited for. Overrides the
+runs once more instead of ending the run. A spend limit with no reset, a
+reset more than five hours away or an unreadable reset is not waited for. Overrides the
 config files; empty means unset; an invalid value prints one warning and is
 ignored. See the
 [usage-limit wait reference](./profile-command.md#usage-limit-wait).

@@ -19,12 +19,14 @@ pub(crate) const STEP_TIMEOUT_LEAD: i64 = 60;
 pub(crate) enum NoWait {
     /// The output has no line in the harness's own limit-message shape.
     NoLimitMessage,
-    /// An organisation spend limit, which no reset lifts.
+    /// An organisation spend limit that states no reset: none lifts it.
     SpendLimit,
     /// The message states no reset that parses.
     NoReset,
     /// The stated reset is more than five hours away.
     ResetTooFar,
+    /// The prompt came on a pipe, which a rerun cannot read again.
+    PipedPrompt,
 }
 
 impl NoWait {
@@ -34,6 +36,7 @@ impl NoWait {
             NoWait::SpendLimit => "spend_limit",
             NoWait::NoReset => "no_reset",
             NoWait::ResetTooFar => "reset_too_far",
+            NoWait::PipedPrompt => "piped_prompt",
         }
     }
 }
@@ -50,8 +53,10 @@ pub(crate) fn wait_for(stderr: &[u8], stdout: &[u8], now: i64) -> WaitFor {
     let Some(m) = limit_patterns::limit_message(stderr, stdout, now) else {
         return WaitFor::Skip(NoWait::NoLimitMessage);
     };
+    // A spend-limit line that also says when the session or weekly limit
+    // resets is waited out like any other: that limit is what stops work.
     match m.reset {
-        _ if m.spend => WaitFor::Skip(NoWait::SpendLimit),
+        None if m.spend => WaitFor::Skip(NoWait::SpendLimit),
         None => WaitFor::Skip(NoWait::NoReset),
         Some(r) if r > now.saturating_add(FIVE_HOURS) => WaitFor::Skip(NoWait::ResetTooFar),
         Some(reset) => WaitFor::Reset {

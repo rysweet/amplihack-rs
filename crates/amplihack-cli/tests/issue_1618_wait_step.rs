@@ -12,8 +12,8 @@
 #![cfg(unix)]
 
 use crate::issue_1618_fixture::{
-    Fixture, LIMIT_TEXT, SPEND_TEXT, WEEKLY_TEXT, assert_progress_shape, claude_stdout, describe,
-    events, sha256_hex, text, wait_lines,
+    Fixture, LIMIT_TEXT, SPEND_SESSION_TEXT, SPEND_TEXT, SPEND_WEEKLY_TEXT, WEEKLY_TEXT,
+    assert_progress_shape, claude_stdout, describe, events, sha256_hex, text, wait_lines,
 };
 use std::fs;
 use std::process::Stdio;
@@ -123,6 +123,7 @@ fn limits_a_wait_cannot_outlast_are_passed_up_at_once() {
     let prose = "Done. Note: the usage limit resets 8:30am (America/Los_Angeles).";
     for (message, stdout, reason) in [
         (SPEND_TEXT, "", "spend_limit"),
+        (SPEND_WEEKLY_TEXT, "", "reset_too_far"),
         (WEEKLY_TEXT, "", "reset_too_far"),
         (
             "You've hit your session limit · try again later",
@@ -144,6 +145,45 @@ fn limits_a_wait_cannot_outlast_are_passed_up_at_once() {
             "{reason}"
         );
     }
+}
+
+#[test]
+fn a_spend_limit_that_states_a_session_reset_waits_for_it() {
+    let f = Fixture::new();
+    let mut c = f.step();
+    c.env("LIMIT_MESSAGE", SPEND_SESSION_TEXT);
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    assert_eq!(f.count("0"), 2);
+    assert_eq!(
+        events(&out),
+        vec![
+            "start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 \
+             until=2026-10-18 08:32:00 -07:00 bound=reset+margin",
+            "end reason=reset reached",
+            "resume attempt=2",
+        ]
+    );
+}
+
+#[test]
+fn a_prompt_piped_on_stdin_is_not_waited_for() {
+    let f = Fixture::new();
+    // `-p` with no prompt text: the prompt is on the pipe.
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    c.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"the piped prompt\n").unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1, "no rerun with an empty prompt");
+    assert_eq!(events(&out), ["skipped reason=piped_prompt"]);
 }
 
 #[test]

@@ -91,6 +91,11 @@ fn every_other_event_has_its_documented_fields() {
             Event::Skipped(Skip::Cannot(NoWait::NoLimitMessage)),
             "skipped reason=no_limit_message",
         ),
+        (
+            Event::Skipped(Skip::Cannot(NoWait::PipedPrompt)),
+            "skipped reason=piped_prompt",
+        ),
+        (Event::Skipped(Skip::Ci), "skipped reason=ci"),
     ];
     for (event, rest) in cases {
         assert_eq!(line(&event, &LA), format!("{PREFIX}{rest}"));

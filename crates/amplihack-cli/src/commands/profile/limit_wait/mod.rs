@@ -68,6 +68,8 @@ pub(crate) enum Skip {
     Disabled,
     AlreadyWaited,
     NotSupervised,
+    /// Off because this is CI and nothing turned it on.
+    Ci,
     /// The limit is not one a wait can outlast.
     Cannot(NoWait),
 }
@@ -103,6 +105,7 @@ where
                 Skip::Disabled => "disabled",
                 Skip::AlreadyWaited => "already_waited",
                 Skip::NotSupervised => "not_supervised",
+                Skip::Ci => "ci",
                 Skip::Cannot(why) => why.as_str(),
             }
         ),
@@ -174,6 +177,8 @@ pub(crate) struct Waiter {
     watch: Watch,
     /// The process that started this step, read before any attempt runs.
     parent: libc::pid_t,
+    /// Why no wait can help this step, whatever the limit says.
+    blocked: Option<NoWait>,
 }
 
 impl Waiter {
@@ -193,6 +198,7 @@ impl Waiter {
             watch,
             // SAFETY: getppid(2) has no preconditions.
             parent: unsafe { libc::getppid() },
+            blocked: None,
         }
     }
 
@@ -203,6 +209,11 @@ impl Waiter {
 
     pub(crate) fn used(&self) -> bool {
         self.used
+    }
+
+    /// Never wait for this step, for `why`.
+    pub(crate) fn block(&mut self, why: NoWait) {
+        self.blocked = Some(why);
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -226,14 +237,19 @@ impl Waiter {
             return AfterLimit::Finish(Some(128 + sig));
         }
         if !settings.enabled {
-            log(&Event::Skipped(Skip::Disabled));
+            log(&Event::Skipped(if settings.off_in_ci {
+                Skip::Ci
+            } else {
+                Skip::Disabled
+            }));
             return AfterLimit::Finish(None);
         }
         if self.used {
             log(&Event::Skipped(Skip::AlreadyWaited));
             return AfterLimit::Finish(None);
         }
-        let (harness, reset) = match lim.wait {
+        let wait = self.blocked.map_or(lim.wait, WaitFor::Skip);
+        let (harness, reset) = match wait {
             WaitFor::Reset { harness, reset } => (harness, reset),
             WaitFor::Skip(why) => {
                 log(&Event::Skipped(Skip::Cannot(why)));

@@ -144,7 +144,7 @@ command, so it never prints `flag`.
 | `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
-| `recipe.usage_limit_wait` | bool | `true` (`false` under `CI=true`) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
+| `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
 | `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 
@@ -321,8 +321,9 @@ like every path.
 Whether a recipe agent step that fails on a Claude usage limit waits for the
 reset and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
-in the environment or a file, it is on, except when `CI` is `true`. The
-environment variable also accepts `1` and `0`.
+in the environment or a file, it is on, except in CI: any non-empty `CI`
+other than `false` or `0`. Setting it in a file or the variable turns it on
+in CI too. The environment variable also accepts `1` and `0`.
 
 `recipe.usage_limit_max_wait_secs` caps one wait; it only shortens it, and
 `0` means one more attempt with no wait.

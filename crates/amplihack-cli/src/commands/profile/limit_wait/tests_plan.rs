@@ -18,6 +18,8 @@ const FIVE_HOURS: i64 = 5 * 3600;
 const CEILING: i64 = FIVE_HOURS + MARGIN;
 
 const SPEND: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
+const SPEND_WEEKLY: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 8, 12am (America/Los_Angeles)";
 const WEEKLY: &str = "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 const SESSION: &str = "You've hit your session limit · resets 1pm (America/Los_Angeles)";
 
@@ -39,10 +41,23 @@ fn a_session_limit_within_five_hours_is_waited_for() {
 }
 
 #[test]
-fn a_spend_limit_is_never_waited_for() {
+fn a_spend_limit_is_waited_for_only_when_it_states_a_near_reset() {
     assert_eq!(
         wait_for(SPEND.as_bytes(), b"", NOW),
-        WaitFor::Skip(NoWait::SpendLimit)
+        WaitFor::Skip(NoWait::SpendLimit),
+        "no reset stated"
+    );
+    assert_eq!(
+        wait_for(SPEND_SESSION.as_bytes(), b"", NOW),
+        WaitFor::Reset {
+            harness: Harness::Claude,
+            reset: LA_1300
+        },
+        "the session limit resets within five hours"
+    );
+    assert_eq!(
+        wait_for(SPEND_WEEKLY.as_bytes(), b"", NOW),
+        WaitFor::Skip(NoWait::ResetTooFar)
     );
 }
 

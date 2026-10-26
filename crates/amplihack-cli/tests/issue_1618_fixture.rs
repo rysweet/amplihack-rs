@@ -21,8 +21,11 @@ pub const TEST_NOW: i64 = 1_792_335_600;
 /// Claude's session-limit message as seen on real hosts, with a reset 30
 /// minutes after `TEST_NOW`.
 pub const LIMIT_TEXT: &str = "You've hit your session limit · resets 8:30am (America/Los_Angeles)";
-/// Real messages that are not waited out.
+/// Real messages: a spend limit with no reset and one with a weekly reset
+/// (neither waited out), and one whose session limit resets at 8:30.
 pub const SPEND_TEXT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+pub const SPEND_WEEKLY_TEXT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 8, 12am (America/Los_Angeles)";
+pub const SPEND_SESSION_TEXT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 8:30am (America/Los_Angeles)";
 pub const WEEKLY_TEXT: &str =
     "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 

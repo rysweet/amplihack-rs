@@ -13,6 +13,7 @@ use super::fsx;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
+use crate::commands::profile::limit_wait::plan::NoWait;
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
@@ -209,11 +210,15 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     super::sweep_rerun(&rerun_dir);
     // Never reads stdin, so nothing here can block before signals are caught.
     let stdin = RerunStdin::capture();
+    let args: Vec<_> = std::env::args_os().skip(1).collect();
+    if matches!(stdin, RerunStdin::Pipe) && !scratch::prompt_in_args(&args) {
+        // The prompt is on the pipe: a rerun would get none.
+        waiter.block(NoWait::PipedPrompt);
+    }
     let signals = match Signals::register() {
         Ok(s) => s,
         Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
     };
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
 
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.

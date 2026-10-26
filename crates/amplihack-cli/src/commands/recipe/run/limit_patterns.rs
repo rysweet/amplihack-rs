@@ -119,7 +119,8 @@ fn epoch_digits(rest: &[u8]) -> Option<i64> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LimitMessage {
     pub(crate) harness: Harness,
-    /// An organisation spend limit: waiting for a reset cannot lift it.
+    /// An organisation spend limit. Its line may also say when the session
+    /// or weekly limit resets, which `reset` then holds.
     pub(crate) spend: bool,
     /// The reset the message states, not clamped; `None` when it states
     /// none that parses.

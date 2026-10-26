@@ -35,18 +35,27 @@ fn user_file(home: &Path, body: &str) {
 const ON: WaitSettings = WaitSettings {
     enabled: true,
     max_wait_secs: None,
+    off_in_ci: false,
 };
 const OFF: WaitSettings = WaitSettings {
     enabled: false,
     max_wait_secs: None,
+    off_in_ci: false,
 };
 
 #[test]
 fn the_wait_is_on_by_default_and_off_under_ci() {
     let home = tempfile::tempdir().unwrap();
-    assert_eq!(settings(home.path(), &[], None), ON);
-    assert_eq!(settings(home.path(), &[], Some("false")), ON);
-    assert_eq!(settings(home.path(), &[], Some("true")), OFF);
+    for ci in [None, Some(""), Some("false"), Some("0")] {
+        assert_eq!(settings(home.path(), &[], ci), ON, "CI={ci:?}");
+    }
+    let off_in_ci = WaitSettings {
+        off_in_ci: true,
+        ..OFF
+    };
+    for ci in ["true", "1", "yes", "github"] {
+        assert_eq!(settings(home.path(), &[], Some(ci)), off_in_ci, "CI={ci}");
+    }
 }
 
 #[test]
@@ -68,6 +77,7 @@ fn the_file_sets_both_keys_and_the_variable_outranks_it() {
     let file = WaitSettings {
         enabled: false,
         max_wait_secs: Some(600),
+        off_in_ci: false,
     };
     assert_eq!(settings(home.path(), &[], None), file);
     let env = [
@@ -77,6 +87,7 @@ fn the_file_sets_both_keys_and_the_variable_outranks_it() {
     let both = WaitSettings {
         enabled: true,
         max_wait_secs: Some(30),
+        off_in_ci: false,
     };
     assert_eq!(settings(home.path(), &env, None), both);
     let off = [("AMPLIHACK_USAGE_LIMIT_WAIT", "0")];

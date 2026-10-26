@@ -17,6 +17,8 @@ const LA_1300: i64 = 1_792_353_600;
 
 /// Messages seen on real hosts, most frequent first.
 pub(super) const SPEND: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+pub(super) const SPEND_SESSION: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your session limit resets 1pm (America/Los_Angeles)";
+pub(super) const SPEND_WEEKLY: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage · your weekly limit resets Oct 8, 12am (America/Los_Angeles)";
 pub(super) const WEEKLY: &str =
     "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 pub(super) const SESSION: &str = "You've hit your session limit · resets 1pm (America/Los_Angeles)";
@@ -123,6 +125,10 @@ fn the_real_messages_are_read_from_stderr() {
         msg(Some(LA_1300), false)
     );
     assert_eq!(limit_message(SPEND.as_bytes(), b"", NOW), msg(None, true));
+    assert_eq!(
+        limit_message(SPEND_SESSION.as_bytes(), b"", NOW),
+        msg(Some(LA_1300), true)
+    );
     // Oct 8 has passed on 2026-10-18, so next year's; the plan refuses it.
     let weekly = limit_message(WEEKLY.as_bytes(), b"", NOW).unwrap();
     assert!(!weekly.spend);
@@ -130,9 +136,13 @@ fn the_real_messages_are_read_from_stderr() {
 }
 
 #[test]
-fn a_spend_limit_wins_over_the_weekly_reset_it_mentions() {
-    let line = format!("{SPEND} · your weekly limit resets Oct 10, 9am (UTC)");
-    assert!(limit_message(line.as_bytes(), b"", NOW).unwrap().spend);
+fn a_spend_limit_line_carries_the_session_or_weekly_reset_it_states() {
+    let weekly = limit_message(SPEND_WEEKLY.as_bytes(), b"", NOW).unwrap();
+    assert!(weekly.spend);
+    assert!(
+        weekly.reset.is_some_and(|r| r > NOW + 300 * 86_400),
+        "next Oct 8"
+    );
 }
 
 #[test]
