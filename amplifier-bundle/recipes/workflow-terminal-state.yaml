@@ -178,53 +178,38 @@ steps:
         done
       }
 
-      parse_github_repo_identity() {
-        local url="$1" path owner repo
-        case "$url" in
-          git@github.com:*) path="${url#git@github.com:}" ;;
-          ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-          https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-          https://github.com/*) path="${url#https://github.com/}" ;;
-          http://github.com/*) path="${url#http://github.com/}" ;;
-          *) return 1 ;;
-        esac
-        path="${path%%\?*}"
-        path="${path%%#*}"
-        path="${path%.git}"
-        case "$path" in */*) ;; *) return 1 ;; esac
-        owner="${path%%/*}"
-        repo="${path#*/}"
-        repo="${repo%%/*}"
-        [ -n "$owner" ] && [ -n "$repo" ] || return 1
-        printf '%s/%s\n' "$owner" "$repo"
-      }
-
+      # parse_github_repo_identity comes from the shared parser
+      # workflow_github_repo.sh (issue #1642), sourced below before the cd.
+      # A PR URL is parsed by position: http(s) only, the owner/repo segments
+      # must equal the identity the shared parser accepted, then exactly
+      # pull/<canonical number>.
       parse_github_pr_url() {
-        local url="$1" path owner repo marker number
-        case "$url" in
-          https://github.com/*/pull/[0-9]*|http://github.com/*/pull/[0-9]*)
-            path="${url#*://github.com/}"
-            ;;
-          https://*@github.com/*/pull/[0-9]*|http://*@github.com/*/pull/[0-9]*)
-            path="${url#*://}"
-            path="${path#*@github.com/}"
-            ;;
-          *)
-            return 1
-            ;;
+        local url="${1:-}" identity rest owner repo marker number
+        case "$url" in http://*|https://*) ;; *) return 1 ;; esac
+        identity="$(parse_github_repo_identity "$url")" || return 1
+        rest="${url%%\?*}"
+        rest="${rest%%#*}"
+        rest="${rest%/}"
+        rest="${rest#*://}"
+        # This strip is the one allowed exception to the single-parser rule
+        # (issue #1642): it runs only after parse_github_repo_identity has
+        # accepted this same URL, and its result must equal that identity.
+        # The accepted userinfo holds no '@' or '/', so the first
+        # "@github.com/" is the host boundary.
+        case "$rest" in
+          github.com/*) rest="${rest#github.com/}" ;;
+          *) rest="${rest#*@github.com/}" ;;
         esac
-        path="${path%%\?*}"
-        path="${path%%#*}"
-        owner="${path%%/*}"
-        path="${path#*/}"
-        repo="${path%%/*}"
-        path="${path#*/}"
-        marker="${path%%/*}"
-        number="${path#pull/}"
+        owner="${rest%%/*}"
+        rest="${rest#*/}"
+        repo="${rest%%/*}"
+        rest="${rest#*/}"
+        [ "$owner/$repo" = "$identity" ] || return 1
+        marker="${rest%%/*}"
+        number="${rest#pull/}"
         [ "$marker" = "pull" ] || return 1
-        [[ "$number" =~ ^[0-9][0-9]*$ ]] || return 1
-        [ -n "$owner" ] && [ -n "$repo" ] || return 1
-        printf '%s/%s/%s\n' "$owner" "$repo" "$number"
+        [[ "$number" =~ ^[1-9][0-9]{0,9}$ ]] || return 1
+        printf '%s/%s\n' "$identity" "$number"
       }
 
       normalize_base_name() {
@@ -290,6 +275,32 @@ steps:
       fi
 
       [ -n "$TARGET_REPO_DIR" ] || fail_terminal_state "FAILED_INVALID_INPUT" "repo_path or worktree_setup.worktree_path is required"
+
+      # Shared GitHub repo identity parser (issue #1642), found with the same
+      # resolution ladder as the strict terminal gate below (issue #962). The
+      # WORKFLOW_GITHUB_REPO_HELPER override, used mainly by tests, works in
+      # every run and is trusted like PATH; a set-but-broken value fails
+      # closed instead of falling through.
+      if [ -n "${WORKFLOW_GITHUB_REPO_HELPER:-}" ]; then
+        GITHUB_REPO_HELPER="$WORKFLOW_GITHUB_REPO_HELPER"
+        if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "WORKFLOW_GITHUB_REPO_HELPER is set but is not a readable file: $GITHUB_REPO_HELPER"
+        fi
+      else
+        GITHUB_REPO_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_github_repo.sh"
+        [ -f "$GITHUB_REPO_HELPER" ] || GITHUB_REPO_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_github_repo.sh"
+        [ -f "$GITHUB_REPO_HELPER" ] || GITHUB_REPO_HELPER="$(pwd)/amplifier-bundle/tools/workflow_github_repo.sh"
+        [ -f "$GITHUB_REPO_HELPER" ] || GITHUB_REPO_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_github_repo.sh"
+        [ -f "$GITHUB_REPO_HELPER" ] || GITHUB_REPO_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_github_repo.sh"
+        if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+          fail_terminal_state "FAILED_INVALID_INPUT" "workflow_github_repo.sh not found at any known location (AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack); run 'amplihack install' or set AMPLIHACK_HOME"
+        fi
+      fi
+      # shellcheck source=/dev/null
+      . "$GITHUB_REPO_HELPER"
+      declare -F parse_github_repo_identity >/dev/null 2>&1 \
+        || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_github_repo.sh did not define parse_github_repo_identity"
+
       cd "$TARGET_REPO_DIR" 2>/dev/null || fail_terminal_state "FAILED_INVALID_INPUT" "target checkout does not exist or is not accessible: $TARGET_REPO_DIR"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "workflow-terminal-state requires a git repo at target checkout; either git init or rerun from a checkout"
 

@@ -119,6 +119,7 @@ nav:
           - Tutorial: tutorials/pr-recovery-readiness.md
           - Reference: reference/pr-recovery-readiness.md
       - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
+      - GitHub Repo Identity Parser: reference/workflow-github-repo-identity.md
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
       - Commit Hook Repair: reference/recipe-commit-hook-repair.md

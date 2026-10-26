@@ -315,6 +315,10 @@ fn run_terminal_state_with_issue(
             "WORKFLOW_PR_SCOPE_HELPER",
             workspace_helper_path("workflow_pr_scope.sh"),
         )
+        .env(
+            "WORKFLOW_GITHUB_REPO_HELPER",
+            workspace_helper_path("workflow_github_repo.sh"),
+        )
         .env("RECIPE_VAR_goal_already_met", "false")
         // Conflicting stale bare names a parent run could leave behind.
         .env("BRANCH_NAME", "stale/issue-1561-parent-branch") // deliberately stale (#1561)
