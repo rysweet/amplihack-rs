@@ -447,13 +447,28 @@ adjudicate() {
   esac
 }
 
+# Read field <field> of the JSON object in the base variable RECIPE_VAR_<key>
+# (#1561). The runner writes RECIPE_VAR_<key> for every declared key, but a
+# nested name only for fields the current object has, so a nested name can
+# hold a parent run's value and is never read. Prints nothing for an unset or
+# empty key, a value that is not a JSON object, or a missing or null field;
+# `false` and `0` print as values. Callers treat empty as "not reported".
+rv_field() {
+  local key="$1" field="$2" var
+  [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
+  var="RECIPE_VAR_${key}"
+  printf '%s' "${!var:-}" \
+    | jq -r --arg f "$field" 'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end' 2>/dev/null \
+    || true
+}
+
 # Recipe-facing wrappers (issue #1268). These keep the recipe steps to a couple
 # of lines each: the env-variable precedence and the fail-soft fallbacks live
 # here, next to the logic they feed, instead of being duplicated across recipes.
 collect_for_step() {
   local pr_url pr_number
-  pr_url="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
-  pr_number="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
+  pr_url="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+  pr_number="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
   [ "$pr_url" = "''" ] && pr_url=""
   PR_URL="$pr_url"
   case "$pr_number" in ''|"''"|*[!0-9]*) PR_NUMBER="" ;; *) PR_NUMBER="$pr_number" ;; esac

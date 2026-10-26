@@ -90,7 +90,9 @@ fi
 # Issue #1406: this used to be "${REPO_ROOT}/../.default-workflow-reliability-test-$$",
 # which creates a directory NEXT TO the checkout under test. A crash or a kill
 # between mkdir and the EXIT trap left it behind in the developer's source tree.
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/default-workflow-reliability-XXXXXX")"
+# Resolved (pwd -P): steps accept worktree_setup.worktree_path only as an
+# already-resolved worktree root (#1561), even when TMPDIR is a symlink.
+WORK="$(cd "$(mktemp -d "${TMPDIR:-/tmp}/default-workflow-reliability-XXXXXX")" && pwd -P)"
 trap 'rm -rf "${WORK}"' EXIT
 STEP04="${WORK}/step-04-setup-worktree.sh"
 STEP_TDD_CHECKPOINT="${WORK}/checkpoint-after-implementation.sh"
@@ -371,6 +373,39 @@ create_terminal_status_repo() {
     git -C "${repo}" checkout -b "${branch}" >/dev/null
 }
 
+# emulate_runner ARG...: sets EMU_ARGS to ARG... plus what the pinned runner
+# writes alongside them (#1561). For every RECIPE_VAR_<key>__<field>=v the
+# runner also writes the base RECIPE_VAR_<key> as the JSON object holding
+# those fields, so the fixtures set both, unless an argument sets
+# RECIPE_VAR_<key> itself. The tool must read the base key.
+emulate_runner() {
+    EMU_ARGS=()
+    local a k b field v json bases=""
+    for a in "$@"; do
+        EMU_ARGS+=("$a")
+        k="${a%%=*}"
+        case "$k" in
+            RECIPE_VAR_*__*)
+                b="${k%%__*}"
+                case " $bases " in *" $b "*) ;; *) bases="$bases $b" ;; esac
+                ;;
+        esac
+    done
+    for b in $bases; do
+        for a in "$@"; do case "$a" in "$b="*) continue 2 ;; esac; done
+        json='{}'
+        for a in "$@"; do
+            case "$a" in
+                "$b"__*=*)
+                    field="${a%%=*}"; field="${field#"$b"__}"; v="${a#*=}"
+                    json="$(jq -c --arg f "$field" --arg v "$v" '.[$f] = $v' <<<"$json")"
+                    ;;
+            esac
+        done
+        EMU_ARGS+=("$b=$json")
+    done
+}
+
 assert_terminal_status_case() {
     local label="$1"
     local expected_rc="$2"
@@ -390,13 +425,12 @@ assert_terminal_status_case() {
 
     (
         export REPO_PATH="${repo}"
-        export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
-        export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
+        export WORKTREE_SETUP_WORKTREE_PATH="${case_dir}/stale-worktree"  # deliberately stale (#1561)
         export WORKFLOW_CLASSIFICATION="Development"
         export RECIPE_NAME="default-workflow"
         export TASK_DESCRIPTION="Issue 752 terminal-state ${label}"
-        export ISSUE_NUMBER="752"
-        export BRANCH_NAME="feat/issue-752-terminal-state"
+        export ISSUE_NUMBER="9999"  # deliberately stale (#1561)
+        export BRANCH_NAME="stale/issue-1561-branch"  # deliberately stale (#1561)
         export BASE_REF="main"
         unset PR_URL PR_NUMBER PR_PUBLISH_RESULT_PR_URL RECIPE_VAR_pr_publish_result__pr_url
         unset IMPLEMENTATION_COMPLETED VERIFICATION_COMPLETED PUBLISH_STATE_REACHED TERMINAL_NO_OP TERMINAL_FAILURE
@@ -404,10 +438,14 @@ assert_terminal_status_case() {
         # #1561: the tool reads step outputs only as RECIPE_VAR_<key>, so the
         # rows pass them that way; clear any the caller's run left behind.
         while IFS= read -r _v; do unset "${_v}"; done < <(compgen -e | grep '^RECIPE_VAR_' || true)
+        # The runner writes the base object and, for its present fields, the
+        # nested names; the tool must read the base (#1561).
+        export RECIPE_VAR_worktree_setup="{\"worktree_path\":\"${repo}\",\"branch_name\":\"feat/issue-752-terminal-state\"}"
         export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
         export RECIPE_VAR_worktree_setup__branch_name="feat/issue-752-terminal-state"
         export RECIPE_VAR_issue_number="752"
-        for assignment in "$@"; do
+        emulate_runner "$@"
+        for assignment in "${EMU_ARGS[@]}"; do
             export "${assignment?}"
         done
         bash "${FINAL_STATUS_TOOL}"
@@ -566,7 +604,7 @@ run_commit_guard_case() {
         export COMMIT_ENV_LOG="${commit_env_log}"
         export WORKTREE_SETUP_WORKTREE_PATH="${repo}"
         export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
-        export RECIPE_VAR_worktree_setup__worktree_path="${repo}"
+        export RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${repo}" '{worktree_path: $p}')"
         export EXPECTED_PRE_COMMIT_ALLOW_NO_CONFIG="${expected_env}"
         unset PRE_COMMIT_ALLOW_NO_CONFIG
         bash "${step_file}"
@@ -1108,6 +1146,7 @@ chmod +x "${WORK}/bin/gh"
     export GH_CREATE_ATTEMPT_FILE="${GH_CREATE_ATTEMPTS}"
     export WORKTREE_SETUP_WORKTREE_PATH="${PR_REPO}"
     export RECIPE_VAR_worktree_setup__worktree_path="${PR_REPO}"
+    export RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${PR_REPO}" '{worktree_path: $p}')"
     export TASK_DESCRIPTION="Fix default workflow reliability"
     export ISSUE_NUMBER="573"
     export REMOTE_HOST_TYPE="github"
@@ -1152,7 +1191,14 @@ extract_step_command "${REFACTOR_REVIEW_RECIPE}" "checkpoint-after-review-feedba
 extract_step_command "${PR_REVIEW_RECIPE}" "step-18c-push-feedback-changes" "${STEP_PR_REVIEW_FEEDBACK}"
 extract_step_command "${FINALIZE_RECIPE}" "step-20b-push-cleanup" "${STEP_FINALIZE_CLEANUP}"
 
-assert_commit_guard_static "workflow-tdd checkpoint-after-implementation" "${STEP_TDD_CHECKPOINT}"
+# Since #1672 the TDD checkpoint sources its guarded commit helper from
+# workflow_checkpoint_commit.sh, so the guard is checked over the step body
+# together with that helper.
+STEP_TDD_CHECKPOINT_WITH_HELPER="${WORK}/checkpoint-after-implementation-with-helper.sh"
+grep -qF 'workflow_checkpoint_commit.sh' "${STEP_TDD_CHECKPOINT}" \
+    || fail "workflow-tdd checkpoint-after-implementation no longer sources workflow_checkpoint_commit.sh"
+cat "${STEP_TDD_CHECKPOINT}" "${REPO_ROOT}/amplifier-bundle/tools/workflow_checkpoint_commit.sh" > "${STEP_TDD_CHECKPOINT_WITH_HELPER}"
+assert_commit_guard_static "workflow-tdd checkpoint-after-implementation" "${STEP_TDD_CHECKPOINT_WITH_HELPER}"
 assert_commit_guard_static "workflow-refactor-review checkpoint-after-review-feedback" "${STEP_REFACTOR_REVIEW_CHECKPOINT}"
 assert_commit_guard_static "workflow-pr-review step-18c review feedback commit" "${STEP_PR_REVIEW_FEEDBACK}"
 assert_commit_guard_static "workflow-finalize final cleanup commit" "${STEP_FINALIZE_CLEANUP}"
@@ -1383,11 +1429,14 @@ render_probe_terminal_step() {
     chmod +x "$2"
 }
 
-# run_terminal_probe <cwd> <out> <err> [R:key=value | B:NAME=value]...
+# run_terminal_probe <cwd> <out> <err> [R:key=value | K:key= | B:NAME=value]...
 # R: sets RECIPE_VAR_<key>; B: exports a bare inherited variable. Every bare
 # input name and every RECIPE_VAR_ variable is cleared first, empty
 # RECIPE_VAR_ values are then unset (as the runner leaves them), and bare
 # values are applied last, so B:NO_MERGE= exports an empty NO_MERGE.
+# K:key= keeps RECIPE_VAR_<key> set to "" past that unset step: the runner
+# always writes a key the recipe declares in context:, even as "", and the
+# #1561 nested rows depend on that base key being present but empty.
 run_terminal_probe() {
     local cwd="$1" out="$2" err="$3"
     shift 3
@@ -1399,10 +1448,11 @@ run_terminal_probe() {
             PR_NUMBER PR_URL GOAL_ALREADY_MET TERMINAL_FAIL_MODE ISSUE_NUMBER
         local _v _a
         while IFS= read -r _v; do unset "${_v}"; done < <(compgen -e | grep '^RECIPE_VAR_' || true)
-        local -a bare=()
+        local -a bare=() keep=()
         for _a in "$@"; do
             case "${_a}" in
                 R:*) _a="${_a#R:}"; export "RECIPE_VAR_${_a%%=*}=${_a#*=}" ;;
+                K:*) _a="${_a#K:}"; keep+=("RECIPE_VAR_${_a%%=*}") ;;
                 B:*) bare+=("${_a#B:}") ;;
                 *) echo "HARNESS-ERROR: bad probe argument ${_a}" >&2; exit 2 ;;
             esac
@@ -1410,6 +1460,7 @@ run_terminal_probe() {
         while IFS= read -r _v; do
             [ -n "${!_v}" ] || unset "${_v}"
         done < <(compgen -e | grep '^RECIPE_VAR_' || true)
+        for _a in "${keep[@]+"${keep[@]}"}"; do export "${_a}="; done
         for _a in "${bare[@]+"${bare[@]}"}"; do export "${_a}"; done
         bash "${PROBE_TERMINAL_RENDERED}"
     ) >"${out}" 2>"${err}"
@@ -1641,6 +1692,151 @@ assert_1561_terminal_state_rows() {
         terminal_state=FAILED_INVALID_INPUT
 
     echo "  PASS[1561-terminal]: NO_MERGE is off-only, inherited bare inputs lose to RECIPE_VAR_, rendered inputs survive, goal_already_met and fail_mode=report are honoured"
+}
+
+# Issue #1561: nested step outputs are read from the base key. The runner
+# writes RECIPE_VAR_<key>__<field> only for the fields the current object has,
+# so a nested name, or its bare alias, can hold a parent run's value. Each row
+# sets a conflicting stale nested value; the run's own base JSON, or its
+# absence, must decide. Every row is reported before the function fails.
+snapshot_1561_repo() {
+    { git -C "$1" for-each-ref --format='%(refname) %(objectname)'
+      git -C "$1" status --porcelain --untracked-files=all
+      (cd "$1" && find . -path ./.git -prune -o -print | LC_ALL=C sort); } 2>&1
+}
+
+# run_1561_final_status <repo> <out> <err> NAME=value...: workflow_final_status.sh
+# in <repo>, with every inherited RECIPE_VAR_ and bare alias cleared first.
+run_1561_final_status() {
+    local repo="$1" out="$2" err="$3"
+    shift 3
+    (
+        cd "${repo}"
+        while IFS= read -r _v; do unset "${_v}"; done < <(compgen -e | grep -E '^(RECIPE_VAR_|TERMINAL_STATE_|IMPLEMENTATION_|VERIFICATION_|PUBLISH_|PR_PUBLISH_RESULT_|WORKTREE_SETUP_)' || true)
+        unset GH_TOKEN GITHUB_TOKEN PR_URL PR_NUMBER TERMINAL_STATE TERMINAL_FAILURE ALLOW_NO_OP
+        export REMOTE_HOST_TYPE=other TASK_DESCRIPTION="issue 1561 nested rows"
+        export RECIPE_VAR_issue_number=1561
+        local _a
+        for _a in "$@"; do export "${_a?}"; done
+        bash "${FINAL_STATUS_TOOL}"
+    ) >"${out}" 2>"${err}"
+}
+
+assert_1561_nested_rows() {
+    local repo="${WORK}/1561-nested-repo" cwd="${WORK}/1561-nested-cwd"
+    local o="${WORK}/1561-nested.out" e="${WORK}/1561-nested.err" rc got
+    local -a bad=()
+    row_1561() {  # row_1561 <row> <ok 0|1> <detail>
+        if [ "$2" = 0 ]; then
+            echo "  PASS[$1]"
+        else
+            echo "  FAIL[$1]: $3" >&2
+            echo "--- $1 stdout ---" >&2; cat "${o}" >&2
+            echo "--- $1 stderr ---" >&2; cat "${e}" >&2
+            bad+=("$1")
+        fi
+    }
+    setup_nomerge_probe_repo "${repo}"
+    mkdir -p "${cwd}"
+    local stale
+    stale="$(mktemp -d "${WORK}/1561-stale-repo.XXXXXX")"
+    git init -q -b feat/stale-1561 "${stale}"
+    configure_identity "${stale}"
+    printf 'stale\n' > "${stale}/stale.txt"
+    git -C "${stale}" add stale.txt
+    git -C "${stale}" commit -q -m "stale run"
+    local before
+    before="$(snapshot_1561_repo "${stale}")"
+    local own_wt
+    own_wt="$(jq -nc --arg p "${repo}" --arg b "feat/issue-929-nomerge" '{worktree_path: $p, branch_name: $b}')"
+
+    # 1561-terminal-stale-nested-worktree: the own worktree_setup JSON names
+    # the test worktree; the nested name and its bare alias name the stale
+    # repository, which is on another branch.
+    rc=0
+    run_terminal_probe "${cwd}" "${o}" "${e}" \
+        "R:repo_path=${repo}" "R:worktree_setup=${own_wt}" \
+        "R:branch_name=feat/issue-929-nomerge" "R:base_ref=main" \
+        "R:worktree_setup__worktree_path=${stale}" \
+        "B:WORKTREE_SETUP_WORKTREE_PATH=${stale}" || rc=$?  # deliberately stale (#1561)
+    got="$(json_field "${o}" terminal_state)"
+    [ "${rc}" = 0 ] && [ "${got}" = FOLLOWUP_CREATED ]
+    row_1561 "1561-terminal-stale-nested-worktree" "$?" "rc=${rc} terminal_state='${got}', want rc=0 FOLLOWUP_CREATED from the own worktree"
+    [ "$(snapshot_1561_repo "${stale}")" = "${before}" ]
+    row_1561 "1561-terminal-stale-nested-worktree(untouched)" "$?" "the stale repository gained a file, commit or ref"
+
+    # 1561-terminal-empty-base-stale-nested: the run's own worktree_setup is
+    # "", so the probe uses repo_path, never the stale nested value.
+    rc=0
+    run_terminal_probe "${cwd}" "${o}" "${e}" \
+        "R:repo_path=${repo}" "K:worktree_setup=" \
+        "R:branch_name=feat/issue-929-nomerge" "R:base_ref=main" \
+        "R:worktree_setup__worktree_path=${stale}" || rc=$?  # deliberately stale (#1561)
+    got="$(json_field "${o}" terminal_state)"
+    [ "${rc}" = 0 ] && [ "${got}" = FOLLOWUP_CREATED ]
+    row_1561 "1561-terminal-empty-base-stale-nested" "$?" "rc=${rc} terminal_state='${got}', want rc=0 FOLLOWUP_CREATED from repo_path"
+    [ "$(snapshot_1561_repo "${stale}")" = "${before}" ]
+    row_1561 "1561-terminal-empty-base-stale-nested(untouched)" "$?" "the stale repository gained a file, commit or ref"
+
+    # The final-status rows: the probe's terminal_state object reaches
+    # workflow_final_status.sh as RECIPE_VAR_terminal_state.
+    local fs_repo="${WORK}/1561-final-status-repo"
+    create_terminal_status_repo "${fs_repo}" feat/issue-1561-nested
+
+    # 1561-terminal-stale-nested-state: own JSON reports an explicit failure;
+    # stale nested names claim success.
+    rc=0
+    run_1561_final_status "${fs_repo}" "${o}" "${e}" \
+        'RECIPE_VAR_terminal_state={"terminal_state":"FAILED_MEANINGFUL_DIFF","terminal_success":false,"terminal_failure":true,"terminal_reason":"own run reason"}' \
+        "RECIPE_VAR_terminal_state__terminal_state=success" \
+        "RECIPE_VAR_terminal_state__terminal_failure=false" \
+        "RECIPE_VAR_terminal_state__terminal_reason=stale run reason" || rc=$?  # deliberately stale (#1561)
+    grep -qx 'terminal_state=FAILED_MEANINGFUL_DIFF' "${o}" && grep -qx 'terminal_failure=true' "${o}" \
+        && ! grep -q 'stale run reason' "${o}" && [ "${rc}" = 1 ]
+    row_1561 "1561-terminal-stale-nested-state" "$?" "rc=${rc}; want rc=1, the own FAILED_MEANINGFUL_DIFF and no stale reason"
+
+    # 1561-terminal-empty-base-stale-verified: base "" and no evidence; stale
+    # nested names claim a verified implementation.
+    rc=0
+    run_1561_final_status "${fs_repo}" "${o}" "${e}" \
+        "RECIPE_VAR_terminal_state=" \
+        "RECIPE_VAR_implementation_terminal_evidence=" \
+        "RECIPE_VAR_verification_terminal_evidence=" \
+        "RECIPE_VAR_terminal_state__terminal_state=IMPLEMENTED_VERIFIED" \
+        "RECIPE_VAR_terminal_state__terminal_success=true" \
+        "RECIPE_VAR_implementation_terminal_evidence__implementation_completed=true" \
+        "RECIPE_VAR_verification_terminal_evidence__verification_completed=true" || rc=$?  # deliberately stale (#1561)
+    grep -qx 'terminal_state=FAILED_MISSING_TERMINAL_EVIDENCE' "${o}" && grep -qx 'terminal_success=false' "${o}" && [ "${rc}" = 1 ]
+    row_1561 "1561-terminal-empty-base-stale-verified" "$?" "rc=${rc}; want rc=1 FAILED_MISSING_TERMINAL_EVIDENCE"
+
+    # 1561-terminal-false-boolean: an own boolean false must stay false. A
+    # stale nested "true" would make MERGED a no-op success; the own false
+    # leaves no evidence. (workflow_final_status.sh normalises "" and false
+    # alike, so false-versus-empty is pinned by the rv_field tests in
+    # issue_1561_step_outputs_prefer_recipe_var.rs; this row pins that a false
+    # is never replaced by a stale value.)
+    rc=0
+    run_1561_final_status "${fs_repo}" "${o}" "${e}" \
+        'RECIPE_VAR_terminal_state={"terminal_state":"MERGED","terminal_success":false,"terminal_failure":false}' \
+        'RECIPE_VAR_implementation_terminal_evidence={"implementation_completed":false,"terminal_no_op":false}' \
+        "RECIPE_VAR_terminal_state__terminal_success=true" \
+        "RECIPE_VAR_implementation_terminal_evidence__terminal_no_op=true" \
+        "RECIPE_VAR_implementation_terminal_evidence__implementation_completed=true" || rc=$?  # deliberately stale (#1561)
+    grep -qx 'terminal_success=false' "${o}" && grep -qx 'terminal_no_op=false' "${o}" \
+        && grep -qx 'implementation_completed=false' "${o}" && [ "${rc}" = 1 ]
+    row_1561 "1561-terminal-false-boolean" "$?" "rc=${rc}; own false values were replaced by stale nested true"
+
+    # Positive control for the row above: an own true is read as true.
+    rc=0
+    run_1561_final_status "${fs_repo}" "${o}" "${e}" \
+        'RECIPE_VAR_terminal_state={"terminal_state":"MERGED","terminal_success":true,"terminal_failure":false}' \
+        "RECIPE_VAR_terminal_state__terminal_success=false" || rc=$?  # deliberately stale (#1561)
+    grep -qx 'terminal_success=true' "${o}" && grep -qx 'terminal_state=MERGED' "${o}" && [ "${rc}" = 0 ]
+    row_1561 "1561-terminal-own-true-beats-stale-false" "$?" "rc=${rc}; want rc=0 terminal_state=MERGED from the own JSON"
+
+    rm -rf -- "${stale}"
+    [ "${#bad[@]}" -eq 0 ] || fail "#1561 nested rows failed: ${bad[*]}"
+    echo "  PASS[1561-nested]: nested step outputs come from the base key; stale nested and bare values lose"
 }
 
 assert_gh_rate_limit_backoff_contracts() {
@@ -1908,5 +2104,6 @@ assert_gh_rate_limit_backoff_contracts
 assert_stanza_cleanup_guidance
 assert_azdo_work_item_url_parsing
 assert_sanitize_cli_output_redacts_secrets
+assert_1561_nested_rows
 
 echo "PASS: default workflow reliability contracts are covered."

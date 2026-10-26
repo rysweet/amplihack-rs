@@ -137,8 +137,8 @@ impl Fixture {
                 ("REPO_PATH".into(), isolated_repo.clone()),
                 ("WORKTREE_SETUP_WORKTREE_PATH".into(), isolated_repo.clone()),
                 (
-                    "RECIPE_VAR_worktree_setup__worktree_path".into(),
-                    isolated_repo,
+                    "RECIPE_VAR_worktree_setup".into(),
+                    serde_json::json!({ "worktree_path": isolated_repo }).to_string(),
                 ),
                 ("AMPLIHACK_HOME".into(), repo().display().to_string()),
             ],

@@ -6,10 +6,28 @@ echo ""
 
 export GH_PAGER=cat PAGER=cat LESS=FRX
 
+command -v jq >/dev/null 2>&1 || { echo "ERROR: workflow_final_status.sh requires jq to read step outputs" >&2; exit 2; }
+
+# Read field <field> of the JSON object in the base variable RECIPE_VAR_<key>
+# (#1561). The runner writes RECIPE_VAR_<key> for every declared key, but a
+# nested name only for fields the current object has, so a nested name can
+# hold a parent run's value and is never read. Prints nothing for an unset or
+# empty key, a value that is not a JSON object, or a missing or null field;
+# `false` and `0` print as values. Callers treat empty as "not reported".
+rv_field() {
+  local key="$1" field="$2" var
+  [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
+  var="RECIPE_VAR_${key}"
+  printf '%s' "${!var:-}" \
+    | jq -r --arg f "$field" 'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end' 2>/dev/null \
+    || true
+}
+
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
-PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
-PUBLISH_STATE="${RECIPE_VAR_pr_publish_result__state:-}"
+PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
+PUBLISH_STATE="$(rv_field pr_publish_result state)"
+PUBLISH_MESSAGE="$(rv_field pr_publish_result message)"
 TASK_DESC="${TASK_DESCRIPTION:-}"
 ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
 
@@ -90,14 +108,16 @@ emit_terminal_evidence() {
   [ -z "$invalid_evidence" ] || echo "invalid_evidence=$invalid_evidence"
 }
 
-impl_input="${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-}"
-verify_input="${RECIPE_VAR_verification_terminal_evidence__verification_completed:-}"
-publish_input="${RECIPE_VAR_publish_terminal_evidence__publish_state_reached:-}"
-no_op_input="${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-${RECIPE_VAR_verification_terminal_evidence__terminal_no_op:-}}"
-failure_input="${RECIPE_VAR_terminal_state__terminal_failure:-}"
+impl_input="$(rv_field implementation_terminal_evidence implementation_completed)"
+verify_input="$(rv_field verification_terminal_evidence verification_completed)"
+publish_input="$(rv_field publish_terminal_evidence publish_state_reached)"
+no_op_input="$(rv_field implementation_terminal_evidence terminal_no_op)"
+no_op_input="${no_op_input:-$(rv_field verification_terminal_evidence terminal_no_op)}"
+failure_input="$(rv_field terminal_state terminal_failure)"
 allow_no_op_input="${RECIPE_VAR_allow_no_op:-false}"
-probe_success_input="${RECIPE_VAR_terminal_state__terminal_success:-}"
-probe_state_input="${RECIPE_VAR_terminal_state__terminal_state:-}"
+probe_success_input="$(rv_field terminal_state terminal_success)"
+probe_state_input="$(rv_field terminal_state terminal_state)"
+probe_reason_input="$(rv_field terminal_state terminal_reason)"
 
 normalize_bool "IMPLEMENTATION_COMPLETED" "$impl_input"
 implementation_completed="$normalized_bool"
@@ -130,7 +150,7 @@ case "$PUBLISH_STATE" in
   BLOCKED_PROVIDER)
     terminal_success="false"
     terminal_state_out="BLOCKED_PROVIDER"
-    terminal_reason_out="${RECIPE_VAR_pr_publish_result__message:-provider publication failed or was ambiguous}"
+    terminal_reason_out="${PUBLISH_MESSAGE:-provider publication failed or was ambiguous}"
     terminal_failure="true"
     emit_terminal_evidence
     echo "ERROR: workflow publish provider is blocked: $terminal_reason_out" >&2
@@ -292,7 +312,7 @@ adjudicate_terminal_state() {
   # SAME lattice as any other judgement — it can downgrade freely, but it can
   # only confirm success when the collected evidence carries a positive
   # artifact, and it can never lift a hard negative.
-  agent_verdict="${RECIPE_VAR_terminal_adjudication__agent_verdict:-}"
+  agent_verdict="$(rv_field terminal_adjudication agent_verdict)"
   rc=0
   adjudication="$(printf '%s' "$terminal_evidence_json" \
     | bash "$TERMINAL_EVIDENCE_HELPER" adjudicate - --agent-verdict "$agent_verdict" --report-only)" || rc=$?
@@ -351,7 +371,7 @@ resolve_open_pr_for_current_branch() {
   fi
   command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  run_dir="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+  run_dir="$(rv_field worktree_setup worktree_path)"
   if [ -n "$run_dir" ]; then
     [ -d "$run_dir" ] || return 0
   else
@@ -370,7 +390,7 @@ resolve_open_pr_for_current_branch() {
 
   branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
   [ -n "$branch" ] || return 0
-  expected_branch="${RECIPE_VAR_worktree_setup__branch_name:-}"
+  expected_branch="$(rv_field worktree_setup branch_name)"
   [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || return 0
   case "$branch" in -*|main|master) return 0 ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
@@ -446,8 +466,8 @@ fi
 
 if [ "$terminal_failure" = "true" ]; then
   terminal_success="false"
-  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-TERMINAL_FAILURE}"
-  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-explicit terminal failure evidence was reported}"
+  terminal_state_out="${probe_state_input:-TERMINAL_FAILURE}"
+  terminal_reason_out="${probe_reason_input:-explicit terminal failure evidence was reported}"
   emit_terminal_evidence
   echo "ERROR: workflow terminal failure: $terminal_state_out: $terminal_reason_out" >&2
   exit 1
@@ -455,16 +475,16 @@ fi
 
 if [ "$terminal_no_op" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-ALLOW_NO_OP}"
-  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-allow_no_op was explicitly selected for a non-code-change path}"
+  terminal_state_out="${probe_state_input:-ALLOW_NO_OP}"
+  terminal_reason_out="${probe_reason_input:-allow_no_op was explicitly selected for a non-code-change path}"
 elif [ "$publish_state_reached" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}"
-  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-${RECIPE_VAR_pr_publish_result__message:-publish/PR state reached}}"
+  terminal_state_out="${probe_state_input:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}"
+  terminal_reason_out="${probe_reason_input:-${PUBLISH_MESSAGE:-publish/PR state reached}}"
 elif [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${RECIPE_VAR_terminal_state__terminal_state:-IMPLEMENTED_VERIFIED}"
-  terminal_reason_out="${RECIPE_VAR_terminal_state__terminal_reason:-implementation and verification evidence present}"
+  terminal_state_out="${probe_state_input:-IMPLEMENTED_VERIFIED}"
+  terminal_reason_out="${probe_reason_input:-implementation and verification evidence present}"
 else
   terminal_success="false"
   terminal_state_out="FAILED_MISSING_TERMINAL_EVIDENCE"

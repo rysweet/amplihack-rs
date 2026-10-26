@@ -371,7 +371,11 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         .current_dir(&worktree)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env("WORKTREE_SETUP_WORKTREE_PATH", &worktree)
-        .env("RECIPE_VAR_worktree_setup__worktree_path", &worktree)
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            serde_json::json!({ "worktree_path": worktree.to_string_lossy() }).to_string(),
+        )
+        .env("RECIPE_VAR_worktree_setup__worktree_path", tmp.path()) // deliberately stale (#1561)
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
             workspace_helper_path("workflow_runtime_artifacts.sh"),

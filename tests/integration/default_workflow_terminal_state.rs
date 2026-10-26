@@ -291,23 +291,37 @@ fn run_terminal_state_with_issue(
     ] {
         cmd.env_remove(key);
     }
+    // An enclosing recipe run's RECIPE_VAR_* would otherwise reach the probe.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RECIPE_VAR_") {
+            cmd.env_remove(&key);
+        }
+    }
     cmd.arg("-c")
         .arg(command)
         .env("PATH", path)
         .env("REPO_PATH", repo_path)
-        .env("BRANCH_NAME", branch_name)
-        .env("BASE_REF", "main")
-        .env("PR_NUMBER", "")
-        .env("PR_URL", pr_url.unwrap_or(""))
+        // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
+        .env("RECIPE_VAR_repo_path", repo_path)
+        .env("RECIPE_VAR_branch_name", branch_name)
+        .env("RECIPE_VAR_base_ref", "main")
+        .env("RECIPE_VAR_pr_number", "")
+        .env("RECIPE_VAR_pr_url", pr_url.unwrap_or(""))
         .env("RECIPE_VAR_issue_number", issue_number)
         .env(
             "WORKFLOW_PR_SCOPE_HELPER",
             workspace_helper_path("workflow_pr_scope.sh"),
         )
-        .env("GOAL_ALREADY_MET", "false");
-    if let Some(worktree_path) = worktree_path {
-        cmd.env("RECIPE_VAR_worktree_setup__worktree_path", worktree_path);
-    }
+        .env("RECIPE_VAR_goal_already_met", "false")
+        // Conflicting stale bare names a parent run could leave behind.
+        .env("BRANCH_NAME", "stale/issue-1561-parent-branch") // deliberately stale (#1561)
+        .env("PR_URL", "https://github.com/stale/parent/pull/9999") // deliberately stale (#1561)
+        .env("GOAL_ALREADY_MET", "true"); // deliberately stale (#1561)
+    // The runner hands worktree_setup back as JSON in its base key (#1561).
+    let worktree_setup = worktree_path
+        .map(|p| serde_json::json!({ "worktree_path": p.to_string_lossy() }).to_string())
+        .unwrap_or_default();
+    cmd.env("RECIPE_VAR_worktree_setup", worktree_setup);
     let output = cmd
         .output()
         .unwrap_or_else(|e| panic!("run workflow-terminal-state: {e}"));

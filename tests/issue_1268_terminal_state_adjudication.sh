@@ -68,6 +68,7 @@ cat >"$BINDIR/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -uo pipefail
 dir="${FAKE_GH_DIR:?FAKE_GH_DIR must be set}"
+printf '%s\n' "$*" >>"$dir/calls.log"
 if [ -f "$dir/fail_auth" ]; then
     echo "HTTP 401: Bad credentials" >&2
     exit 1
@@ -141,25 +142,77 @@ pr_json() {
 
 # Run workflow_final_status.sh against a fixture repo. Combined output lands in
 # $RUN_OUT (a file, so the exit status survives) and the status in $RUN_RC.
+#
+# emulate_runner ARG...: sets EMU_ARGS to ARG... plus what the pinned runner
+# writes alongside them (#1561). For every RECIPE_VAR_<key>__<field>=v the
+# runner also writes the base RECIPE_VAR_<key> as the JSON object holding
+# those fields, so the fixtures set both, unless an argument sets
+# RECIPE_VAR_<key> itself. A STALE:NAME=v argument is passed through with no
+# base key: it stands for a value inherited from a parent run.
+emulate_runner() {
+    EMU_ARGS=()
+    local a k b field v json bases=""
+    for a in "$@"; do
+        case "$a" in STALE:*) EMU_ARGS+=("${a#STALE:}"); continue ;; esac
+        EMU_ARGS+=("$a")
+        k="${a%%=*}"
+        case "$k" in
+            RECIPE_VAR_*__*)
+                b="${k%%__*}"
+                case " $bases " in *" $b "*) ;; *) bases="$bases $b" ;; esac
+                ;;
+        esac
+    done
+    for b in $bases; do
+        for a in "$@"; do case "$a" in "$b="*) continue 2 ;; esac; done
+        json='{}'
+        for a in "$@"; do
+            case "$a" in
+                STALE:*) ;;
+                "$b"__*=*)
+                    field="${a%%=*}"; field="${field#"$b"__}"; v="${a#*=}"
+                    json="$(jq -c --arg f "$field" --arg v "$v" '.[$f] = $v' <<<"$json")"
+                    ;;
+            esac
+        done
+        EMU_ARGS+=("$b=$json")
+    done
+}
+
+# Fixture defaults. An UNSET:NAME argument drops the default NAME for one run.
+RUN_DEFAULTS=(
+    "RECIPE_VAR_pr_url=https://github.com/octo/example/pull/1128"
+    "RECIPE_VAR_pr_publish_result__state=FOLLOWUP_CREATED"
+    "RECIPE_VAR_issue_number=1268"
+)
 RUN_OUT=""
 RUN_RC=0
 run_final_status() {
-    local repo="$1" fakedir="$2"
+    local repo="$1" fakedir="$2" d a
     shift 2
+    local -a args=() drop=()
+    for a in "$@"; do case "$a" in UNSET:*) drop+=("${a#UNSET:}") ;; esac; done
+    for d in "${RUN_DEFAULTS[@]}"; do
+        for a in "${drop[@]+"${drop[@]}"}"; do [ "${d%%=*}" = "$a" ] && continue 2; done
+        args+=("$d")
+    done
+    for a in "$@"; do case "$a" in UNSET:*) ;; *) args+=("$a") ;; esac; done
+    emulate_runner "${args[@]}"
     RUN_OUT="$TMPROOT/last-run.out"
+    : >"$fakedir/calls.log"
     (
         cd "$repo" || exit 99
+        # Nothing the caller's own run exported may reach the tool.
+        while IFS= read -r _v; do unset "$_v"; done < <(compgen -e | grep -E '^(RECIPE_VAR_|PR_PUBLISH_RESULT_|TERMINAL_STATE_|TERMINAL_ADJUDICATION_|WORKTREE_SETUP_)' || true)
+        unset GH_TOKEN GITHUB_TOKEN PR_URL PR_NUMBER REPO_PATH
         export PATH="$BINDIR:$PATH"
         export FAKE_GH_DIR="$fakedir"
         export REMOTE_HOST_TYPE="github"
-        export RECIPE_VAR_pr_url="https://github.com/octo/example/pull/1128"
-        export RECIPE_VAR_pr_publish_result__state="FOLLOWUP_CREATED"
         export TASK_DESCRIPTION="issue 1268 fixture"
-        export RECIPE_VAR_issue_number="1268"
         export GH_RETRY_MAX_TRANSIENT=1
         export GH_RETRY_MAX_RL_WINDOWS=0
         export HOME="$TMPROOT/home"
-        env "$@" bash "$FINAL_STATUS"
+        env "${EMU_ARGS[@]}" bash "$FINAL_STATUS"
     ) >"$RUN_OUT" 2>&1
     RUN_RC=$?
     return 0
@@ -380,6 +433,7 @@ fake="$TMPROOT/fake-wrappers"; mkdir -p "$fake"
 jq -nc --argjson a "$(pr_json 1128 MERGED fix/1268-example 'fix: the deliverable')" '[$a]' > "$fake/pr_list_head.json"
 jq -nc --argjson b "$(pr_json 1132 OPEN followup/rebase 'chore: follow-up A')" '[$b]' > "$fake/pr_list_open.json"
 raw="$(cd "$repo" && PATH="$BINDIR:$PATH" FAKE_GH_DIR="$fake" GH_RETRY_MAX_RL_WINDOWS=0 \
+    RECIPE_VAR_pr_publish_result='{"pr_url":"https://github.com/octo/example/pull/1128"}' \
     RECIPE_VAR_pr_publish_result__pr_url="https://github.com/octo/example/pull/1128" \
     bash "$EVIDENCE" collect-for-step 2>/dev/null)"
 if printf '%s' "$raw" | jq -e '.mechanical_verdict == "SUCCESS" and .merged_pr_count == 1' >/dev/null 2>&1; then
@@ -414,6 +468,65 @@ v="$(narrative_case 'TERMINAL_VERDICT: DEFINITELY_MERGED')"
 v="$(RECIPE_VAR_terminal_adjudication_narrative="" bash "$EVIDENCE" verdict-token 2>/dev/null | jq -r '.agent_verdict')"
 [ -z "$v" ] && record_pass "a skipped adjudicator step offers no judgement (empty verdict)" \
     || record_fail "empty narrative produced a verdict '$v'"
+
+# ===========================================================================
+# 10. #1561: nested step outputs are read from the base key. The runner writes
+#     RECIPE_VAR_<key>__<field> only for the fields the current object has, so
+#     a nested name (or its bare alias) can hold a parent run's value. 9999 is
+#     the stale PR: it must never reach gh or the output.
+# ===========================================================================
+STALE_URL="https://github.com/octo/example/pull/9999"
+stale_pr_unused() {
+    ! grep -qF 9999 "$1/calls.log" && ! grep -qF 9999 "$RUN_OUT"
+}
+
+repo="$(make_repo stale-nested)"
+fake="$TMPROOT/fake-stale-nested"; mkdir -p "$fake"
+jq -nc --argjson a "$(pr_json 1128 MERGED fix/1268-example 'fix: the deliverable')" '[$a]' > "$fake/pr_list_head.json"
+echo '[]' > "$fake/pr_list_open.json"
+jq -c '.[0]' "$fake/pr_list_head.json" > "$fake/pr_view.json"
+run_final_status "$repo" "$fake" UNSET:RECIPE_VAR_pr_url \
+    RECIPE_VAR_pr_publish_result='{"pr_url":"https://github.com/octo/example/pull/1128","pr_number":"1128","state":"FOLLOWUP_CREATED"}' \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_url=$STALE_URL" \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_number=9999" \
+    "STALE:PR_PUBLISH_RESULT_PR_URL=$STALE_URL" \
+    "STALE:PR_PUBLISH_RESULT_PR_NUMBER=9999"  # deliberately stale (#1561)
+out="$(cat "$RUN_OUT")"
+if [ "$RUN_RC" -eq 0 ] && printf '%s' "$out" | grep -q 'terminal_verdict=SUCCESS' && stale_pr_unused "$fake"; then
+    record_pass "1561-stale-nested-pr: own pr_publish_result JSON (#1128) wins; stale #9999 never reaches gh"
+else
+    record_fail "1561-stale-nested-pr: own pr_publish_result JSON (#1128) must win over stale #9999 (rc=$RUN_RC)"
+    printf '%s\n' "$out" | sed 's/^/    | /'; sed 's/^/    gh| /' "$fake/calls.log"
+fi
+
+repo="$(make_repo empty-base-stale)"
+fake="$TMPROOT/fake-empty-base-stale"; mkdir -p "$fake"
+echo '[]' > "$fake/pr_list_head.json"
+echo '[]' > "$fake/pr_list_open.json"
+run_final_status "$repo" "$fake" UNSET:RECIPE_VAR_pr_url RECIPE_VAR_pr_publish_result= \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_url=$STALE_URL" \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_number=9999"  # deliberately stale (#1561)
+out="$(cat "$RUN_OUT")"
+if [ "$RUN_RC" -eq 1 ] && printf '%s' "$out" | grep -qx 'terminal_state=FAILED_MISSING_TERMINAL_EVIDENCE' && stale_pr_unused "$fake"; then
+    record_pass "1561-empty-base-stale-nested-pr: base \"\" + stale nested PR -> no PR, FAILED_MISSING_TERMINAL_EVIDENCE"
+else
+    record_fail "1561-empty-base-stale-nested-pr: base \"\" + stale nested PR must read as no PR (rc=$RUN_RC)"
+    printf '%s\n' "$out" | sed 's/^/    | /'; sed 's/^/    gh| /' "$fake/calls.log"
+fi
+
+repo="$(make_repo stale-verdict)"
+fake="$TMPROOT/fake-stale-verdict"; mkdir -p "$fake"
+jq -nc --argjson a "$(pr_json 1128 MERGED fix/1268-example 'fix: the deliverable')" '[$a]' > "$fake/pr_list_head.json"
+echo '[]' > "$fake/pr_list_open.json"
+run_final_status "$repo" "$fake" RECIPE_VAR_terminal_adjudication='{"agent_verdict":"FAILED"}' \
+    "STALE:RECIPE_VAR_terminal_adjudication__agent_verdict=SUCCESS" \
+    "STALE:TERMINAL_ADJUDICATION_AGENT_VERDICT=SUCCESS"  # deliberately stale (#1561)
+if [ "$RUN_RC" -ne 0 ]; then
+    record_pass "1561-stale-nested-agent-verdict: own agent_verdict FAILED beats a stale nested SUCCESS"
+else
+    record_fail "1561-stale-nested-agent-verdict: a stale nested SUCCESS overrode the run's own FAILED verdict"
+    sed 's/^/    | /' "$RUN_OUT"
+fi
 
 echo ""
 echo "issue #1268 terminal-state adjudication: $pass passed, $fail failed"

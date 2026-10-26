@@ -238,8 +238,151 @@ fn context_file_non_strings_are_compact_json() {
     }
 }
 
+// ── Dotted keys read the base key's JSON (#1561) ────────────────────────────
+//
+// The runner writes `RECIPE_VAR_<a>__<b>` only for fields the current object
+// has, so a nested name can be a parent run's value. `write_context_value a.b`
+// reads `RECIPE_VAR_a` and takes field `b` from its JSON; it never builds or
+// reads `RECIPE_VAR_a__b`. See docs/reference/auto-drive-to-merge.md, "Dotted
+// keys in `write_context_value`".
+
+/// Run `key` to a file, expecting exit 3 and no file.
+fn assert_exit_3(mode: Mode, key: &str, env: &[(&str, &str)], dir: &Path, why: &str) {
+    let out_path = dir.join(format!("out-{mode:?}-exit3"));
+    let out = run(mode, dir, &[key, out_path.to_str().unwrap()], env);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{mode:?} {key}: {why}; stdout: {:?}, stderr: {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        !out_path.exists(),
+        "{mode:?} {key}: exit 3 writes no file ({why})"
+    );
+    let out = run(mode, dir, &[key, "-"], env);
+    assert_eq!(
+        out.status.code(),
+        Some(3),
+        "{mode:?} {key} -> stdout: {why}"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "{mode:?} {key}: nothing printed on exit 3 ({why}), got {:?}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        !stderr.contains("stale"),
+        "{mode:?} {key}: the message never includes a value: {stderr}"
+    );
+}
+
 #[test]
-fn dotted_key_maps_to_double_underscore_var() {
+fn dotted_key_reads_the_base_key_json_not_the_nested_name() {
+    if !jq_available() {
+        return;
+    }
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        let env = [
+            (
+                "RECIPE_VAR_final_requirements",
+                r#"{"summary":"own-value","count":2}"#,
+            ),
+            ("RECIPE_VAR_final_requirements__summary", "stale-nested"), // deliberately stale (#1561)
+        ];
+        let (file, stdout) = read_both(mode, "final_requirements.summary", &env, dir.path());
+        assert_eq!(
+            String::from_utf8_lossy(&file),
+            "own-value",
+            "{mode:?}: the run's own base JSON wins over an inherited nested name"
+        );
+        assert_eq!(String::from_utf8_lossy(&stdout), "own-value");
+    }
+}
+
+#[test]
+fn dotted_key_with_empty_base_exits_3_and_ignores_the_nested_name() {
+    if !jq_available() {
+        return;
+    }
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        let env = [
+            ("RECIPE_VAR_final_requirements", ""),
+            ("RECIPE_VAR_final_requirements__summary", "stale-nested"), // deliberately stale (#1561)
+        ];
+        assert_exit_3(
+            mode,
+            "final_requirements.summary",
+            &env,
+            dir.path(),
+            "a base key set to \"\" has no field, whatever the nested name holds",
+        );
+    }
+}
+
+#[test]
+fn dotted_key_with_unusable_base_exits_3() {
+    if !jq_available() {
+        return;
+    }
+    let bases = [
+        ("not JSON", "not json {"),
+        ("a JSON string", r#""summary""#),
+        ("a JSON array", r#"[{"summary":"x"}]"#),
+        ("a JSON number", "5"),
+        ("an object without the field", r#"{"other":"x"}"#),
+    ];
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        for (what, base) in bases {
+            let env = [
+                ("RECIPE_VAR_final_requirements", base),
+                ("RECIPE_VAR_final_requirements__summary", "stale-nested"), // deliberately stale (#1561)
+            ];
+            assert_exit_3(
+                mode,
+                "final_requirements.summary",
+                &env,
+                dir.path(),
+                &format!("base is {what}"),
+            );
+        }
+    }
+}
+
+#[test]
+fn dotted_key_with_set_base_never_falls_back_to_the_context_file() {
+    if !jq_available() {
+        return;
+    }
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = write_ctx(
+            dir.path(),
+            &serde_json::json!({"final_requirements": {"summary": "stale-file"}}),
+        );
+        // The base key is set, so it is this run's value; the context file is
+        // only for an unset base key (S-F2).
+        let env = [
+            ("RECIPE_VAR_final_requirements", r#"{"other":"x"}"#),
+            ("AMPLIHACK_CONTEXT_FILE", ctx.to_str().unwrap()),
+        ];
+        assert_exit_3(
+            mode,
+            "final_requirements.summary",
+            &env,
+            dir.path(),
+            "a set base key without the field does not read AMPLIHACK_CONTEXT_FILE",
+        );
+    }
+}
+
+#[test]
+fn dotted_key_with_unset_base_uses_the_context_file_not_the_nested_name() {
     if !jq_available() {
         return;
     }
@@ -250,11 +393,97 @@ fn dotted_key_maps_to_double_underscore_var() {
             &serde_json::json!({"final_requirements": {"summary": "from-file"}}),
         );
         let env = [
-            ("RECIPE_VAR_final_requirements__summary", "from-env"),
+            ("RECIPE_VAR_final_requirements__summary", "stale-nested"), // deliberately stale (#1561)
             ("AMPLIHACK_CONTEXT_FILE", ctx.to_str().unwrap()),
         ];
         let (file, _) = read_both(mode, "final_requirements.summary", &env, dir.path());
-        assert_eq!(file, b"from-env");
+        assert_eq!(String::from_utf8_lossy(&file), "from-file", "{mode:?}");
+
+        // Unset base, no context file: exit 3, even with a nested name set.
+        let env = [("RECIPE_VAR_final_requirements__summary", "stale-nested")]; // deliberately stale (#1561)
+        assert_exit_3(
+            mode,
+            "final_requirements.summary",
+            &env,
+            dir.path(),
+            "an unset base key never reads the nested name",
+        );
+    }
+}
+
+#[test]
+fn dotted_key_writes_non_strings_from_the_base_key_as_compact_json() {
+    if !jq_available() {
+        return;
+    }
+    let base = r#"{"ok":false,"n":0,"list":["a","b"],"obj":{"x":1},"text":"line\nnext"}"#;
+    let cases = [
+        ("cfg.ok", "false"),
+        ("cfg.n", "0"),
+        ("cfg.list", r#"["a","b"]"#),
+        ("cfg.obj", r#"{"x":1}"#),
+        ("cfg.text", "line\nnext"),
+    ];
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        let env = [("RECIPE_VAR_cfg", base)];
+        for (key, want) in cases {
+            let (file, stdout) = read_both(mode, key, &env, dir.path());
+            assert_eq!(
+                String::from_utf8_lossy(&file),
+                want,
+                "{mode:?} {key}: `false` and `0` are values, not missing"
+            );
+            assert_eq!(String::from_utf8_lossy(&stdout), want, "{mode:?} {key}");
+        }
+    }
+}
+
+#[test]
+fn dotted_key_reads_a_deeper_path_from_the_base_key() {
+    if !jq_available() {
+        return;
+    }
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        let env = [
+            ("RECIPE_VAR_a", r#"{"b":{"c":"own"}}"#),
+            ("RECIPE_VAR_a__b__c", "stale-nested"), // deliberately stale (#1561)
+        ];
+        let (file, _) = read_both(mode, "a.b.c", &env, dir.path());
+        assert_eq!(String::from_utf8_lossy(&file), "own", "{mode:?}");
+    }
+}
+
+#[test]
+fn dotted_key_field_with_jq_syntax_is_data_not_code() {
+    if !jq_available() {
+        return;
+    }
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        // `-` is a legal key character; the field reaches jq through --arg, so
+        // `a.b-c` is the field named "b-c", never `.b - c`.
+        let env = [("RECIPE_VAR_a", r#"{"b-c":"dash-field","b":1,"c":1}"#)];
+        let (file, _) = read_both(mode, "a.b-c", &env, dir.path());
+        assert_eq!(String::from_utf8_lossy(&file), "dash-field", "{mode:?}");
+    }
+}
+
+#[test]
+fn script_never_builds_a_nested_recipe_var_name() {
+    let text = std::fs::read_to_string(script()).unwrap();
+    for (i, line) in text.lines().enumerate() {
+        if line.trim_start().starts_with('#') {
+            continue;
+        }
+        assert!(
+            !line.contains("//./__"),
+            "recipe_context_value.sh:{}: a dotted key must not be mapped to a \
+             RECIPE_VAR_<a>__<b> name (#1561): {}",
+            i + 1,
+            line.trim()
+        );
     }
 }
 

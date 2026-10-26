@@ -1201,9 +1201,13 @@ fn mid_stage_read_only_steps_fall_back_to_repo_path() {
     // REPO_PATH fallback cannot commit in the launch checkout. It still
     // hard-fails (via :?) when REPO_PATH is also empty.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
+    // #1561: the fallback is the recipe's own repo_path, never an inherited
+    // bare REPO_PATH.
     assert!(
-        command.contains(":-${REPO_PATH:-}"),
-        "workflow-publish/step-16-create-draft-pr must fall back to $REPO_PATH when worktree var is empty"
+        command.contains(
+            r#"[ -n "$WORKTREE_SETUP_WORKTREE_PATH" ] || WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}""#
+        ),
+        "workflow-publish/step-16-create-draft-pr must fall back to repo_path when worktree var is empty"
     );
     assert!(
         command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),

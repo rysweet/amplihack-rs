@@ -85,7 +85,7 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-20a-artifact-guard: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20a $1; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
       wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
@@ -100,7 +100,7 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-20b-push-cleanup: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20b $1; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
       wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
@@ -223,11 +223,11 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
       set -euo pipefail
-      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-21-pr-ready: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
-      PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
+      PR_URL="${RECIPE_VAR_pr_url:-$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" then .pr_url // empty else empty end' 2>/dev/null || true)}"
+      PR_NUMBER="${RECIPE_VAR_pr_number:-$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" and has("pr_number") and .pr_number != null then .pr_number | tostring else empty end' 2>/dev/null || true)}"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
       if [ -z "$PR_URL" ]; then :; fi
@@ -267,12 +267,12 @@ steps:
       # Issue #1596: the final status reads the run's branch and HEAD from cwd
       # (branch PR lookup, scoped PR match). REPO_PATH is the main checkout, not
       # the run's branch, so enter the run's worktree first, as step-21 does.
-      WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-22b-final-status: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       if [ -n "${WORKTREE_SETUP_WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_SETUP_WORKTREE_PATH" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b worktree path unset or gone, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
       export WORKTREE_SETUP_WORKTREE_PATH
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
+      PR_URL="${RECIPE_VAR_pr_url:-$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" then .pr_url // empty else empty end' 2>/dev/null || true)}"
       if [ -z "$PR_URL" ]; then : "N/A"; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi

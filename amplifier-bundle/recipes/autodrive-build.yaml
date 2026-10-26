@@ -37,6 +37,9 @@ context:
   pr_number: ""
   pr_url: ""
   autodrive_state_dir: ""
+  # Set by step-02's default-workflow sub-recipe; step-03 reads the worktree
+  # path and branch from its JSON (#1676, #1561).
+  worktree_setup: ""
   # Phase 1 never merges. auto-drive-to-merge owns that decision.
   no_merge: "true"
 
@@ -184,8 +187,33 @@ steps:
       # the worktree's HEAD. Only the installed bundle's copy is sourced (#1551).
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
       if [ -z "$PR" ]; then
-        RUN_DIR="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-        RUN_BRANCH="${WORKTREE_SETUP_BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}"
+        # #1561: only the JSON in the base key belongs to this run; nested
+        # names and bare WORKTREE_SETUP_* can hold a parent run's values.
+        RUN_DIR="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+          | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
+        RUN_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+          | jq -r 'if type=="object" then .branch_name // empty else empty end' 2>/dev/null || true)"
+        # A branch that is not a valid branch name is dropped; the helper then
+        # takes the branch from the worktree.
+        case "$RUN_BRANCH" in -*) RUN_BRANCH="" ;; esac
+        [ -z "$RUN_BRANCH" ] || git check-ref-format --branch "$RUN_BRANCH" >/dev/null 2>&1 || RUN_BRANCH=""
+        # The path must be one absolute line, not a symlink, already resolved
+        # and a worktree root; anything else skips the lookup.
+        if [ -n "$RUN_DIR" ]; then
+          RUN_DIR_OK="false"
+          case "$RUN_DIR" in
+            *$'\n'*) ;;
+            /*) if [ -d "$RUN_DIR" ] && [ ! -L "$RUN_DIR" ] \
+                   && [ "$(realpath -- "$RUN_DIR" 2>/dev/null)" = "$RUN_DIR" ] \
+                   && [ "$(git -C "$RUN_DIR" rev-parse --show-toplevel 2>/dev/null)" = "$RUN_DIR" ]; then
+                  RUN_DIR_OK="true"
+                fi ;;
+          esac
+          if [ "$RUN_DIR_OK" != "true" ]; then
+            echo "INFO: #1676: worktree_setup.worktree_path is not a worktree root; skipping the run-branch lookup [autodrive-build/step-03]" >&2
+            RUN_DIR=""
+          fi
+        fi
         RUN_PR_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_run_pr.sh"
         case "${AMPLIHACK_HOME:-}" in /*) ;; *) RUN_PR_HELPER="" ;; esac
         if [ -n "$RUN_DIR" ] && [ -n "$RUN_PR_HELPER" ] && [ -f "$RUN_PR_HELPER" ] && . "$RUN_PR_HELPER"; then

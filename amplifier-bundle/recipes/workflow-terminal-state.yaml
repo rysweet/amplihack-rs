@@ -253,7 +253,17 @@ steps:
       # name inherited from whatever launched the runner is not read, and no
       # value is compared with its own template placeholder (render_shell turns
       # that into "$RECIPE_VAR_key", so the comparison discarded the value).
-      WORKTREE_INPUT="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+      # #1561: worktree_setup is read only from the JSON in its base key; a nested
+      # or bare name can hold a parent run's value. The path must be one absolute
+      # line, not a symlink, already resolved and a worktree root (V4).
+      WORKTREE_INPUT="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+        | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
+      case "$WORKTREE_INPUT" in *$'\n'*) WORKTREE_INPUT="!" ;; /*) ;; ?*) WORKTREE_INPUT="!" ;; esac
+      if [ -n "$WORKTREE_INPUT" ] && ! { [ -d "$WORKTREE_INPUT" ] && [ ! -L "$WORKTREE_INPUT" ] \
+          && [ "$(realpath -- "$WORKTREE_INPUT" 2>/dev/null)" = "$WORKTREE_INPUT" ] \
+          && [ "$(git -C "$WORKTREE_INPUT" rev-parse --show-toplevel 2>/dev/null)" = "$WORKTREE_INPUT" ]; }; then
+        fail_terminal_state "FAILED_INVALID_INPUT" "worktree_setup.worktree_path is not a resolved worktree root"
+      fi
       REPO_DIR="${RECIPE_VAR_repo_path:-}"
       case "$REPO_DIR" in ""|"''") REPO_DIR="." ;; esac
       BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"

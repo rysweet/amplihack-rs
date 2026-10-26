@@ -493,6 +493,12 @@ struct Step {
 
 /// Top-level keys a RECIPE_VAR_ name refers to: `pr_publish_result__pr_url`
 /// is the `pr_publish_result` key.
+///
+/// Stripping a name to its base key is sound because no bundle step reads a
+/// nested name: the `nested-read` detector fails on any `RECIPE_VAR_<a>__<b>`.
+/// Every field is taken from the JSON in the base `RECIPE_VAR_<a>`, which the
+/// runner writes for each declared key, so declaring `<a>` in `context:` is
+/// what stops a parent run's value from reaching the step.
 fn base_key(k: &str) -> &str {
     k.split("__").next().unwrap_or(k)
 }
@@ -1653,12 +1659,10 @@ const PROBE_STEP: &str = "probe-terminal-state";
 
 /// `(local, RECIPE_VAR_ key, bare names it must no longer read)` for every
 /// input of `probe-terminal-state`.
+/// `WORKTREE_INPUT` is not listed: it is a field of `worktree_setup`, read
+/// from the base key's JSON (see
+/// `the_terminal_probe_reads_the_worktree_from_the_base_key`).
 const PROBE_INPUTS: &[(&str, &str, &[&str])] = &[
-    (
-        "WORKTREE_INPUT",
-        "worktree_setup__worktree_path",
-        &["WORKTREE_SETUP_WORKTREE_PATH"],
-    ),
     ("REPO_DIR", "repo_path", &["REPO_PATH"]),
     ("BRANCH_INPUT", "branch_name", &["BRANCH_NAME"]),
     ("BASE_INPUT", "base_ref", &["BASE_REF"]),
@@ -2118,6 +2122,31 @@ fn the_terminal_probe_reads_each_input_once_from_recipe_var() {
 }
 
 #[test]
+fn the_terminal_probe_reads_the_worktree_from_the_base_key() {
+    let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
+    let code: String = body
+        .lines()
+        .filter(|l| !is_comment(l))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        code.contains(r#"WORKTREE_INPUT="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \"#)
+            && code.contains(
+                r#"jq -r 'if type=="object" then .worktree_path // empty else empty end'"#
+            ),
+        "{PROBE_STEP}: WORKTREE_INPUT must be read from the JSON in RECIPE_VAR_worktree_setup (#1561)"
+    );
+    assert!(
+        !code.contains("WORKTREE_SETUP_WORKTREE_PATH") && !code.contains("worktree_setup__"),
+        "{PROBE_STEP}: WORKTREE_INPUT must not read a bare or nested worktree name"
+    );
+    assert!(
+        code.contains(r#"fail_terminal_state "FAILED_INVALID_INPUT" "worktree_setup.worktree_path is not a resolved worktree root""#),
+        "{PROBE_STEP}: a worktree_path that fails the path checks fails the probe closed"
+    );
+}
+
+#[test]
 fn the_terminal_probe_blanks_inputs_only_when_empty_or_quoted_empty() {
     let body = site_body(TERMINAL_RECIPE, PROBE_STEP);
     for local in [
@@ -2322,5 +2351,1341 @@ fn the_docs_describe_the_new_precedence_and_drop_the_old_anchor() {
     assert!(
         broken.is_empty(),
         "{DOCS_PAGE} links to anchors it does not have: {broken:?}"
+    );
+}
+
+// ── Nested and run-time-built names (#1561, C5) ─────────────────────────────
+//
+// The runner writes `RECIPE_VAR_<key>__<field>` only for fields the current
+// object has, so a nested name for a missing field keeps a parent run's value
+// (recipe-runner-rs `src/context.rs:356-385`,
+// `src/adapters/cli_subprocess.rs:603-616`). The base key `RECIPE_VAR_<key>`
+// is always written for a declared key, so a field is read from its JSON.
+// See "Nested step outputs are read from the base key" in
+// docs/reference/auto-drive-to-merge.md.
+
+/// The pattern of a nested name, the same one the docs' second grep uses.
+const NESTED_NAME: &str = r"RECIPE_VAR_[A-Za-z0-9]+(_[A-Za-z0-9]+)*__[A-Za-z0-9_]+";
+
+/// The code part of one shell line: the text before a `#` that starts a
+/// comment. Bash starts a comment only at the start of a word, so a `#` inside
+/// single or double quotes, after a backslash, or inside a word (`${#x}`,
+/// `$#`, `a#b`) is code. A quote left open at the end of the line keeps the
+/// rest of the line as code, which can only make the scan see more.
+fn strip_comment(line: &str) -> &str {
+    let b = line.as_bytes();
+    let (mut sq, mut dq, mut esc) = (false, false, false);
+    // Index of the last escaped byte: `a\ #b` is one word, not a comment.
+    let mut escaped_at = usize::MAX;
+    for (i, &c) in b.iter().enumerate() {
+        if esc {
+            esc = false;
+            escaped_at = i;
+            continue;
+        }
+        match c {
+            b'\\' if !sq => esc = true,
+            b'\'' if !dq => sq = !sq,
+            b'"' if !sq => dq = !dq,
+            b'#' if !sq && !dq => {
+                let word_start = i == 0
+                    || (escaped_at != i - 1
+                        && matches!(b[i - 1], b' ' | b'\t' | b';' | b'&' | b'|' | b'(' | b')'));
+                if word_start {
+                    return &line[..i];
+                }
+            }
+            _ => {}
+        }
+    }
+    line
+}
+
+/// `(line, name)` of every nested name in the code part of `text`, in any
+/// form: `${RECIPE_VAR_a__b:-}`, `$RECIPE_VAR_a__b`, `printenv RECIPE_VAR_a__b`
+/// or `"RECIPE_VAR_a__b"`. The match is not anchored on `$` (G1).
+fn nested_reads(text: &str) -> Vec<(usize, String)> {
+    let re = Regex::new(NESTED_NAME).unwrap();
+    let mut found = Vec::new();
+    for (i, raw) in text.lines().enumerate() {
+        for m in re.find_iter(strip_comment(raw)) {
+            found.push((i + 1, m.as_str().to_string()));
+        }
+    }
+    found
+}
+
+/// For each line of `text`, the innermost shell function it is in, or
+/// `"<top>"`. A function starts at `name() {` (or `name() (`) and ends at a
+/// lone `}` or `)` at the same indentation.
+fn enclosing_functions(text: &str) -> Vec<String> {
+    let start =
+        Regex::new(r"^(\s*)(?:function\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*\(\)\s*([{(])\s*(.*)$")
+            .unwrap();
+    let mut stack: Vec<(String, usize)> = Vec::new();
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let code = strip_comment(raw);
+        let indent = raw.len() - raw.trim_start().len();
+        if let Some(c) = start.captures(code) {
+            let rest = c[4].trim();
+            let one_liner = rest.ends_with('}') || rest.ends_with(')');
+            out.push(c[2].to_string());
+            if !one_liner {
+                stack.push((c[2].to_string(), c[1].len()));
+            }
+            continue;
+        }
+        out.push(
+            stack
+                .last()
+                .map(|(n, _)| n.clone())
+                .unwrap_or_else(|| "<top>".into()),
+        );
+        let t = code.trim();
+        if (t == "}" || t == ")") && stack.last().is_some_and(|(_, ind)| *ind == indent) {
+            stack.pop();
+        }
+    }
+    out
+}
+
+/// `(line, function, text)` of every read whose variable name is built at run
+/// time, which no other detector can see: an indirect expansion `${!x}`,
+/// `printenv` of a name with a `$` in it, or a nameref (`declare -n`,
+/// `local -n`, `typeset -n`). Comments are skipped, quote-aware (G2, G3).
+fn runtime_name_reads(text: &str) -> Vec<(usize, String, String)> {
+    let re = Regex::new(
+        r#"\$\{!|\bprintenv\s+"?[A-Za-z0-9_]*\$|\b(?:declare|local|typeset)\s+-[A-Za-z]*n[A-Za-z]*\s"#,
+    )
+    .unwrap();
+    let scopes = enclosing_functions(text);
+    text.lines()
+        .enumerate()
+        .filter(|(_, raw)| re.is_match(strip_comment(raw)))
+        .map(|(i, raw)| (i + 1, scopes[i].clone(), raw.trim().to_string()))
+        .collect()
+}
+
+/// How an allowed run-time-name site is kept safe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RuntimeNameUse {
+    /// A reviewed read helper: `rv_field`, `write_context_value`,
+    /// `workflow_context.sh`. Its key is validated before the name is built.
+    Helper,
+    /// `${!v}` where `v` is the variable of a `for v in <words>` loop whose
+    /// list is literal identifiers, none a `RECIPE_VAR_` name.
+    FixedList,
+    /// `${!v}` where `v` is the function's first argument and every call in
+    /// the bundle passes a literal `AMPLIHACK_*` name.
+    LiteralCallers,
+}
+
+/// Every place a variable name may be built at run time, as
+/// `(file, function or "<top>" or "*", how it is kept safe, why)`. An entry
+/// that no site uses fails the guard (G4).
+const RUNTIME_NAME_ALLOWED: &[(&str, &str, RuntimeNameUse, &str)] = &[
+    (
+        "amplifier-bundle/tools/workflow_final_status.sh",
+        "rv_field",
+        RuntimeNameUse::Helper,
+        "reads RECIPE_VAR_<key> for a key checked against ^[A-Za-z0-9_]+$",
+    ),
+    (
+        "amplifier-bundle/tools/workflow_pr_ready.sh",
+        "rv_field",
+        RuntimeNameUse::Helper,
+        "reads RECIPE_VAR_<key> for a key checked against ^[A-Za-z0-9_]+$",
+    ),
+    (
+        "amplifier-bundle/tools/workflow_terminal_evidence.sh",
+        "rv_field",
+        RuntimeNameUse::Helper,
+        "reads RECIPE_VAR_<key> for a key checked against ^[A-Za-z0-9_]+$",
+    ),
+    (
+        "amplifier-bundle/tools/recipe_context_value.sh",
+        "write_context_value",
+        RuntimeNameUse::Helper,
+        "reads the base RECIPE_VAR_<key> of a validated context key (#1570)",
+    ),
+    (
+        "amplifier-bundle/tools/workflow_context.sh",
+        "*",
+        RuntimeNameUse::Helper,
+        "snapshots a fixed list of context roots before other helpers run",
+    ),
+    (
+        "amplifier-bundle/tools/autodrive_loop.sh",
+        "<top>",
+        RuntimeNameUse::FixedList,
+        "checks that each required --flag set its own local",
+    ),
+    (
+        "amplifier-bundle/tools/git-identity.sh",
+        "_amplihack_explicit_value",
+        RuntimeNameUse::LiteralCallers,
+        "reads the AMPLIHACK_GIT_* override its callers name",
+    ),
+    (
+        "amplifier-bundle/tools/workflow_finalization_collect.sh",
+        "collect_evidence",
+        RuntimeNameUse::FixedList,
+        "serialises a fixed list of locals the function computed",
+    ),
+    (
+        "amplifier-bundle/tools/workflow_finalization_validate.sh",
+        "emit_result",
+        RuntimeNameUse::FixedList,
+        "serialises a fixed list of locals the function computed",
+    ),
+];
+
+/// The tools that read object fields through their own `rv_field`.
+const RV_FIELD_TOOLS: &[&str] = &[
+    "amplifier-bundle/tools/workflow_final_status.sh",
+    "amplifier-bundle/tools/workflow_pr_ready.sh",
+    "amplifier-bundle/tools/workflow_terminal_evidence.sh",
+];
+
+/// The one filter `rv_field` may use. `.[$f] // empty` would turn `false`
+/// into empty and change which branch a gate takes.
+const RV_FIELD_FILTER: &str =
+    r#"'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end'"#;
+
+/// Whether the site at `line` (1-based) of `text` meets its `RuntimeNameUse`.
+fn runtime_site_problem(
+    text: &str,
+    line: usize,
+    func: &str,
+    how: RuntimeNameUse,
+    files: &[(String, String)],
+) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let code = strip_comment(lines[line - 1]);
+    match how {
+        RuntimeNameUse::Helper => None,
+        RuntimeNameUse::FixedList => {
+            let var = Regex::new(r"\$\{!([A-Za-z_][A-Za-z0-9_]*)\}")
+                .unwrap()
+                .captures(code)
+                .map(|c| c[1].to_string())?;
+            let header = Regex::new(&format!(
+                r"^\s*for\s+{}\s+in\s+([^;]*);",
+                regex::escape(&var)
+            ))
+            .unwrap();
+            let from = line.saturating_sub(11);
+            let list = lines[from..line - 1]
+                .iter()
+                .rev()
+                .find_map(|l| header.captures(strip_comment(l)).map(|c| c[1].to_string()));
+            let Some(list) = list else {
+                return Some(format!(
+                    "`${{!{var}}}` is not inside a `for {var} in <words>; do` loop"
+                ));
+            };
+            let word = Regex::new(r"^[A-Za-z_][A-Za-z0-9_]*$").unwrap();
+            list.split_whitespace()
+                .find(|w| !word.is_match(w) || w.starts_with("RECIPE_VAR_"))
+                .map(|w| format!("the loop list has `{w}`, not a literal non-RECIPE_VAR_ name"))
+        }
+        RuntimeNameUse::LiteralCallers => {
+            let call = Regex::new(&format!(r"\b{}\s+(\S+)", regex::escape(func))).unwrap();
+            let name = Regex::new(r#"^"?AMPLIHACK_[A-Z0-9_]+"?$"#).unwrap();
+            let mut calls = 0;
+            for (path, t) in files {
+                for (i, l) in t.lines().enumerate() {
+                    let c = strip_comment(l);
+                    if c.contains(&format!("{func}()")) {
+                        continue;
+                    }
+                    for m in call.captures_iter(c) {
+                        calls += 1;
+                        if !name.is_match(&m[1]) {
+                            return Some(format!(
+                                "{path}:{}: `{func}` is called with `{}`, not a literal AMPLIHACK_* name",
+                                i + 1,
+                                &m[1]
+                            ));
+                        }
+                    }
+                }
+            }
+            (calls == 0).then(|| format!("`{func}` has no caller to check"))
+        }
+    }
+}
+
+/// `(rendered site, problem)` of every run-time-name read in `files` that the
+/// allowlist does not cover, then one line per unused allowlist entry.
+fn runtime_name_report(
+    files: &[(String, String)],
+    allowed: &[(&str, &str, RuntimeNameUse, &str)],
+) -> Vec<String> {
+    let mut report = Vec::new();
+    let mut used = vec![false; allowed.len()];
+    for (path, text) in files {
+        for (line, func, src) in runtime_name_reads(text) {
+            let entry = allowed
+                .iter()
+                .position(|(f, s, _, _)| f == path && (*s == "*" || *s == func));
+            match entry {
+                None => report.push(format!(
+                    "{path}:{line}: runtime-name-read: {src} (in {func}; not an allowed helper)"
+                )),
+                Some(e) => {
+                    used[e] = true;
+                    if let Some(p) = runtime_site_problem(text, line, &func, allowed[e].2, files) {
+                        report.push(format!("{path}:{line}: runtime-name-read: {src} ({p})"));
+                    }
+                }
+            }
+        }
+    }
+    for (e, (f, s, _, _)) in allowed.iter().enumerate() {
+        if !used[e] {
+            report.push(format!(
+                "unused runtime-name allowlist entry ({f}, {s}): remove it, an \
+                 exemption nothing needs is a stale hole"
+            ));
+        }
+    }
+    report
+}
+
+/// The `rv_field` definition in a tool, from `rv_field() {` to its closing
+/// `}`, dedented.
+fn rv_field_definition(text: &str) -> Option<String> {
+    let lines: Vec<&str> = text.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| strip_comment(l).trim_start().starts_with("rv_field()"))?;
+    let indent = lines[start].len() - lines[start].trim_start().len();
+    let end = lines[start..]
+        .iter()
+        .position(|l| l.trim() == "}" && l.len() - l.trim_start().len() == indent)?;
+    Some(dedent(&lines[start..=start + end].join("\n")))
+}
+
+#[test]
+fn no_bundle_file_reads_a_nested_recipe_var_name() {
+    let mut report = Vec::new();
+    for (path, text) in scanned_files() {
+        for (line, name) in nested_reads(&text) {
+            let src = text.lines().nth(line - 1).unwrap_or("").trim();
+            report.push(format!("{path}:{line}: nested-read: {src}  [{name}]"));
+        }
+    }
+    assert!(
+        report.is_empty(),
+        "{} reads of a nested name RECIPE_VAR_<key>__<field> (#1561). The runner \
+         writes a nested name only for fields the current object has, so a missing \
+         field keeps a parent run's value. Read the base RECIPE_VAR_<key> and take the \
+         field from its JSON (`rv_field <key> <field>` in a tool, inline jq in a \
+         recipe), and declare <key> in context:. See \"Nested step outputs are read \
+         from the base key\" in {DOCS_PAGE}:\n{}",
+        report.len(),
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_nested_name_grep_finds_nothing_in_the_bundle() {
+    // The docs' second grep, comments included, over the same two
+    // non-recursive sets the detectors scan.
+    let re = Regex::new(NESTED_NAME).unwrap();
+    let mut hits = Vec::new();
+    for (path, text) in scanned_files() {
+        for (i, l) in text.lines().enumerate() {
+            if re.is_match(l) {
+                hits.push(format!("{path}:{}: {}", i + 1, l.trim()));
+            }
+        }
+    }
+    assert!(
+        hits.is_empty(),
+        "the nested-name grep still matches {} lines (comments count: write the form \
+         as RECIPE_VAR_<key>__<field>):\n{}",
+        hits.len(),
+        hits.join("\n")
+    );
+}
+
+#[test]
+fn no_bundle_file_builds_a_variable_name_at_run_time_outside_the_allowlist() {
+    let files = scanned_files();
+    let report = runtime_name_report(&files, RUNTIME_NAME_ALLOWED);
+    assert!(
+        report.is_empty(),
+        "{} run-time-built variable names (#1561). `${{!x}}`, `printenv \"…$x\"` and \
+         namerefs read a name no detector can see, so they are allowed only in the \
+         reviewed helpers listed in RUNTIME_NAME_ALLOWED:\n{}",
+        report.len(),
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_nested_read_detector_flags_every_form() {
+    let flagged = [
+        r#"RUN_DIR="${RECIPE_VAR_worktree_setup__worktree_path:-}""#,
+        r#"RUN_DIR="$RECIPE_VAR_worktree_setup__worktree_path""#,
+        "RUN_DIR=$(printenv RECIPE_VAR_worktree_setup__worktree_path)",
+        r#"for n in "RECIPE_VAR_pr_publish_result__pr_number"; do :; done"#,
+        r#"v=${RECIPE_VAR_a__b}"#,
+        r#"v=${RECIPE_VAR_a__b__c:-x}"#,
+        r#"[ -n "${RECIPE_VAR_terminal_state__terminal_state+x}" ]"#,
+        r#"echo "a # b" ${RECIPE_VAR_a__b:-}"#,
+        r#"echo 'it''s' # "$RECIPE_VAR_a__b""#,
+    ];
+    // The last one: the `#` after `'it''s'` does start a comment, so it is
+    // the one accepted case among these lines; check it separately.
+    for src in &flagged[..flagged.len() - 1] {
+        assert_eq!(nested_reads(src).len(), 1, "not flagged: {src}");
+    }
+    assert!(
+        nested_reads(flagged[flagged.len() - 1]).is_empty(),
+        "a real comment after closed quotes is skipped"
+    );
+    // Several on one line are all reported, with the right line number.
+    let text = "ok=1\nX=\"${RECIPE_VAR_a__b:-}${RECIPE_VAR_c_d__e:-}\"\n";
+    assert_eq!(
+        nested_reads(text),
+        vec![
+            (2, "RECIPE_VAR_a__b".to_string()),
+            (2, "RECIPE_VAR_c_d__e".to_string())
+        ]
+    );
+}
+
+#[test]
+fn the_nested_read_detector_accepts_base_key_reads_and_comments() {
+    let accepted = [
+        r#"RUN_DIR="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')""#,
+        r#"rv_field terminal_state terminal_state"#,
+        r#"PR="${RECIPE_VAR_pr_number:-}""#,
+        "# was: ${RECIPE_VAR_worktree_setup__worktree_path:-}",
+        "    # placeholder form RECIPE_VAR_<key>__<field> in a comment",
+        "x=1  # RECIPE_VAR_a__b in a trailing comment",
+        r#"[[ $n == "RECIPE_VAR_${key}__"* ]]"#,
+        "WORKTREE_SETUP__X=1",
+        "MY_RECIPE_VAR=1",
+    ];
+    for src in accepted {
+        assert!(nested_reads(src).is_empty(), "flagged: {src}");
+    }
+}
+
+#[test]
+fn comment_stripping_knows_about_quotes() {
+    let cases = [
+        ("x=1 # c", "x=1 "),
+        ("# whole line", ""),
+        ("  # indented", "  "),
+        (r#"echo "a # b""#, r#"echo "a # b""#),
+        ("echo 'a # b'", "echo 'a # b'"),
+        (r#"echo "it's # here""#, r#"echo "it's # here""#),
+        (r"echo a\ #b", r"echo a\ #b"),
+        ("n=${#arr[@]}", "n=${#arr[@]}"),
+        ("[ $# -eq 0 ]", "[ $# -eq 0 ]"),
+        ("url=a#b", "url=a#b"),
+        ("true;# c", "true;"),
+        (r#"echo "open # quote"#, r#"echo "open # quote"#),
+    ];
+    for (line, want) in cases {
+        assert_eq!(strip_comment(line), want, "line: {line}");
+    }
+    // A `#` inside quotes must not hide a nested read after it (G3).
+    let src = r##"echo "# not a comment" "${RECIPE_VAR_a__b:-}""##;
+    assert_eq!(nested_reads(src).len(), 1);
+    let src = r#"jq -r '.x # y' <<<"${RECIPE_VAR_a__b:-}""#;
+    assert_eq!(nested_reads(src).len(), 1);
+}
+
+#[test]
+fn the_runtime_name_detector_flags_each_shape_outside_the_allowlist() {
+    let tools = |text: &str| vec![("amplifier-bundle/tools/x.sh".to_string(), text.to_string())];
+    let flagged = [
+        "v=\"${!name}\"",
+        "v=\"${!name:-}\"",
+        "[ -n \"${!var+set}\" ]",
+        "v=$(printenv \"RECIPE_VAR_$key\")",
+        "v=$(printenv RECIPE_VAR_${key})",
+        "declare -n ref=\"RECIPE_VAR_$key\"",
+        "f() {\n  local -n ref=$1\n}",
+        "typeset -n ref=x",
+        "echo '#' \"${!name}\"",
+    ];
+    for src in flagged {
+        let report = runtime_name_report(&tools(src), &[]);
+        assert_eq!(report.len(), 1, "not flagged once: {src}\n{report:?}");
+        assert!(report[0].contains("runtime-name-read"), "{report:?}");
+    }
+    let accepted = [
+        "v=\"${name}\"",
+        "n=${#arr[@]}",
+        "echo \"${arr[@]}\"",
+        "printenv HOME",
+        "printenv \"RECIPE_VAR_pr_url\"",
+        "# v=\"${!name}\" in a comment",
+        "local -r x=1",
+        "declare -a list=()",
+        "[ \"$a\" != \"$b\" ]",
+    ];
+    for src in accepted {
+        assert!(
+            runtime_name_report(&tools(src), &[]).is_empty(),
+            "flagged: {src}"
+        );
+    }
+}
+
+#[test]
+fn the_runtime_name_allowlist_is_scoped_to_its_function() {
+    let path = "amplifier-bundle/tools/t.sh";
+    let text = "rv_field() {\n  local var=\"RECIPE_VAR_$1\"\n  printf '%s' \"${!var:-}\"\n}\n\
+                other() {\n  printf '%s' \"${!1}\"\n}\n\
+                printf '%s' \"${!x}\"\n";
+    let files = vec![(path.to_string(), text.to_string())];
+    let allowed = [(path, "rv_field", RuntimeNameUse::Helper, "test")];
+    let report = runtime_name_report(&files, &allowed);
+    assert_eq!(report.len(), 2, "{report:?}");
+    assert!(
+        report[0].contains(":6:") && report[0].contains("in other"),
+        "{report:?}"
+    );
+    assert!(
+        report[1].contains(":8:") && report[1].contains("in <top>"),
+        "{report:?}"
+    );
+
+    // The innermost function counts: `${!x}` in a function nested in an
+    // allowed one is not allowed.
+    let text = "outer() {\n  inner() {\n    echo \"${!x}\"\n  }\n}\n";
+    let files = vec![(path.to_string(), text.to_string())];
+    let allowed = [(path, "outer", RuntimeNameUse::Helper, "test")];
+    let report = runtime_name_report(&files, &allowed);
+    assert!(
+        report.iter().any(|r| r.contains("in inner")),
+        "a nested function is its own scope: {report:?}"
+    );
+}
+
+#[test]
+fn an_unused_runtime_name_allowlist_entry_fails() {
+    let path = "amplifier-bundle/tools/t.sh";
+    let files = vec![(path.to_string(), "echo ok\n".to_string())];
+    let allowed = [(path, "rv_field", RuntimeNameUse::Helper, "test")];
+    let report = runtime_name_report(&files, &allowed);
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert!(
+        report[0].starts_with("unused runtime-name allowlist entry"),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_fixed_list_site_must_loop_over_literal_non_recipe_var_names() {
+    let path = "amplifier-bundle/tools/t.sh";
+    let allowed = [(path, "<top>", RuntimeNameUse::FixedList, "test")];
+    let ok = "for f in a b_c D; do\n  printf '%s' \"${!f}\"\ndone\n";
+    let files = vec![(path.to_string(), ok.to_string())];
+    assert!(runtime_name_report(&files, &allowed).is_empty());
+    for bad in [
+        "for f in a RECIPE_VAR_x; do\n  printf '%s' \"${!f}\"\ndone\n",
+        "for f in a $list; do\n  printf '%s' \"${!f}\"\ndone\n",
+        "for f in \"RECIPE_VAR_$k\"; do\n  printf '%s' \"${!f}\"\ndone\n",
+        "f=RECIPE_VAR_x\nprintf '%s' \"${!f}\"\n",
+    ] {
+        let files = vec![(path.to_string(), bad.to_string())];
+        assert_eq!(
+            runtime_name_report(&files, &allowed).len(),
+            1,
+            "accepted: {bad}"
+        );
+    }
+}
+
+#[test]
+fn a_literal_callers_site_needs_literal_amplihack_names() {
+    let path = "amplifier-bundle/tools/t.sh";
+    let def = "get() {\n  local v=\"${!1:-}\"\n}\n";
+    let allowed = [(path, "get", RuntimeNameUse::LiteralCallers, "test")];
+    let ok = format!("{def}x=$(get AMPLIHACK_GIT_AUTHOR_NAME author_name)\n");
+    let files = vec![(path.to_string(), ok)];
+    assert!(runtime_name_report(&files, &allowed).is_empty());
+    for bad in [
+        format!("{def}x=$(get \"RECIPE_VAR_$k\")\n"),
+        format!("{def}x=$(get \"$name\")\n"),
+        def.to_string(),
+    ] {
+        let files = vec![(path.to_string(), bad.clone())];
+        assert_eq!(
+            runtime_name_report(&files, &allowed).len(),
+            1,
+            "accepted: {bad}"
+        );
+    }
+}
+
+#[test]
+fn each_rv_field_tool_defines_the_same_safe_rv_field() {
+    let mut defs = Vec::new();
+    for rel in RV_FIELD_TOOLS {
+        let text = read_repo_file(rel);
+        let def = rv_field_definition(&text).unwrap_or_else(|| {
+            panic!(
+                "{rel} must define its own `rv_field() {{ … }}` to read object fields \
+                 from the base RECIPE_VAR_<key> (#1561, C3)"
+            )
+        });
+        assert!(
+            def.contains(RV_FIELD_FILTER),
+            "{rel}: rv_field must use the filter {RV_FIELD_FILTER}; `.[$f] // empty` \
+             turns false into empty:\n{def}"
+        );
+        assert!(
+            def.contains(r#"--arg f "$field""#),
+            "{rel}: the field reaches jq only through --arg:\n{def}"
+        );
+        assert!(
+            def.contains(r#"[[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]]"#),
+            "{rel}: rv_field must check key and field against ^[A-Za-z0-9_]+$ before \
+             building the name:\n{def}"
+        );
+        assert!(
+            def.contains(r#"var="RECIPE_VAR_${key}""#),
+            "{rel}: rv_field reads the base key RECIPE_VAR_<key>:\n{def}"
+        );
+        for bad in ["__", "eval", "// empty", "AMPLIHACK_CONTEXT_FILE"] {
+            assert!(
+                !def.contains(bad),
+                "{rel}: rv_field must not contain `{bad}`:\n{def}"
+            );
+        }
+        let calls = text
+            .lines()
+            .filter(|l| {
+                let c = strip_comment(l);
+                c.contains("rv_field ") && !c.contains("rv_field()")
+            })
+            .count();
+        assert!(calls > 0, "{rel} defines rv_field but never calls it");
+        defs.push((rel, def));
+    }
+    for (rel, def) in &defs[1..] {
+        assert_eq!(
+            def, &defs[0].1,
+            "{rel} and {} must define byte-identical rv_field functions",
+            defs[0].0
+        );
+    }
+}
+
+fn jq_on_path() -> bool {
+    let ok = Command::new("jq")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !ok {
+        eprintln!("skip: `jq` not on PATH; rv_field needs it");
+    }
+    ok
+}
+
+/// Run `rv_field key field` from `def` under a scrubbed environment.
+fn run_rv_field(
+    def: &str,
+    key: &str,
+    field: &str,
+    env: &[(&str, &str)],
+    cwd: &Path,
+) -> (String, i32) {
+    let mut cmd = Command::new("bash");
+    cmd.arg("-c")
+        // As callers use it: through `$(…)`, which drops jq's trailing newline.
+        .arg(format!(
+            "set -u\n{def}\nv=\"$(rv_field \"$1\" \"$2\")\"; printf '%s' \"$v\""
+        ))
+        .arg("bash")
+        .arg(key)
+        .arg(field)
+        .env_clear()
+        .env(
+            "PATH",
+            std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+        )
+        .current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let out = cmd.output().expect("spawn bash");
+    (
+        String::from_utf8(out.stdout).expect("utf-8"),
+        out.status.code().unwrap_or(-1),
+    )
+}
+
+#[test]
+fn rv_field_reads_the_base_key_ignores_nested_names_and_keeps_false() {
+    if !jq_on_path() {
+        return;
+    }
+    let own = r#"{"terminal_state":"FAILED_MEANINGFUL_DIFF","terminal_success":false,"commits_ahead":0,"pr_number":5,"extra":{"a":1},"none":null,"text":"two\nlines"}"#;
+    let stale = [
+        (
+            "RECIPE_VAR_terminal_state__terminal_state",
+            "IMPLEMENTED_VERIFIED",
+        ), // deliberately stale (#1561)
+        ("RECIPE_VAR_terminal_state__terminal_reason", "stale-reason"), // deliberately stale (#1561)
+        ("TERMINAL_STATE_TERMINAL_STATE", "IMPLEMENTED_VERIFIED"), // deliberately stale (#1561)
+    ];
+    for rel in RV_FIELD_TOOLS {
+        let Some(def) = rv_field_definition(&read_repo_file(rel)) else {
+            panic!("{rel} defines no rv_field (#1561, C3)");
+        };
+        let dir = tempfile::tempdir().unwrap();
+        fn with<'a>(
+            stale: &[(&'a str, &'a str)],
+            base: Option<&'a str>,
+        ) -> Vec<(&'a str, &'a str)> {
+            let mut env = stale.to_vec();
+            if let Some(b) = base {
+                env.push(("RECIPE_VAR_terminal_state", b));
+            }
+            env
+        }
+        let cases: &[(Option<&str>, &str, &str, &str)] = &[
+            (
+                Some(own),
+                "terminal_state",
+                "FAILED_MEANINGFUL_DIFF",
+                "own JSON beats a stale nested name",
+            ),
+            (
+                Some(own),
+                "terminal_success",
+                "false",
+                "boolean false is a value",
+            ),
+            (Some(own), "commits_ahead", "0", "number 0 is a value"),
+            (Some(own), "pr_number", "5", "a number reads as its digits"),
+            (
+                Some(own),
+                "extra",
+                r#"{"a":1}"#,
+                "an object reads as compact JSON",
+            ),
+            (Some(own), "text", "two\nlines", "a string reads raw"),
+            (Some(own), "none", "", "null reads as empty"),
+            (
+                Some(own),
+                "terminal_reason",
+                "",
+                "a missing field is empty, not the nested name",
+            ),
+            (
+                Some(""),
+                "terminal_state",
+                "",
+                "a base set to \"\" is empty",
+            ),
+            (None, "terminal_state", "", "an unset base is empty"),
+            (
+                Some("not json {"),
+                "terminal_state",
+                "",
+                "not JSON is empty",
+            ),
+            (
+                Some(r#""IMPLEMENTED_VERIFIED""#),
+                "terminal_state",
+                "",
+                "a JSON string is not an object",
+            ),
+            (
+                Some(r#"[{"terminal_state":"x"}]"#),
+                "terminal_state",
+                "",
+                "an array is not an object",
+            ),
+        ];
+        for (base, field, want, why) in cases {
+            let (got, code) = run_rv_field(
+                &def,
+                "terminal_state",
+                field,
+                &with(&stale, *base),
+                dir.path(),
+            );
+            assert_eq!(code, 0, "{rel}: rv_field always exits 0 ({why})");
+            assert_eq!(got, *want, "{rel}: {why} (base {base:?}, field {field})");
+        }
+        // Bad key or field: nothing read, nothing run.
+        for (key, field) in [
+            ("terminal-state", "terminal_state"),
+            ("$(touch pwned)", "terminal_state"),
+            ("terminal_state", "a.b"),
+            ("terminal_state", "x\") | input_filename | (\""),
+            ("", "terminal_state"),
+        ] {
+            let env = [("RECIPE_VAR_terminal_state", own)];
+            let (got, code) = run_rv_field(&def, key, field, &env, dir.path());
+            assert_eq!(
+                (got.as_str(), code),
+                ("", 0),
+                "{rel}: key {key:?} field {field:?}"
+            );
+        }
+        assert!(
+            !dir.path().join("pwned").exists(),
+            "{rel}: a key is never executed"
+        );
+    }
+}
+
+/// String fields that a recipe may read inline with `.<field> // empty`.
+/// A boolean or number field must use the `has($f)` filter instead.
+const INLINE_STRING_FIELDS: &[&str] = &[
+    "worktree_path",
+    "branch_name",
+    "base_ref",
+    "repo_path",
+    "head_sha",
+    "pr_url",
+    "terminal_state",
+    "terminal_reason",
+];
+
+/// `(line, field)` of each `.<field> // empty` in a jq read whose input is a
+/// `RECIPE_VAR_<key>`, looking at the read's line and the next one.
+fn inline_empty_fields(body: &str) -> Vec<(usize, String)> {
+    let input = Regex::new(r#"\$\{?RECIPE_VAR_[A-Za-z0-9_]+"#).unwrap();
+    let alt = Regex::new(r"\.([A-Za-z0-9_]+)\s*//\s*empty").unwrap();
+    let lines: Vec<&str> = body.lines().map(strip_comment).collect();
+    let mut found = BTreeSet::new();
+    for (i, l) in lines.iter().enumerate() {
+        if !input.is_match(l) {
+            continue;
+        }
+        // The next line belongs to the read only after a `\` or `|`.
+        let mut window = vec![(i + 1, *l)];
+        let end = l.trim_end();
+        if (end.ends_with('\\') || end.ends_with('|'))
+            && let Some(next) = lines.get(i + 1)
+        {
+            window.push((i + 2, *next));
+        }
+        if !window.iter().any(|(_, w)| w.contains("jq")) {
+            continue;
+        }
+        for (n, w) in window {
+            for c in alt.captures_iter(w) {
+                found.insert((n, c[1].to_string()));
+            }
+        }
+    }
+    found.into_iter().collect()
+}
+
+#[test]
+fn inline_recipe_field_reads_use_empty_only_for_string_fields() {
+    let mut report = Vec::new();
+    for (path, text) in recipe_files() {
+        for (line, field) in inline_empty_fields(&text) {
+            if !INLINE_STRING_FIELDS.contains(&field.as_str()) {
+                report.push(format!("{path}:{line}: `.{field} // empty`"));
+            }
+        }
+    }
+    assert!(
+        report.is_empty(),
+        "`// empty` turns false and null alike into empty; use it only for the string \
+         fields in INLINE_STRING_FIELDS, and the has($f) filter otherwise:\n{}",
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_inline_empty_check_sees_the_read_and_its_next_line() {
+    let body = "A=\"$(printf '%s' \"${RECIPE_VAR_x:-}\" \\\n  | jq -r 'if type==\"object\" then .ok // empty else empty end')\"\n\
+                B=\"$(printf '%s' \"${RECIPE_VAR_y:-}\" | jq -r '.worktree_path // empty')\"\n\
+                C=\"$(gh pr list --json number --jq '.[0].number // empty')\"\n";
+    assert_eq!(
+        inline_empty_fields(body),
+        vec![(2, "ok".to_string()), (3, "worktree_path".to_string())]
+    );
+}
+
+/// Problems with the checks a recipe step applies to a field it reads from a
+/// base key: a worktree path must be resolved and a worktree root, a branch
+/// must be a valid branch name (V4, V5).
+fn field_check_problems(body: &str) -> Vec<String> {
+    let code: String = body
+        .lines()
+        .map(strip_comment)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let reads_from_base = |field: &str| {
+        // The field must follow a `jq` on the read's line or the next one,
+        // so a message that names `worktree_setup.worktree_path` is not a read.
+        let re = Regex::new(&format!(
+            r"RECIPE_VAR_[A-Za-z0-9_]+[^\n]*(?:\n[^\n]*)?\bjq\b[^\n]*\.{field}\b"
+        ))
+        .unwrap();
+        re.is_match(&code)
+    };
+    let mut bad = Vec::new();
+    if reads_from_base("worktree_path") {
+        for (need, what) in [
+            ("rev-parse --show-toplevel", "the worktree-root check"),
+            ("realpath --", "the resolved-path check"),
+            ("[ ! -L ", "the symlink check"),
+        ] {
+            if !code.contains(need) {
+                bad.push(format!("reads .worktree_path without {what} (`{need}`)"));
+            }
+        }
+    }
+    if reads_from_base("branch_name") && !code.contains("check-ref-format --branch") {
+        bad.push("reads .branch_name without `git check-ref-format --branch`".into());
+    }
+    bad
+}
+
+#[test]
+fn every_recipe_step_checks_the_path_and_branch_it_reads_from_a_base_key() {
+    let mut report = Vec::new();
+    for (path, text) in recipe_files() {
+        let doc: serde_yaml::Value = serde_yaml::from_str(&text).expect("recipe parses");
+        for s in doc
+            .get("steps")
+            .and_then(|s| s.as_sequence())
+            .into_iter()
+            .flatten()
+        {
+            let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+            let body = s.get("command").and_then(|v| v.as_str()).unwrap_or("");
+            for p in field_check_problems(body) {
+                report.push(format!("{path} {id}: {p}"));
+            }
+        }
+    }
+    assert!(
+        report.is_empty(),
+        "a path or branch read from a base key is this run's value but is still \
+         checked before git uses it (see \"Checking a path, branch or PR number read \
+         from a field\" in {DOCS_PAGE}):\n{}",
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_field_check_detector_needs_every_check() {
+    let read = "P=\"$(printf '%s' \"${RECIPE_VAR_worktree_setup:-}\" \\\n  | jq -r 'if type==\"object\" then .worktree_path // empty else empty end')\"\n";
+    let checks = "[ ! -L \"$P\" ] && [ \"$(realpath -- \"$P\")\" = \"$P\" ] && [ \"$(git -C \"$P\" rev-parse --show-toplevel)\" = \"$P\" ]\n";
+    assert!(field_check_problems(&format!("{read}{checks}")).is_empty());
+    assert_eq!(field_check_problems(read).len(), 3);
+    for drop in [
+        "[ ! -L \"$P\" ] && ",
+        "[ \"$(realpath -- \"$P\")\" = \"$P\" ] && ",
+    ] {
+        let body = format!("{read}{}", checks.replace(drop, ""));
+        assert_eq!(field_check_problems(&body).len(), 1, "dropped {drop}");
+    }
+    // A check only in a comment does not count.
+    let body = format!("{read}# {checks}");
+    assert_eq!(field_check_problems(&body).len(), 3);
+    let branch =
+        "B=\"$(printf '%s' \"${RECIPE_VAR_worktree_setup:-}\" | jq -r '.branch_name // empty')\"\n";
+    assert_eq!(field_check_problems(branch).len(), 1);
+    let ok = format!("{branch}git check-ref-format --branch \"$B\" >/dev/null || B=\n");
+    assert!(field_check_problems(&ok).is_empty());
+    // A message that names the field is not a read.
+    let msg =
+        "P=\"${RECIPE_VAR_worktree_setup:-}\"\ncd \"${P:?needs worktree_setup.worktree_path}\"\n";
+    assert!(field_check_problems(msg).is_empty());
+    // Unrelated jq on gh output is not a base-key read.
+    assert!(field_check_problems("gh pr view --json headRefName --jq '.branch_name'\n").is_empty());
+}
+
+// ── The bare-name allowlist (G4) ─────────────────────────────────────────────
+
+/// Every bare upper-case name a step may still read, as
+/// `(NAME, "documented in docs/<page>.md#<anchor>", justification)`. Each has
+/// a fixed read form, checked by `bare_site_problem`, and an entry nothing
+/// reads fails the guard.
+const BARE_NAME_ALLOWLIST: &[(&str, &str, &str)] = &[
+    (
+        "NO_MERGE",
+        "documented in docs/reference/auto-drive-to-merge.md#no_merge-override",
+        "an operator's no-merge request; it is OR'd in after the recipe's no_merge \
+         is resolved, so a stale value can only stop a merge, never cause one",
+    ),
+    (
+        "AUTODRIVE_LAUNCH_TOOLS",
+        "documented in docs/reference/auto-drive-to-merge.md#autodrive_launch_tools-is-checked-before-use",
+        "the launch-tree pin the loops set (#1543), not a step output; each round \
+         checks it is an absolute single-line directory holding the guard before use",
+    ),
+];
+
+/// The recipes that may read `AUTODRIVE_LAUNCH_TOOLS`.
+const LAUNCH_TOOLS_RECIPES: &[&str] = &[
+    "amplifier-bundle/recipes/autodrive-crusty-round.yaml",
+    "amplifier-bundle/recipes/autodrive-merge-round.yaml",
+];
+
+fn bare_reads_of(name: &str, text: &str) -> Vec<usize> {
+    let re = Regex::new(&format!(
+        r"\$\{{?{}\b(?:[^_A-Za-z0-9]|$)",
+        regex::escape(name)
+    ))
+    .unwrap();
+    text.lines()
+        .enumerate()
+        .filter(|(_, l)| re.is_match(strip_comment(l)))
+        .map(|(i, _)| i + 1)
+        .collect()
+}
+
+/// What is wrong with a step body that reads `AUTODRIVE_LAUNCH_TOOLS` (S-F3).
+/// The one permitted shape: `LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"`, then
+/// the absolute, single-line, `-d` and `-f` guard checks, each stopping with
+/// `STOP: autodrive-launch-tools-invalid` and naming no value, before the
+/// first `bash "$LAUNCH_T/…"`, which may run only the checked guard.
+fn launch_tools_problems(body: &str) -> Vec<String> {
+    let lines: Vec<&str> = body.lines().map(strip_comment).collect();
+    let reads = bare_reads_of("AUTODRIVE_LAUNCH_TOOLS", body);
+    let mut bad = Vec::new();
+    if reads.len() != 1 {
+        bad.push(format!(
+            "{} reads of AUTODRIVE_LAUNCH_TOOLS; copy it once into LAUNCH_T",
+            reads.len()
+        ));
+    }
+    let Some(&read) = reads.first() else {
+        return bad;
+    };
+    if lines[read - 1].trim() != r#"LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}""# {
+        bad.push(format!(
+            "the read must be the line `LAUNCH_T=\"${{AUTODRIVE_LAUNCH_TOOLS:-}}\"`, got `{}`",
+            lines[read - 1].trim()
+        ));
+    }
+    let Some(first_use) = lines
+        .iter()
+        .position(|l| l.contains(r#"bash "$LAUNCH_T/"#))
+        .map(|i| i + 1)
+    else {
+        bad.push("no `bash \"$LAUNCH_T/…\"` use".into());
+        return bad;
+    };
+    if first_use < read {
+        bad.push("`bash \"$LAUNCH_T/…\"` runs before LAUNCH_T is read".into());
+        return bad;
+    }
+    let region = lines[read..first_use - 1].join("\n");
+    for (need, what) in [
+        (r#"case "$LAUNCH_T" in"#, "a `case` on LAUNCH_T"),
+        ("/*) ;;", "the absolute-path check (`/*) ;;`)"),
+        (r"*$'\n'*", "the single-line check"),
+        (r#"[ -d "$LAUNCH_T" ]"#, "the directory check"),
+        (
+            r#"[ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ]"#,
+            "the guard-file check",
+        ),
+    ] {
+        if !region.contains(need) {
+            bad.push(format!("missing {what} before the first use"));
+        }
+    }
+    let stops: Vec<&str> = region
+        .lines()
+        .filter(|l| l.contains("STOP: autodrive-launch-tools-invalid"))
+        .collect();
+    if stops.len() < 4 {
+        bad.push(format!(
+            "{} `STOP: autodrive-launch-tools-invalid` lines before the first use (want 4)",
+            stops.len()
+        ));
+    }
+    for l in &stops {
+        if !l.contains("exit 1") {
+            bad.push(format!("a STOP line does not `exit 1`: {}", l.trim()));
+        }
+        let msg = l.split("echo").nth(1).unwrap_or("");
+        if msg.contains("$LAUNCH_T")
+            || msg.contains("${LAUNCH_T")
+            || msg.contains("AUTODRIVE_LAUNCH_TOOLS:-")
+        {
+            bad.push(format!("a STOP message prints the value: {}", l.trim()));
+        }
+    }
+    let uses = Regex::new(r#""\$\{?LAUNCH_T\}?/([^"]+)""#).unwrap();
+    for l in &lines {
+        for c in uses.captures_iter(l) {
+            if &c[1] != "autodrive_worktree_guard.sh" {
+                bad.push(format!(
+                    "runs `{}` from LAUNCH_T, which is not checked",
+                    &c[1]
+                ));
+            }
+        }
+    }
+    bad
+}
+
+/// `(site, problem)` lines for every read of an allowlisted bare name in
+/// `files`, then one line per entry nothing reads.
+fn bare_allowlist_report(
+    files: &[(String, String)],
+    allowlist: &[(&str, &str, &str)],
+) -> Vec<String> {
+    let mut report = Vec::new();
+    for (name, _, _) in allowlist {
+        let mut sites = 0;
+        for (path, text) in files {
+            let reads = bare_reads_of(name, text);
+            if reads.is_empty() {
+                continue;
+            }
+            sites += reads.len();
+            match *name {
+                "NO_MERGE" => {
+                    let lines: Vec<&str> = text.lines().collect();
+                    for l in reads {
+                        if let Err(e) = override_shape(&lines, l - 1) {
+                            report.push(format!("{path}:{l}: bare NO_MERGE: {e}"));
+                        }
+                    }
+                }
+                "AUTODRIVE_LAUNCH_TOOLS" => {
+                    if !LAUNCH_TOOLS_RECIPES.contains(&path.as_str()) {
+                        report.push(format!(
+                            "{path}: reads AUTODRIVE_LAUNCH_TOOLS outside {LAUNCH_TOOLS_RECIPES:?}"
+                        ));
+                        continue;
+                    }
+                    let doc: serde_yaml::Value = serde_yaml::from_str(text).expect("recipe parses");
+                    for s in doc
+                        .get("steps")
+                        .and_then(|s| s.as_sequence())
+                        .into_iter()
+                        .flatten()
+                    {
+                        let body = s.get("command").and_then(|v| v.as_str()).unwrap_or("");
+                        if bare_reads_of(name, body).is_empty() {
+                            continue;
+                        }
+                        let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+                        for p in launch_tools_problems(body) {
+                            report.push(format!("{path} {id}: AUTODRIVE_LAUNCH_TOOLS: {p}"));
+                        }
+                    }
+                }
+                other => report.push(format!(
+                    "{path}: {other} is allowlisted but has no read-form check"
+                )),
+            }
+        }
+        if sites == 0 {
+            report.push(format!(
+                "unused bare-name allowlist entry {name}: remove it, an exemption \
+                 nothing needs is a stale hole"
+            ));
+        }
+    }
+    report
+}
+
+const GOOD_LAUNCH_STEP: &str = r#"set -euo pipefail
+LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
+case "$LAUNCH_T" in
+  /*) ;;
+  *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [r/s]" >&2; exit 1 ;;
+esac
+case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [r/s]" >&2; exit 1 ;; esac
+[ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [r/s]" >&2; exit 1; }
+[ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [r/s]" >&2; exit 1; }
+bash "$LAUNCH_T/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused (#1528)" >&2; exit 1; }
+"#;
+
+#[test]
+fn every_bare_name_allowlist_entry_is_documented() {
+    let root = repo_root();
+    for (name, reason, why) in BARE_NAME_ALLOWLIST {
+        if let Err(e) = check_override(&root, name, reason, why) {
+            panic!("bare-name allowlist entry: {e}");
+        }
+    }
+    let names: Vec<&str> = BARE_NAME_ALLOWLIST.iter().map(|(n, _, _)| *n).collect();
+    assert_eq!(
+        names,
+        ["NO_MERGE", "AUTODRIVE_LAUNCH_TOOLS"],
+        "the bare-name allowlist holds exactly NO_MERGE and AUTODRIVE_LAUNCH_TOOLS (#1561 D1)"
+    );
+    for (n, _, _) in ALLOWED_OVERRIDES {
+        assert!(
+            names.contains(n),
+            "override {n} is not in the bare-name allowlist"
+        );
+    }
+}
+
+#[test]
+fn every_bare_name_allowlist_read_has_its_allowed_form_and_every_entry_is_used() {
+    let report = bare_allowlist_report(&scanned_files(), BARE_NAME_ALLOWLIST);
+    assert!(
+        report.is_empty(),
+        "{} problems with the bare-name allowlist (#1561 D1, S-F3). NO_MERGE may only \
+         be the override line; AUTODRIVE_LAUNCH_TOOLS may only be copied into LAUNCH_T \
+         and checked before use (see \"`AUTODRIVE_LAUNCH_TOOLS` is checked before \
+         use\" in {DOCS_PAGE}):\n{}",
+        report.len(),
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_launch_tools_check_accepts_the_documented_step_and_refuses_each_gap() {
+    assert_eq!(
+        launch_tools_problems(GOOD_LAUNCH_STEP),
+        Vec::<String>::new()
+    );
+    let drop_line = |needle: &str| {
+        GOOD_LAUNCH_STEP
+            .lines()
+            .filter(|l| !l.contains(needle))
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let gaps = [
+        ("no absolute check", GOOD_LAUNCH_STEP.replace("  /*) ;;\n", "")),
+        ("no single-line check", drop_line(r"*$'\n'*")),
+        ("no -d check", drop_line(r#"[ -d "$LAUNCH_T" ]"#)),
+        ("no -f check", drop_line(r#"[ -f "$LAUNCH_T/"#)),
+        (
+            "the pre-fix read",
+            "bash \"${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh\" round-guard || exit 1\n".to_string(),
+        ),
+        (
+            "used before the checks",
+            GOOD_LAUNCH_STEP.replacen(
+                "case \"$LAUNCH_T\" in\n",
+                "bash \"$LAUNCH_T/autodrive_worktree_guard.sh\" round-guard\ncase \"$LAUNCH_T\" in\n",
+                1,
+            ),
+        ),
+        (
+            "a second bare read",
+            format!("{GOOD_LAUNCH_STEP}echo \"${{AUTODRIVE_LAUNCH_TOOLS:-}}\"\n"),
+        ),
+        (
+            "a default other than empty",
+            GOOD_LAUNCH_STEP.replace("${AUTODRIVE_LAUNCH_TOOLS:-}", "${AUTODRIVE_LAUNCH_TOOLS:-/tmp}"),
+        ),
+        (
+            "a message that prints the value",
+            GOOD_LAUNCH_STEP.replace(
+                "AUTODRIVE_LAUNCH_TOOLS is not a directory [r/s]",
+                "AUTODRIVE_LAUNCH_TOOLS '$LAUNCH_T' is not a directory [r/s]",
+            ),
+        ),
+        (
+            "a STOP that does not exit",
+            GOOD_LAUNCH_STEP.replace(
+                "is not a directory [r/s]\" >&2; exit 1; }",
+                "is not a directory [r/s]\" >&2; }",
+            ),
+        ),
+        (
+            "an unchecked tool",
+            format!("{GOOD_LAUNCH_STEP}bash \"$LAUNCH_T/other_tool.sh\"\n"),
+        ),
+    ];
+    for (what, body) in gaps {
+        assert!(
+            !launch_tools_problems(&body).is_empty(),
+            "accepted a step with {what}:\n{body}"
+        );
+    }
+}
+
+#[test]
+fn an_unused_or_unchecked_bare_name_allowlist_entry_fails() {
+    let files = vec![(
+        "amplifier-bundle/tools/t.sh".to_string(),
+        "echo \"${SOME_PIN:-}\"\n".to_string(),
+    )];
+    let report = bare_allowlist_report(
+        &files,
+        &[("NO_SUCH_NAME", "documented in docs/x.md#y", "test")],
+    );
+    assert_eq!(report.len(), 1, "{report:?}");
+    assert!(report[0].starts_with("unused bare-name allowlist entry NO_SUCH_NAME"));
+    let report =
+        bare_allowlist_report(&files, &[("SOME_PIN", "documented in docs/x.md#y", "test")]);
+    assert!(
+        report.iter().any(|r| r.contains("no read-form check")),
+        "an allowlisted name with no form check fails: {report:?}"
+    );
+    // AUTODRIVE_LAUNCH_TOOLS outside the two round recipes fails.
+    let files = vec![(
+        "amplifier-bundle/recipes/other.yaml".to_string(),
+        "steps:\n  - id: s\n    command: |\n      bash \"${AUTODRIVE_LAUNCH_TOOLS:-}/x.sh\"\n"
+            .to_string(),
+    )];
+    let report = bare_allowlist_report(
+        &files,
+        &[(
+            "AUTODRIVE_LAUNCH_TOOLS",
+            "documented in docs/x.md#y",
+            "test",
+        )],
+    );
+    assert!(report.iter().any(|r| r.contains("outside")), "{report:?}");
+}
+
+// ── Soundness of the declared-key check, and no way to skip the guard ────────
+
+#[test]
+fn base_key_documents_why_it_is_sound() {
+    let src =
+        read_repo_file("crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs");
+    let lines: Vec<&str> = src.lines().collect();
+    let at = lines
+        .iter()
+        .position(|l| l.starts_with("fn base_key("))
+        .expect("base_key is defined");
+    let doc: String = lines[..at]
+        .iter()
+        .rev()
+        .take_while(|l| l.starts_with("///"))
+        .map(|l| l.trim_start_matches('/').trim())
+        .collect::<Vec<_>>()
+        .join(" ");
+    for need in ["nested-read", "sound"] {
+        assert!(
+            doc.contains(need),
+            "the doc comment on base_key() must say why stripping to the base key is \
+             sound (no step reads a nested name; see the `nested-read` detector). It \
+             lacks `{need}`: {doc}"
+        );
+    }
+}
+
+#[test]
+fn the_guard_cannot_be_skipped() {
+    let src =
+        read_repo_file("crates/amplihack-cli/tests/issue_1561_step_outputs_prefer_recipe_var.rs");
+    let ignore = concat!("#[", "ignore");
+    assert!(!src.contains(ignore), "no guard test may be ignored (G5)");
+    let main = read_repo_file("crates/amplihack-cli/tests/main.rs");
+    assert!(
+        main.contains("mod issue_1561_step_outputs_prefer_recipe_var;"),
+        "the guard must stay registered in tests/main.rs"
     );
 }

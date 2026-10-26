@@ -212,9 +212,47 @@ make_repo() {
 # default host is github; a later REMOTE_HOST_TYPE=... argument overrides it.
 # Sets: OUT ERR RC GH_LOG SCOPE_LOG
 # ---------------------------------------------------------------------------
+# emulate_runner ARG...: sets EMU_ARGS to ARG... plus what the pinned runner
+# writes alongside them (#1561). For every RECIPE_VAR_<key>__<field>=v the
+# runner also writes the base RECIPE_VAR_<key> as the JSON object holding
+# those fields, so the rows below set both, unless an argument sets
+# RECIPE_VAR_<key> itself. A STALE:NAME=v argument is passed through with no
+# base key: it stands for a value inherited from a parent run, which the
+# current recipe never wrote.
+emulate_runner() {
+    EMU_ARGS=()
+    local a k b field v json bases=""
+    for a in "$@"; do
+        case "$a" in STALE:*) EMU_ARGS+=("${a#STALE:}"); continue ;; esac
+        EMU_ARGS+=("$a")
+        k="${a%%=*}"
+        case "$k" in
+            RECIPE_VAR_*__*)
+                b="${k%%__*}"
+                case " $bases " in *" $b "*) ;; *) bases="$bases $b" ;; esac
+                ;;
+        esac
+    done
+    for b in $bases; do
+        for a in "$@"; do case "$a" in "$b="*) continue 2 ;; esac; done
+        json='{}'
+        for a in "$@"; do
+            case "$a" in
+                STALE:*) ;;
+                "$b"__*=*)
+                    field="${a%%=*}"; field="${field#"$b"__}"; v="${a#*=}"
+                    json="$(jq -c --arg f "$field" --arg v "$v" '.[$f] = $v' <<<"$json")"
+                    ;;
+            esac
+        done
+        EMU_ARGS+=("$b=$json")
+    done
+}
+
 case_no=0
 run_final_status() {
     local repo="$1"; shift
+    emulate_runner "$@"
     case_no=$((case_no + 1))
     OUT="$TMPROOT/case$case_no.out"
     ERR="$TMPROOT/case$case_no.err"
@@ -238,7 +276,7 @@ run_final_status() {
             REMOTE_HOST_TYPE=github \
             TASK_DESCRIPTION="issue 1596 regression" \
             RECIPE_VAR_issue_number=1596 \
-            "$@" \
+            "${EMU_ARGS[@]+"${EMU_ARGS[@]}"}" \
             bash "$FINAL_STATUS"
     ) >"$OUT" 2>"$ERR"
     RC=$?
@@ -540,7 +578,7 @@ STEP22B_CMD="$(awk '
     in_cmd { exit }
 ' "$FINALIZE_RECIPE")"
 if printf '%s\n' "$STEP22B_CMD" | grep -q 'workflow_final_status.sh' \
-    && printf '%s\n' "$STEP22B_CMD" | grep -q 'WORKTREE_SETUP_WORKTREE_PATH'; then
+    && printf '%s\n' "$STEP22B_CMD" | grep -q 'RECIPE_VAR_worktree_setup'; then
     record_pass "15-0: extracted step-22b's command from workflow-finalize.yaml"
 else
     record_fail "15-0: extracted step-22b's command from workflow-finalize.yaml"
@@ -699,6 +737,80 @@ read -r repo wt < <(make_layout c15-match main)
 run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
     RECIPE_VAR_worktree_setup__worktree_path="$wt" RECIPE_VAR_worktree_setup__branch_name="$BRANCH"
 assert_resolved_worktree_pr "15-match: WORKTREE_SETUP_BRANCH_NAME agrees with the worktree branch -> EXISTING_OPEN_PR"
+
+# --- 16. #1561: nested step outputs are read from the base key -------------
+# The runner writes RECIPE_VAR_<key>__<field> only for the fields the current
+# object has, so a nested name can hold a parent run's value. Each row sets a
+# conflicting stale nested (and bare) value; the run's own base JSON, or its
+# absence, must decide. 9999 is the stale PR: it must never reach gh, the
+# scope helper or the output.
+STALE_PR=9999
+STALE_URL="https://github.com/octo/example/pull/$STALE_PR"
+assert_stale_pr_unused() {
+    local label="$1"
+    if ! grep -qF "$STALE_PR" "$GH_LOG" && ! grep -qF "$STALE_PR" "$SCOPE_LOG" \
+        && ! grep -qF "$STALE_PR" "$OUT"; then
+        record_pass "$label"
+    else
+        record_fail "$label"; dump; echo "    scope log:"; sed 's/^/    | /' "$SCOPE_LOG"
+    fi
+}
+
+repo="$(make_repo c16-own-pr)"
+run_final_status "$repo" FAKE_GH_MODE=open \
+    RECIPE_VAR_pr_publish_result="$(jq -nc --arg u "$PR_URL_OK" --arg n "$PR_NUM" '{pr_url: $u, pr_number: $n, state: "FOLLOWUP_CREATED"}')" \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_url=$STALE_URL" \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_number=$STALE_PR" \
+    "STALE:PR_PUBLISH_RESULT_PR_URL=$STALE_URL" \
+    "STALE:PR_PUBLISH_RESULT_PR_NUMBER=$STALE_PR"  # deliberately stale (#1561)
+if [ "$RC" -eq 0 ] && grep -qxF "=== PR: $PR_URL_OK ===" "$OUT" \
+    && grep -qx "publish_state_reached=true" "$OUT"; then
+    record_pass "16-1561-stale-nested-pr: own pr_publish_result JSON beats stale nested and bare PR values"
+else
+    record_fail "16-1561-stale-nested-pr: own pr_publish_result JSON beats stale nested and bare PR values"; dump
+fi
+assert_stale_pr_unused "16-1561-stale-nested-pr-a: the stale PR #$STALE_PR is never used"
+
+repo="$(make_repo c16-empty-base-pr)"
+run_final_status "$repo" FAKE_GH_MODE=empty \
+    RECIPE_VAR_pr_publish_result= \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_url=$STALE_URL" \
+    "STALE:RECIPE_VAR_pr_publish_result__pr_number=$STALE_PR" \
+    "STALE:RECIPE_VAR_pr_publish_result__state=FOLLOWUP_CREATED"  # deliberately stale (#1561)
+assert_unchanged_failure "16-1561-empty-base-stale-nested-pr: base \"\" + stale nested PR -> treated as no PR"
+assert_stale_pr_unused "16-1561-empty-base-stale-nested-pr-a: the stale PR #$STALE_PR is never used"
+
+# A stale nested worktree path names a second, conflicting repository on
+# another branch. The run's own worktree_setup JSON names the real worktree.
+snapshot_repo() {
+    { git -C "$1" for-each-ref --format='%(refname) %(objectname)'; git -C "$1" status --porcelain --untracked-files=all
+      (cd "$1" && find . -path ./.git -prune -o -print | LC_ALL=C sort); } 2>&1
+}
+STALE_REPO="$(make_repo c16-stale-repo)"
+git -C "$STALE_REPO" checkout --quiet -b feat/stale-1561
+stale_before="$(snapshot_repo "$STALE_REPO")"
+read -r repo wt < <(make_layout c16-nested-wt main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    RECIPE_VAR_worktree_setup="$(jq -nc --arg p "$wt" --arg b "$BRANCH" '{worktree_path: $p, branch_name: $b}')" \
+    "STALE:RECIPE_VAR_worktree_setup__worktree_path=$STALE_REPO" \
+    "STALE:RECIPE_VAR_worktree_setup__branch_name=feat/stale-1561" \
+    "STALE:WORKTREE_SETUP_WORKTREE_PATH=$STALE_REPO"  # deliberately stale (#1561)
+assert_resolved_worktree_pr "16-1561-stale-nested-worktree: step-22b uses own worktree_setup JSON, not the stale nested path"
+if [ "$(snapshot_repo "$STALE_REPO")" = "$stale_before" ] && ! grep -qF -- "--head feat/stale-1561" "$GH_LOG"; then
+    record_pass "16-1561-stale-nested-worktree-a: the stale repository is untouched and its branch never looked up"
+else
+    record_fail "16-1561-stale-nested-worktree-a: the stale repository is untouched and its branch never looked up"; dump
+fi
+
+# Base "" with a stale nested path naming a worktree whose branch HAS an open
+# PR: the run has no worktree of its own, so nothing may be credited.
+read -r repo wt < <(make_layout c16-empty-base-wt main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    RECIPE_VAR_worktree_setup= \
+    "STALE:RECIPE_VAR_worktree_setup__worktree_path=$wt" \
+    "STALE:RECIPE_VAR_worktree_setup__branch_name=$BRANCH"  # deliberately stale (#1561)
+assert_no_lookup "16-1561-empty-base-stale-nested-worktree: base \"\" + stale nested worktree -> no lookup"
+assert_unchanged_failure "16-1561-empty-base-stale-nested-worktree-a: base \"\" + stale nested worktree -> unchanged failure"
 
 # --- 14. lookup does not depend on caller credentials -----------------------
 # env -i already strips GH_TOKEN/GITHUB_TOKEN; assert the script never asks gh

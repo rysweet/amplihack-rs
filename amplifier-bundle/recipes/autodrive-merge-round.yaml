@@ -40,10 +40,8 @@ context:
   autodrive_tools_dir: ""
 
 steps:
-  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under
-  # AMPLIHACK_HOME, REPO_PATH, the git toplevel, ~/.copilot or ~/.amplihack that
-  # holds them all. Later bash steps and step-04's prompt (git-identity.sh) read it
-  # from autodrive_tools_dir. A missing install fails here by name (#1517).
+  # The tools this round runs, found ONCE: the first amplifier-bundle/tools under AMPLIHACK_HOME, REPO_PATH, the git toplevel,
+  # ~/.copilot or ~/.amplihack holding them all; later steps read autodrive_tools_dir. A missing install fails here by name (#1517).
   - id: "step-00-tools-dir"
     type: "bash"
     command: |
@@ -74,17 +72,20 @@ steps:
       echo "ERROR: autodrive-tools-not-found: no amplifier-bundle/tools holds all of ${NEED} (searched ${SEARCHED:-no root})" >&2
       exit 1
     output: "autodrive_tools_dir"
-  # Judging agents start outside the tree under review (#1528); it stamps the review
-  # dir's index for step-02b; the loop checks after the whole round (autodrive_worktree_guard.sh).
+  # Judging agents start outside the tree under review (#1528); autodrive_worktree_guard.sh stamps the review dir's index for step-02b.
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
-      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or missing from autodrive_launch_tools '${AUTODRIVE_LAUNCH_TOOLS:-}' (#1528)" >&2; exit 1; }
+      # Launch-tree pin (#1543), checked before use (#1561 S-F3): docs/reference/auto-drive-to-merge.md#autodrive_launch_tools-is-checked-before-use
+      LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
+      case "$LAUNCH_T" in /*) ;; *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [autodrive-merge-round/step-00]" >&2; exit 1 ;; esac
+      case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [autodrive-merge-round/step-00]" >&2; exit 1 ;; esac
+      [ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [autodrive-merge-round/step-00]" >&2; exit 1; }
+      [ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [autodrive-merge-round/step-00]" >&2; exit 1; }
+      bash "$LAUNCH_T/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused (#1528) [autodrive-merge-round/step-00]" >&2; exit 1; }
     output: "review_index"
-  # merge-ready refuses agents, so bash finds its files for step-02; a missing
-  # install fails here by name (#1517). So does gadugi-test where criterion 1
-  # needs it: autodrive_gadugi_required, true for a Node repository or an
-  # operator-set AUTODRIVE_QA_SCENARIO_DIR (qa-team's repo-type table).
+  # merge-ready refuses agents, so bash finds its files for step-02; a missing install fails here by name (#1517). So does gadugi-test
+  # where criterion 1 needs it: autodrive_gadugi_required (a Node repository or an operator-set AUTODRIVE_QA_SCENARIO_DIR).
   - id: "step-00-merge-ready-files"
     type: "bash"
     parse_json: true
@@ -108,10 +109,8 @@ steps:
       fi
       printf '%s\n' "$OUT"
     output: "merge_ready_files"
-  # Commits after the clean crusty round (#1517 D4) are NOT re-reviewed here: a
-  # loop started from a round step runs one runner deeper, and the recursion guard
-  # refuses it with exit 79 (PR #1520 review). autodrive_crusty_rereview.sh does it
-  # before each round from the merge-ready loop's shell; step-01b measures it.
+  # Commits after the clean crusty round (#1517 D4) are NOT re-reviewed here: the recursion guard refuses a nested loop (exit 79,
+  # PR #1520 review). autodrive_crusty_rereview.sh does it before each round from the loop's shell; step-01b measures it.
   - id: "merge-evidence"
     type: "recipe"
     recipe: "autodrive-merge-evidence"
@@ -133,8 +132,7 @@ steps:
       [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
       bash "$T" qa-evidence-hash "${AUTODRIVE_QA_EVIDENCE:-}"
     output: "qa_evidence_hash"
-  # Platform facts, criterion 6 included (#1518): autodrive_platform_facts.sh,
-  # which prints one JSON line whatever it can read. No line is a broken tool.
+  # Platform facts, criterion 6 included (#1518): autodrive_platform_facts.sh prints one JSON line whatever it reads; none is a broken tool.
   - id: "step-01-platform-facts"
     type: "bash"
     parse_json: true
@@ -153,8 +151,7 @@ steps:
         *) echo "ERROR: autodrive-platform-facts-failed: autodrive_platform_facts.sh printed no facts" >&2; exit 1 ;;
       esac
     output: "platform_facts"
-  # Criterion 3: `autodrive_round_evidence.sh crusty-evidence`, the loop's
-  # final crusty record and the commits after it (#1517 D4).
+  # Criterion 3: `autodrive_round_evidence.sh crusty-evidence`, the loop's final crusty record and the commits after it (#1517 D4).
   - id: "step-01b-crusty-evidence"
     type: "bash"
     parse_json: true
@@ -250,14 +247,18 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
-      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-merge-ready-assessment || exit 1
+      LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
+      case "$LAUNCH_T" in /*) ;; *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [autodrive-merge-round/step-02b]" >&2; exit 1 ;; esac
+      case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [autodrive-merge-round/step-02b]" >&2; exit 1 ;; esac
+      [ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [autodrive-merge-round/step-02b]" >&2; exit 1; }
+      [ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [autodrive-merge-round/step-02b]" >&2; exit 1; }
+      bash "$LAUNCH_T/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-merge-ready-assessment || exit 1
   - id: "step-03-extract-merge-ready-verdict"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
-      # Canonical pipeline (docs/reference/structured-verdict-parsing.md): agent
-      # output is untrusted DATA on stdin, never a command and never raw prose.
+      # Canonical pipeline (docs/reference/structured-verdict-parsing.md): agent output is untrusted DATA on stdin, never a command.
       RAW="${RECIPE_VAR_merge_ready_review:-}"
       if [ -z "$RAW" ]; then
         echo "WARNING: the merge-ready assessment produced no output; a missing verdict is NOT_MERGE_READY, never MERGE_READY." >&2
@@ -360,8 +361,7 @@ steps:
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
       unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
       bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
-      # Commit as the workflow's identity (issue #1394); source it in THIS block.
-      # step-00-tools-dir found git-identity.sh with this round's other tools.
+      # Commit as the workflow's identity (issue #1394), sourced in THIS block from step-00-tools-dir's git-identity.sh.
       . "{{autodrive_tools_dir}}/git-identity.sh" || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
       amplihack_prepare_git_commit_identity || { echo "ERROR: git identity helper not found; stop rather than commit under a guessed identity" >&2; exit 2; }
 

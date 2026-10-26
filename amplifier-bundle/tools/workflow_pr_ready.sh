@@ -2,8 +2,6 @@
 set -euo pipefail
 
 export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-PR_URL="${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}"
-PR_NUMBER="${RECIPE_VAR_pr_number:-${RECIPE_VAR_pr_publish_result__pr_number:-}}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PR_SCOPE_HELPER="${WORKFLOW_PR_SCOPE_HELPER:-${SCRIPT_DIR}/workflow_pr_scope.sh}"
 # workflow_pr_scope.sh validates headRefName, baseRefName, headRefOid,
@@ -21,6 +19,24 @@ if ! command -v jq >/dev/null 2>&1; then
   echo "ERROR: jq CLI not found — cannot validate GitHub PR readiness metadata" >&2
   exit 127
 fi
+
+# Read field <field> of the JSON object in the base variable RECIPE_VAR_<key>
+# (#1561). The runner writes RECIPE_VAR_<key> for every declared key, but a
+# nested name only for fields the current object has, so a nested name can
+# hold a parent run's value and is never read. Prints nothing for an unset or
+# empty key, a value that is not a JSON object, or a missing or null field;
+# `false` and `0` print as values. Callers treat empty as "not reported".
+rv_field() {
+  local key="$1" field="$2" var
+  [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
+  var="RECIPE_VAR_${key}"
+  printf '%s' "${!var:-}" \
+    | jq -r --arg f "$field" 'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end' 2>/dev/null \
+    || true
+}
+
+PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}"

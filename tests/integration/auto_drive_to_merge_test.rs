@@ -2268,9 +2268,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
         "step-01 must read the reviewed head with git, in bash"
     );
     let cmd = field(step(&recipe, "step-06-write-round-record"), "command");
+    // #1561: step outputs are read only as RECIPE_VAR_<key>.
     for needle in [
-        "CRUSTY_ROUND_CONTEXT",
-        "CRUSTY_FIX_EVIDENCE",
+        "RECIPE_VAR_crusty_round_context",
+        "RECIPE_VAR_crusty_fix_evidence",
         "\"reviewed_head_sha\":\"%s\"",
         "\"head_sha\":\"%s\"",
         "crusty-head-sha-unavailable",
@@ -3670,8 +3671,9 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
     );
 
     let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
+    // #1561: the step-00d hash is read only as RECIPE_VAR_qa_evidence_hash.
     for needle in [
-        "QA_EVIDENCE_HASH",
+        "RECIPE_VAR_qa_evidence_hash",
         "AUTODRIVE_QA_EVIDENCE",
         "qa_evidence_sha \"${AUTODRIVE_QA_EVIDENCE:-}\"",
         "qa_evidence=modified",
@@ -3685,7 +3687,7 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
 
     let record = round_step_bash(&recipe, "step-05-write-round-record");
     for needle in [
-        "QA_EVIDENCE_HASH",
+        "RECIPE_VAR_qa_evidence_hash",
         "\"qa_evidence_sha\":\"%s\"",
         "umask 077",
     ] {
@@ -5291,7 +5293,7 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
         }
         let pf = field(step(&recipe, preflight), "command");
         assert!(
-            pf.contains("autodrive_pr_head.sh") && pf.contains("AUTODRIVE_PR_INPUT"),
+            pf.contains("autodrive_pr_head.sh") && pf.contains("RECIPE_VAR_autodrive_pr_input"),
             "{loop_name} {preflight} must resolve the PR head when pr_number was supplied"
         );
         assert!(

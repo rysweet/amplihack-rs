@@ -94,7 +94,10 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         .current_dir(repo)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
         .env("WORKTREE_SETUP_WORKTREE_PATH", repo)
-        .env("RECIPE_VAR_worktree_setup__worktree_path", repo)
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            serde_json::json!({ "worktree_path": repo.to_string_lossy() }).to_string(),
+        )
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
             workspace_helper_path("workflow_runtime_artifacts.sh"),

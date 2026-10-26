@@ -2037,6 +2037,81 @@ else
   fail "1528-step-00-other-gitlink" "rc=${rc} mode=${GL_MODE}"
 fi
 
+# ---------------------------------------------------------------------------
+# 5z2. AUTODRIVE_LAUNCH_TOOLS is checked before a round runs the guard from it
+#      (#1561 S-F3, #1543).
+# ---------------------------------------------------------------------------
+# The launch-tree pin is the one bare name besides NO_MERGE that a round step
+# still reads. An empty value once ran /autodrive_worktree_guard.sh from the
+# filesystem root, and a relative one ran whatever the cwd held. Each step that
+# runs the guard must refuse an empty, relative, non-directory or guard-less
+# value with STOP: autodrive-launch-tools-invalid before any `bash` call.
+# A decoy guard that writes a marker sits where an unchecked path would reach
+# it (cwd/tools for the relative case, and next to the guard-less directory).
+# A positive control first proves the same step reaches a valid stub guard, so
+# a step that stops early for another reason cannot pass a negative row.
+LT_MARK="${WORK}/lt-marker"
+lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
+  mkdir -p -- "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
+  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+}
+lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
+  find "$1" -print 2>/dev/null | LC_ALL=C sort
+  git -C "${LAUNCH}" status --porcelain --ignored 2>/dev/null
+}
+lt_run() { # lt_run <cwd> <body> <AUTODRIVE_LAUNCH_TOOLS value> -> LT_RC, LT_ERR
+  LT_ERR="$(cd -- "$1" && env REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" RECIPE_VAR_review_index="lt-stamp" \
+    AUTODRIVE_LAUNCH_TOOLS="$3" bash -c "$2" 2>&1 >/dev/null)"; LT_RC=$?
+}
+for r in autodrive-crusty-round autodrive-merge-round; do
+  rshort="${r#autodrive-}"; rshort="${rshort%-round}"
+  for st in step-00-review-dir-guard step-02b-review-dir-unchanged; do
+    LT_BODY="$(extract_step_command "${RECIPES}/${r}.yaml" "${st}")"
+    [ -n "${LT_BODY}" ] || { fail "1561-launch-tools-body-${rshort}-${st}" "could not extract ${st} from ${r}.yaml"; continue; }
+    case "${st}" in step-00-*) sfx="" ;; *) sfx="-index-check" ;; esac
+
+    # Positive control: a valid absolute directory holding the guard is used.
+    LT_CWD="$(mktemp -d "${WORK}/lt-cwd.XXXXXX")"; rm -f -- "${LT_MARK}"
+    lt_guard "${LT_CWD}/launch-tools"
+    lt_run "${LT_CWD}" "${LT_BODY}" "${LT_CWD}/launch-tools"
+    if [ "${LT_RC}" -eq 0 ] && [ -s "${LT_MARK}" ]; then
+      pass "1561-launch-tools-valid-${rshort}${sfx}" "${r}/${st} runs the guard from a valid AUTODRIVE_LAUNCH_TOOLS"
+    else
+      fail "1561-launch-tools-valid-${rshort}${sfx}" "rc=${LT_RC} marker=$( [ -s "${LT_MARK}" ] && echo written || echo missing ) err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+    fi
+
+    for kind in empty relative not-dir no-guard; do
+      LT_CWD="$(mktemp -d "${WORK}/lt-cwd.XXXXXX")"; rm -f -- "${LT_MARK}"
+      lt_guard "${LT_CWD}/tools"                         # decoy a relative path would reach
+      case "${kind}" in
+        empty)    LT_VAL="" ;;                           # deliberately stale (#1561)
+        relative) LT_VAL="tools" ;;                      # deliberately stale (#1561)
+        not-dir)  LT_VAL="${LT_CWD}/plain-file"; printf 'not a dir\n' > "${LT_VAL}" ;; # deliberately stale (#1561)
+        no-guard) LT_VAL="${LT_CWD}/guardless"; mkdir -p -- "${LT_VAL}" ;;              # deliberately stale (#1561)
+      esac
+      LT_BEFORE="$(lt_snapshot "${LT_CWD}")"
+      lt_run "${LT_CWD}" "${LT_BODY}" "${LT_VAL}"
+      LT_AFTER="$(lt_snapshot "${LT_CWD}")"
+      LT_WHY=""
+      [ "${LT_RC}" -ne 0 ] || LT_WHY="${LT_WHY} exited 0;"
+      printf '%s' "${LT_ERR}" | grep -qF 'STOP: autodrive-launch-tools-invalid' || LT_WHY="${LT_WHY} no 'STOP: autodrive-launch-tools-invalid';"
+      [ ! -e "${LT_MARK}" ] || LT_WHY="${LT_WHY} a decoy guard ran;"
+      printf '%s' "${LT_ERR}" | grep -qF '/autodrive_worktree_guard.sh: No such file' && LT_WHY="${LT_WHY} bash was handed an unchecked guard path;"
+      [ "${LT_BEFORE}" = "${LT_AFTER}" ] || LT_WHY="${LT_WHY} files appeared or the review dir changed;"
+      case "${kind}" in not-dir|no-guard)
+        printf '%s' "${LT_ERR}" | grep -qF -- "${LT_VAL}" && LT_WHY="${LT_WHY} the message prints the value;" ;;
+      esac
+      if [ -z "${LT_WHY}" ]; then
+        pass "1561-launch-tools-${kind}-${rshort}${sfx}" "${r}/${st} stops on a ${kind} AUTODRIVE_LAUNCH_TOOLS before running any guard"
+      else
+        fail "1561-launch-tools-${kind}-${rshort}${sfx}" "rc=${LT_RC};${LT_WHY} err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+      fi
+    done
+  done
+done
+unset LT_BODY LT_CWD LT_VAL LT_BEFORE LT_AFTER LT_WHY LT_ERR LT_RC
+
 crusty_verdict() {
   PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="$1" AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" \
     AUTODRIVE_ROUND_LABEL="r" bash -c "$CRUSTY_BODY" 2>/dev/null \
@@ -2871,7 +2946,7 @@ else
   # No tools dir at all: refused by name before any path is built from it (#1607).
   s00_run "${WORK_PHYS}/no-such-root"
   if [ "${S00_RC}" -ne 0 ] && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found:' \
-     && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found: autodrive_tools_dir is not a directory [autodrive-merge-round/step-00-merge-ready-files]'; then
+     && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00-merge-ready-files]'; then
     pass "STEP00-tools-dir-missing-fails" "a tools dir that does not exist fails step-00 with the named error"
   else
     fail "STEP00-tools-dir-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
@@ -4829,7 +4904,7 @@ else
 fi
 s01_run "${WORK_PHYS}/no-such-tools"
 if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
-   && grep -qx 'ERROR: autodrive-tools-not-found: autodrive_tools_dir is not a directory \[autodrive-merge-round/step-01-platform-facts\]' "${WORK_PHYS}/pf-${PF_N}.err"; then
+   && grep -qx 'ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory \[autodrive-merge-round/step-01-platform-facts\]' "${WORK_PHYS}/pf-${PF_N}.err"; then
   pass "PF-step-01-no-tools-dir" "a tools dir that does not exist fails step-01 by name and reports no facts"
 else
   fail "PF-step-01-no-tools-dir" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"

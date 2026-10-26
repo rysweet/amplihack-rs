@@ -132,8 +132,8 @@ fn no_match_missing_repository_and_worktree_fallback_remain_truthful() {
         .args(["-c", step_command("workflow-pr-review", STEP)])
         .env("WORKTREE_SETUP_WORKTREE_PATH", "/missing/worktree")
         .env(
-            "RECIPE_VAR_worktree_setup__worktree_path",
-            "/missing/worktree",
+            "RECIPE_VAR_worktree_setup",
+            r#"{"worktree_path":"/missing/worktree"}"#,
         )
         .output()
         .unwrap();

@@ -1354,7 +1354,7 @@ A read is one `${RECIPE_VAR_<name>:-` occurrence for a name in the checked
 output set, so a line that reads the same output twice counts twice. Reads
 made inside a bundled tool, such as the merge round's evidence reads in
 `autodrive_round_evidence.sh`, are not counted here; that file uses the same
-form. There are 35 in all:
+form. There are 34 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
@@ -1363,7 +1363,7 @@ form. There are 35 in all:
 | `autodrive-crusty-loop.yaml` | 7 |
 | `autodrive-crusty-round.yaml` | 8 |
 | `autodrive-merge-loop.yaml` | 6 |
-| `autodrive-merge-round.yaml` | 9 |
+| `autodrive-merge-round.yaml` | 8 |
 
 ### Step outputs ignore inherited bare variables
 
@@ -1373,7 +1373,9 @@ interactive shell, or a CI job. Every step body in
 `amplifier-bundle/recipes/*.yaml` and every bundled tool in
 `amplifier-bundle/tools/*.sh` reads a recipe value as
 `${RECIPE_VAR_<key>:-<default>}`, and never reads a bare name in place of its
-`RECIPE_VAR_` partner. A stale bare value is ignored even when the recipe's own
+`RECIPE_VAR_` partner. A field of an object output is read from the JSON in
+`RECIPE_VAR_<key>`, never from a nested name `RECIPE_VAR_<key>__<field>`; see
+[Nested step outputs are read from the base key](#nested-step-outputs-are-read-from-the-base-key). A stale bare value is ignored even when the recipe's own
 value is empty. The only bare name still read next to its partner is the
 [`NO_MERGE` override](#no_merge-override), which can only stop a merge. Bare
 names with no partner in the same read, such as the `$AMPLIHACK_HOME` and
@@ -1426,7 +1428,10 @@ hold. It holds a stale value only when the key is undeclared, or when a step
 body runs outside the runner, as the shell tests run it:
 
 - `src/context.rs:357` always exports `RECIPE_VAR_<key>` for every context
-  value, and `RECIPE_VAR_<key>__<field>` for each nested field of an object.
+  value. For an object it also exports `RECIPE_VAR_<key>__<field>`, but only
+  for the fields the current object has (`src/context.rs:356-385`). It never
+  clears a nested name for a field the object lacks; see
+  [Nested step outputs are read from the base key](#nested-step-outputs-are-read-from-the-base-key).
 - `src/context.rs:372-379` and `:399` add the bare upper-case alias only for a
   top-level, non-reserved **scalar**. An object output, such as `qa_evidence`
   or `worktree_setup`, never gets one.
@@ -1443,16 +1448,18 @@ So inside a run, for a key the recipe declares in its `context:`,
 scalar the bare alias holds the same value, so dropping the bare read changes
 nothing; for an object, or an undeclared key, the bare name could only ever be
 inherited. Undeclared keys are covered
-[below](#every-key-read-is-declared-in-context).
+[below](#every-key-read-is-declared-in-context). The same holds for the base
+key only: a nested name `RECIPE_VAR_<key>__<field>` can still hold an
+inherited value, so no step reads one.
 
 #### How each spelling was rewritten
 
 | Before #1561 | After |
 | --- | --- |
 | `${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}` | `${RECIPE_VAR_qa_evidence:-}` |
-| `${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}` | `${RECIPE_VAR_pr_url:-${RECIPE_VAR_pr_publish_result__pr_url:-}}` |
-| `${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}` | `${RECIPE_VAR_branch_name:-${RECIPE_VAR_worktree_setup__branch_name:-}}` |
-| `${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}}` | `${RECIPE_VAR_terminal_state__terminal_state:-}` |
+| `${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}` | `${RECIPE_VAR_pr_url:-}`, then `rv_field pr_publish_result pr_url` when that is empty |
+| `${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}` | `${RECIPE_VAR_branch_name:-}`, then `.branch_name` of `RECIPE_VAR_worktree_setup` when that is empty |
+| `${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}}` | `rv_field terminal_state terminal_state` |
 | `X="${UPPER:-}"` then `[ -n "$X" ] \|\| X="${RECIPE_VAR_x:-}"` | `X="${RECIPE_VAR_x:-}"` |
 | `${UPPER:=${RECIPE_VAR_x:-}}`, `${UPPER-${RECIPE_VAR_x:-}}` | `${RECIPE_VAR_x:-}` |
 
@@ -1460,6 +1467,10 @@ The rules behind the table:
 
 - A flattened nested bare name (`PR_PUBLISH_RESULT_PR_URL`) is removed; the
   runner never sets it.
+- A nested `RECIPE_VAR_<key>__<field>` name is replaced by a read of `<field>`
+  from the JSON in `RECIPE_VAR_<key>`, and the recipe declares `<key>` in its
+  `context:`; see
+  [Nested step outputs are read from the base key](#nested-step-outputs-are-read-from-the-base-key).
 - A top-level bare alias (`PR_URL`, `BRANCH_NAME`, `REPO_PATH`,
   `TASK_DESCRIPTION`) that is paired with its `RECIPE_VAR_` partner in the same
   read becomes that partner (`RECIPE_VAR_pr_url`), and the recipe declares the
@@ -1530,7 +1541,8 @@ The probe now reads every input once from `RECIPE_VAR_<key>`, with no bare
 read and no template, and blanks it only when it is empty or the literal `''`:
 
 ```bash
-WORKTREE_INPUT="${RECIPE_VAR_worktree_setup__worktree_path:-}"
+WORKTREE_INPUT="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+  | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
 REPO_DIR="${RECIPE_VAR_repo_path:-}"
 case "$REPO_DIR" in ""|"''") REPO_DIR="." ;; esac
 BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"
@@ -1542,9 +1554,11 @@ fail_mode="${RECIPE_VAR_terminal_fail_mode:-}"
 ```
 
 An unset or empty `repo_path` still falls back to `.`, and a non-empty
-`worktree_setup__worktree_path` still takes precedence over it as the target
-checkout. An inherited `WORKTREE_SETUP_WORKTREE_PATH` or `REPO_PATH` no longer
-redirects the probe to another checkout. The
+`worktree_setup.worktree_path` still takes precedence over it as the target
+checkout, after the
+[path checks](#checking-a-path-branch-or-pr-number-read-from-a-field). An
+inherited `WORKTREE_SETUP_WORKTREE_PATH`, `RECIPE_VAR_worktree_setup__worktree_path`
+or `REPO_PATH` no longer redirects the probe to another checkout. The
 [bundle-wide guard](#the-bundle-wide-guard) rejects a `case` pattern or a
 `[ … != … ]` test whose operand is `"{{key}}"`, so the self-comparison cannot
 return.
@@ -1574,6 +1588,12 @@ bare variable hid the recipe's value:
   round whose own tools directory had no round tool kept the outer run's
   `AUTODRIVE_TOOLS_DIR` and reported `MERGE_READY` (PR #1588's QA case
   `MERGEREADY-no-round-tool`).
+- **Nested names leaked even after the bare reads were gone.** A read of
+  `RECIPE_VAR_worktree_setup__worktree_path` or
+  `RECIPE_VAR_terminal_state__terminal_state` picked up the parent's value
+  whenever the run's own object lacked that field, because the runner writes
+  a nested name only for a field that is present. Declaring `worktree_setup`
+  in `context:` did not help; it replaces the base key only.
 
 #### The tools directory comes from step-00 only
 
@@ -1588,14 +1608,13 @@ its path checks. Each step copies it into a local named `TOOLS_D`, never
 
 ```bash
 TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-[ -n "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1; }
-[ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is not a directory [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1; }
+[ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1; }
 T="${TOOLS_D}/autodrive_round_evidence.sh"
 [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
 ```
 
 A failed check exits non-zero, writes no round record and reports no
-`MERGE_READY`. The empty and not-a-directory messages name the key and the
+`MERGE_READY`. The empty-or-not-a-directory message names the key and the
 step, never the value; a missing tool's message names the tool's path, which
 step-00 has already checked. The step never tries another tree (`$PWD`,
 `$HOME`, `/` or a bare variable), and it never builds `/autodrive_<tool>.sh`
@@ -1636,6 +1655,12 @@ answer other than `false` requires gadugi-test.
   `TASK_DESC` its caller in `workflow-prep.yaml` set. It is never a
   `RECIPE_VAR_` alias, so #1561 does not touch it.
 - **`NO_MERGE`**, as the [override](#no_merge-override) below.
+- **`AUTODRIVE_LAUNCH_TOOLS`**, the launch-tree pin from #1543. The crusty and
+  merge loops set it to the tools directory of the checkout that launched the
+  run, so a round runs `autodrive_worktree_guard.sh` from the launch tree and
+  never from the PR's worktree. It is not a step output and has no
+  `RECIPE_VAR_` partner. Each round checks it before use; see
+  [`AUTODRIVE_LAUNCH_TOOLS` is checked before use](#autodrive_launch_tools-is-checked-before-use).
 - **Test harnesses.** `amplifier-bundle/recipes/tests/` stands in for the
   runner and sets names on purpose; the guard does not scan it.
 
@@ -1667,10 +1692,209 @@ through the [check below](#state_dir-is-checked-before-use), and
 `autodrive-merge-evidence.yaml` reads no step outputs, so the
 [merge gate](#no-silent-merge) cannot be fed through this path.
 
+A `context:` declaration replaces `RECIPE_VAR_<key>` only. It does not replace
+the nested names `RECIPE_VAR_<key>__<field>`, which is why no step reads them.
+
+### Nested step outputs are read from the base key
+
+A step that needs one field of an object output, such as
+`worktree_setup.worktree_path` or `terminal_state.terminal_state`, reads the
+whole object from `RECIPE_VAR_<key>` and takes the field out of its JSON. No
+recipe in `amplifier-bundle/recipes/*.yaml` and no tool in
+`amplifier-bundle/tools/*.sh` reads a nested name `RECIPE_VAR_<key>__<field>`.
+
+#### How the runner exports an object
+
+For an object output `worktree_setup`, the pinned runner (rev `4d5187ea`)
+writes:
+
+| Name | When it is written |
+| --- | --- |
+| `RECIPE_VAR_worktree_setup` | always, for a key declared in `context:` or produced by a step that ran. It holds the object as JSON |
+| `RECIPE_VAR_worktree_setup__worktree_path`, `RECIPE_VAR_worktree_setup__branch_name`, … | only for the fields the current object has (`src/context.rs:356-385`) |
+| `WORKTREE_SETUP` | never; an object gets no bare alias |
+
+Each step starts from the runner's inherited environment, with the recipe's
+values laid over it (`src/adapters/cli_subprocess.rs:603-616`). A nested name
+for a field the current object lacks is never written, so it keeps whatever
+the parent run or the launching shell exported. For example, a parent run's
+`RECIPE_VAR_worktree_setup__worktree_path=/home/ryan/src/other-run` survives
+into a child whose own `worktree_setup` is `""`, or whose object has no
+`worktree_path`. Before this fix, `autodrive-build` step-03 and
+`probe-terminal-state` would then look for a pull request, or judge the
+terminal state, in the other run's checkout.
+
+The base key has no such gap: once the recipe declares it, the runner always
+writes it, even as `""`.
+
+#### The read rule
+
+Read field `<field>` of output `<key>` from `RECIPE_VAR_<key>`, and declare
+`<key>` in the recipe's `context:`. A value that is not JSON, is not an object,
+or lacks the field reads as empty, and the caller then stops or takes its
+existing documented default. There is no fallback to the nested name, to a
+bare name or to `AMPLIHACK_CONTEXT_FILE`.
+
+**In a tool.** `workflow_final_status.sh`, `workflow_pr_ready.sh` and
+`workflow_terminal_evidence.sh` each define their own copy of `rv_field`, so
+each tool stays self-contained:
+
+```bash
+# rv_field <key> <field>: print <field> of the JSON object in RECIPE_VAR_<key>,
+# or nothing. Never reads RECIPE_VAR_<key>__<field> (#1561).
+rv_field() {
+  local key=$1 field=$2 var
+  [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
+  var="RECIPE_VAR_${key}"
+  printf '%s' "${!var:-}" | jq -r --arg f "$field" \
+    'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end' \
+    2>/dev/null || true
+}
+```
+
+A stale nested name is ignored, and a boolean `false` comes out as `false`:
+
+```console
+$ export RECIPE_VAR_terminal_state='{"terminal_state":"FAILED_MEANINGFUL_DIFF","terminal_success":false}'
+$ export RECIPE_VAR_terminal_state__terminal_state=IMPLEMENTED_VERIFIED
+$ echo "[$(rv_field terminal_state terminal_state)]"
+[FAILED_MEANINGFUL_DIFF]
+$ echo "[$(rv_field terminal_state terminal_success)]"
+[false]
+$ echo "[$(rv_field terminal_state terminal_reason)]"
+[]
+$ RECIPE_VAR_terminal_state='not json'
+$ echo "[$(rv_field terminal_state terminal_state)]"
+[]
+```
+
+The filter must test `has($f)` and `null` itself. The shorter
+`.[$f] // empty` treats `false` as missing, so a `false` evidence flag would
+read as empty and change which branch a gate takes. A number reads as its
+digits (`5`) and a nested object as compact JSON, which is what the runner's
+nested names held.
+
+The key and field are checked against `^[A-Za-z0-9_]+$` and reach `jq` only
+through `--arg`; nothing is interpolated into the `jq` program and nothing is
+`eval`'d. Each converted read keeps its old default byte for byte, for example
+`FAILED_MISSING_TERMINAL_EVIDENCE` when the terminal evidence is missing. The
+`|| true` is safe only because every caller treats an empty result as missing. `workflow_final_status.sh` stops with `ERROR: workflow_final_status.sh requires
+jq to read step outputs` when `jq` is not installed, so a missing `jq` can
+never read as "no evidence".
+
+**In a recipe.** A step reads a string field inline:
+
+```bash
+RUN_DIR="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+  | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
+```
+
+`// empty` is allowed in this inline form only for string fields such as
+`worktree_path` and `branch_name`. A boolean or number field uses the
+`has($f)` filter above.
+
+#### Checking a path, branch or PR number read from a field
+
+A value read from the base key belongs to this run, but it is still checked
+before git or `gh` uses it:
+
+| Value | Checks | On failure |
+| --- | --- | --- |
+| a worktree path (`worktree_setup.worktree_path`) | one line; absolute; `[ -d ]`; already resolved: `[ ! -L "$p" ]` and `realpath -- "$p"` equals `$p`; `git -C "$p" rev-parse --show-toplevel` equals `$p` | the step treats the path as missing |
+| a branch name (`worktree_setup.branch_name`, `branch_name`) | no leading `-`; `git check-ref-format --branch "$b"` succeeds | the step treats the branch as missing |
+| a PR number (`pr_publish_result.pr_number`, `pr_number`) | matches `^[1-9][0-9]*$` | the step treats the number as missing |
+
+Each path check stops a different wrong value:
+
+- The resolved-path check rejects a symlink, and any path with a `..` or
+  `.` component or a symlinked parent directory. This check is needed because
+  the top-level check alone does not reject a symlink: `rev-parse
+  --show-toplevel` and `realpath` both follow the link, so a link to the root
+  of another repository gives two equal values.
+- The top-level check rejects a subdirectory of a repository and a directory
+  that is not in a repository at all, such as a stale directory left by an
+  earlier run.
+Every expansion is quoted, and `--` goes before a path given to `cd`, `rm` or
+`realpath`.
+
+`workflow-worktree.yaml` emits `worktree_path` as the physical path of the
+worktree root (`cd -P -- "$WORKTREE_PATH" && pwd -P`), so a run started from
+a `repo_path` that goes through a symlink still passes the resolved-path
+check.
+
+Where a path fails, the step does what it already did for a missing path:
+step-20a and step-20b skip; step-15, step-18c and the checkpoint commits stop
+on their `:?` message; step-14b, step-14c, step-14g and step-16 fall back to
+`repo_path`; and step-19c, step-21 and step-22b fall back to `REPO_PATH`. Each
+first prints
+`WARNING: <step>: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)`.
+The terminal-state probe (`workflow-terminal-state.yaml`) is the exception: a
+path that fails stops it with `FAILED_INVALID_INPUT`, because a verdict
+measured in another checkout would be wrong.
+
+In the phase recipes held to the 400-line brick budget, the read and its
+checks are one line, in the same style as those recipes' helper lookups.
+These steps run under `set -euo pipefail` and the commit steps may not use
+`|| true` (#573), so the `jq` read has no `|| true` and no `2>/dev/null`: a
+`worktree_setup` that is not JSON stops the step with `jq`'s own parse error.
+
+```bash
+WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-15-commit-push: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
+```
+
+#### Dotted keys in `write_context_value`
+
+`recipe_context_value.sh` follows the same rule. `write_context_value a.b OUT`
+reads `RECIPE_VAR_a` and writes its field `b`, using the `jq` path `.b` passed
+with `--arg`. It never builds or reads `RECIPE_VAR_a__b`:
+
+| `RECIPE_VAR_a` | Result |
+| --- | --- |
+| an object with field `b` | `b` is written: a string raw, anything else as compact JSON. Exit `0` |
+| set, but not JSON, not an object, or without `b` (including `""`) | exit `3`, nothing written |
+| unset | the `AMPLIHACK_CONTEXT_FILE` fallback, as for an undotted key |
+
+This covers `consensus-issue-worktree.yaml` and `consensus-publish.yaml`, which
+call `write_context_value` with dotted keys; their calls did not change. Before
+this fix, a base key set to `""` could still produce a value through the
+nested name; now it exits `3`. No call site depends on the old behaviour,
+because every dotted call already handles a non-zero exit in the same way: it
+prints a `WARN:` line and leaves the field's file empty.
+
+| Call site | Dotted key | On exit `3` |
+| --- | --- | --- |
+| `consensus-issue-worktree.yaml`, step 2 | `final_requirements.<f>` for `explicit_requirements`, `success_criteria`, `constraints`, `consensus_mechanism_used`, `agents_involved`, `confidence_level` | `WARN: final_requirements.<f> is not available; leaving it empty`; that issue-body section is empty |
+| `consensus-publish.yaml`, commit step | `final_requirements.task_summary` | `WARN: …`; the commit message's summary is empty |
+| `consensus-publish.yaml`, PR step | `final_requirements.explicit_requirements`, `final_requirements.consensus_mechanism_used` | `WARN: …`; that PR-body section is empty |
+
+Only the undotted `task_description` read stops the step (`exit 1`). See
+[Read a context value of any size in a bash step](../howto/pass-large-recipe-context.md#read-a-context-value-of-any-size-in-a-bash-step).
+
+#### What the runner still exports
+
+The fix is entirely in the bundle. `recipe-runner-rs` is unchanged, so three
+things remain:
+
+- **The runner still exports bare aliases and nested names.** Scalars still
+  get an upper-case alias, and objects still get `RECIPE_VAR_<key>__<field>`
+  for present fields. Nothing in the bundle reads either, so this is harmless
+  while the [bundle-wide guard](#the-bundle-wide-guard) passes. A runner-side
+  fix that stops exporting them, or clears nested names when it writes the
+  base key, is out of scope here.
+- **`AMPLIHACK_CONTEXT_FILE` is still read for an unset key.**
+  `write_context_value` falls back to it only when `RECIPE_VAR_<key>` is not
+  set at all, for older runners that passed context that way. Inside a run
+  under the pinned runner, a declared key is always set, so the fallback is
+  not reached. A step that runs outside the runner, or reads an undeclared
+  key, can still read an inherited `AMPLIHACK_CONTEXT_FILE`.
+- **`AUTODRIVE_LAUNCH_TOOLS` stays a bare name by design** (#1543). It is safe
+  only because each round checks it before use; see
+  [`AUTODRIVE_LAUNCH_TOOLS` is checked before use](#autodrive_launch_tools-is-checked-before-use).
+
 ### `NO_MERGE` override
 
-`NO_MERGE` is the one bare name that is still read, and only as an explicit
-override. A bare `NO_MERGE` is combined with the recipe's `no_merge` value as a
+`NO_MERGE` is the one bare name that can override a recipe value, and only
+as an explicit override. A bare `NO_MERGE` is combined with the recipe's `no_merge` value as a
 logical OR, after the recipe value has been resolved. It can switch merging
 off, but it can never switch it on. A stale `NO_MERGE=true` can only stop a
 merge. Ignoring an operator's no-merge request would be a worse failure than
@@ -1802,6 +2026,29 @@ when it finds one, and otherwise exits `1` with the usual
 `ERROR: phase 1 finished without a pull request.` A non-empty unsafe value
 still exits non-zero, and nothing is marked.
 
+### `AUTODRIVE_LAUNCH_TOOLS` is checked before use
+
+`AUTODRIVE_LAUNCH_TOOLS` is the one bare name besides `NO_MERGE` that a step
+still reads (#1543). The `round-guard` and `index-check` calls in
+`autodrive-crusty-round.yaml` and `autodrive-merge-round.yaml` run
+`autodrive_worktree_guard.sh` from it. Before either call, the step checks
+the value:
+
+```bash
+LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
+case "$LAUNCH_T" in /*) ;; *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [autodrive-merge-round/step-00]" >&2; exit 1 ;; esac
+case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [autodrive-merge-round/step-00]" >&2; exit 1 ;; esac
+[ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [autodrive-merge-round/step-00]" >&2; exit 1; }
+[ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [autodrive-merge-round/step-00]" >&2; exit 1; }
+bash "$LAUNCH_T/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused (#1528) [autodrive-merge-round/step-00]" >&2; exit 1; }
+```
+
+The bracketed part names the recipe and step (`step-00` or `step-02b`). The messages name the
+variable, never its value. An empty value can no longer run
+`/autodrive_worktree_guard.sh` from the filesystem root, and the step never
+looks for the guard anywhere else. A refused value stops the round before it
+reviews anything, so no verdict and no round record are written.
+
 ### How step-03 finds phase 1's pull request
 
 `autodrive-build.yaml` step-03 tries, in order:
@@ -1824,6 +2071,32 @@ still exits non-zero, and nothing is marked.
    - its head commit is the worktree's `HEAD`.
 
    Anything else, including a `gh` error or malformed output, finds nothing.
+
+   step-03 reads the worktree path and branch from the JSON in
+   `RECIPE_VAR_worktree_setup`, which `autodrive-build.yaml` declares as
+   `worktree_setup: ""` in its `context:`. It never reads
+   `RECIPE_VAR_worktree_setup__worktree_path`,
+   `RECIPE_VAR_worktree_setup__branch_name` or the bare
+   `WORKTREE_SETUP_WORKTREE_PATH` and `WORKTREE_SETUP_BRANCH_NAME`, which can
+   all hold a parent run's values (see
+   [Nested step outputs are read from the base key](#nested-step-outputs-are-read-from-the-base-key)):
+
+   ```bash
+   RUN_DIR="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+     | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
+   RUN_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
+     | jq -r 'if type=="object" then .branch_name // empty else empty end' 2>/dev/null || true)"
+   ```
+
+   The path and branch then go through the
+   [path and branch checks](#checking-a-path-branch-or-pr-number-read-from-a-field).
+   A path that fails, such as a subdirectory of the run's worktree, a
+   symlink (even one to the root of another repository) or a path that is
+   not already resolved, skips this lookup with
+   `INFO: #1676: worktree_setup.worktree_path is not a worktree root; skipping the run-branch lookup [autodrive-build/step-03]`.
+   A branch that fails is dropped, and the helper takes the branch from the
+   worktree instead. An empty or missing `worktree_setup` skips the lookup
+   with no message.
 
 Only when all four find nothing does step-03 stop with
 `ERROR: phase 1 finished without a pull request.`
@@ -1920,7 +2193,12 @@ cause:
 
 A change that adds or removes a read updates the table and the total in the
 same commit. Copy the new numbers from the counted map in the check 4
-failure.
+failure. Do not change the check to make the numbers fit. This applies to the
+#1561 change that turns nested reads into base-key reads: a step that read
+`${RECIPE_VAR_worktree_setup__worktree_path:-}` now reads
+`${RECIPE_VAR_worktree_setup:-}`, which is counted if `worktree_setup` is in
+the checked output set, so a recipe's row and the total can change in that
+commit.
 
 The table parse fails closed: the test fails, rather than skipping the count
 check, when
@@ -1960,7 +2238,9 @@ It scans, read-only and non-recursively:
 - every `amplifier-bundle/tools/*.sh`, and fails if it finds fewer than 40.
 
 The minimum counts stop the guard from passing because it scanned nothing.
-Six detectors run on each line. In the table, `UPPER` is the upper-case form
+Eight detectors run on each line that is not a comment. A `#` starts a comment
+only outside quotes, so `echo "# not a comment" ${RECIPE_VAR_a__b:-}` is still
+scanned. In the table, `UPPER` is the upper-case form
 of any `RECIPE_VAR_` name on the same line (for `two-line-fallback`, on the
 fallback line), so
 `RECIPE_VAR_worktree_setup__worktree_path` pairs with
@@ -1974,6 +2254,8 @@ fallback line), so
 | `single-line-or` | `X="${UPPER:-}" \|\| X="${RECIPE_VAR_x:-}"` and other `\|\|` chains that try `UPPER` first |
 | `bare-last` | `${RECIPE_VAR_x:-${UPPER:-}}`, where an empty recipe value would still fall through |
 | `template-self-compare` | a `case` pattern, or an operand of `[ … != … ]` or `[ … = … ]`, written `"{{key}}"` in a shell `command:`; the runner renders it as `"$RECIPE_VAR_key"`, so it compares a value with itself (see [Template fallbacks compared a value with itself](#template-fallbacks-compared-a-value-with-itself)) |
+| `nested-read` | any text matching `RECIPE_VAR_[A-Za-z0-9]+(_[A-Za-z0-9]+)*__[A-Za-z0-9_]+`, in any form: `${RECIPE_VAR_a__b:-}`, `$RECIPE_VAR_a__b`, `printenv RECIPE_VAR_a__b`, `"RECIPE_VAR_a__b"`. The match is not anchored on `$`. A comment that has to mention the form writes it with placeholders, `RECIPE_VAR_<key>__<field>`, which the pattern does not match; the second grep below checks comment lines too. See [Nested step outputs are read from the base key](#nested-step-outputs-are-read-from-the-base-key) |
+| `runtime-name-read` | an indirect expansion `${!…}`, a `printenv` of a name with a `$` in it, or a nameref (`declare -n`, `local -n`, `typeset -n`), each of which builds a variable name at run time that no other detector can see. Allowed only at the sites listed in `RUNTIME_NAME_ALLOWED`: inside `rv_field` (in the three tools that define it), `write_context_value` (`recipe_context_value.sh`) and `workflow_context.sh`; and at four sites that loop over or pass fixed names, none a `RECIPE_VAR_` name: the required-flag check in `autodrive_loop.sh`, `_amplihack_explicit_value` in `git-identity.sh` (every caller passes a literal `AMPLIHACK_*` name), and the field serialisers in `workflow_finalization_collect.sh` and `workflow_finalization_validate.sh` (a `for` list of literal local names). The scope is the innermost shell function. An entry that no site uses fails the guard |
 
 A bare read with no `RECIPE_VAR_` partner is not flagged. Examples are
 `${REPO_PATH:-}`, `: "${TMPDIR:=/tmp}"`, a lone `X="${UPPER:-}"` that no
@@ -1987,7 +2269,16 @@ test. They include a four-level chain that interleaves bare and `RECIPE_VAR_`
 names, and a `:=` read followed by `${REPO_PATH:-}`. A captured bare name
 ends at a word boundary, so the `RECIPE_VAR_` prefix of a lower-case name is
 never taken for a bare name: `${RECIPE_VAR_x:-${RECIPE_VAR_y:-}}` is accepted,
-and `${FOO_BAR:-${RECIPE_VAR_x:-}}` is flagged.
+and `${FOO_BAR:-${RECIPE_VAR_x:-}}` is flagged. For the two new detectors the
+self-tests check that each form of a nested read above is flagged, that a `jq`
+read of `RECIPE_VAR_worktree_setup` is not, that a comment line is skipped,
+that a `#` inside quotes does not hide a read on the same line, and that
+`${!x}` outside the allowed helpers is flagged.
+
+The scan stays at `amplifier-bundle/recipes/*.yaml` and
+`amplifier-bundle/tools/*.sh`. The harnesses under `recipes/tests/` set stale
+nested names on purpose, so they are not scanned. No guard test is
+`#[ignore]`, and CI has no way to skip it.
 
 The guard also checks:
 
@@ -2006,6 +2297,16 @@ The guard also checks:
   `docs/` or `tests/`: this page and the `tests/integration/*.rs` fixtures
   quote the old form on purpose, as in
   [How each spelling was rewritten](#how-each-spelling-was-rewritten).
+  A second grep, for nested names, must also print nothing, comments
+  included:
+
+  ```bash
+  grep -nE 'RECIPE_VAR_[A-Za-z0-9]+(_[A-Za-z0-9]+)*__[A-Za-z0-9_]+' \
+    amplifier-bundle/recipes/*.yaml amplifier-bundle/tools/*.sh
+  ```
+
+  A comment that needs to mention the form writes it with placeholders,
+  `RECIPE_VAR_<key>__<field>`, which the pattern does not match.
 - **No `AUTODRIVE_TOOLS_DIR` read is left.** The name may appear in a comment,
   but no recipe or tool may read it.
 - **Every `RECIPE_VAR_<key>` a recipe reads is declared in `context:`.** The
@@ -2016,10 +2317,24 @@ The guard also checks:
   Negative fixtures prove that each of these fails: an undeclared read, a read
   in a step before the only producer, and a read after a producer with a
   `condition:`.
-- **`ALLOWED_OVERRIDES` holds `NO_MERGE` only.** Each entry is a name and a
-  justification, and the justification must name a page under `docs/` that
-  exists and mentions the variable. The entry exempts only the
-  [override shape](#no_merge-override).
+- **The bare-name allowlist holds `NO_MERGE` and `AUTODRIVE_LAUNCH_TOOLS`
+  only.** Each entry is a name and a justification, and the justification must
+  name a page under `docs/` that exists and mentions the variable. Each entry
+  also fixes where and how the name may be read:
+
+  | Name | Allowed only |
+  | --- | --- |
+  | `NO_MERGE` | as the argument of `normalise_no_merge_flag` in the [override line](#no_merge-override), at the three sites listed there |
+  | `AUTODRIVE_LAUNCH_TOOLS` | in `autodrive-crusty-round.yaml` and `autodrive-merge-round.yaml`, copied into a local that then passes [every check](#autodrive_launch_tools-is-checked-before-use) before the first `bash "$LAUNCH_T/…"` |
+
+  Any other bare read that the guard finds is a defect. An allowlist entry
+  that no file uses any more also fails the guard, so the list cannot keep a
+  stale exemption.
+- **`base_key()` is sound.** The declaration check strips a nested name to its
+  base key (`worktree_setup__worktree_path` to `worktree_setup`). That is
+  sound only because no step reads a nested name: with the `nested-read`
+  detector in place, every read is of the base key, which a `context:`
+  declaration does replace. A doc comment on `base_key()` says so.
 - **`no_merge_override_can_only_tighten`.** Each `NO_MERGE` read must have
   the [override shape](#no_merge-override) exactly, in one of the three steps
   listed there, assigning `NM` or `NO_MERGE_DIRECTIVE`, with that site's
@@ -2038,6 +2353,7 @@ value:
 
 ```
 amplifier-bundle/tools/workflow_pr_ready.sh:5: nested-default: PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-}}"
+amplifier-bundle/recipes/autodrive-build.yaml:177: nested-read: RUN_DIR="${RECIPE_VAR_worktree_setup__worktree_path:-}"
 ```
 
 ### The inherited-variable rows
@@ -2052,6 +2368,7 @@ with a conflicting bare variable set:
 | `1561-stale-MERGE_SYNC-empty`, `1561-stale-PLATFORM_FACTS-empty`, `1561-stale-CRUSTY_EVIDENCE-empty`, `1561-stale-QA_EVIDENCE_HASH-empty` | a passing bare value and an empty `RECIPE_VAR_` value | `NOT_MERGE_READY`, with the deny default named in the downgrade reason |
 | `1607-stale-tools-dir-<step>`, one per tool-running step | `AUTODRIVE_TOOLS_DIR` to a decoy directory whose tools append their name to a marker file, print a sentinel and exit `0` | the marker file is never written and the sentinel is never printed; the step runs its tool from `RECIPE_VAR_autodrive_tools_dir`. A positive control first sets the decoy as `RECIPE_VAR_autodrive_tools_dir` and requires the marker file, so a step that stopped early cannot pass. Because a decoy exits `0`, a step's exit status shows nothing; only the marker does |
 | `1607-stale-tools-dir-empty-<step>`, `1561-empty-tools-dir-fails-closed` | the decoy as `AUTODRIVE_TOOLS_DIR` and an empty `RECIPE_VAR_autodrive_tools_dir` | each step exits non-zero with `autodrive-tools-not-found`, runs no decoy tool, reports no `MERGE_READY`, and never builds an `/autodrive_*.sh` path |
+| `1561-launch-tools-empty-<round>`, `1561-launch-tools-relative-<round>`, `1561-launch-tools-not-dir-<round>`, `1561-launch-tools-no-guard-<round>`, for the crusty and merge rounds, each also with `-index-check` for the step-02b `index-check` call. Positive controls `1561-launch-tools-valid-<round>` and `1561-launch-tools-valid-<round>-index-check` first require a valid directory's guard to run | `AUTODRIVE_LAUNCH_TOOLS` empty, relative, a regular file, or a directory without `autodrive_worktree_guard.sh`. A decoy `/tmp`-rooted guard that writes a marker is planted where an unchecked path would reach it | the step stops with `STOP: autodrive-launch-tools-invalid`, the marker is never written, and no verdict or round record is written |
 | `MERGEREADY-no-round-tool-inherited` | the outer run's real `amplifier-bundle/tools` as `AUTODRIVE_TOOLS_DIR`, not scrubbed, and a round tools directory with no round tool | `NOT_MERGE_READY` with `measured_evidence=unreadable`; the inherited tools do not rescue the round |
 | `1561-NO_MERGE-bare-true-blocks`, `1561-NO_MERGE-bare-1-blocks`, `1561-NO_MERGE-bare-On-blocks` | bare `NO_MERGE` true in some spelling, recipe `no_merge` `false` or empty | merging is off |
 | `1561-NO_MERGE-bare-false-does-not-override-recipe-true`, `1561-NO_MERGE-bare-empty-does-not-override-recipe-true` | recipe `no_merge=true`, bare `NO_MERGE` `false` or empty | merging is off |
@@ -2110,6 +2427,11 @@ from `bare-unset`.
 | `1561-terminal-recipe-true-bare-unset`, `1561-terminal-recipe-true-bare-false`, `1561-terminal-recipe-true-bare-empty` | recipe `no_merge=true`; bare `NO_MERGE` unset, `false` or empty | `should_merge=false` |
 | `1561-terminal-recipe-false-bare-true` | recipe `no_merge=false`, bare `NO_MERGE=true` | `should_merge=false`, and stderr has `INFO: workflow-terminal-state/probe-terminal-state: no_merge=true from bare NO_MERGE env (override, #1561)` |
 | `1561-terminal-stale-repo-path` | `RECIPE_VAR_repo_path` at the test repository; bare `REPO_PATH` and `WORKTREE_SETUP_WORKTREE_PATH` at a decoy directory that is not a git repository | the probe runs in the test repository and does not fail with `FAILED_INVALID_INPUT` |
+| `1561-terminal-stale-nested-worktree` | `RECIPE_VAR_worktree_setup` as JSON naming the test worktree; `RECIPE_VAR_worktree_setup__worktree_path` and `WORKTREE_SETUP_WORKTREE_PATH` at a second, conflicting git repository made with `mktemp -d` | the probe judges the test worktree; the conflicting repository gets no new file, commit or ref |
+| `1561-terminal-empty-base-stale-nested` | `RECIPE_VAR_worktree_setup=""`, a conflicting `RECIPE_VAR_worktree_setup__worktree_path` | the probe falls back to `repo_path`, never to the nested value |
+| `1561-terminal-stale-nested-state` | own `RECIPE_VAR_terminal_state` JSON with `terminal_state` `FAILED_MEANINGFUL_DIFF`; stale `RECIPE_VAR_terminal_state__terminal_state=success` | the run's own state is reported |
+| `1561-terminal-empty-base-stale-verified` | `RECIPE_VAR_terminal_state=""`, stale `RECIPE_VAR_terminal_state__terminal_state=IMPLEMENTED_VERIFIED`, no evidence | `FAILED_MISSING_TERMINAL_EVIDENCE` |
+| `1561-terminal-false-boolean` | own JSON with an evidence field `false` | the field still compares as `false`, not as empty |
 | `1561-terminal-bare-injection` | recipe `no_merge=false`, bare `NO_MERGE='$(touch $TMPDIR/pwned)'` | `should_merge=true`, and `$TMPDIR/pwned` does not exist |
 | `1561-terminal-rendered-inputs` | `RECIPE_VAR_pr_number` and `RECIPE_VAR_branch_name` | both values reach the terminal state; neither is blanked |
 | `1561-terminal-goal-already-met` | `RECIPE_VAR_goal_already_met=true` with meaningful unmerged diff | `FAILED_MEANINGFUL_DIFF` |
@@ -2119,6 +2441,35 @@ Run it with:
 
 ```bash
 bash amplifier-bundle/recipes/tests/test-default-workflow-reliability.sh
+```
+
+#### The nested-output rows
+
+These rows prove at run time that a stale nested name, set to a value that
+conflicts with the run's own object, is not used. Every row runs the step
+body under `env -i` with stubbed `gh` and `git` on `PATH` and no real
+`GH_TOKEN` or `GITHUB_TOKEN`. Each stale directory is made with `mktemp -d`
+and removed by an `EXIT` trap. A row asserts on what happened to the stale
+value, not only on the step's exit status: the stale directory gets no new
+file or commit, and the stale PR number does not appear in the `gh` stub's log.
+
+| File | Row | Asserts |
+| --- | --- | --- |
+| `tests/issue_1676_build_resolves_agent_pr.sh` | stale real directory in `RECIPE_VAR_worktree_setup__worktree_path` and `WORKTREE_SETUP_WORKTREE_PATH`, stale `RECIPE_VAR_worktree_setup__branch_name`, own `RECIPE_VAR_worktree_setup` JSON | step-03 finds the PR on the own path and branch; the stale directory is untouched |
+| `tests/issue_1676_build_resolves_agent_pr.sh` | `RECIPE_VAR_worktree_setup=""` with the same stale nested values | step-03 stops with `ERROR: phase 1 finished without a pull request.` |
+| `tests/issue_1676_build_resolves_agent_pr.sh` | own `worktree_path` is a subdirectory of the run's worktree | the `rev-parse --show-toplevel` check rejects it; the lookup is skipped with the `#1676` `INFO` line |
+| `tests/issue_1676_build_resolves_agent_pr.sh` | own `worktree_path` is a symlink to the root of another repository, or a path through a symlinked parent directory | the resolved-path check rejects it, though `rev-parse --show-toplevel` would accept it; the lookup is skipped with the `#1676` `INFO` line and the other repository is untouched |
+| `tests/issue_1268_terminal_state_adjudication.sh`, `tests/issue_1596_final_status_branch_pr_lookup.sh` | stale `RECIPE_VAR_pr_publish_result__*` values, own `RECIPE_VAR_pr_publish_result` JSON | the own values win; the stale PR number is absent from the `gh` stub log |
+| `crates/amplihack-cli/tests/issue_1570_context_value.rs` | stale `RECIPE_VAR_a__b`, own `RECIPE_VAR_a` object | `write_context_value a.b` writes the own value |
+| `crates/amplihack-cli/tests/issue_1570_context_value.rs` | stale `RECIPE_VAR_a__b`, `RECIPE_VAR_a=""` or a non-object | exit `3`, nothing written |
+
+Run them with:
+
+```bash
+bash tests/issue_1676_build_resolves_agent_pr.sh
+bash tests/issue_1268_terminal_state_adjudication.sh
+bash tests/issue_1596_final_status_branch_pr_lookup.sh
+cargo test -p amplihack-cli --test cli_integration issue_1570_context_value
 ```
 
 ## Reading the loop-health line
