@@ -9,7 +9,7 @@ tags: ["development", "prep", "requirements"]
 recursion:
   max_depth: 6
   max_total_steps: 80
-context: {}
+context: { issue_number: "" }
 steps:
   # STEP 0: WORKFLOW PREPARATION (MANDATORY - DO NOT SKIP)
   # Creates tracking structure. Must complete before ANY implementation work.
@@ -245,8 +245,8 @@ steps:
       echo "=== Step 3: Creating Tracking Issue ===" >&2
       TASK_DESC="$TASK_DESCRIPTION"
       ISSUE_TITLE="${TASK_DESC//$'\n'/ }"; ISSUE_TITLE="${ISSUE_TITLE//$'\r'/ }"; ISSUE_TITLE="${ISSUE_TITLE:0:200}"
-      SANITIZED_ISSUE_REQS="$(printf '%s\n' "$FINAL_REQUIREMENTS" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
-      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"; EXISTING_ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+      SANITIZED_ISSUE_REQS="$(printf '%s\n' "${RECIPE_VAR_final_requirements:-}" | awk '/^ℹ NODE_OPTIONS=--max-old-space-size=[0-9]+ \(saved preference\)(\. To change: .+)?$/ { next } { print }')"  # sanitize only launcher "ℹ NODE_OPTIONS=--max-old-space-size=N (saved preference). To change: ~/.amplihack/config" notices; preserve legitimate NODE_OPTIONS task text such as "Ensure the workflow rejects unsafe NODE_OPTIONS values"
+      HOST_TYPE="${RECIPE_VAR_remote_host_type:-other}"; EXISTING_ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
       case "$HOST_TYPE" in github|azdo|other) ;; azure-devops) HOST_TYPE="azdo" ;; *) echo "WARN: Unexpected REMOTE_HOST_TYPE — using local tracking" >&2; HOST_TYPE="other" ;; esac
       # step-03's provider-metadata helpers (select_github_tracking_issue, derive_local_tracking_id,
       # emit_local_metadata, sanitize_cli_output, _pct_decode) live in amplifier-bundle/tools/workflow_issue_tracking.sh.
@@ -347,7 +347,7 @@ steps:
     type: "bash"
     command: |
       # Extract issue number — GitHub/AzDO numeric; local tracking propagates its ref, never coercing to a number, but fails loud on malformed metadata (#815, #804).
-      ISSUE_CREATION="$ISSUE_CREATION"; TASK_DESC_RAW="$TASK_DESCRIPTION"
+      ISSUE_CREATION="${RECIPE_VAR_issue_creation:-}"; TASK_DESC_RAW="$TASK_DESCRIPTION"
       EXTRACTED=""
       LOCAL_TRACKING_RE='(^|[[:space:]])(tracking_reference|tracking_issue)=(local-[a-zA-Z0-9._:-]+|local-tracking:[a-zA-Z0-9._:-]+)($|[[:space:]])'
       LOCAL_MARKER_RE='(^|[[:space:]])(tracking_system=local|issue_creation=local-tracking|(tracking_reference|tracking_issue)=local[^[:space:]]*)($|[[:space:]])'
@@ -387,5 +387,5 @@ steps:
       C=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_issue_claim_check.sh" ] && { C="$c/amplifier-bundle/tools/workflow_issue_claim_check.sh"; break; }; done
       # A missing helper is not a verdict. Warn and continue rather than gate the run.
       [ -n "$C" ] || { echo "WARNING: issue claim check helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack) — continuing without a claim check" >&2; printf 'issue_claim_check: unknown reason=helper-not-found\n'; exit 0; }
-      bash "$C" --issue "${ISSUE_NUMBER:-}" --repo-path "${REPO_PATH:-.}"
+      bash "$C" --issue "${RECIPE_VAR_issue_number:-}" --repo-path "${REPO_PATH:-.}"
     output: "issue_claim_check"

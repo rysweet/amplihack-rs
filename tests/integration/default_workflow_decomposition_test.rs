@@ -171,7 +171,7 @@ impl Step03bRunner {
                 "workflow-prep",
                 "step-03b-extract-issue-number",
             ))
-            .env("ISSUE_CREATION", issue_creation)
+            .env("RECIPE_VAR_issue_creation", issue_creation)
             .env("TASK_DESCRIPTION", task_description)
             .env("PATH", &self.path)
             .output()
@@ -903,9 +903,9 @@ fn workflow_prep_step_02d_detects_remote_host_type() {
 fn workflow_prep_step_03_consumes_remote_host_type() {
     let command = step_command("workflow-prep", "step-03-create-issue");
 
-    // Step-03 must consume REMOTE_HOST_TYPE from step-02d (not re-detect)
+    // Step-03 must consume remote_host_type from step-02d (not re-detect)
     assert!(
-        command.contains("REMOTE_HOST_TYPE"),
+        command.contains("RECIPE_VAR_remote_host_type"),
         "step-03 must consume REMOTE_HOST_TYPE from step-02d"
     );
 }
@@ -938,7 +938,7 @@ fn workflow_prep_step_03_reuses_existing_issue_number_before_provider_commands()
     let command = step_command("workflow-prep", "step-03-create-issue");
 
     let issue_number_pos = command
-        .find("ISSUE_NUMBER")
+        .find("RECIPE_VAR_issue_number")
         .expect("step-03 must read existing ISSUE_NUMBER context before creating/searching issues");
     let first_gh_issue_pos = command
         .find("gh issue")

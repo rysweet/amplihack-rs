@@ -289,10 +289,13 @@ exit 7
         // step-00a. The resolution cascade itself is exercised by
         // tests/issue_1361_duplicate_pr_claim_check.sh.
         .env("AMPLIHACK_HOME", workspace_root())
-        .env("REMOTE_HOST_TYPE", host_type)
+        .env("RECIPE_VAR_remote_host_type", host_type)
         .env("TASK_DESCRIPTION", task_description)
-        .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")
-        .env("ISSUE_NUMBER", issue_number)
+        .env(
+            "RECIPE_VAR_final_requirements",
+            "Issue #718 regression requirements",
+        )
+        .env("RECIPE_VAR_issue_number", issue_number)
         .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
         .env("AZ_LOG", &az_log);
@@ -342,7 +345,7 @@ fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
         .arg(command)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("ISSUE_CREATION", issue_creation)
+        .env("RECIPE_VAR_issue_creation", issue_creation)
         .env("TASK_DESCRIPTION", task_description)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

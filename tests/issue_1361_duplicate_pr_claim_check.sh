@@ -247,26 +247,26 @@ if [ -s "$STEP" ]; then
   pass "step-03c resolves the helper through the AMPLIHACK_HOME / REPO_PATH / cwd / ~/.copilot / ~/.amplihack cascade"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref AMPLIHACK_HOME="$ROOT" \
-        REPO_PATH="$WORK/gh" ISSUE_NUMBER=1084 bash "$STEP" 2>&1)"; RC=$?
+        REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
   [ "$RC" -eq 1 ] && grep -q 'already working on issue #1084' <<<"$OUT" \
     && pass "the recipe step stops a run whose issue is already claimed" \
     || fail "recipe step did not refuse: rc=$RC out=${OUT:0:300}"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=none AMPLIHACK_HOME="$ROOT" \
-        REPO_PATH="$WORK/gh" ISSUE_NUMBER=1084 bash "$STEP" 2>&1)"; RC=$?
+        REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
   [ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok' <<<"$OUT" \
     && pass "the recipe step passes an unclaimed issue" \
     || fail "recipe step refused an unclaimed issue: rc=$RC out=${OUT:0:300}"
 
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref AMPLIHACK_HOME="$ROOT" \
-        REPO_PATH="$WORK/gh" ISSUE_NUMBER=1084 EXISTING_BRANCH="fix/1084-resume" bash "$STEP" 2>&1)"; RC=$?
+        REPO_PATH="$WORK/gh" RECIPE_VAR_issue_number=1084 EXISTING_BRANCH="fix/1084-resume" bash "$STEP" 2>&1)"; RC=$?
   [ "$RC" -eq 0 ] && grep -q 'explicit-existing-branch-or-pr' <<<"$OUT" \
     && pass "a run that explicitly targets an existing branch is not its own duplicate" \
     || fail "resuming an existing branch was refused: rc=$RC out=${OUT:0:300}"
 
   EMPTY="$WORK/empty"; mkdir -p "$EMPTY"
   OUT="$(cd "$EMPTY" && env PATH="$BIN:$PATH" FAKE_GH=closing_ref HOME="$HOME" \
-        AMPLIHACK_HOME="$EMPTY" REPO_PATH="$EMPTY" ISSUE_NUMBER=1084 bash "$STEP" 2>&1)"; RC=$?
+        AMPLIHACK_HOME="$EMPTY" REPO_PATH="$EMPTY" RECIPE_VAR_issue_number=1084 bash "$STEP" 2>&1)"; RC=$?
   [ "$RC" -eq 0 ] && grep -q 'WARNING' <<<"$OUT" && grep -q 'helper-not-found' <<<"$OUT" \
     && pass "a missing helper warns and continues rather than gating the run" \
     || fail "missing helper gated the run: rc=$RC out=${OUT:0:300}"

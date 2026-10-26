@@ -52,7 +52,8 @@ This step:
 
 ### Stage 2: File infrastructure bug
 
-Step `file-routing-bug` runs when `adaptive_recipe` is non-empty. It:
+Step `file-routing-bug` runs when `adaptive_recipe` is non-empty. It calls
+`amplifier-bundle/tools/smart_routing_gap_report.sh`, which:
 1. Assembles diagnostic context (task type, workstream count, environment)
 2. Attempts to create a GitHub issue labeled `bug`
 3. Falls back to writing a local diagnostic file if `gh` is unavailable
