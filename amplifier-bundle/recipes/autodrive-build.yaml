@@ -167,6 +167,22 @@ steps:
       if [ -z "$PR" ]; then
         PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       fi
+      # Issue #1676: an agent step can open the PR on the branch default-workflow
+      # created in its own worktree, which neither lookup above sees (they ask
+      # about REPO_PATH's branch). worktree_setup comes back from step-02's
+      # sub-recipe; the helper applies #1596's open-PR check there, plus head ==
+      # the worktree's HEAD. Only the installed bundle's copy is sourced (#1551).
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      if [ -z "$PR" ]; then
+        RUN_DIR="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+        RUN_BRANCH="${WORKTREE_SETUP_BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}"
+        RUN_PR_HELPER="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/autodrive_run_pr.sh"
+        case "${AMPLIHACK_HOME:-}" in /*) ;; *) RUN_PR_HELPER="" ;; esac
+        if [ -n "$RUN_DIR" ] && [ -n "$RUN_PR_HELPER" ] && [ -f "$RUN_PR_HELPER" ] && . "$RUN_PR_HELPER"; then
+          PR="$(autodrive_open_pr_for_run_branch "$RUN_DIR" "$RUN_BRANCH")"
+          [ -z "$PR" ] || echo "INFO: #1676: found open PR #${PR} for the run's branch ${RUN_BRANCH:-<from worktree>} at its HEAD" >&2
+        fi
+      fi
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
       if [ -z "$PR" ]; then
         echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
