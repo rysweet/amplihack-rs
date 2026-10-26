@@ -141,6 +141,9 @@ jobs:
       - name: Auto-drive build — resolves agent-opened PR on the run's branch (issue #1676)
         shell: bash
         run: bash tests/issue_1676_build_resolves_agent_pr.sh
+      - name: Auto-drive build — a fresh run's state is keyed by its PR (issue #1680)
+        shell: bash
+        run: bash tests/issue_1680_fresh_run_state_key.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
