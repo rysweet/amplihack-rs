@@ -1,8 +1,9 @@
 //! The wait itself (issue #1618), over a `WaitDeps` so tests drive it with
-//! their own clock. Each pass checks, in order: a stop signal, the deadline,
-//! the login fingerprint (every 30 s) and the progress line (every 60 s),
-//! then sleeps at most one second. A login change needs two probes in a row
-//! that both differ from the first one, so one torn or failed read of
+//! their own clock. Each pass checks, in order: a stop signal, the end of
+//! the session that started the step, the deadline, the login fingerprint
+//! and the rotator's capacity (every 30 s), and the progress line (every
+//! 60 s), then sleeps at most one second. A login change needs two probes in
+//! a row that both differ from the first one, so one torn or failed read of
 //! `.claude.json` does not end the wait.
 
 use super::plan::{Bound, Plan};
@@ -24,6 +25,11 @@ pub(crate) trait WaitDeps {
     fn fingerprint(&mut self) -> Option<Self::Print>;
     /// A stop signal received, if any.
     fn signal(&mut self) -> Option<i32>;
+    /// The process that started the step is gone, so nobody is left to
+    /// use the retry's result.
+    fn session_ended(&mut self) -> bool;
+    /// The rotator recorded a cycle with capacity after `start`.
+    fn rotator_capacity(&mut self, start: i64) -> bool;
     fn log(&mut self, line: &str);
 }
 
@@ -34,6 +40,8 @@ pub(crate) enum End {
     MaxReached,
     StepTimeout,
     LoginChanged,
+    RotatorCapacity,
+    SessionEnded,
     Signal(i32),
 }
 
@@ -44,6 +52,8 @@ impl End {
             End::MaxReached => "max reached",
             End::StepTimeout => "step timeout",
             End::LoginChanged => "login changed",
+            End::RotatorCapacity => "rotator capacity",
+            End::SessionEnded => "session ended",
             End::Signal(_) => "signal",
         }
     }
@@ -57,8 +67,9 @@ impl End {
     }
 }
 
-/// Waits until `plan.until`, a login change or a stop signal. Writes only
-/// `progress` lines; `start`, `end` and `resume` are the caller's.
+/// Waits until `plan.until`, a login change, rotator capacity, the end of
+/// the step's session or a stop signal. Writes only `progress` lines;
+/// `start`, `end` and `resume` are the caller's.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
     let first = deps.fingerprint();
@@ -68,6 +79,9 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     loop {
         if let Some(sig) = deps.signal() {
             return End::Signal(sig);
+        }
+        if deps.session_ended() {
+            return End::SessionEnded;
         }
         let now = deps.now();
         if now >= plan.until {
@@ -79,6 +93,9 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
                 return End::LoginChanged;
             }
             changed_once = changed;
+            if deps.rotator_capacity(start) {
+                return End::RotatorCapacity;
+            }
             next_poll = now.saturating_add(POLL_SECS);
         }
         if now >= next_progress {

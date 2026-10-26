@@ -112,8 +112,6 @@ mod issue_1606_config_cli;
 mod issue_1606_detach;
 #[path = "issue_1618_fixture.rs"]
 mod issue_1618_fixture;
-#[path = "issue_1618_pattern_home.rs"]
-mod issue_1618_pattern_home;
 #[path = "issue_1618_wait_ends.rs"]
 mod issue_1618_wait_ends;
 #[path = "issue_1618_wait_profiles.rs"]

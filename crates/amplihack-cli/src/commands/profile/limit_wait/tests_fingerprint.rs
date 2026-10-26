@@ -82,11 +82,18 @@ impl Env {
         self.store.root().join(n)
     }
 
-    /// The rotate ledger (`profile rotate`) naming `live`.
     fn rotator(&self, live: &str) {
+        self.rotator_cycle(live, 1, "stayed", false);
+    }
+
+    /// The rotate ledger (`profile rotate`) with its last cycle.
+    fn rotator_cycle(&self, live: &str, at: i64, outcome: &str, alert: bool) {
+        let alert = if alert { r#""no capacity""# } else { "null" };
         private(
             &rotate_ledger(self.store.root()),
-            &format!(r#"{{"version":1,"live":"{live}","alert":null}}"#),
+            &format!(
+                r#"{{"version":1,"live":"{live}","alert":{alert},"last_cycle":{{"at":{at},"outcome":"{outcome}"}}}}"#
+            ),
         );
     }
 
@@ -340,4 +347,33 @@ fn a_swap_recorded_in_the_auto_switch_ledger_is_a_change_for_that_profile() {
     let before = probe(&w);
     e.auto_switch_ledger("a", "b");
     assert!(before != probe(&w));
+}
+
+#[test]
+fn a_fresh_rotator_cycle_with_capacity_counts_for_home_only() {
+    let e = env();
+    let now = crate::commands::profile::fsx::now();
+    let start = now - 600;
+    let home = e.home_watch();
+    assert!(!home.rotator_capacity(start), "no ledger, no capacity");
+    for outcome in ["swapped", "stayed"] {
+        e.rotator_cycle("a", now - 10, outcome, false);
+        assert!(home.rotator_capacity(start), "{outcome}");
+        assert!(!e.profile("a").rotator_capacity(start), "{outcome}");
+    }
+}
+
+#[test]
+fn a_stale_or_alerted_rotator_cycle_is_no_capacity() {
+    let e = env();
+    let now = crate::commands::profile::fsx::now();
+    let start = now - 600;
+    let home = e.home_watch();
+    // Recorded within a minute of the limit: its probe may predate it.
+    e.rotator_cycle("a", start + 60, "swapped", false);
+    assert!(!home.rotator_capacity(start));
+    e.rotator_cycle("a", now - 10, "swapped", true);
+    assert!(!home.rotator_capacity(start), "alert set");
+    e.rotator_cycle("a", now - 10, "alerted", false);
+    assert!(!home.rotator_capacity(start), "alerted outcome");
 }

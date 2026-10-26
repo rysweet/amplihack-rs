@@ -1464,112 +1464,67 @@ do not depend on these two behaviours.
 
 ## Waiting for a usage-limit reset
 
-When a recipe agent step fails because the Claude account has reached its
-usage limit, amplihack waits for the limit to reset and then runs that step
-once more, instead of ending the recipe run. Steps that already finished are
-not repeated. The wait is **on by default** and needs no profiles: it also
-applies when the run uses the plain `~/.claude` login, for example one kept
-up to date by a login rotator.
+When a recipe agent step fails because the Claude account reached its usage
+limit, amplihack waits for the limit to reset and then runs that step once
+more, instead of ending the recipe run. Steps that already finished are not
+repeated. The wait is **on by default** and needs no profiles.
 
-### When it applies
-
-The wait happens inside the step's own `amplihack claude -p` launch. It
-applies when all of these hold:
-
-- the launch prints and exits (`-p`, `--print` or `--print=`);
-- it runs inside `amplihack recipe run`, which sets
-  `AMPLIHACK_NONINTERACTIVE=1` for every step;
-- there is no `--profile` flag, and the launch is not `--docker` or `--auto`
-  (with an inherited profile those modes are refused outright; see
-  [Limits](#limits));
-- the attempt exits non-zero and its output matches the recipe runner's
-  usage-limit check, the same check
-  [auto-switch](#what-happens-for-nested-launches-and-recipe-steps) uses.
-
-An `amplihack claude -p` typed at a terminal, without
-`AMPLIHACK_NONINTERACTIVE=1`, never waits. Interactive sessions never wait.
-A failure that is not a usage limit, such as a failing test, is passed back
+It applies to the `amplihack claude -p` launch of a recipe step
+(`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
+`--profile`, `--docker` or `--auto`. Interactive sessions and launches typed
+at a terminal never wait. A failure that is not a usage limit is passed back
 at once.
 
 ### What happens
 
-1. The step fails with a usage limit.
-2. If [auto-switch](#switch-accounts-automatically) is on and another
-   profile has quota left, the step runs again under that profile first, as
-   it does today.
-3. When no profile is left, or auto-switch is off, amplihack reads the reset
-   time from Claude's message and waits.
-4. The wait ends at the earliest of:
-   - the reset time plus two minutes;
-   - the login for the step changing, for example because a rotator or
-     auto-switch moved an account with quota into `~/.claude` or into the
-     inherited profile (two checks in a row, 30 seconds apart);
-   - the configured maximum, if one is set;
-   - one minute before the step's timeout, when the run was started with
-     `--step-timeout`.
-5. Unless the wait ended because of the step timeout or a signal, the step
-   runs once more, with the same arguments, environment and
-   standard input. It runs under the profile it inherited, or with no
-   profile if it inherited none.
-6. That attempt's output and exit code go to the recipe runner. If it hits
-   the limit again, the run ends with the usual usage-limit message; there
-   is no second wait.
+1. If [auto-switch](#switch-accounts-automatically) is on and another
+   profile has quota left, the step first runs again under that profile.
+2. Otherwise amplihack reads the reset time from Claude's message, such as
+   `resets 8:30am (America/Los_Angeles)`, and waits until the earliest of:
+   - the reset plus two minutes, or 30 minutes when no reset can be read
+     (never more than five hours);
+   - a different account becoming live for the step's login directory;
+   - for a step that uses `~/.claude`, the
+     [login rotator](claude-profile-rotation.md) recording a fresh cycle
+     with capacity;
+   - the configured maximum;
+   - one minute before the step's timeout.
+3. The step runs once more with the same arguments, environment and input.
+   If it hits the limit again, the run ends with the usual usage-limit
+   message.
 
-If Claude's message gives no reset time that amplihack can read, the wait
-lasts at most 30 minutes. amplihack reads a clock time with a zone, such as
-`resets 8:30am (America/Los_Angeles)` or `resets 17:00 (Europe/London)`; it
-does not guess a missing zone and does not read dates, so a weekly-limit
-message such as `resets Oct 20 at 9am` gets the 30-minute default. A reset
-time more than five hours away is treated as five hours away.
+The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
+or `SIGHUP`), when the process that started the step exits, or when the
+step's timeout is about to run out.
 
-A reset time already in the past, including a clock time up to 10 minutes
-in the past, counts as already reached: the step runs again at once, with
-no two-minute margin. A clock time more than 10 minutes in the past
-means the same time tomorrow, which the five-hour cap then shortens.
-
-"The login changing" means a different account, not a refreshed token.
-amplihack compares the account named in Claude's `.claude.json`, the
-account the auto-switch or rotator ledger records, and whether a
-`.credentials.json` file exists. It never opens `.credentials.json`, so
-Claude refreshing its token during the wait does not end the wait early.
+The rerun starts the step from the beginning, so anything the failed
+attempt already did, such as a push or a comment, may happen again. Keep
+agent steps safe to run twice.
 
 ### What the log shows
 
-Every line goes to the step's standard error and starts with
-`amplihack.recipe.usage_limit_wait`, so a recipe log can be searched for it:
+Each line goes to the step's standard error and starts with
+`amplihack.recipe.usage_limit_wait`:
 
 ```
 amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
 amplihack.recipe.usage_limit_wait progress remaining=3540s
-amplihack.recipe.usage_limit_wait progress remaining=3480s
-amplihack.recipe.usage_limit_wait end reason=login changed
+amplihack.recipe.usage_limit_wait end reason=rotator capacity
 amplihack.recipe.usage_limit_wait resume attempt=2
 ```
 
-A `progress` line is written every 60 seconds while waiting. `end` gives
-the reason the wait stopped: `reset reached`, `login changed`,
-`max reached`, `step timeout` or `signal`. When a step hits the limit but
-does not wait, one `skipped` line says why:
-
-```
-amplihack.recipe.usage_limit_wait skipped reason=disabled
-```
-
-The [reference](../reference/profile-command.md#usage-limit-wait) lists
-every field.
+The [reference](../reference/profile-command.md#usage-limit-wait) lists every
+event and reason.
 
 ### Turn it off or shorten it
 
-For one run, or one shell:
-
 ```bash
-export AMPLIHACK_USAGE_LIMIT_WAIT=0               # off; 1, true, on or yes turn it on
-export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600   # never wait more than an hour
-amplihack recipe run default-workflow -c task_description="Fix issue 1618"
+export AMPLIHACK_USAGE_LIMIT_WAIT=0               # off
+export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600   # wait at most an hour
 ```
 
-For every run, set the `usage_limit_wait` key in `~/.amplihack/config`. The
-file is JSON and holds other settings too, so change only this key:
+Or, for every run, set the `usage_limit_wait` key in the JSON file
+`~/.amplihack/config`, changing only that key:
 
 ```bash
 cfg="$HOME/.amplihack/config"
@@ -1578,61 +1533,20 @@ jq '.usage_limit_wait = {"enabled": true, "max_wait_secs": 3600}' "$cfg" > "$cfg
   && chmod 600 "$cfg.new" && mv "$cfg.new" "$cfg"
 ```
 
-An environment variable overrides the file, and the file overrides the
-default. A maximum only shortens the wait; it never makes amplihack wait
-past the reset time plus two minutes, or past 30 minutes when the reset
-time is unknown. `"max_wait_secs": 0` means no wait but one more attempt;
-to turn the feature off, use `"enabled": false`. A value amplihack cannot
-read prints one warning and is ignored.
-
-With the wait off, and auto-switch off or out of profiles, a usage limit
-ends the run as it did before this feature existed.
-
-### Stop a waiting step
-
-Stopping the run (Ctrl-C, or `SIGTERM` or `SIGHUP` to the step) ends the
-wait within a second. The failed attempt's output is printed, the step
-exits with `128` plus the signal number, and the step does not run again.
-Nothing else needs cleaning up: no Claude process runs during the wait, and
-no login is moved.
+A variable overrides the file. A maximum only shortens the wait;
+`"max_wait_secs": 0` means no wait but one more attempt.
 
 ### Limits of the wait
 
 - **Standard output is held back.** While the wait is on, a recipe step's
-  standard output is printed when the step ends, not as it is written, even
-  for steps that never hit a limit. Error output still streams. Turn the
-  wait off to get streaming output back for steps that inherit no profile.
-- **Piped input is copied to disk.** Each step's piped standard input is
-  copied to a private file (mode `0600`) under
-  `<root>/.auto-switch.d/rerun/` when auto-switch is on, or under
-  `~/.amplihack/rerun/` otherwise (also for a step that inherits a profile
-  while auto-switch is off). The file is deleted when the step ends. There
-  is no size limit, so very large input needs the same amount of free disk
-  space. Input from a terminal is not copied.
-- **`~/.amplihack` must be private.** It must be owned by you and not
-  writable by group or others, and `~/.amplihack/rerun` must be mode
-  `0700`. amplihack creates them that way but never changes the mode of an
-  existing directory. If either check fails, the step writes
-  `skipped reason=not_supervised` and runs once, without the wait. Fix it
-  with `chmod go-w ~/.amplihack` and `chmod 700 ~/.amplihack/rerun`.
-- **A failed input copy can fail the step.** If copying piped input fails
-  part way through, for example on a full disk, the step prints a warning
-  and exits `1`, because the input has been read and cannot be given to
-  Claude again.
-- **The retry repeats the step from the start.** Claude gets the same
-  prompt with no memory of the failed attempt, so anything that attempt
-  already did, such as a push or a comment, may happen again. Keep agent
-  steps safe to run twice: have the prompt check whether its commit, PR or
-  comment already exists before creating it.
-- **Claude Code only.** Codex and Copilot steps are not supervised.
-- **Unix only.** On other platforms a usage limit ends the run as before.
-- **Step timeouts still apply.** The recipe runner can stop a step only at
-  its timeout, so the wait ends a minute before it, with
-  `end reason=step timeout`. The step is then **not** run again, because a
-  fresh attempt would be killed part way; the usage-limit failure goes to
-  the runner, which ends the run. Start long runs without `--step-timeout`,
-  or with a value larger than the longest wait you accept plus the time the
-  step itself needs.
+  standard output is printed when the step ends, even for steps that never
+  hit a limit. Error output still streams.
+- **Piped input is copied to disk** under `~/.amplihack/rerun/` (or
+  `<root>/.auto-switch.d/rerun/` with auto-switch on) and deleted when the
+  step ends. `~/.amplihack` must be owned by you and not writable by
+  others; otherwise the step writes `skipped reason=not_supervised` and
+  runs once without the wait.
+- **Claude Code and Unix only.**
 
 ## Limits
 

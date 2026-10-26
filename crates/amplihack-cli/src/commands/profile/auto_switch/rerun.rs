@@ -1,10 +1,11 @@
-//! Usage-limit reruns for nested `-p` launches that inherited a profile
-//! (recipe agent steps). A supervising amplihack runs the launch as a child
-//! (see `profile::attempt`), and when the attempt fails with what the recipe
+//! Usage-limit reruns for nested `-p` launches (recipe agent steps). A
+//! supervising amplihack runs the launch as a child (see
+//! `profile::attempt`), and when the attempt fails with what the recipe
 //! runner's own classifier calls a usage limit, reruns it under the next
 //! eligible profile while auto-switch is on (#1569). When none is left, or
-//! auto-switch is off, the usage-limit wait may run the step once more under
-//! the inherited profile (#1618). Only the final attempt's stdout is printed.
+//! auto-switch is off or no profile was inherited, the usage-limit wait may
+//! run the step once more in the inherited environment (#1618). Only the
+//! final attempt's stdout is printed.
 
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
@@ -154,27 +155,48 @@ pub(crate) fn ledger_account(root: &std::path::Path, name: &str) -> Option<Strin
     Some(ledger.account_in(name).to_string())
 }
 
-/// Runs the launch under supervision and returns its final exit code.
-/// `Ok(None)` when the supervisor could not start, so the caller launches
-/// unsupervised; once an attempt has run, errors are returned instead, so a
-/// step is never run twice by accident. `None` too when neither auto-switch
-/// nor the wait applies.
+/// Auto-switch for one supervised step: the store, its state and the
+/// profile the step inherited.
+pub(crate) struct Switch<'a> {
+    store: &'a ProfileStore,
+    state: State,
+    inherited: ProfileName,
+}
+
+/// Runs a launch that inherited a profile under supervision. `None` when
+/// neither auto-switch nor the wait applies; otherwise as [`run`].
 pub fn supervise(
     store: &ProfileStore,
     inherited: ProfileName,
-    mut waiter: Waiter,
+    waiter: Waiter,
 ) -> Result<Option<i32>> {
     let eff = config::effective(store.root());
     if !eff.on && !waiter.enabled() {
         return Ok(None);
     }
     // Auto-switch off creates nothing under the profile root (#1618).
-    let state = if eff.on {
-        Some(State::new(store.root())?)
+    let switch = if eff.on {
+        Some(Switch {
+            store,
+            state: State::new(store.root())?,
+            inherited,
+        })
     } else {
         None
     };
-    let setup = scratch_dir(state.as_ref()).and_then(|dir| {
+    run(switch, waiter)
+}
+
+/// Runs the launch under supervision and returns its final exit code. With
+/// `switch` a limited attempt is rerun under the next eligible profile;
+/// without it (auto-switch off, or no inherited profile) only the wait can
+/// rerun it, in the inherited environment. `Ok(None)` when the supervisor
+/// could not start, so the caller launches unsupervised; once an attempt
+/// has run, errors are returned instead, so a step is never run twice by
+/// accident.
+pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Option<i32>> {
+    let on = switch.is_some();
+    let setup = scratch_dir(switch.as_ref().map(|s| &s.state)).and_then(|dir| {
         Ok((
             dir,
             std::env::current_exe().context("cannot find the amplihack binary")?,
@@ -182,16 +204,16 @@ pub fn supervise(
     });
     let (rerun_dir, exe) = match setup {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, eff.on, &e),
+        Err(e) => return unsupervised(&waiter, on, &e),
     };
     super::sweep_rerun(&rerun_dir);
     let signals = match Signals::register() {
         Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, eff.on, &format!("cannot catch stop signals: {e}")),
+        Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
     };
     let stdin = match StdinCopy::take(&rerun_dir) {
         Ok(c) => c,
-        Err(CopyError::BeforeRead(e)) => return unsupervised(&waiter, eff.on, &e),
+        Err(CopyError::BeforeRead(e)) => return unsupervised(&waiter, on, &e),
         Err(e @ CopyError::AfterRead(_)) => {
             eprintln!(
                 "error: could not copy this step's input for its supervisor ({e}); not running it"
@@ -201,39 +223,50 @@ pub fn supervise(
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
 
-    let mut profile = inherited.clone();
-    if let Some(state) = &state
-        && let Some((c, reason)) = substitute(store, state, &eff.config, &inherited)
-    {
-        eprintln!("{}", substitution_note(&inherited, &reason, &c));
-        profile = c;
+    // The profile this attempt runs under; `None` keeps the inherited
+    // environment.
+    let mut profile: Option<ProfileName> = None;
+    if let Some(sw) = &switch {
+        let eff = config::effective(sw.store.root());
+        if let Some((c, reason)) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
+            eprintln!("{}", substitution_note(&sw.inherited, &reason, &c));
+            profile = Some(c);
+        }
     }
     let mut tried: Vec<String> = Vec::new();
     let mut n = 0u32;
     loop {
         n += 1;
-        let switch_dir = state
+        let switch_dir = switch
             .as_ref()
-            .filter(|_| profile != inherited)
-            .map(|s| s.profile_dir(profile.as_str()));
-        let env = switch_dir.as_deref().map(|d| (&profile, d));
+            .zip(profile.as_ref())
+            .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
+        let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
         let attempt = match run_attempt(&exe, &args, &rerun_dir, env, &stdin, n, &signals) {
             Ok(a) => a,
             // Only before any input was consumed can a plain launch follow.
-            Err(e) if n == 1 && profile == inherited && stdin.path().is_none() => {
-                return unsupervised(&waiter, eff.on, &e);
+            Err(e) if n == 1 && profile.is_none() && stdin.path().is_none() => {
+                return unsupervised(&waiter, on, &e);
             }
             Err(e) => return Err(e),
         };
-        tried.push(profile.to_string());
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
-        if let Some(state) = &state {
-            let eff = config::effective(&state.root);
+        if let Some(sw) = &switch {
+            let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
+            tried.push(current.to_string());
+            let eff = config::effective(&sw.state.root);
             if eff.on
-                && let Some(next) =
-                    next_profile(store, state, &eff.config, &profile, &tried, &lim, &waiter)
+                && let Some(next) = next_profile(
+                    sw.store,
+                    &sw.state,
+                    &eff.config,
+                    &current,
+                    &tried,
+                    &lim,
+                    &waiter,
+                )
             {
                 if let Some(sig) = signals.received() {
                     eprintln!("auto-switch: no rerun: this step was told to stop");
@@ -241,11 +274,11 @@ pub fn supervise(
                 }
                 eprintln!(
                     "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
-                    profile.as_str(),
+                    current.as_str(),
                     next.as_str()
                 );
                 attempt.discard();
-                profile = next;
+                profile = Some(next).filter(|p| *p != sw.inherited);
                 continue;
             }
         }
@@ -253,7 +286,7 @@ pub fn supervise(
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();
-                profile = inherited.clone();
+                profile = None;
             }
         }
     }

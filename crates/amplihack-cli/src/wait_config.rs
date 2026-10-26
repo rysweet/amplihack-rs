@@ -14,7 +14,7 @@ use crate::commands::profile::fsx;
 use serde_json::{Map, Value};
 use std::io;
 use std::os::unix::fs::MetadataExt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const ENABLED_ENV: &str = "AMPLIHACK_USAGE_LIMIT_WAIT";
@@ -214,27 +214,42 @@ pub fn read_file(home: &Path) -> FileRead {
     }
 }
 
-/// Sets the `usage_limit_wait` key of `$HOME/.amplihack/config`, keeping
-/// every other key. Written atomically through a private temporary file and
-/// left at mode `0600`. Refuses a symlinked file, a file owned by another
-/// user, a file over 64 KiB and content that is not a JSON object. Takes no
-/// lock: a concurrent saved-preference write can lose one of the updates.
-pub fn write(home: &Path, settings: &WaitSettings) -> io::Result<()> {
+/// `$HOME/.amplihack`, created at `0700` when missing. An existing one must
+/// be a real directory (not a symlink) owned by the current user that
+/// group and others cannot write; it is never `chmod`ed. Shared by `write`
+/// and the usage-limit wait's scratch directory.
+pub(crate) fn private_amplihack_dir(home: &Path) -> io::Result<PathBuf> {
     let dir = home.join(".amplihack");
     match std::fs::symlink_metadata(&dir) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            let mut b = std::fs::DirBuilder::new();
-            std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-            b.create(&dir)?;
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => fsx::ensure_private_dir(&dir)?,
         Err(e) => return Err(e),
         Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
             return Err(fsx::invalid("~/.amplihack is not a real directory"));
         }
+        Ok(m) if m.uid() != fsx::euid() => {
+            return Err(fsx::invalid("~/.amplihack is owned by another user"));
+        }
+        Ok(m) if fsx::writable_by_others(&m) => {
+            return Err(fsx::invalid("~/.amplihack is writable by other users"));
+        }
         Ok(_) => {}
     }
+    Ok(dir)
+}
+
+/// Sets the `usage_limit_wait` key of `$HOME/.amplihack/config`, keeping
+/// every other key. Written atomically through a private temporary file and
+/// left at mode `0600`. Refuses a `~/.amplihack` that fails
+/// [`private_amplihack_dir`], a symlinked file, a file owned by another
+/// user, a file over 64 KiB and content that is not a JSON object. Takes no
+/// lock: a concurrent saved-preference write can lose one of the updates.
+pub fn write(home: &Path, settings: &WaitSettings) -> io::Result<()> {
+    let dir = private_amplihack_dir(home)?;
     let mut top = match fsx::read_bounded_nofollow(&dir.join("config"), MAX_FILE)? {
         None => Map::new(),
+        Some((_, meta)) if meta.uid() != fsx::euid() => {
+            return Err(fsx::invalid("~/.amplihack/config is owned by another user"));
+        }
         Some((raw, _)) => match serde_json::from_slice::<Value>(&raw) {
             Ok(Value::Object(m)) => m,
             _ => return Err(fsx::invalid("~/.amplihack/config is not a JSON object")),

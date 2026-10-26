@@ -1,6 +1,7 @@
 //! Moving logins: the in-session swap, the return when a session ends, crash
 //! recovery, and the lease checks. A login file is only ever renamed with
-//! `RENAME_NOREPLACE`, never opened, so each login is in exactly one place.
+//! `RENAME_NOREPLACE`, never opened, so each account's login is in exactly
+//! one place: its home slot or the one directory where it is live.
 
 use super::candidate::{self, Pool};
 use super::config::Config;
@@ -247,10 +248,11 @@ fn same_version(before: &fs::Metadata, now: &fs::Metadata) -> bool {
 // Recovery and return
 // ---------------------------------------------------------------------------
 
-/// Finishes or undoes an interrupted swap, returns every hosted directory no
-/// longer live and sweeps `rerun/`. Call with the global lock held. Returns
-/// the `/proc` scan when taken; it is skipped while no login is borrowed,
-/// since it reads every same-user process's environment.
+/// Finishes or undoes an interrupted swap, returns every hosted directory
+/// that is no longer live, and removes stale rerun buffers. Call with the
+/// global lock held. Returns the `/proc` scan when it took one: it is
+/// skipped while no directory hosts a borrowed login, since that scan costs
+/// a read of every same-user process's environment.
 pub fn recover(state: &State) -> Result<Option<Liveness>, ProfileError> {
     recover_reporting(state).map(|(live, _)| live)
 }
@@ -294,7 +296,8 @@ pub fn recover_reporting(state: &State) -> Result<(Option<Liveness>, Vec<String>
     Ok((Some(live), done))
 }
 
-/// Whether a swap journal awaits recovery: only an existence check, for `status`.
+/// Whether a swap journal is waiting for recovery. Looks only at whether
+/// the file exists, so `status` can report it without acting on it.
 pub fn pending_journal(state: &State) -> bool {
     fsx::exists(&state.dir.join("journal.json"))
 }

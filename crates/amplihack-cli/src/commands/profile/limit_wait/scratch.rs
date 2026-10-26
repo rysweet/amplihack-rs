@@ -14,27 +14,11 @@ use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-/// `$HOME/.amplihack/rerun`, checked or created. `$HOME/.amplihack` must be
-/// a real directory owned by the current user that others cannot write; it
-/// is created at `0700` when missing and never `chmod`ed. `rerun/` must be a
+/// `$HOME/.amplihack/rerun`, checked or created: `$HOME/.amplihack` must
+/// pass `wait_config::private_amplihack_dir`, and `rerun/` must be a
 /// private (`0700`) directory owned by the current user.
 pub(crate) fn home_rerun_dir(home: &Path) -> io::Result<PathBuf> {
-    let dot = home.join(".amplihack");
-    match fs::symlink_metadata(&dot) {
-        Err(e) if e.kind() == io::ErrorKind::NotFound => fsx::ensure_private_dir(&dot)?,
-        Err(e) => return Err(e),
-        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
-            return Err(fsx::invalid("~/.amplihack is not a real directory"));
-        }
-        Ok(m) if m.uid() != fsx::euid() => {
-            return Err(fsx::invalid("~/.amplihack is owned by another user"));
-        }
-        Ok(m) if fsx::writable_by_others(&m) => {
-            return Err(fsx::invalid("~/.amplihack is writable by other users"));
-        }
-        Ok(_) => {}
-    }
-    let rerun = dot.join("rerun");
+    let rerun = crate::wait_config::private_amplihack_dir(home)?.join("rerun");
     fsx::ensure_private_dir(&rerun)?;
     Ok(rerun)
 }

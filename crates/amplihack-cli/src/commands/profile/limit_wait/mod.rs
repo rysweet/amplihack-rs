@@ -5,8 +5,8 @@
 //! change), then runs once more with the same inputs. See
 //! docs/reference/profile-command.md#usage-limit-wait.
 //!
-//! `Waiter` decides what happens after a limit; the auto-switch supervisor
-//! (`auto_switch::rerun`) and `supervise_unprofiled` below run the attempts.
+//! `Waiter` decides what happens after a limit; the one supervisor loop,
+//! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
 //! Log lines are built only from static text, integers and parsed instants.
 
 pub(crate) mod fingerprint;
@@ -23,15 +23,13 @@ mod tests_scratch;
 #[cfg(test)]
 mod tests_wait;
 
-use super::attempt::{self, Limited, Signals};
-use super::auto_switch::sweep_rerun;
+use super::attempt::{Limited, Signals};
 use crate::commands::recipe::run::limit_patterns::Harness;
 use crate::wait_config::WaitSettings;
-use anyhow::{Context, Result};
+use anyhow::Result;
 use chrono::TimeZone;
 use fingerprint::{Fingerprint, Watch};
 use plan::{Bound, plan};
-use scratch::{CopyError, StdinCopy};
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -171,6 +169,7 @@ struct RealDeps<'a> {
     clock: &'a mut Clock,
     watch: &'a Watch,
     signals: &'a Signals,
+    parent: libc::pid_t,
 }
 
 impl WaitDeps for RealDeps<'_> {
@@ -192,6 +191,16 @@ impl WaitDeps for RealDeps<'_> {
         self.signals.received()
     }
 
+    fn session_ended(&mut self) -> bool {
+        // SAFETY: getppid(2) has no preconditions. A parent that exits
+        // re-parents this process, so the id changes.
+        unsafe { libc::getppid() != self.parent }
+    }
+
+    fn rotator_capacity(&mut self, start: i64) -> bool {
+        self.watch.rotator_capacity(start)
+    }
+
     fn log(&mut self, line: &str) {
         eprintln!("{line}");
     }
@@ -206,6 +215,8 @@ pub(crate) struct Waiter {
     step_start: i64,
     step_timeout: Option<u64>,
     watch: Watch,
+    /// The process that started this step, read before any attempt runs.
+    parent: libc::pid_t,
 }
 
 impl Waiter {
@@ -223,6 +234,8 @@ impl Waiter {
             step_start,
             step_timeout,
             watch,
+            // SAFETY: getppid(2) has no preconditions.
+            parent: unsafe { libc::getppid() },
         }
     }
 
@@ -277,13 +290,14 @@ impl Waiter {
             clock: &mut self.clock,
             watch: &self.watch,
             signals,
+            parent: self.parent,
         };
         let end = wait::wait(&p, &mut deps);
         log(&Event::End(end));
         match end {
             End::Signal(sig) => AfterLimit::Finish(Some(128 + sig)),
-            End::StepTimeout => AfterLimit::Finish(None),
-            End::ResetReached | End::MaxReached | End::LoginChanged => {
+            End::StepTimeout | End::SessionEnded => AfterLimit::Finish(None),
+            End::ResetReached | End::MaxReached | End::LoginChanged | End::RotatorCapacity => {
                 log(&Event::Resume {
                     attempt: n.saturating_add(1),
                 });
@@ -317,58 +331,5 @@ pub(crate) fn supervise_unprofiled(settings: WaitSettings) -> Result<Option<i32>
         .map_err(|_| eprintln!("amplihack: usage-limit wait: profile store unavailable"))
         .ok();
     let watch = Watch::new(store.as_ref(), None, config_dir.as_deref(), home.as_deref());
-    let mut waiter = Waiter::new(Some(settings), watch);
-    let unsupervised = |waiter: &Waiter, why: &dyn Display| {
-        eprintln!(
-            "warning: the usage-limit wait cannot supervise this step ({why}); running it once"
-        );
-        waiter.not_supervised();
-        Ok(None)
-    };
-    let setup = home
-        .context("HOME is not set")
-        .and_then(|h| scratch::home_rerun_dir(&h).context("no private scratch directory"))
-        .and_then(|dir| {
-            Ok((
-                dir,
-                std::env::current_exe().context("cannot find the amplihack binary")?,
-            ))
-        });
-    let (dir, exe) = match setup {
-        Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, &e),
-    };
-    sweep_rerun(&dir);
-    let signals = match Signals::register() {
-        Ok(s) => s,
-        Err(e) => return unsupervised(&waiter, &e),
-    };
-    let stdin = match StdinCopy::take(&dir) {
-        Ok(c) => c,
-        Err(CopyError::BeforeRead(e)) => return unsupervised(&waiter, &e),
-        Err(e @ CopyError::AfterRead(_)) => {
-            eprintln!(
-                "error: could not copy this step's input for the usage-limit wait ({e}); not running it"
-            );
-            return Ok(Some(1));
-        }
-    };
-    let args: Vec<_> = std::env::args_os().skip(1).collect();
-    let mut n = 0u32;
-    loop {
-        n += 1;
-        let attempt = match attempt::run_attempt(&exe, &args, &dir, None, &stdin, n, &signals) {
-            Ok(a) => a,
-            // A terminal stdin was not consumed, so a plain launch still works.
-            Err(e) if n == 1 && stdin.path().is_none() => return unsupervised(&waiter, &e),
-            Err(e) => return Err(e),
-        };
-        let Some(lim) = attempt::usage_limited(&attempt, waiter.now()) else {
-            return attempt.finish(None);
-        };
-        match waiter.after_limit(&lim, n, &signals) {
-            AfterLimit::Finish(code) => return attempt.finish(code),
-            AfterLimit::Retry => attempt.discard(),
-        }
-    }
+    super::auto_switch::rerun::run(None, Waiter::new(Some(settings), watch))
 }

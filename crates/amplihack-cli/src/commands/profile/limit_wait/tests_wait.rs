@@ -29,6 +29,10 @@ struct Fake {
     sleeps_after_signal: usize,
     probes: Vec<i64>,
     logs: Vec<String>,
+    /// Virtual second from which the step's parent is gone.
+    parent_gone_from: Option<i64>,
+    /// Virtual second from which the rotator reports fresh capacity.
+    capacity_from: Option<i64>,
 }
 
 impl Fake {
@@ -42,6 +46,8 @@ impl Fake {
             sleeps_after_signal: 0,
             probes: Vec::new(),
             logs: Vec::new(),
+            parent_gone_from: None,
+            capacity_from: None,
         }
     }
 
@@ -97,6 +103,15 @@ impl WaitDeps for Fake {
         } else {
             None
         }
+    }
+
+    fn session_ended(&mut self) -> bool {
+        self.parent_gone_from.is_some_and(|t| self.elapsed() >= t)
+    }
+
+    fn rotator_capacity(&mut self, start: i64) -> bool {
+        assert_eq!(start, T0, "capacity is judged from the wait's start");
+        self.capacity_from.is_some_and(|t| self.elapsed() >= t)
     }
 
     fn log(&mut self, line: &str) {
@@ -285,12 +300,25 @@ fn a_passed_deadline_wins_over_a_changed_login() {
 }
 
 #[test]
-fn end_reasons_match_the_log_table() {
-    assert_eq!(End::ResetReached.as_str(), "reset reached");
-    assert_eq!(End::MaxReached.as_str(), "max reached");
-    assert_eq!(End::StepTimeout.as_str(), "step timeout");
-    assert_eq!(End::LoginChanged.as_str(), "login changed");
-    assert_eq!(End::Signal(libc::SIGHUP).as_str(), "signal");
+fn the_end_of_the_steps_session_ends_the_wait_within_one_slice() {
+    let mut f = Fake::new();
+    f.parent_gone_from = Some(10);
+    assert_eq!(
+        wait(&plan_in(5 * 3600, Bound::ResetMargin), &mut f),
+        End::SessionEnded
+    );
+    assert!(f.elapsed() <= 11, "noticed at {}", f.elapsed());
+}
+
+#[test]
+fn fresh_rotator_capacity_ends_the_wait_at_the_next_poll() {
+    let mut f = Fake::new();
+    f.capacity_from = Some(40);
+    assert_eq!(
+        wait(&plan_in(1800, Bound::Default), &mut f),
+        End::RotatorCapacity
+    );
+    assert_eq!(f.elapsed(), 60);
 }
 
 // --- line ----------------------------------------------------------------
@@ -348,6 +376,11 @@ fn every_other_event_has_its_documented_fields() {
         ),
         (Event::End(End::ResetReached), "end reason=reset reached"),
         (Event::End(End::LoginChanged), "end reason=login changed"),
+        (
+            Event::End(End::RotatorCapacity),
+            "end reason=rotator capacity",
+        ),
+        (Event::End(End::SessionEnded), "end reason=session ended"),
         (Event::End(End::MaxReached), "end reason=max reached"),
         (Event::End(End::StepTimeout), "end reason=step timeout"),
         (Event::End(End::Signal(libc::SIGTERM)), "end reason=signal"),

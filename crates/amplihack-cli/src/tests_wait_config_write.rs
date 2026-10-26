@@ -1,8 +1,9 @@
 //! `wait_config::write` (issue #1618): replaces only the `usage_limit_wait`
 //! key of `$HOME/.amplihack/config`, keeps every other key, writes
 //! atomically at mode 0600, and refuses a symlinked file or content that is
-//! not a JSON object. A file owned by another user cannot be made without
-//! root, so that refusal is not tested here.
+//! not a JSON object, or a `~/.amplihack` that others can write. A file or
+//! directory owned by another user cannot be made without root, so that
+//! refusal is not tested here.
 //!
 //! Wired from `lib.rs` with `#[cfg(all(test, unix))] mod tests_wait_config_write;`.
 
@@ -126,4 +127,24 @@ fn write_refuses_content_that_is_not_a_json_object() {
         assert!(write(&home, &defaults()).is_err(), "{body}");
         assert_eq!(fs::read_to_string(config(&home)).unwrap(), body);
     }
+}
+
+#[test]
+fn write_refuses_an_amplihack_dir_others_can_write_and_leaves_it_alone() {
+    let (_t, home) = home();
+    let dir = home.join(".amplihack");
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o777)).unwrap();
+    assert!(write(&home, &defaults()).is_err());
+    assert!(!config(&home).exists(), "nothing written");
+    assert_eq!(mode(&dir), 0o777, "never chmod-ed");
+}
+
+#[test]
+fn write_creates_a_missing_amplihack_dir_private() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    write(&home, &defaults()).unwrap();
+    assert_eq!(mode(&home.join(".amplihack")), 0o700);
+    assert_eq!(mode(&config(&home)), 0o600);
 }

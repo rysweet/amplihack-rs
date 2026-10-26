@@ -116,13 +116,14 @@ impl Fixture {
         }
     }
 
-    /// `amplihack <args>` with only the fixture's environment, the wait
+    /// `amplihack <args>`, isolated, with only the fixture's environment, the wait
     /// seams set, and a step limited once with `LIMIT_TEXT`.
     pub fn cmd(&self, args: &[&str]) -> Command {
-        let mut c = Command::new(amplihack_bin());
+        // `isolated` clears the environment and sets the HOME guard; the
+        // fixture's own HOME, under the same temp dir, replaces its HOME.
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.args(args)
             .current_dir(&self.work)
-            .env_clear()
             .env(
                 "PATH",
                 format!("{}:/usr/local/bin:/usr/bin:/bin", self.tools.display()),

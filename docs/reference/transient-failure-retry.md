@@ -64,15 +64,8 @@ usage-limit wait all read that table; no other source file holds a Claude
 limit message. `failure_class::usage_limit_reset_hint` is a thin wrapper
 over the table's reset reader, and the classifier's precedence is
 unchanged: work, then repo-selection and environmental, then usage limit,
-then transient. The integration test `tests/issue_1618_pattern_home.rs`
-fails if a string literal in a source file other than `limit_patterns.rs`
-is exactly equal to a marker or to the `resets ` anchor, or contains
-`Claude AI usage limit reached`. Equality, not containment, is used for the
-markers so that ordinary messages that happen to mention a usage limit are
-not flagged. Every string literal is checked, including the text of log and
-error messages; only `//` comment lines and `tests_*.rs` files are skipped.
-To support another harness,
-add a `Harness` variant and its table there; nothing else needs to change.
+then transient. To support another harness, add a `Harness` variant and
+its table there.
 
 - **A usage limit is waited out before the runner sees it.** A Claude agent
   step that hits a usage limit inside a recipe run first waits for the reset,

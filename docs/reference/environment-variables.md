@@ -971,59 +971,27 @@ backend configuration reference.
 **Values:** `1`, `true`, `on`, `yes` (on) | `0`, `false`, `off`, `no` (off), in any case
 **Default:** on
 **Config key:** `usage_limit_wait.enabled` in `~/.amplihack/config`
-**Read by:** `amplihack claude` when it runs as a recipe agent step
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Turns the usage-limit wait on or off for this process and its children.
-When a recipe agent step (`amplihack claude -p` with
-`AMPLIHACK_NONINTERACTIVE=1`) fails because the Claude account reached its
-usage limit, amplihack waits until the limit resets, or until the login for
-the step changes, and then runs the step once more instead of ending the
-recipe run. With the wait off, a usage limit ends the run as it did before.
-
-The variable overrides the config file. Empty means unset. Any other value
-prints one warning and the config file, then the default, decides. The
-warning names the variable but not its value.
-
-Both wait variables are read only when `AMPLIHACK_NONINTERACTIVE` is
-exactly `1`, and only on Unix. The config file is used only when it is a
-regular file, not a symlink, owned by the current user and not writable by
-group or others.
-
-```sh
-# End the run on a usage limit instead of waiting
-AMPLIHACK_USAGE_LIMIT_WAIT=0 \
-amplihack recipe run default-workflow \
-  -c task_description="Fix issue 1618"
-```
-
-See [Waiting for a usage-limit reset](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset)
-and the [usage-limit wait reference](./profile-command.md#usage-limit-wait).
+Turns the usage-limit wait on or off: a recipe agent step that fails on a
+Claude usage limit waits for the reset, or for a login with capacity, and
+runs once more instead of ending the run. Overrides the config file; empty
+means unset; an invalid value prints one warning and is ignored. See the
+[usage-limit wait reference](./profile-command.md#usage-limit-wait).
 
 ---
 
 ### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
 
-**Type:** string (non-negative integer as text, seconds)
-**Default:** unset (wait until the reported reset plus 120 seconds, or 1800 seconds when no reset time can be read)
+**Type:** string (non-negative integer, seconds)
+**Default:** unset (the reported reset plus 120 seconds, or 1800 seconds when no reset can be read)
 **Config key:** `usage_limit_wait.max_wait_secs` in `~/.amplihack/config`
-**Read by:** `amplihack claude` when it runs as a recipe agent step
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
 
-Upper bound on one usage-limit wait. It only shortens the wait: a value
-larger than the default bound changes nothing. `0` means do not wait but
-still run the step once more; to turn the wait off, use
-`AMPLIHACK_USAGE_LIMIT_WAIT=0`. However it is set, no wait lasts longer
-than five hours and 120 seconds.
-
-The variable overrides the config file. Empty means unset. A value with a
-sign, a fraction or other text prints one warning and the config file, then
-the default, decides.
-
-```sh
-# Wait at most one hour for a usage limit to reset
-AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600 \
-amplihack recipe run default-workflow \
-  -c task_description="Fix issue 1618"
-```
+Upper bound on one usage-limit wait. It only shortens the wait; `0` means
+no wait but one more attempt. No wait lasts longer than five hours and 120
+seconds. Overrides the config file; empty means unset; an invalid value
+prints one warning and is ignored.
 
 ---
 
