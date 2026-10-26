@@ -129,12 +129,16 @@ The hooks directory is resolved with `git rev-parse --git-path hooks`, which
 honours `core.hooksPath`, and made absolute. Git configuration is only read,
 never written.
 
-**Either operation.** Output containing a line that begins `fatal:`, or the
-text `gpg failed to sign` or a line beginning `error: gpg failed`, is never a
-hook rejection, whatever hooks exist. Git's own fatal errors and signing
-failures happen after the hooks have passed, or without them. A hook that
-prints such a line itself is classed as an ordinary failure and not
-repaired, which fails safe. At step-15 such a commit reports `commit-failed`.
+**Either operation.** Output whose last non-empty line begins `fatal:`, or
+output containing the text `gpg failed to sign` or a line beginning
+`error: gpg failed`, is never a hook rejection, whatever hooks exist. Git's
+own fatal errors and signing failures happen after the hooks have passed, or
+without them, and git prints its `fatal:` line last. Only the last line is
+tested for `fatal:`, so a hook whose own output carries a `fatal:` line
+further up, such as a test run's, is still a hook rejection. A hook whose
+output ends with a `fatal:` line, or mentions a gpg failure, is classed as an
+ordinary failure and not repaired, which fails safe. At step-15 such a commit
+reports `commit-failed`.
 
 **Commit.** All of the following must hold as well:
 
@@ -340,8 +344,9 @@ written to a `hook-repair-attempt.XXXXXX` file in the git directory
 must be able to write anyway, and is redacted there. A first-try success, or
 a failure that is not a hook rejection, removes that file and returns; it
 does not matter where `TMPDIR` points or whether it is writable. If the git
-directory cannot hold the file, the command runs unchanged with its output on
-stderr, and a failure is returned as `not_hook`.
+directory cannot hold the file, the command still runs, its combined output
+is redacted on its way to stderr and to the `--output` file, and a failure is
+returned as `not_hook`, so step-15 reports `push-failed: <redacted output>`.
 
 Only once a hook rejection has been identified does the driver create a
 private directory, `HR_DIR`, move the first attempt's output into it, and
@@ -487,12 +492,14 @@ change:
 | Git configuration | hash of `git config --local --list` and `git config --worktree --list`, and a hash of the hook-related entries at every scope (`core.hookspath`, `core.fsmonitor`, `hook.*`, `include.path`, `includeIf.*.path`, `push.*`) from `git config --show-origin --list` |
 | HEAD | `git rev-parse HEAD` |
 | Refs (`git-refs`) | `git for-each-ref` over the current branch and its remote-tracking refs (`refs/remotes/*/<branch>`), and the commits `@{upstream}` and `@{push}` resolve to |
-| Stash (`git-stash`) | `refs/stash` and `git stash list` |
+| Stash (`git-stash`) | the `git stash list` entries whose first parent is HEAD at the start of the round, that is the stashes made in this worktree |
 
 A `git push`, `update-ref`, `reset --soft` or `stash` made during a round
 therefore refuses it, even when HEAD stays where it was. Other branches are
 not recorded: every worktree of a repository shares them, and parallel
-sessions in other worktrees move them during a round.
+sessions in other worktrees move them during a round. The stash is shared in
+the same way, so a stash made in another worktree, on another HEAD, is not
+recorded either.
 
 `entry:` values are read from block-style YAML only. A first word that is a
 command name, such as `bash` in `entry: bash scripts/check.sh`, is not a path,
@@ -785,8 +792,11 @@ against an over-eager agent, not a hostile one, and does not detect:
 - a `SKIP` variable already set in the launcher's environment
 
 A ref moved by a parallel session on the current branch or its
-remote-tracking ref, or a stash made in another worktree during a round,
-refuses the round although the agent did not make it. This fails closed.
+remote-tracking ref, or a stash made during a round in another worktree whose
+HEAD is the same commit as this one's, refuses the round although the agent
+did not make it. This fails closed. Conversely, an agent stash made on a
+commit other than HEAD at the start of the round is not seen; making one
+means moving HEAD, which is refused in its own right.
 
 A pre-push hook that prints its own `error:` or `fatal:` line with an
 excluded marker, such as `error: request timed out`, is classed as
@@ -847,7 +857,9 @@ has its own case in the shell test:
 | a local hook's entry script, lint configuration and Cargo lint tables are protected; a dependency edit is not | [Refusal rules](#refusal-rules) |
 | an added linter or test suppression, or a `git rm --cached` file, is refused; an edited line that already had a suppression is not | [Refusal rules](#refusal-rules) |
 | a first-try success with `TMPDIR` inside the worktree, missing or read-only behaves as the bare command | [Evidence](#evidence) |
-| `fatal:` and signing failures are `not_hook`; step-15 reports `commit-failed` | [Classifying a failure](#classifying-a-failure) |
+| a trailing `fatal:` line and signing failures are `not_hook`, and step-15 reports `commit-failed`; a `fatal:` line inside a hook's output is still repaired | [Classifying a failure](#classifying-a-failure) |
+| a stash made in another worktree during a round is not refused | [Refusal rules](#refusal-rules) |
+| a git directory that cannot hold the attempt file still yields redacted stderr and `--output` | [Evidence](#evidence) |
 | `not_fixable_in_code` with no diff and the same output stops without the evaluator; any difference goes to it | [No-progress stop](#no-progress-stop) |
 | lockfiles are staged | [Staging rules](#staging-rules) |
 | step-15's commit hook never sees `PRE_COMMIT_ALLOW_NO_CONFIG`; a checkpoint's does without a config | [Where it applies](#where-it-applies) |

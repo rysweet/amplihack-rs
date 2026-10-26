@@ -678,6 +678,15 @@ section_c() {
     printf 'error: gpg failed to sign the data\n' > "${dir}/extra"
     HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "C12: gpg text is not_hook" "$(var_of "${dir}" STATUS)" "not_hook"
+
+    # C13 a fatal: line inside the hook's own output, not at the end, is still
+    # a hook rejection: only the last non-empty line is git's own.
+    dir="${WORK}/c13-fatal-mid-hook"
+    commit_case "${dir}"
+    printf 'fatal: from the hook test run\n\ntest result: FAILED\n' > "${dir}/extra"
+    HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" STUB_AGENT_ACTION=fix run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "C13: fatal: mid hook output is repaired" "$(var_of "${dir}" STATUS)" "ok"
+    expect_eq "C13: one agent round" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "1"
 }
 
 # Push classification lives with the push cases in section G.
@@ -1054,6 +1063,17 @@ section_e() {
     expect_eq "E7 stash: refused" "$(var_of "${dir}" STATUS)" "refused"
     expect_eq "E7 stash: reason" "$(var_of "${dir}" REASON)" "agent-changed-refs: git-stash"
     expect_eq "E7 stash: never retried" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
+    # A stash made in another worktree, on another HEAD, during the round is
+    # another session's and does not refuse it.
+    dir="${WORK}/e7-stash-other-worktree"
+    commit_case "${dir}"
+    printf 'm\n' > "${dir}/main/moved.txt"
+    git -C "${dir}/main" add moved.txt
+    git -C "${dir}/main" commit -q -m "main moved on"
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY='printf "other\n" >> ../main/README.md && git -C ../main stash -q' \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E7 stash in another worktree: harness: a stash was made" "$(git -C "${dir}/main" stash list | wc -l | tr -d ' ')" "1"
+    expect_eq "E7 stash in another worktree: not refused" "$(var_of "${dir}" STATUS)" "ok"
     dir="${WORK}/e7-update-ref"
     commit_case "${dir}"
     STUB_AGENT_ACTION=fix STUB_VERDICTS=CONTINUE \
@@ -1064,8 +1084,10 @@ section_e() {
     # Another branch, as a parallel session in another worktree would move it, is not refused.
     dir="${WORK}/e7-other-branch"
     commit_case "${dir}"
-    STUB_AGENT_ACTION=fix STUB_AGENT_BODY='git -C ../main commit -q --allow-empty -m "parallel session"' \
+    # A real file, not --allow-empty: the harness hook rejects an empty commit.
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY='printf "p\n" > ../main/parallel.txt && git -C ../main add parallel.txt && git -C ../main commit -q -m "parallel session"' \
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E7 other branch: harness: the other branch moved" "$(git -C "${dir}/main" log -1 --format=%s)" "parallel session"
     expect_eq "E7 other branch: not refused" "$(var_of "${dir}" STATUS)" "ok"
 
     # E8 the script a `repo: local` hook runs is protected like the config.
@@ -1416,6 +1438,35 @@ section_g() {
     expect_eq "G11: reason" "$(var_of "${dir}" REASON)" "agent-changed-refs: git-refs"
     expect_eq "G11: push not retried" "$(hook_calls "${dir}/hook.log" pre-push)" "1"
     expect_eq "G11: evaluator not called" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "0"
+
+    # G12 a git dir that cannot hold the attempt file: the command still runs,
+    # its output is redacted on stderr and in --output, and a failure is not
+    # repaired.
+    local gd tok="gh""p_""CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC" g12
+    for g12 in rejected clean; do
+        dir="${WORK}/g12-gitdir-readonly-${g12}"
+        if [[ "${g12}" == rejected ]]; then push_case "${dir}"; else push_case "${dir}" "clean"; fi
+        printf 'token %s\n' "${tok}" > "${dir}/extra"
+        gd="$(git -C "${dir}/repo" rev-parse --absolute-git-dir)"
+        chmod 0500 "${gd}"
+        HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" run_driver "${dir}" push step-15-commit-push \
+            --fix-message "fix: address {hook_ids} pre-push rejection" --output "${dir}/push.out" -- git push
+        chmod 0700 "${gd}"
+        expect_eq "G12 ${g12}: no agent ran" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+        expect_file_lacks "G12 ${g12}: no raw token on stderr" "${dir}/stderr" "${tok}"
+        expect_file_lacks "G12 ${g12}: no raw token in --output" "${dir}/push.out" "${tok}"
+        expect_empty_file "G12 ${g12}: nothing on stdout" "${dir}/stdout"
+    done
+    dir="${WORK}/g12-gitdir-readonly-rejected"
+    expect_eq "G12 rejected: not_hook" "$(var_of "${dir}" STATUS)" "not_hook"
+    expect_ne "G12 rejected: rc non-zero" "$(rc_of "${dir}")" "0"
+    expect_file_contains "G12 rejected: --output holds the hook output" "${dir}/push.out" "cargo test"
+    expect_file_contains "G12 rejected: --output is redacted" "${dir}/push.out" "REDACTED"
+    expect_file_contains "G12 rejected: stderr holds the hook output" "${dir}/stderr" "cargo test"
+    dir="${WORK}/g12-gitdir-readonly-clean"
+    expect_eq "G12 clean: ok" "$(var_of "${dir}" STATUS)" "ok"
+    expect_eq "G12 clean: rc 0" "$(rc_of "${dir}")" "0"
+    expect_eq "G12 clean: pushed" "$(git -C "${dir}/repo" rev-parse '@{u}')" "$(git -C "${dir}/repo" rev-parse HEAD)"
 }
 
 # =============================================================================

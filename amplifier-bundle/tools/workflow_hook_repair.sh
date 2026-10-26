@@ -108,10 +108,12 @@ hook_repair_ids() {
 hook_repair_is_rejection() {
   local op="$1" rc="$2" out="$3" hooks="$4"
   [ "$rc" -ne 0 ] || return 1
-  # git's own fatal error, or a commit that could not be signed, is not a
-  # hook's doing whatever hooks exist. A hook that prints such a line itself
-  # is not repaired, which fails safe.
-  LC_ALL=C grep -E '^fatal:|gpg failed to sign|^error: gpg failed' "$out" >/dev/null 2>&1 && return 1
+  # A commit that could not be signed is not a hook's doing whatever hooks
+  # exist; nor is output whose last non-empty line is git's own `fatal:`.
+  # Only the last line is tested for `fatal:`, because a hook's own output
+  # (a test run, say) may contain such a line and still be a rejection.
+  LC_ALL=C grep -E 'gpg failed to sign|^error: gpg failed' "$out" >/dev/null 2>&1 && return 1
+  LC_ALL=C awk 'NF { last = $0 } END { exit !(last ~ /^fatal:/) }' "$out" 2>/dev/null && return 1
   case "$op" in
     commit)
       git diff --cached --quiet 2>/dev/null && return 1
@@ -222,9 +224,11 @@ hook_repair_cargo_lints() {
     on || /^[[:space:]]*(workspace\.)?lints[[:space:]]*[.=]/ { print }' "$1"
 }
 
-# hook_repair_snapshot <worktree>: hook configuration, the scripts local hooks
-# run, lint configuration, allowlists, the hooks directory, git configuration,
-# HEAD, the branch's refs and the stash, one sorted, unique line per entry.
+# hook_repair_snapshot <worktree> <baseline>: hook configuration, the scripts
+# local hooks run, lint configuration, allowlists, the hooks directory, git
+# configuration, HEAD, the branch's refs and the stash entries made on
+# <baseline> (HEAD at the start of the round), one sorted, unique line per
+# entry.
 # Taken at the worktree top whatever the caller's directory. The hooks
 # directory is resolved afresh each time, and the hook-related configuration
 # is read at every scope, so a core.hooksPath or hook.* change in the global
@@ -282,7 +286,11 @@ hook_repair_snapshot() {
       [ -z "$head_ref" ] || git for-each-ref --format='%(refname) %(objectname)' "$head_ref" "refs/remotes/*/${head_ref#refs/heads/}"
       git rev-parse -q --verify '@{upstream}' 2>/dev/null || true
       git rev-parse -q --verify '@{push}' 2>/dev/null || true; } | cksum)"
-    printf 'git-stash\t%s\n' "$( { git for-each-ref --format='%(objectname)' refs/stash; git stash list --format='%H' 2>/dev/null || true; } | cksum)"
+    # The stash is shared by every worktree. Only entries whose first parent
+    # is this worktree's HEAD at the start of the round are recorded, so a
+    # stash made in another worktree during the round does not refuse it.
+    printf 'git-stash\t%s\n' "$( { git stash list --format='%H %P' 2>/dev/null || true; } \
+      | LC_ALL=C awk -v b="$2" 'b != "" && $2 == b { print $1 }' | cksum)"
   )" || return 1
   printf '%s\n' "$entries" | LC_ALL=C sort -u
 }
@@ -554,8 +562,11 @@ hook_repair_run() {
   out="$([ -n "$gd" ] && umask 077 && mktemp "${gd}/hook-repair-attempt.XXXXXX" 2>/dev/null)" || out=""
   if [ -z "$out" ]; then
     # With nowhere to keep the output the failure cannot be classified: the
-    # command runs as it is and a failure is returned unrepaired.
-    if "$@" >&2; then HOOK_REPAIR_STATUS="ok"; return 0; else rc=$?; fi
+    # command runs and a failure is returned unrepaired. Its output is still
+    # redacted on its way to stderr and to --output.
+    "$@" 2>&1 | hook_repair_redact | if [ -n "$output_file" ]; then tee -- "$output_file"; else cat; fi >&2
+    rc="${PIPESTATUS[0]}"
+    if [ "$rc" -eq 0 ]; then HOOK_REPAIR_STATUS="ok"; return 0; fi
     HOOK_REPAIR_STATUS="not_hook"; return "$rc"
   fi
   if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
@@ -604,7 +615,7 @@ hook_repair_run() {
     before="${hr}/round-${round}.before"; after="${hr}/round-${round}.after"
     # A valid snapshot always holds the HEAD and git-config-* lines, so an
     # empty one failed. Without it the refusal check would pass unseen.
-    if ! hook_repair_snapshot "$wt" >"$before" || [ ! -s "$before" ]; then
+    if ! hook_repair_snapshot "$wt" "$baseline" >"$before" || [ ! -s "$before" ]; then
       echo "ERROR: hook_repair_run: the refusal snapshot ${before} could not be taken; not retried." >&2
       status="stuck"; reasoning="refusal snapshot could not be taken"; break
     fi
@@ -640,7 +651,7 @@ hook_repair_run() {
       echo "ERROR: hook_repair_run: Artifact Guard blocked the files staged after repair round ${round}; not retried." >&2
       status="stuck"; reasoning="artifact guard blocked the agent's changes"; break
     fi
-    if ! hook_repair_snapshot "$wt" >"$after" || [ ! -s "$after" ]; then
+    if ! hook_repair_snapshot "$wt" "$baseline" >"$after" || [ ! -s "$after" ]; then
       echo "ERROR: hook_repair_run: the refusal snapshot ${after} could not be taken; not retried." >&2
       status="stuck"; reasoning="refusal snapshot could not be taken"; break
     fi
