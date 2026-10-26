@@ -1411,6 +1411,32 @@ when it finds one, and otherwise exits `1` with the usual
 `ERROR: phase 1 finished without a pull request.` A non-empty unsafe value
 still exits non-zero, and nothing is marked.
 
+### How step-03 finds phase 1's pull request
+
+`autodrive-build.yaml` step-03 tries, in order:
+
+1. the PR the preflight found;
+2. a PR for the preflight's branch, which is `REPO_PATH`'s branch;
+3. the PR for the current checkout (`gh pr view`);
+4. (issue #1676) an open PR that an agent step opened on the run's own
+   branch. default-workflow creates that branch in its own worktree, and the
+   recipe runner hands `worktree_setup` back to `autodrive-build` when the
+   step-02 sub-recipe ends. `autodrive_open_pr_for_run_branch`
+   (`amplifier-bundle/tools/autodrive_run_pr.sh`, sourced only from the
+   installed bundle under an absolute `AMPLIHACK_HOME`) applies the same
+   open-PR check as workflow-finalize step-22b (#1596), plus a check on the
+   head commit. It accepts a PR only when:
+   - the worktree's current branch is `worktree_setup.branch_name`, and is not
+     `main`, `master` or detached;
+   - the PR is open and comes from the same repository, not a fork;
+   - its head branch is the run's branch;
+   - its head commit is the worktree's `HEAD`.
+
+   Anything else, including a `gh` error or malformed output, finds nothing.
+
+Only when all four find nothing does step-03 stop with
+`ERROR: phase 1 finished without a pull request.`
+
 The path is always quoted, and because the check refuses a leading `-`, it
 can never be read as an option. An absolute path is not required; the
 preflight decides where state lives. No step deletes `state_dir` recursively.
