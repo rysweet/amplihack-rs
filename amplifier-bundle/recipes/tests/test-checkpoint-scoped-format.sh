@@ -55,7 +55,7 @@ printf 'def answer():\n    return 42\n' > "$WORK/task/model.py"
 printf '%s\n' '---- MODULE Model ----' '====' > "$WORK/task/Model.tla"
 before="$(git -C "$WORK/task" rev-parse HEAD)"
 checkpoint || fail 'Python/TLA checkpoint failed'
-test "$(git -C "$WORK/task" show --format= --name-only HEAD | sort)" = $'Model.tla\nmodel.py' \
+test "$(git -C "$WORK/task" show --format= --name-only HEAD | LC_ALL=C sort)" = $'Model.tla\nmodel.py' \
   || fail 'non-Rust checkpoint committed unexpected paths'
 test "$(cat "$WORK/task/src/lib.rs")" = 'pub fn value( )->i32{ 1 }' \
   || fail 'non-Rust checkpoint changed pristine Rust'
@@ -86,7 +86,7 @@ git -C "$WORK/task" commit -qm 'fixture for rename and literal pathspec'
 git -C "$WORK/task" mv old.txt new.txt
 printf 'changed\n' > "$WORK/task/file[1].txt"
 checkpoint || fail 'rename and literal path checkpoint failed'
-paths="$(git -C "$WORK/task" show --format= --name-only --no-renames HEAD | sort)"
+paths="$(git -C "$WORK/task" show --format= --name-only --no-renames HEAD | LC_ALL=C sort)"
 test "$paths" = $'file[1].txt\nnew.txt\nold.txt' \
   || fail 'rename or literal pathspec checkpoint included the wrong files'
 
