@@ -27,6 +27,7 @@ WORKSTREAM_ID=""
 EXPECTED_PR_TITLE_PREFIX=""
 CREATED_AFTER=""
 HEAD_SHA=""
+ALLOW_HEAD_BEHIND="false"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -43,6 +44,7 @@ Scope options:
   --expected-pr-title-prefix PREFIX
   --created-after RFC3339_TIME
   --head-sha SHA
+  --allow-head-behind   accept an OPEN named PR whose head is an ancestor of --head-sha (#1467)
 USAGE
 }
 
@@ -61,6 +63,7 @@ while [ "$#" -gt 0 ]; do
     --expected-pr-title-prefix) EXPECTED_PR_TITLE_PREFIX="${2:-}"; shift 2 ;;
     --created-after) CREATED_AFTER="${2:-}"; shift 2 ;;
     --head-sha) HEAD_SHA="${2:-}"; shift 2 ;;
+    --allow-head-behind) ALLOW_HEAD_BEHIND="true"; shift ;;
     -h|--help) usage; exit 0 ;;
     *)
       jq -nc --arg reason "invalid_arg" --arg arg "$1" '{ok:false,reason:$reason,arg:$arg}'
@@ -283,10 +286,13 @@ if [ -n "$PR_NUMBER" ] || [ -n "$PR_URL" ]; then
   # This preserves the fail-closed contract for a caller-supplied PR identity.
   matches="$(apply_discriminators "$primary")"
   match_count="$(array_length "$matches")"
-  # Issue #1467: an OPEN named PR whose head is an ancestor of local HEAD is
-  # behind, not stale (opened early, later commits not yet pushed). Accept that
-  # head in place of HEAD_SHA; every other discriminator stays hard.
-  if [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+  # Issue #1467, opt-in (--allow-head-behind; only the terminal-state probe,
+  # which runs before the push steps): a named PR that is OPEN and whose head is
+  # an ancestor of local HEAD is behind, not stale. Accept that head in place of
+  # HEAD_SHA; every other discriminator stays hard. End-of-run callers
+  # (final status, PR ready) must not pass it: there, behind means the PR lacks
+  # the run's work.
+  if [ "$ALLOW_HEAD_BEHIND" = "true" ] && [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
     behind_oid="$(open_candidates "$primary" | jq -r 'if length == 1 then (.[0].headRefOid // "") else "" end')"
     if [[ "$behind_oid" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$behind_oid" "$HEAD_SHA" 2>/dev/null; then
       echo "INFO: workflow_pr_scope.sh: PR head $behind_oid is behind local HEAD $HEAD_SHA; treating it as unpushed work, not stale (#1467)" >&2

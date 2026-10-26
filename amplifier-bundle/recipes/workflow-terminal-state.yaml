@@ -361,6 +361,7 @@ steps:
       pr_json=""
       pr_target=""
       pr_lookup_failed="false"
+      pr_behind="false"
       if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ]; then
         if parse_github_pr_url "$PR_URL_INPUT" >/dev/null 2>&1; then
           supports_github_pr_metadata="true"
@@ -390,6 +391,8 @@ steps:
           --issue "$scoped_issue_id"
           --work-item "$scoped_issue_id"
           --head-sha "$local_head"
+          # #1467: this probe runs before the push steps, so a PR behind HEAD is unpushed work.
+          --allow-head-behind
         )
         title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
         [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
@@ -444,11 +447,15 @@ steps:
         if [ "$pr_head_oid" != "$local_head" ]; then
           # Issue #1467: an open PR whose head is an ancestor of local HEAD is
           # behind, not stale: an agent opened it early and a later step
-          # committed without pushing. The publish step pushes those commits.
-          # A merged or closed PR, or a head that is not an ancestor, still fails.
+          # committed without pushing; the next push step pushes them. A merged
+          # or closed PR, a head that is not an ancestor, or a remote branch
+          # rewound behind what this checkout last saw pushed, still fails.
+          tracking_oid="$(git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH_INPUT}^{commit}" 2>/dev/null || true)"
           if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
+              && { [ -z "$tracking_oid" ] || [ "$tracking_oid" = "$pr_head_oid" ]; } \
               && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
-            echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; publish pushes them (#1467)" >&2
+            pr_behind="true"
+            echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
           else
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
           fi
@@ -473,7 +480,8 @@ steps:
         fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
       fi
 
-      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ]; then
+      # #1467: a PR behind local HEAD reports checks for a superseded commit.
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ] && [ "${pr_behind:-false}" != "true" ]; then
         fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
       fi
 

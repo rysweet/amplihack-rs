@@ -632,16 +632,21 @@ without pushing (the pre-commit phase's fixes, the step-20c quality audit). The
 PR's `headRefOid` is then an ancestor of local `HEAD`: the branch is ahead, not
 stale. While the PR is `OPEN`:
 
-- the terminal-state probe accepts it and prints
-  `INFO: ... commit(s) ahead of open PR head ...; publish pushes them (#1467)`;
-  `step-15-commit-push` then pushes the commits;
-- `workflow_pr_scope.sh`, given an explicit PR number or URL, accepts that PR's
-  head in place of local `HEAD` when it is the only open candidate; every other
-  discriminator stays a hard filter.
+- the terminal-state probe accepts it, prints
+  `INFO: ... commit(s) ahead of open PR head ...; the next push step pushes them (#1467)`,
+  and skips the failing-checks gate, because those checks ran on the superseded
+  head (often the very commit the unpushed fix repairs). `step-15-commit-push`,
+  or `step-20b-push-cleanup` in finalize, then pushes the commits;
+- the probe passes `--allow-head-behind` to `workflow_pr_scope.sh`, which then
+  accepts a named PR that is `OPEN` and whose head is an ancestor of local
+  `HEAD`; every other discriminator stays a hard filter. End-of-run callers
+  (`workflow_final_status.sh`, `workflow_pr_ready.sh`) do not pass it: after
+  the last push, a PR behind `HEAD` lacks the run's work and must not count.
 
-A merged or closed PR, or a head that is not an ancestor of local `HEAD`, still
-fails as `stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits
-must not be reported as `MERGED`, because the local commits would be lost.
+A merged or closed PR, a head that is not an ancestor of local `HEAD`, or a
+remote branch rewound behind this checkout's `origin/<branch>`, still fails as
+`stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits must not be
+reported as `MERGED`, because the local commits would be lost.
 
 In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
 and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
