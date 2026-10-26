@@ -301,6 +301,9 @@ fn run_terminal_state_with_issue(
         .arg(command)
         .env("PATH", path)
         .env("REPO_PATH", repo_path)
+        // The probe sources recipe_var.sh and runs worktree_setup_path.sh from
+        // the installed bundle, found under AMPLIHACK_HOME first.
+        .env("AMPLIHACK_HOME", workspace_root())
         // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
         .env("RECIPE_VAR_repo_path", repo_path)
         .env("RECIPE_VAR_branch_name", branch_name)

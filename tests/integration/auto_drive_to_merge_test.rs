@@ -4941,10 +4941,9 @@ fn run_auto_drive_contract_shell_test(inherited: Inherited) {
         Ok(p) => format!("{}:{}:{p}", guard.display(), bin_dir.display()),
         Err(_) => format!("{}:{}", guard.display(), bin_dir.display()),
     };
-    // The script refuses to run without TMPDIR rather than fall back to /tmp,
-    // so pass one explicitly. Its resolver cases need scratch space outside
-    // every git work tree; CARGO_TARGET_TMPDIR is inside this checkout, so an
-    // unset TMPDIR falls back to the system temp dir instead.
+    // The script's resolver cases need scratch space outside every git work
+    // tree. CARGO_TARGET_TMPDIR is inside this checkout, so pass TMPDIR
+    // explicitly, falling back to the system temp dir when it is unset.
     let tmpdir = std::env::var_os("TMPDIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
@@ -5159,10 +5158,12 @@ fn issue_1543_pr_head_worktree_shell_test_passes() {
         Err(_) => bin_dir.display().to_string(),
     };
 
+    // The amplihack under test runs from PATH: keep it off the real ~/.amplihack.
     let out = Command::new("bash")
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
         .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the #1543 shell test");
@@ -5524,6 +5525,7 @@ fn autodrive_round_with_inherited_stale_tools_dir_uses_its_own() {
         }
         cmd.env("PATH", &path)
             .env("HOME", tmp.path())
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
             .env("AUTODRIVE_ROUND_RECORD", tmp.path().join("round.json"))
             .env("AUTODRIVE_ROUND_LABEL", "r")
             .env("AUTODRIVE_QA_EVIDENCE", &qa_file)

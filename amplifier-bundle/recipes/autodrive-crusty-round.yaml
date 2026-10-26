@@ -50,18 +50,15 @@ context:
   crusty_fix_evidence: ""
 
 steps:
-  # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh stamps the review dir's index;
-  # step-02b compares it, and the loop compares its own stamp after the whole round, step-04 included.
+  # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
+  # It prints a stamp of the review dir's index; step-02b compares it. The loop
+  # compares its own stamp after the whole round, step-04 included.
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
-      # Launch-tree pin (#1543), checked before use (#1561 S-F3): docs/reference/auto-drive-to-merge.md#autodrive_launch_tools-is-checked-before-use
-      LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
-      case "$LAUNCH_T" in /*) ;; *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [autodrive-crusty-round/step-00]" >&2; exit 1 ;; esac
-      case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [autodrive-crusty-round/step-00]" >&2; exit 1 ;; esac
-      [ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [autodrive-crusty-round/step-00]" >&2; exit 1; }
-      [ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [autodrive-crusty-round/step-00]" >&2; exit 1; }
-      bash "$LAUNCH_T/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused (#1528) [autodrive-crusty-round/step-00]" >&2; exit 1; }
+      # AUTODRIVE_LAUNCH_TOOLS (#1543): the leading "/" keeps an empty or relative value from resolving against the cwd;
+      # the guard itself checks the value (autodrive_worktree_guard.sh, "AUTODRIVE_LAUNCH_TOOLS").
+      bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-crusty-round/step-00]" >&2; exit 1; }
     output: "review_index"
 
   - id: "step-01-round-context"
@@ -190,20 +187,16 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
-      LAUNCH_T="${AUTODRIVE_LAUNCH_TOOLS:-}"
-      case "$LAUNCH_T" in /*) ;; *) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is empty or not absolute [autodrive-crusty-round/step-02b]" >&2; exit 1 ;; esac
-      case "$LAUNCH_T" in *$'\n'*) echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a single line [autodrive-crusty-round/step-02b]" >&2; exit 1 ;; esac
-      [ -d "$LAUNCH_T" ] || { echo "STOP: autodrive-launch-tools-invalid: AUTODRIVE_LAUNCH_TOOLS is not a directory [autodrive-crusty-round/step-02b]" >&2; exit 1; }
-      [ -f "$LAUNCH_T/autodrive_worktree_guard.sh" ] || { echo "STOP: autodrive-launch-tools-invalid: autodrive_worktree_guard.sh is missing from AUTODRIVE_LAUNCH_TOOLS [autodrive-crusty-round/step-02b]" >&2; exit 1; }
-      bash "$LAUNCH_T/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-crusty-review || exit 1
+      bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-crusty-review || exit 1
 
   - id: "step-03-extract-crusty-verdict"
     type: "bash"
     parse_json: true
     command: |
       set -uo pipefail
-      # Canonical pipeline (docs/reference/structured-verdict-parsing.md): agent output is untrusted DATA on stdin,
-      # never interpolated into a command position, never eval'd, never branched on as raw prose.
+      # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
+      # agent output is untrusted DATA on stdin, never interpolated into a
+      # command position, never eval'd, never branched on as raw prose.
       RAW="${RECIPE_VAR_crusty_review:-}"
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       if [ -z "$RAW" ]; then
@@ -290,7 +283,8 @@ steps:
       cd "{{repo_path}}" || { echo "STOP: cannot enter the PR worktree (#1528)" >&2; exit 1; }
       unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GH_REPO
       bash "{{autodrive_launch_tools}}/autodrive_worktree_guard.sh" commit-dir {{pr_number}} || { echo "STOP: not the PR's linked worktree on its head branch; never stage or commit in the main checkout or another checkout (#1528)" >&2; exit 1; }
-      # Commit as the workflow's identity, not this worktree's git config (issue #1394). The helper only exports into the
+      # Commit as the workflow's identity, not as whatever git is configured
+      # with in this worktree (issue #1394). The helper only exports into the
       # shell that sources it, so it has to be sourced here, in this block.
       for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
         [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/git-identity.sh" ] && { . "$c/amplifier-bundle/tools/git-identity.sh"; break; }
@@ -355,7 +349,8 @@ steps:
       [ -n "$RECORD" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; exit 1; }
       g() { printf '%s' "${1:-}" | amplihack orch helper extract-json --require-field "$2" \
               | amplihack orch helper extract-field --field "$2" --default "$3"; }
-      # Whole-value checks: grep -x matches line by line, so an embedded newline would pass and split the one-line record.
+      # Whole-value checks: grep -x matches line by line, so a value with an
+      # embedded newline would pass and split the one-line record.
       hex() { case "${#1}" in 40|64) ;; *) return 1 ;; esac; case "$1" in *[!0123456789abcdef]*) return 1 ;; esac; }
       digits() { case "$1" in ''|*[!0123456789]*) return 1 ;; esac; }
       VERDICT="$(printf '%s' "${RECIPE_VAR_crusty_verdict:-}" \
@@ -379,8 +374,9 @@ steps:
         exit 1
       fi
       LABEL="$(printf '%s' "${AUTODRIVE_ROUND_LABEL:-round}" | tr -c 'A-Za-z0-9._-' '_')"
-      # The merge gate reads this record as criterion-3 evidence only when no one else could have written it, so it is
-      # created new under umask 077, whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
+      # The merge gate reads this record as criterion-3 evidence only when no
+      # one else could have written it, so it is created new under umask 077,
+      # whatever the caller's umask (autodrive_state.sh, PRIVATE STATE).
       umask 077
       [ -f "${RECORD}.findings" ] || : > "${RECORD}.findings"
       rm -f -- "$RECORD"

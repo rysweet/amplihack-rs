@@ -243,8 +243,7 @@ fn context_file_non_strings_are_compact_json() {
 // The runner writes `RECIPE_VAR_<a>__<b>` only for fields the current object
 // has, so a nested name can be a parent run's value. `write_context_value a.b`
 // reads `RECIPE_VAR_a` and takes field `b` from its JSON; it never builds or
-// reads `RECIPE_VAR_a__b`. See docs/reference/auto-drive-to-merge.md, "Dotted
-// keys in `write_context_value`".
+// reads `RECIPE_VAR_a__b`. See docs/howto/pass-large-recipe-context.md.
 
 /// Run `key` to a file, expecting exit 3 and no file.
 fn assert_exit_3(mode: Mode, key: &str, env: &[(&str, &str)], dir: &Path, why: &str) {

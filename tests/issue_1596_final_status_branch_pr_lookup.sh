@@ -586,7 +586,7 @@ STEP22B_CMD="$(awk '
     in_cmd { exit }
 ' "$FINALIZE_RECIPE")"
 if printf '%s\n' "$STEP22B_CMD" | grep -q 'workflow_final_status.sh' \
-    && printf '%s\n' "$STEP22B_CMD" | grep -q 'RECIPE_VAR_worktree_setup'; then
+    && printf '%s\n' "$STEP22B_CMD" | grep -q 'worktree_setup_path.sh'; then
     record_pass "15-0: extracted step-22b's command from workflow-finalize.yaml"
 else
     record_fail "15-0: extracted step-22b's command from workflow-finalize.yaml"

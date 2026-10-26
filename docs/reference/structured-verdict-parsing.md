@@ -314,12 +314,11 @@ stdout markers are unchanged, and the checkpoint remains non-fatal (issue #834).
 The classifier (`smart-classify-route.yaml`) emits a `no_merge` boolean in its
 `parse_json` output, derived from the task description it already reads. It
 threads down as the context var `no_merge`, which
-`workflow-terminal-state.yaml` reads as `${RECIPE_VAR_no_merge:-}` only. A bare
-`NO_MERGE` is read only as the
-[`NO_MERGE` override](auto-drive-to-merge.md#no_merge-override): it can switch
-merging off, never on (#1561).
+`workflow-terminal-state.yaml` reads from `RECIPE_VAR_no_merge` through
+`no_merge_flag`. A bare `NO_MERGE` can only switch merging off; see the
+[`NO_MERGE` override](auto-drive-to-merge.md#no_merge-override).
 Terminal-state consumes the structured flag via an engine `condition:` or that
-`RECIPE_VAR_` read, never a prose regex. The "only suppress merge, never fabricate"
+read, never a prose regex. The "only suppress merge, never fabricate"
 semantics and the explicit-flag path are unchanged.
 
 Because intent is now a structured field, previously unmatched phrasings — "hold

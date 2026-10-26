@@ -1080,13 +1080,11 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     }
 }
 
-// #1561: the worktree path is read from the JSON in RECIPE_VAR_worktree_setup,
-// so neither an inherited WORKTREE_SETUP_WORKTREE_PATH nor a nested
-// RECIPE_VAR_worktree_setup__worktree_path (written only for fields the
-// current object has) can outrank the recipe's own worktree. The read is the
-// start of a line that then applies the path checks. A value that is not
-// JSON is named by a WARNING rather than aborting the step with jq's error.
-const STEP_20B_CONTEXT_DEFAULT: &str = r#"_ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: "#;
+// #1561: the worktree path comes from worktree_setup_path.sh, which reads only
+// the JSON in RECIPE_VAR_worktree_setup and checks it, so neither an inherited
+// WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
+// can outrank the recipe's own worktree. A rejected or unset path skips the step.
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "worktree path gone"; cd -P "$wt""#;
 
 /// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
 pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
@@ -1265,7 +1263,7 @@ mod finalize_skip_reasons {
             assert_eq!(output.status.code(), Some(0), "{label}\nstderr:\n{stderr}");
             if label == "not a git directory" {
                 assert!(
-                    stderr.contains("worktree_setup.worktree_path is not a resolved worktree root"),
+                    stderr.contains("worktree-setup-rejected: "),
                     "{label}: the #1561 path check names why the path was dropped\nstderr:\n{stderr}"
                 );
             }
@@ -1307,6 +1305,10 @@ const PHASE1_COMMIT_SITES: [(&str, &str); 3] = [
     ("workflow-publish.yaml", "step-15-commit-push"),
 ];
 
+/// The commit sites' worktree read: a failure empties the path, so the
+/// `${WORKTREE_SETUP_WORKTREE_PATH:?…}` check after it stops the step (#1528).
+const COMMIT_SITE_WORKTREE_READ: &str = r#")" || WORKTREE_SETUP_WORKTREE_PATH="""#;
+
 const PHASE1_REFUSAL_TAIL: &str = " is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)";
 
 #[test]
@@ -1322,8 +1324,9 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
         let add = shell_command_offset(command, add_command)
             .unwrap_or_else(|| panic!("{recipe}/{step} must execute `{add_command}`"));
         assert!(
-            command.contains(STEP_20B_CONTEXT_DEFAULT),
-            "{recipe}/{step}: the worktree default must not fall back to REPO_PATH"
+            command.contains(COMMIT_SITE_WORKTREE_READ),
+            "{recipe}/{step}: the worktree path must come from worktree_setup_path.sh and \
+             a rejected or unset one must stop at the `:?` check, never fall back to REPO_PATH"
         );
         assert!(
             !command[..add].contains("${REPO_PATH:-}}}"),
@@ -1501,9 +1504,7 @@ mod phase1_commit_runtime {
                 }
                 if label == "subdirectory of a linked worktree" {
                     assert!(
-                        stderr.contains(
-                            "worktree_setup.worktree_path is not a resolved worktree root"
-                        ),
+                        stderr.contains("worktree-setup-rejected: "),
                         "{step}/{label}: expected the #1561 path-check warning\nstderr:\n{stderr}"
                     );
                 }

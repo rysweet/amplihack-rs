@@ -1580,12 +1580,13 @@ assert_1561_terminal_state_rows() {
     )
 
     # NO_MERGE is off-only: a bare value can add a no-merge, never clear one.
+    # The INFO line appears only when the bare value is what turns merging off.
     local spec row recipe_nm bare_nm want_merge want_info
     for spec in \
         "1561-terminal-recipe-true-bare-unset|true|<unset>|false|no" \
         "1561-terminal-recipe-true-bare-false|true|false|false|no" \
         "1561-terminal-recipe-true-bare-empty|true||false|no" \
-        "1561-terminal-recipe-true-bare-true|true|true|false|yes" \
+        "1561-terminal-recipe-true-bare-true|true|true|false|no" \
         "1561-terminal-recipe-false-bare-true|false|true|false|yes" \
         "1561-terminal-recipe-false-bare-maybe|false|maybe|true|no" \
         "1561-terminal-recipe-false-bare-unset|false|<unset>|true|no" \
@@ -1605,7 +1606,7 @@ assert_1561_terminal_state_rows() {
         else
             if grep -qF 'bare NO_MERGE env' "${e}"; then
                 cat "${e}" >&2
-                fail "${row}: the override INFO line must appear only when the bare NO_MERGE is truthy"
+                fail "${row}: the override INFO line must appear only when the bare NO_MERGE switches merging off"
             fi
         fi
     done
@@ -2098,19 +2099,19 @@ assert_sanitize_cli_output_redacts_secrets() {
 }
 
 # Issue #1561: a worktree_setup that is not JSON, or a worktree_path that fails
-# the V4 checks, is named rather than hidden. step-20a skips after a WARNING;
-# step-16 stops with STOP: worktree-setup-invalid and never runs gh pr create.
+# the checks in worktree_setup_path.sh, is named rather than hidden. step-20a
+# skips after the tool's WARNING; step-16 stops and never runs gh pr create.
 # An unset base still falls back to repo_path in step-16, as before.
 assert_1561_worktree_setup_invalid_rows() {
     local step20a="${WORK}/1561-step-20a.sh" cwd="${WORK}/1561-ws-cwd"
     local o="${WORK}/1561-ws.out" e="${WORK}/1561-ws.err" log="${WORK}/1561-ws-gh.log" rc
-    local warn20a='WARNING: step-20a-artifact-guard: worktree_setup is not valid JSON; treated as missing (#1561)'
-    local stop16='STOP: worktree-setup-invalid: step-16-create-draft-pr:'
+    local warn20a='WARNING: worktree-setup-not-json: step-20a-artifact-guard: worktree_setup is not one JSON object (#1561)'
+    local stop16='worktree-setup-'
     extract_step_command "${FINALIZE_RECIPE}" "step-20a-artifact-guard" "${step20a}"
     mkdir -p "${cwd}" "${WORK}/1561-ws-rel"
 
     rc=0
-    ( cd "${cwd}"; export RECIPE_VAR_worktree_setup='not json'; bash "${step20a}" ) >"${o}" 2>"${e}" || rc=$?
+    ( cd "${cwd}"; export AMPLIHACK_HOME="${REPO_ROOT}" RECIPE_VAR_worktree_setup='not json'; bash "${step20a}" ) >"${o}" 2>"${e}" || rc=$?
     [ "${rc}" -eq 0 ] || { cat "${e}" >&2; fail "1561-ws-corrupt-step-20a: expected exit 0, got ${rc}"; }
     grep -qF "${warn20a}" "${e}" || { cat "${e}" >&2; fail "1561-ws-corrupt-step-20a: the named warning is missing"; }
     grep -qF 'skipping the artifact guard' "${e}" || { cat "${e}" >&2; fail "1561-ws-corrupt-step-20a: the step did not skip"; }
@@ -2135,14 +2136,14 @@ assert_1561_worktree_setup_invalid_rows() {
         "not-a-root|$(jq -nc --arg p "${cwd}" '{worktree_path: $p}')"; do
         base="${row#*|}"; rc=0; run_1561_step16 "${base}" || rc=$?
         [ "${rc}" -ne 0 ] || { cat "${e}" >&2; fail "1561-ws-${row%%|*}-step-16: expected a non-zero exit"; }
-        grep -qF "${stop16}" "${e}" || { cat "${e}" >&2; fail "1561-ws-${row%%|*}-step-16: STOP: worktree-setup-invalid is missing"; }
+        grep -qF "${stop16}" "${e}" || { cat "${e}" >&2; fail "1561-ws-${row%%|*}-step-16: the worktree_setup_path.sh warning is missing"; }
         if grep -q '^pr create' "${log}"; then fail "1561-ws-${row%%|*}-step-16: gh pr create ran after a rejected worktree_setup"; fi
     done
 
     rc=0; run_1561_step16 "<unset>" || rc=$?
     [ "${rc}" -eq 0 ] || { cat "${e}" >&2; fail "1561-ws-unset-step-16: expected the repo_path fallback to succeed, got ${rc}"; }
     grep -q '^pr create' "${log}" || { cat "${e}" >&2; fail "1561-ws-unset-step-16: gh pr create did not run from repo_path"; }
-    if grep -qF 'STOP:' "${e}"; then cat "${e}" >&2; fail "1561-ws-unset-step-16: an unset base must not STOP"; fi
+    if grep -qE 'worktree-setup-(not-json|rejected)' "${e}"; then cat "${e}" >&2; fail "1561-ws-unset-step-16: an unset base must not be rejected"; fi
 
     echo "  PASS[1561-worktree-setup]: a corrupt base warns and skips step-20a; a corrupt or rejected path stops step-16 before gh; an unset base still falls back to repo_path"
 }

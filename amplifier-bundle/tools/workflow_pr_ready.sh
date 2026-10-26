@@ -20,23 +20,9 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 127
 fi
 
-# Read field <field> of the JSON object in the base variable RECIPE_VAR_<key>
-# (#1561). The runner writes RECIPE_VAR_<key> for every declared key, but a
-# nested name only for fields the current object has, so a nested name can
-# hold a parent run's value and is never read. Prints nothing for an unset or
-# empty key, a value that is not exactly one JSON object, or a missing or null
-# field; `false` and `0` print as values. A value that is set but is not one
-# object also prints a WARNING to stderr. Callers treat empty as "not reported".
-rv_field() {
-  local key="$1" field="$2" var out
-  [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
-  var="RECIPE_VAR_${key}"
-  [ -n "${!var:-}" ] || return 0
-  out="$(printf '%s' "${!var}" \
-    | jq -r -s --arg f "$field" 'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one object") end | if has($f) and .[$f] != null then .[$f] | tostring else empty end' 2>/dev/null)" \
-    || { echo "WARNING: rv_field: RECIPE_VAR_${key} is not a single JSON object; treated as missing (#1561)" >&2; return 0; }
-  printf '%s' "$out"
-}
+# rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+  || { echo "ERROR: workflow_pr_ready.sh: recipe_var.sh not found beside it" >&2; exit 2; }
 
 PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
 PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"

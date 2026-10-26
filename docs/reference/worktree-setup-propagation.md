@@ -109,28 +109,23 @@ This is why every consuming sub-recipe must explicitly declare `worktree_setup` 
 
 ## Shell variable expansion
 
-Inside shell steps, `worktree_setup` is a JSON object. The recipe runner
-exports each nested field as `RECIPE_VAR_<key>__<field>`; it sets no
-upper-case alias for an object, so `WORKTREE_SETUP_WORKTREE_PATH` is never
-set by the runner:
+Inside shell steps, `worktree_setup` is a JSON object in
+`RECIPE_VAR_worktree_setup`. The runner sets no upper-case alias for an
+object, and it writes nested `RECIPE_VAR_worktree_setup__<field>` names only
+for the fields the current object has, so neither a bare
+`WORKTREE_SETUP_WORKTREE_PATH` nor a nested name is read; either can hold a
+parent run's value.
 
-| JSON path | Environment variable | Example value |
-|-----------|---------------------|---------------|
-| `worktree_setup.worktree_path` | `RECIPE_VAR_worktree_setup__worktree_path` | `/tmp/worktrees/feat-auth-1234` |
-| `worktree_setup.branch_name` | `RECIPE_VAR_worktree_setup__branch_name` | `feat/add-auth-1234` |
-| `worktree_setup.is_new_worktree` | `RECIPE_VAR_worktree_setup__is_new_worktree` | `true` |
+| JSON path | Read with | Example value |
+|-----------|-----------|---------------|
+| `worktree_setup.worktree_path` | [`worktree_setup_path.sh <step-label>`](../../amplifier-bundle/tools/worktree_setup_path.sh) | `/tmp/worktrees/feat-auth-1234` |
+| `worktree_setup.branch_name` | `rv_field worktree_setup branch_name` ([`recipe_var.sh`](../../amplifier-bundle/tools/recipe_var.sh)) | `feat/add-auth-1234` |
 
-Each step that needs the worktree assigns a local copy first, then uses it:
-
-```bash
-WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-}"
-```
-
-The assignment always replaces the variable, so a `WORKTREE_SETUP_WORKTREE_PATH`
-inherited from the shell or a parent run is never used (issue #1561; see
+`worktree_setup_path.sh` prints the path only when it is a resolved worktree
+root, and otherwise exits non-zero; each step assigns the result to a local
+`WORKTREE_SETUP_WORKTREE_PATH` and decides what a failure means (see the
+tool's header and
 [Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
-Steps in `workflow-publish` fall back to `${REPO_PATH:-}` after the
-`RECIPE_VAR_` read.
 
 ### Directory access tiers
 

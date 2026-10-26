@@ -162,14 +162,15 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
 echo "=== auto-drive-to-merge contract ==="
 
-WORK="$(mktemp -d "${TMPDIR:?TMPDIR must point at scratch space, never /tmp}/adm-test.XXXXXX")"
+# mktemp -d uses TMPDIR when it is set and /tmp otherwise.
+WORK="$(mktemp -d)" || { echo "HARNESS-ERROR: mktemp -d failed (TMPDIR=${TMPDIR:-unset})" >&2; exit 2; }
 trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
 WORK_PHYS="$(cd "${WORK}" && pwd -P)"
 # The resolver cases run from a directory that must not be inside any git work
 # tree; scratch space under a checkout (say <repo>/target/tmp) would let them
 # find that checkout's bundle and fail for the wrong reason.
 if git -C "${WORK_PHYS}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "HARNESS-ERROR: TMPDIR (${TMPDIR}) is inside a git work tree; point it at scratch space outside any repository" >&2
+  echo "HARNESS-ERROR: the scratch dir ${WORK_PHYS} (TMPDIR=${TMPDIR:-unset}) is inside a git work tree; point TMPDIR at scratch space outside any repository" >&2
   exit 2
 fi
 # Every step body runs with HOME here, never the real one (issue #1517).
@@ -2045,18 +2046,15 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 5z2. AUTODRIVE_LAUNCH_TOOLS is checked before a round runs the guard from it
-#      (#1561 S-F3, #1543).
+# 5z2. AUTODRIVE_LAUNCH_TOOLS is checked before a round trusts the guard
+#      it names (#1561, #1543).
 # ---------------------------------------------------------------------------
-# The launch-tree pin is the one bare name besides NO_MERGE that a round step
-# still reads. An empty value once ran /autodrive_worktree_guard.sh from the
-# filesystem root, and a relative one ran whatever the cwd held. Each step that
-# runs the guard must refuse an empty, relative, non-directory or guard-less
-# value with STOP: autodrive-launch-tools-invalid before any `bash` call.
-# A decoy guard that writes a marker sits where an unchecked path would reach
-# it (cwd/tools for the relative case, and next to the guard-less directory).
-# A positive control first proves the same step reaches a valid stub guard, so
-# a step that stops early for another reason cannot pass a negative row.
+# The rounds run "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh", so
+# an empty or relative value is looked up under / and never reaches a guard in
+# the working directory, and the guard itself refuses a value that is not one
+# absolute line naming its own directory. A decoy guard that writes a marker
+# sits where an unchecked relative path would reach it. A positive control
+# first proves the same step reaches a valid stub guard.
 LT_MARK="${WORK}/lt-marker"
 lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
   mkdir -p -- "$1"
@@ -2102,22 +2100,38 @@ for r in autodrive-crusty-round autodrive-merge-round; do
       LT_AFTER="$(lt_snapshot "${LT_CWD}")"
       LT_WHY=""
       [ "${LT_RC}" -ne 0 ] || LT_WHY="${LT_WHY} exited 0;"
-      printf '%s' "${LT_ERR}" | grep -qF 'STOP: autodrive-launch-tools-invalid' || LT_WHY="${LT_WHY} no 'STOP: autodrive-launch-tools-invalid';"
       [ ! -e "${LT_MARK}" ] || LT_WHY="${LT_WHY} a decoy guard ran;"
-      printf '%s' "${LT_ERR}" | grep -qF '/autodrive_worktree_guard.sh: No such file' && LT_WHY="${LT_WHY} bash was handed an unchecked guard path;"
       [ "${LT_BEFORE}" = "${LT_AFTER}" ] || LT_WHY="${LT_WHY} files appeared or the review dir changed;"
-      case "${kind}" in not-dir|no-guard)
-        printf '%s' "${LT_ERR}" | grep -qF -- "${LT_VAL}" && LT_WHY="${LT_WHY} the message prints the value;" ;;
-      esac
       if [ -z "${LT_WHY}" ]; then
-        pass "1561-launch-tools-${kind}-${rshort}${sfx}" "${r}/${st} stops on a ${kind} AUTODRIVE_LAUNCH_TOOLS before running any guard"
+        pass "1561-launch-tools-${kind}-${rshort}${sfx}" "${r}/${st} stops on a ${kind} AUTODRIVE_LAUNCH_TOOLS without running any guard"
       else
         fail "1561-launch-tools-${kind}-${rshort}${sfx}" "rc=${LT_RC};${LT_WHY} err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
       fi
     done
   done
 done
-unset LT_BODY LT_CWD LT_VAL LT_BEFORE LT_AFTER LT_WHY LT_ERR LT_RC
+# The guard's own check: run directly, it refuses a value that is empty,
+# relative, two lines, or a directory other than its own.
+LT_OTHER="$(mktemp -d "${WORK}/lt-other.XXXXXX")"
+for kind in empty relative two-lines other-dir; do
+  case "${kind}" in
+    empty)     LT_VAL="" ;;                                   # deliberately stale (#1561)
+    relative)  LT_VAL="amplifier-bundle/tools" ;;             # deliberately stale (#1561)
+    two-lines) LT_VAL="${TOOLS}"$'\n'"${TOOLS}" ;;            # deliberately stale (#1561)
+    other-dir) LT_VAL="${LT_OTHER}" ;;                        # deliberately stale (#1561)
+  esac
+  for sub in round-guard "round-index-check ${LAUNCH} lt-stamp step-x"; do
+    # shellcheck disable=SC2086 # $sub is the subcommand and its arguments
+    LT_ERR="$(cd -- "${REPO_ROOT}" && env REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${LT_VAL}" \
+      bash "${TOOLS}/autodrive_worktree_guard.sh" ${sub} 2>&1 >/dev/null)"; LT_RC=$?
+    if [ "${LT_RC}" -eq 1 ] && printf '%s' "${LT_ERR}" | grep -qF 'STOP: autodrive-launch-tools-invalid'; then
+      pass "1561-launch-tools-guard-${kind}-${sub%% *}" "the guard refuses a ${kind} AUTODRIVE_LAUNCH_TOOLS"
+    else
+      fail "1561-launch-tools-guard-${kind}-${sub%% *}" "rc=${LT_RC} err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+    fi
+  done
+done
+unset LT_BODY LT_CWD LT_VAL LT_BEFORE LT_AFTER LT_WHY LT_ERR LT_RC LT_OTHER
 
 crusty_verdict() {
   PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="$1" AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" \
@@ -2614,7 +2628,7 @@ NM_BODY="$(extract_step_command "${RECIPES}/autodrive-build.yaml" "step-01b-no-m
 NM_ERR="${WORK_PHYS}/1561-nm.err"
 nm_row() { # nm_row <row> <want: blocks|merges> [VAR=value ...]
   local row="$1" want="$2" out got; shift 2
-  out="$(env -u NO_MERGE -u RECIPE_VAR_no_merge -u TASK_DESCRIPTION -u REQUIREMENTS \
+  out="$(env -u NO_MERGE -u RECIPE_VAR_no_merge -u TASK_DESCRIPTION -u REQUIREMENTS AMPLIHACK_HOME="${REPO_ROOT}" \
     RECIPE_VAR_task_description='build the thing' RECIPE_VAR_requirements='it works' \
     "$@" bash -c "${NM_BODY}" 2>"${NM_ERR}" </dev/null)"
   if [[ "$(printf '%s' "$out" | jq -r .task_description 2>/dev/null)" == *"${NM_MARKER}"* ]]; then got=blocks; else got=merges; fi

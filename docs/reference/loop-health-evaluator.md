@@ -932,8 +932,7 @@ that obeys the "emit only the JSON object" contract makes
 **absent** at runtime, and a bare `${LOOP_EVIDENCE:-}` read is silently empty,
 or worse, holds a stale value inherited from whatever launched the runner.
 
-Every read in these bricks uses the `RECIPE_VAR_` name alone, as every other
-bundle recipe does:
+Every read in these bricks uses the `RECIPE_VAR_` name alone:
 
 ```bash
 EV="${RECIPE_VAR_loop_evidence:-}"
@@ -945,12 +944,10 @@ cannot replace the brick's own evidence or verdict (see
 Dropping the `RECIPE_VAR_` read makes the recipe inert: the reads miss,
 `--default true` fires, and every run reports a `terminal_policy_refusal` that
 never happened. `tests/integration/issue_1337_loop_health_evaluator_test.rs`
-guards the invariant statically: it fails on any read of `LOOP_EVIDENCE`,
-`LOOP_HEALTH` or `LOOP_HEALTH_ASSESSMENT` in a step command, and it fails if
-any of the three `RECIPE_VAR_` reads is missing, so it cannot pass vacuously.
-The [bundle-wide guard](auto-drive-to-merge.md#the-bundle-wide-guard) rejects a
-bare-first read, and the contract test proves it end to end through the real
-runner.
+fails on any read of `LOOP_EVIDENCE`, `LOOP_HEALTH` or
+`LOOP_HEALTH_ASSESSMENT` in a step command, and on a missing `RECIPE_VAR_`
+read of any of the three; the contract test proves it end to end through the
+real runner.
 
 ### Which JSON object is the verdict
 

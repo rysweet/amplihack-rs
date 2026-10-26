@@ -59,7 +59,7 @@ following invariants:
 | Robust JSON edit | Sets `package.json` `.version` via `jq` (with a `python3`/`node` fallback), never `sed`/`grep` on JSON. Preserves indentation and a trailing newline. |
 | Guarded | Runs only when `package.json` exists; non-JS workspaces are skipped, not errored. Also skips cleanly (`exit 0`) if the version cannot be read. |
 | Idempotent | Safe to run when the value already matches; re-running produces no diff. |
-| Worktree resolution | Resolves the target tree from `RECIPE_VAR_worktree_setup__worktree_path`, then `REPO_PATH`, the same chain as the sibling `step-14b-sync-lockfile`. An inherited `WORKTREE_SETUP_WORKTREE_PATH` is ignored: the step assigns that name as a local copy and never reads it as an input. |
+| Worktree resolution | Gets the target tree from [`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh), which reads only `RECIPE_VAR_worktree_setup`, as the sibling `step-14b-sync-lockfile` does. When `worktree_setup` has no path (exit `3`) the step uses `repo_path`; any other failure stops it. |
 | No double-staging | The step does not `git add` `package.json`. `step-15-commit-push` stages it via `git add -A`. |
 | Condition guard | Shares the same `condition` as its sibling steps so it only runs when publishing. |
 | No `--locked` change | The step never weakens, removes, or bypasses a `--locked` flag. |
@@ -68,7 +68,8 @@ following invariants:
 
 ```bash
 set -euo pipefail
-WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}"
+WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14c-sync-package-json)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
 cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
 
 # Issue #925: step-14 bumps [workspace.package].version in Cargo.toml and
@@ -182,8 +183,8 @@ The step needs no feature-specific flag. It uses the standard publish context:
 
 | Context key / variable | Required | How the step uses it |
 | --- | --- | --- |
-| `worktree_setup.worktree_path` (via `RECIPE_VAR_worktree_setup__worktree_path`) | Yes | Directory to `cd` into before reading `Cargo.toml` and rewriting `package.json`. Populated by the `workflow-worktree` sub-recipe (step-04). |
-| `REPO_PATH` | Fallback | Final fallback if the worktree path is unavailable. |
+| `worktree_setup.worktree_path` (read from `RECIPE_VAR_worktree_setup` by `worktree_setup_path.sh`) | Yes | Directory to `cd` into before reading `Cargo.toml` and rewriting `package.json`. Populated by the `workflow-worktree` sub-recipe (step-04). |
+| `repo_path` | Fallback | Used when `worktree_setup` has no worktree path. |
 | `condition` (`goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'`) | Yes | Gates the step to publish-only runs, matching its sibling steps verbatim. |
 
 ## Behavior on non-JS workspaces

@@ -32,7 +32,6 @@ context:
   terminal_adjudication: ""
   finalizer_step_status: ""
   workflow_result: ""
-  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   issue_number: ""
   pr_number: ""
   pr_url: ""
@@ -85,10 +84,10 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      _ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-20a-artifact-guard: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_SETUP_WORKTREE_PATH=""; _ws_corrupt=1; }; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp=""; _wsp_rejected=1 ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-20a-artifact-guard: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; _wsp_rejected=1; } ;; ?*) _wsp=""; _wsp_rejected=1 ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20a $1; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
-      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20a-artifact-guard)" || skip "worktree path gone"; cd -P "$wt"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -100,10 +99,10 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      _ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-20b-push-cleanup: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_SETUP_WORKTREE_PATH=""; _ws_corrupt=1; }; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp=""; _wsp_rejected=1 ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-20b-push-cleanup: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; _wsp_rejected=1; } ;; ?*) _wsp=""; _wsp_rejected=1 ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
       # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
       skip() { echo "WARNING: step-20b $1; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
-      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "worktree path gone"; cd -P "$wt"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       export GIT_PAGER=cat
@@ -223,16 +222,17 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
       set -euo pipefail
-      _ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-21-pr-ready: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_SETUP_WORKTREE_PATH=""; _ws_corrupt=1; }; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp=""; _wsp_rejected=1 ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-21-pr-ready: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; _wsp_rejected=1; } ;; ?*) _wsp=""; _wsp_rejected=1 ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-21-pr-ready)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      PR_URL="${RECIPE_VAR_pr_url:-}"; [ -n "$PR_URL" ] || PR_URL="$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" then .pr_url // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-21-pr-ready: pr_publish_result is not valid JSON; treated as missing (#1561)" >&2; PR_URL=""; }
-      PR_NUMBER="${RECIPE_VAR_pr_number:-}"; [ -n "$PR_NUMBER" ] || PR_NUMBER="$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" and has("pr_number") and .pr_number != null then .pr_number | tostring else empty end' 2>/dev/null)" || { echo "WARNING: step-21-pr-ready: pr_publish_result is not valid JSON; treated as missing (#1561)" >&2; PR_NUMBER=""; }
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
-      if [ -z "$PR_URL" ]; then :; fi
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
-      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
+      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
+      [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"
+      [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"
+      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"
+      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
       [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER"
     output: "pr_ready_result"
@@ -264,21 +264,21 @@ steps:
     command: |
       set -euo pipefail
       : "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
-      # Issue #1596: the final status reads the run's branch and HEAD from cwd
-      # (branch PR lookup, scoped PR match). REPO_PATH is the main checkout, not
-      # the run's branch, so enter the run's worktree first, as step-21 does.
-      _ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-22b-final-status: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_SETUP_WORKTREE_PATH=""; _ws_corrupt=1; }; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp=""; _wsp_rejected=1 ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-22b-final-status: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; _wsp_rejected=1; } ;; ?*) _wsp=""; _wsp_rejected=1 ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
-      if [ -n "${WORKTREE_SETUP_WORKTREE_PATH:-}" ] && [ -d "$WORKTREE_SETUP_WORKTREE_PATH" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b worktree path unset or gone, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
-      export WORKTREE_SETUP_WORKTREE_PATH
+      # Issue #1596: the final status reads the run's branch and HEAD from cwd (branch PR lookup,
+      # scoped PR match). REPO_PATH is the main checkout, so enter the run's worktree first.
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-22b-final-status)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b worktree path unset or gone, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="${RECIPE_VAR_pr_url:-}"; [ -n "$PR_URL" ] || PR_URL="$(printf '%s' "${RECIPE_VAR_pr_publish_result:-}" | jq -r 'if type=="object" then .pr_url // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-22b-final-status: pr_publish_result is not valid JSON; treated as missing (#1561)" >&2; PR_URL=""; }
-      if [ -z "$PR_URL" ]; then : "N/A"; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
-      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
+      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"
+      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"

@@ -105,8 +105,9 @@ assert "step-16 contains remote host type detection or github.com check" \
 assert "step-21 references PR_URL variable" \
     "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -q 'PR_URL'"
 
+# step-21 runs workflow_pr_ready.sh, which guards PR_URL itself (#1561).
 assert "step-21 checks PR_URL before gh pr ready" \
-    "awk '/id: .step-21-pr-ready/,/output:/' '$FINALIZE_FILE' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
+    "grep -q 'workflow_pr_ready.sh' '$FINALIZE_FILE' && cat '$REPO_ROOT/amplifier-bundle/tools/workflow_pr_ready.sh' | grep -Eq '\\[ -z .PR_URL|\\[ -n .PR_URL|-z \".PR_URL|-n \".PR_URL|PR_URL.*=~|\\[\\[.*PR_URL'"
 
 # --- Test 9: Runtime remote detection function tests -------------------------
 # These test the expected shell logic for classifying remote URLs.
