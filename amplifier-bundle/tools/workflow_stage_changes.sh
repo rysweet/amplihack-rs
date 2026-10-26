@@ -4,14 +4,14 @@
 #
 # Stages tracked modifications and deletions, then every untracked,
 # non-ignored file except build and packaging artefacts: a path with a
-# component node_modules or __pycache__, a component ending in .egg-info, or
-# the file name uv.lock, at any depth; a `target` directory at the top or one
-# holding Cargo's CACHEDIR.TAG, at any depth (so source such as
-# src/target/mod.rs is still staged); and amplihack's own
-# runtime state at the top: .claude/runtime/ and .amplihack/. An agent run in
-# the worktree (a hook-repair round) writes both. A tracked uv.lock, or a
-# tracked file under those two directories, is still staged when modified.
-# Excluded paths are reported on stderr.
+# component node_modules or __pycache__, or a component ending in .egg-info,
+# at any depth; a `target` directory at the top or one holding Cargo's
+# CACHEDIR.TAG, at any depth (so source such as src/target/mod.rs is still
+# staged); and amplihack's own runtime state at the top: .claude/runtime/ and
+# .amplihack/. An agent run in the worktree (a hook-repair round) writes both.
+# Lockfiles (uv.lock, Cargo.lock, package-lock.json ...) are source and are
+# staged. A tracked file under the two runtime directories is still staged
+# when modified. Excluded paths are reported on stderr.
 #
 # Untracked paths are passed as literal pathspecs, so a file named `*` or
 # `:(glob)x` is a name, not a pattern (SR-5). Writes nothing to stdout,
@@ -27,11 +27,10 @@ workflow_stage_filter() {
   local top="$1" path rest prefix cargo_dir=""
   # The artefact test is inline in this loop, not a per-path function call:
   # one call per untracked path was most of the cost on a large un-ignored node_modules or target tree.
-  # `*/uv.lock/` is the file name uv.lock at any depth; the two runtime
-  # directories are matched at the top only.
+  # The two runtime directories are matched at the top only.
   while IFS= read -r -d '' path; do
     case "/${path}/" in
-      */node_modules/*|*/__pycache__/*|*.egg-info/*|*/uv.lock/|/.claude/runtime/*|/.amplihack/*|/target/*)
+      */node_modules/*|*/__pycache__/*|*.egg-info/*|/.claude/runtime/*|/.amplihack/*|/target/*)
         printf 'stage_workflow_changes: skipped %s\n' "$path" >&2; continue ;;
       */target/*)
         # The last Cargo directory found is remembered, so a large build tree

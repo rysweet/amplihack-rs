@@ -269,7 +269,7 @@ install_pre_commit_hook() {
     hook="$(hooks_dir "$1")/pre-commit"
     cat > "${hook}" <<'HOOK'
 #!/usr/bin/env bash
-printf 'pre-commit SKIP=%s\n' "${SKIP-unset}" >> "${HOOK_LOG:-/dev/null}"
+printf 'pre-commit SKIP=%s ALLOW_NO_CONFIG=%s\n' "${SKIP-unset}" "${PRE_COMMIT_ALLOW_NO_CONFIG-unset}" >> "${HOOK_LOG:-/dev/null}"
 if git diff --cached -z --name-only --diff-filter=ACM | xargs -0 -r grep -l FORMAT_ME -- >/dev/null 2>&1; then
   echo "cargo fmt................................................................Failed"
   id="${HOOK_OWN_ID-cargo-fmt}"
@@ -360,6 +360,9 @@ expect_driver_hygiene() {
     if [[ -f "${dir}/hook.log" ]] && grep -q 'SKIP=[^u]' "${dir}/hook.log"; then fail "${label}: a hook ran with SKIP set"; else pass; fi
     [[ -z "$(git -C "${dir}/repo" status --porcelain --untracked-files=all | grep -E 'round-[0-9]+\.evidence|hook-repair' || true)" ]] \
         && pass || fail "${label}: evidence was written inside the worktree"
+    # The first attempt's output is kept in the git dir only while it runs.
+    [[ -z "$(find "$(git -C "${dir}/repo" rev-parse --absolute-git-dir)" -maxdepth 1 -name 'hook-repair-attempt.*' -print)" ]] \
+        && pass || fail "${label}: the first attempt's output was left in the git directory"
 }
 
 # commit_case <case-dir> [content]: a repo with the pre-commit hook and one
@@ -410,7 +413,11 @@ section_a() {
     printf 'pub mod x;\n' > "${repo}/src/target/mod.rs"
     printf 'x\n' > "${repo}/py/__pycache__/m.pyc"
     printf 'x\n' > "${repo}/py/pkg.egg-info/PKG-INFO"
+    # Lockfiles are source: an untracked one is staged at any depth.
     printf 'x\n' > "${repo}/sub/uv.lock"
+    mkdir -p "${repo}/web"
+    printf '{}\n' > "${repo}/web/package-lock.json"
+    printf 'x\n' > "${repo}/Cargo.lock"
     printf 'x\n' > "${repo}/ignored/file"
     # Near misses that must be staged: the rule is on whole components.
     printf 'x\n' > "${repo}/targets/keep.txt"
@@ -441,7 +448,11 @@ section_a() {
     expect_file_contains "A: targets/ is not target/" "${dir}/staged" "A	targets/keep.txt"
     expect_file_contains "A: a source directory named target is staged" "${dir}/staged" "A	src/target/mod.rs"
     expect_file_contains "A: my_node_modules/ is not node_modules/" "${dir}/staged" "A	my_node_modules/keep.txt"
-    expect_file_contains "A: uv.lock.bak is not uv.lock" "${dir}/staged" "A	uv.lock.bak"
+    expect_file_contains "A: uv.lock.bak is staged" "${dir}/staged" "A	uv.lock.bak"
+    expect_file_contains "A: an untracked nested uv.lock is staged" "${dir}/staged" "A	sub/uv.lock"
+    expect_file_contains "A: an untracked package-lock.json is staged" "${dir}/staged" "A	web/package-lock.json"
+    expect_file_contains "A: an untracked Cargo.lock is staged" "${dir}/staged" "A	Cargo.lock"
+    expect_file_lacks "A: uv.lock is not reported as skipped" "${err}" "skipped sub/uv.lock"
     expect_file_contains "A: a file named * is staged as a name" "${dir}/staged" "A	*"
     expect_file_contains "A: a file named :(glob)x is staged as a name" "${dir}/staged" "A	:(glob)x"
     expect_file_contains "A: a nested .amplihack/ is staged" "${dir}/staged" "A	docs/.amplihack/keep.md"
@@ -449,7 +460,7 @@ section_a() {
     local excluded
     for excluded in node_modules/pkg/index.js web/node_modules/x/a.js crate/target/debug/bin \
         crate/target/CACHEDIR.TAG target/release/top \
-        py/__pycache__/m.pyc py/pkg.egg-info/PKG-INFO sub/uv.lock \
+        py/__pycache__/m.pyc py/pkg.egg-info/PKG-INFO \
         .claude/runtime/metrics/m.jsonl .amplihack/graph_db; do
         expect_file_lacks "A: ${excluded} is not staged" "${dir}/staged" "${excluded}"
         expect_file_contains "A: ${excluded} is reported on stderr" "${err}" "stage_workflow_changes: skipped ${excluded}"
@@ -526,6 +537,28 @@ section_b() {
     TMPDIR_OVERRIDE="${dir}/repo/.tmp-inside" run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "B: HR_DIR inside the worktree returns 2" "$(rc_of "${dir}")" "2"
     expect_eq "B: HR_DIR inside the worktree runs no agent" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+    expect_eq "B: HR_DIR inside the worktree is checked after the first attempt" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
+    [[ -z "$(ls -A "${dir}/repo/.tmp-inside")" ]] && pass || fail "B: nothing may be left in a TMPDIR inside the worktree"
+
+    # A first-try success creates nothing under TMPDIR, so a TMPDIR inside the
+    # worktree, missing, or read-only changes nothing (item 4 of the review).
+    local tmp_case tmp_dir
+    for tmp_case in inside missing readonly; do
+        dir="${WORK}/b-first-try-${tmp_case}"
+        commit_case "${dir}" "clean content"
+        case "${tmp_case}" in
+            inside) tmp_dir="${dir}/repo/.tmp-inside"; mkdir -p "${tmp_dir}" ;;
+            missing) tmp_dir="${dir}/no-such-tmp" ;;
+            readonly) tmp_dir="${dir}/ro-tmp"; mkdir -p "${tmp_dir}"; chmod 0500 "${tmp_dir}" ;;
+        esac
+        TMPDIR_OVERRIDE="${tmp_dir}" run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "B first try, TMPDIR ${tmp_case}: rc 0" "$(rc_of "${dir}")" "0"
+        expect_eq "B first try, TMPDIR ${tmp_case}: status ok" "$(var_of "${dir}" STATUS)" "ok"
+        expect_eq "B first try, TMPDIR ${tmp_case}: committed" "$(git -C "${dir}/repo" log -1 --format=%s)" "wip: checkpoint after implementation"
+        expect_driver_hygiene "B first try, TMPDIR ${tmp_case}" "${dir}"
+        [[ "${tmp_case}" != inside ]] || { [[ -z "$(ls -A "${dir}/repo/.tmp-inside")" ]] && pass || fail "B first try: nothing written to TMPDIR"; }
+        [[ "${tmp_case}" != readonly ]] || chmod 0700 "${dir}/ro-tmp"
+    done
 }
 
 # =============================================================================
@@ -620,6 +653,31 @@ section_c() {
     HOOK_OWN_ID="" HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "C9: at most 20 ids kept" "$(var_of "${dir}" IDS | tr ',' '\n' | grep -c .)" "20"
     expect_eq "C9: the first 20 in sort order" "$(var_of "${dir}" IDS | awk -F, '{ print $NF }')" "id20"
+
+    # C10 git's own fatal: line is not a hook rejection, even with a hook present.
+    dir="${WORK}/c10-fatal"
+    commit_case "${dir}"
+    run_driver "${dir}" commit checkpoint-after-implementation -- sh -c 'echo "fatal: unable to write new index file" >&2; exit 128'
+    expect_eq "C10: fatal: is not_hook" "$(var_of "${dir}" STATUS)" "not_hook"
+    expect_eq "C10: rc is the command's" "$(rc_of "${dir}")" "128"
+    expect_eq "C10: no agent ran" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+
+    # C11 a signing failure after the hook passed is not a hook rejection.
+    dir="${WORK}/c11-gpg"
+    commit_case "${dir}" "clean content"
+    run_driver "${dir}" commit checkpoint-after-implementation -- \
+        git -c commit.gpgsign=true -c gpg.program=false commit -m "wip: signed"
+    expect_eq "C11: gpg failure is not_hook" "$(var_of "${dir}" STATUS)" "not_hook"
+    expect_ne "C11: rc non-zero" "$(rc_of "${dir}")" "0"
+    expect_eq "C11: no agent ran" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+    expect_driver_hygiene C11 "${dir}"
+
+    # C12 the gpg message alone, from a hook that also failed, is not repaired.
+    dir="${WORK}/c12-gpg-text"
+    commit_case "${dir}"
+    printf 'error: gpg failed to sign the data\n' > "${dir}/extra"
+    HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "C12: gpg text is not_hook" "$(var_of "${dir}" STATUS)" "not_hook"
 }
 
 # Push classification lives with the push cases in section G.
@@ -788,16 +846,43 @@ section_d() {
     expect_eq "D7: missing agent line is unreported" \
         "$(stub_arg "${dir}/stub" loop-health-evaluator 1 loop_round_verdict)" "unreported"
 
-    # D8 environment-class rejection: not_fixable_in_code still goes to the
-    # evaluator, which ends the loop.
+    # D8 environment-class rejection: not_fixable_in_code, no change and the
+    # same hook output ends the loop as stuck without asking the evaluator.
     dir="${WORK}/d8-env"
     commit_case "${dir}"
-    STUB_AGENT_STATUS=not_fixable_in_code STUB_AGENT_CLASS=environment STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK \
+    STUB_AGENT_STATUS=not_fixable_in_code STUB_AGENT_CLASS=environment STUB_AGENT_ACTION=noop STUB_VERDICTS=CONTINUE \
         run_driver "${dir}" "${COMMIT_ARGS[@]}"
-    expect_eq "D8: not_fixable_in_code reaches the evaluator" \
-        "$(stub_arg "${dir}/stub" loop-health-evaluator 1 loop_round_verdict)" "not_fixable_in_code"
+    expect_eq "D8: rc 1" "$(rc_of "${dir}")" "1"
     expect_eq "D8: status stuck" "$(var_of "${dir}" STATUS)" "stuck"
     expect_eq "D8: the retry still ran" "$(hook_calls "${dir}/hook.log" pre-commit)" "2"
+    expect_eq "D8: evaluator not called" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "0"
+    expect_eq "D8: one round" "$(var_of "${dir}" ROUNDS)" "1"
+    [[ "$(var_of "${dir}" REASON)" == "no progress: "* ]] && pass || fail "D8: reason must start 'no progress: ' (got '$(var_of "${dir}" REASON)')"
+    expect_eq "D8: result loop_verdict empty" "$(result_field "${dir}" 'r["loop_verdict"]')" ""
+    expect_file_contains "D8: history records the round" "$(var_of "${dir}" EVIDENCE_DIR)/history" "output_changed=no agent=not_fixable_in_code diff=no diff"
+
+    # D8b not_fixable_in_code whose hook output changes still goes to the evaluator.
+    dir="${WORK}/d8b-env-output-changes"
+    commit_case "${dir}"
+    : > "${dir}/extra"
+    HOOK_EXTRA_OUTPUT_FILE="${dir}/extra" STUB_AGENT_BODY="echo another line >> '${dir}/extra'" \
+        STUB_AGENT_STATUS=not_fixable_in_code STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "D8b: changed output reaches the evaluator" \
+        "$(stub_arg "${dir}/stub" loop-health-evaluator 1 loop_round_verdict)" "not_fixable_in_code"
+    expect_eq "D8b: status stuck from the evaluator" "$(result_field "${dir}" 'r["loop_verdict"]')" "STUCK"
+
+    # D8c not_fixable_in_code with a staged change still goes to the evaluator.
+    dir="${WORK}/d8c-env-tree-changes"
+    commit_case "${dir}"
+    STUB_AGENT_BODY="echo note > notes.txt" \
+        STUB_AGENT_STATUS=not_fixable_in_code STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "D8c: a changed tree reaches the evaluator" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "1"
+
+    # D8d an agent that reports fixed but changed nothing still goes to the evaluator.
+    dir="${WORK}/d8d-fixed-no-change"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "D8d: fixed with no change reaches the evaluator" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "1"
 
     # D9 terminal 79 from the agent, by rc or by marker, and from the evaluator.
     local mode
@@ -839,6 +924,22 @@ section_d() {
         STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK run_driver "${dir}" "${COMMIT_ARGS[@]}"
     expect_eq "D11: HOOK_REPAIR_ROUND_RECIPE" "$(cat "${dir}/stub/hook-rejection-repair.1.path" 2>/dev/null)" "${dir}/alt/hook-rejection-repair.yaml"
     expect_eq "D11: HOOK_REPAIR_HEALTH_RECIPE" "$(cat "${dir}/stub/loop-health-evaluator.1.path" 2>/dev/null)" "${dir}/alt/loop-health-evaluator.yaml"
+
+    # D12 the kept evidence directory holds no raw agent or evaluator log.
+    local tok="gh""p_""BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    dir="${WORK}/d12-redacted-logs"
+    commit_case "${dir}"
+    STUB_AGENT_SUMMARY="pushed with ${tok}" STUB_HEALTH_REASON="saw ${tok} in the output" STUB_AGENT_ACTION=noop STUB_VERDICTS=STUCK \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    hr="$(var_of "${dir}" EVIDENCE_DIR)"
+    [[ -f "${hr}/agent-1.log" && -f "${hr}/health-1.log" ]] && pass || fail "D12: the redacted agent and evaluator logs are kept"
+    if grep -rqF -- "${tok}" "${hr}" 2>/dev/null; then fail "D12: a raw token remains in ${hr##*/}"; else pass; fi
+    expect_eq "D12: no raw attempt file" "$(find "${hr}" -name '*.raw' -o -name '*.redacted' | wc -l | tr -d ' ')" "0"
+    expect_file_contains "D12: the agent log is kept, redacted" "${hr}/agent-1.log" "agent: working on the hook rejection"
+    dir="${WORK}/d12-redacted-terminal"
+    commit_case "${dir}"
+    STUB_AGENT_SUMMARY="pushed with ${tok}" STUB_AGENT_RC=79 run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    if grep -rqF -- "${tok}" "$(var_of "${dir}" EVIDENCE_DIR)" 2>/dev/null; then fail "D12 terminal: a raw token remains"; else pass; fi
 }
 
 # =============================================================================
@@ -944,6 +1045,149 @@ section_e() {
     expect_eq "E6: refused" "$(var_of "${dir}" STATUS)" "refused"
     [[ "$(var_of "${dir}" REASON)" == "hook-config-modified: hooks/pre-commit"* ]] && pass \
         || fail "E6: reason must name hooks/pre-commit (got '$(var_of "${dir}" REASON)')"
+
+    # E7 refs and the stash: a push, a stash or a moved remote-tracking ref
+    # made during the round is refused even though HEAD stays where it was.
+    dir="${WORK}/e7-stash"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=noop STUB_AGENT_BODY='git stash -q' STUB_VERDICTS=CONTINUE run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E7 stash: refused" "$(var_of "${dir}" STATUS)" "refused"
+    expect_eq "E7 stash: reason" "$(var_of "${dir}" REASON)" "agent-changed-refs: git-stash"
+    expect_eq "E7 stash: never retried" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
+    dir="${WORK}/e7-update-ref"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=fix STUB_VERDICTS=CONTINUE \
+        STUB_AGENT_BODY='git update-ref "refs/remotes/origin/$(git branch --show-current)" "$(git commit-tree "HEAD^{tree}" -p HEAD -m x)"' \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E7 update-ref: refused" "$(var_of "${dir}" STATUS)" "refused"
+    expect_eq "E7 update-ref: reason" "$(var_of "${dir}" REASON)" "agent-changed-refs: git-refs"
+    # Another branch, as a parallel session in another worktree would move it, is not refused.
+    dir="${WORK}/e7-other-branch"
+    commit_case "${dir}"
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY='git -C ../main commit -q --allow-empty -m "parallel session"' \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E7 other branch: not refused" "$(var_of "${dir}" STATUS)" "ok"
+
+    # E8 the script a `repo: local` hook runs is protected like the config.
+    local entry_spec entry_label entry_line entry_path
+    for entry_spec in "plain|entry: scripts/check.sh|scripts/check.sh" \
+        "quoted|entry: \"./scripts/check.sh --strict\"|scripts/check.sh" \
+        "list-item|- entry: scripts/check.sh|scripts/check.sh"; do
+        IFS='|' read -r entry_label entry_line entry_path <<<"${entry_spec}"
+        dir="${WORK}/e8-local-entry-${entry_label}"
+        commit_case "${dir}"
+        git -C "${dir}/repo" reset -q -- src.txt
+        mkdir -p "${dir}/repo/scripts"
+        printf '#!/bin/sh\nexit 0\n' > "${dir}/repo/scripts/check.sh"
+        if [[ "${entry_label}" == "list-item" ]]; then
+            # The entry as the first key of its list item.
+            printf 'repos:\n  - repo: local\n    hooks:\n      %s\n        id: check\n        language: script\n' \
+                "${entry_line}" > "${dir}/repo/.pre-commit-config.yaml"
+        else
+            printf 'repos:\n  - repo: https://github.com/example/hooks\n    rev: v1\n    hooks:\n      - id: remote\n        entry: scripts/remote-only.sh\n  - repo: local\n    hooks:\n      - id: check\n        name: check\n        language: script\n        %s\n' \
+                "${entry_line}" > "${dir}/repo/.pre-commit-config.yaml"
+        fi
+        git -C "${dir}/repo" add .pre-commit-config.yaml scripts/check.sh
+        git -C "${dir}/repo" commit -qm "local hook"
+        git -C "${dir}/repo" add src.txt
+        STUB_AGENT_ACTION=fix STUB_AGENT_BODY="printf 'exit 0 # weakened\n' >> ${entry_path}" STUB_VERDICTS=CONTINUE \
+            run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "E8 ${entry_label}: refused" "$(var_of "${dir}" STATUS)" "refused"
+        expect_eq "E8 ${entry_label}: reason names the entry script" "$(var_of "${dir}" REASON)" "hook-config-modified: ${entry_path}"
+    done
+    # A remote repo's entry is relative to that repo, not this one: not protected.
+    dir="${WORK}/e8-remote-entry"
+    commit_case "${dir}"
+    git -C "${dir}/repo" reset -q -- src.txt
+    mkdir -p "${dir}/repo/scripts"
+    printf 'x\n' > "${dir}/repo/scripts/remote-only.sh"
+    printf 'repos:\n  - repo: https://github.com/example/hooks\n    rev: v1\n    hooks:\n      - id: remote\n        entry: scripts/remote-only.sh\n' \
+        > "${dir}/repo/.pre-commit-config.yaml"
+    git -C "${dir}/repo" add .pre-commit-config.yaml scripts/remote-only.sh
+    git -C "${dir}/repo" commit -qm "remote hook"
+    git -C "${dir}/repo" add src.txt
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="printf 'y\n' >> scripts/remote-only.sh" run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E8 remote entry: not refused" "$(var_of "${dir}" STATUS)" "ok"
+
+    # E9 lint configuration, at the top and nested, and Cargo.toml lint tables.
+    local -a lint_specs=(
+        "clippy-toml|clippy.toml|printf 'too-many-arguments-threshold = 99\n' > clippy.toml"
+        "dot-clippy-nested|crates/x/.clippy.toml|mkdir -p crates/x && printf 'x = 1\n' > crates/x/.clippy.toml"
+        "rustfmt-toml|rustfmt.toml|printf 'disable_all_formatting = true\n' > rustfmt.toml"
+        "dot-rustfmt|.rustfmt.toml|printf 'x = 1\n' > .rustfmt.toml"
+        "cargo-config|.cargo/config.toml|mkdir -p .cargo && printf '[build]\nrustflags = [\"-Awarnings\"]\n' > .cargo/config.toml"
+        "cargo-config-legacy|.cargo/config|mkdir -p .cargo && printf '[build]\n' > .cargo/config"
+        "cargo-lints|Cargo.toml[lints]|sed -i 's/all = \"deny\"/all = \"allow\"/' Cargo.toml"
+        "cargo-workspace-lints|crates/y/Cargo.toml[lints]|printf '[workspace.lints.rust]\nwarnings = \"allow\"\n' >> crates/y/Cargo.toml"
+    )
+    for spec in "${lint_specs[@]}"; do
+        IFS='|' read -r label entry_path body <<<"${spec}"
+        dir="${WORK}/e9-${label}"
+        commit_case "${dir}"
+        git -C "${dir}/repo" reset -q -- src.txt
+        mkdir -p "${dir}/repo/crates/y"
+        printf '[package]\nname = "x"\n\n[dependencies]\n\n[lints.clippy]\nall = "deny"\n' > "${dir}/repo/Cargo.toml"
+        printf '[package]\nname = "y"\n' > "${dir}/repo/crates/y/Cargo.toml"
+        git -C "${dir}/repo" add Cargo.toml crates/y/Cargo.toml
+        git -C "${dir}/repo" commit -qm "cargo manifests"
+        git -C "${dir}/repo" add src.txt
+        STUB_AGENT_ACTION=fix STUB_AGENT_BODY="${body}" STUB_VERDICTS=CONTINUE run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "E9 ${label}: refused" "$(var_of "${dir}" STATUS)" "refused"
+        expect_eq "E9 ${label}: reason" "$(var_of "${dir}" REASON)" "hook-config-modified: ${entry_path}"
+    done
+    # A Cargo.toml change outside the lint tables is not refused.
+    dir="${WORK}/e9-cargo-dependency"
+    commit_case "${dir}"
+    git -C "${dir}/repo" reset -q -- src.txt
+    printf '[package]\nname = "x"\n\n[dependencies]\n\n[lints.clippy]\nall = "deny"\n' > "${dir}/repo/Cargo.toml"
+    git -C "${dir}/repo" add Cargo.toml
+    git -C "${dir}/repo" commit -qm "cargo manifest"
+    git -C "${dir}/repo" add src.txt
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY="sed -i 's/^\[dependencies\]\$/[dependencies]\nserde = \"1\"/' Cargo.toml" \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E9 dependency: not refused" "$(var_of "${dir}" STATUS)" "ok"
+    expect_eq "E9 dependency: the edit was committed" "$(git -C "${dir}/repo" show HEAD:Cargo.toml | grep -c '^serde = "1"$' || true)" "1"
+
+    # E10 an inline linter suppression or skipped test added by the agent is refused.
+    local -a lint_markers=(
+        "allow|lib.rs|printf '#[allow(dead_code)]\nfn x() {}\n' > lib.rs"
+        "inner-allow|lib.rs|printf '#![allow(clippy::all)]\n' > lib.rs"
+        "expect|lib.rs|printf '#[expect(unused)]\nfn x() {}\n' > lib.rs"
+        "ignore|t.rs|printf '#[test]\n#[ignore]\nfn t() {}\n' > t.rs"
+        "noqa|m.py|printf 'import os  # noqa: F401\n' > m.py"
+        "eslint|a.js|printf '/* eslint-disable */\n' > a.js"
+        "ts-ignore|a.ts|printf '// @ts-ignore\nlet x = 1\n' > a.ts"
+        "shellcheck|a.sh|printf '# shellcheck disable=SC2086\necho \$x\n' > a.sh"
+    )
+    for spec in "${lint_markers[@]}"; do
+        IFS='|' read -r label entry_path body <<<"${spec}"
+        dir="${WORK}/e10-${label}"
+        commit_case "${dir}"
+        STUB_AGENT_ACTION=fix STUB_AGENT_BODY="${body}" STUB_VERDICTS=CONTINUE run_driver "${dir}" "${COMMIT_ARGS[@]}"
+        expect_eq "E10 ${label}: refused" "$(var_of "${dir}" STATUS)" "refused"
+        expect_eq "E10 ${label}: reason" "$(var_of "${dir}" REASON)" "lint-suppression-added: ${entry_path}"
+        expect_eq "E10 ${label}: never retried" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
+    done
+    # A line that already carried a suppression and is edited by the fix is not
+    # a new suppression.
+    dir="${WORK}/e10-existing"
+    commit_case "${dir}" "FORMAT_ME #[allow(dead_code)] # pragma: allowlist secret"
+    STUB_AGENT_ACTION=fix run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E10 existing suppression on an edited line: not refused" "$(var_of "${dir}" STATUS)" "ok"
+
+    # E11 `git rm --cached` of a tracked file the worktree keeps is refused.
+    dir="${WORK}/e11-rm-cached"
+    commit_case "${dir}"
+    git -C "${dir}/repo" reset -q -- src.txt
+    printf 'tracked\n' > "${dir}/repo/keep.txt"
+    git -C "${dir}/repo" add keep.txt
+    git -C "${dir}/repo" commit -qm "keep"
+    git -C "${dir}/repo" add src.txt
+    STUB_AGENT_ACTION=fix STUB_AGENT_BODY='git rm -q --cached keep.txt && echo keep.txt >> .gitignore' STUB_VERDICTS=CONTINUE \
+        run_driver "${dir}" "${COMMIT_ARGS[@]}"
+    expect_eq "E11: refused" "$(var_of "${dir}" STATUS)" "refused"
+    expect_eq "E11: reason" "$(var_of "${dir}" REASON)" "tracked-file-untracked: keep.txt"
+    expect_eq "E11: never retried" "$(hook_calls "${dir}/hook.log" pre-commit)" "1"
 }
 
 # =============================================================================
@@ -1158,6 +1402,20 @@ section_g() {
     STUB_AGENT_ACTION=edit-pre-commit-config run_driver "${dir}" "${PUSH_ARGS[@]}"
     expect_eq "G10: refused" "$(var_of "${dir}" STATUS)" "refused"
     expect_eq "G10: push not retried" "$(hook_calls "${dir}/hook.log" pre-push)" "1"
+
+    # G11 the agent pushes past the rejecting pre-push hook itself: the moved
+    # remote-tracking ref refuses the round, and the operation is not ok.
+    dir="${WORK}/g11-agent-pushes"
+    push_case "${dir}"
+    feat="$(git -C "${dir}/repo" rev-parse HEAD)"
+    STUB_AGENT_ACTION=noop STUB_AGENT_BODY='git push -q --no-verify 2>/dev/null' STUB_VERDICTS=CONTINUE \
+        run_driver "${dir}" "${PUSH_ARGS[@]}"
+    expect_eq "G11: harness: the agent's push reached the remote" "$(git -C "${dir}/origin.git" rev-parse "feat/issue-1671-g11-agent-pushes")" "${feat}"
+    expect_eq "G11: rc 1" "$(rc_of "${dir}")" "1"
+    expect_eq "G11: refused" "$(var_of "${dir}" STATUS)" "refused"
+    expect_eq "G11: reason" "$(var_of "${dir}" REASON)" "agent-changed-refs: git-refs"
+    expect_eq "G11: push not retried" "$(hook_calls "${dir}/hook.log" pre-push)" "1"
+    expect_eq "G11: evaluator not called" "$(stub_calls "${dir}/stub" loop-health-evaluator)" "0"
 }
 
 # =============================================================================
@@ -1201,7 +1459,14 @@ section_h_static() {
         [[ "${id}" == "checkpoint-after-implementation" ]] && stage_text="git --literal-pathspecs add -A --pathspec-from-file"
         expect_file_contains "${label}: initial staging (${stage_text})" "${file}" "${stage_text}"
         expect_file_contains "${label}: commit goes through hook_repair_run" "${file}" "hook_repair_run commit ${id}"
-        expect_eq "${label}: exactly one guarded commit" "$(grep -c 'commit_with_pre_commit_guard -m' "${file}")" "1"
+        if [[ "${id}" == "step-15-commit-push" ]]; then
+            # Step-15's commit stays a plain `git commit`: PRE_COMMIT_ALLOW_NO_CONFIG
+            # is not set for it, as before #1671.
+            expect_eq "${label}: no guarded commit" "$(grep -c 'commit_with_pre_commit_guard' "${file}" || true)" "0"
+            expect_file_contains "${label}: plain git commit inside hook_repair_run" "${file}" '-- git commit -m "$COMMIT_MSG"'
+        else
+            expect_eq "${label}: exactly one guarded commit" "$(grep -c 'commit_with_pre_commit_guard -m' "${file}")" "1"
+        fi
         if grep -nE '^[[:space:]]*(PRE_COMMIT_ALLOW_NO_CONFIG=1[[:space:]]+)?git[[:space:]]+commit[[:space:]]+-m' "${file}" >/dev/null; then
             fail "${label}: a bare git commit -m remains"
         else pass; fi
@@ -1294,6 +1559,8 @@ section_h_dynamic() {
         "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 2p)" "artifact-guard staged=src.txt,"
     expect_eq "H1: third artifact-guard saw the agent's fix staged" \
         "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 3p)" "artifact-guard staged=src.txt,"
+    expect_eq "H1: the checkpoint commit sets PRE_COMMIT_ALLOW_NO_CONFIG without a config" \
+        "$(grep -c 'ALLOW_NO_CONFIG=1$' "${dir}/hook.log" || true)" "2"
 
     # H1b TDD checkpoint: the guard refuses what the round staged; not retried.
     dir="${WORK}/h1b-tdd-guard-after-round"
@@ -1362,7 +1629,11 @@ section_h_dynamic() {
     expect_eq "H7: pushed" "$(step15_field "${dir}" pushed)" "true"
     expect_eq "H7: reason" "$(step15_field "${dir}" reason)" "pushed"
     expect_eq "H7: commit title" "$(git -C "${dir}/repo" log -1 --format=%s)" "feat: add the widget"
-    expect_eq "H7: committed through the guarded wrapper with the fix" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "formatted"
+    expect_eq "H7: committed with the fix" "$(git -C "${dir}/repo" show HEAD:src.txt 2>/dev/null)" "formatted"
+    # A plain `git commit`, as before #1671: the hook never sees PRE_COMMIT_ALLOW_NO_CONFIG.
+    expect_eq "H7: the commit hook ran without PRE_COMMIT_ALLOW_NO_CONFIG" \
+        "$(grep '^pre-commit' "${dir}/hook.log" | grep -vc 'ALLOW_NO_CONFIG=unset$' || true)" "0"
+    expect_eq "H7: the commit hook ran twice" "$(hook_calls "${dir}/hook.log" pre-commit)" "2"
     expect_eq "H7: node_modules not committed" "$(git -C "${dir}/repo" ls-tree -r --name-only HEAD | grep -c node_modules || true)" "0"
     expect_eq "H7: second artifact-guard saw the helper's staging" \
         "$(grep '^artifact-guard' "${dir}/stub/log" 2>/dev/null | sed -n 2p)" "artifact-guard staged=src.txt,"
@@ -1380,6 +1651,8 @@ section_h_dynamic() {
     expect_eq "H8: original commit kept beneath" "$(git -C "${dir}/repo" log -1 --format=%s HEAD~1)" "feat: add the widget"
     expect_eq "H8: sha is the pushed HEAD" "$(step15_field "${dir}" sha)" "$(git -C "${dir}/repo" rev-parse HEAD)"
     expect_eq "H8: remote matches" "$(git -C "${dir}/repo" rev-parse '@{u}')" "$(git -C "${dir}/repo" rev-parse HEAD)"
+    expect_eq "H8: no commit hook saw PRE_COMMIT_ALLOW_NO_CONFIG" \
+        "$(grep '^pre-commit' "${dir}/hook.log" | grep -vc 'ALLOW_NO_CONFIG=unset$' || true)" "0"
 
     # H9 step-15: push stuck.
     dir="${WORK}/h9-s15-push-stuck"
@@ -1467,6 +1740,32 @@ SHIM
     [[ "$(step15_field "${dir}" reason)" == "diverged-upstream: "* ]] && pass \
         || fail "H15: reason must stay diverged-upstream (got '$(step15_field "${dir}" reason)')"
     expect_eq "H15: no agent ran" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+
+    # H16 step-15: a commit that cannot be signed, with a passing pre-commit
+    # hook installed, is commit-failed and never reaches the agent.
+    dir="${WORK}/h16-s15-gpg"
+    new_repo "${dir}"
+    install_pre_commit_hook "${dir}/repo"
+    git -C "${dir}/repo" config commit.gpgsign true
+    git -C "${dir}/repo" config gpg.program false
+    printf 'clean\n' > "${dir}/repo/src.txt"
+    run_step "${dir}" "${STEP_15}" "${STEP15_ENV[@]}"
+    expect_one_stdout_line H16 "${dir}"
+    expect_eq "H16: reason commit-failed" "$(step15_field "${dir}" reason)" "commit-failed"
+    expect_ne "H16: non-zero exit" "$(rc_of "${dir}")" "0"
+    expect_eq "H16: no agent ran" "$(stub_calls "${dir}/stub" hook-rejection-repair)" "0"
+
+    # H17 step-15: the agent pushes past the pre-push hook; the step refuses and
+    # does not report the branch as pushed.
+    dir="${WORK}/h17-s15-agent-pushes"
+    new_repo "${dir}"
+    install_pre_commit_hook "${dir}/repo"; install_pre_push_hook "${dir}/repo"
+    printf 'PUSH_BAD\n' > "${dir}/repo/src.txt"
+    run_step "${dir}" "${STEP_15}" "${STEP15_ENV[@]}" STUB_AGENT_ACTION=noop STUB_AGENT_BODY='git push -q --no-verify 2>/dev/null'
+    expect_one_stdout_line H17 "${dir}"
+    expect_eq "H17: exit 1" "$(rc_of "${dir}")" "1"
+    expect_eq "H17: pushed false" "$(step15_field "${dir}" pushed)" "false"
+    expect_eq "H17: reason" "$(step15_field "${dir}" reason)" "hook-rejected-refused:push:cargo-test"
 }
 
 # =============================================================================

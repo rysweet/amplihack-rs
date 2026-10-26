@@ -15,9 +15,16 @@
 # Hooks are never bypassed or weakened. This file never passes a hook-skipping
 # flag, never sets or clears SKIP, PRE_COMMIT_*, GIT_*, HUSKY or LEFTHOOK*, and
 # never writes git configuration. A round in which the agent changes hook
-# configuration, a secret-scanner allowlist, git configuration or HEAD ends
-# the loop as `refused`; a round whose refusal snapshot cannot be taken ends
-# it as `stuck`.
+# configuration, a script a local hook runs, lint configuration, a
+# secret-scanner allowlist, git configuration, HEAD, the branch's refs or the
+# stash, adds an inline suppression, or untracks a file ends the loop as
+# `refused`; a round whose refusal snapshot cannot be taken ends it as `stuck`.
+# A round in which the agent reports not_fixable_in_code, changes nothing and
+# the hook output repeats ends as `stuck` without asking the evaluator.
+#
+# Nothing is created under TMPDIR before a hook rejection is identified: the
+# first attempt's output is kept in the git directory, so a first-try success
+# needs nothing the bare command did not.
 #
 # Return codes: 0 ok, the command's own rc when the failure was not a hook
 # rejection, 1 stuck / evaluator_done_unresolved / refused, 79 terminal, 2
@@ -101,6 +108,10 @@ hook_repair_ids() {
 hook_repair_is_rejection() {
   local op="$1" rc="$2" out="$3" hooks="$4"
   [ "$rc" -ne 0 ] || return 1
+  # git's own fatal error, or a commit that could not be signed, is not a
+  # hook's doing whatever hooks exist. A hook that prints such a line itself
+  # is not repaired, which fails safe.
+  LC_ALL=C grep -E '^fatal:|gpg failed to sign|^error: gpg failed' "$out" >/dev/null 2>&1 && return 1
   case "$op" in
     commit)
       git diff --cached --quiet 2>/dev/null && return 1
@@ -174,12 +185,51 @@ hook_repair_entry() {
   fi
 }
 
-# hook_repair_snapshot <worktree>: hook configuration, allowlists, the hooks
-# directory, git configuration and HEAD, one sorted line per entry. Taken at
-# the worktree top whatever the caller's directory. The hooks directory is
-# resolved afresh each time, and the hook-related configuration is read at
-# every scope, so a core.hooksPath or hook.* change in the global config
-# shows too.
+# Lint configuration that decides what a hook reports, at any depth.
+HOOK_REPAIR_LINT_CONFIG_RE='(^|/)(\.?clippy\.toml|\.?rustfmt\.toml|\.cargo/config|\.cargo/config\.toml)$'
+
+# hook_repair_local_entries: in the worktree top, the first word of each
+# `entry:` of a `repo: local` hook in .pre-commit-config.yaml, one per line,
+# when it names a path inside the worktree. Block style YAML only; flow style
+# (`- {repo: local, ...}`) is not read.
+hook_repair_local_entries() {
+  local top word
+  [ -f .pre-commit-config.yaml ] || return 0
+  top="$(pwd -P)"
+  LC_ALL=C awk -v q="'" '
+    /^[[:space:]]*-[[:space:]]*repo:/ {
+      v = $0; sub(/^[[:space:]]*-[[:space:]]*repo:[[:space:]]*/, "", v); sub(/[[:space:]]#.*$/, "", v)
+      gsub(/[[:space:]"]/, "", v); gsub(q, "", v); loc = (v == "local"); next }
+    loc && /^[[:space:]]*(-[[:space:]]*)?entry:/ {
+      v = $0; sub(/^[[:space:]]*(-[[:space:]]*)?entry:[[:space:]]*/, "", v)
+      split(v, w, /[[:space:]]+/); gsub(/"/, "", w[1]); gsub(q, "", w[1])
+      if (w[1] != "") print w[1] }' .pre-commit-config.yaml \
+    | while IFS= read -r word; do
+        case "$word" in "$top"/*) word="${word#"$top"/}" ;; /*|-*) continue ;; esac
+        word="${word#./}"
+        case "/${word}/" in */../*) continue ;; esac
+        # A bare command name (cargo, bash) is a path only when such a file exists.
+        case "$word" in */*) ;; *) [ -e "$word" ] || continue ;; esac
+        printf '%s\n' "$word"
+      done
+}
+
+# hook_repair_cargo_lints <Cargo.toml>: its [lints], [lints.*],
+# [workspace.lints] and [workspace.lints.*] tables, and any dotted lints key.
+hook_repair_cargo_lints() {
+  LC_ALL=C awk '
+    /^[[:space:]]*\[/ { h = $0; gsub(/[[:space:]]/, "", h); on = (h ~ /^\[(workspace\.)?lints(\.[^]]*)?\]/) }
+    on || /^[[:space:]]*(workspace\.)?lints[[:space:]]*[.=]/ { print }' "$1"
+}
+
+# hook_repair_snapshot <worktree>: hook configuration, the scripts local hooks
+# run, lint configuration, allowlists, the hooks directory, git configuration,
+# HEAD, the branch's refs and the stash, one sorted, unique line per entry.
+# Taken at the worktree top whatever the caller's directory. The hooks
+# directory is resolved afresh each time, and the hook-related configuration
+# is read at every scope, so a core.hooksPath or hook.* change in the global
+# config shows too. Lines are unique because the refusal check compares with
+# `uniq -u`, which would lose a changed entry recorded twice.
 hook_repair_snapshot() {
   local entries
   # Collected first so that a failed find fails the snapshot: a hook file that
@@ -187,11 +237,12 @@ hook_repair_snapshot() {
   # change would go unseen. The caller treats a failed snapshot as stuck.
   entries="$( cd "$1" || exit 1
     set -o pipefail
-    local hooks path
+    local hooks path files lints head_ref
     hooks="$(hook_repair_hooks_dir 2>/dev/null)" || hooks=""
     printf 'hooks-dir\t%s\n' "${hooks:-unresolved}"
     for path in .pre-commit-config.yaml .pre-commit-hooks.yaml .secrets.baseline .gitleaksignore \
-      .gitleaks.toml .trufflehogignore .talismanrc; do
+      .gitleaks.toml .trufflehogignore .talismanrc clippy.toml .clippy.toml rustfmt.toml .rustfmt.toml \
+      .cargo/config.toml .cargo/config; do
       hook_repair_entry "$path" "$path" || exit 1
     done
     find . -mindepth 1 -maxdepth 1 \( -name .husky -o -name 'lefthook*.yml' -o -name 'lefthook*.yaml' \
@@ -202,6 +253,18 @@ hook_repair_snapshot() {
       find -H "$hooks" -mindepth 1 \( -type f -o -type l \) -print \
         | while IFS= read -r path; do hook_repair_entry "hooks/${path#"$hooks"/}" "$path" || exit 1; done || exit 1
     fi
+    hook_repair_local_entries | while IFS= read -r path; do hook_repair_entry "$path" "$path" || exit 1; done || exit 1
+    # Tracked and untracked, non-ignored files: lint configuration in any
+    # directory, and the lint tables of every Cargo.toml.
+    files="$(git ls-files -z -co --exclude-standard | LC_ALL=C tr '\0' '\n')" || exit 1
+    printf '%s\n' "$files" | { LC_ALL=C grep -E "$HOOK_REPAIR_LINT_CONFIG_RE" || true; } \
+      | while IFS= read -r path; do hook_repair_entry "$path" "$path" || exit 1; done || exit 1
+    printf '%s\n' "$files" | { LC_ALL=C grep -E '(^|/)Cargo\.toml$' || true; } \
+      | while IFS= read -r path; do
+          [ -f "$path" ] || { printf '%s[lints]\tabsent\n' "$path"; continue; }
+          lints="$(hook_repair_cargo_lints "$path")" || exit 1
+          printf '%s[lints]\tcksum:%s\n' "$path" "$(printf '%s' "$lints" | cksum)"
+        done || exit 1
     printf 'git-config-local\t%s\n' "$(git config --local --list 2>&1 | cksum)"
     printf 'git-config-worktree\t%s\n' "$(git config --worktree --list 2>&1 | cksum)"
     # Filtered so unrelated global changes, such as a credential helper set by
@@ -210,56 +273,110 @@ hook_repair_snapshot() {
     printf 'git-config-hooks\t%s\n' "$(git config --show-origin --list 2>&1 \
       | LC_ALL=C grep -iE $'\t''(core\.hookspath|core\.fsmonitor|hook\.|include\.path|includeif\..*\.path|push\.)' | cksum)"
     printf 'HEAD\t%s\n' "$(git rev-parse -q --verify HEAD 2>/dev/null || echo none)"
+    # The current branch, its remote-tracking refs, upstream and push refs: a
+    # push, update-ref or reset made during the round moves one of them. Other
+    # branches are left out because every worktree of the repository shares
+    # them and parallel sessions move them.
+    head_ref="$(git symbolic-ref -q HEAD 2>/dev/null)" || head_ref=""
+    printf 'git-refs\t%s\n' "$( {
+      [ -z "$head_ref" ] || git for-each-ref --format='%(refname) %(objectname)' "$head_ref" "refs/remotes/*/${head_ref#refs/heads/}"
+      git rev-parse -q --verify '@{upstream}' 2>/dev/null || true
+      git rev-parse -q --verify '@{push}' 2>/dev/null || true; } | cksum)"
+    printf 'git-stash\t%s\n' "$( { git for-each-ref --format='%(objectname)' refs/stash; git stash list --format='%H' 2>/dev/null || true; } | cksum)"
   )" || return 1
-  printf '%s\n' "$entries" | LC_ALL=C sort
+  printf '%s\n' "$entries" | LC_ALL=C sort -u
 }
 
 # Inline markers that tell a secret scanner to ignore the line they are on.
 HOOK_REPAIR_SCANNER_MARKERS='pragma:[[:space:]]*allowlist|gitleaks:allow|trufflehog:ignore|talisman:ignore|nosemgrep|ggignore'
+# Inline markers that silence a linter or skip a test. Bracket expressions,
+# not backslashes, because awk -v would process the escapes.
+HOOK_REPAIR_LINT_MARKERS='#!?[[]allow[(]|#!?[[]expect[(]|#[[]ignore|#[[:space:]]*noqa|eslint-disable|@ts-ignore|@ts-nocheck|shellcheck[[:space:]]+disable'
 
-# hook_repair_marker_check <tree-before> <tree-after>: prints the refusal
-# reason when the agent's round added an inline secret-scanner suppression.
-# Without both trees the whole staged diff against HEAD is searched, which
-# fails closed.
-hook_repair_marker_check() {
-  local diff files
+# hook_repair_path_list: paths on stdin as one sorted, JSON-safe,
+# comma-separated list.
+hook_repair_path_list() {
+  LC_ALL=C sort -u | hook_repair_jsafe_lines | paste -sd, - | sed 's/,/, /g'
+}
+
+# hook_repair_diff_check <worktree> <tree-before> <tree-after>: prints the
+# refusal reason when the agent's round added an inline secret-scanner or
+# linter suppression, or took a tracked file out of the index while leaving
+# it in the worktree (`git rm --cached`). A file counts as gaining a
+# suppression when its added lines carry more markers than its removed lines,
+# so editing a line that already had one is not refused. Without both trees
+# the whole staged diff against HEAD is searched, which fails closed.
+hook_repair_diff_check() {
+  local wt="$1" diff removed found files path kept=""
   # A diff that cannot be produced refuses the round rather than passing it.
-  if [ -n "$1" ] && [ -n "$2" ]; then
-    diff="$(git diff -U0 --no-color "$1" "$2")" || { printf 'scanner-suppression-check-failed'; return 0; }
+  if [ -n "$2" ] && [ -n "$3" ]; then
+    diff="$(git diff -U0 --no-color "$2" "$3")" || { printf 'scanner-suppression-check-failed'; return 0; }
+    removed="$(git diff --no-renames --name-only --diff-filter=D -z "$2" "$3" | LC_ALL=C tr '\0' '\n')" \
+      || { printf 'scanner-suppression-check-failed'; return 0; }
   else
     diff="$(git diff -U0 --no-color --cached)" || { printf 'scanner-suppression-check-failed'; return 0; }
+    removed="$(git diff --cached --no-renames --name-only --diff-filter=D -z | LC_ALL=C tr '\0' '\n')" \
+      || { printf 'scanner-suppression-check-failed'; return 0; }
   fi
-  files="$(printf '%s\n' "$diff" \
-    | LC_ALL=C awk -v re="$HOOK_REPAIR_SCANNER_MARKERS" '/^\+\+\+ / { f = substr($0, 7); next } /^\+/ && $0 ~ re { print f }')"
-  [ -n "$files" ] || return 1
-  printf 'scanner-suppression-added: %s' \
-    "$(printf '%s\n' "$files" | LC_ALL=C sort -u | hook_repair_jsafe_lines | paste -sd, - | sed 's/,/, /g')"
+  found="$(printf '%s\n' "$diff" | LC_ALL=C awk -v s="$HOOK_REPAIR_SCANNER_MARKERS" -v l="$HOOK_REPAIR_LINT_MARKERS" '
+    /^diff --git / { next }
+    /^--- / { next }
+    /^\+\+\+ / { f = substr($0, 7); next }
+    /^[-+]/ { d = (substr($0, 1, 1) == "+") ? 1 : -1
+      if ($0 ~ s) sn[f] += d; else if ($0 ~ l) ln[f] += d }
+    END { for (k in sn) if (sn[k] > 0) print "S\t" k; for (k in ln) if (ln[k] > 0) print "L\t" k }')"
+  files="$(printf '%s\n' "$found" | LC_ALL=C awk -F '\t' '$1 == "S" { print $2 }')"
+  if [ -n "$files" ]; then printf 'scanner-suppression-added: %s' "$(printf '%s\n' "$files" | hook_repair_path_list)"; return 0; fi
+  files="$(printf '%s\n' "$found" | LC_ALL=C awk -F '\t' '$1 == "L" { print $2 }')"
+  if [ -n "$files" ]; then printf 'lint-suppression-added: %s' "$(printf '%s\n' "$files" | hook_repair_path_list)"; return 0; fi
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    if [ -e "${wt}/${path}" ] || [ -L "${wt}/${path}" ]; then kept="${kept}${path}"$'\n'; fi
+  done <<<"$removed"
+  [ -n "$kept" ] || return 1
+  printf 'tracked-file-untracked: %s' "$(printf '%s' "$kept" | hook_repair_path_list)"
 }
 
 # hook_repair_refusal_check <before> <after>: prints the refusal reason, if any.
 hook_repair_refusal_check() {
-  local changed paths
+  local changed paths refs
   changed="$(LC_ALL=C sort "$1" "$2" | uniq -u | cut -f1 | LC_ALL=C sort -u)"
   [ -n "$changed" ] || return 1
-  paths="$(printf '%s\n' "$changed" | grep -vx HEAD | hook_repair_jsafe_lines | paste -sd, - | sed 's/,/, /g')"
+  paths="$(printf '%s\n' "$changed" | grep -vxE 'HEAD|git-refs|git-stash' | hook_repair_jsafe_lines | paste -sd, - | sed 's/,/, /g')"
+  refs="$(printf '%s\n' "$changed" | grep -xE 'git-refs|git-stash' | paste -sd, - | sed 's/,/, /g')"
   if [ -n "$paths" ]; then
     printf 'hook-config-modified: %s' "$paths"
-  else
+  elif printf '%s\n' "$changed" | grep -qx HEAD; then
     printf 'agent-moved-head'
+  else
+    printf 'agent-changed-refs: %s' "$refs"
   fi
   return 0
 }
 
-# hook_repair_attempt <dir> <output-file> <cmd...>: runs <cmd> and keeps only
-# its redacted combined output, in <dir>/attempt.out and <output-file> if one
-# is given. Returns the command's exit code.
+# hook_repair_attempt <out> <output-file> <cmd...>: runs <cmd> and keeps only
+# its redacted combined output, in <out> and <output-file> if one is given.
+# The raw output lives beside <out>, private, only until it is redacted.
+# Returns the command's exit code.
 hook_repair_attempt() {
-  local dir="$1" copy="$2" rc=0
+  local out="$1" copy="$2" rc=0
   shift 2
-  "$@" >"${dir}/attempt.raw" 2>&1 || rc=$?
-  hook_repair_redact "${dir}/attempt.raw" >"${dir}/attempt.out"; rm -f -- "${dir}/attempt.raw"
-  [ -z "$copy" ] || cat -- "${dir}/attempt.out" >"$copy"
+  ( umask 077 && : >"${out}.raw" ) 2>/dev/null || true
+  "$@" >"${out}.raw" 2>&1 || rc=$?
+  hook_repair_redact "${out}.raw" >"$out"; rm -f -- "${out}.raw"
+  [ -z "$copy" ] || cat -- "$out" >"$copy"
   return "$rc"
+}
+
+# hook_repair_redact_in_place <file>: replaces <file> with its redacted text,
+# or removes it when that fails, so no raw nested-run log is kept.
+hook_repair_redact_in_place() {
+  [ -f "$1" ] || return 0
+  if hook_repair_redact "$1" >"${1}.redacted"; then
+    mv -f -- "${1}.redacted" "$1"
+  else
+    rm -f -- "$1" "${1}.redacted"
+  fi
 }
 
 # hook_repair_evidence <file> <op> <step> <rc> <ids> <output-file>: one round's
@@ -325,45 +442,34 @@ hook_repair_step15_reason() {
   esac
 }
 
-# hook_repair_push_commit: after a push round, commits the agent's staged fix
-# as a new commit through a nested commit repair. Called from hook_repair_run
-# and works on its locals (bash locals are dynamically scoped). Returns 1, with
-# status set, when the loop must end.
+# hook_repair_push_commit <step> <message>: commits the staged fix of a push
+# round as a new commit, never an amend, through a nested commit repair. It is
+# a plain `git commit`, as step-15's own commit is. Returns the nested
+# repair's code; HOOK_REPAIR_* then describe the nested repair.
 hook_repair_push_commit() {
-  if [ "$op" = "push" ] && ! git diff --cached --quiet 2>/dev/null; then
-    # The nested call's locals shadow these, so ids and round survive it.
-    if hook_repair_run commit "$step" -- commit_with_pre_commit_guard -m "${fix_message//\{hook_ids\}/"$ids"}"; then
-      inner_rc=0
-    else
-      inner_rc=$?
-    fi
-    inner_rounds=$((inner_rounds + HOOK_REPAIR_ROUNDS))
-    HOOK_REPAIR_ROUNDS=$((round + inner_rounds)); HOOK_REPAIR_HOOK_IDS="$ids"
-    case "$HOOK_REPAIR_STATUS" in
-      ok) ;;
-      terminal) status="terminal"; return 1 ;;
-      not_hook)
-        echo "ERROR: hook_repair_run: committing the agent's fix failed (exit ${inner_rc}) and was not a hook rejection." >&2
-        status="stuck"; reasoning="the fix commit failed (exit ${inner_rc})"; return 1 ;;
-      *)
-        status="$HOOK_REPAIR_STATUS"; verdict=""
-        reasoning="the fix commit was not repaired: ${HOOK_REPAIR_REASON}"; return 1 ;;
-    esac
+  if declare -F amplihack_prepare_git_commit_identity >/dev/null; then
+    amplihack_prepare_git_commit_identity || true
   fi
-  return 0
+  hook_repair_run commit "$1" -- git commit -m "$2"
 }
 
-# hook_repair_evaluate: runs the loop-health evaluator on the round just
-# finished and reads its verdict. Works on hook_repair_run's locals. Returns 0
-# on CONTINUE; otherwise sets status and reasoning and returns 1.
+# hook_repair_evaluate <hr> <round> <output> <bin> <recipe> <step> <op> <wt>
+#   <ids> <prev-ids> <baseline> <rc> <agent-status>
+# Runs the loop-health evaluator on the round just finished and prints
+# `<verdict><TAB><reasoning>`, where the verdict is CONTINUE, DONE, STUCK or
+# TERMINAL. A missing or malformed verdict, or a non-zero exit other than 79,
+# is STUCK. Returns 79 for TERMINAL, otherwise 0.
 hook_repair_evaluate() {
+  local hr="$1" round="$2" out="$3" bin="$4" recipe="$5" step="$6" op="$7" wt="$8"
+  local ids="$9" prev_ids="${10}" baseline="${11}" rc="${12}" agent_status="${13}"
+  local log="${hr}/health-${round}.log" erc=0 verdict="STUCK" body="" line
+  local verdict_re='^(CONTINUE|DONE|STUCK)( |$)'
   # The evaluator starts in HR_DIR, never in the worktree (#1528). The hook
   # output and the history go in through files in the private evidence
   # directory, not argv, where any local user could read them with ps.
-  health_log="${hr}/health-${round}.log"
   tail -c "$HOOK_REPAIR_TAIL_BYTES" "$out" >"${hr}/eval-${round}.output"
   tail -n 20 "${hr}/history" >"${hr}/eval-${round}.history"
-  if ( cd "$hr" && exec "$bin" recipe run "$health_recipe" --working-dir "$hr" \
+  if ( cd "$hr" && exec "$bin" recipe run "$recipe" --working-dir "$hr" \
     -c "loop_name=hook-repair:${step}:${op}" \
     -c "loop_round_label=${round}" \
     -c "loop_repo_path=${wt}" \
@@ -376,29 +482,23 @@ hook_repair_evaluate() {
     -c "loop_child_exit_code=${rc}" \
     -c "loop_round_verdict=${agent_status}" \
     -c "loop_clean_token=HOOK_PASSED" \
-    --context-from-file "loop_history=${hr}/eval-${round}.history" ) >"$health_log" 2>&1; then inner_rc=0; else inner_rc=$?; fi
-  if hook_repair_terminal_refusal "$inner_rc" "$health_log"; then
+    --context-from-file "loop_history=${hr}/eval-${round}.history" ) >"$log" 2>&1; then erc=0; else erc=$?; fi
+  if hook_repair_terminal_refusal "$erc" "$log"; then
+    hook_repair_redact_in_place "$log"
     echo "ERROR: hook_repair_run: loop-health-evaluator returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
-    status="terminal"; return 1
+    printf 'TERMINAL\t'
+    return "$HOOK_REPAIR_EXIT_TERMINAL"
   fi
-  verdict="STUCK"; body=""
-  if [ "$inner_rc" -eq 0 ]; then
-    line="$(hook_repair_health_line "$health_log")"
+  if [ "$erc" -eq 0 ]; then
+    line="$(hook_repair_health_line "$log")"
     case "$line" in
       "    Output: LOOP_HEALTH: "*) body="${line#    Output: LOOP_HEALTH: }" ;;
       "LOOP_HEALTH: "*) body="${line#LOOP_HEALTH: }" ;;
     esac
     if [[ "$body" =~ $verdict_re ]]; then verdict="${BASH_REMATCH[1]}"; else body=""; fi
   fi
-  reasoning="$(printf '%s' "${body#"$verdict"}" | sed -E 's/^[[:space:]]*(-|—)?[[:space:]]*//')"
-  case "$verdict" in
-    CONTINUE) reasoning=""; return 0 ;;
-    DONE) status="evaluator_done_unresolved"
-      reasoning="evaluator ended the loop while the hook still rejects${reasoning:+: ${reasoning}}" ;;
-    *) status="stuck"
-      reasoning="${reasoning:-loop-health-evaluator returned STUCK or no readable verdict}" ;;
-  esac
-  return 1
+  hook_repair_redact_in_place "$log"
+  printf '%s\t%s' "$verdict" "$(printf '%s' "${body#"$verdict"}" | sed -E 's/^[[:space:]]*(-|—)?[[:space:]]*//')"
 }
 
 hook_repair_usage() {
@@ -438,48 +538,65 @@ hook_repair_run() {
     hook_repair_usage "--fix-message applies to push only"; return 2
   fi
 
-  local wt hr hooks bin round_recipe health_recipe
+  local wt gd hr hooks bin round_recipe health_recipe
   wt="$(git rev-parse --show-toplevel 2>/dev/null)" || { hook_repair_usage "not inside a git work tree"; return 2; }
   wt="$(cd "$wt" && pwd -P)"
-  hr="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hook-repair.XXXXXX")" \
-    || { hook_repair_usage "could not create a private evidence directory under ${TMPDIR:-/tmp}"; return 2; }
-  hr="$(cd "$hr" && pwd -P)"
-  case "$hr/" in
-    "$wt"/*)
-      rm -rf -- "$hr"
-      hook_repair_usage "the evidence directory ${hr} lies inside the worktree ${wt}; set TMPDIR outside it (SR-14)"
-      return 2 ;;
-  esac
   bin="${AMPLIHACK_BIN:-amplihack}"
   round_recipe="${HOOK_REPAIR_ROUND_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/hook-rejection-repair.yaml}"
   health_recipe="${HOOK_REPAIR_HEALTH_RECIPE:-${HOOK_REPAIR_TOOLS_DIR%/*}/recipes/loop-health-evaluator.yaml}"
 
   # --- first attempt ----------------------------------------------------------
-  local rc=0 out="${hr}/attempt.out"
-  if hook_repair_attempt "$hr" "$output_file" "$@"; then rc=0; else rc=$?; fi
+  # Its output is kept in the git directory, which a commit or push needs to
+  # be able to write anyway; TMPDIR is not touched until a hook has rejected
+  # the operation.
+  local rc=0 out
+  gd="$(git rev-parse --absolute-git-dir 2>/dev/null)" || gd=""
+  out="$([ -n "$gd" ] && umask 077 && mktemp "${gd}/hook-repair-attempt.XXXXXX" 2>/dev/null)" || out=""
+  if [ -z "$out" ]; then
+    # With nowhere to keep the output the failure cannot be classified: the
+    # command runs as it is and a failure is returned unrepaired.
+    if "$@" >&2; then HOOK_REPAIR_STATUS="ok"; return 0; else rc=$?; fi
+    HOOK_REPAIR_STATUS="not_hook"; return "$rc"
+  fi
+  if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
   if [ "$rc" -eq 0 ]; then
-    rm -rf -- "$hr"; HOOK_REPAIR_STATUS="ok"; return 0
+    rm -f -- "$out"; HOOK_REPAIR_STATUS="ok"; return 0
   fi
   # Resolved only once something has failed; the success path skips it. An
   # unresolvable directory leaves hooks empty, so hook_repair_is_rejection
   # finds no hook and returns not_hook: the loop never runs without one.
   hooks="$(hook_repair_hooks_dir)" || hooks=""
   if ! hook_repair_is_rejection "$op" "$rc" "$out" "$hooks"; then
-    rm -rf -- "$hr"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
+    rm -f -- "$out"; HOOK_REPAIR_STATUS="not_hook"; return "$rc"
   fi
 
-  local ids prev_ids="" verdict="" reasoning="" status="" round=0 prev_hash="" agent_status
+  # A hook rejected the operation: from here on everything goes in a private
+  # evidence directory outside the worktree.
+  hr="$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/hook-repair.XXXXXX")" \
+    || { rm -f -- "$out"; hook_repair_usage "could not create a private evidence directory under ${TMPDIR:-/tmp}"; return 2; }
+  hr="$(cd "$hr" && pwd -P)"
+  case "$hr/" in
+    "$wt"/*)
+      rm -rf -- "$hr"; rm -f -- "$out"
+      hook_repair_usage "the evidence directory ${hr} lies inside the worktree ${wt}; set TMPDIR outside it (SR-14)"
+      return 2 ;;
+  esac
+  mv -f -- "$out" "${hr}/attempt.out" \
+    || { rm -rf -- "$hr"; rm -f -- "$out"; hook_repair_usage "could not move the first attempt's output into ${hr}"; return 2; }
+  out="${hr}/attempt.out"
+
+  local ids prev_ids="" verdict="" reasoning="" status="" round=0 prev_hash agent_status evaluation
   ids="$(hook_repair_ids "$out")"
   HOOK_REPAIR_HOOK_IDS="$ids"
+  prev_hash="$(hook_repair_hash "$out" | cut -c1-12)"
   if ! "$bin" recipe show "$health_recipe" >/dev/null 2>&1; then
     echo "ERROR: hook_repair_run: the loop-health evaluator ${health_recipe} does not resolve; it is the loop's only terminator, so no repair round runs (#1337)." >&2
     status="stuck"; reasoning="loop-health-evaluator does not resolve"
   fi
 
   # --- the rounds: ROUND is a label, never compared against a limit -----------
-  local baseline before after tree_before tree_after evidence agent_log health_log line body
+  local baseline before after tree_before tree_after evidence agent_log terminal
   local refusal diffstat out_hash changed inner_rc inner_rounds=0
-  local verdict_re='^(CONTINUE|DONE|STUCK)( |$)'
   while [ -z "$status" ]; do
     round=$((round + 1))
     HOOK_REPAIR_ROUNDS=$((round + inner_rounds))
@@ -503,13 +620,17 @@ hook_repair_run() {
       -c "hook_repair_operation=${op}" \
       -c "hook_repair_step=${step}" \
       -c "hook_repair_hook_ids=${ids}" >"$agent_log" 2>&1; then inner_rc=0; else inner_rc=$?; fi
-    if hook_repair_terminal_refusal "$inner_rc" "$agent_log"; then
-      echo "ERROR: hook_repair_run: the fixing agent returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
-      status="terminal"; break
-    fi
+    terminal=0
+    hook_repair_terminal_refusal "$inner_rc" "$agent_log" && terminal=1
     agent_status="$(hook_repair_agent_status "$agent_log")"
     { printf '\n--- agent report ---\n'; LC_ALL=C grep -E '"hook_repair"' "$agent_log" | tail -n 1 | hook_repair_redact; } >>"$evidence" \
       || echo "WARNING: hook_repair_run: the agent report was not appended to ${evidence}." >&2
+    # Everything needed from the raw log has been read; only its redacted text is kept.
+    hook_repair_redact_in_place "$agent_log"
+    if [ "$terminal" -eq 1 ]; then
+      echo "ERROR: hook_repair_run: the fixing agent returned the exit-${HOOK_REPAIR_EXIT_TERMINAL} terminal policy refusal; not retried (#1327)." >&2
+      status="terminal"; break
+    fi
     if ! stage_workflow_changes; then
       status="stuck"; reasoning="staging the agent's changes failed"; break
     fi
@@ -524,12 +645,12 @@ hook_repair_run() {
       status="stuck"; reasoning="refusal snapshot could not be taken"; break
     fi
     if refusal="$(hook_repair_refusal_check "$before" "$after")"; then
-      echo "ERROR: hook_repair_run: ${refusal}; the agent may not change hook configuration or HEAD. Not retried." >&2
+      echo "ERROR: hook_repair_run: ${refusal}; the agent may not change hook or lint configuration, HEAD, refs or the stash. Not retried." >&2
       status="refused"; reasoning="$refusal"; verdict=""; break
     fi
     tree_after="$(git write-tree 2>/dev/null || true)"
-    if refusal="$(hook_repair_marker_check "$tree_before" "$tree_after")"; then
-      echo "ERROR: hook_repair_run: ${refusal}; the agent may not suppress a secret scanner. Not retried." >&2
+    if refusal="$(hook_repair_diff_check "$wt" "$tree_before" "$tree_after")"; then
+      echo "ERROR: hook_repair_run: ${refusal}; the agent may not suppress a scanner or linter, or untrack a file. Not retried." >&2
       status="refused"; reasoning="$refusal"; verdict=""; break
     fi
     diffstat="no diff"
@@ -540,10 +661,24 @@ hook_repair_run() {
     fi
 
     # Push: the agent's fix becomes a new commit, never an amend (D7).
-    hook_repair_push_commit || break
+    if [ "$op" = "push" ] && ! git diff --cached --quiet 2>/dev/null; then
+      if hook_repair_push_commit "$step" "${fix_message//\{hook_ids\}/"$ids"}"; then inner_rc=0; else inner_rc=$?; fi
+      inner_rounds=$((inner_rounds + HOOK_REPAIR_ROUNDS))
+      HOOK_REPAIR_ROUNDS=$((round + inner_rounds)); HOOK_REPAIR_HOOK_IDS="$ids"
+      case "$HOOK_REPAIR_STATUS" in
+        ok) ;;
+        terminal) status="terminal"; break ;;
+        not_hook)
+          echo "ERROR: hook_repair_run: committing the agent's fix failed (exit ${inner_rc}) and was not a hook rejection." >&2
+          status="stuck"; reasoning="the fix commit failed (exit ${inner_rc})"; break ;;
+        *)
+          status="$HOOK_REPAIR_STATUS"; verdict=""
+          reasoning="the fix commit was not repaired: ${HOOK_REPAIR_REASON}"; break ;;
+      esac
+    fi
 
     # Retry the same operation.
-    if hook_repair_attempt "$hr" "$output_file" "$@"; then rc=0; else rc=$?; fi
+    if hook_repair_attempt "$out" "$output_file" "$@"; then rc=0; else rc=$?; fi
     if [ "$rc" -eq 0 ]; then
       status="ok"; break
     fi
@@ -561,7 +696,28 @@ hook_repair_run() {
     printf 'round %s: output_sha256=%s output_changed=%s agent=%s diff=%s\n' \
       "$round" "$out_hash" "$changed" "$agent_status" "${diffstat:-no diff}" >>"${hr}/history"
 
-    hook_repair_evaluate || break
+    # A round that changed nothing at all is a fact, not a judgement: the agent
+    # says the cause is not in the code, the staged tree is the same and the
+    # hook said the same thing again. This is not an iteration cap (#1337).
+    if [ "$agent_status" = "not_fixable_in_code" ] && [ "$changed" = "no" ] \
+      && [ -n "$tree_before" ] && [ "$tree_before" = "$tree_after" ]; then
+      echo "hook_repair_run: round ${round} made no progress: the agent reported not_fixable_in_code, changed nothing, and the hook output repeated; not retried." >&2
+      status="stuck"; verdict=""
+      reasoning="no progress: the agent reported not_fixable_in_code, the staged tree did not change and the hook output was identical to the previous attempt"
+      break
+    fi
+
+    evaluation="$(hook_repair_evaluate "$hr" "$round" "$out" "$bin" "$health_recipe" "$step" "$op" "$wt" \
+      "$ids" "$prev_ids" "$baseline" "$rc" "$agent_status")" || true
+    verdict="${evaluation%%$'\t'*}"; reasoning="${evaluation#*$'\t'}"
+    case "$verdict" in
+      CONTINUE) reasoning="" ;;
+      TERMINAL) status="terminal"; verdict="" ;;
+      DONE) status="evaluator_done_unresolved"
+        reasoning="evaluator ended the loop while the hook still rejects${reasoning:+: ${reasoning}}" ;;
+      *) status="stuck"; verdict="STUCK"
+        reasoning="${reasoning:-loop-health-evaluator returned STUCK or no readable verdict}" ;;
+    esac
   done
 
   HOOK_REPAIR_REASON="$(printf '%s' "$reasoning" | hook_repair_redact)"
