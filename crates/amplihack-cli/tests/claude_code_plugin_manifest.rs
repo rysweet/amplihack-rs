@@ -179,6 +179,7 @@ const EXPECTED_HOOKS: &[(&str, Option<&str>, &[&str])] = &[
     ("Stop", None, &["stop"]),
     ("PreCompact", None, &["pre-compact"]),
     ("SessionEnd", None, &["session-stop-event"]),
+    ("StopFailure", Some("rate_limit"), &["limit-resume"]),
 ];
 
 #[test]
@@ -1329,10 +1330,13 @@ fi
             "{log}"
         );
         assert!(!log.contains("fetching amplihack"), "{log}");
-        let seen = Command::new(run.home.path().join(".local/bin/amplihack"))
-            .arg("--version")
-            .output()
-            .unwrap();
+        // A stub the test installed, not the real binary; isolated all the
+        // same, as every program named `amplihack` a test runs is.
+        let seen =
+            crate::isolated_amplihack::isolated(run.home.path().join(".local/bin/amplihack"))
+                .arg("--version")
+                .output()
+                .unwrap();
         assert_eq!(
             String::from_utf8_lossy(&seen.stdout).trim(),
             "amplihack 1.0.0"

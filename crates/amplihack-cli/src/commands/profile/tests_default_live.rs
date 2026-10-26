@@ -1,6 +1,7 @@
 //! `default_live::detect`: the rotator ledger first, then the account match.
 use super::default_live::{
-    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, still_live,
+    AMBIGUOUS_WARNING, LEDGER_WARNING, LIST_WARNING, OWN_LOGIN_WARNING, detect, live_name,
+    still_live,
 };
 use super::name::ProfileName;
 use super::store::ProfileStore;
@@ -176,9 +177,115 @@ fn without_a_ledger_the_matching_account_is_live() {
     e.claude_json("b", &account("u1", "other@example.com"));
     assert_eq!(e.live(), (Some("b".into()), None), "uuids decide");
 
+    // Without a uuid on either side the e-mails decide (D2).
     let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        r#"{"oauthAccount":{"emailAddress":"me@example.com"}}"#,
+    );
     e.claude_json("a", &account("", "ME@Example.com"));
     assert_eq!(e.live(), (Some("a".into()), None), "e-mail, any case");
+}
+
+#[test]
+fn a_uuid_on_one_side_only_does_not_match() {
+    // `~/.claude.json` has u1; a profile with only an e-mail is not the
+    // same account (D2).
+    let e = env();
+    e.claude_json("a", &account("", "ME@Example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+fn account_org(uuid: &str, org: &str, email: &str) -> String {
+    serde_json::json!({"oauthAccount": {
+        "accountUuid": uuid,
+        "organizationUuid": org,
+        "emailAddress": email,
+    }})
+    .to_string()
+}
+
+#[test]
+fn one_user_in_two_orgs_marks_the_matching_org_live_without_a_warning() {
+    // D22: ryan-mistt-org and ryan-mistt-personal.
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o-personal", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o-team", "me@example.com"));
+    e.claude_json("b", &account_org("u1", "o-personal", "me@example.com"));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn one_user_in_two_orgs_with_neither_matching_marks_none() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o-third", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o-team", "me@example.com"));
+    e.claude_json("b", &account_org("u1", "o-personal", "me@example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+#[test]
+fn the_same_user_and_org_twice_is_still_ambiguous() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o1", "me@example.com"),
+    );
+    e.claude_json("a", &account_org("u1", "o1", ""));
+    e.claude_json("b", &account_org("u1", "o1", ""));
+    assert_eq!(e.live(), (None, Some(AMBIGUOUS_WARNING)));
+}
+
+#[test]
+fn an_org_on_one_side_only_does_not_match() {
+    let e = env();
+    private(
+        &e.home.join(".claude.json"),
+        &account_org("u1", "o1", "me@example.com"),
+    );
+    e.claude_json("a", &account("u1", "me@example.com"));
+    assert_eq!(e.live(), (None, None));
+}
+
+#[test]
+fn the_default_dir_account_is_read_through_the_safe_filter() {
+    // D4: the shared `identify::Account` replaces the private copy, so an
+    // over-long uuid counts as missing here too.
+    let e = env();
+    let long = "u".repeat(321);
+    private(&e.home.join(".claude.json"), &account(&long, ""));
+    e.claude_json("a", &account(&long, ""));
+    assert_eq!(e.live(), (None, None));
+}
+
+// --- live_name (bug 3) ------------------------------------------------------
+
+#[test]
+fn live_name_is_the_detected_profile() {
+    let e = env();
+    e.ledger(LEDGER_A);
+    assert_eq!(
+        live_name(&e.store, Some(&e.home)).map(|n| n.as_str().to_string()),
+        Some("a".into())
+    );
+}
+
+#[test]
+fn live_name_is_none_without_home_detection_or_when_ambiguous() {
+    let e = env();
+    assert_eq!(live_name(&e.store, None), None, "no $HOME");
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "nothing matches");
+    e.claude_json("a", &account("u1", ""));
+    e.claude_json("b", &account("u1", ""));
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "ambiguous");
+    e.ledger("not json");
+    assert_eq!(live_name(&e.store, Some(&e.home)), None, "bad ledger");
 }
 
 #[test]
@@ -250,4 +357,146 @@ fn a_rotator_symlink_even_dangling_is_an_untrusted_ledger() {
     private(&real.join("ledger.json"), LEDGER_A);
     std::os::unix::fs::symlink(&real, &dir).unwrap();
     assert_eq!(e.live(), (None, Some(LEDGER_WARNING)), "to a directory");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1592 (D14): the `profile rotate` ledger and the prototype's.
+// ---------------------------------------------------------------------------
+
+impl Env {
+    fn rotate_ledger(&self, body: &str) -> PathBuf {
+        let dir = self.store.root().join(".auto-switch.d/rotate");
+        fs::create_dir_all(&dir).unwrap();
+        for d in [dir.parent().unwrap(), dir.as_path()] {
+            fs::set_permissions(d, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let p = dir.join("ledger.json");
+        private(&p, body);
+        p
+    }
+}
+
+fn rotate_ledger(live: &str, since: Option<i64>) -> String {
+    let mut v = serde_json::json!({"version": 1, "live": live, "account": "u1"});
+    if let Some(s) = since {
+        v["since"] = s.into();
+    }
+    v.to_string()
+}
+
+#[test]
+fn the_rotate_ledger_alone_names_the_live_profile() {
+    let e = env();
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn the_ledger_with_the_later_since_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":5}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
+
+    let e = env();
+    e.ledger(r#"{"live":"a","since":20}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("a".into()), None), "prototype is later");
+}
+
+#[test]
+fn a_tie_goes_to_the_rotate_ledger() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":10}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn a_ledger_without_since_is_older() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    e.rotate_ledger(&rotate_ledger("b", None));
+    assert_eq!(e.live(), (Some("a".into()), None));
+}
+
+#[test]
+fn a_malformed_rotate_ledger_warns_and_the_prototype_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    e.rotate_ledger("not json");
+    assert_eq!(e.live(), (Some("a".into()), Some(LEDGER_WARNING)));
+}
+
+#[test]
+fn an_untrusted_rotate_ledger_warns_and_the_prototype_decides() {
+    let e = env();
+    e.ledger(r#"{"live":"a","since":1}"#);
+    let p = e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o666)).unwrap();
+    assert_eq!(e.live(), (Some("a".into()), Some(LEDGER_WARNING)));
+}
+
+#[test]
+fn a_rotate_ledger_that_names_nobody_leaves_the_account_match() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    for body in [
+        r#"{"version":1,"last_cycle":{"at":1,"outcome":"alerted"},"alert":"no-capacity:-"}"#,
+        r#"{"version":1,"live":null}"#,
+    ] {
+        e.rotate_ledger(body);
+        assert_eq!(e.live(), (Some("a".into()), None), "{body}");
+    }
+}
+
+#[test]
+fn a_rotate_ledger_that_names_nobody_does_not_override_the_prototype() {
+    let e = env();
+    e.ledger(r#"{"live":"b"}"#);
+    e.rotate_ledger(r#"{"version":1,"alert":"no-capacity:-"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None));
+}
+
+#[test]
+fn reading_the_rotate_ledger_writes_nothing() {
+    let e = env();
+    let p = e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    let before = fs::read(&p).unwrap();
+    let _ = e.live();
+    assert_eq!(fs::read(&p).unwrap(), before);
+    assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
+}
+
+#[test]
+fn a_new_rotate_since_counts_as_a_swap() {
+    let e = env();
+    e.rotate_ledger(&rotate_ledger("b", Some(10)));
+    let live = detect(&e.store, Some(&e.home)).0.unwrap();
+    assert!(still_live(&e.store, Some(&e.home), &live));
+    e.rotate_ledger(&rotate_ledger("b", Some(11)));
+    assert!(!still_live(&e.store, Some(&e.home), &live));
+}
+
+#[test]
+fn a_prototype_iso_since_is_compared_as_a_time() {
+    let e = env();
+    // The prototype writes `datetime.now().isoformat()`, in local time.
+    e.ledger(r#"{"live":"a","since":"2999-01-01T00:00:00"}"#);
+    e.rotate_ledger(&rotate_ledger("b", Some(2_000_000_000)));
+    assert_eq!(e.live(), (Some("a".into()), None), "prototype is later");
+    e.ledger(r#"{"live":"a","since":"2000-01-01T00:00:00"}"#);
+    assert_eq!(e.live(), (Some("b".into()), None), "rotate is later");
+}
+
+#[test]
+fn a_rotate_ledger_for_another_account_is_ignored_after_a_hand_change() {
+    let e = env();
+    e.claude_json("a", &account("u1", "me@example.com"));
+    e.rotate_ledger(r#"{"version":1,"live":"b","account":"u-other","since":10}"#);
+    assert_eq!(
+        e.live(),
+        (Some("a".into()), None),
+        "the account match decides"
+    );
 }

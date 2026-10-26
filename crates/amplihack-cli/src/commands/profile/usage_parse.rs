@@ -24,7 +24,7 @@ pub const NOT_LOGGED_IN: &[&str] = &[
 /// Phrases meaning the organisation's spend limit was reached. Matched like
 /// [`NOT_LOGGED_IN`], whatever else was read.
 pub const SPEND_LIMIT: &[&str] = &[
-    crate::commands::recipe::run::limit_patterns::SPEND_LIMIT,
+    "spend limit",
     "spending limit",
     "usage limit for your organization",
     "organization has reached",

@@ -65,7 +65,7 @@ steps:
       # #1543: the operator's own pr_number outranks a guess from the launch checkout.
       # The composer produces autodrive_pr_input as a step output, so it is
       # read through its RECIPE_VAR_ name as well.
-      PR_INPUT="${AUTODRIVE_PR_INPUT:-${RECIPE_VAR_autodrive_pr_input:-}}"
+      PR_INPUT="${RECIPE_VAR_autodrive_pr_input:-}"
       PR="${PR_NUMBER:-}"
       case "$PR" in ''|*[!0-9]*) PR="$PR_INPUT" ;; esac
       # PR_GIVEN: the PR this loop was handed, either the build phase's PR
@@ -169,17 +169,17 @@ steps:
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || LOOP_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_loop.sh"
       [ -f "$LOOP_HELPER" ] || { echo "ERROR: autodrive loop helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): $LOOP_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+      DIR="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+      PR="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       # Refuse an empty or unsafe state_dir before anything touches it.
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-02]" >&2; exit 1 ;;
       esac
-      REPO="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+      REPO="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field repo \
         | amplihack orch helper extract-field --field repo --default '')"
       [ -n "$REPO" ] || { echo "ERROR: preflight produced no repo; refusing to run a loop that would measure the launch checkout (#1543) [autodrive-crusty-loop/step-02]" >&2; exit 1; }
@@ -252,17 +252,17 @@ steps:
       [ -f "$STATE_HELPER" ] || STATE_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/autodrive_state.sh"
       [ -f "$STATE_HELPER" ] || { echo "WARNING: autodrive state helper not found; this run stays correct but a resumed run will redo the crusty loop." >&2; exit 0; }
       . "$STATE_HELPER"
-      DIR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+      DIR="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field state_dir \
         | amplihack orch helper extract-field --field state_dir --default '')"
-      PR="$(printf '%s' "${CRUSTY_LOOP_PREFLIGHT:-${RECIPE_VAR_crusty_loop_preflight:-}}" \
+      PR="$(printf '%s' "${RECIPE_VAR_crusty_loop_preflight:-}" \
         | amplihack orch helper extract-json --require-field pr \
         | amplihack orch helper extract-field --field pr --default '')"
       # Refuse an empty or unsafe state_dir before anything touches it.
       case "$DIR" in
         ''|/|-*|*$'\n'*) echo "ERROR: no state_dir (empty or unsafe: refusing to touch it) [autodrive-crusty-loop/step-03]" >&2; exit 1 ;;
       esac
-      RESULT="$(printf '%s' "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}" \
+      RESULT="$(printf '%s' "${RECIPE_VAR_crusty_loop_result:-}" \
         | amplihack orch helper extract-json --require-field loop_result \
         | amplihack orch helper extract-field --field loop_result --default '')"
       if [ "$RESULT" != "DONE" ]; then

@@ -30,6 +30,20 @@ pub(super) struct RecipeRunCorrelation {
     work_item_id: Option<String>,
     work_item_url: Option<String>,
     runner_path: String,
+    /// Issue #1606: what this run resolved, recorded so a run can be audited
+    /// for the agent CLI and home it actually used.
+    settings: RunSettings,
+}
+
+/// The resolved values the log pointer records (issue #1606).
+#[derive(Debug, Clone, Default)]
+pub(super) struct RunSettings {
+    /// The agent CLI every step runs under.
+    pub(super) agent_binary: Option<String>,
+    /// The resolver layer that chose it (`ResolutionSource::label`).
+    pub(super) agent_binary_source: Option<&'static str>,
+    /// The `AMPLIHACK_HOME` handed to the runner.
+    pub(super) amplihack_home: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -88,7 +102,14 @@ impl RecipeRunCorrelation {
             ),
             work_item_url: first_context_value(context, &["work_item_url", "ado_work_item_url"]),
             runner_path: path_to_string(runner_path),
+            settings: RunSettings::default(),
         }
+    }
+
+    /// Record the run's resolved settings in every pointer (issue #1606).
+    pub(super) fn with_settings(mut self, settings: RunSettings) -> Self {
+        self.settings = settings;
+        self
     }
 
     pub(super) fn run_id(&self) -> &str {
@@ -116,6 +137,9 @@ impl RecipeRunCorrelation {
             work_item_id: self.work_item_id.as_deref(),
             work_item_url: self.work_item_url.as_deref(),
             runner_path: &self.runner_path,
+            agent_binary: self.settings.agent_binary.as_deref(),
+            agent_binary_source: self.settings.agent_binary_source,
+            amplihack_home: self.settings.amplihack_home.as_deref(),
             child_pid: None,
             exit_code: None,
             status: None,
@@ -152,6 +176,9 @@ impl RecipeRunCorrelation {
             work_item_id: self.work_item_id.as_deref(),
             work_item_url: self.work_item_url.as_deref(),
             runner_path: &self.runner_path,
+            agent_binary: self.settings.agent_binary.as_deref(),
+            agent_binary_source: self.settings.agent_binary_source,
+            amplihack_home: self.settings.amplihack_home.as_deref(),
             child_pid,
             exit_code,
             status: Some(status.as_str()),
@@ -265,6 +292,12 @@ struct LogPointerEvent<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     work_item_url: Option<&'a str>,
     runner_path: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_binary: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent_binary_source: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    amplihack_home: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     child_pid: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]

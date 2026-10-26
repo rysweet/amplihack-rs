@@ -232,6 +232,10 @@ fn run_all_checks() -> Result<()> {
 
     let (_, failed) = print_summary(&results);
 
+    // Issue #1606: the effective user config, with where each value came from.
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("/"));
+    print!("{}", crate::commands::config::doctor_section(&cwd));
+
     if failed > 0 {
         std::process::exit(1);
     }

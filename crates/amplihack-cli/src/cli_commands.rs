@@ -338,6 +338,12 @@ MODEL SELECTION (issues #1421, #1527)
     LockStatus,
     /// Show version information
     Version,
+    /// Read and change persistent user defaults (issue #1606):
+    /// `~/.amplihack/config.toml` and a project's `.amplihack/config.toml`.
+    Config {
+        #[command(subcommand)]
+        command: crate::ConfigCommands,
+    },
     /// Print the agent CLI that agent steps would run under, and why.
     ///
     /// With --shell, print it as `env -u <each session marker>

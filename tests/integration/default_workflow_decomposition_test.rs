@@ -283,9 +283,10 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
     "step-20-final-cleanup",
+    // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
+    "step-20c-quality-audit",
     "step-20a-artifact-guard",
     "step-20b-push-cleanup",
-    "step-20c-quality-audit",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     // Issue #1268: evidence + judgement between the scoped-PR signal and the
@@ -1201,9 +1202,14 @@ fn mid_stage_read_only_steps_fall_back_to_repo_path() {
     // REPO_PATH fallback cannot commit in the launch checkout. It still
     // hard-fails (via :?) when REPO_PATH is also empty.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
+    // #1561: the fallback is the recipe's own repo_path, never an inherited
+    // bare REPO_PATH, and only when worktree_setup is unset (exit 3); a
+    // present but rejected path stops the step.
     assert!(
-        command.contains(":-${REPO_PATH:-}"),
-        "workflow-publish/step-16-create-draft-pr must fall back to $REPO_PATH when worktree var is empty"
+        command.contains(
+            r#"|| { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }"#
+        ),
+        "workflow-publish/step-16-create-draft-pr must fall back to repo_path when worktree_setup is unset"
     );
     assert!(
         command.contains("WORKTREE_SETUP_WORKTREE_PATH:?"),
@@ -1279,35 +1285,27 @@ fn workflow_publish_step_16_guards_non_github_remotes() {
 
 #[test]
 fn workflow_finalize_step_21_guards_pr_url_before_gh_commands() {
+    // step-21 delegates to workflow_pr_ready.sh, which reads PR_URL itself
+    // from the recipe's own values (#1561) and checks it before any gh call.
     let command = step_command("workflow-finalize", "step-21-pr-ready");
-
-    // Must reference PR_URL variable
     assert!(
-        command.contains("PR_URL"),
-        "step-21 must reference PR_URL to guard against empty values"
+        command.contains("workflow_pr_ready.sh"),
+        "step-21 must run workflow_pr_ready.sh"
     );
-
-    // Must check PR_URL is non-empty (whitespace-tolerant) before calling gh pr ready
-    assert!(
-        command.contains("-z \"$PR_URL\"")
-            || command.contains("-n \"$PR_URL\"")
-            || command.contains("[ -z \"${PR_URL")
-            || command.contains("[ -n \"${PR_URL")
-            || command.contains("[^[:space:]]"),
-        "step-21 must check PR_URL is non-empty before invoking gh commands"
-    );
-
-    // gh pr ready must NOT be invoked unconditionally at the top level
-    // It should be inside a conditional that checks PR_URL
-    let pr_url_check_pos = command
-        .find("PR_URL")
-        .expect("PR_URL must appear in step-21");
-    let gh_pr_ready_pos = command
-        .find("gh pr ready")
+    let helper = std::fs::read_to_string(recipes_dir().join("../tools/workflow_pr_ready.sh"))
+        .expect("read workflow_pr_ready.sh");
+    let read_pos = helper
+        .find("PR_URL=\"${RECIPE_VAR_pr_url:-")
+        .expect("workflow_pr_ready.sh must read PR_URL from RECIPE_VAR_pr_url");
+    let check_pos = helper
+        .find("[[ \"$PR_URL\" =~ [^[:space:]] ]]")
+        .expect("workflow_pr_ready.sh must check PR_URL is non-empty");
+    let gh_pr_ready_pos = helper
+        .find("pr ready \"$pr_url\"")
         .expect("'gh pr ready' must still exist for GitHub PRs");
     assert!(
-        gh_pr_ready_pos > pr_url_check_pos,
-        "step-21 must check PR_URL before invoking 'gh pr ready'"
+        read_pos < check_pos && check_pos < gh_pr_ready_pos,
+        "workflow_pr_ready.sh must read and check PR_URL before invoking 'gh pr ready'"
     );
 }
 

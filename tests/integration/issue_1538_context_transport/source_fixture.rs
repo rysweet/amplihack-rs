@@ -107,9 +107,11 @@ impl NativeFixture {
         } else {
             std::env::var_os("RECIPE_RUNNER_RS_PATH")
         };
-        let mut install = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut install = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
         install
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", &private_path)
             .env("CARGO_HOME", home.join(".cargo"))
             .env("XDG_CACHE_HOME", home.join(".cache"))
@@ -204,7 +206,9 @@ impl NativeFixture {
         fs::write(&recipe_file, serde_yaml::to_string(&fixture).unwrap()).unwrap();
         let observer = case.join("observer.sh");
         let child_stderr = case.join("child.stderr");
-        fs::write(&observer, "printf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\nexec 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
+        // Observe only the step shell: a nested bash (e.g. a `git` wrapper script
+        // on PATH) would otherwise re-source this and truncate the evidence files.
+        fs::write(&observer, "unset BASH_ENV\nprintf '%s\\n' \"$BASH_EXECUTION_STRING\" > \"$SOURCE_RENDERED_BODY\"\nexec 2> >(tee \"$SOURCE_CHILD_STDERR\" >&2)\n").unwrap();
         let output = Command::new(&self.runner)
             .arg(&recipe_file)
             .arg("--no-auto-stage")

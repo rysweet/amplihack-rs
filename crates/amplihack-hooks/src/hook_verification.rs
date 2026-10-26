@@ -29,6 +29,7 @@ const REQUIRED_NATIVE_HOOKS: &[&str] = &[
     "workflow-classification-reminder",
     "user-prompt-submit",
     "pre-compact",
+    "limit-resume",
 ];
 
 /// Resolve the amplihack home directory.
@@ -250,7 +251,8 @@ mod tests {
                     {"hooks": [{"type": "command", "command": "amplihack-hooks workflow-classification-reminder"}]},
                     {"hooks": [{"type": "command", "command": "amplihack-hooks user-prompt-submit"}]}
                 ],
-                "PreCompact": [{"hooks": [{"type": "command", "command": "amplihack-hooks pre-compact"}]}]
+                "PreCompact": [{"hooks": [{"type": "command", "command": "amplihack-hooks pre-compact"}]}],
+                "StopFailure": [{"matcher": "rate_limit", "hooks": [{"type": "command", "command": "amplihack-hooks limit-resume"}]}]
             }
         });
         fs::write(&path, serde_json::to_string_pretty(&settings).unwrap()).unwrap();

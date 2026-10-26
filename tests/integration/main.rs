@@ -19,6 +19,10 @@
 mod amplihack_path;
 #[path = "investigation_workflow_decomposition_test.rs"]
 mod investigation_workflow_decomposition;
+#[path = "../support/isolated_amplihack.rs"]
+mod isolated_amplihack;
+#[path = "isolated_amplihack_scan.rs"]
+mod isolated_amplihack_scan;
 
 #[path = "smart_orchestrator_decomposition_test.rs"]
 mod smart_orchestrator_decomposition;
@@ -164,6 +168,14 @@ mod autodrive_pr_worktree;
 
 #[path = "doctor_node_remediation_test.rs"]
 mod doctor_node_remediation;
+
+// PR #1530: brick-budget hook reads its limit with POSIX sed (macOS/BSD).
+#[path = "brick_budget_hook_portability_test.rs"]
+mod brick_budget_hook_portability;
+
+// PR #1530: Linux-only auto-switch test helpers allow dead_code on macOS.
+#[path = "linux_only_test_helpers_test.rs"]
+mod linux_only_test_helpers;
 
 // Consensus-workflow decomposition parity tests.
 // Locks the v3 contract: composer calls 11 phase sub-recipes, all 60 step IDs
@@ -412,6 +424,21 @@ mod ci_wallclock_parallelize;
 #[path = "issue_1337_loop_health_evaluator_test.rs"]
 mod issue_1337_loop_health_evaluator;
 
+// Issue #1671: a rejected git hook in a checkpoint or publish step goes to a
+// fixing agent and the step retries until the loop-health evaluator ends the
+// loop. Pins the fixing recipe, its manifest entry, the brick budget, the
+// reference page links, and runs the executable shell contract.
+#[path = "issue_1671_hook_rejection_repair_test.rs"]
+mod issue_1671_hook_rejection_repair;
+
+// Issue #1510: the loop-evidence collector drops agent output lines
+// (`[HH:MM:SS] [amplihack:...]`) before its BLOCKED_TERMINAL and exit-79
+// detectors, the same rule as terminal_refusal() in autodrive_loop.sh, so a
+// review quoting the token is not a terminal policy refusal. Runs the real
+// step-01 command through bash; needs bash and git, not the amplihack binary.
+#[path = "issue_1510_collector_agent_prose_test.rs"]
+mod issue_1510_collector_agent_prose;
+
 // auto-drive-to-merge: wrap default-workflow and drive the PR to merge through
 // two agentically-terminated loops (crusty, then merge-ready). Pins the absence
 // of any numeric iteration cap, the fail-safe-to-blocking verdict defaults, the
@@ -421,3 +448,12 @@ mod issue_1337_loop_health_evaluator;
 // tests themselves need only extract-json / extract-field, already on main.
 #[path = "auto_drive_to_merge_test.rs"]
 mod auto_drive_to_merge;
+
+// Issue #1641: a resumed run whose branch already has an open, same-repo PR
+// with green checks (or pending/no CI plus this run's typed precommit evidence)
+// finalizes as EXISTING_OPEN_PR instead of FAILED_IMPLEMENTATION; a failing
+// check is BLOCKED_CI, and every fail-closed case (no PR, no verification
+// signal, hollow success, blockers) is kept. Runs the
+// real validator against a private git repo and a stub gh.
+#[path = "issue_1641_finalization_open_pr.rs"]
+mod issue_1641_finalization_open_pr;

@@ -11,10 +11,19 @@ mod attempt;
 mod auto_switch;
 mod default_live;
 #[cfg(unix)]
+mod duplicates;
+#[cfg(unix)]
 mod limit_wait;
+#[cfg(unix)]
+mod login_check;
 mod name;
 mod pointer;
+mod root_cmd;
+mod root_config;
+mod rotate;
 mod run;
+mod settings_refresh;
+mod shared_dirs;
 mod store;
 mod supervise_gate;
 mod usage_cmd;
@@ -26,14 +35,26 @@ mod tests_commands;
 mod tests_default_live;
 #[cfg(test)]
 mod tests_docs_sync;
+#[cfg(all(test, unix))]
+mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_login_check;
 #[cfg(test)]
 mod tests_name;
 #[cfg(test)]
 mod tests_pointer;
 #[cfg(test)]
+mod tests_root_config;
+#[cfg(test)]
+mod tests_root_save;
+#[cfg(test)]
 mod tests_run;
 #[cfg(test)]
 mod tests_seed;
+#[cfg(all(test, unix))]
+mod tests_settings_refresh;
+#[cfg(all(test, unix))]
+mod tests_shared_dirs;
 #[cfg(test)]
 mod tests_store;
 #[cfg(test)]
@@ -47,8 +68,14 @@ use anyhow::Result;
 /// File helpers shared with the usage-limit wait and its settings (#1618).
 #[cfg(unix)]
 pub(crate) use auto_switch::fsx;
+pub(crate) use auto_switch::{
+    launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
+};
 use clap::Subcommand;
 use name::ProfileName;
+use root_cmd::{render_list, render_show};
+pub(crate) use rotate::autostart_on_launch;
+pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;
@@ -79,6 +106,8 @@ pub enum ProfileError {
     PointerCorrupt(String),
     #[error("invalid profile root: {0:?}")]
     InvalidRoot(String),
+    #[error("saved profile root in {path:?} is invalid: {reason}")]
+    InvalidSavedRoot { path: String, reason: String },
     #[error("invalid shared Claude settings: {0}")]
     InvalidSharedSettings(String),
     #[error("shared Claude asset source is not a directory: {0:?}")]
@@ -115,6 +144,18 @@ pub enum ProfileError {
     AutoSwitchInstall(String),
     #[error("auto-switch is not available on this platform")]
     AutoSwitchUnsupported,
+    #[error("{0}")]
+    RotateConfig(String),
+    #[error("the external login rotator holds <root>/.rotator/lock")]
+    RotatePrototypeRunning,
+    #[error("swap refused: {0}")]
+    RotateRefused(String),
+    #[error("rotate state is inconsistent: {0}")]
+    RotateInconsistent(String),
+    #[error("profile rotate is not available on this platform")]
+    RotateUnsupported,
+    #[error("rotate: {0}")]
+    RotateDaemon(String),
     #[error(
         "inherited AMPLIHACK_CLAUDE_PROFILE {value}: {}",
         .source.inherited_reason()
@@ -137,7 +178,12 @@ impl ProfileError {
             Self::UnsupportedMode(_) => "launch without --docker/--auto, or without --profile",
             Self::PointerDangling(_) => "run `amplihack profile switch <name>` or add the profile",
             Self::PointerCorrupt(_) => "re-run `amplihack profile switch <name>`",
-            Self::InvalidRoot(_) => "set AMPLIHACK_CLAUDE_PROFILE_ROOT to an absolute path",
+            Self::InvalidRoot(_) => {
+                "use an absolute path: set AMPLIHACK_CLAUDE_PROFILE_ROOT to one, or run: amplihack profile root <absolute dir>"
+            }
+            Self::InvalidSavedRoot { .. } => {
+                "fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>"
+            }
             Self::InvalidSharedSettings(_) => "repair ~/.claude/settings.json and retry",
             Self::InvalidSharedSource(_) => "ensure ~/.claude is a directory and retry",
             Self::SharedAssetLimit(_) => {
@@ -165,6 +211,20 @@ impl ProfileError {
                 "fix or remove the reported file, then run `amplihack profile auto-switch repair`"
             }
             Self::AutoSwitchUnsupported => "auto-switch needs Linux or another Unix; leave it off",
+            Self::RotateConfig(_) => {
+                "run `amplihack profile rotate --help` for the accepted values"
+            }
+            Self::RotatePrototypeRunning => {
+                "stop the external rotator (tmux session claude-rotator) first"
+            }
+            Self::RotateRefused(_) => {
+                "nothing was moved; see \"Swap refused\" in docs/howto/claude-profile-rotation.md"
+            }
+            Self::RotateInconsistent(_) => {
+                "see the Recovery section of docs/howto/claude-profile-rotation.md"
+            }
+            Self::RotateUnsupported => "rotate needs Linux or another Unix",
+            Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
             Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
                 "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"
             }
@@ -227,12 +287,18 @@ pub(crate) fn with_hint(e: ProfileError) -> anyhow::Error {
 pub enum ProfileCommands {
     /// Create a profile and copy allowlisted shared Claude assets (does not run Claude)
     Add { name: String },
-    /// List profiles; the default is marked with '*'
+    /// List profiles after a `root:` line; the default is marked with '*'
     List,
     /// Show the default profile name and directory
     Show,
-    /// Make a profile the default for `launch` and `claude`
-    Switch { name: String },
+    /// Make a profile the default for `launch` and `claude`, or clear it with --none
+    Switch {
+        #[arg(required_unless_present = "none")]
+        name: Option<String>,
+        /// Clear the default instead: `launch` and `claude` then use no profile
+        #[arg(long, conflicts_with = "name")]
+        none: bool,
+    },
     /// Delete a profile directory
     Remove {
         name: String,
@@ -267,6 +333,10 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: auto_switch::AutoSwitchCommand,
     },
+    /// Print the profile root and its source, or save <dir> as the root
+    Root { dir: Option<String> },
+    /// Keep the login in ~/.claude on the profile with the most capacity left
+    Rotate(Box<rotate::RotateArgs>),
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
     Statusline {
@@ -290,14 +360,20 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
     if let ProfileCommands::Statusline { root, owner } = &cmd {
         std::process::exit(auto_switch::statusline(root, owner));
     }
-    let store = ProfileStore::from_env()?;
+    // Before the root is resolved, so it can repair a damaged saved root.
+    if let ProfileCommands::Root { dir } = cmd {
+        return Ok(root_cmd::run(dir)?);
+    }
+    let (store, source) = root_config::store_from_env()?;
     match cmd {
         ProfileCommands::Add { name } => {
             let dir = store.add(&ProfileName::parse(&name)?)?;
             println!("created profile {name} at {}", dir.display());
             println!("next: amplihack profile login {name}");
+            root_cmd::record_after_add(&store);
         }
         ProfileCommands::List => {
+            println!("{}", root_cmd::root_line(store.root(), source));
             let out = render_list(&store)?;
             if out.is_empty() {
                 println!("no profiles; create one with `amplihack profile add <name>`");
@@ -306,11 +382,13 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             }
         }
         ProfileCommands::Show => print!("{}", render_show(&store)?),
-        ProfileCommands::Switch { name } => {
-            let name = ProfileName::parse(&name)?;
+        ProfileCommands::Switch { none: true, .. } => println!("{}", clear_default(&store)?),
+        ProfileCommands::Switch { name, .. } => {
+            let name = ProfileName::parse(name.as_deref().unwrap_or_default())?;
             store.resolve(&name)?;
             pointer::write(store.root(), &name)?;
             println!("default profile: {name}");
+            shared_dirs::ensure_for(&store, &name);
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;
@@ -324,7 +402,14 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             let name = ProfileName::parse(&name)?;
             store.resolve(&name)?;
             auto_switch::guard(&store, &name, auto_switch::Action::Login)?;
-            run::login(&store, &name)?
+            // Login spawns claude itself, not through the pre-spawn check.
+            shared_dirs::ensure_for(&store, &name);
+            #[cfg(unix)]
+            login_check::login_checked(&store, &name, usage_cmd::home_dir().as_deref(), || {
+                run::login(&store, &name)
+            })?;
+            #[cfg(not(unix))]
+            run::login(&store, &name)?;
         }
         ProfileCommands::Run { name, args } => {
             let name = ProfileName::parse(&name)?;
@@ -339,33 +424,33 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             timeout_secs,
         } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
-        ProfileCommands::Statusline { .. } => unreachable!("handled above"),
+        ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
+        ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
+            unreachable!("handled above")
+        }
     }
     Ok(())
 }
 
-fn render_list(store: &ProfileStore) -> Result<String, ProfileError> {
-    let default = pointer::read(store.root())?;
-    let mut out = String::new();
-    for n in store.list()? {
-        let mark = if default.as_ref().is_some_and(|d| d.as_str() == n) {
-            '*'
-        } else {
-            ' '
-        };
-        out.push_str(&format!("{mark} {n}\n"));
-    }
-    Ok(out)
+/// Printed by `profile switch --none`.
+const CLEARED: &str = "Default profile cleared.";
+const NOT_SET: &str = "No default profile was set.";
+
+/// Removes the default pointer, valid or not; the message to print.
+fn clear_default(store: &ProfileStore) -> Result<&'static str, ProfileError> {
+    store.check_root_not_symlink()?;
+    let existed = pointer::exists(store.root());
+    pointer::clear(store.root())?;
+    Ok(if existed { CLEARED } else { NOT_SET })
 }
 
-fn render_show(store: &ProfileStore) -> Result<String, ProfileError> {
-    match pointer::read(store.root())? {
-        None => Ok("none\n".to_string()),
-        Some(name) => {
-            let dir = store.resolve(&name)?;
-            Ok(format!("name: {name}\ndir: {}\n", dir.display()))
-        }
-    }
+/// The one line printed when a launch of the rotator's live profile runs
+/// against `~/.claude`.
+fn live_launch_note(name: &str) -> String {
+    format!(
+        "note: profile '{name}' is the rotator's live login, which is in ~/.claude; \
+         launching against ~/.claude."
+    )
 }
 
 /// Resolution order: `--profile` flag, then a non-empty inherited
@@ -458,7 +543,10 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_sw
     }
     let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
         && auto_switch::inside_session(dir);
-    auto_switch::guard_launch(&store, &name, join).map_err(with_hint)
+    let hold = auto_switch::guard_launch(&store, &name, join).map_err(with_hint)?;
+    // Issue #1634: the shared session links, under the hold. Never fails.
+    shared_dirs::ensure_for(&store, &name);
+    Ok(hold)
 }
 
 /// Set when this process's launch profile was inherited (tier 2), the only
@@ -493,6 +581,7 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
         docker,
         docker_env,
         auto,
+        usage_cmd::home_dir().as_deref(),
         ProfileStore::from_env,
     )
     .map_err(with_hint)
@@ -500,13 +589,14 @@ pub fn launch_profile_dir(flag: Option<&str>, docker: bool, auto: bool) -> Resul
 
 /// `launch_profile_dir` with the environment passed in, so tests do not depend
 /// on the caller's environment. `open_store` is only called when a profile may
-/// be applied.
+/// be applied. `home` is `$HOME`, for finding the rotator's live profile.
 fn launch_profile_dir_with(
     flag: Option<&str>,
     inherited: Option<&OsStr>,
     docker: bool,
     docker_env: bool,
     auto: bool,
+    home: Option<&std::path::Path>,
     open_store: impl FnOnce() -> Result<ProfileStore, ProfileError>,
 ) -> Result<Option<PathBuf>, ProfileError> {
     validate_launch_flags(flag, docker, docker_env, auto)?;
@@ -540,6 +630,21 @@ fn launch_profile_dir_with(
     let Some((name, dir)) = resolved else {
         return Ok(None);
     };
+    // The rotator's live profile has its login in `~/.claude`, not in its
+    // directory: launch with no profile, as Claude then uses `~/.claude`.
+    // Only a directory without its own login can be live, so one lstat
+    // skips reading the ledgers and every profile's `.claude.json` on the
+    // usual launch.
+    if default_live::could_be_live(&store, &name) {
+        let (live, warning) = default_live::detect(&store, home);
+        if let Some(w) = warning {
+            eprintln!("{w}");
+        }
+        if live.is_some_and(|l| l.name == name) {
+            eprintln!("{}", live_launch_note(name.as_str()));
+            return Ok(None);
+        }
+    }
     // Auto-switch (#1569): only an inherited profile is ever redirected or
     // allowed to join a hosted session; a flag or the pointer never is.
     let is_inherited = flag.is_none() && inherited.is_some();

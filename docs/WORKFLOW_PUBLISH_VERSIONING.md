@@ -71,17 +71,15 @@ Cargo.toml     : version = "0.9.4" → "1.0.0"
 The Step 15 commit block resolves the prefix deterministically, in priority
 order:
 
-1. **Classification signal (primary).** The step reads the environment variable
-   `VERSION_BUMP_CHANGE_CLASSIFICATION` (uppercased form, dot → single `_`),
-   falling back to the `RECIPE_VAR_version_bump__change_classification` alias
-   (dot → double `__`), produced by `step-14-bump-version`. A whitelist `case`
-   maps it:
+1. **Classification signal (primary).** The step reads the
+   `change_classification` field of the JSON in `RECIPE_VAR_version_bump`, the
+   output of `step-14-bump-version`. A whitelist `case` maps it:
    - `PATCH → fix:`
    - `MINOR → feat:`
    - `MAJOR → feat!:`
 2. **Task-description heuristic (fallback, rarely reached).** The primary signal
    above is derived from the actual branch diff, so it is populated on virtually
-   every real publish run. Only if the classification variable is empty or unset
+   every real publish run. Only if the classification field is empty or missing
    (e.g. the bump step was skipped) does the block fall back to scanning
    `$TASK_DESCRIPTION` for bugfix intent (`bug`, `bugfix`, `fix`); a match yields
    `fix:`. Because this fallback is text-based, a feature titled "add fix-it

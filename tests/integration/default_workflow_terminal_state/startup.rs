@@ -25,6 +25,8 @@ pub(super) fn isolate(command: &mut Command, root: &Path) {
         fs::copy(&selected, bin.join(name)).expect("private tool copy");
     }
     command.env_clear();
+    command.env(crate::isolated_amplihack::HOME_GUARD_ENV, "1");
+    command.env("TMPDIR", std::env::temp_dir());
     for (key, name) in [
         ("HOME", "home"),
         ("CODEX_HOME", "codex"),

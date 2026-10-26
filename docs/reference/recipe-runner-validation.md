@@ -2,7 +2,7 @@
 title: Recipe runner validation
 description: Runner capability schema, provider rules and managed source provenance.
 type: reference
-updated: 2026-10-08
+updated: 2026-10-18
 ---
 
 # Recipe runner validation
@@ -73,6 +73,74 @@ stamping success. The managed revision is never selected from upstream `main`
 or inferred from a capability report. If an older user-owned runtime lacks native validation,
 bootstrap builds a private Cargo validator without replacing the user's runtime.
 Receipts describe local installation provenance, not cryptographic attestation.
+
+## Installer downgrade guard
+
+`scripts/install-pinned-recipe-runner.sh`, `claude-plugin/bin/install-runtime`,
+`amplihack install` and launcher freshness do not replace an installed runner
+with an older revision. Each reads the installed revision from the Cargo
+receipt (`.crates2.json`), never from `recipe-runner-rs --version` or
+`recipe_runner.json`, and accepts it only when exactly one entry has the source
+`git+https://github.com/rysweet/amplihack-recipe-runner` followed by `?` or `#`,
+the `recipe-runner-rs` package and binary, and a 40-character lowercase SHA.
+Ancestry comes from Cargo's git database and, failing that, from a fetch of the
+two SHAs (into `~/.amplihack/state/recipe-runner.git` for Rust, a temporary
+directory for the scripts). The installed runner is classified against the pin:
+
+| Class | Installed revision | Without force |
+| --- | --- | --- |
+| `Unknown` | Not found in the receipt | Install the pin |
+| `Equal` | Same as the pin | Keep; validate the existing binary (`install-runtime` instead reruns `cargo install`, which makes no changes at the same revision) |
+| `Older` | Ancestor of the pin | Install the pin |
+| `Newer` | Descendant of the pin | Keep and warn |
+| `Diverged` | Neither ancestor nor descendant | Keep and warn |
+| `Unverifiable` | Order could not be established | Keep and warn |
+
+### Skip warnings
+
+Each skip produces one warning naming both SHAs and the force variable. The
+wording depends on the class:
+
+| Class | Message |
+| --- | --- |
+| `Newer` | `kept recipe-runner-rs <installed> (newer than pinned <pin>); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to downgrade` |
+| `Diverged` | `kept recipe-runner-rs <installed> (diverged from pinned <pin>); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to replace it` |
+| `Unverifiable` | `kept recipe-runner-rs <installed> (could not verify order against pinned <pin>); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to replace it` |
+
+Where the message appears depends on the installer. `amplihack install` prints
+it to the terminal as an indented warning line; for a `Newer` runner:
+
+```text
+   ⚠️  kept recipe-runner-rs 77a0c1e2b3d4 (newer than pinned 4d5187eaf958); set AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1 to downgrade
+```
+
+`scripts/install-pinned-recipe-runner.sh` and
+`claude-plugin/bin/install-runtime` write the same message text to standard
+error. Launcher freshness does not print a terminal line; it emits the message
+through `tracing::warn!`, so it appears only where launcher warnings are
+logged.
+
+### Skip record, force and overrides
+
+The kept binary is still validated, and a further warning is given if it fails
+the capability probe or provenance; it is kept regardless. The launcher records
+the skip in `recipe_runner.json` with the real installed SHA, so later launches
+do no git work while the pin and receipt are unchanged; `Diverged` and
+`Unverifiable` are retried after the 24-hour freshness cooldown. Setting
+[`AMPLIHACK_FORCE_RECIPE_RUNNER_DOWNGRADE=1`](environment-variables.md#amplihack_force_recipe_runner_downgrade),
+or passing `--force` to the shell installer, installs the pin anyway and logs
+"downgrade forced". A `RECIPE_RUNNER_RS_PATH` override is never replaced.
+
+[`RECIPE_RUNNER_ANCESTRY_REPO`](environment-variables.md#recipe_runner_ancestry_repo)
+replaces both ancestry sources in the two shell installers. It exists for the
+test suite only; a value starting with `-`, or anything other than a local path
+or an `https://` or `file://` URL, is rejected, and the result is
+`Unverifiable`.
+
+The guard is a control against accidental regression, not a supply-chain
+defence: integrity still rests on the pinned SHA, HTTPS and
+`cargo install --locked --rev`. Pin changes on `main` are checked separately by
+the [recipe runner pin ancestry check](ci-pipeline.md#recipe-runner-pin-ancestry).
 
 ## Internal validation endpoint
 

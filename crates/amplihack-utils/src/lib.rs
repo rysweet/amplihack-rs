@@ -33,6 +33,7 @@ pub mod artifact_guard;
 pub mod backoff;
 pub mod binary_finder;
 pub mod bundle_generator;
+pub mod claude_capacity;
 pub mod claude_md;
 /// Platform-package selection and native-binary materialization checks for
 /// `@anthropic-ai/claude-code`. See issue #1266.
@@ -78,6 +79,7 @@ pub mod prompt_delivery;
 pub mod resolve_bundle_asset;
 /// `IS_SANDBOX=1` for `claude --dangerously-skip-permissions` as root (issue #1482).
 pub mod root_sandbox;
+pub mod rotator_status;
 pub mod runtime_assets;
 /// Secure file and directory creation with restrictive permissions.
 pub mod secure_files;

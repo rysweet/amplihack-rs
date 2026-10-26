@@ -128,3 +128,370 @@ fn reference_quotes_the_env_credential_warning() {
         "reference must quote: {warning}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1592: `profile rotate` is documented, flag for flag.
+// ---------------------------------------------------------------------------
+
+const ROTATE_HOWTO: &str = include_str!("../../../../../docs/howto/claude-profile-rotation.md");
+const PROFILE_MANAGEMENT: &str = include_str!("../../../../../docs/PROFILE_MANAGEMENT.md");
+const MKDOCS: &str = include_str!("../../../../../mkdocs.yml");
+
+/// Every visible long flag of `rotate` and its subcommands.
+fn rotate_flags() -> Vec<String> {
+    use clap::Args;
+    let cmd = super::rotate::RotateArgs::augment_args(clap::Command::new("rotate"));
+    let mut flags = Vec::new();
+    for c in std::iter::once(&cmd).chain(cmd.get_subcommands()) {
+        for a in c.get_arguments() {
+            if a.is_hide_set() {
+                continue;
+            }
+            if let Some(l) = a.get_long() {
+                flags.push(format!("--{l}"));
+            }
+        }
+    }
+    flags.sort();
+    flags.dedup();
+    flags
+}
+
+#[test]
+fn rotate_has_the_documented_flags_and_hides_spawned() {
+    let flags = rotate_flags();
+    for want in [
+        "--dry-run",
+        "--session-at",
+        "--week-at",
+        "--margin",
+        "--upgrade-margin",
+        "--hold",
+        "--interval",
+    ] {
+        assert!(flags.iter().any(|f| f == want), "missing {want}: {flags:?}");
+    }
+    assert!(
+        !flags.iter().any(|f| f == "--spawned"),
+        "--spawned is hidden"
+    );
+}
+
+#[test]
+fn reference_and_howto_document_profile_rotate() {
+    for (name, doc) in [("reference", REFERENCE), ("rotate howto", ROTATE_HOWTO)] {
+        assert!(doc.contains("amplihack profile rotate"), "{name}");
+        for sub in ["start", "stop", "status", "--dry-run"] {
+            assert!(doc.contains(sub), "{name} doc is missing {sub}");
+        }
+    }
+    for flag in rotate_flags() {
+        assert!(
+            REFERENCE.contains(&format!("`{flag}")),
+            "reference is missing {flag}"
+        );
+    }
+    for var in [
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
+        "AMPLIHACK_ROTATE_MARGIN",
+        "AMPLIHACK_ROTATE_UPGRADE_MARGIN",
+        "AMPLIHACK_ROTATE_HOLD",
+        "AMPLIHACK_ROTATE_INTERVAL",
+    ] {
+        assert!(REFERENCE.contains(var), "reference is missing {var}");
+    }
+}
+
+#[test]
+fn reference_quotes_every_rotate_error_hint() {
+    use super::ProfileError as E;
+    for e in [
+        E::RotateConfig("x".into()),
+        E::RotatePrototypeRunning,
+        E::RotateRefused("x".into()),
+        E::RotateInconsistent("x".into()),
+        E::RotateUnsupported,
+        E::RotateDaemon("x".into()),
+    ] {
+        let hint = e.hint();
+        assert!(!hint.is_empty(), "{e:?}");
+        assert!(!e.to_string().contains('\n'), "{e:?}");
+        let quoted = hint.replace('`', "");
+        assert!(
+            REFERENCE.replace('`', "").contains(&quoted),
+            "reference is missing the hint for {e:?}: {hint}"
+        );
+    }
+}
+
+#[test]
+fn rotate_docs_are_linked_and_in_the_nav() {
+    let link = "claude-profile-rotation.md";
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("claude-profiles howto", HOWTO),
+        ("PROFILE_MANAGEMENT", PROFILE_MANAGEMENT),
+    ] {
+        assert!(doc.contains(link), "{name} does not link the rotate how-to");
+    }
+    assert!(
+        MKDOCS.contains("howto/claude-profile-rotation.md"),
+        "mkdocs nav"
+    );
+}
+
+#[test]
+fn rotate_log_grammar_is_documented() {
+    for line in [
+        "cycle live=",
+        "reason=threshold",
+        "ALERT: no profile has capacity",
+        "ALERT: no login in ~/.claude; no swap",
+        "idle: auto-switch is off",
+        "skip: state lock busy",
+        "stop: signal received; cycle abandoned",
+        "recovery: rolled back an interrupted swap",
+        "recovery: finished an interrupted swap",
+    ] {
+        assert!(REFERENCE.contains(line), "reference is missing `{line}`");
+    }
+}
+
+/// Rotator autostart and failed-probe damping: the reference names the
+/// variable, the command, the status line and the new log lines as the code
+/// prints them, and the how-tos describe autostart.
+#[test]
+fn rotate_autostart_and_failed_probe_damping_are_documented() {
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "rotate autostart",
+        "autostart:",
+        "autostart: on (default)",
+        "autostart: off (setting)",
+        "autostart: off (env)",
+        "autostart: off (corrupt)",
+        "— inactive (auto-switch off)",
+        "<root>/.auto-switch.d/rotate/autostart",
+        "amplihack: started Claude login rotator (pid <pid>); 'amplihack profile rotate autostart off' to disable",
+        "autostart: started pid <pid> exe <path>",
+        "autostart: failed: <error>",
+        "reason=failed-probe",
+        "live probe failed",
+        "stay: live probe failed (<k>/3)",
+        "stay: live probe failed; held after last swap (<N>s left)",
+    ] {
+        assert!(REFERENCE.contains(s), "reference is missing `{s}`");
+    }
+    for s in [
+        "AMPLIHACK_ROTATE_AUTOSTART",
+        "amplihack profile rotate autostart off",
+        "autostart: on (default)",
+        "stay: live probe failed (1/3)",
+        "reason=failed-probe",
+        "stay: live probe failed; held after last swap (",
+    ] {
+        assert!(ROTATE_HOWTO.contains(s), "rotate how-to is missing `{s}`");
+    }
+    assert!(
+        !ROTATE_HOWTO.contains("does not start again after a reboot"),
+        "the reboot caveat is replaced by the autostart section"
+    );
+    assert!(
+        !REFERENCE.contains("held after failed-probe swap")
+            && !ROTATE_HOWTO.contains("held after failed-probe swap"),
+        "the hold message was renamed"
+    );
+    assert!(
+        HOWTO.contains("autostart"),
+        "claude-profiles.md notes autostart under auto-switch"
+    );
+}
+
+/// The how-to quotes each refusal and recovery reason as the code prints it,
+/// and its examples are the code's `Display` output.
+#[cfg(unix)]
+#[test]
+fn rotate_howto_quotes_the_refusal_reasons_word_for_word() {
+    use super::ProfileError as E;
+    for reason in super::rotate::DOCUMENTED_REFUSALS {
+        assert!(
+            ROTATE_HOWTO.contains(reason),
+            "rotate how-to is missing `{reason}`"
+        );
+    }
+    for e in [
+        E::RotateRefused("profile work already has a login".into()),
+        E::RotateInconsistent("the login files are not where the journal expects".into()),
+    ] {
+        let line = format!("error: {e}\nhint: {}", e.hint());
+        assert!(
+            ROTATE_HOWTO.contains(&line),
+            "rotate how-to is missing:\n{line}"
+        );
+    }
+}
+
+/// Issue #1592: the profile root command, its sources, the rotate record and
+/// both root hints appear in the docs as the code prints them.
+#[test]
+fn docs_describe_the_saved_profile_root() {
+    use super::ProfileError as E;
+    for s in [
+        "amplihack profile root",
+        "source: env",
+        "source: config",
+        "source: default",
+        "~/.amplihack/profile-root",
+        "~/.amplihack/rotate-root",
+        "pinned by running rotator",
+        "saved profile root: ",
+        "recorded profile root ",
+        "warning: could not record profile root: ",
+        "overrides the saved root in this shell",
+    ] {
+        assert!(REFERENCE.contains(s), "reference is missing `{s}`");
+    }
+    for e in [
+        E::InvalidRoot(String::new()),
+        E::InvalidSavedRoot {
+            path: String::new(),
+            reason: String::new(),
+        },
+    ] {
+        assert!(
+            REFERENCE.contains(e.hint()),
+            "reference is missing `{}`",
+            e.hint()
+        );
+    }
+    for reason in [
+        "empty",
+        "not an absolute path",
+        "not UTF-8",
+        "larger than 4096 bytes",
+        "contains control characters",
+        "contains a .. component",
+        "is a symlink",
+        "not a regular file",
+        "writable by others",
+    ] {
+        assert!(
+            REFERENCE.contains(&format!("| `{reason}` |")),
+            "reason `{reason}`"
+        );
+    }
+    assert!(HOWTO.contains("amplihack profile root"));
+    assert!(ROTATE_HOWTO.contains("pinned by running rotator"));
+}
+
+// ---------------------------------------------------------------------------
+// Account identity, duplicate logins and the live default (bugs 1-3).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reference_quotes_the_switch_none_messages() {
+    for m in [super::CLEARED, super::NOT_SET] {
+        assert!(
+            REFERENCE.contains(&format!("`{m}`")),
+            "reference is missing {m:?}"
+        );
+        assert!(HOWTO.contains(m), "howto is missing {m:?}");
+    }
+    for doc in [REFERENCE, HOWTO, ROTATE_HOWTO] {
+        assert!(doc.contains("profile switch --none"));
+    }
+}
+
+#[test]
+fn docs_quote_the_live_launch_note() {
+    let note = super::live_launch_note("<name>");
+    assert!(REFERENCE.contains(&note), "reference is missing {note:?}");
+    let team = super::live_launch_note("team");
+    assert!(HOWTO.contains(&team), "howto is missing {team:?}");
+    assert!(
+        ROTATE_HOWTO.contains(&team),
+        "rotation howto is missing {team:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn reference_quotes_the_login_refusal() {
+    use super::login_check::{refusal_hint, refusal_message};
+    let msg = format!("error: {}", refusal_message("<name>", "<holder>", "<path>"));
+    let hint = format!("hint: {}", refusal_hint("<name>"));
+    for line in [&msg, &hint] {
+        assert!(
+            REFERENCE.contains(line.as_str()),
+            "reference is missing {line:?}"
+        );
+    }
+    let howto_hint = format!("hint: {}", refusal_hint("rssourcelabs"));
+    assert!(
+        HOWTO.contains(&howto_hint),
+        "howto is missing {howto_hint:?}"
+    );
+    let howto_msg = refusal_message("rssourcelabs", "profile 'ryan-ryansweet'", "");
+    let head = howto_msg.split(" The new login").next().unwrap();
+    assert!(
+        HOWTO.contains(&format!("error: {head}")),
+        "howto is missing {head:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_live_profile_login_refusal() {
+    use super::login_check::{LIVE_REFUSAL_HINT, live_refusal_message};
+    let hint = format!("hint: {LIVE_REFUSAL_HINT}");
+    for (doc, name) in [(REFERENCE, "<name>"), (HOWTO, "team")] {
+        let msg = format!("error: {}", live_refusal_message(name));
+        assert!(doc.contains(&msg), "docs are missing {msg:?}");
+        assert!(doc.contains(&hint), "docs are missing {hint:?}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn docs_quote_the_duplicate_login_warning() {
+    use super::duplicates::{Holder, warning};
+    let p = |s: &str| Holder::Profile(super::name::ProfileName::parse(s).unwrap());
+    let template = warning(&p("aaa"), &p("bbb"))
+        .replace("aaa", "<a>")
+        .replace("bbb", "<b>");
+    assert!(
+        REFERENCE.contains(&template),
+        "reference is missing {template:?}"
+    );
+    let example = format!(
+        "note: {}",
+        warning(&p("rssourcelabs"), &p("ryan-ryansweet"))
+    );
+    assert!(HOWTO.contains(&example), "howto is missing {example:?}");
+}
+
+#[test]
+fn the_old_same_account_note_is_gone_from_the_docs() {
+    for (name, doc) in [
+        ("reference", REFERENCE),
+        ("howto", HOWTO),
+        ("rotation howto", ROTATE_HOWTO),
+    ] {
+        assert!(
+            !doc.contains("their readings are not reliable"),
+            "{name} still quotes the old note"
+        );
+    }
+}
+
+#[test]
+fn docs_state_the_identity_rule() {
+    for (name, doc) in [("reference", REFERENCE), ("howto", HOWTO)] {
+        assert!(
+            doc.contains("organizationUuid"),
+            "{name} must name organizationUuid"
+        );
+    }
+    assert!(REFERENCE.contains("| uuid on one side only | (any) | no |"));
+}

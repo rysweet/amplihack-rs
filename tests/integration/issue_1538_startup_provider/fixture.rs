@@ -5,7 +5,7 @@ use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::{Command, Output},
+    process::Output,
 };
 use tempfile::TempDir;
 
@@ -185,9 +185,11 @@ esac"#
     }
 
     pub fn run(&self, args: &[&str]) -> Output {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack"));
+        let mut command = crate::isolated_amplihack::isolated(env!("CARGO_BIN_EXE_amplihack"));
         command
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .args(args)
             .current_dir(&self.source)
             .env("HOME", &self.home)

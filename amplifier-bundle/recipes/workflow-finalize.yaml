@@ -12,7 +12,7 @@ inputs:
   - name: worktree_setup.worktree_path
     description: "Absolute path to the per-task worktree produced by workflow-worktree (step-04). Required by bash steps in step-20b-push-cleanup and step-21-pr-ready that cd into the worktree."
   - name: repo_path
-    description: "Absolute path to the repository root. Required by step-22b-final-status that runs the final status report against the parent repo."
+    description: "Absolute path to the repository root. Required by step-22b-final-status, which locates helpers through it and falls back to it only when the run's worktree (worktree_setup.worktree_path) is unset or gone; the final status itself runs in that worktree (issue #1596)."
 
 context:
   worktree_setup: ""
@@ -32,6 +32,13 @@ context:
   terminal_adjudication: ""
   finalizer_step_status: ""
   workflow_result: ""
+  issue_number: ""
+  pr_number: ""
+  pr_url: ""
+  pr_publish_result: ""
+  implementation_terminal_evidence: ""
+  verification_terminal_evidence: ""
+  publish_terminal_evidence: ""
 
 steps:
   - id: "finalize-terminal-state"
@@ -72,15 +79,38 @@ steps:
       **FINAL CHECK:** All explicit user requirements preserved.
     output: "final_cleanup"
 
+  - id: "step-20c-quality-audit"
+    agent: "amplihack:core:reviewer"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    prompt: |
+      # Step 20c: Quality Audit Loop (runs before 20a/20b, so its fixes are guarded and pushed; #1467)
+
+      **Requirements:** {{final_requirements}}
+      **PR URL:** {{pr_publish_result.pr_url}}
+      **Repository:** {{repo_path}}
+
+      Run 3-6 quality-audit cycles over the branch's changed files (`git diff <base>...HEAD`; recent commits may be unpushed). Each cycle must:
+      1. Seek issues in security, reliability, dead code, test/doc gaps,
+         silent fallbacks, swallowed errors, structural complexity, and docs.
+      2. Validate findings with technical, skeptical, and adversarial reads;
+         confirm only when at least two perspectives agree.
+      3. Fix confirmed findings minimally, with tests where appropriate.
+      4. Continue until at least cycle 3; after that stop only when no
+         high/critical and at most three medium findings remain, or at cycle 6.
+
+      Finish with a self-improvement pass for systemic critical issues.
+      Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
+    output: "quality_audit_results"
+
   - id: "step-20a-artifact-guard"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
-      skip() { echo "WARNING: step-20a $1; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
-      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      skip() { echo "WARNING: step-20a ${1:-worktree_setup_path.sh not found}; skipping the artifact guard — never runs in REPO_PATH (#1528)" >&2; exit 0; }
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20a-artifact-guard)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -92,15 +122,13 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
       # Issue #1528: stage, commit and push only at the top of the linked task worktree, never in REPO_PATH or the cwd.
-      skip() { echo "WARNING: step-20b $1; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
-      wt="$WORKTREE_SETUP_WORKTREE_PATH"; if [ -z "$wt" ] || [ ! -d "$wt" ]; then skip "worktree path gone"; fi; cd -P "$wt"
+      skip() { echo "WARNING: step-20b ${1:-worktree_setup_path.sh not found}; skipping cleanup commit/push — never commits in REPO_PATH (#1528)" >&2; exit 0; }
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
-      export GIT_PAGER=cat
-      export PAGER=cat
-      export LESS=FRX
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
       redact_sensitive_output() {
         sed -E 's#(https?://)[^@[:space:]]+@#\1REDACTED@#g'
       }
@@ -187,42 +215,17 @@ steps:
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"
 
-  - id: "step-20c-quality-audit"
-    agent: "amplihack:core:reviewer"
-    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
-    prompt: |
-      # Step 20c: Quality Audit Loop
-
-      **Requirements:** {{final_requirements}}
-      **PR URL:** {{pr_publish_result.pr_url}}
-      **Repository:** {{repo_path}}
-
-      Run 3-6 quality-audit cycles over changed PR files. Each cycle must:
-      1. Seek issues in security, reliability, dead code, test/doc gaps,
-         silent fallbacks, swallowed errors, structural complexity, and docs.
-      2. Validate findings with technical, skeptical, and adversarial reads;
-         confirm only when at least two perspectives agree.
-      3. Fix confirmed findings minimally, with tests where appropriate.
-      4. Continue until at least cycle 3; after that stop only when no
-         high/critical and at most three medium findings remain, or at cycle 6.
-
-      Finish with a self-improvement pass for systemic critical issues.
-      Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
-    output: "quality_audit_results"
-
   - id: "step-21-pr-ready"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_run_ci_wait == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WT_GONE="${WT_TOOL:+worktree path gone}"
+      if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-21-pr-ready)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 ${WT_GONE:-worktree_setup_path.sh not found}, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 ${WT_GONE:-worktree_setup_path.sh not found} and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      PR_URL="${PR_URL:-${RECIPE_VAR_pr_url:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}}"
-      PR_NUMBER="${PR_NUMBER:-${RECIPE_VAR_pr_number:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}}"
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
-      if [ -z "$PR_URL" ]; then :; fi
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
       READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
       [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"
@@ -244,7 +247,7 @@ steps:
 
       Verify the PR is ready to merge: CI passing, no conflicts, review
       comments addressed, and approval present. If CI fails, diagnose and fix.
-      This is the task completion point.
+      This is the task completion point. **no_merge:** {{no_merge}}. When it is "true": do not merge; stop at merge-ready.
     output: "ci_status"
 
   # Issue #1268: the scope match below is a SIGNAL, not the verdict. Collect the
@@ -259,11 +262,14 @@ steps:
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
     command: |
       set -euo pipefail
-      cd "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
+      : "${REPO_PATH:?step-22b-final-status requires repo_path; ensure parent recipe propagated repo_path context}"
+      # Issue #1596: the final status reads the run's branch and HEAD from cwd (branch PR lookup,
+      # scoped PR match). REPO_PATH is the main checkout, so enter the run's worktree first.
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WT_GONE="${WT_TOOL:+worktree path unset or gone}"
+      if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-22b-final-status)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; else echo "WARNING: step-22b ${WT_GONE:-worktree_setup_path.sh not found}, using REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; fi
       export GH_PAGER=cat PAGER=cat LESS=FRX
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-      if [ -z "$PR_URL" ]; then : "N/A"; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_runtime_artifacts.sh"; [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
@@ -370,6 +376,7 @@ steps:
       # preserved fail-closed invariants FAILED_DIRTY_WORKTREE,
       # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF, and
       # FAILED_MISSING_TOOLING. Non-success classifications exit 1 (fail closed).
+      # Success also includes EXISTING_OPEN_PR (#1641): see default-workflow-agentic-finalization.md.
       FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
       bash "$FINALIZER_HELPER" validate
     output: "workflow_result"
@@ -383,7 +390,7 @@ steps:
       # required_next_action, hollow_success_detected, evidence_used, reporting_failure,
       # finalizer_schema_version, finalizer_confidence, finalizer_output_valid,
       # terminal_failure, and the terminal vocabulary: MERGED, CLOSED_OBSOLETE,
-      # NO_DIFF_SUCCESS, FOLLOWUP_CREATED, SUPERSEDED, IMPLEMENTED_VERIFIED,
+      # NO_DIFF_SUCCESS, FOLLOWUP_CREATED, EXISTING_OPEN_PR, SUPERSEDED, IMPLEMENTED_VERIFIED,
       # ALLOW_NO_OP, BLOCKED_CI, FAILED_IMPLEMENTATION, FAILED_REPORTING,
       # FAILED_INVALID_EVIDENCE, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
       # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.

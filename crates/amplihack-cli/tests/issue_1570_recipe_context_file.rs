@@ -93,7 +93,7 @@ impl Fixture {
         if let Some(extra) = extra_path {
             path = format!("{}:{path}", extra.display());
         }
-        let mut c = Command::new(amplihack_bin());
+        let mut c = crate::isolated_amplihack::isolated(amplihack_bin());
         c.arg("recipe")
             .arg("run")
             .arg(&self.recipe)
@@ -102,6 +102,8 @@ impl Fixture {
             .arg(&self.root)
             .current_dir(&self.root)
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", path)
             .env("HOME", &self.home)
             .env("RECORD_DIR", &self.records)

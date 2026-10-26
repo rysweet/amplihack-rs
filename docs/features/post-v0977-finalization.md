@@ -95,7 +95,8 @@ Large Rust-plus-Node validation runs use the supported V8 heap setting:
 export NODE_OPTIONS=--max-old-space-size=32768
 ```
 
-Persist this value in `~/.amplihack/config` when nested workflow agents need to
+Persist the consent with `amplihack config set node.heap_consent true` (and,
+to pin the limit, `amplihack config set node.max_old_space_mb 32768`) when nested workflow agents need to
 inherit it automatically. If a different `NODE_OPTIONS` value is already
 present, preserve it unless validation proves the heap setting is the cause of a
 failure.

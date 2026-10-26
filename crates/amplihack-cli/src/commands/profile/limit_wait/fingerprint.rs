@@ -5,7 +5,7 @@
 //! The watched directory is the one the retry runs with: the inherited
 //! profile's, else `$CLAUDE_CONFIG_DIR`, else `$HOME/.claude`. Three parts
 //! are compared: the ledger account (auto-switch ledger for a profile,
-//! rotator ledger for `$HOME/.claude`), the account identity in
+//! rotate ledger's `live` for `$HOME/.claude`), the account identity in
 //! `.claude.json`, and whether `.credentials.json` exists. The credentials
 //! file is never opened, so an OAuth token refresh is not a change.
 //!
@@ -13,10 +13,10 @@
 //! is only compared: it has no `Debug`, `Display` or `Clone`.
 
 use super::super::auto_switch::{self, CREDS};
-use super::super::default_live::rotator_live;
 use super::super::fsx;
 use super::super::name::ProfileName;
 use super::super::store::ProfileStore;
+use amplihack_utils::rotator_status::read_cycle;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -96,7 +96,12 @@ impl Watch {
         let (ledger, json_dir) = match &self.kind {
             Kind::Profile { root, name } => (auto_switch::rerun::ledger_account(root, name), dir),
             Kind::ConfigDir => (None, dir),
-            Kind::Home { json, root } => (root.as_deref().and_then(rotator_live), json.as_path()),
+            Kind::Home { json, root } => (
+                root.as_deref()
+                    .and_then(|r| read_cycle(r, fsx::now()))
+                    .and_then(|c| c.live),
+                json.as_path(),
+            ),
         };
         Some(Fingerprint {
             ledger,

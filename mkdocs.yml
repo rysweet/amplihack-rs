@@ -64,6 +64,7 @@ nav:
       - Runtime Asset Resolution: howto/verify-runtime-asset-resolution.md
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
+      - Claude Login Rotation: howto/claude-profile-rotation.md
       - Profile Command Reference: reference/profile-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:
@@ -120,6 +121,7 @@ nav:
       - Terminal-State Provider Safety: reference/workflow-terminal-state-provider-safety.md
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
+      - Commit Hook Repair: reference/recipe-commit-hook-repair.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
   - Agents:
@@ -243,5 +245,7 @@ nav:
       - query-code Command: reference/query-code-command.md
       - multitask Command: reference/multitask-command.md
       - doctor Command: reference/doctor-command.md
+      - User Configuration: reference/user-config.md
+      - AMPLIHACK_* Environment Variable Audit: reference/amplihack-env-vars.md
       - Rust Runner Execution: reference/rust-runner-execution.md
       - Transient Failure Retry: reference/transient-failure-retry.md

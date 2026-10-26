@@ -2,15 +2,12 @@
 
 use crate::util::{is_noninteractive, read_user_input_with_timeout, run_output_with_timeout};
 use anyhow::Result;
-use serde_json::{Map, Value};
-use std::env;
 use std::fs;
-use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-const MIN_MEMORY_MB: u64 = 8192;
-const MAX_MEMORY_MB: u64 = 32768;
+pub(crate) const MIN_MEMORY_MB: u64 = 8192;
+pub(crate) const MAX_MEMORY_MB: u64 = 32768;
 const MEMORY_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 const RAM_DETECTION_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -39,20 +36,25 @@ pub fn prepare_memory_config(existing_node_options: Option<&str>) -> Result<Memo
 fn resolve_memory_config(existing_node_options: Option<&str>) -> Result<MemoryConfig> {
     let existing_node_options = existing_node_options.unwrap_or_default();
     let current_limit_mb = extract_memory_limit(existing_node_options);
+    // Issue #1606: a configured `node.max_old_space_mb` replaces the limit
+    // computed from RAM.
+    let configured_limit_mb = crate::user_config::max_old_space_mb();
 
     let Some(system_ram_gb) = detect_system_ram_gb() else {
+        let limit_mb = configured_limit_mb.unwrap_or(MAX_MEMORY_MB);
         return Ok(MemoryConfig {
             system_ram_gb: None,
-            recommended_limit_mb: MAX_MEMORY_MB,
+            recommended_limit_mb: limit_mb,
             current_limit_mb,
-            node_options: merge_node_options(existing_node_options, MAX_MEMORY_MB),
+            node_options: merge_node_options(existing_node_options, limit_mb),
             user_consent: None,
             returning_user: false,
             error: Some("Failed to detect system RAM".to_string()),
         });
     };
 
-    let recommended_limit_mb = calculate_recommended_limit(system_ram_gb);
+    let recommended_limit_mb =
+        configured_limit_mb.unwrap_or_else(|| calculate_recommended_limit(system_ram_gb));
     let saved_preference = load_user_preference();
     let mut user_consent = None;
     let mut returning_user = false;
@@ -72,7 +74,7 @@ fn resolve_memory_config(existing_node_options: Option<&str>) -> Result<MemoryCo
         };
         let consent = prompt_user_consent(&config)?;
         user_consent = Some(consent);
-        save_user_preference(consent, recommended_limit_mb);
+        save_user_preference(consent);
     }
 
     Ok(MemoryConfig {
@@ -229,27 +231,18 @@ fn display_memory_config(config: &MemoryConfig) -> String {
         return format!("⚠ {error}. Set NODE_OPTIONS={}", config.node_options);
     }
 
-    let config_path = config_path();
     if config.returning_user {
         if config.user_consent == Some(false) {
-            return match config_path {
-                Some(path) => format!(
-                    "ℹ NODE_OPTIONS memory config: skipped (saved preference). To change: {}",
-                    path.display()
-                ),
-                None => "ℹ NODE_OPTIONS memory config: skipped (saved preference).".to_string(),
-            };
+            return format!(
+                "ℹ NODE_OPTIONS memory config: skipped (saved preference). To change: {CHANGE_HINT}"
+            );
         }
         let limit =
             extract_memory_limit(&config.node_options).unwrap_or(config.recommended_limit_mb);
-        return match config_path {
-            Some(path) => format!(
-                "ℹ NODE_OPTIONS=--max-old-space-size={} (saved preference). To change: {}",
-                limit,
-                path.display()
-            ),
-            None => format!("ℹ NODE_OPTIONS=--max-old-space-size={limit} (saved preference)"),
-        };
+        return format!(
+            "ℹ NODE_OPTIONS=--max-old-space-size={limit} (saved preference). To change: \
+             {CHANGE_HINT}"
+        );
     }
 
     if config.user_consent == Some(false) {
@@ -261,60 +254,23 @@ fn display_memory_config(config: &MemoryConfig) -> String {
     }
 }
 
+/// How a user changes the saved answer, as printed by [`display_memory_config`].
+const CHANGE_HINT: &str = "amplihack config set node.heap_consent <true|false>";
+
+/// The saved answer: `node.heap_consent` in `~/.amplihack/config.toml`, or a
+/// legacy `~/.amplihack/config` whose migration has not completed (issue
+/// #1606).
 fn load_user_preference() -> Option<SavedPreference> {
-    let config_path = config_path()?;
-    let content = fs::read_to_string(config_path).ok()?;
-    let value = serde_json::from_str::<Value>(&content).ok()?;
-    Some(SavedPreference {
-        consent: value.get("node_options_consent")?.as_bool()?,
-    })
+    crate::user_config::heap_consent().map(|consent| SavedPreference { consent })
 }
 
-fn save_user_preference(consent: bool, limit_mb: u64) {
-    let Some(config_path) = config_path() else {
-        return;
-    };
-    if let Some(parent) = config_path.parent()
-        && let Err(error) = fs::create_dir_all(parent)
-    {
-        tracing::warn!(
-            path = %parent.display(),
-            "failed to create memory config directory: {error}"
-        );
-        return;
-    }
-
-    let mut value = fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    if !value.is_object() {
-        value = Value::Object(Map::new());
-    }
-    let object = value
-        .as_object_mut()
-        .expect("memory config value should be a JSON object");
-    object.insert("node_options_consent".to_string(), Value::Bool(consent));
-    object.insert(
-        "node_options_limit_mb".to_string(),
-        Value::Number(limit_mb.into()),
-    );
-
-    if let Err(error) = fs::write(
-        &config_path,
-        serde_json::to_string_pretty(&value)
-            .map(|json| json + "\n")
-            .unwrap_or_else(|_| "{}\n".to_string()),
+fn save_user_preference(consent: bool) {
+    if let Err(error) = crate::user_config::set_user_value(
+        "node.heap_consent",
+        &crate::user_config::Value::Bool(consent),
     ) {
-        tracing::warn!(
-            path = %config_path.display(),
-            "failed to save memory config preference: {error}"
-        );
+        tracing::warn!("failed to save the NODE_OPTIONS consent: {error}");
     }
-}
-
-fn config_path() -> Option<PathBuf> {
-    env::var_os("HOME").map(|home| PathBuf::from(home).join(".amplihack").join("config"))
 }
 
 #[cfg(test)]

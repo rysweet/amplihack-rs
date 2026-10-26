@@ -152,6 +152,8 @@ fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
     let configure = |command: &mut Command| {
         command
             .env_clear()
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("TMPDIR", std::env::temp_dir())
             .env("PATH", path_with_bin())
             .env("CARGO_HOME", private.path().join(".cargo"))
             .env("XDG_DATA_HOME", private.path().join(".local/share"))
@@ -179,7 +181,7 @@ fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
         }
     };
     if args.first() == Some(&"session-tree") {
-        let mut install = Command::new(bin());
+        let mut install = crate::isolated_amplihack::isolated(bin());
         configure(&mut install);
         let output = install
             .args(["install", "--local"])
@@ -200,7 +202,7 @@ fn run_cli(args: &[&str], stdin: &str, extra_env: &[(&str, &str)]) -> Run {
             String::from_utf8_lossy(&output.stderr)
         );
     }
-    let mut cmd = Command::new(bin());
+    let mut cmd = crate::isolated_amplihack::isolated(bin());
     configure(&mut cmd);
     cmd.args(args)
         .env("PATH", path_with_bin())

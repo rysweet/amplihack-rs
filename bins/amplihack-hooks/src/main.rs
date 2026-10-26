@@ -11,6 +11,7 @@
 //! amplihack-hooks session-stop    → SessionStopHook
 //! amplihack-hooks user-prompt     → UserPromptSubmitHook
 //! amplihack-hooks pre-compact     → PreCompactHook
+//! amplihack-hooks limit-resume    → limit_resume::run (StopFailure)
 //! ```
 
 use amplihack_hooks::{
@@ -21,6 +22,16 @@ use amplihack_hooks::{
 };
 
 fn main() {
+    // `limit-resume` owns its exit code and stderr (exit 2 with one fixed
+    // line wakes the session), so it runs before tracing is set up and
+    // outside `run_hook`, which always prints JSON.
+    if std::env::args().nth(1).as_deref() == Some("limit-resume") {
+        #[cfg(unix)]
+        std::process::exit(amplihack_hooks::limit_resume::run(std::io::stdin().lock()));
+        #[cfg(not(unix))]
+        std::process::exit(0);
+    }
+
     // Initialize minimal tracing for telemetry.
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -61,7 +72,7 @@ fn main() {
             run_hook(SessionStopHook)
         }
         "workflow-classification-reminder" => run_hook(WorkflowClassificationReminderHook),
-        "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook),
+        "user-prompt" | "user-prompt-submit" => run_hook(UserPromptSubmitHook::default()),
         "pre-compact" => run_hook(PreCompactHook),
         // No-op pre-commit hook. Drains stdin and exits 0 — see
         // precommit_prefs::run docs for the security contract (no logging, no
@@ -90,6 +101,7 @@ fn main() {
                 workflow-classification-reminder\n  \
                 user-prompt\n  \
                 pre-compact\n  \
+                limit-resume\n  \
                 precommit-prefs"
             );
             std::process::exit(1);

@@ -6,9 +6,16 @@
 //!    hosting this process, which outranks any file on disk. An
 //!    `AMPLIHACK_AGENT_BINARY` that amplihack itself exported to describe a
 //!    session ranks here too, among the markers of the CLI it names.
-//! 3. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
+//! 3. The user's configured `agent.binary` (issue #1606), passed in by the
+//!    caller through [`resolve_detailed_configured`], else an inherited value
+//!    tagged [`user_config_tag`] for the same binary. It ranks above every
+//!    value a tmux server may have supplied: a `tmux_server:*`-tagged value,
+//!    and a live marker the caller reports the tmux server's global
+//!    environment holds (a copy of whatever started the server).
+//! 4. Those tmux-server-held values, in that order.
+//! 5. `<cwd-or-ancestor>/.claude/runtime/launcher_context.json` `launcher` field
 //!    (persisted state, possibly written by a different session).
-//! 4. Built-in default: `"copilot"`.
+//! 6. Built-in default: `"copilot"`.
 //!
 //! Only an `AMPLIHACK_AGENT_BINARY` with no [`SOURCE_ENV`] tag beside it is an
 //! instruction. amplihack tags every value it exports itself, because that
@@ -88,9 +95,17 @@ pub const BINARY_ENV: &str = "AMPLIHACK_AGENT_BINARY";
 ///
 /// `amplihack agent-binary --shell` writes one other value,
 /// `tmux_server:<marker variable>` -- see [`tmux_server_marker_tag`]. It is not
-/// a guess, and layer 1 honours the value it sits beside; it only lets the
-/// receiving run say where that value came from.
+/// a guess, but not an instruction either: it ranks below a live session
+/// marker and the user's configured `agent.binary` (issue #1606), with what a
+/// tmux server supplied, and lets the receiving run say where it came from.
 pub const SOURCE_ENV: &str = "AMPLIHACK_AGENT_BINARY_SOURCE";
+
+/// A random value every amplihack launcher exports beside its
+/// `session:<cli>` tag (issue #1606). It is unique to that launch, so a
+/// process holding one can tell its own session from a tmux server's copy of
+/// another: a marker counts as the server's only when the server's global
+/// environment holds this same value too.
+pub const SESSION_NONCE_ENV: &str = "AMPLIHACK_SESSION_NONCE";
 
 /// The [`SOURCE_ENV`] value marking `binary` as a default-layer guess.
 pub fn default_guess_tag(binary: &str) -> String {
@@ -133,10 +148,101 @@ pub fn session_tag(binary: &str) -> String {
 pub fn export_tag(binary: &str, source: ResolutionSource) -> Option<String> {
     match source {
         ResolutionSource::Env => None,
+        ResolutionSource::UserConfig => Some(user_config_tag(binary)),
         ResolutionSource::SessionMarker | ResolutionSource::LauncherContext => {
             Some(session_tag(binary))
         }
         ResolutionSource::Default => Some(default_guess_tag(binary)),
+    }
+}
+
+/// Prefix of a [`user_config_tag`], and on its own the bare form of the tag.
+pub const USER_CONFIG_TAG: &str = "user_config";
+
+/// The [`SOURCE_ENV`] value marking `binary` as the user's configured
+/// `agent.binary` (issue #1606).
+///
+/// It uses the same `kind:<binary>` form as [`session_tag`] and
+/// [`default_guess_tag`], so it describes only the value it was exported with.
+/// Someone who later sets a different binary beside a stale tag has made an
+/// explicit choice, which [`classify_inherited`] reports as
+/// [`InheritedBinary::Explicit`]. A bare `user_config` tag cannot tell the
+/// configured value from a later override, so it binds to whatever value sits
+/// next to it.
+pub fn user_config_tag(binary: &str) -> String {
+    format!("{USER_CONFIG_TAG}:{binary}")
+}
+
+/// What an inherited [`BINARY_ENV`] amounts to, given the [`SOURCE_ENV`] tag
+/// beside it. See [`classify_inherited`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InheritedBinary {
+    /// No value, or a value that is not on the allowlist. The tag is never
+    /// read for such a value, so a tag cannot launder it.
+    Absent,
+    /// Untagged, tagged with something amplihack does not recognise, or
+    /// carrying a tag that describes a different binary. Someone chose it.
+    Explicit(String),
+    /// Tagged [`user_config_tag`] for this binary, or with a bare
+    /// [`USER_CONFIG_TAG`]: a parent resolved it from the user's config.
+    UserConfig(String),
+    /// Tagged [`tmux_server_marker_tag`] for a marker implying this binary:
+    /// possibly the tmux server's copy of a foreign session's marker.
+    Inherited(String),
+    /// Tagged [`session_tag`] for this binary; ranks with the session markers.
+    SessionDescribed(SessionMarker),
+    /// Tagged [`default_guess_tag`] for this binary; ignored.
+    DefaultGuess,
+}
+
+/// Classify an inherited `binary` by the `tag` exported beside it.
+///
+/// Pure and total. The value is checked against the allowlist before the tag
+/// is looked at (a tag is bookkeeping, not authority), and every tag binds only
+/// to the binary it names, compared case-insensitively.
+pub fn classify_inherited(binary: Option<&str>, tag: Option<&str>) -> InheritedBinary {
+    let Some(value) = binary.and_then(validate_binary_name) else {
+        return InheritedBinary::Absent;
+    };
+    let Some(tag) = tag.map(str::trim).filter(|tag| !tag.is_empty()) else {
+        return InheritedBinary::Explicit(value);
+    };
+    if tag == default_guess_tag(&value) {
+        return InheritedBinary::DefaultGuess;
+    }
+    if let Some(marker) = session_described(Some(&value), Some(tag)) {
+        return InheritedBinary::SessionDescribed(marker);
+    }
+    if tmux_server_marker(Some(&value), Some(tag)).is_some() {
+        return InheritedBinary::Inherited(value);
+    }
+    if tag == USER_CONFIG_TAG {
+        return InheritedBinary::UserConfig(value);
+    }
+    match tag
+        .strip_prefix(USER_CONFIG_TAG)
+        .and_then(|rest| rest.strip_prefix(':'))
+    {
+        Some(named) if named.eq_ignore_ascii_case(&value) => InheritedBinary::UserConfig(value),
+        _ => InheritedBinary::Explicit(value),
+    }
+}
+
+/// [`classify_inherited`] for this process's own [`BINARY_ENV`] and
+/// [`SOURCE_ENV`].
+pub fn inherited_binary() -> InheritedBinary {
+    classify_inherited(
+        std::env::var(BINARY_ENV).ok().as_deref(),
+        std::env::var(SOURCE_ENV).ok().as_deref(),
+    )
+}
+
+/// This process's [`BINARY_ENV`] when it is an explicit choice: valid, and not
+/// tagged as anything amplihack exported itself (see [`classify_inherited`]).
+pub fn explicit_env_binary() -> Option<String> {
+    match inherited_binary() {
+        InheritedBinary::Explicit(binary) => Some(binary),
+        _ => None,
     }
 }
 
@@ -303,6 +409,10 @@ pub enum ResolutionSource {
     /// `AMPLIHACK_AGENT_BINARY` was set and valid, and not tagged as a guess
     /// or as a session description.
     Env,
+    /// The user's configured `agent.binary` (issue #1606), or an inherited
+    /// value tagged [`user_config_tag`] for the same binary. An explicit
+    /// choice, made in a file instead of the environment.
+    UserConfig,
     /// Determined from a live session marker in this process's environment.
     /// The session that is actually running, and it outranks any file.
     ///
@@ -326,7 +436,7 @@ impl ResolutionSource {
     pub fn is_inferred(self) -> bool {
         !matches!(
             self,
-            ResolutionSource::Env | ResolutionSource::SessionMarker
+            ResolutionSource::Env | ResolutionSource::UserConfig | ResolutionSource::SessionMarker
         )
     }
 
@@ -334,6 +444,7 @@ impl ResolutionSource {
     pub fn label(self) -> &'static str {
         match self {
             ResolutionSource::Env => "env",
+            ResolutionSource::UserConfig => "user_config",
             ResolutionSource::SessionMarker => "session_marker",
             ResolutionSource::LauncherContext => "launcher_context",
             ResolutionSource::Default => "default",
@@ -473,32 +584,96 @@ pub struct SessionMarker {
 /// WARN is still hidden at the default filter, so a caller about to launch
 /// agents on an inferred answer must say so itself (see `recipe run`).
 pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
-    // Both lookups run unconditionally so the precedence rule lives in exactly
-    // one place, `resolve_layers`. Gating the second on the first being None
-    // would encode the ordering twice -- once here and once there -- and the
-    // two could then drift without any test noticing.
-    let from_env = if inherited_binary_is_default_guess() {
-        debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
-        None
-    } else if inherited_session_described().is_some() {
-        debug!(
+    resolve_detailed_with(cwd, None)
+}
+
+/// [`resolve_detailed_configured`] with no way to tell a tmux server's copy of
+/// a marker from a live one: every live marker counts as live.
+pub fn resolve_detailed_with(
+    cwd: &Path,
+    configured: Option<&str>,
+) -> Result<Resolution, ResolveError> {
+    let configured = configured.map_or(ConfiguredBinary::NotRead, ConfiguredBinary::Set);
+    resolve_detailed_configured(cwd, configured, &|_| false)
+}
+
+/// What the caller found for `agent.binary` in the user's config.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ConfiguredBinary<'a> {
+    /// No user config could be read: an inherited `user_config:<bin>` value,
+    /// the parent's reading, answers in its place.
+    #[default]
+    NotRead,
+    /// The user config was read and does not set `agent.binary` (or no longer
+    /// does): an inherited `user_config:<bin>` value is stale and ignored.
+    Unset,
+    /// The user config sets this value. It beats an inherited one.
+    Set(&'a str),
+}
+
+/// [`resolve_detailed`], with the user's configured `agent.binary` as a layer
+/// below an explicit `AMPLIHACK_AGENT_BINARY` and a live session marker, and
+/// above every value a tmux server may have supplied (issue #1606).
+///
+/// `configured` is passed in, not read here, so this crate stays free of the
+/// CLI's config loader. It is validated against the allowlist like every other
+/// input; an invalid value is ignored. With `None` the answer is exactly
+/// [`resolve_detailed`]'s.
+///
+/// `marker_is_server_held` says whether the tmux server's global environment
+/// holds a marker, so the marker may be a copy of the server starter's rather
+/// than this session's own. It is asked only when the answer depends on it.
+pub fn resolve_detailed_configured(
+    cwd: &Path,
+    configured: ConfiguredBinary<'_>,
+    marker_is_server_held: &dyn Fn(SessionMarker) -> bool,
+) -> Result<Resolution, ResolveError> {
+    // Every lookup runs unconditionally so the precedence rule lives in exactly
+    // one place, `resolve_layers`. Gating one on another would encode the
+    // ordering twice, and the two could then drift without any test noticing.
+    let mut layers = Layers::default();
+    match inherited_binary() {
+        InheritedBinary::Explicit(binary) => layers.env = Some(binary),
+        InheritedBinary::UserConfig(binary) => layers.user_config = Some(binary),
+        InheritedBinary::Inherited(binary) => layers.inherited = Some(binary),
+        InheritedBinary::SessionDescribed(_) => debug!(
             "an inherited AMPLIHACK_AGENT_BINARY describes a session; ranking it with the \
              session markers"
-        );
-        None
-    } else {
-        std::env::var(BINARY_ENV)
-            .ok()
-            .and_then(|raw| validate_binary_name(&raw))
-    };
+        ),
+        InheritedBinary::DefaultGuess => {
+            debug!("ignoring an inherited AMPLIHACK_AGENT_BINARY that a parent guessed");
+        }
+        InheritedBinary::Absent => {}
+    }
+    // This process's own reading of the config beats an inherited
+    // `user_config:<bin>`: a `config set` or `config unset` takes effect even
+    // under a tmux server that captured an older value, and
+    // `config list --show-origin` shows what runs.
+    match configured {
+        ConfiguredBinary::NotRead => {}
+        ConfiguredBinary::Unset => layers.user_config = None,
+        ConfiguredBinary::Set(raw) => {
+            layers.user_config = validate_binary_name(raw);
+            if layers.user_config.is_none() {
+                warn!("ignoring a configured agent.binary that is not on the allowlist");
+            }
+        }
+    }
     let from_marker = session_marker();
+    if let Some(marker) = from_marker {
+        // Asking costs a tmux round trip, so only when a lower layer could
+        // answer instead of this marker.
+        let contested = layers.user_config.is_some() || layers.inherited.is_some();
+        if contested && marker_is_server_held(marker) {
+            layers.server_held_marker = Some(marker.binary.to_string());
+        } else {
+            layers.marker = Some(marker.binary.to_string());
+        }
+    }
     let persisted = lookup_persisted_launcher(cwd);
+    layers.persisted = persisted.found.as_ref().map(|(name, _)| name.clone());
 
-    let (name, source) = resolve_layers(
-        from_env,
-        from_marker.map(|marker| marker.binary.to_string()),
-        persisted.found.as_ref().map(|(name, _)| name.clone()),
-    );
+    let (name, source) = resolve_layers(layers);
     let context_file = match source {
         ResolutionSource::LauncherContext => persisted.found.map(|(_, path)| path),
         _ => None,
@@ -512,7 +687,7 @@ pub fn resolve_detailed(cwd: &Path) -> Result<Resolution, ResolveError> {
         );
     }
     match source {
-        ResolutionSource::Env | ResolutionSource::SessionMarker => {
+        ResolutionSource::Env | ResolutionSource::UserConfig | ResolutionSource::SessionMarker => {
             debug!(binary = %name, source = source.label(), "agent binary resolved");
         }
         ResolutionSource::LauncherContext => warn!(
@@ -565,23 +740,60 @@ pub fn is_default_guess(binary: Option<&str>, tag: Option<&str>) -> bool {
     }
 }
 
-/// Pure precedence rule, separated from the three lookups that feed it.
+/// The candidate answers [`resolve_layers`] chooses between, one per layer.
+///
+/// Every field is an already validated binary name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Layers {
+    /// An explicit `AMPLIHACK_AGENT_BINARY` ([`InheritedBinary::Explicit`]).
+    pub env: Option<String>,
+    /// The configured `agent.binary`, else an inherited `user_config`-tagged
+    /// value.
+    pub user_config: Option<String>,
+    /// An inherited `tmux_server:*`-tagged value ([`InheritedBinary::Inherited`]).
+    /// Labelled [`ResolutionSource::Env`], as before issue #1606.
+    pub inherited: Option<String>,
+    /// The ranked session marker (see [`rank_session_markers`]), when it is
+    /// this session's own.
+    pub marker: Option<String>,
+    /// The ranked session marker, when the tmux server's global environment
+    /// holds it, so it may be the server starter's. Labelled
+    /// [`ResolutionSource::SessionMarker`].
+    pub server_held_marker: Option<String>,
+    /// A usable `launcher_context.json`.
+    pub persisted: Option<String>,
+}
+
+/// Pure precedence rule, separated from the lookups that feed it.
 ///
 /// Kept free of environment and filesystem access so the ordering can be
 /// tested directly, and so it is the single place the precedence is written
 /// down.
-pub fn resolve_layers(
-    from_env: Option<String>,
-    from_marker: Option<String>,
-    from_persisted: Option<String>,
-) -> (String, ResolutionSource) {
-    if let Some(name) = from_env {
+pub fn resolve_layers(layers: Layers) -> (String, ResolutionSource) {
+    let Layers {
+        env,
+        user_config,
+        inherited,
+        marker,
+        server_held_marker,
+        persisted,
+    } = layers;
+    if let Some(name) = env {
         return (name, ResolutionSource::Env);
     }
-    if let Some(name) = from_marker {
+    if let Some(name) = marker {
         return (name, ResolutionSource::SessionMarker);
     }
-    if let Some(name) = from_persisted {
+    if let Some(name) = user_config {
+        return (name, ResolutionSource::UserConfig);
+    }
+    if let Some(name) = inherited {
+        return (name, ResolutionSource::Env);
+    }
+    if let Some(name) = server_held_marker {
+        return (name, ResolutionSource::SessionMarker);
+    }
+    if let Some(name) = persisted {
         return (name, ResolutionSource::LauncherContext);
     }
     (DEFAULT_BINARY.to_string(), ResolutionSource::Default)
@@ -957,6 +1169,8 @@ mod tests {
     fn source_labels_are_stable_and_distinct() {
         let labels = [
             ResolutionSource::Env.label(),
+            ResolutionSource::UserConfig.label(),
+            ResolutionSource::SessionMarker.label(),
             ResolutionSource::LauncherContext.label(),
             ResolutionSource::Default.label(),
         ];
@@ -972,11 +1186,12 @@ mod tests {
 
     #[test]
     fn env_wins_over_everything() {
-        let (name, source) = resolve_layers(
-            Some("claude".into()),
-            Some("copilot".into()),
-            Some("codex".into()),
-        );
+        let (name, source) = resolve_layers(Layers {
+            env: Some("claude".into()),
+            marker: Some("copilot".into()),
+            persisted: Some("codex".into()),
+            ..Layers::default()
+        });
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::Env);
         assert!(!source.is_inferred());
@@ -984,7 +1199,10 @@ mod tests {
 
     #[test]
     fn persisted_file_is_used_only_when_nothing_better_exists() {
-        let (name, source) = resolve_layers(None, None, Some("codex".into()));
+        let (name, source) = resolve_layers(Layers {
+            persisted: Some("codex".into()),
+            ..Layers::default()
+        });
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::LauncherContext);
         assert!(source.is_inferred());
@@ -992,7 +1210,7 @@ mod tests {
 
     #[test]
     fn default_is_the_last_resort_and_is_marked_inferred() {
-        let (name, source) = resolve_layers(None, None, None);
+        let (name, source) = resolve_layers(Layers::default());
         assert_eq!(name, DEFAULT_BINARY);
         assert_eq!(source, ResolutionSource::Default);
         assert!(source.is_inferred());
@@ -1122,11 +1340,19 @@ mod tests {
     /// the file could only ever say copilot.
     #[test]
     fn a_live_session_marker_beats_a_file_written_by_another_vendor() {
-        let (name, source) = resolve_layers(None, Some("copilot".into()), Some("claude".into()));
+        let (name, source) = resolve_layers(Layers {
+            marker: Some("copilot".into()),
+            persisted: Some("claude".into()),
+            ..Layers::default()
+        });
         assert_eq!(name, "copilot", "a copilot session must not spawn claude");
         assert_eq!(source, ResolutionSource::SessionMarker);
 
-        let (name, source) = resolve_layers(None, Some("claude".into()), Some("copilot".into()));
+        let (name, source) = resolve_layers(Layers {
+            marker: Some("claude".into()),
+            persisted: Some("copilot".into()),
+            ..Layers::default()
+        });
         assert_eq!(
             name, "claude",
             "and a claude session must not spawn copilot"
@@ -1139,7 +1365,10 @@ mod tests {
     /// file at all, the marker alone must carry it.
     #[test]
     fn a_session_marker_alone_decides_when_nothing_else_speaks() {
-        let (name, source) = resolve_layers(None, Some("claude".into()), None);
+        let (name, source) = resolve_layers(Layers {
+            marker: Some("claude".into()),
+            ..Layers::default()
+        });
         assert_eq!(name, "claude");
         assert_eq!(source, ResolutionSource::SessionMarker);
         assert!(!source.is_inferred(), "a live marker is not an inference");
@@ -1234,11 +1463,12 @@ mod tests {
     /// An explicit override still wins over everything, including the marker.
     #[test]
     fn env_still_beats_the_session_marker() {
-        let (name, source) = resolve_layers(
-            Some("codex".into()),
-            Some("claude".into()),
-            Some("copilot".into()),
-        );
+        let (name, source) = resolve_layers(Layers {
+            env: Some("codex".into()),
+            marker: Some("claude".into()),
+            persisted: Some("copilot".into()),
+            ..Layers::default()
+        });
         assert_eq!(name, "codex");
         assert_eq!(source, ResolutionSource::Env);
     }

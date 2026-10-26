@@ -67,12 +67,8 @@ pub(super) fn ensure_settings_json(
 
     let mut settings = read_settings_json(settings_path)?;
     ensure_permissions(&mut settings);
-    update_hook_paths(&mut settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
-
-    let xpia_dir = xpia_hooks_dir()?;
-    if xpia_dir.exists() {
-        update_hook_paths(&mut settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
-    }
+    let with_xpia = xpia_hooks_dir()?.exists();
+    register_hooks(&mut settings, hooks_bin, with_xpia);
 
     fs::write(
         settings_path,
@@ -105,6 +101,47 @@ pub(super) fn ensure_settings_json(
     };
 
     Ok((true, registered_events))
+}
+
+/// Replaces amplihack's hook entries in `settings` (and xpia's, when its hooks
+/// are installed) with this build's, leaving every other entry in place.
+fn register_hooks(settings: &mut Value, hooks_bin: &Path, with_xpia: bool) {
+    update_hook_paths(settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
+    if with_xpia {
+        update_hook_paths(settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
+    }
+}
+
+/// Unit tests set this to let `refresh_profile_hooks` run.
+pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REFRESH";
+
+/// Issue #1661: gives every profile's existing `settings.json` the same hook
+/// registrations as `~/.claude/settings.json`. Never fails the install: a
+/// profile that cannot be refreshed is reported and skipped.
+pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
+    use crate::commands::profile::{Refresh, refresh_profile_settings};
+    // This crate's in-process install tests inherit the developer's
+    // AMPLIHACK_CLAUDE_PROFILE_ROOT and would rewrite their real profiles;
+    // they opt in explicitly. Integration tests start the binary through
+    // `isolated(..)`, which clears that variable.
+    if cfg!(test) && std::env::var_os(PROFILE_REFRESH_TEST_OPT_IN).is_none() {
+        return;
+    }
+    let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
+    let results =
+        refresh_profile_settings(&|settings| register_hooks(settings, hooks_bin, with_xpia));
+    let updated = results
+        .iter()
+        .filter(|(_, r)| *r == Refresh::Updated)
+        .count();
+    if updated > 0 {
+        println!("  ✅ Refreshed amplihack hooks in {updated} profile settings.json file(s)");
+    }
+    for (name, result) in &results {
+        if let Refresh::Skipped(reason) = result {
+            println!("  ⚠️  Profile {name}: settings.json not refreshed ({reason})");
+        }
+    }
 }
 
 /// Issue #1526: the amplihack hook registrations this build would add that

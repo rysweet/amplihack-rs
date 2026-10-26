@@ -12,6 +12,8 @@ mod context_loaders;
 mod migration;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+mod tests_capacity;
 
 use crate::original_request::{capture_original_request, format_original_request_context};
 use crate::protocol::{FailurePolicy, Hook};
@@ -145,6 +147,14 @@ impl Hook for SessionStartHook {
             }
         }
 
+        // The no-capacity notice, after every existing part. A fresh session
+        // has no dedupe record, so it shows here and the first prompt is quiet.
+        let notice =
+            crate::capacity_notice::notice(session_id.as_deref(), is_nested_recipe_session());
+        if let Some(n) = &notice {
+            context_parts.push(n.context.clone());
+        }
+
         let additional_context = context_parts.join("\n\n");
 
         // Signal channel: session start performs NO group I/O. Groups are
@@ -168,6 +178,9 @@ impl Hook for SessionStartHook {
         });
         if !warnings.is_empty() {
             output["warnings"] = serde_json::json!(warnings);
+        }
+        if let Some(message) = notice.and_then(|n| n.system_message) {
+            output["systemMessage"] = Value::String(message);
         }
 
         Ok(output)

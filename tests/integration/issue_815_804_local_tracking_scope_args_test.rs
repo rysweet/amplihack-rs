@@ -111,12 +111,17 @@ fn arg_value(log: &str, flag: &str) -> String {
         .to_string()
 }
 
-/// A recipe run exports ISSUE_NUMBER for its own issue; the helpers prefer it
-/// over RECIPE_VAR_issue_number, so an inherited value would hide the input
-/// each test sets.
+/// The helpers read the issue only as RECIPE_VAR_issue_number (#1561). An
+/// enclosing recipe run's RECIPE_VAR_* would hide the input each test sets, so
+/// they are cleared, and a conflicting stale bare ISSUE_NUMBER is set to show
+/// it is never read.
 fn clear_inherited_issue_env(cmd: &mut Command) {
-    cmd.env_remove("ISSUE_NUMBER")
-        .env_remove("RECIPE_VAR_issue_number");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("RECIPE_VAR_") {
+            cmd.env_remove(&key);
+        }
+    }
+    cmd.env("ISSUE_NUMBER", "9999"); // deliberately stale (#1561)
 }
 
 fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &str)]) {
@@ -141,7 +146,7 @@ fn run_final_status(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
         .env("WORKFLOW_PR_SCOPE_HELPER", stub)
         .env("REMOTE_HOST_TYPE", "github")
-        .env("PR_URL", "https://github.com/owner/repo/pull/7")
+        .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("TASK_DESCRIPTION", "test task");
     clear_inherited_issue_env(&mut cmd);
     for (k, v) in issue_env {
@@ -188,7 +193,12 @@ fn pr_ready_preserves_numeric_issue_number() {
     let log = tmp.path().join("scope-args.log");
     let stub = recorder_scope_helper(tmp.path(), &log);
 
-    run_pr_ready(&repo, &bin_dir, &stub, &[("ISSUE_NUMBER", "763")]);
+    run_pr_ready(
+        &repo,
+        &bin_dir,
+        &stub,
+        &[("RECIPE_VAR_issue_number", "763")],
+    );
 
     let recorded = fs::read_to_string(&log).expect("read scope args log");
     assert_eq!(
@@ -236,7 +246,12 @@ fn final_status_preserves_numeric_issue_number() {
     let log = tmp.path().join("scope-args.log");
     let stub = recorder_scope_helper(tmp.path(), &log);
 
-    run_final_status(&repo, &bin_dir, &stub, &[("ISSUE_NUMBER", "763")]);
+    run_final_status(
+        &repo,
+        &bin_dir,
+        &stub,
+        &[("RECIPE_VAR_issue_number", "763")],
+    );
 
     let recorded = fs::read_to_string(&log).expect("read scope args log");
     assert_eq!(

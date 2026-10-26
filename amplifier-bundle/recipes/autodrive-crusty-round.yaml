@@ -46,6 +46,8 @@ context:
   # round. Crusty is told about them so a resumed run does not reopen settled
   # ground; it may still re-raise one with NEW evidence.
   autodrive_resolved_concerns_file: ""
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  crusty_fix_evidence: ""
 
 steps:
   # Judging agents start outside the tree under review (#1528): autodrive_worktree_guard.sh.
@@ -54,7 +56,9 @@ steps:
   - id: "step-00-review-dir-guard"
     type: "bash"
     command: |
-      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or missing from autodrive_launch_tools '${AUTODRIVE_LAUNCH_TOOLS:-}' (#1528)" >&2; exit 1; }
+      # AUTODRIVE_LAUNCH_TOOLS (#1543): the leading "/" keeps an empty or relative value from resolving against the cwd;
+      # the guard itself checks the value (autodrive_worktree_guard.sh, "AUTODRIVE_LAUNCH_TOOLS").
+      bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-guard || { echo "STOP: review-dir guard refused or not found under AUTODRIVE_LAUNCH_TOOLS (#1528) [autodrive-crusty-round/step-00]" >&2; exit 1; }
     output: "review_index"
 
   - id: "step-01-round-context"
@@ -116,6 +120,8 @@ steps:
       evidence-linked judgement, hidden costs named, no enthusiasm.
 
       You are standing in for the maintainer. Review it as hard as they would.
+
+      [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
 
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
@@ -181,7 +187,7 @@ steps:
   - id: "step-02b-review-dir-unchanged"
     type: "bash"
     command: |
-      bash "${AUTODRIVE_LAUNCH_TOOLS:-}/autodrive_worktree_guard.sh" index-check "${REVIEW_DIR:-}" "${REVIEW_INDEX:-${RECIPE_VAR_review_index:-}}" step-02-crusty-review || exit 1
+      bash "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh" round-index-check "${REVIEW_DIR:-}" "${RECIPE_VAR_review_index:-}" step-02-crusty-review || exit 1
 
   - id: "step-03-extract-crusty-verdict"
     type: "bash"
@@ -191,7 +197,7 @@ steps:
       # Canonical pipeline (docs/reference/structured-verdict-parsing.md):
       # agent output is untrusted DATA on stdin, never interpolated into a
       # command position, never eval'd, never branched on as raw prose.
-      RAW="${CRUSTY_REVIEW:-${RECIPE_VAR_crusty_review:-}}"
+      RAW="${RECIPE_VAR_crusty_review:-}"
       RECORD="${AUTODRIVE_ROUND_RECORD:-}"
       if [ -z "$RAW" ]; then
         echo "WARNING: crusty produced no output; a missing verdict is CONCERNS, never CLEAN." >&2
@@ -262,6 +268,8 @@ steps:
       Do not paper over a concern. Do not narrow a test until it passes. Do not
       leave a TODO in place of a fix.
 
+      [amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive's merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.
+
       Do not create, edit, move, rename, delete or archive any file in the
       auto-drive state directory (the directory holding crusty-round-*.json,
       merge-ready-round-*.json and phases.tsv).
@@ -315,7 +323,7 @@ steps:
         GIT_OK="false"
         echo "[skip] not a git repo; commit evidence is reported as unobserved, never as progress" >&2
       fi
-      BASE="$(printf '%s' "${CRUSTY_ROUND_CONTEXT:-${RECIPE_VAR_crusty_round_context:-}}" \
+      BASE="$(printf '%s' "${RECIPE_VAR_crusty_round_context:-}" \
         | amplihack orch helper extract-json --require-field head_sha \
         | amplihack orch helper extract-field --field head_sha --default '')"
       NOW=""
@@ -345,12 +353,12 @@ steps:
       # embedded newline would pass and split the one-line record.
       hex() { case "${#1}" in 40|64) ;; *) return 1 ;; esac; case "$1" in *[!0123456789abcdef]*) return 1 ;; esac; }
       digits() { case "$1" in ''|*[!0123456789]*) return 1 ;; esac; }
-      VERDICT="$(printf '%s' "${CRUSTY_VERDICT:-${RECIPE_VAR_crusty_verdict:-}}" \
+      VERDICT="$(printf '%s' "${RECIPE_VAR_crusty_verdict:-}" \
         | amplihack orch helper extract-json --require-field crusty_verdict \
         | amplihack orch helper extract-field --field crusty_verdict --default CONCERNS)"
       case "$VERDICT" in CLEAN|CONCERNS) ;; *) VERDICT="CONCERNS" ;; esac
-      COUNT="$(g "${CRUSTY_VERDICT:-${RECIPE_VAR_crusty_verdict:-}}" concern_count 0)"
-      COMMITS="$(g "${CRUSTY_FIX_EVIDENCE:-${RECIPE_VAR_crusty_fix_evidence:-}}" commits 0)"
+      COUNT="$(g "${RECIPE_VAR_crusty_verdict:-}" concern_count 0)"
+      COMMITS="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" commits 0)"
       digits "$COUNT" || { echo "WARNING: concern_count '$(printf '%s' "$COUNT" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COUNT=0; }
       digits "$COMMITS" || { echo "WARNING: commits '$(printf '%s' "$COMMITS" | tr -cd '0-9A-Za-z' | cut -c1-32)' is not a number; recorded as 0" >&2; COMMITS=0; }
       # The reviewed head comes from bash (step-01: the PR's headRefOid, equal
@@ -358,8 +366,8 @@ steps:
       # step-05 ran, otherwise the reviewed head, so it is never empty (issue
       # #1517). A missing SHA fails the step: forcing CONCERNS instead would
       # make the loop review the same tree forever.
-      REVIEWED="$(g "${CRUSTY_ROUND_CONTEXT:-${RECIPE_VAR_crusty_round_context:-}}" head_sha '')"
-      SHA="$(g "${CRUSTY_FIX_EVIDENCE:-${RECIPE_VAR_crusty_fix_evidence:-}}" head_sha '')"
+      REVIEWED="$(g "${RECIPE_VAR_crusty_round_context:-}" head_sha '')"
+      SHA="$(g "${RECIPE_VAR_crusty_fix_evidence:-}" head_sha '')"
       [ -n "$SHA" ] || SHA="$REVIEWED"
       if ! hex "$REVIEWED" || ! hex "$SHA"; then
         echo "ERROR: crusty-head-sha-unavailable: reviewed_head_sha='$(printf '%s' "$REVIEWED" | tr -cd '0-9A-Za-z' | cut -c1-64)' head_sha='$(printf '%s' "$SHA" | tr -cd '0-9A-Za-z' | cut -c1-64)'; no round record is written, so this round cannot count as a CLEAN crusty round." >&2

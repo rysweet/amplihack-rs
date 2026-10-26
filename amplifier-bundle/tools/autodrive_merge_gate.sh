@@ -1,12 +1,10 @@
-#!/usr/bin/env bash
-# autodrive_merge_gate.sh — the final, evidence-gated merge for
-# auto-drive-to-merge.
+#!/bin/bash -p
+# autodrive_merge_gate.sh — the final, evidence-gated merge for auto-drive-to-merge.
 #
 # NO SILENT MERGE. Every criterion is re-verified HERE, in the run that merges,
 # against ONE head SHA, and the evidence is written down before anything is
-# merged. A criterion that cannot be read is a FAILURE, never a pass: an
-# unreadable CI status means "we do not know", and "we do not know" does not
-# merge.
+# merged. A criterion that cannot be read is a FAILURE, never a pass: an unreadable
+# CI status means "we do not know", and "we do not know" does not merge.
 #
 # The merge argv is a FIXED literal list built in this file. It takes no flags
 # from any caller, so there is no argument through which a branch-protection
@@ -20,6 +18,8 @@
 #   Exit 79 — terminal policy refusal from a child. Surfaced, never retried.
 
 set -uo pipefail
+# #1551: -p ignores exported functions and BASH_ENV; drop gh/git/jq functions anyway.
+builtin unset -f gh git jq
 
 AUTODRIVE_EXIT_POLICY_REFUSAL=79
 PR=""; REPO="."; ROUND_RECORD=""; QA_EVIDENCE=""; STATE_DIR=""; DRY_RUN="false"

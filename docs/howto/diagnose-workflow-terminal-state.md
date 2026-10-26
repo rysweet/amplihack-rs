@@ -77,6 +77,38 @@ amplihack recipe run default-workflow \
 The rerun must either continue into implementation/verification/publish or end
 with an explicit terminal no-op/failure state.
 
+### The PR exists but the run still failed
+
+Since issue #1596, the final-status helper asks GitHub for an open PR on the
+run's branch when the publish step reported no PR URL. It reads that branch from
+the run's worktree (`worktree_setup.worktree_path`), not from `repo_path`. If
+such a run still fails with `FAILED_MISSING_TERMINAL_EVIDENCE`, check the
+worktree:
+
+```bash
+wt="<worktree_setup.worktree_path from the run log>"
+git -C "$wt" branch --show-current
+gh pr list --repo "$(gh repo view --json nameWithOwner -q .nameWithOwner)" \
+  --head "$(git -C "$wt" branch --show-current)" --state open \
+  --json url,number,isCrossRepository,headRefOid
+git -C "$wt" rev-parse HEAD
+```
+
+| Finding | Cause | Fix |
+| --- | --- | --- |
+| The worktree directory no longer exists | The lookup refuses to fall back to `repo_path`'s branch. | Re-run finalize while the worktree exists, or pass `pr_url`. |
+| Branch is empty, a base branch, or not `worktree_setup.branch_name` | Nothing trustworthy to look up. | Check out the run's branch in the worktree. |
+| `gh pr list` returns `[]`, or only fork PRs | No same-repository open PR on the branch. | Publish the PR from the origin repository. |
+| The PR's `headRefOid` is not the worktree's `HEAD` | The PR does not hold this run's latest work (issue #1679). | Push the worktree's commits to the PR branch. |
+| `stale PR metadata: headRefOid '…' does not match local HEAD '…'` | The PR head is not an ancestor of local `HEAD` (force-push, other branch), or the PR is merged or closed with local commits on top. An open PR that is merely behind is accepted (issue #1467). | Check `git merge-base --is-ancestor <headRefOid> HEAD`; reconcile the branch, or open a follow-up PR for the extra commits. |
+| `stderr` shows `INFO: branch PR lookup skipped (#1679): <reason>` | The run's worktree or branch could not be established. | Act on the reason: for example, record `worktree_setup` or keep the worktree until finalize. |
+| `stderr` shows `WARNING: branch PR lookup failed (#1596): <reason>` | `gh` failed, or returned data the helper will not trust. | Run `gh auth status`; check `origin` points at the PR's repository. |
+| `terminal_state=EXISTING_OPEN_PR` but exit `1` or `terminal_verdict=UNCERTAIN` | The PR was found and then failed the scope check. | See [Scoped-PR Signal and Agentic Adjudication](../reference/workflow-terminal-state.md#scoped-pr-signal-and-agentic-adjudication). |
+| `REMOTE_HOST_TYPE` is set and is not `github` | The lookup is GitHub-only. An unset value falls back to the worktree's `origin` (issue #1679). | Pass `pr_url` explicitly for Azure DevOps runs. |
+
+See [Branch PR Lookup](../reference/workflow-terminal-state.md#branch-pr-lookup)
+for the full rules.
+
 ---
 
 ## Fix `FAILED_INVALID_EVIDENCE`
@@ -306,12 +338,14 @@ terminal evidence, the routing layer is incorrectly masking failure.
 ## Run the Terminal-State Evaluator Directly
 
 The shell helper can be run from a checkout to inspect normalized evidence.
+It reads recipe values only from their `RECIPE_VAR_` names, and an evidence
+field from the JSON of its step output, as the runner exports them (see the
+[helper inputs](../reference/workflow-terminal-state.md#inputs)).
 
 ```bash
 WORKFLOW_CLASSIFICATION=Development \
 RECIPE_NAME=default-workflow \
 REPO_PATH=. \
-BRANCH_NAME="$(git branch --show-current)" \
 OBSERVED_PHASES="workflow-prep,workflow-worktree,workflow-design" \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
@@ -330,11 +364,8 @@ Add implementation and verification evidence to confirm a valid success path:
 WORKFLOW_CLASSIFICATION=Development \
 RECIPE_NAME=default-workflow \
 REPO_PATH=. \
-BRANCH_NAME="$(git branch --show-current)" \
-IMPLEMENTATION_COMPLETED=true \
-VERIFICATION_COMPLETED=true \
-TERMINAL_STATE=IMPLEMENTED_VERIFIED \
-TERMINAL_REASON="implementation and targeted tests completed" \
+RECIPE_VAR_implementation_terminal_evidence='{"implementation_completed":true}' \
+RECIPE_VAR_verification_terminal_evidence='{"verification_completed":true}' \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
 

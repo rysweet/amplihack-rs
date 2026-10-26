@@ -37,6 +37,7 @@ pub mod env_builder;
 /// in `commands/fleet.rs`.
 pub mod fleet_local;
 pub mod freshness;
+mod runner_ancestry;
 mod runner_probe;
 mod runner_validation;
 pub use runner_validation::InternalCommands;
@@ -67,6 +68,7 @@ mod tests_wait_config_write;
 pub mod tool_update_check;
 pub mod uninstall;
 pub mod update;
+pub(crate) mod user_config;
 pub mod util;
 /// Issue #1618: settings for the usage-limit wait of recipe agent steps.
 #[cfg(unix)]
@@ -97,7 +99,7 @@ pub const VERSION: &str = match option_env!("AMPLIHACK_RELEASE_VERSION") {
 
 pub use cli_commands::Commands;
 pub use cli_subcommands::{
-    BuilderCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
+    BuilderCommands, ConfigCommands, HygieneArtifactGuardArgs, HygieneCleanupArgs, HygieneCommands,
     LiteLlmCommands, LiveClient, MIN_CLEANUP_APPLY_OLDER_THAN_HOURS,
     MIN_CLEANUP_APPLY_OLDER_THAN_SECS, MemoryCommands, ModeCommands, MultitaskCommands,
     PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,

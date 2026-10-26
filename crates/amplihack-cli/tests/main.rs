@@ -22,6 +22,8 @@
 //! the `amplihack` package's `integration` binary, fail on anything this root
 //! does not reach and on process-state changes outside a quiet child.
 
+#[path = "../../../tests/support/isolated_amplihack.rs"]
+mod isolated_amplihack;
 mod support;
 
 #[path = "active_agent_binary_default_test.rs"]
@@ -40,6 +42,8 @@ mod cargo_cxx_pin;
 mod claude_code_plugin_manifest;
 #[path = "claude_install_contract.rs"]
 mod claude_install_contract;
+#[path = "claude_profile_rotation_skill_present.rs"]
+mod claude_profile_rotation_skill_present;
 #[path = "codex_frontdoor_contract.rs"]
 mod codex_frontdoor_contract;
 #[path = "cycle2_module_budget.rs"]
@@ -62,10 +66,14 @@ mod issue_1356_release_tags_last;
 mod issue_1358_sccache_installed_before_cargo;
 #[path = "issue_1526_release_version_stamp.rs"]
 mod issue_1526_release_version_stamp;
+#[path = "issue_1551_merge_guard.rs"]
+mod issue_1551_merge_guard;
 #[path = "issue_1552_investigation_report_written.rs"]
 mod issue_1552_investigation_report_written;
 #[path = "issue_1553_max_total_steps_cap.rs"]
 mod issue_1553_max_total_steps_cap;
+#[path = "issue_1561_step_outputs_prefer_recipe_var.rs"]
+mod issue_1561_step_outputs_prefer_recipe_var;
 #[path = "issue_1567_nested_profile.rs"]
 mod issue_1567_nested_profile;
 #[path = "issue_1569_auto_switch.rs"]
@@ -88,6 +96,20 @@ mod issue_1570_recipe_text;
 mod issue_1570_run_output_stdin;
 #[path = "issue_1578_profile_usage.rs"]
 mod issue_1578_profile_usage;
+#[path = "issue_1592_daemon.rs"]
+mod issue_1592_daemon;
+#[path = "issue_1592_oneshot.rs"]
+mod issue_1592_oneshot;
+#[path = "issue_1592_recovery.rs"]
+mod issue_1592_recovery;
+#[path = "issue_1592_root.rs"]
+mod issue_1592_root;
+#[path = "issue_1592_root_rotator.rs"]
+mod issue_1592_root_rotator;
+#[path = "issue_1606_config_cli.rs"]
+mod issue_1606_config_cli;
+#[path = "issue_1606_detach.rs"]
+mod issue_1606_detach;
 #[path = "issue_1618_fixture.rs"]
 mod issue_1618_fixture;
 #[path = "issue_1618_pattern_home.rs"]
@@ -104,6 +126,10 @@ mod issue_1618_wait_settings;
 mod issue_1618_wait_signals;
 #[path = "issue_1618_wait_step.rs"]
 mod issue_1618_wait_step;
+#[path = "issue_1634_shared_sessions.rs"]
+mod issue_1634_shared_sessions;
+#[path = "issue_1650_profile_identity.rs"]
+mod issue_1650_profile_identity;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -128,6 +154,8 @@ mod issue_833_merge_validations_json_tolerance;
 mod issue_860_pr_guide_present;
 #[path = "issue_899_merge_validations_abstention.rs"]
 mod issue_899_merge_validations_abstention;
+#[path = "no_capacity_notice_statusline.rs"]
+mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
 #[path = "remote_cli_contract.rs"]

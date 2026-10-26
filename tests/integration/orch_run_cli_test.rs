@@ -10,7 +10,6 @@
 //!   `multitask::run_multitask` short-circuit at models.rs/mod.rs).
 //! - `orch run --help` is visible (subcommand wired into clap).
 
-use std::process::Command;
 use tempfile::TempDir;
 
 fn bin() -> &'static str {
@@ -19,7 +18,7 @@ fn bin() -> &'static str {
 
 #[test]
 fn orch_run_help_is_available() {
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args(["orch", "run", "--help"])
         .output()
         .expect("failed to execute amplihack orch run --help");
@@ -42,7 +41,7 @@ fn orch_run_empty_workstreams_exits_zero() {
     let ws = tmp.path().join("ws.json");
     std::fs::write(&ws, "[]").expect("write ws.json");
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args(["orch", "run"])
         .arg(&ws)
         .output()
@@ -65,7 +64,7 @@ fn orch_run_missing_file_fails() {
     let tmp = TempDir::new().expect("tempdir");
     let missing = tmp.path().join("does_not_exist.json");
 
-    let output = Command::new(bin())
+    let output = crate::isolated_amplihack::isolated(bin())
         .args(["orch", "run"])
         .arg(&missing)
         .output()

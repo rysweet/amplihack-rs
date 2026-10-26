@@ -5,11 +5,15 @@
 //! 2. Injects native Rust memory context for referenced agents
 //! 3. Detects framework injection needs (AMPLIHACK.md vs CLAUDE.md)
 //! 4. Returns modified prompt with injected context
+//!
+//! It also notes the prompt for a waiting `limit-resume` hook (Unix only).
 
 mod memory;
 mod preferences;
 #[cfg(test)]
 mod tests;
+#[cfg(all(test, unix))]
+mod tests_capacity;
 
 use crate::post_tool_use::begin_workflow_enforcement_tracking;
 use crate::prompt_input::extract_user_prompt;
@@ -17,11 +21,35 @@ use crate::protocol::{FailurePolicy, Hook};
 use crate::session_start::{is_nested_recipe_session, is_workflow_active};
 use amplihack_types::HookInput;
 use serde_json::Value;
+use std::path::PathBuf;
 
 pub use memory::format_agent_memory_context;
 pub use preferences::{build_preference_context, extract_preferences};
 
-pub struct UserPromptSubmitHook;
+/// Finds the profile root for the limit-resume prompt marker.
+type RootResolver = Box<dyn Fn() -> Option<PathBuf>>;
+
+pub struct UserPromptSubmitHook {
+    prompt_root: RootResolver,
+}
+
+impl Default for UserPromptSubmitHook {
+    /// Resolves the real profile root, as `amplihack profile` does.
+    fn default() -> Self {
+        Self::with_prompt_root(amplihack_utils::rotator_status::resolve_root)
+    }
+}
+
+impl UserPromptSubmitHook {
+    /// A hook that writes the limit-resume prompt marker under the root
+    /// `resolve` returns, or nowhere when it returns `None`. Tests use this
+    /// so they never touch the real profile root.
+    pub fn with_prompt_root(resolve: impl Fn() -> Option<PathBuf> + 'static) -> Self {
+        Self {
+            prompt_root: Box::new(resolve),
+        }
+    }
+}
 
 impl Hook for UserPromptSubmitHook {
     fn name(&self) -> &'static str {
@@ -45,6 +73,12 @@ impl Hook for UserPromptSubmitHook {
             } => (user_prompt, session_id, extra),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Tells a waiting limit-resume hook that the session moved on.
+        #[cfg(unix)]
+        if let Some(root) = (self.prompt_root)() {
+            crate::limit_resume::record_prompt(&root, session_id.as_deref());
+        }
 
         let prompt = extract_user_prompt(user_prompt.as_deref(), &extra);
         if prompt.is_empty() {
@@ -104,17 +138,28 @@ impl Hook for UserPromptSubmitHook {
             );
         }
 
+        // The no-capacity notice: once per state change per session.
+        let notice =
+            crate::capacity_notice::notice(session_id.as_deref(), is_nested_recipe_session());
+        if let Some(n) = &notice {
+            context_parts.push(n.context.clone());
+        }
+
         if context_parts.is_empty() {
             return Ok(Value::Object(serde_json::Map::new()));
         }
 
         let additional_context = context_parts.join("\n\n");
 
-        Ok(serde_json::json!({
+        let mut output = serde_json::json!({
             "hookSpecificOutput": {
                 "hookEventName": "UserPromptSubmit",
                 "additionalContext": additional_context
             }
-        }))
+        });
+        if let Some(message) = notice.and_then(|n| n.system_message) {
+            output["systemMessage"] = Value::String(message);
+        }
+        Ok(output)
     }
 }

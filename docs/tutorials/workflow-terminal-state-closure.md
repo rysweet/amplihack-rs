@@ -207,6 +207,12 @@ may exit `2` for invalid helper invocation, missing tooling, or malformed input
 before evaluation can run. Through `amplihack recipe run`, that helper failure is
 reported as recipe failure and the CLI exits nonzero, currently `1`.
 
+Called directly, the helper reads its inputs only from `RECIPE_VAR_` names,
+such as `RECIPE_VAR_pr_number`, `RECIPE_VAR_pr_url` and
+`RECIPE_VAR_issue_number`. A bare `PR_NUMBER`, `PR_URL` or `ISSUE_NUMBER` is
+ignored (see
+[Step outputs ignore inherited bare variables](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
+
 ---
 
 ## Next Steps

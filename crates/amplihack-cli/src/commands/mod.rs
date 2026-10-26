@@ -5,6 +5,7 @@ pub mod append;
 pub mod auto_mode;
 pub mod builder;
 pub mod completions;
+pub mod config;
 pub mod cs_validate;
 pub mod doctor;
 pub mod fleet;
@@ -138,6 +139,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+            profile::autostart_on_launch(docker);
+            profile::capacity_launch_warning(&claude_args);
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -192,6 +195,8 @@ pub fn dispatch(command: Commands) -> Result<()> {
                 return Ok(());
             }
             let claude_config_dir = profile::launch_profile_dir(profile.as_deref(), docker, auto)?;
+            profile::autostart_on_launch(docker);
+            profile::capacity_launch_warning(&claude_args);
             if auto {
                 validate_gateway_auto_mode(auto_mode::AutoModeTool::Claude, &claude_args)?;
                 let working_dir = launch::resolve_checkout_repo(checkout_repo.as_deref())?;
@@ -435,6 +440,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
             println!("amplihack-rs {}", crate::VERSION);
             Ok(())
         }
+        Commands::Config { command } => config::run_config(command),
         Commands::AgentBinary { shell, working_dir } => {
             agent_binary::run_agent_binary(shell, working_dir)
         }
@@ -668,6 +674,8 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             format,
             working_dir,
             step_timeout,
+            detach,
+            no_detach,
         } => {
             if progress {
                 anyhow::bail!(
@@ -676,8 +684,36 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
             }
             // Issue #1570: file sources are merged under `-c` here, so
             // `run_recipe` keeps taking `KEY=VALUE` pairs.
-            let context =
-                recipe::resolve_context_args(context_file.as_deref(), &context_from_file, context)?;
+            let resolved = recipe::resolve_context_args(
+                context_file.as_deref(),
+                &context_from_file,
+                context.clone(),
+            )?;
+            // Issue #1606: --detach / --no-detach, else `recipe.detach` for
+            // the directory the steps run in.
+            let detach = detach
+                || (!no_detach
+                    && recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)
+                        .is_ok_and(|working| crate::user_config::recipe_detach(&working)));
+            if detach {
+                let working = recipe::validate_path(working_dir.as_deref().unwrap_or("."), false)?;
+                let agent_binary = crate::env_builder::resolve_agent_binary_in(&working);
+                return recipe::detach::launch(recipe::detach::Launch {
+                    args: recipe::detach::pane_args(
+                        &recipe_path,
+                        dry_run,
+                        verbose,
+                        &format,
+                        working_dir.as_deref(),
+                        step_timeout,
+                    ),
+                    context: &resolved,
+                    recipe_path: &recipe_path,
+                    working_dir: &working,
+                    agent_binary: &agent_binary,
+                });
+            }
+            let context = resolved;
             recipe::run_recipe(
                 &recipe_path,
                 &context,
@@ -687,6 +723,15 @@ fn dispatch_recipe(command: RecipeCommands) -> Result<()> {
                 working_dir.as_deref(),
                 step_timeout,
             )
+        }
+        RecipeCommands::Stop { target } => recipe::stop::run_stop(&target),
+        RecipeCommands::DetachedChild { log, spec } => {
+            let code = recipe::detach::run_detached_child(&spec, &log)?;
+            if code == 0 {
+                Ok(())
+            } else {
+                Err(crate::command_error::exit_error(code))
+            }
         }
         RecipeCommands::List {
             recipe_dir,

@@ -29,6 +29,21 @@ the original publish/finalize paths:
 Static coverage fails if a recipe contains an executable `git commit`
 without preparing identity first.
 
+## Implementation checkpoints
+
+The `workflow-tdd` implementation checkpoint captures the changed paths in its
+linked task worktree before validation. It stages those paths, including both
+sides of a rename, and prints the staged file list for review. Files created by
+validation after the snapshot cause the checkpoint to stop without committing;
+they are left in the worktree for inspection.
+
+When the captured changes include a Rust source file, the checkpoint runs
+`cargo fmt --all -- --check` before staging. This checks the workspace without
+rewriting files. If formatting fails, format the affected Rust files and retry
+the checkpoint. A change with no Rust source files skips the Rust formatting
+check, so the checkpoint does not rewrite unrelated Rust files. Artifact Guard
+runs before and after staging, and a failed guard stops the commit.
+
 ## Configure identity for workflows
 
 Use explicit Amplihack variables when running workflows on shared machines,

@@ -198,7 +198,7 @@ registration state, on-disk presence, and `repo_path` form:
 | `repo_path` | Worktree registered? | Directory on disk? | Branch matches? | Result |
 | ----------- | -------------------- | ------------------ | --------------- | ------ |
 | `.` or absolute | yes | yes | yes | **State 1** — reuse, exit 0, `created=false` |
-| `.` or absolute | yes | yes | no (dirty/ahead) | reset to `BASE_REF`, exit 0 |
+| `.` or absolute | yes | yes | no (dirty/ahead) | kept untouched; run moves to a fresh branch, exit 0 ([#1565](issue-1565-rerun-preserves-worktree.md)) |
 | `.` or absolute | yes | no | — | **State 2** — attach, exit 0 |
 | `.` or absolute | no | yes | yes | prune + reuse, exit 0 |
 | `.` or absolute | no | yes | no | prune + remove + re-add, exit 0 |

@@ -79,12 +79,14 @@ Complete documentation for using the Recipe Runner:
 - **[Step 03 Host-Aware Tracking Idempotency](../reference/recipe-step-03-idempotency.md)** - GitHub issue, Azure Boards work-item, and local tracking reuse/create contract
 - **[Tracking Issue Selection (#1595)](../reference/workflow-tracking-issue-selection.md)** - Explicit `issue_number`, marked and bare task-text references, and open-issue validation on GitHub
 - **[Default Workflow Step 13 Validation](../reference/default-workflow-step-13-validation.md)** - Toolchain-aware outside-in local validation contract for the pre-commit gate
+- **[Step Outputs Ignore Inherited Bare Variables (#1561)](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)** - The autodrive and workflow phase recipes read a step value only as `RECIPE_VAR_<key>`, and an object field only from that key's JSON; set a value with `-c <key>=<value>`. `NO_MERGE` is the one bare override, and it can only stop a merge
 - **[Workflow Terminal-State Reference](../reference/workflow-terminal-state.md)** - Target contract for development workflow completion evidence, no-op states, routed failure propagation, and `workflow_final_status.sh` API
 - **[How to Diagnose Workflow Terminal-State Failures](../howto/diagnose-workflow-terminal-state.md)** - Recovery guide for missing terminal evidence after planning, analysis, design, or worktree-only execution
 - **[Tutorial: Workflow Terminal-State Closure](../tutorials/workflow-terminal-state-closure.md)** - Walk through successful evidence, planning-only failure, and rerun behavior
 - **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
 - **[Leak-Proof, Self-Healing Worktree Setup (#840)](issue-840-leak-proof-worktree.md)** - Orphan-worktree sweep and cleanup-on-failure for `step-04-setup-worktree`, with the `workflow_worktree_sweep.sh` helper API, the data-loss safety gate, and `AMPLIHACK_WORKTREE_STALE_SECS` configuration
 - **[Relative-Path-Safe, Idempotent Worktree Setup (#1121)](issue-1121-relative-repo-path.md)** - Canonicalizes `repo_path` (`pwd -P`) and routes every `git worktree add` through a guarded `wt_add_idempotent` helper so `step-04-setup-worktree` reuses an already-present worktree instead of hard-failing with `already exists` (exit 128) under a relative `repo_path`
+- **[Re-runs Never Destroy an Existing Worktree's Work (#1565, #1626)](issue-1565-rerun-preserves-worktree.md)** - `step-04-setup-worktree` and consensus `step3-setup-worktree` keep a dirty or ahead branch and worktree untouched and move the re-run to a fresh branch via `workflow_worktree_deconflict.sh resolve --base`; how to continue the kept branch with `existing_branch`
 
 ## Why It Exists
 

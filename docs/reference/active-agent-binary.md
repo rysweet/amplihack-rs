@@ -46,10 +46,11 @@ The resolver evaluates sources in order and returns the first valid value. A val
 
 | # | Source | Notes |
 | - | --- | --- |
-| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored here while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>` or `session:<same binary>` (see [What amplihack exports is tagged](#what-amplihack-exports-is-tagged)). It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
-| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. An `AMPLIHACK_AGENT_BINARY` tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may come from the server's copy of whatever started the server; see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch). |
-| 3 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never in or above a world-writable or foreign-owned directory. A file in such a directory is not read, but it is named when the answer was inferred (see below). |
-| 4 | Built-in default | `"copilot"` |
+| 1 | `AMPLIHACK_AGENT_BINARY` env var | Explicit override. Used by CI, tests, and external consumers that have not migrated yet. Ignored here while tagged `AMPLIHACK_AGENT_BINARY_SOURCE=default:<same binary>`, `session:<same binary>`, `tmux_server:<marker>` or `user_config:<same binary>` (see [What amplihack exports is tagged](#what-amplihack-exports-is-tagged)). A tag amplihack does not recognise, or a `user_config:` tag naming a different binary, leaves the value an explicit choice. It outranks a session marker naming a different CLI; `recipe run` and `agent-binary` then say so on stderr (see below). |
+| 2 | Live session marker | An environment variable the hosting CLI exports, such as `CLAUDECODE`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT` or `COPILOT_CLI`. The full list is `agent_binary::SESSION_MARKERS`. An `AMPLIHACK_AGENT_BINARY` tagged `session:<binary>` is one more marker, of the CLI it names, ranked after that CLI's own markers. Inside tmux a marker may come from the server's copy of whatever started the server: a marker the server's global environment also holds ranks below layer 3 (and below a `tmux_server:*`-tagged value), not here. Each `amplihack <cli>` launch exports a random `AMPLIHACK_SESSION_NONCE`. When a process has one, the marker counts as the server's only if the server holds that same nonce as well as the marker, so a live `amplihack copilot` in a pane of a server another Copilot session started still answers here. See [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch). |
+| 3 | Configured `agent.binary` | `ResolutionSource::UserConfig`, label `user_config`. Read from `~/.amplihack/config.toml` only ([user config](./user-config.md#agentbinary); a project file cannot set it). Without a configured value, an inherited `AMPLIHACK_AGENT_BINARY` tagged `user_config:<same binary>` (or a bare `user_config`) answers here instead. It ranks below the CLI this process runs in (layers 1 and 2) and above everything a tmux server supplied: a `tmux_server:*`-tagged value and a marker the server holds. Callers that cannot read the config (`amplihack-utils` alone, such as `llm_client`, `knowledge_builder` and `cascade`) get it through the exported tag. |
+| 4 | `<repo>/.claude/runtime/launcher_context.json` `launcher` field | Persisted state, possibly written by a different session. Consulted only while fresh, and never in or above a world-writable or foreign-owned directory. A file in such a directory is not read, but it is named when the answer was inferred (see below). |
+| 5 | Built-in default | `"copilot"` |
 
 If a source produces a value that fails validation (allowlist, length, character class), the resolver ignores it and falls through to the next source. **No source ever coerces an invalid value into a different name.** What is said about it depends on the source:
 
@@ -78,8 +79,8 @@ That one answer is also what the root-sandbox pre-flight checks (issue
 steps would actually run `claude`, because it looks at the same binary the
 runner is handed rather than resolving again from the caller's directory.
 
-When the answer was inferred rather than observed (layer 3 or 4), recipe run
-prints a notice on stderr saying why. From layer 3 it names the file it read,
+When the answer was inferred rather than observed (layer 4 or 5), recipe run
+prints a notice on stderr saying why. From layer 4 it names the file it read,
 by its full path. The walk-up visits ancestors, so that file need not be in
 the working directory. The notice adds a line for every
 `launcher_context.json` the walk-up passed over because it could not be used
@@ -123,8 +124,11 @@ amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY is set b
 The steps are handed the marker's answer as a valid value, tagged
 `session:<binary>`, so a nested run does not repeat the line.
 
-An answer from layer 1 is a choice, not an inference, and it still wins over a
-session marker. But when the marker names a different CLI, recipe run names
+An answer from layer 1 is a choice, not an inference, and it still wins over
+a session marker. A configured `agent.binary` (layer 3) is a choice too, and
+prints nothing:
+you wrote it down, and `amplihack config list --show-origin` shows where. For
+an `AMPLIHACK_AGENT_BINARY` (layer 1), when the marker names a different CLI, recipe run names
 the marker it overruled. These docs tell you to export the variable to choose a
 CLI, so a profile line written for one CLI and still exported inside another's
 session looks exactly like this. Without the line, every step would run under
@@ -190,7 +194,7 @@ override usually still sees another Claude marker and repeats the line.
 Agent-step stderr is shown only when a step fails. Rust callers get the
 marker, variable and binary, from `Resolution::session_marker`.
 
-When the answer came from layer 4, recipe run also exports
+When the answer came from layer 5, recipe run also exports
 `AMPLIHACK_AGENT_BINARY_SOURCE=default:<binary>`. The tag keeps a guess a guess
 on the way down:
 
@@ -247,7 +251,7 @@ else amplihack exports is tagged:
 | Exported by | Value | `AMPLIHACK_AGENT_BINARY_SOURCE` |
 | --- | --- | --- |
 | A launcher (`amplihack claude`, `amplihack copilot`, `--auto`, the fleet reasoner's `claude -p`, ...) | the CLI it starts | `session:<cli>`, or `default:<cli>` when it was itself started on an inherited guess naming it |
-| `recipe run`, to its steps | its answer | none when the answer came from layer 1; `session:<binary>` from layer 2 or 3; `default:<binary>` from layer 4 |
+| `recipe run`, to its steps | its answer | none when the answer came from layer 1; `session:<binary>` from layer 2 or 4; `user_config:<binary>` from layer 3; `default:<binary>` from layer 5 |
 | `amplihack agent-binary --shell` (the hand-off) | the caller's answer | see [Handing the binary to a detached launch](#handing-the-binary-to-a-detached-launch) |
 | The Claude Code plugin's `bootstrap` | `claude`, unless you set a value | `session:claude` |
 
@@ -355,9 +359,13 @@ rests on a marker the tmux server holds, it hands it on tagged
 was a launcher's `session:<cli>` value, which answers only for a CLI with no
 marker of its own (codex, amplifier) or when no other marker is set, the
 variable it names is `AMPLIHACK_AGENT_BINARY_SOURCE`, and that is also the
-variable the tmux check asks the server about. The run that
-receives it still runs under that CLI, which is what it would resolve with no
-hand-off at all, and prints:
+variable the tmux check asks the server about. A layer 3 answer
+(`agent.binary`) never rests on a marker, so `--shell` tags it
+`user_config:<binary>` even when the tmux server holds another CLI's marker:
+the configured value decides, and the server's marker does not. Without a
+configured `agent.binary` (layer 3 outranks a `tmux_server:` value), the run
+that receives a `tmux_server:` tag still runs under that CLI, which is what it
+would resolve with no hand-off at all, and prints:
 
 ```text
 amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY was handed on by amplihack agent-binary --shell, which read it from COPILOT_CLI while the tmux server's global environment held the same value, so it may come from whatever started that server rather than from a copilot session). If that hand-off was in a single-quoted tmux command, it ran in the new session instead of in your shell: put the command in double quotes. To choose an agent CLI, set AMPLIHACK_AGENT_BINARY.
@@ -386,10 +394,12 @@ amplihack: agent steps will run under 'copilot' (AMPLIHACK_AGENT_BINARY was hand
   description, the far side's run would find the same `session:<cli>` in its
   own server's environment and name the server for an answer the caller gave.
   The exception is an answer read from a marker the tmux server holds, which
-  gets `tmux_server:<marker variable>` (above). That tag is not a guess either:
-  the resolver honours the value beside it, `migrate.sh` treats it as a
-  choice, and `recipe run` exports its steps the value untagged, as it does
-  any explicit value. A tag naming a marker of a different CLI than the value
+  gets `tmux_server:<marker variable>` (above). That tag is not a guess
+  either, but it is not an instruction: the resolver ranks the value beside it
+  between layers 3 and 4, below a live session marker and a configured
+  `agent.binary`, and above a marker the server holds and
+  `launcher_context.json`. `migrate.sh` treats it as a choice, and
+  `recipe run`, when that value answers, exports it to its steps untagged. A tag naming a marker of a different CLI than the value
   describes nothing and is ignored.
 - An answer read from a launcher context crosses with that empty tag, as an
   explicit value, so the far side's run log does not say it was inferred.
@@ -615,5 +625,6 @@ AMPLIHACK_AGENT_BINARY=codex amplihack recipe run smart-orchestrator \
 
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Architectural overview and rationale
 - [Environment Variables](./environment-variables.md#amplihack_agent_binary) — Full env var reference
+- [User Configuration](./user-config.md#agentbinary) — Setting `agent.binary` once, and the `user_config:<binary>` tag
 - [Agent Configuration](./agent-configuration.md#agent-binary-resolution) — Where the default fits into config precedence
 - [Hook Specifications](./hook-specifications.md) — Per-binary hook layout and supported events

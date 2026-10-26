@@ -80,6 +80,9 @@ additive; consumers must ignore fields they do not understand.
 | `work_item_id` | string | early, final | no | Explicit Azure Boards or external work item ID when supplied. |
 | `work_item_url` | string | early, final | no | Explicit external work item URL when supplied. |
 | `runner_path` | string | early, final | yes | `recipe-runner-rs` executable path selected by the wrapper. |
+| `agent_binary` | string | early, final | no | Agent CLI the steps run under (`claude`, `copilot`, `codex` or `amplifier`), resolved once at entry. |
+| `agent_binary_source` | string | early, final | no | Resolver layer that chose `agent_binary`: `env`, `user_config`, `session_marker`, `launcher_context` or `default`. See [Active Agent Binary](./active-agent-binary.md#resolution-precedence). |
+| `amplihack_home` | string | early, final | no | `AMPLIHACK_HOME` handed to the runner. Omitted when no home resolved. |
 | `child_pid` | integer | final | no | Child `recipe-runner-rs` process ID when the child spawned. |
 | `exit_code` | integer | final | no | Child exit code when available. |
 | `status` | string | final | yes | Lowercase terminal wrapper status. See [Final statuses](#final-statuses). |

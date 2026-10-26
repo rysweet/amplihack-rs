@@ -127,8 +127,11 @@ pub(super) fn select_prompt_context_memories(
         // the previous chars().count() / 4 for ASCII, a slight overestimate
         // for multibyte UTF-8, and O(1) instead of O(n).
         let memory_tokens = memory.content.len() / 4;
+        // Skip, rather than stop at, a memory too large for what is left:
+        // one long transcript must not keep every smaller, lower-ranked
+        // memory out of the prompt.
         if total_tokens + memory_tokens > token_budget {
-            break;
+            continue;
         }
         selected.push(SelectedPromptContextMemory {
             memory_id: memory.memory_id,

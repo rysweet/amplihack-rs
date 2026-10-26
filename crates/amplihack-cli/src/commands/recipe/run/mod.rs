@@ -11,8 +11,12 @@ mod format;
 /// Issue #1618: the usage-limit patterns of every agent harness, in one place.
 pub(crate) mod limit_patterns;
 mod limit_reset;
+/// Issue #1551 — the `gh` merge guard for auto-drive runs.
+pub(crate) mod merge_guard;
 /// Issue #1267 — bounded mechanical retry for transient transport faults.
 mod retry;
+/// Issue #1606: SIGHUP/SIGINT/SIGTERM stop the whole recipe tree.
+pub(crate) mod stop_signal;
 
 pub use context_sources::resolve_context_args;
 /// Issue #1569: the auto-switch rerun supervisor uses the same classifier, so
@@ -85,6 +89,7 @@ fn execute_recipe_via_rust_for_test(
         search_dirs,
         step_timeout,
         crate::env_builder::resolve_agent_binary_in(working_dir),
+        false,
     )
 }
 
@@ -179,6 +184,18 @@ pub(crate) fn run_recipe_with(
 
     let working_dir = working_dir.unwrap_or(".");
     let abs_working_dir = validate_path(working_dir, false)?;
+    // Issue #1606: `recipe.verbose` turns --verbose on; it cannot turn it off.
+    let verbose = verbose || crate::user_config::recipe_verbose(&abs_working_dir);
+    // Issue #1606: --step-timeout, then an inherited AMPLIHACK_STEP_TIMEOUT
+    // (passed through untouched, as before), then `recipe.step_timeout`.
+    let step_timeout = step_timeout.or_else(|| {
+        let inherited = std::env::var_os("AMPLIHACK_STEP_TIMEOUT").is_some_and(|v| !v.is_empty());
+        if inherited {
+            None
+        } else {
+            crate::user_config::recipe_step_timeout(&abs_working_dir)
+        }
+    });
     let validated_path = resolve_recipe_path(recipe_path, &abs_working_dir)?;
     let recipe = parse_recipe_from_path(&validated_path)?;
     let (merged_context, inferred) = infer_missing_context(&recipe.context, &context);
@@ -213,7 +230,16 @@ pub(crate) fn run_recipe_with(
         writeln!(preflight_out, "Error: {error}")?;
         return Err(exit_error(1));
     }
+    // Never refuses: the user may know better than the capacity file.
+    crate::commands::profile::capacity_recipe_warning(preflight_out);
     let search_dirs = build_search_dirs(&validated_path, &abs_working_dir)?;
+    // Issue #1551: auto-drive, and any run nested inside one, gets the `gh`
+    // merge guard first on PATH.
+    let merge_guard = merge_guard::guard_applies(
+        &recipe.name,
+        &validated_path,
+        std::env::var(merge_guard::MERGE_GUARD_ENV).ok().as_deref(),
+    );
     let result = match execute_recipe_via_rust(
         &validated_path,
         &merged_context,
@@ -223,6 +249,7 @@ pub(crate) fn run_recipe_with(
         &search_dirs,
         step_timeout,
         agent_binary,
+        merge_guard,
     ) {
         Ok(result) => result,
         Err(error) => {
@@ -236,6 +263,10 @@ pub(crate) fn run_recipe_with(
                 return Err(exit_error(code));
             }
             writeln!(io::stderr(), "Error: {error}")?;
+            // Issue #1606: a stopped run exits the way a killed process does.
+            if let Some(stopped) = error.downcast_ref::<stop_signal::StoppedBySignal>() {
+                return Err(exit_error(stopped.exit_code()));
+            }
             return Err(exit_error(1));
         }
     };
@@ -383,6 +414,8 @@ mod tests_format;
 mod tests_limit_patterns;
 #[cfg(test)]
 mod tests_limit_reset;
+#[cfg(test)]
+mod tests_merge_guard;
 #[cfg(test)]
 mod tests_root_sandbox;
 #[cfg(test)]

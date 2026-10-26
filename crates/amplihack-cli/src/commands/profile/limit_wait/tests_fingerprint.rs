@@ -82,15 +82,11 @@ impl Env {
         self.store.root().join(n)
     }
 
+    /// The rotate ledger (`profile rotate`) naming `live`.
     fn rotator(&self, live: &str) {
-        let dir = self.store.root().join(".rotator");
-        fs::create_dir_all(&dir).unwrap();
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
         private(
-            &dir.join("ledger.json"),
-            &format!(
-                r#"{{"duplicate":null,"live":"{live}","live_hash":"h","live_week_reset":0,"since":1}}"#
-            ),
+            &rotate_ledger(self.store.root()),
+            &format!(r#"{{"version":1,"live":"{live}","alert":null}}"#),
         );
     }
 
@@ -105,6 +101,10 @@ impl Env {
             ),
         );
     }
+}
+
+fn rotate_ledger(root: &Path) -> PathBuf {
+    amplihack_utils::rotator_status::ledger_path(root)
 }
 
 fn probe(w: &Watch) -> Fingerprint {
@@ -325,7 +325,7 @@ fn an_untrusted_rotator_ledger_counts_as_absent() {
     let absent = probe(&w);
     e.rotator("a");
     fs::set_permissions(
-        e.store.root().join(".rotator/ledger.json"),
+        rotate_ledger(e.store.root()),
         fs::Permissions::from_mode(0o666),
     )
     .unwrap();

@@ -104,6 +104,11 @@ fn run_hook(subcommand: &str, input_json: &str) -> (String, String, bool) {
 
     let mut child = Command::new(&bin)
         .env("AMPLIHACK_AGENT_BINARY", "claude")
+        // Keeps user-prompt's limit-resume marker out of the real profile root.
+        .env(
+            "AMPLIHACK_CLAUDE_PROFILE_ROOT",
+            project_root.path.join("profiles"),
+        )
         .arg(subcommand)
         .current_dir(&project_root.path)
         .stdin(Stdio::piped())

@@ -4,6 +4,7 @@
 //! and Copilot via JSON stdin/stdout protocol.
 
 mod agent_memory;
+mod capacity_notice;
 mod original_request;
 mod prompt_input;
 #[cfg(test)]
@@ -44,6 +45,8 @@ pub mod copilot_stop_handler;
 pub mod hook_verification;
 /// Known amplihack agent name registry.
 pub mod known_agents;
+#[cfg(unix)]
+pub mod limit_resume;
 /// Host-specific hook strategies (Claude, Copilot).
 pub mod strategies;
 

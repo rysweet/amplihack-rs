@@ -105,9 +105,9 @@ flowchart TD
         S19b --> S19c[Step 19c: Zero-BS Verification]
         S19c --> S19d[Step 19d: Verification Gate]
         S19d --> S20[Step 20: Final Cleanup]
-        S20 --> S20b[Step 20b: Push Cleanup]
-        S20b --> S20c[Step 20c: Quality Audit]
-        S20c --> S21[Step 21: PR Ready]
+        S20 --> S20c[Step 20c: Quality Audit]
+        S20c --> S20b[Step 20b: Push Cleanup]
+        S20b --> S21[Step 21: PR Ready]
         S21 --> S22[Step 22: Ensure Mergeable]
         S22 --> S22b[Step 22b: Final Status]
     end

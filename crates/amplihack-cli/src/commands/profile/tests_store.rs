@@ -42,6 +42,44 @@ fn add_does_not_create_credentials_or_files_inside() {
     assert_eq!(fs::read_dir(dir).unwrap().count(), 0);
 }
 
+/// Issue #1634: with a shared source, the only entries `add` creates beyond
+/// seeded assets are the three absolute session links.
+#[cfg(unix)]
+#[test]
+fn add_with_shared_source_creates_only_the_three_session_links() {
+    use std::os::unix::fs::PermissionsExt;
+    let d = tempfile::tempdir().unwrap();
+    let source = d.path().join("main-claude");
+    fs::create_dir_all(&source).unwrap();
+    fs::set_permissions(&source, fs::Permissions::from_mode(0o700)).unwrap();
+    let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source.clone());
+    let dir = store.add(&n("work")).unwrap();
+    let mut entries: Vec<(String, bool)> = fs::read_dir(&dir)
+        .unwrap()
+        .map(|e| {
+            let e = e.unwrap();
+            (
+                e.file_name().into_string().unwrap(),
+                e.file_type().unwrap().is_symlink(),
+            )
+        })
+        .collect();
+    entries.sort();
+    assert_eq!(
+        entries,
+        vec![
+            ("file-history".to_string(), true),
+            ("projects".to_string(), true),
+            ("session-env".to_string(), true),
+        ]
+    );
+    for (name, _) in entries {
+        let target = fs::read_link(dir.join(&name)).unwrap();
+        assert!(target.is_absolute());
+        assert_eq!(target, source.canonicalize().unwrap().join(&name));
+    }
+}
+
 #[test]
 fn oversized_shared_asset_fails_and_rolls_back_profile() {
     let d = tempfile::tempdir().unwrap();
@@ -86,6 +124,8 @@ fn add_copies_allowlisted_shared_assets_and_filters_settings() {
     )
     .unwrap();
 
+    #[cfg(unix)]
+    fs::set_permissions(&source, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
     let store = ProfileStore::new(d.path().join("profiles")).with_shared_assets(source);
     let profile = store.add(&n("work")).unwrap();
 
@@ -105,7 +145,6 @@ fn add_copies_allowlisted_shared_assets_and_filters_settings() {
         ".credentials.json",
         "history.jsonl",
         "plugins",
-        "projects",
         "credentials.json",
     ] {
         assert!(
@@ -113,6 +152,14 @@ fn add_copies_allowlisted_shared_assets_and_filters_settings() {
             "copied excluded {excluded}"
         );
     }
+    // Issue #1634: `projects/` is a link to the shared store, not a copy.
+    #[cfg(unix)]
+    assert!(
+        fs::symlink_metadata(profile.join("projects"))
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
     let copied_settings: serde_json::Value =
         serde_json::from_slice(&fs::read(profile.join("settings.json")).unwrap()).unwrap();
     assert_eq!(copied_settings["model"], "sonnet");
@@ -391,7 +438,7 @@ fn remove_never_follows_symlink_outside_root() {
 }
 
 #[test]
-fn from_env_rejects_relative_and_empty_root() {
+fn from_root_str_rejects_relative_and_empty_root() {
     for bad in ["", "relative/path"] {
         assert!(matches!(
             ProfileStore::from_root_str(bad),

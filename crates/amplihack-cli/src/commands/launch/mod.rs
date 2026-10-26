@@ -451,6 +451,14 @@ fn run_launch_core(
         let env_builder = augment_claude_launch_env(env_builder, tool, Some(binary.path.as_path()))
             .set_if(is_noninteractive(), "AMPLIHACK_NONINTERACTIVE", "1")
             .set_if(no_reflection, "AMPLIHACK_SKIP_REFLECTION", "1"); // WS2: propagate flags
+        // Issue #1551: inside an auto-drive run the gh merge guard stays first
+        // on PATH, ahead of the agent binary's directory prepended above.
+        let env_builder = crate::commands::recipe::run::merge_guard::keep_guard_first(
+            env_builder,
+            std::env::var(crate::commands::recipe::run::merge_guard::MERGE_GUARD_ENV)
+                .ok()
+                .as_deref(),
+        )?;
 
         maybe_run_blarify_indexing_prompt(tool, is_noninteractive(), Some(&execution_dir))?;
 
@@ -1013,6 +1021,7 @@ fn missing_binary_context(tool: &str) -> String {
 /// only claimed when its file name is actually the tool. Matching loosely here
 /// would put a confident, wrong sentence into an error message — worse than the
 /// bare "not found" it replaces.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))] // /proc/<pid>/exe is Linux only
 fn deleted_target_for_tool(raw: &str, tool: &str) -> Option<std::path::PathBuf> {
     let stripped = raw.strip_suffix(" (deleted)")?;
     let path = std::path::PathBuf::from(stripped);

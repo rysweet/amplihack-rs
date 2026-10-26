@@ -35,6 +35,18 @@ pub enum HookInput {
         session_id: Option<String>,
     },
 
+    /// Stop failure: the turn ended on an API error (rate limit, overload,
+    /// authentication failure). Claude Code sends this instead of `Stop`.
+    StopFailure {
+        session_id: Option<String>,
+        error: Option<String>,
+        error_details: Option<String>,
+        last_assistant_message: Option<String>,
+        stop_hook_active: Option<bool>,
+        transcript_path: Option<PathBuf>,
+        extra: Value,
+    },
+
     /// Session start: initialize session state.
     SessionStart {
         session_id: Option<String>,
@@ -79,6 +91,9 @@ const STOP_HOOK_ACTIVE_FIELDS: &[&str] = &["stop_hook_active", "stopHookActive"]
 const TRANSCRIPT_PATH_FIELDS: &[&str] = &["transcript_path", "transcriptPath"];
 const CWD_FIELDS: &[&str] = &["cwd"];
 const USER_PROMPT_FIELDS: &[&str] = &["user_prompt", "userPrompt", "prompt"];
+const ERROR_FIELDS: &[&str] = &["error"];
+const ERROR_DETAILS_FIELDS: &[&str] = &["error_details", "errorDetails"];
+const LAST_ASSISTANT_MESSAGE_FIELDS: &[&str] = &["last_assistant_message", "lastAssistantMessage"];
 
 impl<'de> Deserialize<'de> for HookInput {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -111,6 +126,26 @@ impl<'de> Deserialize<'de> for HookInput {
                 stop_hook_active: optional_typed_field(map, STOP_HOOK_ACTIVE_FIELDS)?,
                 transcript_path: optional_typed_field(map, TRANSCRIPT_PATH_FIELDS)?,
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
+            }),
+            Some("stopfailure") => Ok(HookInput::StopFailure {
+                session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
+                error: optional_typed_field(map, ERROR_FIELDS)?,
+                error_details: optional_typed_field(map, ERROR_DETAILS_FIELDS)?,
+                last_assistant_message: optional_typed_field(map, LAST_ASSISTANT_MESSAGE_FIELDS)?,
+                stop_hook_active: optional_typed_field(map, STOP_HOOK_ACTIVE_FIELDS)?,
+                transcript_path: optional_typed_field(map, TRANSCRIPT_PATH_FIELDS)?,
+                extra: extra_without(
+                    map,
+                    &[
+                        EVENT_FIELDS,
+                        SESSION_ID_FIELDS,
+                        ERROR_FIELDS,
+                        ERROR_DETAILS_FIELDS,
+                        LAST_ASSISTANT_MESSAGE_FIELDS,
+                        STOP_HOOK_ACTIVE_FIELDS,
+                        TRANSCRIPT_PATH_FIELDS,
+                    ],
+                ),
             }),
             Some("sessionstart") => Ok(HookInput::SessionStart {
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
@@ -234,21 +269,26 @@ fn infer_hook_event_name(map: &JsonMap) -> Option<String> {
 }
 
 fn extra_fields(map: &JsonMap) -> Value {
+    extra_without(
+        map,
+        &[
+            EVENT_FIELDS,
+            TOOL_NAME_FIELDS,
+            TOOL_INPUT_FIELDS,
+            TOOL_RESULT_FIELDS,
+            SESSION_ID_FIELDS,
+            STOP_HOOK_ACTIVE_FIELDS,
+            TRANSCRIPT_PATH_FIELDS,
+            CWD_FIELDS,
+            USER_PROMPT_FIELDS,
+        ],
+    )
+}
+
+/// The payload without the fields a variant already parsed.
+fn extra_without(map: &JsonMap, known: &[&[&str]]) -> Value {
     let mut extra = map.clone();
-    for field in [
-        EVENT_FIELDS,
-        TOOL_NAME_FIELDS,
-        TOOL_INPUT_FIELDS,
-        TOOL_RESULT_FIELDS,
-        SESSION_ID_FIELDS,
-        STOP_HOOK_ACTIVE_FIELDS,
-        TRANSCRIPT_PATH_FIELDS,
-        CWD_FIELDS,
-        USER_PROMPT_FIELDS,
-    ]
-    .into_iter()
-    .flatten()
-    {
+    for field in known.iter().copied().flatten() {
         extra.remove(*field);
     }
     Value::Object(extra)

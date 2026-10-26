@@ -96,7 +96,7 @@ esac
         );
         // Framework is staged by a different provider, before Codex is present.
         if staged {
-            let out = Command::new(&cli)
+            let out = crate::isolated_amplihack::isolated(&cli)
                 .args(["install", "--local", source.to_str().unwrap()])
                 .env("HOME", home.path())
                 .env("PATH", &tools)
@@ -157,7 +157,7 @@ esac
         );
         let mut input = unsafe { fs::File::from_raw_fd(master) };
         let terminal = unsafe { fs::File::from_raw_fd(slave) };
-        let child = Command::new(&cli)
+        let child = crate::isolated_amplihack::isolated(&cli)
             .args([
                 "codex",
                 "--no-reflection",

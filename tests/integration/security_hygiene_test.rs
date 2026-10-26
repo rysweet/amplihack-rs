@@ -32,7 +32,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -462,7 +462,7 @@ fn tc_sec_08_fleet_scout_rejects_session_target_with_dollar_sign() {
     // A session target containing `$` would be dangerous in a shell context.
     let malicious_target = "vm-01:session$(whoami)";
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "scout", "--session-target", malicious_target])
         // Redirect stdout/stderr so the test captures them.
@@ -506,7 +506,7 @@ fn tc_sec_09_fleet_scout_rejects_vm_name_with_path_traversal() {
 
     let malicious_vm = "../../../etc/passwd";
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "fleet",
@@ -542,7 +542,7 @@ fn tc_sec_10_fleet_watch_rejects_session_with_pipe() {
 
     let malicious_session = "legit-vm:sess|cat /etc/passwd";
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "watch", "--session-target", malicious_session])
         .stdout(Stdio::piped())
@@ -571,7 +571,7 @@ fn tc_sec_11_fleet_adopt_rejects_vm_name_with_semicolon() {
 
     let malicious_vm = "vm-01;rm -rf /";
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "adopt", malicious_vm])
         .stdout(Stdio::piped())
@@ -600,7 +600,7 @@ fn tc_sec_12_fleet_auth_rejects_vm_name_with_backtick() {
 
     let malicious_vm = "vm`id`";
 
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args(["fleet", "auth", malicious_vm])
         .stdout(Stdio::piped())
@@ -642,7 +642,7 @@ fn tc_sec_13_fleet_scout_rejects_save_path_with_null_byte() {
     // Embed a null byte in the argument.
     let malicious_path = "/tmp/ok\x00evil";
 
-    let result = Command::new(&bin)
+    let result = crate::isolated_amplihack::isolated(&bin)
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
         .args([
             "fleet",
@@ -709,7 +709,7 @@ fn tc_sec_14_fleet_scout_rejects_all_shell_metacharacters_in_session_name() {
         let session_with_metachar = format!("sess{ch}injected");
         let target = format!("vm-01:{session_with_metachar}");
 
-        let output = Command::new(&bin)
+        let output = crate::isolated_amplihack::isolated(&bin)
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .args(["fleet", "scout", "--session-target", &target])
             .stdout(Stdio::piped())
@@ -900,6 +900,12 @@ fn tc_sec_20_no_hardcoded_high_entropy_secrets_in_fleet_source() {
         "dangerously-skip-permissions",
         // Public git revision pin for the authoritative RustyClawd build.
         "e03613a731ec2243590ccbb2b50db4dcf83ca69b",
+        // Public recipe-runner revision pin (recipe-runner.rev), used as a
+        // test fixture by runner_validation and runner_ancestry.
+        "4d5187eaf95836a549e6e68725f8f853d0dc7034",
+        // Made-up, obviously non-secret commit ids used by runner pin tests.
+        "0123456789abcdef0123456789abcdef01234567",
+        "b4a82e7000000000000000000000000000000000",
     ];
 
     // Regex-free scan: look for very long alphanumeric tokens in string literals.
@@ -990,7 +996,7 @@ fn tc_sec_21_fleet_status_error_does_not_expose_home_path() {
         .expect("tempdir for HOME under /tmp");
 
     // Point AZLIN_PATH to a non-existent file to trigger an error.
-    let output = Command::new(&bin)
+    let output = crate::isolated_amplihack::isolated(&bin)
         .env("HOME", home.path())
         .env_remove("AMPLIHACK_HOME")
         .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")

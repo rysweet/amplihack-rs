@@ -11,6 +11,11 @@ use amplihack_types::{HookInput, ProjectDirs};
 use serde_json::Value;
 use std::fs;
 
+/// Never resolves the real profile root.
+fn test_hook() -> UserPromptSubmitHook {
+    UserPromptSubmitHook::with_prompt_root(|| None)
+}
+
 #[test]
 fn extract_prefs_from_table() {
     let content = r#"
@@ -111,6 +116,7 @@ fn detects_slash_command_agent() {
 #[test]
 fn formats_agent_memory_context() {
     let context = format_agent_memory_context(
+        "/analyze why CI fails on cargo fmt",
         &[String::from("analyzer")],
         &[PromptContextMemory {
             content: String::from("Fix CI by running cargo fmt before push."),
@@ -118,17 +124,127 @@ fn formats_agent_memory_context() {
                 "**Related Files:**\n- src/example/module.py (python)",
             )),
         }],
-    );
-    assert!(context.contains("## Memory for analyzer Agent"));
+    )
+    .expect("relevant memory is injected");
+    assert!(context.contains("## Relevant Memory (agents: analyzer)"));
     assert!(context.contains("Fix CI by running cargo fmt before push."));
-    assert!(context.contains("relevance: 0.00"));
+    assert!(!context.contains("relevance: 0.00"));
     assert!(context.contains("**Related Files:**"));
     assert!(context.contains("src/example/module.py"));
 }
 
+/// Issue #1483: words and path segments from a prompt are not agents.
+#[test]
+fn ordinary_words_and_paths_are_not_agent_references() {
+    for prompt in [
+        "look at the files in /skills /web /docs /commands /plugin and /bin today",
+        "check ~/.amplihack/bin/amplihack-hook and /amplihack-recipe-runner output",
+        "search amaz /amaz products",
+        "reply with just: pong",
+    ] {
+        assert!(
+            detect_agent_references(prompt).is_empty(),
+            "no agent in {prompt:?}: {:?}",
+            detect_agent_references(prompt)
+        );
+    }
+    assert_eq!(
+        detect_agent_references("run /analyzer on /skills and /builder here"),
+        vec!["analyzer".to_string(), "builder".to_string()]
+    );
+}
+
+/// Issue #1483: the stored "pong" smoke-test memory is unrelated to the
+/// prompt and must not be injected, once per agent or at all.
+#[test]
+fn unrelated_smoke_test_memory_is_not_injected() {
+    let agents = ["analyzer", "builder", "reviewer"].map(String::from);
+    // Shaped as session-stop stores it: `Agent <name>: <transcript>`.
+    let memories = [PromptContextMemory {
+        content: String::from("Agent general: user: reply with just: pong\n\nassistant: pong"),
+        code_context: None,
+    }];
+    for prompt in [
+        "update the skills under docs and web, then rebuild bin",
+        "/analyze the amplihack-hook plugin commands",
+        "/analyze the builder agent output",
+    ] {
+        assert_eq!(
+            format_agent_memory_context(prompt, &agents, &memories),
+            None,
+            "nothing is injected for {prompt:?}"
+        );
+    }
+}
+
+/// A mid-prompt slash command still names its agent.
+#[test]
+fn midprompt_slash_command_agents_are_detected() {
+    assert_eq!(
+        detect_agent_references("please /reflect on this session"),
+        vec!["reflection".to_string()]
+    );
+    assert_eq!(
+        detect_agent_references("then /ultrathink about it"),
+        vec!["orchestrator".to_string()]
+    );
+}
+
+/// Issue #1483 end to end: learnings stored by session-stop under several
+/// agents reach the prompt once when relevant, and not at all otherwise.
+#[test]
+fn stored_learnings_are_injected_once_and_only_when_relevant() {
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let dir = tempfile::tempdir().unwrap();
+    let _home = EnvVarGuard::set("HOME", dir.path());
+    let _backend = EnvVarGuard::set("AMPLIHACK_MEMORY_BACKEND", "sqlite");
+    let session = "issue-1483-session";
+
+    for agent in ["general", "analyzer", "builder"] {
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "user: reply with just: pong\n\nassistant: pong",
+            None,
+            true,
+        )
+        .unwrap();
+        amplihack_memory::cli_memory::store_session_learning(
+            session,
+            agent,
+            "The auth middleware rejected expired tokens before refresh",
+            None,
+            true,
+        )
+        .unwrap();
+    }
+
+    assert_eq!(
+        memory::inject_memory("/analyze the builder agent output", Some(session)),
+        None
+    );
+
+    let context = memory::inject_memory(
+        "/analyze why the auth middleware rejected expired tokens",
+        Some(session),
+    )
+    .expect("relevant learning is injected");
+    assert_eq!(
+        context
+            .matches("The auth middleware rejected expired tokens before refresh")
+            .count(),
+        1
+    );
+    assert!(!context.contains("pong"));
+    assert!(!context.contains("Agent "));
+    assert!(!context.contains("relevance: 0.00"));
+}
+
 #[test]
 fn handles_unknown_events() {
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook.process(HookInput::Unknown).unwrap();
     assert!(result.as_object().unwrap().is_empty());
 }
@@ -145,7 +261,7 @@ fn returns_additional_context_without_mutating_prompt() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -196,7 +312,7 @@ fn extracts_prompt_from_extra_prompt_key() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: None,
@@ -225,7 +341,7 @@ fn extracts_prompt_from_user_message_dict() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: None,
@@ -256,7 +372,7 @@ fn dev_prompt_initializes_workflow_enforcement_state_and_warning_path() {
     let dir = tempfile::tempdir().unwrap();
     let cwd = crate::test_support::CwdGuard::set(dir.path()).unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -356,7 +472,7 @@ fn workflow_active_semaphore_skips_dev_detection() {
     )
     .unwrap();
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -389,7 +505,7 @@ fn workflow_active_via_session_depth_skips_dev_detection() {
     let previous = std::env::var_os("AMPLIHACK_SESSION_DEPTH");
     unsafe { std::env::set_var("AMPLIHACK_SESSION_DEPTH", "1") };
 
-    let hook = UserPromptSubmitHook;
+    let hook = test_hook();
     let result = hook
         .process(HookInput::UserPromptSubmit {
             user_prompt: Some("/dev continue parity audit".to_string()),
@@ -432,4 +548,52 @@ fn is_workflow_active_returns_true_with_live_pid() {
     )
     .unwrap();
     assert!(is_workflow_active(&dirs));
+}
+
+#[cfg(unix)]
+#[test]
+fn prompt_is_noted_for_a_waiting_limit_resume_hook_only_when_resume_dir_exists() {
+    use crate::limit_resume::decide::session_key;
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = env_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _agent_bin = EnvVarGuard::set("AMPLIHACK_AGENT_BINARY", "claude");
+    let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    let root = tempfile::tempdir().unwrap();
+    fs::set_permissions(root.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let cwd_dir = tempfile::tempdir().unwrap();
+    let cwd = crate::test_support::CwdGuard::set(cwd_dir.path()).unwrap();
+
+    let root_path = root.path().to_path_buf();
+    let hook = UserPromptSubmitHook::with_prompt_root(move || Some(root_path.clone()));
+    let submit = || {
+        hook.process(HookInput::UserPromptSubmit {
+            user_prompt: Some("keep going".to_string()),
+            session_id: Some("prompt-session".to_string()),
+            extra: Value::Null,
+        })
+        .unwrap();
+    };
+
+    submit();
+    assert_eq!(
+        fs::read_dir(root.path()).unwrap().count(),
+        0,
+        "nothing is created without resume/"
+    );
+
+    let resume = root.path().join(".auto-switch.d").join("resume");
+    for d in [root.path().join(".auto-switch.d"), resume.clone()] {
+        fs::create_dir(&d).unwrap();
+        fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    submit();
+    drop(cwd);
+
+    let marker = resume.join("prompted").join(session_key("prompt-session"));
+    let text = fs::read_to_string(&marker).unwrap();
+    assert!(text.trim_end().parse::<i64>().unwrap() > 0, "{text:?}");
+    assert!(!text.contains("prompt-session"));
 }

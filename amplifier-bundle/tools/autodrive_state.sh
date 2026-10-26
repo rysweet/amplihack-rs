@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge
-# workflow.
+# autodrive_state.sh — durable, resumable state for the auto-drive-to-merge workflow.
 #
 # A run that dies partway must be re-runnable WITHOUT redoing merged work and
 # WITHOUT reopening concerns a previous run already resolved and had confirmed
@@ -383,6 +382,9 @@ autodrive_pr_state() {
     printf 'UNKNOWN\n'
   fi
 }
+
+# shellcheck source=autodrive_unmerged.sh # autodrive_require_unmerged (#1551) lives there; absent, it fails closed.
+if _ad_u="$(dirname "${BASH_SOURCE[0]}")/autodrive_unmerged.sh" && [ -f "$_ad_u" ]; then . "$_ad_u"; else autodrive_require_unmerged() { echo "ERROR: #1551: autodrive_unmerged.sh is missing beside autodrive_state.sh; refusing to continue unverified." >&2; return 1; }; fi; unset _ad_u
 
 # autodrive_launch_recipe <name|path> -> the recipe in the tree beside this file
 # (#1543). The loops run with --working-dir in the PR worktree, whose own

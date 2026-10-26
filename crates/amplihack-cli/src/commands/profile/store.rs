@@ -60,6 +60,7 @@ impl ProfileStore {
         self
     }
 
+    #[cfg(test)]
     pub fn from_root_str(raw: &str) -> Result<Self, ProfileError> {
         let path = PathBuf::from(raw);
         if raw.is_empty() || !path.is_absolute() {
@@ -68,31 +69,19 @@ impl ProfileStore {
         Ok(Self::new(path))
     }
 
+    /// The store for this process's environment; see `root_config`.
     pub fn from_env() -> Result<Self, ProfileError> {
-        let home = std::env::var_os("HOME")
-            .or_else(|| std::env::var_os("USERPROFILE"))
-            .filter(|h| !h.is_empty())
-            .map(PathBuf::from);
-        let root = if let Some(raw) = std::env::var_os(ROOT_ENV) {
-            let raw = raw
-                .into_string()
-                .map_err(|_| ProfileError::InvalidRoot("non-UTF-8 path".into()))?;
-            Self::from_root_str(&raw)?.root
-        } else {
-            home.as_ref()
-                .ok_or_else(|| ProfileError::InvalidRoot("HOME is not set".into()))?
-                .join(".amplihack")
-                .join("claude-profiles")
-        };
-        let store = Self::new(root);
-        Ok(match home {
-            Some(home) => store.with_shared_assets(home.join(".claude")),
-            None => store,
-        })
+        super::root_config::store_from_env().map(|(store, _)| store)
     }
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// The Claude config dir assets are seeded from, also the canonical root
+    /// of the shared session store (issue #1634). `None` without a HOME.
+    pub(super) fn shared_assets(&self) -> Option<&Path> {
+        self.shared_assets.as_deref()
     }
 
     /// Non-creating check: a missing root is fine, a symlinked one is not.
@@ -167,6 +156,10 @@ impl ProfileStore {
                 ProfileError::Io(error)
             };
             return Err(discard_staging(&staging, error));
+        }
+        // Issue #1634: link the session dirs to the shared store. Never fails.
+        if let Some(source) = &self.shared_assets {
+            super::shared_dirs::after_add(&dir, name, source);
         }
         Ok(dir)
     }
@@ -332,7 +325,7 @@ fn discard_staging(path: &Path, seed_error: ProfileError) -> ProfileError {
     }
 }
 
-fn reject_root_inside_source(root: &Path, source: &Path) -> Result<(), ProfileError> {
+pub(super) fn reject_root_inside_source(root: &Path, source: &Path) -> Result<(), ProfileError> {
     match fs::symlink_metadata(source) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(ProfileError::SymlinkRefused(source.display().to_string()));
@@ -436,6 +429,101 @@ pub(super) fn rename_noreplace(source: &Path, destination: &Path) -> std::io::Re
             std::io::ErrorKind::Unsupported,
             "atomic no-replace directory rename is unsupported on this platform",
         ))
+    }
+}
+
+/// Swaps two existing names atomically (`renameat2(RENAME_EXCHANGE)`).
+/// `Ok(false)` when this system or filesystem cannot, with nothing moved.
+#[cfg(unix)]
+pub(super) fn exchange(a: &Path, b: &Path) -> std::io::Result<bool> {
+    #[cfg(test)]
+    if test_hook::no_exchange() {
+        return Ok(false);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        let cstr = |p: &Path| {
+            std::ffi::CString::new(p.as_os_str().as_bytes())
+                .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+        };
+        let (a, b) = (cstr(a)?, cstr(b)?);
+        // SAFETY: both paths are valid NUL-terminated strings; RENAME_EXCHANGE
+        // swaps two existing names and creates or removes nothing.
+        let rc = unsafe {
+            libc::renameat2(
+                libc::AT_FDCWD,
+                a.as_ptr(),
+                libc::AT_FDCWD,
+                b.as_ptr(),
+                libc::RENAME_EXCHANGE,
+            )
+        };
+        if rc == 0 {
+            return Ok(true);
+        }
+        let e = std::io::Error::last_os_error();
+        match e.raw_os_error() {
+            Some(libc::EINVAL | libc::ENOSYS) => Ok(false),
+            _ => Err(e),
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (a, b);
+        Ok(false)
+    }
+}
+
+/// [`rename_noreplace`] relative to two directory descriptors, so neither
+/// parent path is resolved again.
+#[cfg(unix)]
+pub(super) fn renameat_noreplace(
+    from_dir: std::os::fd::RawFd,
+    from: &std::ffi::OsStr,
+    to_dir: std::os::fd::RawFd,
+    to: &std::ffi::OsStr,
+) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let cstr = |s: &std::ffi::OsStr| {
+        std::ffi::CString::new(s.as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))
+    };
+    let (from, to) = (cstr(from)?, cstr(to)?);
+    #[cfg(target_os = "linux")]
+    // SAFETY: valid descriptors and NUL-terminated names; RENAME_NOREPLACE
+    // never replaces an existing destination.
+    let rc = unsafe {
+        libc::renameat2(
+            from_dir,
+            from.as_ptr(),
+            to_dir,
+            to.as_ptr(),
+            libc::RENAME_NOREPLACE,
+        )
+    };
+    #[cfg(target_os = "macos")]
+    // SAFETY: valid descriptors and NUL-terminated names; RENAME_EXCL never
+    // replaces an existing destination.
+    let rc = unsafe {
+        libc::renameatx_np(
+            from_dir,
+            from.as_ptr(),
+            to_dir,
+            to.as_ptr(),
+            libc::RENAME_EXCL,
+        )
+    };
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let rc: libc::c_int = {
+        let _ = (from_dir, &from, to_dir, &to);
+        errno::set_errno(errno::Errno(libc::ENOSYS));
+        -1
+    };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
     }
 }
 
@@ -594,10 +682,23 @@ pub(super) mod test_hook {
             }
         });
     }
+
+    thread_local! {
+        static NO_EXCHANGE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// Makes [`super::exchange`] report "unsupported" on this thread.
+    pub fn set_no_exchange(on: bool) {
+        NO_EXCHANGE.with(|c| c.set(on));
+    }
+
+    pub(super) fn no_exchange() -> bool {
+        NO_EXCHANGE.with(std::cell::Cell::get)
+    }
 }
 
 #[cfg(unix)]
-mod fdwalk {
+pub(super) mod fdwalk {
     use super::{MAX_COPY_DEPTH, MAX_COPY_ENTRIES, ProfileError};
     use std::ffi::{CString, OsStr, OsString};
     use std::fs::File;
@@ -606,11 +707,11 @@ mod fdwalk {
     use std::os::unix::ffi::{OsStrExt, OsStringExt};
     use std::path::Path;
 
-    fn cstr(name: &OsStr) -> std::io::Result<CString> {
+    pub(in crate::commands::profile) fn cstr(name: &OsStr) -> std::io::Result<CString> {
         CString::new(name.as_bytes()).map_err(|_| std::io::ErrorKind::InvalidInput.into())
     }
 
-    fn openat(
+    pub(in crate::commands::profile) fn openat(
         dir: RawFd,
         name: &OsStr,
         flags: libc::c_int,
@@ -731,7 +832,7 @@ mod fdwalk {
         Ok(unsafe { st.assume_init() }.st_mode & libc::S_IFMT)
     }
 
-    fn list(dir: &OwnedFd) -> std::io::Result<Vec<OsString>> {
+    pub(in crate::commands::profile) fn list(dir: &OwnedFd) -> std::io::Result<Vec<OsString>> {
         // SAFETY: dup returns a new descriptor or -1.
         let dup = unsafe { libc::dup(dir.as_raw_fd()) };
         if dup < 0 {

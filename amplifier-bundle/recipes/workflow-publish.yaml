@@ -27,6 +27,9 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  repo_path: ""
+  version_bump: ""
 
 steps:
   - id: "publish-terminal-state"
@@ -83,7 +86,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14b-sync-lockfile)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       # Issue #915: step-14's version bump leaves Cargo.lock stale, so --locked
       # pre-commit gates fail deterministically. Keep the lock IN SYNC (do NOT
@@ -100,7 +104,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14c-sync-package-json)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       SP=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_sync_package_version.sh" ] && { SP="$c/amplifier-bundle/tools/workflow_sync_package_version.sh"; break; }; done
       # A missing mirror helper must not fail a publish; the version sync is advisory.
@@ -111,7 +116,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14g-artifact-guard)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14g requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       amplihack hygiene artifact-guard --repo . --mode pre-publish
 
@@ -123,7 +129,8 @@ steps:
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-15-commit-push)" || WORKTREE_SETUP_WORKTREE_PATH=""
       # Issue #1528: stage and commit only at the top of the linked task worktree; no REPO_PATH fallback.
       # Hard-fail rather than skip: a skipped commit here would lose work silently.
       cd -P "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
@@ -162,15 +169,22 @@ steps:
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || { echo "ERROR: workflow runtime artifact helper not found (searched WORKFLOW_RUNTIME_ARTIFACT_HELPER, AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER" >&2; exit 2; }
       . "$RUNTIME_ARTIFACT_HELPER"
       preflight_known_workflow_runtime_artifacts .
+      # #1671: every step-15 helper comes from the bundle that supplied the runtime
+      # artifact helper above; the older search order is only the fallback.
+      GIT_IDENTITY_HELPER="${RUNTIME_ARTIFACT_HELPER:+${RUNTIME_ARTIFACT_HELPER%/*}/git-identity.sh}"; [ -n "$GIT_IDENTITY_HELPER" ] && [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
+      # #1671: stage_workflow_changes is `git add -A` minus build artefacts, and a
+      # rejecting git hook goes to a fixing agent before the commit or push is retried.
+      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"; [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] || WF_TOOLS="${GIT_IDENTITY_HELPER%/*}"
+      for wf_helper in "${WORKFLOW_STAGE_CHANGES_HELPER:-$WF_TOOLS/workflow_stage_changes.sh}" "${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; do [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"; done
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      stage_workflow_changes; amplihack hygiene artifact-guard --repo . --mode pre-publish
       echo "--- Creating Commit ---" >&2
       # FIX (#469/#311): env vars are injection-safe; ${VAR:-} nounset reads so an unset value can't abort before the #944 fallback below.
       TASK_DESC="${TASK_DESCRIPTION:-}"
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:,
       # MINOR->feat:, MAJOR->feat!:), not a hardcoded 'feat:'. Unknown -> bugfix heuristic.
-      CHANGE_CLASS="${VERSION_BUMP_CHANGE_CLASSIFICATION:-${RECIPE_VAR_version_bump__change_classification:-}}"
+      CHANGE_CLASS="$(printf '%s' "${RECIPE_VAR_version_bump:-}" | jq -r 'if type=="object" and has("change_classification") and .change_classification != null then .change_classification | tostring else empty end' 2>/dev/null)" || { echo "WARNING: step-15-commit-push: version_bump is not valid JSON; treated as missing (#1561)" >&2; CHANGE_CLASS=""; }
       case "$(printf '%s' "$CHANGE_CLASS" | tr '[:lower:]' '[:upper:]')" in
         PATCH) COMMIT_PREFIX="fix: " ;;
         MINOR) COMMIT_PREFIX="feat: " ;;
@@ -201,9 +215,17 @@ steps:
       COMMIT_MSG=$(printf '%s\n\nImplements %s\n\nChanges:\n- Implementation as per design specification\n- Tests added for new functionality\n- Documentation updated\n\n%s' "$COMMIT_TITLE" "$ISSUE_IMPL" "$ISSUE_REF")
       # PERF: --quiet short-circuits on the first staged change.
       if ! git diff --cached --quiet; then
-        GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
         amplihack_prepare_git_commit_identity
-        git commit -m "$COMMIT_MSG"
+        commit_output_file=$(mktemp -t step15-commit-XXXXXX)
+        # A plain commit, as before #1671: PRE_COMMIT_ALLOW_NO_CONFIG is not set here.
+        hook_repair_run commit step-15-commit-push --output "$commit_output_file" -- git commit -m "$COMMIT_MSG" || {
+          commit_rc=$?
+          # A commit that fails for any other reason reports commit-failed, not aborted (#1671).
+          reason="$(hook_repair_step15_reason commit)" || { reason="commit-failed"; redact_sensitive_file "$commit_output_file" >&2; }
+          rm -f "$commit_output_file"
+          exit "$commit_rc"
+        }
+        redact_sensitive_file "$commit_output_file" >&2; rm -f "$commit_output_file"
       else
         # FIX (#282): avoid hollow-success false-positive — check the current branch
         # for new commits (in any worktree) before declaring nothing was done.
@@ -267,7 +289,10 @@ steps:
         push_stderr_file=$(mktemp -t step15-push-XXXXXX)
         # shellcheck disable=SC2064
         trap "rm -f \"$push_stderr_file\"; _emit_commit_result" EXIT
-        if git push 2>"$push_stderr_file"; then
+        if hook_repair_run push step-15-commit-push \
+          --fix-message "fix: address {hook_ids} pre-push rejection${ISSUE_NUMBER:+ (#$ISSUE_NUMBER)}" \
+          --output "$push_stderr_file" -- git push; then
+          redact_sensitive_file "$push_stderr_file" >&2  # kept for the step log; never printed raw (#978)
           # FIX (#1269): confirm the published commit is the tested one. A missing
           # helper warns, never fails -- see verify_pushed_ref.sh and #1268.
           V=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/verify_pushed_ref.sh" ] && { V="$c/amplifier-bundle/tools/verify_pushed_ref.sh"; break; }; done || true
@@ -277,6 +302,8 @@ steps:
           pushed="true"; reason="pushed"  # step-16 gate: only after verification
         else
           push_rc=$?
+          # #1671: an unresolved hook rejection (hook-rejected-<status>:push:<ids>) or exit 79 (orchestration-unavailable) has its own reason.
+          if reason="$(hook_repair_step15_reason push)"; then exit "$push_rc"; fi
           sanitized=$(redact_sensitive_file "$push_stderr_file" | tr '\n' ' ' | head -c 500)
           reason="push-failed: ${sanitized}"
           echo "ERROR: git push failed (exit $push_rc)" >&2
@@ -302,7 +329,8 @@ steps:
     command: |
       set -euo pipefail
       export GIT_PAGER=cat PAGER=cat LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-16-create-draft-pr)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")

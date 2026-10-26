@@ -140,7 +140,7 @@ steps:
         "requires_api_design": "true/false", "requires_database_design": "true/false", "requires_integration_work": "true/false"
       }
       ```
-      Answer the requires_* flags "false" only when confident the task involves no such work at all (a CLI flag, a CI edit, a pure refactor); when in doubt answer "true". Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents.
+      Answer the requires_* flags "false" only when confident the task involves no such work at all (a CLI flag, a CI edit, a pure refactor); when in doubt answer "true". Use your best judgment to work autonomously. Pass explicit requirements to ALL subsequent agents. **no_merge:** {{no_merge}}. When it is "true", the requirements and acceptance criteria end at "PR open, merge-ready" and never include merging the PR.
     output: "clarified_requirements"
     parse_json: true
 

@@ -93,7 +93,7 @@ Centralized plugin system that works across all your projects:
 - [Stale Wrapper Repair Tutorial](tutorials/repair-install-update-path-conflicts.md) - Learn how install/update keeps the Rust binary first and refreshes stale assets
 - [Repair Stale Wrappers and PATH Conflicts](howto/repair-install-update-path-conflicts.md) - Quarantine stale Python/uvx wrappers and make `~/.local/bin/amplihack` resolve first
 - [Repair a Stale Framework Bundle](howto/repair-stale-framework-bundle.md) - Replace stale installed `amplifier-bundle` assets from the current Rust distribution
-- [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in isolated `CLAUDE_CONFIG_DIR` profiles ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
+- [Manage Claude Login Profiles](howto/claude-profiles.md) - Keep multiple Claude Code logins in separate `CLAUDE_CONFIG_DIR` profiles that share one session store ([reference](reference/profile-command.md), [ccswitch review](reviews/ccswitch-review.md))
 - [Wait for a Usage-Limit Reset](howto/claude-profiles.md#waiting-for-a-usage-limit-reset) - Let a recipe step that hits a Claude usage limit wait for the reset and run once more ([reference](reference/profile-command.md#usage-limit-wait))
 
 ### Configuration
@@ -135,13 +135,15 @@ amplihack copilot
 **Codex**
 
 - [Use Amplihack with Codex](howto/install-codex-plugin.md) - Install native skills and hooks, launch sessions, and run recipes
-- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, and diagnostics
+- [Runner validation reference](reference/recipe-runner-validation.md) - Capability schema, provider compatibility, managed provenance, installer downgrade guard, and diagnostics
 - [Workflow context transport](reference/workflow-context-transport.md) - File-first authority, structured verifier objects, legacy compatibility, and consumer verdict policies
 - [Native installer ownership](concepts/codex-installation-ownership.md) - Packaging, hook ownership, locking, and recovery
 - [Codex ownership ledger migration](CODEX_OWNERSHIP_MIGRATION.md) - Safe upgrade of legacy schema 1 ownership proofs
 
 #### General Configuration
 
+- [User Configuration](reference/user-config.md) - Persistent defaults in `~/.amplihack/config.toml` and `.amplihack/config.toml`, and the `amplihack config` command
+- [AMPLIHACK_* Environment Variable Audit](reference/amplihack-env-vars.md) - Every `AMPLIHACK_*` name classified as user preference, internal or test-only, with its config key
 - [Profile Management](PROFILE_MANAGEMENT.md) - Multiple environment configurations
 - [Hook Configuration](HOOK_CONFIGURATION_GUIDE.md) - Customize framework behavior
 - [Artifact Guard](artifact-guard.md) - Guard for broad staging, pre-commit, and workflow publication artifacts
@@ -156,8 +158,9 @@ amplihack copilot
 
 - [Release Installation](howto/first-install.md) - Install from published binaries or source
 - [Install Manifest](reference/install-manifest.md) - Understand installed files and uninstall state
-- [Claude Profiles How-To](howto/claude-profiles.md) - Isolated Claude logins per profile and what a new profile inherits
-- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, security rules, and errors
+- [Claude Profiles How-To](howto/claude-profiles.md) - Separate Claude logins per profile, shared sessions, and what a new profile inherits
+- [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
+- [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud
@@ -220,8 +223,8 @@ Understand the philosophy and architecture behind amplihack.
 
 Proven methodologies for consistent, high-quality results.
 
-- [Workflow Commit Identity](workflows.md) - Planned safe author and committer
-  attribution for Amplihack-created workflow commits
+- [Workflow checkpoints and commits](workflows.md) - Implementation checkpoint
+  staging and formatting, plus commit identity configuration
 
 ### Automatic Workflow Classification ⭐ NEW
 
@@ -289,6 +292,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Verify Dev-Orchestrator Routing](howto/verify-dev-orchestrator-routing.md) - Check deterministic Development-to-default-workflow routing from the CLI
 - [Correlate Recipe Runs with Logs](howto/correlate-recipe-runs.md) - Match terminal output, final JSON, child process IDs, and runner log paths by run ID
 - [Recipe Executor Environment](reference/recipe-executor-environment.md) - Step-level variables plus subprocess environment contract for forced non-interactive recipe execution
+- [Recipe Commit Hook Repair](reference/recipe-commit-hook-repair.md) - How checkpoint and publish steps hand a rejected git `pre-commit` or `pre-push` hook to a fixing agent, retry under loop-health evaluation, and refuse changes to hook configuration
 - [Structured Verdict & Intent Parsing Reference](reference/structured-verdict-parsing.md) - `normalise-verdict` helper, `session-tree register --json`, and the `verdict`/`no_merge`/`goal_status`/`status` fields that replace brittle agent-prose scraping
 - [Auto Drive To Merge Reference](reference/auto-drive-to-merge.md) - the build → crusty-review → merge-ready loops, how the autodrive recipes read step outputs through `RECIPE_VAR_<output>`, how the `LOOP_HEALTH:` line is read, and the evidence-gated merge
 - [Loop-Health Evaluator Reference](reference/loop-health-evaluator.md) - the reusable `CONTINUE`/`DONE`/`STUCK` agentic loop-health contract, `normalise-loop-verdict`, and why the loop terminator is absence of progress rather than an iteration cap
@@ -305,7 +309,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Tutorial: Simulate Provider-Neutral Workflows](tutorials/provider-neutral-workflow-simulation.md) - Run and inspect a provider-neutral recipe simulation
 - [Clean Up Stale Workflow Change Requests](howto/cleanup-stale-workflow-prs.md) - Dry-run and apply stale/superseded cleanup through the provider abstraction
 - [CI Resource Discipline Reference](reference/ci-resource-discipline.md) - Concurrency, timeout, matrix, cache, and coverage boundaries for CI
-- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, and required checks
+- [CI Pipeline Reference](reference/ci-pipeline.md) - Pinned toolchain, cargo-nextest test job, disk freeing, caching, recipe runner pin ancestry, and required checks
 - [CI Wall-Clock Parallelization Reference](reference/ci-wallclock-parallelization.md) - Parallel fan-out job graph (no `needs: check`) and tag-conditional release optimization keeping shipped artifacts fully optimized
 - [Merge Flow Reference](reference/merge-flow.md) - How `main` merges: strict up-to-date branch protection with all 7 required checks stays on, why a GitHub merge queue is unavailable on a user-owned repo, and the serial green-and-up-to-date squash-merge flow
 - [Branch Protection Guard Reference](reference/branch-protection-guard.md) - In-repo detection that fails a check within one CI cycle when the strict up-to-date policy on `main` is turned off; the script, workflow, `BRANCH_PROTECTION_READ_TOKEN` setup, and why it is detection (not prevention)
@@ -326,7 +330,7 @@ Code-enforced workflow execution engine with declarative YAML recipes.
 - [Workflow Publish Lockfile Sync Reference](reference/workflow-publish-lockfile-sync.md) - Offline `Cargo.lock` sync after the version bump so `--locked` pre-commit gates pass (issue #915)
 - [Workflow Publish package.json Version Sync Reference](reference/workflow-publish-package-json-sync.md) - Offline sync of root `package.json` version to `[workspace.package].version` so the version-contract test and CI Test job pass (issue #925)
 - [Best-Effort PR Labeling Reference](reference/workflow-pr-labels.md) - `WORKFLOW_PR_LABELS` contract and the `apply_pr_labels_best_effort` helper that stamps labels onto the published PR via a single `gh pr edit --add-label` call
-- [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, and shell helper API
+- [Workflow Terminal-State Reference](reference/workflow-terminal-state.md) - Target contract for development completion evidence, no-op states, failure semantics, shell helper API, and the branch PR lookup for agent-opened PRs
 - [Default Workflow Agentic Finalization](reference/default-workflow-agentic-finalization.md) - Structured finalizer schema, terminal-state vocabulary, configuration, and examples for robust workflow closure
 - [How to Diagnose Workflow Terminal-State Failures](howto/diagnose-workflow-terminal-state.md) - Investigate missing evidence after planning, analysis, design, or worktree-only runs
 - [Tutorial: Workflow Terminal-State Closure](tutorials/workflow-terminal-state-closure.md) - Walk through completion evidence, planning-only failure, and rerun semantics
@@ -776,6 +780,7 @@ Testing strategies, quality assurance, and validation patterns.
 - [CS Validator](cs-validator/README.md) - Code style validation
 - [Testing Plan](testing/TEST_PLAN.md) - Testing strategy and execution checklist
 - [Skill Frontmatter Type Guard](testing/SKILL_FRONTMATTER_TYPE_GUARD.md) - Regression test catching Copilot CLI frontmatter string-scalar TYPE bugs
+- [Keep the Pre-commit Hooks Portable to macOS](howto/keep-pre-commit-hooks-portable-to-macos.md) - POSIX sed, bash 3.2, Linux-only clippy allows, and libc type aliases
 
 ### Code Review
 

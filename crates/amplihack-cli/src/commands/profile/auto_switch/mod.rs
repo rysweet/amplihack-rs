@@ -12,13 +12,19 @@
 #[cfg(unix)]
 mod candidate;
 #[cfg(unix)]
+pub(super) mod capacity;
+#[cfg(unix)]
 mod cli;
 #[cfg(unix)]
 mod config;
 #[cfg(unix)]
 pub(crate) mod fsx;
 #[cfg(unix)]
+pub(super) mod kit;
+#[cfg(unix)]
 mod liveness;
+#[cfg(unix)]
+mod mv;
 #[cfg(unix)]
 pub(crate) mod rerun;
 #[cfg(unix)]
@@ -33,13 +39,19 @@ mod usage;
 #[cfg(all(test, unix))]
 mod tests_candidate;
 #[cfg(all(test, unix))]
+mod tests_capacity;
+#[cfg(all(test, unix))]
 mod tests_config;
 #[cfg(test)]
 mod tests_contract;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
+mod tests_mv;
+#[cfg(all(test, unix))]
 mod tests_record;
+#[cfg(all(test, unix))]
+mod tests_status_drift;
 #[cfg(all(test, unix))]
 mod tests_usage;
 
@@ -57,6 +69,9 @@ pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
 #[cfg(unix)]
 pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, writable_by_others};
+/// For the shared-session liveness tests (issue #1634).
+#[cfg(all(test, unix))]
+pub(super) use liveness::scan;
 #[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
@@ -257,6 +272,24 @@ pub fn return_after_session(dir: &Path) {
     let _ = dir;
 }
 
+/// `amplihack claude` / launch: the one-line no-capacity warning on stderr
+/// when every account is over the threshold. Never changes the launch.
+pub fn launch_warning(args: &[String]) {
+    #[cfg(unix)]
+    capacity::launch_warning(args, &mut std::io::stderr());
+    #[cfg(not(unix))]
+    let _ = args;
+}
+
+/// `amplihack recipe run`: the one-line no-capacity warning, with the reset
+/// time, to `out`. Never refuses the run.
+pub fn recipe_warning(out: &mut dyn std::io::Write) {
+    #[cfg(unix)]
+    capacity::recipe_warning(out);
+    #[cfg(not(unix))]
+    let _ = out;
+}
+
 /// Who holds which login, from the ledger: directory → account live there.
 /// Read for marks and attribution in `profile usage`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -409,6 +442,7 @@ pub fn record_usage(root: &Path, observed: &[Observation]) -> Result<RecordOutco
         }
         if let Some(file) = file {
             state.save_usage(&file)?;
+            capacity::refresh(&state, &file, &ledger, "usage");
         }
         Ok(RecordOutcome::Recorded { written, moved })
     }

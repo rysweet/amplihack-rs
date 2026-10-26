@@ -6,73 +6,27 @@ use super::candidate::{self, Pool};
 use super::config::Config;
 use super::fsx;
 use super::liveness::{self, Liveness};
+use super::mv::{self, MoveError, abort_point};
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
 };
 use super::usage::{self, Attribution, RateLimits};
-use crate::commands::profile::store::rename_noreplace;
-use crate::commands::profile::{ProfileError, name::ProfileName};
+use crate::commands::profile::ProfileError;
+use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::rotate::identify::Account;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-const REFRESH_LOCK: &str = ".oauth_refresh.lock";
 const RERUN_MAX_AGE_SECS: u64 = 24 * 3600;
-
-#[cfg(debug_assertions)]
-const TEST_ABORT_ENV: &str = "AMPLIHACK_AUTO_SWITCH_TEST_ABORT_AFTER";
-
-/// Debug builds only: stop the process at a named step, as a crash would.
-fn abort_point(step: &str) {
-    #[cfg(debug_assertions)]
-    if std::env::var_os(TEST_ABORT_ENV).is_some_and(|v| v == step) {
-        std::process::exit(86);
-    }
-    let _ = step;
-}
 
 fn invariant(msg: impl Into<String>) -> ProfileError {
     ProfileError::AutoSwitchInvariant(msg.into())
 }
 
-enum MoveError {
-    /// The destination exists: two copies, and amplihack cannot tell which is
-    /// current.
-    Exists,
-    /// The filesystem cannot rename between these paths.
-    Unsupported,
-    Other(String),
-}
-
-/// Renames one login file. The source must be a regular file owned by the
-/// current user with one hard link; the destination must not exist.
 fn move_login(state: &State, src: &Path, dst: &Path) -> Result<(), MoveError> {
-    if !fsx::movable_login(src) {
-        return Err(MoveError::Other(format!(
-            "{} is not a private regular file with one link",
-            state.rel(src)
-        )));
-    }
-    let dst_dir = dst.parent().unwrap_or(&state.root);
-    match rename_noreplace(src, dst) {
-        Ok(()) => {}
-        Err(e) if e.raw_os_error() == Some(libc::EEXIST) => return Err(MoveError::Exists),
-        Err(e)
-            if matches!(
-                e.raw_os_error(),
-                Some(libc::EXDEV | libc::EINVAL | libc::ENOSYS)
-            ) =>
-        {
-            return Err(MoveError::Unsupported);
-        }
-        Err(e) => return Err(MoveError::Other(format!("{}: {e}", state.rel(src)))),
-    }
-    let sync = fsx::fsync_dir(dst_dir).and_then(|()| match src.parent() {
-        Some(p) if p != dst_dir => fsx::fsync_dir(p),
-        _ => Ok(()),
-    });
-    sync.map_err(|e| MoveError::Other(format!("sync after move: {e}")))
+    mv::move_login(src, dst, &|p| state.rel(p))
 }
 
 /// Home slot of `account` while `dir`'s live login changes: the owner of
@@ -227,23 +181,15 @@ pub fn snapshot_account(state: &State, name: &str) {
     }
 }
 
-/// The `accountUuid` of the account that owns `name`'s login, for the
-/// duplicate-account note: the saved block while `name`'s directory hosts
-/// another account, else the directory's own `.claude.json`. Read-only.
-pub fn account_uuid(state: &State, name: &str, hosting: bool) -> Option<String> {
-    let block = if hosting {
-        state.read_sub_json("accounts", name).ok()??
+/// The account that owns `name`'s login, for the duplicate-login checks:
+/// the saved block while `name`'s directory hosts another account, else the
+/// directory's own `.claude.json`. Read-only.
+pub fn account(state: &State, name: &str, hosting: bool) -> Option<Account> {
+    if hosting {
+        Account::from_block(&state.read_sub_json("accounts", name).ok()??)
     } else {
-        read_claude_json(&state.profile_dir(name))?
-            .0
-            .get("oauthAccount")?
-            .clone()
-    };
-    block
-        .get("accountUuid")?
-        .as_str()
-        .filter(|u| !u.is_empty())
-        .map(str::to_string)
+        Account::of_dir(&state.profile_dir(name))
+    }
 }
 
 /// Sets `oauthAccount` in `dir`'s `.claude.json` to `account`'s saved block,
@@ -488,24 +434,17 @@ fn pid_running(pid: u32) -> bool {
 // Claude's refresh lock
 // ---------------------------------------------------------------------------
 
-/// Takes `<dir>/.oauth_refresh.lock` with a non-blocking `mkdir`, as Claude
-/// does. `None` when it is held: the lock is never broken.
+/// Takes Claude's refresh lock in profile `dir`; `None` when it is held.
 fn take_refresh_lock(state: &State, dir: &str) -> Option<u64> {
-    let path = state.profile_dir(dir).join(REFRESH_LOCK);
-    let mut b = fs::DirBuilder::new();
-    std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
-    b.create(&path).ok()?;
-    fs::symlink_metadata(&path).ok().map(|m| m.ino())
+    // Auto-switch does not swap without the lock; why it was not taken
+    // does not change that.
+    mv::take_refresh_lock_at(&state.profile_dir(dir)).ok()
 }
 
 /// Removes the refresh lock only if it is still the one amplihack created.
 fn release_refresh_lock(state: &State, dir: &str, ino: Option<u64>) {
-    let Some(ino) = ino else {
-        return;
-    };
-    let path = state.profile_dir(dir).join(REFRESH_LOCK);
-    if fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir() && m.ino() == ino) {
-        let _ = fs::remove_dir(&path);
+    if let Some(ino) = ino {
+        mv::release_refresh_lock_at(&state.profile_dir(dir), ino);
     }
 }
 

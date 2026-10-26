@@ -1,5 +1,6 @@
 //! Constants, types, and static hook specifications for install/uninstall.
 
+use amplihack_utils::rotator_status::LIMIT_RESUME_TIMEOUT_SECS;
 use serde::{Deserialize, Serialize};
 
 /// Upstream archive URL — only used as a network fallback when the
@@ -213,6 +214,9 @@ pub(super) struct HookSpec {
     pub cmd: HookCommandKind,
     pub timeout: Option<u64>,
     pub matcher: Option<&'static str>,
+    /// Register with `"asyncRewake": true`: Claude Code runs the hook in the
+    /// background and exit code 2 wakes the session. Only `StopFailure`.
+    pub async_rewake: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -227,6 +231,7 @@ pub(super) struct CanonicalHookContractEntry {
     pub native_subcmd: Option<&'static str>,
     pub timeout: Option<u64>,
     pub matcher: Option<&'static str>,
+    pub async_rewake: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -248,6 +253,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("session-start"),
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "Stop",
@@ -257,6 +263,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("stop"),
         timeout: Some(120),
         matcher: None,
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "PreToolUse",
@@ -264,6 +271,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("pre-tool-use"),
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "PostToolUse",
@@ -272,6 +280,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("post-tool-use"),
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "UserPromptSubmit",
@@ -279,6 +288,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("workflow-classification-reminder"),
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "UserPromptSubmit",
@@ -287,6 +297,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("user-prompt-submit"),
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     },
     CanonicalHookContractEntry {
         event: "PreCompact",
@@ -294,6 +305,7 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("pre-compact"),
         timeout: Some(30),
         matcher: None,
+        async_rewake: false,
     },
     // SessionEnd fires once when a Claude Code session genuinely terminates.
     // It drives per-session Signal channel teardown (leave group, stop the
@@ -305,6 +317,18 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
         native_subcmd: Some("session-stop-event"),
         timeout: Some(30),
         matcher: None,
+        async_rewake: false,
+    },
+    // A turn ended by a usage limit (issue #1658): wait, bounded, for the
+    // login rotator to record a fresh cycle with capacity, then wake the
+    // session. Needs Claude Code 2.1.306 or later.
+    CanonicalHookContractEntry {
+        event: "StopFailure",
+        hook_file: None,
+        native_subcmd: Some("limit-resume"),
+        timeout: Some(LIMIT_RESUME_TIMEOUT_SECS),
+        matcher: Some("rate_limit"),
+        async_rewake: true,
     },
 ];
 
@@ -316,12 +340,14 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     },
     HookSpec {
         event: "Stop",
         cmd: HookCommandKind::BinarySubcmd { subcmd: "stop" },
         timeout: Some(120),
         matcher: None,
+        async_rewake: false,
     },
     HookSpec {
         event: "PreToolUse",
@@ -330,6 +356,7 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
     HookSpec {
         event: "PostToolUse",
@@ -338,6 +365,7 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
     // Classification reminder must come BEFORE user-prompt-submit so the
     // topic-boundary routing guidance is injected first.
@@ -348,6 +376,7 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(5),
         matcher: None,
+        async_rewake: false,
     },
     HookSpec {
         event: "UserPromptSubmit",
@@ -356,6 +385,7 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     },
     HookSpec {
         event: "PreCompact",
@@ -364,6 +394,7 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(30),
         matcher: None,
+        async_rewake: false,
     },
     // Session teardown: fires once at genuine session end (Claude `SessionEnd`).
     // Routes to SessionStopHook, which performs per-session Signal channel
@@ -375,6 +406,18 @@ pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(30),
         matcher: None,
+        async_rewake: false,
+    },
+    // Usage-limit resume (issue #1658). Claude Code runs `asyncRewake`
+    // hooks in the background; exit 2 wakes the session.
+    HookSpec {
+        event: "StopFailure",
+        cmd: HookCommandKind::BinarySubcmd {
+            subcmd: "limit-resume",
+        },
+        timeout: Some(LIMIT_RESUME_TIMEOUT_SECS),
+        matcher: Some("rate_limit"),
+        async_rewake: true,
     },
 ];
 
@@ -386,6 +429,7 @@ pub(super) const XPIA_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: Some(10),
         matcher: None,
+        async_rewake: false,
     },
     HookSpec {
         event: "PreToolUse",
@@ -394,6 +438,7 @@ pub(super) const XPIA_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
     HookSpec {
         event: "PostToolUse",
@@ -402,6 +447,7 @@ pub(super) const XPIA_HOOK_SPECS: &[HookSpec] = &[
         },
         timeout: None,
         matcher: Some("*"),
+        async_rewake: false,
     },
 ];
 
