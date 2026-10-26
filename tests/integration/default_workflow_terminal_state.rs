@@ -1158,3 +1158,149 @@ steps:
         fs::read_to_string(&marker).unwrap_or_default()
     );
 }
+
+// --- Issue #1467: an open PR behind local HEAD is unpushed work, not stale ---
+
+/// Like `fake_gh`, but `pr list` answers `[body]`, so the probe finds the PR in
+/// discovery mode (no pr_url), as it does when an agent opened the PR early.
+fn fake_gh_listing(tmp: &TempDir, body: &str) -> PathBuf {
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake gh bin");
+    let gh = bin_dir.join("gh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [ "${{1:-}}" = "pr" ] && [ "${{2:-}}" = "list" ]; then
+  cat <<'JSON'
+[{body}]
+JSON
+  exit 0
+fi
+cat <<'JSON'
+{body}
+JSON
+"#
+    );
+    fs::write(&gh, script).expect("write fake gh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+    }
+    bin_dir
+}
+
+/// A feature worktree whose PR head is one commit behind local HEAD.
+fn pr_behind_local_head(state: &str) -> (GitFixture, PathBuf, String) {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let pr_head = git_head(&worktree);
+    write_file(
+        &worktree.join("later.txt"),
+        "committed locally, not pushed\n",
+    );
+    run_cmd(&worktree, "git", &["add", "later.txt"]);
+    run_cmd(&worktree, "git", &["commit", "-m", "later local commit"]);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, state, "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String(pr_head);
+    (fixture, worktree, pr.to_string())
+}
+
+#[test]
+fn terminal_state_accepts_open_pr_behind_local_head_in_discovery_mode() {
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        run.success && run.json["terminal_state"] != "FAILED_INVALID_INPUT",
+        "an open PR one commit behind local HEAD is unpushed work, not stale\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("ahead of open PR head"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_accepts_named_open_pr_behind_local_head() {
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr, 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert!(
+        run.success && run.json["terminal_state"] != "FAILED_INVALID_INPUT",
+        "a named open PR behind local HEAD must still be scoped\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+    assert!(
+        run.stderr.contains("behind local HEAD"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_still_rejects_merged_pr_behind_local_head() {
+    // A merged PR with unpushed local commits must not be reported as MERGED:
+    // the local commits would be dropped.
+    let (fixture, worktree, pr) = pr_behind_local_head("MERGED");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr);
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        !run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
+    assert!(
+        run.stderr.contains("stale PR metadata"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_still_rejects_open_pr_not_an_ancestor_in_discovery_mode() {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String("1111111111111111111111111111111111111111".to_string());
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert!(
+        !run.success,
+        "stdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT");
+    assert!(
+        run.stderr.contains("stale PR metadata"),
+        "stderr: {}",
+        run.stderr
+    );
+}

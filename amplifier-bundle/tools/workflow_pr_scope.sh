@@ -283,6 +283,17 @@ if [ -n "$PR_NUMBER" ] || [ -n "$PR_URL" ]; then
   # This preserves the fail-closed contract for a caller-supplied PR identity.
   matches="$(apply_discriminators "$primary")"
   match_count="$(array_length "$matches")"
+  # Issue #1467: an OPEN named PR whose head is an ancestor of local HEAD is
+  # behind, not stale (opened early, later commits not yet pushed). Accept that
+  # head in place of HEAD_SHA; every other discriminator stays hard.
+  if [ "$match_count" -eq 0 ] && [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+    behind_oid="$(open_candidates "$primary" | jq -r 'if length == 1 then (.[0].headRefOid // "") else "" end')"
+    if [[ "$behind_oid" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$behind_oid" "$HEAD_SHA" 2>/dev/null; then
+      echo "INFO: workflow_pr_scope.sh: PR head $behind_oid is behind local HEAD $HEAD_SHA; treating it as unpushed work, not stale (#1467)" >&2
+      matches="$(HEAD_SHA="$behind_oid" apply_discriminators "$primary")"
+      match_count="$(array_length "$matches")"
+    fi
+  fi
   if [ "$match_count" -eq 0 ]; then
     emit_failure "no_scoped_pr" "no PR matched the explicit workflow scope"
   fi

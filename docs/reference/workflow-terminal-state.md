@@ -625,6 +625,28 @@ underneath it.
 
 The scope match is now a **signal**, not the arbiter.
 
+### A PR behind local HEAD is unpushed work
+
+Issue #1467. An agent step can open the PR early, and a later step can commit
+without pushing (the pre-commit phase's fixes, the step-20c quality audit). The
+PR's `headRefOid` is then an ancestor of local `HEAD`: the branch is ahead, not
+stale. While the PR is `OPEN`:
+
+- the terminal-state probe accepts it and prints
+  `INFO: ... commit(s) ahead of open PR head ...; publish pushes them (#1467)`;
+  `step-15-commit-push` then pushes the commits;
+- `workflow_pr_scope.sh`, given an explicit PR number or URL, accepts that PR's
+  head in place of local `HEAD` when it is the only open candidate; every other
+  discriminator stays a hard filter.
+
+A merged or closed PR, or a head that is not an ancestor of local `HEAD`, still
+fails as `stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits
+must not be reported as `MERGED`, because the local commits would be lost.
+
+In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
+and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
+before `step-21-pr-ready` validates the PR.
+
 ### The three-verdict contract
 
 `amplifier-bundle/tools/workflow_terminal_evidence.sh` has two modes:

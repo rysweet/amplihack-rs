@@ -442,7 +442,16 @@ steps:
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: baseRefName '$pr_base' does not match base_ref '$expected_base'"
         fi
         if [ "$pr_head_oid" != "$local_head" ]; then
-          fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
+          # Issue #1467: an open PR whose head is an ancestor of local HEAD is
+          # behind, not stale: an agent opened it early and a later step
+          # committed without pushing. The publish step pushes those commits.
+          # A merged or closed PR, or a head that is not an ancestor, still fails.
+          if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
+              && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
+            echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; publish pushes them (#1467)" >&2
+          else
+            fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
+          fi
         fi
         if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
