@@ -60,7 +60,9 @@ pub(crate) fn from_effective(effective: &Effective, ci: Option<&str>) -> WaitSet
     }
 }
 
-/// Whether `CI` names a CI run: set, non-empty, and not `false` or `0`.
+/// Whether `CI` names a CI run: set and, trimmed, neither empty, `0` nor
+/// `false` in any case.
 fn in_ci(ci: Option<&str>) -> bool {
-    ci.is_some_and(|v| !v.is_empty() && v != "false" && v != "0")
+    ci.map(str::trim)
+        .is_some_and(|v| !v.is_empty() && v != "0" && !v.eq_ignore_ascii_case("false"))
 }

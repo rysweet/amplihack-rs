@@ -211,8 +211,10 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // Never reads stdin, so nothing here can block before signals are caught.
     let stdin = RerunStdin::capture();
     let args: Vec<_> = std::env::args_os().skip(1).collect();
-    if matches!(stdin, RerunStdin::Pipe) && !scratch::prompt_in_args(&args) {
-        // The prompt is on the pipe: a rerun would get none.
+    // The prompt is on the pipe: neither an auto-switch rerun nor the wait
+    // could give it to another attempt.
+    let piped_prompt = matches!(stdin, RerunStdin::Pipe) && !waiter.prompt_in_args();
+    if piped_prompt {
         waiter.block(NoWait::PipedPrompt);
     }
     let signals = match Signals::register() {
@@ -266,18 +268,27 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                     &waiter,
                 )
             {
-                if let Some(sig) = signals.received() {
-                    eprintln!("auto-switch: no rerun: this step was told to stop");
-                    return attempt.finish(Some(128 + sig));
+                if piped_prompt {
+                    // The limit is recorded; a rerun would get no prompt. The
+                    // wait below refuses too, with `piped_prompt`.
+                    eprintln!(
+                        "auto-switch: no rerun under profile {:?}: this step's prompt came on a pipe, which a rerun cannot read again",
+                        next.as_str()
+                    );
+                } else {
+                    if let Some(sig) = signals.received() {
+                        eprintln!("auto-switch: no rerun: this step was told to stop");
+                        return attempt.finish(Some(128 + sig));
+                    }
+                    eprintln!(
+                        "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
+                        current.as_str(),
+                        next.as_str()
+                    );
+                    attempt.discard();
+                    profile = Some(next).filter(|p| *p != sw.inherited);
+                    continue;
                 }
-                eprintln!(
-                    "amplihack: profile {:?} hit its usage limit; rerunning this step under profile {:?} (auto-switch)",
-                    current.as_str(),
-                    next.as_str()
-                );
-                attempt.discard();
-                profile = Some(next).filter(|p| *p != sw.inherited);
-                continue;
             }
         }
         match waiter.after_limit(&lim, n, &signals) {

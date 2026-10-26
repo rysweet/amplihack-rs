@@ -9,6 +9,7 @@
 //! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
 //! Log lines are built only from static text, integers and parsed instants.
 
+pub(crate) mod claude_args;
 mod clock;
 pub(crate) mod fingerprint;
 pub(crate) mod plan;
@@ -16,6 +17,8 @@ pub(crate) mod scratch;
 pub(crate) mod settings;
 pub(crate) mod wait;
 
+#[cfg(test)]
+mod tests_claude_args;
 #[cfg(test)]
 mod tests_fingerprint;
 #[cfg(test)]
@@ -179,14 +182,19 @@ pub(crate) struct Waiter {
     parent: libc::pid_t,
     /// Why no wait can help this step, whatever the limit says.
     blocked: Option<NoWait>,
+    /// Claude's arguments carry the prompt (else it may be on stdin).
+    prompt_in_args: bool,
 }
 
 impl Waiter {
-    pub(crate) fn new(settings: Option<WaitSettings>, watch: Watch) -> Self {
+    pub(crate) fn new(settings: Option<WaitSettings>, watch: Watch, prompt_in_args: bool) -> Self {
         let clock = Clock::new();
         let step_start = clock.now();
+        // Trimmed, as the config loader reads it: a stray space must not
+        // drop the bound and let the wait outlive the step.
         let step_timeout = std::env::var(STEP_TIMEOUT_ENV)
             .ok()
+            .map(|v| v.trim().to_string())
             .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
             .and_then(|v| v.parse().ok());
         Self {
@@ -199,6 +207,7 @@ impl Waiter {
             // SAFETY: getppid(2) has no preconditions.
             parent: unsafe { libc::getppid() },
             blocked: None,
+            prompt_in_args,
         }
     }
 
@@ -214,6 +223,11 @@ impl Waiter {
     /// Never wait for this step, for `why`.
     pub(crate) fn block(&mut self, why: NoWait) {
         self.blocked = Some(why);
+    }
+
+    /// Whether Claude's arguments carry the prompt.
+    pub(crate) fn prompt_in_args(&self) -> bool {
+        self.prompt_in_args
     }
 
     /// The wait's clock, for reading a reset relative to it.
@@ -303,6 +317,7 @@ pub(crate) fn supervise_unprofiled(
     settings: WaitSettings,
     store: Option<&super::store::ProfileStore>,
     default: Option<&super::name::ProfileName>,
+    prompt_in_args: bool,
 ) -> Result<Option<i32>> {
     let path = |name: &str| {
         std::env::var_os(name)
@@ -311,5 +326,5 @@ pub(crate) fn supervise_unprofiled(
     };
     let (home, config_dir) = (path("HOME"), path("CLAUDE_CONFIG_DIR"));
     let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
-    super::auto_switch::rerun::run(None, Waiter::new(Some(settings), watch))
+    super::auto_switch::rerun::run(None, Waiter::new(Some(settings), watch, prompt_in_args))
 }

@@ -172,7 +172,7 @@ fn shaped(p: &Patterns, line: &str) -> bool {
     }
     let curly = p.message_prefix.replace('\'', "\u{2019}");
     (line.starts_with(p.message_prefix) || line.starts_with(curly.as_str()))
-        && line.contains("limit")
+        && line.to_ascii_lowercase().contains("limit")
         && line.contains('\u{b7}')
 }
 

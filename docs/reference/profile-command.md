@@ -3069,7 +3069,8 @@ in the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
 A launch is supervised for the wait when all of these hold:
 
 1. no `--profile` flag;
-2. Claude's arguments contain `-p`, `--print` or `--print=`;
+2. Claude's arguments set `-p` or `--print` (read as Claude reads them, so
+   an option's value such as `--model -p` does not count);
 3. `AMPLIHACK_AUTO_SWITCH_SUPERVISED` is unset (the launch is not itself a
    supervised attempt);
 4. `AMPLIHACK_NONINTERACTIVE` is exactly `1` (`amplihack recipe run` sets
@@ -3104,9 +3105,14 @@ offset is shared with other processes), a terminal unchanged, and anything
 else (a pipe, a socket, a closed descriptor) `/dev/null`: a pipe's contents
 went to the first attempt. Recipe agent steps get their prompt as `-p`
 argv, so this changes nothing for them, and a step that inherited a pipe
-the recipe run never closes no longer hangs. When stdin is a pipe and no
-prompt text follows `-p`/`--print`, the prompt is on the pipe, so the step
-is never waited for: `skipped reason=piped_prompt`.
+the recipe run never closes no longer hangs. When stdin is a pipe and
+Claude's arguments carry no prompt, the prompt is on the pipe, so the step
+is neither rerun by auto-switch (`auto-switch: no rerun under profile …`)
+nor waited for (`skipped reason=piped_prompt`). The prompt is any
+positional argument, wherever it is, read with Claude's option table so
+that the values of options such as `--model`, `--output-format`,
+`--max-turns`, `--allowedTools` and `--append-system-prompt` are not taken
+for it; a prompt that starts with `-` counts only after `--`.
 
 ### Order of attempts
 
@@ -3249,7 +3255,8 @@ the user or project `config.toml`, or with the variable, which outranks the
 files. The variable takes `true`, `false`, `1` or `0`; an invalid value is
 reported by the config loader and ignored. A project file may only lower
 the maximum. With no setting in the environment or a file, the wait is off
-in CI, meaning any non-empty `CI` other than `false` or `0`: a CI job has no
+in CI, meaning any `CI` that is not, after trimming, empty, `0` or `false`
+in any case: a CI job has no
 second login to wait for, and its own timeout bounds it better. A limit
 then writes `skipped reason=ci` where a supervisor runs. Setting
 `recipe.usage_limit_wait = true` in the user or project `config.toml`, or

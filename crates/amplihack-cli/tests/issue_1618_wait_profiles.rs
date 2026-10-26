@@ -9,6 +9,8 @@
 //!   with one `skipped reason=disabled` line.
 //! - With no inherited profile but a `.default` pointer, the wait watches
 //!   the pointed-to profile's login, the one the launch uses.
+//! - A prompt piped on stdin is neither rerun by auto-switch nor waited for:
+//!   the rerun would get no prompt.
 //!
 //! See `issue_1618_fixture`.
 
@@ -184,4 +186,34 @@ fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
         ["end reason=login changed", "resume attempt=2"],
         "{ev:?}"
     );
+}
+
+#[test]
+fn a_piped_prompt_is_not_rerun_by_auto_switch_either() {
+    let f = with_profiles();
+    switch_on(&f);
+    // `-p` with no prompt text: the prompt is on the pipe.
+    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
+    c.env("AMPLIHACK_CLAUDE_PROFILE", "X")
+        .env("CLAUDE_CONFIG_DIR", f.profiles.join("X"))
+        .env(TOGGLE_ENV, "1")
+        .env("LIMIT_CALLS", "5")
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut child = c.spawn().expect("start amplihack");
+    {
+        use std::io::Write;
+        let mut stdin = child.stdin.take().unwrap();
+        stdin.write_all(b"the piped prompt\n").unwrap();
+    }
+    let out = child.wait_with_output().unwrap();
+    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
+    assert_eq!(f.count("0"), 1, "no rerun under Y with an empty prompt");
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("auto-switch: no rerun under profile \"Y\""),
+        "{stderr}"
+    );
+    assert_eq!(wait_lines(&out), vec!["skipped reason=piped_prompt"]);
 }

@@ -6,7 +6,7 @@
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_scratch;`.
 
 use super::super::auto_switch::{rerun_owner, sweep_rerun};
-use super::scratch::{RerunStdin, home_rerun_dir, prompt_in_args};
+use super::scratch::{RerunStdin, home_rerun_dir};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -140,26 +140,6 @@ fn a_held_open_pipe_gives_reruns_dev_null_without_reading_it() {
     // The writer is still open: a rerun reading the pipe would hang here.
     assert_eq!(cat(policy.for_attempt(2).unwrap()), b"");
     drop(writer);
-}
-
-#[test]
-fn the_prompt_is_in_the_args_only_as_text_right_after_the_print_flag() {
-    let args = |a: &[&str]| a.iter().map(std::ffi::OsString::from).collect::<Vec<_>>();
-    assert!(prompt_in_args(&args(&[
-        "claude",
-        "--",
-        "-p",
-        "do the step"
-    ])));
-    assert!(prompt_in_args(&args(&["claude", "--", "--print", "x"])));
-    for none in [
-        &["claude", "--", "-p"][..],
-        &["claude", "--", "-p", "--model", "opus"],
-        &["claude", "--", "-p", ""],
-        &["claude", "--", "step"],
-    ] {
-        assert!(!prompt_in_args(&args(none)), "{none:?}");
-    }
 }
 
 #[test]

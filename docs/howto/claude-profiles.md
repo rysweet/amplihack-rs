@@ -1473,8 +1473,8 @@ It applies to the `amplihack claude -p` launch of a recipe step
 (`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
 `--profile`, `--docker` or `--auto`. Interactive sessions and launches typed
 at a terminal never wait, and with no setting the wait is off in CI (a
-non-empty `CI` other than `false` or `0`; set `recipe.usage_limit_wait =
-true` to turn it on there). A failure that is not a usage limit is passed back at once.
+`CI` other than empty, `0` or `false`; set `recipe.usage_limit_wait = true`
+to turn it on there). A failure that is not a usage limit is passed back at once.
 
 ### What happens
 
@@ -1498,7 +1498,8 @@ It does not wait, and the run ends as before, when the limit is an
 organisation spend limit with no reset (one that also says when your
 session limit resets is waited out), when the reset is more than five hours
 away (a weekly limit), when Claude's message states no reset amplihack can
-read, or when the prompt came on a pipe.
+read, or when the prompt came on a pipe (auto-switch then does not rerun it
+under another profile either).
 Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`

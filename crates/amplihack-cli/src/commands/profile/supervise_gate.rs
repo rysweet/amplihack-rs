@@ -46,10 +46,8 @@ mod unix {
             return Ok(None);
         }
         // 2. Only a print launch.
-        let printing = claude_args
-            .iter()
-            .any(|a| a == "-p" || a == "--print" || a.starts_with("--print="));
-        if !printing {
+        let parsed = limit_wait::claude_args::parse(claude_args);
+        if !parsed.print {
             return Ok(None);
         }
         // 3. Never a launch that is itself a supervised attempt.
@@ -83,7 +81,12 @@ mod unix {
             let default = store
                 .as_ref()
                 .and_then(|s| default_profile(s, home.as_deref().map(Path::new)));
-            return limit_wait::supervise_unprofiled(settings, store.as_ref(), default.as_ref());
+            return limit_wait::supervise_unprofiled(
+                settings,
+                store.as_ref(),
+                default.as_ref(),
+                parsed.prompt,
+            );
         };
         let Some(inherited) = inherited.to_str().map(str::to_string) else {
             return Ok(None);
@@ -114,7 +117,7 @@ mod unix {
             None,
             home.as_deref().map(Path::new),
         );
-        auto_switch::rerun::supervise(&store, name, Waiter::new(wait, watch))
+        auto_switch::rerun::supervise(&store, name, Waiter::new(wait, watch, parsed.prompt))
     }
 }
 

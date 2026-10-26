@@ -969,7 +969,7 @@ backend configuration reference.
 
 **Type:** string (boolean)
 **Values:** `true` or `1` (on) | `false` or `0` (off)
-**Default:** on; off in CI (non-empty `CI` other than `false` or `0`) when nothing sets it
+**Default:** on; off in CI (a `CI` other than empty, `0` or `false` in any case) when nothing sets it
 **Config key:** [`recipe.usage_limit_wait`](./user-config.md#recipeusage_limit_wait) in `config.toml`
 **Read by:** `amplihack claude -p` when it runs as a recipe agent step
 

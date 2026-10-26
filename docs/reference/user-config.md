@@ -321,8 +321,8 @@ like every path.
 Whether a recipe agent step that fails on a Claude usage limit waits for the
 reset and runs once more, instead of ending the run. See the
 [usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
-in the environment or a file, it is on, except in CI: any non-empty `CI`
-other than `false` or `0`. Setting it in a file or the variable turns it on
+in the environment or a file, it is on, except in CI: any `CI` that is
+not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
 in CI too. The environment variable also accepts `1` and `0`.
 
 `recipe.usage_limit_max_wait_secs` caps one wait; it only shortens it, and

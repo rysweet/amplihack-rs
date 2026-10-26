@@ -46,14 +46,24 @@ const OFF: WaitSettings = WaitSettings {
 #[test]
 fn the_wait_is_on_by_default_and_off_under_ci() {
     let home = tempfile::tempdir().unwrap();
-    for ci in [None, Some(""), Some("false"), Some("0")] {
+    for ci in [
+        None,
+        Some(""),
+        Some("  "),
+        Some("false"),
+        Some("False"),
+        Some("FALSE"),
+        Some(" false "),
+        Some("0"),
+        Some(" 0"),
+    ] {
         assert_eq!(settings(home.path(), &[], ci), ON, "CI={ci:?}");
     }
     let off_in_ci = WaitSettings {
         off_in_ci: true,
         ..OFF
     };
-    for ci in ["true", "1", "yes", "github"] {
+    for ci in ["true", "TRUE", "1", "yes", "github", " true "] {
         assert_eq!(settings(home.path(), &[], Some(ci)), off_in_ci, "CI={ci}");
     }
 }

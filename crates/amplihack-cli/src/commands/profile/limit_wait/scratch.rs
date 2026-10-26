@@ -10,7 +10,7 @@
 //! anything else (a pipe, a socket, a closed descriptor) `/dev/null`: what
 //! the first attempt read from it is gone. Recipe agent steps get their
 //! prompt as `-p` argv, so stdin is not their prompt; a step whose prompt
-//! came on a pipe is not waited for (see [`prompt_in_args`]).
+//! came on a pipe is not rerun (see `claude_args`).
 
 use super::super::fsx;
 use std::fs;
@@ -117,15 +117,4 @@ fn reopen(file: &fs::File) -> Option<fs::File> {
     let fresh = fs::File::open("/proc/self/fd/0").ok()?;
     let (a, b) = (fresh.metadata().ok()?, file.metadata().ok()?);
     (a.is_file() && a.dev() == b.dev() && a.ino() == b.ino()).then_some(fresh)
-}
-
-/// Whether the launch arguments carry the prompt: a non-option argument
-/// right after `-p` or `--print`, the way the recipe runner passes it.
-pub(crate) fn prompt_in_args(args: &[std::ffi::OsString]) -> bool {
-    args.windows(2).any(|w| {
-        (w[0] == "-p" || w[0] == "--print")
-            && w[1]
-                .to_str()
-                .is_some_and(|a| !a.is_empty() && !a.starts_with('-'))
-    })
 }
