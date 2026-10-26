@@ -1292,6 +1292,33 @@ fn terminal_state_accepts_named_open_pr_behind_local_head() {
 }
 
 #[test]
+fn terminal_state_accepts_a_tracking_ref_that_moved_forward_through_several_pushes() {
+    // The agent pushed the base commit, then the PR head; both reflog entries
+    // are ancestors of the PR head, so this is the normal flow, not a rewind.
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let pr_head = pr["headRefOid"].as_str().expect("pr head").to_string();
+    let parent = String::from_utf8(
+        amplihack_git::command()
+            .current_dir(&worktree)
+            .args(["rev-parse", &format!("{pr_head}~1")])
+            .output()
+            .expect("rev-parse parent")
+            .stdout,
+    )
+    .expect("utf8 sha")
+    .trim()
+    .to_string();
+    set_tracking_ref(&worktree, &parent);
+    set_tracking_ref(&worktree, &pr_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_publish_continues(&run, "tracking ref advanced through two pushes");
+}
+
+#[test]
 fn terminal_state_ignores_failing_checks_on_a_head_behind_local_head() {
     // The checks ran on the superseded head; the unpushed commit may be the fix.
     let (fixture, worktree, mut pr) = pr_behind_local_head("OPEN");
@@ -1387,6 +1414,11 @@ fn terminal_state_still_rejects_a_rewind_that_was_already_fetched() {
     let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
 
     assert_stale(&run, "rewind already fetched into origin/feature");
+    assert!(
+        run.stderr.contains("history rewritten or rewound"),
+        "the refusal must name the rewind: {}",
+        run.stderr
+    );
 }
 
 /// workflow_pr_scope.sh in named mode, run directly in the worktree.

@@ -460,6 +460,8 @@ steps:
               && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
             pr_behind="true"
             echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
+          elif [ "$remote_rewound" = "true" ]; then
+            fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head', and origin/$BRANCH_INPUT has held a commit that is not an ancestor of the PR head (history rewritten or rewound; #1467)"
           else
             fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
           fi
