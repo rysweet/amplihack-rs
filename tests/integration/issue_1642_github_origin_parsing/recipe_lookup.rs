@@ -17,10 +17,20 @@ use std::fs;
 pub(super) fn run_probe_bare(fx: &Fixture, envs: &[(&str, &std::ffi::OsStr)]) -> Outcome {
     let empty_home = fx.path("empty-home");
     fs::create_dir_all(&empty_home).expect("empty home");
+    // The probe also needs recipe_var.sh and worktree_setup_path.sh (#1561).
+    // This bundle holds those two only, so workflow_github_repo.sh stays
+    // unresolvable unless a test supplies it.
+    let partial_bundle = fx.path("partial-bundle");
+    let partial_tools = partial_bundle.join("amplifier-bundle/tools");
+    fs::create_dir_all(&partial_tools).expect("partial bundle");
+    for tool in ["recipe_var.sh", "worktree_setup_path.sh"] {
+        fs::copy(tool_path(tool), partial_tools.join(tool)).expect("copy bundle tool");
+    }
     let mut cmd = fx.command("bash");
     cmd.arg("-c")
         .arg(probe_command())
         .env("HOME", &empty_home)
+        .env("AMPLIHACK_HOME", &partial_bundle)
         .env("REPO_PATH", &fx.repo)
         // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
         .env("RECIPE_VAR_repo_path", &fx.repo)

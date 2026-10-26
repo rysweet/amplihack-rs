@@ -108,6 +108,9 @@ pub(super) fn run_probe(fx: &Fixture, pr_url: &str, envs: &[(&str, &std::ffi::Os
     cmd.arg("-c")
         .arg(probe_command())
         .env("REPO_PATH", &fx.repo)
+        // The probe sources recipe_var.sh and runs worktree_setup_path.sh from
+        // the installed bundle (#1561); a test's own env may override this.
+        .env("AMPLIHACK_HOME", workspace_root())
         // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
         .env("RECIPE_VAR_repo_path", &fx.repo)
         .env("RECIPE_VAR_branch_name", super::fixture::BRANCH)
