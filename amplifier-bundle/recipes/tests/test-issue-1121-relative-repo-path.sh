@@ -263,7 +263,7 @@ fi
 WT_TOOL="${REPO_ROOT}/amplifier-bundle/tools/worktree_setup_path.sh"
 check_resolved() { # check_resolved <id> <why>: RUN_RC/RUN_OUT from run_step_body
     local id="$1" why="$2" json wt real rc=0
-    json="$(printf '%s\n' "${RUN_OUT}" | grep -E '^\{"worktree_path"' | tail -n 1)"
+    json="$(printf '%s\n' "${RUN_OUT}" | awk '/^\{"worktree_path"/ { last = $0 } END { print last }')"
     wt="$(printf '%s' "${json}" | jq -r '.worktree_path // empty' 2>/dev/null)"
     real="$(realpath -- "${wt}" 2>/dev/null || true)"
     RECIPE_VAR_worktree_setup="${json}" bash "${WT_TOOL}" "test-${id}" >/dev/null 2>&1 || rc=$?
