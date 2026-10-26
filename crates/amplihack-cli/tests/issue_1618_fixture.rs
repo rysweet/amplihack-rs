@@ -151,6 +151,9 @@ impl Fixture {
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
+            // Auto-switch is on in these runs, so without this every launch
+            // starts a real rotator that outlives the test by an hour.
+            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW", TEST_NOW.to_string())
             .env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "1000000")
             .env("LIMIT_CALLS", "1")
