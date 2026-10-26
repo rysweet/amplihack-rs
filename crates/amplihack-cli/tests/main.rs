@@ -126,6 +126,8 @@ mod issue_1618_wait_signals;
 mod issue_1618_wait_stdin;
 #[path = "issue_1618_wait_step.rs"]
 mod issue_1618_wait_step;
+#[path = "issue_1618_wait_threshold.rs"]
+mod issue_1618_wait_threshold;
 #[path = "issue_1634_shared_sessions.rs"]
 mod issue_1634_shared_sessions;
 #[path = "issue_1650_profile_identity.rs"]

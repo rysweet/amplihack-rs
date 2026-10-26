@@ -270,11 +270,16 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             );
             // The inherited account never runs before the retry, so its
             // reset comes from the readings, moved onto the wait's clock.
+            // With no window at 100% it was passed over only for being over
+            // the threshold: it still has capacity, so the retry under it
+            // may run at once (a reset of `now` makes `plan` end the wait
+            // immediately). A candidate's limit is another account's and
+            // never times this wait.
             let wait_now = waiter.now();
-            inherited_wait = sub.inherited_reset.map(|r| {
-                let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
-                plan::from_reading(Harness::Claude, reset, wait_now)
+            let reset = sub.inherited_reset.map_or(wait_now, |r| {
+                wait_now.saturating_add(r.saturating_sub(fsx::now()))
             });
+            inherited_wait = Some(plan::from_reading(Harness::Claude, reset, wait_now));
             profile = Some(sub.profile);
         }
     }
@@ -304,10 +309,13 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             // freshest word on that profile.
             inherited_wait = Some(lim.wait);
         }
-        // Unset only when the step was moved off the inherited profile before
-        // the first attempt for being over the threshold, with no window used
-        // up: then the last limit met is the best guess at when work resumes.
-        let wait = inherited_wait.unwrap_or(lim.wait);
+        // Set by now: either the step was moved off the inherited profile
+        // before the first attempt (above), or an attempt ran under it. If
+        // it were not, the result is passed up: a candidate's limit is
+        // another account's and never times the wait.
+        let Some(wait) = inherited_wait else {
+            return attempt.finish(None);
+        };
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
             tried.push(current.to_string());

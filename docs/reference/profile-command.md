@@ -3152,8 +3152,10 @@ When auto-switch moved the step off the inherited profile before the first
 attempt, the inherited profile's limit comes from the usage readings: the
 latest reset among its windows at 100%. A window over the auto-switch
 threshold but under 100% is a reason to prefer another profile, not a
-limit, so it neither times nor cancels the wait; if no window is at 100%,
-the wait uses the last attempt's limit.
+limit, so it neither times nor cancels the wait. If no window is at 100%,
+the inherited profile still has capacity, so the wait ends at once
+(`reset` and `until` are the time it starts) and the retry runs under the
+inherited profile straight away; a candidate's limit never times it.
 
 There is at most one wait per step. The retry runs the step **from the
 start** with the same prompt, so anything the failed attempt already did (a

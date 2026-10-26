@@ -29,7 +29,7 @@ const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
 
 /// The fixture with profiles `X` and `Y`, each logged in with a distinct
 /// account.
-fn with_profiles() -> Fixture {
+pub(crate) fn with_profiles() -> Fixture {
     let f = Fixture::new();
     for name in ["X", "Y"] {
         let out = f.run(&mut f.cmd(&["profile", "add", name]));
@@ -55,7 +55,7 @@ fn with_profiles() -> Fixture {
 }
 
 /// Turns auto-switch on through its command, as the #1569 tests do.
-fn switch_on(f: &Fixture) {
+pub(crate) fn switch_on(f: &Fixture) {
     let out = f.run(&mut f.cmd(&["profile", "auto-switch", "on"]));
     assert!(out.status.success(), "auto-switch on: {}", describe(&out));
 }
