@@ -28,9 +28,13 @@
 #   6. Production layout (section 15): REPO_PATH is the main checkout (on main,
 #      detached, or an unrelated branch with its own open PR) and the run's
 #      branch lives in a separate `git worktree` named by
-#      WORKTREE_SETUP_WORKTREE_PATH. These cases run step-22b's own command,
+#      worktree_setup.worktree_path. These cases run step-22b's own command,
 #      extracted verbatim from workflow-finalize.yaml, not the helper alone.
 #      The lookup must use the worktree's branch, never REPO_PATH's.
+#   7. Issue #1679 (section 17): with no recorded outputs at all, not even
+#      REMOTE_HOST_TYPE, an open PR at the worktree's HEAD still resolves; a
+#      PR whose head is not the local HEAD never counts; with no PR the run
+#      still fails closed; a skipped lookup names its reason on stderr.
 #
 # Behavioural tests against real fixtures: a real git repository and a fake
 # `gh` first on PATH. Every run uses `env -i`, a sandboxed HOME and
@@ -91,9 +95,13 @@ set -uo pipefail
 printf '%s\n' "$*" >>"${GH_LOG:?GH_LOG must be set}"
 mode="${FAKE_GH_MODE:-empty}"
 pr_obj() {
-    # $1 url  $2 number  $3 isCrossRepository
-    jq -nc --arg u "$1" --argjson n "$2" --argjson x "$3" \
-        '{url: $u, number: $n, isCrossRepository: $x}'
+    # $1 url  $2 number  $3 isCrossRepository. headRefOid is the run's HEAD
+    # (#1679) unless FAKE_GH_HEAD_OID says otherwise.
+    local wt oid
+    wt="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r '.worktree_path // empty' 2>/dev/null)"
+    oid="${FAKE_GH_HEAD_OID:-$(git -C "${wt:-.}" rev-parse HEAD 2>/dev/null)}"
+    jq -nc --arg u "$1" --argjson n "$2" --argjson x "$3" --arg o "$oid" \
+        '{url: $u, number: $n, isCrossRepository: $x, headRefOid: $o}'
 }
 is_open_list=false
 if [ "${1:-}" = "pr" ] && [ "${2:-}" = "list" ]; then
@@ -811,6 +819,58 @@ run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
     "STALE:RECIPE_VAR_worktree_setup__branch_name=$BRANCH"  # deliberately stale (#1561)
 assert_no_lookup "16-1561-empty-base-stale-nested-worktree: base \"\" + stale nested worktree -> no lookup"
 assert_unchanged_failure "16-1561-empty-base-stale-nested-worktree-a: base \"\" + stale nested worktree -> unchanged failure"
+
+# --- 17. issue #1679: no recorded outputs at all -----------------------------
+# jamestown #926: step-22b failed with missing_evidence=implementation_completed,
+# publish_state_reached,... and observed_phases=unknown while the run's PR was
+# open, clean and pushed at the worktree's HEAD. Reproduce that state through
+# step-22b's own command: no implementation, verification or publish outputs,
+# and no REMOTE_HOST_TYPE either. Only the worktree is known.
+read -r repo wt < <(make_layout c17-accept main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    REMOTE_HOST_TYPE= RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_resolved_worktree_pr "17: acceptance: open PR at local HEAD, no recorded outputs, no host type -> EXISTING_OPEN_PR, exit 0"
+if grep -qF -- "--repo octo/example" "$GH_LOG" && grep -qF -- "headRefOid" "$GH_LOG" \
+    && grep -qF -- "--pr-url $PR_URL_OK" "$SCOPE_LOG"; then
+    record_pass "17a: host taken from the worktree's github.com origin; headRefOid requested; scope check still runs"
+else
+    record_fail "17a: host taken from the worktree's github.com origin; headRefOid requested; scope check still runs"; dump
+fi
+
+read -r repo wt < <(make_layout c17-none main)
+run_step22b_case "$repo" FAKE_GH_MODE=empty REMOTE_HOST_TYPE= RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_unchanged_failure "17b: acceptance: no PR and no recorded outputs -> fails closed"
+
+# A PR on the branch whose head is not the run's HEAD does not hold this run's
+# work: refused under either host-type spelling.
+other_sha="$(git -C "$repo" rev-parse main)"
+for ht in "" github; do
+    read -r repo wt < <(make_layout "c17-stale-${ht:-unset}" main)
+    run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+        FAKE_GH_HEAD_OID="$other_sha" REMOTE_HOST_TYPE="$ht" RECIPE_VAR_worktree_setup__worktree_path="$wt"
+    assert_unchanged_failure "17c-${ht:-unset}: open PR whose head is not the local HEAD -> fails closed"
+done
+
+# Unset host type and a non-GitHub origin: no lookup.
+read -r repo wt < <(make_layout c17-gitlab main)
+git -C "$repo" remote set-url origin "https://gitlab.com/octo/example.git"
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    REMOTE_HOST_TYPE= RECIPE_VAR_worktree_setup__worktree_path="$wt"
+assert_no_lookup "17d: unset host type, non-GitHub origin -> no lookup"
+assert_unchanged_failure "17d-a: unset host type, non-GitHub origin -> unchanged failure"
+
+# No worktree recorded: the lookup is still refused for REPO_PATH, and the
+# failure now says why.
+read -r repo wt < <(make_layout c17-noworktree main)
+run_step22b_case "$repo" FAKE_GH_MODE=head-match FAKE_GH_OPEN_HEAD="$BRANCH" \
+    REMOTE_HOST_TYPE= RECIPE_VAR_worktree_setup=
+assert_no_lookup "17e: no worktree recorded -> no lookup against REPO_PATH"
+if grep -qxF "INFO: branch PR lookup skipped (#1679): no worktree path recorded and cwd is REPO_PATH" "$ERR" \
+    && ! grep -qF "(#1679)" "$OUT"; then
+    record_pass "17e-a: the skipped lookup names its reason on stderr only"
+else
+    record_fail "17e-a: the skipped lookup names its reason on stderr only"; dump
+fi
 
 # --- 14. lookup does not depend on caller credentials -----------------------
 # env -i already strips GH_TOKEN/GITHUB_TOKEN; assert the script never asks gh

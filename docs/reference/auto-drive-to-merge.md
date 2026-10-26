@@ -3128,6 +3128,16 @@ resolved concern is reopened.
 | Local | `${AMPLIHACK_STATE_DIR:-~/.amplihack/state}/auto-drive/<key>/` | Phase completions, resolved concern ids, round records, manifests, evidence bundles. Written only by the host that ran them. |
 | Platform | `gh pr view --json state,mergedAt` | The **authority** on whether the PR is merged. |
 
+`<key>` is the launch repository's `origin` URL plus the run's pull request
+number, made filesystem-safe (`autodrive_state_key`). A run started with
+`pr_number`, or whose branch already has a PR, is keyed by that PR from the
+start. A fresh run has no PR when it starts, so its build preflight keys it by
+the launch checkout's branch; once phase 1 has opened the PR, autodrive-build
+step-03 switches to the PR's key, and every later phase uses that directory
+(issue #1680). So two fresh runs in one repository never share verdict files,
+and a run resumed later with `pr_number=N` finds the same state. An explicit
+`autodrive_state_dir` is used as given.
+
 Local state is a cache, never a claim: the merge gate re-verifies every
 criterion regardless of what any state file says, and `UNKNOWN` platform state
 is treated as a failure rather than as "not merged". The exception is the

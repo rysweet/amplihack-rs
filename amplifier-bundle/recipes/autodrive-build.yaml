@@ -234,6 +234,21 @@ steps:
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
       HAVE_HELPER="false"
       [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
+      # Issue #1680: with no PR, the preflight keyed state_dir by REPO_PATH's
+      # branch (main, say), which every fresh run in this repository shares.
+      # Now the PR is known, key the state by it, as a later pr_number=N run's
+      # preflight does. An explicit autodrive_state_dir is kept: the check is
+      # that neither spelling is set, so neither name outranks the other (#1561).
+      if [ -n "$DIR" ] && [ -z "$(g pr)" ] && [ -z "${RECIPE_VAR_autodrive_state_dir:-}" ] && [ -z "${AUTODRIVE_STATE_DIR:-}" ]; then
+        NEW_DIR=""
+        [ "$HAVE_HELPER" = "true" ] && NEW_DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$PR")"
+        if [ -n "$NEW_DIR" ]; then
+          [ "$NEW_DIR" = "$DIR" ] || echo "INFO: #1680: state for PR #${PR} is kept in ${NEW_DIR}, not ${DIR}" >&2
+          DIR="$NEW_DIR"
+        else
+          echo "WARNING: #1680: could not key the state by PR #${PR}; keeping ${DIR}" >&2
+        fi
+      fi
       # Issue #1551: a phase 1 that built under no_merge must leave its PR
       # unmerged. MERGED here means something merged around the gh merge guard.
       normalise_no_merge_flag() {
