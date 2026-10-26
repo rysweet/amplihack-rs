@@ -2,6 +2,8 @@
 //! virtual clock: the order of checks in each pass (signal, deadline, login
 //! fingerprint, progress), sleep slices of at most one second, the 30-second
 //! fingerprint poll and its stable baseline, and the 60-second progress line.
+//! The other ends (a stop signal, which end wins, the step's session ending,
+//! rotator capacity) are in `tests_wait_ends.rs`, which uses `Fake` here.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_wait;`.
 
@@ -10,30 +12,30 @@ use super::wait::{End, WaitDeps, wait};
 use std::time::Duration;
 
 /// 2026-10-18 08:00:00 -07:00.
-const T0: i64 = 1_792_335_600;
+pub(super) const T0: i64 = 1_792_335_600;
 
 /// Login fingerprint schedule: from virtual second `.0` (relative to T0) on,
 /// the probe returns `.1`.
 type Schedule = Vec<(i64, Option<u8>)>;
 
-struct Fake {
+pub(super) struct Fake {
     ms: i64,
-    prints: Schedule,
+    pub(super) prints: Schedule,
     /// Virtual second from which a signal is pending.
-    signal_from: Option<(i64, i32)>,
+    pub(super) signal_from: Option<(i64, i32)>,
     signal_seen_at_ms: Option<i64>,
     sleeps: Vec<Duration>,
-    sleeps_after_signal: usize,
+    pub(super) sleeps_after_signal: usize,
     probes: Vec<i64>,
     logs: Vec<String>,
     /// Virtual second from which the step's parent is gone.
-    parent_gone_from: Option<i64>,
+    pub(super) parent_gone_from: Option<i64>,
     /// Virtual second from which the rotator reports fresh capacity.
-    capacity_from: Option<i64>,
+    pub(super) capacity_from: Option<i64>,
 }
 
 impl Fake {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             ms: 0,
             prints: vec![(0, Some(1))],
@@ -48,7 +50,7 @@ impl Fake {
         }
     }
 
-    fn elapsed(&self) -> i64 {
+    pub(super) fn elapsed(&self) -> i64 {
         self.ms.div_euclid(1000)
     }
 
@@ -116,7 +118,7 @@ impl WaitDeps for Fake {
     }
 }
 
-fn plan_in(secs: i64, bound: Bound) -> Plan {
+pub(super) fn plan_in(secs: i64, bound: Bound) -> Plan {
     Plan {
         until: T0 + secs,
         bound,
@@ -269,64 +271,4 @@ fn an_absent_fingerprint_that_stays_absent_is_no_change() {
         wait(&plan_in(200, Bound::ResetMargin), &mut f),
         End::ResetReached
     );
-}
-
-#[test]
-fn a_signal_ends_the_wait_within_one_slice() {
-    for sig in [libc::SIGINT, libc::SIGTERM, libc::SIGHUP] {
-        let mut f = Fake::new();
-        f.signal_from = Some((10, sig));
-        assert_eq!(
-            wait(&plan_in(1800, Bound::ResetMargin), &mut f),
-            End::Signal(sig)
-        );
-        assert_eq!(f.sleeps_after_signal, 0, "slept after seeing the signal");
-        assert!(f.elapsed() <= 11, "noticed at {}", f.elapsed());
-    }
-}
-
-#[test]
-fn a_pending_signal_wins_over_a_passed_deadline_and_a_changed_login() {
-    let mut f = Fake::new();
-    f.signal_from = Some((0, libc::SIGTERM));
-    assert_eq!(
-        wait(&plan_in(0, Bound::ResetMargin), &mut f),
-        End::Signal(libc::SIGTERM)
-    );
-    let mut f = Fake::new();
-    f.signal_from = Some((30, libc::SIGINT));
-    f.prints = vec![(0, Some(1)), (20, Some(2))];
-    assert_eq!(
-        wait(&plan_in(1800, Bound::ResetMargin), &mut f),
-        End::Signal(libc::SIGINT)
-    );
-}
-
-#[test]
-fn a_passed_deadline_wins_over_a_changed_login() {
-    let mut f = Fake::new();
-    f.prints = vec![(0, Some(1)), (45, Some(2))];
-    assert_eq!(wait(&plan_in(60, Bound::MaxWait), &mut f), End::MaxReached);
-}
-
-#[test]
-fn the_end_of_the_steps_session_ends_the_wait_within_one_slice() {
-    let mut f = Fake::new();
-    f.parent_gone_from = Some(10);
-    assert_eq!(
-        wait(&plan_in(5 * 3600, Bound::ResetMargin), &mut f),
-        End::SessionEnded
-    );
-    assert!(f.elapsed() <= 11, "noticed at {}", f.elapsed());
-}
-
-#[test]
-fn fresh_rotator_capacity_ends_the_wait_at_the_next_poll() {
-    let mut f = Fake::new();
-    f.capacity_from = Some(40);
-    assert_eq!(
-        wait(&plan_in(1800, Bound::ResetMargin), &mut f),
-        End::RotatorCapacity
-    );
-    assert_eq!(f.elapsed(), 60);
 }

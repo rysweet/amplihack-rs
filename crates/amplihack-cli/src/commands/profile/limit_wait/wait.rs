@@ -7,8 +7,8 @@
 //! that two probes in a row agree on, so a torn or failed read of
 //! `.claude.json`, first or later, never ends the wait.
 
+use super::events::{Event, line};
 use super::plan::{Bound, Plan};
-use super::{Event, line};
 use std::time::Duration;
 
 /// How often the login fingerprint is taken again.

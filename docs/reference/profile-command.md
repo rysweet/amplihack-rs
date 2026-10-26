@@ -3112,7 +3112,14 @@ nor waited for (`skipped reason=piped_prompt`). The prompt is any
 positional argument, wherever it is, read with Claude's option table so
 that the values of options such as `--model`, `--output-format`,
 `--max-turns`, `--allowedTools` and `--append-system-prompt` are not taken
-for it; a prompt that starts with `-` counts only after `--`.
+for it; a prompt that starts with `-` counts only after `--`. The table
+includes Claude's hidden value-taking options (such as
+`--max-thinking-tokens`), which `claude --help` does not list. An option
+in no table, such as one a newer Claude added, is read as taking the next
+non-option word as its value. That errs toward "no prompt in the
+arguments", which with a piped stdin only means the step runs once as it
+did before the wait existed. The other way round would be worse: a wait of
+hours, then a rerun with no prompt.
 
 ### Order of attempts
 

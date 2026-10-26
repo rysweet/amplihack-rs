@@ -168,22 +168,45 @@ fn a_spend_limit_that_states_a_session_reset_waits_for_it() {
 
 #[test]
 fn a_prompt_piped_on_stdin_is_not_waited_for() {
-    let f = Fixture::new();
-    // `-p` with no prompt text: the prompt is on the pipe.
-    let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p"]);
-    c.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = c.spawn().expect("start amplihack");
-    {
-        use std::io::Write;
-        let mut stdin = child.stdin.take().unwrap();
-        stdin.write_all(b"the piped prompt\n").unwrap();
+    // `-p` with no prompt text: the prompt is on the pipe. The value of a
+    // hidden option (`--max-thinking-tokens`) or of an option this version
+    // does not know is not a prompt either, so these skip the wait too.
+    for claude_args in [
+        &["-p"][..],
+        &["-p", "--max-thinking-tokens", "8000"],
+        &["-p", "--some-new-opt", "value"],
+    ] {
+        let f = Fixture::new();
+        let mut args = vec!["claude", "--subprocess-safe", "--"];
+        args.extend_from_slice(claude_args);
+        let mut c = f.cmd(&args);
+        c.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = c.spawn().expect("start amplihack");
+        {
+            use std::io::Write;
+            let mut stdin = child.stdin.take().unwrap();
+            stdin.write_all(b"the piped prompt\n").unwrap();
+        }
+        let out = child.wait_with_output().unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{claude_args:?}: {}",
+            describe(&out)
+        );
+        assert_eq!(
+            f.count("0"),
+            1,
+            "{claude_args:?}: no rerun with an empty prompt"
+        );
+        assert_eq!(
+            events(&out),
+            ["skipped reason=piped_prompt"],
+            "{claude_args:?}"
+        );
     }
-    let out = child.wait_with_output().unwrap();
-    assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
-    assert_eq!(f.count("0"), 1, "no rerun with an empty prompt");
-    assert_eq!(events(&out), ["skipped reason=piped_prompt"]);
 }
 
 #[test]

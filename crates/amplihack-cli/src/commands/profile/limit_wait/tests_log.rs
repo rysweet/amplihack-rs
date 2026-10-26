@@ -4,9 +4,9 @@
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_log;`.
 
+use super::events::{Event, Skip, line};
 use super::plan::{Bound, NoWait};
 use super::wait::End;
-use super::{Event, Skip, line};
 use crate::commands::recipe::run::limit_patterns::Harness;
 
 /// 2026-10-18 08:00:00 -07:00.

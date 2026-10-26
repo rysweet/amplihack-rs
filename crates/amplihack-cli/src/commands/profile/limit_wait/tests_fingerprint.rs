@@ -3,6 +3,10 @@
 //! what must not count as a change, chiefly an OAuth token refresh that
 //! rewrites `.credentials.json`.
 //!
+//! Which config directory and ledgers are watched, and the rotator's
+//! capacity, are in `tests_fingerprint_ledgers.rs`, which uses the helpers
+//! here.
+//!
 //! `Fingerprint` has no `Debug`, so comparisons use `assert!(a == b)`.
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_fingerprint;`.
 
@@ -13,20 +17,20 @@ use std::fs;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 
-struct Env {
+pub(super) struct Env {
     _tmp: tempfile::TempDir,
-    tmp: PathBuf,
-    home: PathBuf,
-    store: ProfileStore,
+    pub(super) tmp: PathBuf,
+    pub(super) home: PathBuf,
+    pub(super) store: ProfileStore,
 }
 
-fn private(path: &Path, body: &str) {
+pub(super) fn private(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(path, body).unwrap();
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-fn account(uuid: Option<&str>, email: &str, pad: usize) -> String {
+pub(super) fn account(uuid: Option<&str>, email: &str, pad: usize) -> String {
     let mut v = serde_json::json!({
         "oauthAccount": {"emailAddress": email},
         "projects": {"pad": "p".repeat(pad)},
@@ -38,7 +42,7 @@ fn account(uuid: Option<&str>, email: &str, pad: usize) -> String {
 }
 
 /// Profiles `a` and `b` with logins; `~/.claude` with a login.
-fn env() -> Env {
+pub(super) fn env() -> Env {
     let tmp = tempfile::tempdir().unwrap();
     let base = tmp.path().to_path_buf();
     let home = base.join("home");
@@ -69,25 +73,25 @@ fn env() -> Env {
 }
 
 impl Env {
-    fn profile(&self, n: &str) -> Watch {
+    pub(super) fn profile(&self, n: &str) -> Watch {
         let name = ProfileName::parse(n).unwrap();
         Watch::new(Some(&self.store), Some(&name), None, Some(&self.home))
     }
 
-    fn home_watch(&self) -> Watch {
+    pub(super) fn home_watch(&self) -> Watch {
         Watch::new(Some(&self.store), None, None, Some(&self.home))
     }
 
-    fn dir(&self, n: &str) -> PathBuf {
+    pub(super) fn dir(&self, n: &str) -> PathBuf {
         self.store.root().join(n)
     }
 
-    fn rotator(&self, live: &str) {
+    pub(super) fn rotator(&self, live: &str) {
         self.rotator_cycle(live, 1, "stayed", false);
     }
 
     /// The rotate ledger (`profile rotate`) with its last cycle.
-    fn rotator_cycle(&self, live: &str, at: i64, outcome: &str, alert: bool) {
+    pub(super) fn rotator_cycle(&self, live: &str, at: i64, outcome: &str, alert: bool) {
         let alert = if alert { r#""no capacity""# } else { "null" };
         private(
             &rotate_ledger(self.store.root()),
@@ -97,7 +101,7 @@ impl Env {
         );
     }
 
-    fn auto_switch_ledger(&self, dir: &str, live: &str) {
+    pub(super) fn auto_switch_ledger(&self, dir: &str, live: &str) {
         let state = self.store.root().join(".auto-switch.d");
         fs::create_dir_all(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
@@ -110,11 +114,11 @@ impl Env {
     }
 }
 
-fn rotate_ledger(root: &Path) -> PathBuf {
+pub(super) fn rotate_ledger(root: &Path) -> PathBuf {
     amplihack_utils::rotator_status::ledger_path(root)
 }
 
-fn probe(w: &Watch) -> Fingerprint {
+pub(super) fn probe(w: &Watch) -> Fingerprint {
     w.probe().expect("a watched directory gives a fingerprint")
 }
 
@@ -275,105 +279,4 @@ fn home_reads_home_claude_json_not_one_inside_dot_claude() {
         &account(Some("uuid-new"), "me@example.invalid", 0),
     );
     assert!(before != probe(&w), "$HOME/.claude.json is read");
-}
-
-#[test]
-fn an_explicit_config_dir_of_home_claude_reads_its_own_claude_json() {
-    // Claude reads `$CLAUDE_CONFIG_DIR/.claude.json` whenever the variable
-    // is set, even to `$HOME/.claude`; the rotator ledger is still watched.
-    let e = env();
-    e.rotator("a");
-    let cfg = e.home.join(".claude");
-    private(
-        &cfg.join(".claude.json"),
-        &account(Some("uuid-inner"), "i@example.invalid", 0),
-    );
-    let w = Watch::new(Some(&e.store), None, Some(&cfg), Some(&e.home));
-    let before = probe(&w);
-    private(
-        &e.home.join(".claude.json"),
-        &account(Some("uuid-new"), "me@example.invalid", 0),
-    );
-    assert!(before == probe(&w), "$HOME/.claude.json is not read");
-    private(
-        &cfg.join(".claude.json"),
-        &account(Some("uuid-inner-2"), "i@example.invalid", 0),
-    );
-    let after = probe(&w);
-    assert!(before != after, "$HOME/.claude/.claude.json is read");
-    e.rotator("b");
-    assert!(after != probe(&w), "the rotator ledger is still watched");
-}
-
-#[test]
-fn a_rotation_into_home_claude_is_a_change_for_home() {
-    let e = env();
-    e.rotator("a");
-    let w = e.home_watch();
-    let before = probe(&w);
-    e.rotator("b");
-    assert!(before != probe(&w));
-}
-
-#[test]
-fn a_rotation_into_home_claude_is_ignored_for_an_inherited_profile() {
-    let e = env();
-    e.rotator("a");
-    let w = e.profile("a");
-    let before = probe(&w);
-    e.rotator("b");
-    assert!(before == probe(&w));
-}
-
-#[test]
-fn an_untrusted_rotator_ledger_counts_as_absent() {
-    let e = env();
-    let w = e.home_watch();
-    let absent = probe(&w);
-    e.rotator("a");
-    fs::set_permissions(
-        rotate_ledger(e.store.root()),
-        fs::Permissions::from_mode(0o666),
-    )
-    .unwrap();
-    assert!(absent == probe(&w));
-}
-
-#[test]
-fn a_swap_recorded_in_the_auto_switch_ledger_is_a_change_for_that_profile() {
-    let e = env();
-    e.auto_switch_ledger("a", "a");
-    let w = e.profile("a");
-    let before = probe(&w);
-    e.auto_switch_ledger("a", "b");
-    assert!(before != probe(&w));
-}
-
-#[test]
-fn a_fresh_rotator_cycle_with_capacity_counts_for_home_only() {
-    let e = env();
-    let now = crate::commands::profile::fsx::now();
-    let start = now - 600;
-    let home = e.home_watch();
-    assert!(!home.rotator_capacity(start), "no ledger, no capacity");
-    for outcome in ["swapped", "stayed"] {
-        e.rotator_cycle("a", now - 10, outcome, false);
-        assert!(home.rotator_capacity(start), "{outcome}");
-        assert!(!e.profile("a").rotator_capacity(start), "{outcome}");
-    }
-}
-
-#[test]
-fn a_stale_or_alerted_rotator_cycle_is_no_capacity() {
-    let e = env();
-    let now = crate::commands::profile::fsx::now();
-    let start = now - 600;
-    let home = e.home_watch();
-    // Recorded within a minute of the limit: its probe may predate it.
-    e.rotator_cycle("a", start + 60, "swapped", false);
-    assert!(!home.rotator_capacity(start));
-    e.rotator_cycle("a", now - 10, "swapped", true);
-    assert!(!home.rotator_capacity(start), "alert set");
-    e.rotator_cycle("a", now - 10, "alerted", false);
-    assert!(!home.rotator_capacity(start), "alerted outcome");
 }
