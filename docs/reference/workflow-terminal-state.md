@@ -769,6 +769,14 @@ orphan a live artifact.
   `pr list` call only. It ignores fork PRs, accepts only a URL on the validated
   origin repository, never logs the raw `remote.origin.url`, and fails closed
   on any `gh`, JSON, or validation error.
+- Origin and PR URL identity comes only from the shared
+  [GitHub repo identity parser](workflow-github-repo-identity.md) (issue
+  #1642). The step finds it with the same resolution ladder as the strict
+  terminal gate, sources it before `cd "$TARGET_REPO_DIR"`, rejects hostile
+  userinfo such as `https://evil.example/x@github.com/o/r`, and fails with
+  `FAILED_INVALID_INPUT` when no helper is found or when
+  `WORKFLOW_GITHUB_REPO_HELPER` is set but is not a readable file. The
+  failure reason names `amplihack install`.
 - Diagnostics do not print full environments, tokens, credentials, or auth
   headers.
 - Nonzero exit codes are preserved through nested recipe routing.

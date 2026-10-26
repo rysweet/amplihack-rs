@@ -1,8 +1,26 @@
 #!/usr/bin/env bash
+# This library is sourced; the variables it sets are read by its caller.
+# shellcheck disable=SC2034
 # Deterministic repository and completion evidence collection.
+# parse_github_repo_identity comes from the shared parser next to this file
+# (issue #1642). Sourcing only warns when it is missing. collect_evidence then
+# exits 2 rather than report github_remote=false, because a false value could
+# drop gh_required and relax the gh-missing check in validate (fail open).
+_finalization_collect_repo_helper="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
+if [ -f "$_finalization_collect_repo_helper" ] && [ -r "$_finalization_collect_repo_helper" ]; then
+  # shellcheck source=workflow_github_repo.sh disable=SC1090
+  . "$_finalization_collect_repo_helper"
+else
+  echo "WARNING: shared GitHub repo identity parser not found or unreadable at $_finalization_collect_repo_helper" >&2
+fi
+unset _finalization_collect_repo_helper
 collect_evidence() {
   if ! command -v jq >/dev/null 2>&1; then
     echo "ERROR: collect-finalization-evidence requires jq for structured JSON evidence" >&2
+    exit 2
+  fi
+  if ! declare -F parse_github_repo_identity >/dev/null 2>&1; then
+    echo "ERROR: collect-finalization-evidence requires parse_github_repo_identity from workflow_github_repo.sh; set WORKFLOW_GITHUB_REPO_HELPER or restore the helper next to this file" >&2
     exit 2
   fi
 
@@ -34,9 +52,9 @@ collect_evidence() {
     fi
     head_sha="$(git -C "$target_dir" rev-parse --verify HEAD)"
     remote_origin="$(git -C "$target_dir" config --get remote.origin.url 2>/dev/null || true)"
-    case "$remote_origin" in
-      git@github.com:*|ssh://git@github.com/*|https://github.com/*|http://github.com/*|https://*@github.com/*|http://*@github.com/*) github_remote="true" ;;
-    esac
+    if parse_github_repo_identity "$remote_origin" >/dev/null 2>&1; then
+      github_remote="true"
+    fi
     if [ -n "$(git -C "$target_dir" status --porcelain)" ]; then
       dirty_worktree="true"
     else
@@ -78,8 +96,21 @@ collect_evidence() {
   if [ "$publish_status" = "FOLLOWUP_CREATED" ] || [ -n "$pr_url" ]; then
     publish_state_reached="true"
   fi
-  case "$pr_url" in
-    https://github.com/*|http://github.com/*|https://*@github.com/*|http://*@github.com/*) github_remote="true" ;;
+  # A PR URL is always http(s); the shared parser checks host and userinfo.
+  # A PR or issue page may carry a subpath (/pull/5/files, /issues/7), which
+  # the parser does not accept, so check the owner/repo before it. The
+  # subpath may not contain dot segments, so it cannot name another repo, and
+  # a repo ending in .git is refused, as the parser refuses r.git/pull/5.
+  local pr_page_re='^(https?://[^?#]*)/(pull|issues)/[1-9][0-9]{0,9}(/[A-Za-z0-9_-][A-Za-z0-9._-]*)*/?([?#].*)?$'
+  local pr_repo_url="$pr_url"
+  if [[ "$pr_url" =~ $pr_page_re ]] && [[ "${BASH_REMATCH[1]}" != *.git ]]; then
+    pr_repo_url="${BASH_REMATCH[1]}"
+  fi
+  case "$pr_repo_url" in
+    http://*|https://*)
+      if parse_github_repo_identity "$pr_repo_url" >/dev/null 2>&1; then
+        github_remote="true"
+      fi ;;
   esac
   if { [ "$remote_host_type" = "github" ] || [ "$github_remote" = "true" ]; } && { [ "$meaningful_diff" != "false" ] || [ -n "$pr_url" ] || [ -n "$pr_number" ]; }; then
     gh_required="true"
