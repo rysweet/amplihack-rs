@@ -363,8 +363,11 @@ GitHub once, read-only, whether the **run's branch** already has an open PR in
 the origin repository:
 
 ```bash
-gh pr list --repo "$repo" --head "$branch" --state open --json url,number,isCrossRepository
+gh pr list --repo "$repo" --head "$branch" --state open --json url,number,isCrossRepository,headRefOid
 ```
+
+A PR counts only when its head commit is the worktree's `HEAD` (issue #1679), so
+a PR that does not hold exactly this run's work is ignored.
 
 **Which branch.** The branch is read from the run's worktree
 (`WORKTREE_SETUP_WORKTREE_PATH`, or `RECIPE_VAR_worktree_setup__worktree_path`).
@@ -385,7 +388,10 @@ path; there the current directory is the run's checkout.
 
 **When it runs.** Only on the missing-evidence path. That means:
 
-- GitHub host
+- GitHub host. When `REMOTE_HOST_TYPE` is unset because the run recorded no
+  workflow-prep output, the host is taken from the worktree's `origin`: only a
+  `github.com` origin is looked up (issue #1679). An explicit non-GitHub
+  `REMOTE_HOST_TYPE` still means no lookup.
 - no PR URL
 - no success publish state
 - no failure, no-op, or invalid evidence
@@ -406,11 +412,15 @@ did before, when any of the following is true:
 - `gh` errors
 - the JSON is malformed
 - only fork PRs exist
+- no same-repository PR has the worktree's `HEAD` as its head commit
 - the URL and number do not agree with each other or with the origin repository
 
 Failures print one fixed-phrase line on `stderr`,
-`WARNING: branch PR lookup failed (#1596): <reason>`. The lookup never writes
-to `stdout`.
+`WARNING: branch PR lookup failed (#1596): <reason>`. When the lookup is skipped
+because the worktree or branch cannot be established, it prints
+`INFO: branch PR lookup skipped (#1679): <reason>` instead, so a
+`FAILED_MISSING_TERMINAL_EVIDENCE` result says which check stopped it. The
+lookup never writes to `stdout`.
 
 **Effect.** A validated PR sets `PR_URL`, `PR_NUMBER` and
 `PUBLISH_STATE=EXISTING_OPEN_PR`. It is evidence, not proof:
@@ -429,7 +439,10 @@ specification. Section 15 runs step-22b's own command from
 
 In each, the run's branch lives in a separate `git worktree`. Section 15 also
 runs step-22b with the worktree path set-but-missing and unset; in both, an
-open PR on `REPO_PATH`'s unrelated branch is never looked up.
+open PR on `REPO_PATH`'s unrelated branch is never looked up. Section 16
+(issue #1679) runs step-22b with no recorded outputs at all, not even
+`REMOTE_HOST_TYPE`: an open PR at the worktree's `HEAD` resolves, a PR at
+another commit does not, and with no PR the run still fails.
 
 ---
 
