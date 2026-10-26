@@ -706,10 +706,25 @@ fn step_22b_issue_line_is_host_aware() {
     );
 }
 
+/// The text of workflow_final_status.sh, after checking step-22b runs it.
+fn final_status_helper() -> String {
+    let recipe = load_recipe("workflow-finalize");
+    let step = extract_step_body(recipe, "step-22b-final-status");
+    assert!(
+        step.contains("workflow_final_status.sh"),
+        "step-22b must run workflow_final_status.sh"
+    );
+    std::fs::read_to_string(
+        workspace_root().join("amplifier-bundle/tools/workflow_final_status.sh"),
+    )
+    .expect("read workflow_final_status.sh")
+}
+
 #[test]
 fn step_22b_pr_line_handles_empty_pr_url() {
-    let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(recipe, "step-22b-final-status");
+    // step-22b runs workflow_final_status.sh, which reads PR_URL from the
+    // recipe's own values and prints the summary (#1561), so check the helper.
+    let body = final_status_helper();
 
     // When PR_URL is empty (non-GitHub host), the summary should say
     // something like "PR: N/A" rather than "PR: " (empty)
@@ -1477,9 +1492,9 @@ fn step_03_preserves_local_tracking_fallback() {
 
 #[test]
 fn step_22b_preserves_pr_url_guard() {
-    // The existing PR_URL empty-check must be preserved
-    let recipe = load_recipe("workflow-finalize");
-    let body = extract_step_body(recipe, "step-22b-final-status");
+    // The existing PR_URL empty-check must be preserved. It lives in
+    // workflow_final_status.sh, which step-22b runs (#1561).
+    let body = final_status_helper();
 
     let has_pr_url_check =
         body.contains("PR_URL") && (body.contains("-z \"$PR_URL\"") || body.contains("PR_URL:-"));

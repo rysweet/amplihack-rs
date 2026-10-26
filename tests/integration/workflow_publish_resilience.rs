@@ -370,6 +370,8 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         .arg(command)
         .current_dir(&worktree)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
+        // step-15 runs worktree_setup_path.sh from the bundle, AMPLIHACK_HOME first.
+        .env("AMPLIHACK_HOME", workspace_root())
         .env("WORKTREE_SETUP_WORKTREE_PATH", &worktree)
         .env(
             "RECIPE_VAR_worktree_setup",

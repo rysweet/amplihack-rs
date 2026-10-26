@@ -1083,8 +1083,9 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
 // #1561: the worktree path comes from worktree_setup_path.sh, which reads only
 // the JSON in RECIPE_VAR_worktree_setup and checks it, so neither an inherited
 // WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
-// can outrank the recipe's own worktree. A rejected or unset path skips the step.
-const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "worktree path gone"; cd -P "$wt""#;
+// can outrank the recipe's own worktree. A rejected or unset path skips the step
+// ("worktree path gone"); a missing tool skips with "worktree_setup_path.sh not found".
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
 
 /// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
 pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
