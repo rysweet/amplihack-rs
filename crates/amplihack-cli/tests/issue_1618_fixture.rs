@@ -41,8 +41,8 @@ pub const WEEKLY_TEXT: &str =
 /// - prints `attempt <n> output` on stdout, then `$STDOUT_TEXT` if set;
 /// - for its first `$LIMIT_CALLS` calls (default 0) in step `$LIMIT_STEP`
 ///   (any step when unset), and only under profile `$LIMIT_PROFILE` when that
-///   is set, prints `$LIMIT_MESSAGE` on stderr and exits `$LIMIT_EXIT`
-///   (default 1);
+///   is set, prints `$LIMIT_MESSAGE_<profile>` (or, when that is unset,
+///   `$LIMIT_MESSAGE`) on stderr and exits `$LIMIT_EXIT` (default 1);
 /// - otherwise exits 0.
 const STUB_CLAUDE: &str = r#"#!/bin/sh
 case "$1" in
@@ -71,7 +71,8 @@ if [ -n "$LIMIT_PROFILE" ] && [ "$LIMIT_PROFILE" != "${AMPLIHACK_CLAUDE_PROFILE-
 echo "attempt $n output"
 if [ -n "$STDOUT_TEXT" ]; then printf '%s\n' "$STDOUT_TEXT"; fi
 if [ "$n" -le "$limit" ]; then
-  printf '%s\n' "$LIMIT_MESSAGE" >&2
+  eval "msg=\${LIMIT_MESSAGE_${AMPLIHACK_CLAUDE_PROFILE:-}-\$LIMIT_MESSAGE}"
+  printf '%s\n' "$msg" >&2
   exit "${LIMIT_EXIT:-1}"
 fi
 exit 0

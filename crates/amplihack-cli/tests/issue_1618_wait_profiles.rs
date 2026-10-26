@@ -5,6 +5,9 @@
 //! - A2: with auto-switch off, the step waits and retries under the same
 //!   profile, and its scratch files go in `$HOME/.amplihack/rerun/`, not
 //!   under the profile root.
+//! - With auto-switch out of profiles, the wait is for the latest reset
+//!   any attempt saw, in either order, so the retry under the inherited
+//!   profile starts only after that profile's own limit has reset.
 //! - D7: with the wait disabled, auto-switch's last failure is passed up
 //!   with one `skipped reason=disabled` line.
 //! - With no inherited profile but a `.default` pointer, the wait watches
@@ -119,15 +122,21 @@ fn a2_with_auto_switch_off_the_step_waits_and_retries_under_its_own_profile() {
     f.assert_isolated("0");
 }
 
-#[test]
-fn after_the_last_auto_switch_candidate_the_step_waits_then_retries_its_own_profile() {
+const RESET_0830: &str = "You've hit your session limit · resets 8:30am (America/Los_Angeles)";
+const RESET_0930: &str = "You've hit your session limit · resets 9:30am (America/Los_Angeles)";
+
+/// X and Y both limited, X with `x_limit` and Y with `y_limit`: the step
+/// waits once, for the later of the two resets, then retries under X.
+fn wait_after_both_profiles(x_limit: &str, y_limit: &str) -> Vec<String> {
     let f = with_profiles();
     switch_on(&f);
     let mut c = nested_x(&f);
     // The first two calls (X, then Y) are limited; the third succeeds.
     c.env(TOGGLE_ENV, "1")
         .env("LIMIT_PROFILE", "")
-        .env("LIMIT_CALLS", "2");
+        .env("LIMIT_CALLS", "2")
+        .env("LIMIT_MESSAGE_X", x_limit)
+        .env("LIMIT_MESSAGE_Y", y_limit);
     let out = f.run(&mut c);
     assert!(out.status.success(), "{}", describe(&out));
     assert_eq!(f.count("0"), 3, "X, then Y, then the retry after the wait");
@@ -138,11 +147,30 @@ fn after_the_last_auto_switch_candidate_the_step_waits_then_retries_its_own_prof
         "X",
         "the retry uses the inherited profile, not the last candidate"
     );
-    let ev = events(&out);
+    events(&out)
+}
+
+/// Both orders of resets: the wait is for 9:30 whether X or Y saw it, so
+/// the retry under X never starts before X's own limit has reset.
+#[test]
+fn after_the_last_auto_switch_candidate_the_step_waits_for_the_later_reset_then_retries_its_own_profile()
+ {
+    let waited_for_0930 = vec![
+        "start reason=usage_limit harness=claude reset=2026-10-18 09:30:00 -07:00 \
+         until=2026-10-18 09:32:00 -07:00 bound=reset+margin"
+            .to_string(),
+        "end reason=reset reached".to_string(),
+        "resume attempt=3".to_string(),
+    ];
     assert_eq!(
-        ev.last().map(String::as_str),
-        Some("resume attempt=3"),
-        "{ev:?}"
+        wait_after_both_profiles(RESET_0930, RESET_0830),
+        waited_for_0930,
+        "X resets after Y: the wait is for X's reset, not Y's"
+    );
+    assert_eq!(
+        wait_after_both_profiles(RESET_0830, RESET_0930),
+        waited_for_0930,
+        "Y resets after X: the wait is for Y's reset, the later one"
     );
 }
 

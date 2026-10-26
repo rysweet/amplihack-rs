@@ -45,6 +45,8 @@ mod tests_config;
 #[cfg(test)]
 mod tests_contract;
 #[cfg(all(test, unix))]
+mod tests_exhausted_reset;
+#[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
 mod tests_mv;
@@ -223,9 +225,12 @@ pub fn substitute_nested(store: &ProfileStore, inherited: &ProfileName) -> Optio
                 return None;
             }
         };
-        let (c, reason) = rerun::substitute(store, &state, &eff.config, inherited)?;
-        eprintln!("{}", rerun::substitution_note(inherited, &reason, &c));
-        Some(c)
+        let sub = rerun::substitute(store, &state, &eff.config, inherited)?;
+        eprintln!(
+            "{}",
+            rerun::substitution_note(inherited, &sub.reason, &sub.profile)
+        );
+        Some(sub.profile)
     }
     #[cfg(not(unix))]
     {

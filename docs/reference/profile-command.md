@@ -3086,6 +3086,9 @@ once and runs unsupervised, as before.
 
 With an inherited profile and auto-switch on, the
 [auto-switch reruns](#usage-limit-reruns) come first and the wait follows.
+The retry after the wait always runs under the inherited profile, not under
+the last profile auto-switch tried, so the wait is for the **latest** reset
+among every limit this step met (see [Order of attempts](#order-of-attempts)).
 Otherwise the same supervisor runs with no profile substitution: the retry
 runs under the inherited profile, or with no override when none was
 inherited. With no inherited profile the launch may still apply the
@@ -3138,6 +3141,19 @@ After an attempt hits a usage limit, in this order:
    step exits with `128` plus the signal; after `step timeout` or
    `session ended` the failed attempt's result is passed up; after any
    other reason `resume` is written and the step runs once more.
+
+Steps 5 and 6 read every limit this step has met, not only the last
+attempt's. When auto-switch ran the step under several profiles before
+running out, each attempt's limit came from a different account, and the
+retry runs under the inherited profile. So the wait's `reset` is the latest
+reset among those limits: a retry timed from the last profile's reset could
+start while the inherited profile's own window is still closed, and then
+fail with `skipped reason=already_waited`. A limit no wait lifts (a spend
+limit with no reset, a reset more than five hours away) skips the wait
+whichever attempt saw it. When auto-switch moved the step off the inherited
+profile before the first attempt, because the readings already showed it
+exhausted, the inherited account's limit is the latest reset among its
+exhausted windows in those readings.
 
 There is at most one wait per step. The retry runs the step **from the
 start** with the same prompt, so anything the failed attempt already did (a

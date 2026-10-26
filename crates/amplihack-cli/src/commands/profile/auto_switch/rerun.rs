@@ -13,11 +13,12 @@ use super::fsx;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
-use crate::commands::profile::limit_wait::plan::NoWait;
+use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use crate::commands::recipe::run::limit_patterns::Harness;
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -77,6 +78,17 @@ fn limit_reason(r: &Reading, now: i64) -> String {
     format!("at {pct:.0}% of its {window} limit")
 }
 
+/// When the exhausted windows of `r` reset: the latest of them, as a wait
+/// would need (#1618). `None` when no window is exhausted.
+pub(super) fn exhausted_reset(r: &Reading, threshold: u8, now: i64) -> Option<i64> {
+    [r.five_hour.as_ref(), r.seven_day.as_ref()]
+        .into_iter()
+        .flatten()
+        .filter(|w| candidate::adjusted(Some(w), now) >= f64::from(threshold))
+        .map(|w| w.resets_at)
+        .max()
+}
+
 /// The note printed when a nested launch is moved to another profile.
 pub fn substitution_note(from: &ProfileName, reason: &str, to: &ProfileName) -> String {
     format!(
@@ -86,15 +98,24 @@ pub fn substitution_note(from: &ProfileName, reason: &str, to: &ProfileName) -> 
     )
 }
 
+/// A profile chosen before the first attempt because the inherited one is
+/// exhausted.
+pub struct Substitute {
+    pub profile: ProfileName,
+    /// For the note: why the inherited profile was passed over.
+    pub reason: String,
+    /// When the inherited account's exhausted windows reset (ledger clock).
+    pub inherited_reset: Option<i64>,
+}
+
 /// The profile a nested launch inheriting `inherited` should use, when the
-/// account live there is exhausted and another profile has quota left, with
-/// the reason for the note.
+/// account live there is exhausted and another profile has quota left.
 pub fn substitute(
     store: &ProfileStore,
     state: &State,
     cfg: &Config,
     inherited: &ProfileName,
-) -> Option<(ProfileName, String)> {
+) -> Option<Substitute> {
     if !state.exists() {
         return None; // no readings yet
     }
@@ -113,10 +134,16 @@ pub fn substitute(
         return None;
     }
     let reason = limit_reason(reading, now);
+    let inherited_reset = exhausted_reset(reading, cfg.threshold, now);
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
-    nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip)
-        .map(|c| (c, reason))
+    nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {
+        Substitute {
+            profile: c,
+            reason,
+            inherited_reset,
+        }
+    })
 }
 
 fn record_limit(state: &State, account: &str, reset: i64) {
@@ -225,11 +252,25 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
     // The profile this attempt runs under; `None` keeps the inherited
     // environment.
     let mut profile: Option<ProfileName> = None;
+    // Every limit this step has met, folded with `plan::later`: a wait is
+    // for the latest reset, because its retry runs under the inherited
+    // profile, not under whichever profile was limited last (#1618).
+    let mut seen: Option<WaitFor> = None;
     if let Some(sw) = &switch {
         let eff = config::effective(sw.store.root());
-        if let Some((c, reason)) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
-            eprintln!("{}", substitution_note(&sw.inherited, &reason, &c));
-            profile = Some(c);
+        if let Some(sub) = substitute(sw.store, &sw.state, &eff.config, &sw.inherited) {
+            eprintln!(
+                "{}",
+                substitution_note(&sw.inherited, &sub.reason, &sub.profile)
+            );
+            // The inherited account never runs before the retry, so its
+            // reset comes from the readings, moved onto the wait's clock.
+            let wait_now = waiter.now();
+            seen = sub.inherited_reset.map(|r| {
+                let reset = wait_now.saturating_add(r.saturating_sub(fsx::now()));
+                plan::from_reading(Harness::Claude, reset, wait_now)
+            });
+            profile = Some(sub.profile);
         }
     }
     let mut tried: Vec<String> = Vec::new();
@@ -253,6 +294,8 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };
+        let wait = seen.map_or(lim.wait, |s| plan::later(s, lim.wait));
+        seen = Some(wait);
         if let Some(sw) = &switch {
             let current = profile.as_ref().unwrap_or(&sw.inherited).clone();
             tried.push(current.to_string());
@@ -291,7 +334,7 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
                 }
             }
         }
-        match waiter.after_limit(&lim, n, &signals) {
+        match waiter.after_limit(wait, n, &signals) {
             AfterLimit::Finish(code) => return attempt.finish(code),
             AfterLimit::Retry => {
                 attempt.discard();
