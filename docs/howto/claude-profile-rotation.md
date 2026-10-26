@@ -513,7 +513,10 @@ a login with capacity in `~/.claude`, then tells the session to continue.
 
 You need:
 
-- Claude Code 2.1.306 or later (`claude --version`).
+- Claude Code 2.1.306 or later (`claude --version`). For an older `claude`,
+  `amplihack install` leaves the hook out and says so: Claude Code before
+  2.1.78 does not know `StopFailure` and ignores a settings file that names
+  it.
 - `amplihack install` run with this version of amplihack, which registers the
   hook in `~/.claude/settings.json`.
 - Auto-switch on and the rotator running:
@@ -548,10 +551,10 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
-2. The hook reads the rotator's ledger every 15 seconds. It waits for a cycle
-   recorded more than 60 seconds after the limit hit that ended `swapped` or
-   `stayed` with no ALERT. The margin skips a cycle that was already
-   measuring when the limit hit. After the first hour it reads the ledger
+2. If no rotator is running, the hook exits at once (`rotator-down`).
+   Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
+   cycle that started measuring after the limit hit and ended `swapped` or
+   `stayed` with no ALERT. After the first hour it reads the ledger
    every 5 minutes instead. It stops waiting if you turn auto-switch off
    (`disabled`), if you send a prompt in that session during the wait, for
    example `continue` (`moved-on`), or if the session exits
@@ -590,7 +593,9 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 
 `no-capacity-timeout` usually means every login was at capacity, so the
-rotator wrote `ALERT: no profile has capacity`, or the rotator was not running.
+rotator wrote `ALERT: no profile has capacity`. `rotator-down` means the
+rotator was not running when the limit hit; start it with
+`amplihack profile rotate start`.
 `moved-on` means you sent a prompt in that session during the wait. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
@@ -879,15 +884,11 @@ full rule is in
   or when every login is at capacity, a session stopped by a limit is never
   resumed. The resume waits for at most 7 days; a shorter `--interval`
   resumes sooner. If you send a prompt in the session during the wait, the
-  hook stops without waking it (`moved-on`). With no rotator running, each
-  limited session still leaves a hook process that reads the ledger every
-  5 minutes until its session exits or the 7 days run out
-  ([#1659](https://github.com/rysweet/amplihack-rs/issues/1659)). A session
-  is treated as exited when the hook's parent process changes; if Claude Code
-  runs the hook under a shell that outlives it, the hook waits out the 7 days.
-  With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
-  above about 50 seconds, a cycle measured before the limit can still count,
-  and one resume may be spent on a login that is still at its limit.
+  hook stops without waking it (`moved-on`). A rotator started after the
+  limit does not help that session: its hook already ended as
+  `rotator-down`. A session is treated as exited when the hook's parent
+  process changes; if Claude Code runs the hook under a shell that outlives
+  it, the hook waits out the 7 days.
 - **The ledger records the user, not the organization.** The rotate ledger
   is unchanged and names the account in `~/.claude` by user (or e-mail).
   If someone runs `/login` in `~/.claude` and signs in to the same user in

@@ -1,6 +1,9 @@
 //! Settings.json configuration, hook contract validation, and framework verification.
 
-use super::hooks::{ensure_array, ensure_object, update_hook_paths, wrapper_matches};
+use super::hooks::{
+    ensure_array, ensure_object, is_own_wrapper, remove_hook_wrappers, update_hook_paths,
+    wrapper_matches,
+};
 use super::paths::xpia_hooks_dir;
 use super::types::*;
 use anyhow::{Context, Result, bail};
@@ -68,7 +71,16 @@ pub(super) fn ensure_settings_json(
     let mut settings = read_settings_json(settings_path)?;
     ensure_permissions(&mut settings);
     let with_xpia = xpia_hooks_dir()?.exists();
-    register_hooks(&mut settings, hooks_bin, with_xpia);
+    let old_claude = claude_too_old_for_limit_resume();
+    if let Some(version) = &old_claude {
+        println!(
+            "  ⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: the usage-limit \
+             resume hook (StopFailure) is not registered; upgrade Claude Code and run \
+             `amplihack install` again"
+        );
+    }
+    let limit_resume = old_claude.is_none();
+    register_hooks(&mut settings, hooks_bin, with_xpia, limit_resume);
 
     fs::write(
         settings_path,
@@ -77,7 +89,7 @@ pub(super) fn ensure_settings_json(
     .with_context(|| format!("failed to write {}", settings_path.display()))?;
     println!("  ✅ settings.json configured");
 
-    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings);
+    let hook_contract_drift = validate_amplihack_native_hook_contract(&settings, limit_resume);
     if hook_contract_drift.is_empty() {
         println!("  ✅ Native amplihack hook contract matches hooks.json");
     } else {
@@ -94,7 +106,7 @@ pub(super) fn ensure_settings_json(
     // Collect deduplicated event names that were registered
     let registered_events: Vec<String> = {
         let mut seen = BTreeSet::new();
-        for spec in AMPLIHACK_HOOK_SPECS {
+        for spec in amplihack_specs(limit_resume) {
             seen.insert(spec.event.to_string());
         }
         seen.into_iter().collect()
@@ -103,10 +115,69 @@ pub(super) fn ensure_settings_json(
     Ok((true, registered_events))
 }
 
+/// The first Claude Code the limit-resume hook (`StopFailure` with
+/// `asyncRewake`) was verified on. Versions before 2.1.78 do not know
+/// `StopFailure` and skip the whole settings file that names it (#1659).
+pub(super) const LIMIT_RESUME_MIN_CLAUDE: semver::Version = semver::Version::new(2, 1, 306);
+
+/// The version of the `claude` a launch would run, when it is known and
+/// older than [`LIMIT_RESUME_MIN_CLAUDE`]. An unknown version (no `claude`
+/// yet, or no answer within the probe budget) is not too old: Claude Code
+/// installed later is current.
+pub(super) fn claude_too_old_for_limit_resume() -> Option<String> {
+    // Unit tests never run the host's `claude`.
+    if cfg!(test) {
+        return None;
+    }
+    let resolution = amplihack_utils::launch_target::resolve(
+        "claude",
+        amplihack_utils::launch_target::OverrideOrigin::User,
+    );
+    resolution
+        .target
+        .map(|t| t.version)
+        .filter(|v| too_old_for_limit_resume(v))
+}
+
+/// Whether `version` (semver) is older than [`LIMIT_RESUME_MIN_CLAUDE`];
+/// `false` when it does not parse.
+pub(super) fn too_old_for_limit_resume(version: &str) -> bool {
+    semver::Version::parse(version).is_ok_and(|v| v < LIMIT_RESUME_MIN_CLAUDE)
+}
+
+/// The amplihack hook specs to register: all of them, less `StopFailure`
+/// when `limit_resume` is false.
+fn amplihack_specs(limit_resume: bool) -> Vec<HookSpec> {
+    AMPLIHACK_HOOK_SPECS
+        .iter()
+        .filter(|spec| limit_resume || spec.event != LIMIT_RESUME_EVENT)
+        .cloned()
+        .collect()
+}
+
 /// Replaces amplihack's hook entries in `settings` (and xpia's, when its hooks
 /// are installed) with this build's, leaving every other entry in place.
-fn register_hooks(settings: &mut Value, hooks_bin: &Path, with_xpia: bool) {
-    update_hook_paths(settings, "amplihack", AMPLIHACK_HOOK_SPECS, hooks_bin);
+/// Without `limit_resume`, amplihack's `StopFailure` entry is removed.
+pub(super) fn register_hooks(
+    settings: &mut Value,
+    hooks_bin: &Path,
+    with_xpia: bool,
+    limit_resume: bool,
+) {
+    update_hook_paths(
+        settings,
+        "amplihack",
+        &amplihack_specs(limit_resume),
+        hooks_bin,
+    );
+    if !limit_resume {
+        for spec in AMPLIHACK_HOOK_SPECS
+            .iter()
+            .filter(|s| s.event == LIMIT_RESUME_EVENT)
+        {
+            remove_hook_wrappers(settings, spec, "amplihack");
+        }
+    }
     if with_xpia {
         update_hook_paths(settings, "xpia", XPIA_HOOK_SPECS, hooks_bin);
     }
@@ -128,8 +199,10 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
         return;
     }
     let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
-    let results =
-        refresh_profile_settings(&|settings| register_hooks(settings, hooks_bin, with_xpia));
+    let limit_resume = claude_too_old_for_limit_resume().is_none();
+    let results = refresh_profile_settings(&|settings| {
+        register_hooks(settings, hooks_bin, with_xpia, limit_resume)
+    });
     let updated = results
         .iter()
         .filter(|(_, r)| *r == Refresh::Updated)
@@ -144,27 +217,37 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     }
 }
 
-/// Issue #1526: the amplihack hook registrations this build would add that
-/// `settings` lacks, as `Event (subcommand)`. Empty when `settings` holds no
-/// amplihack hook at all: that file is unconfigured rather than out of date,
-/// and the launch bootstrap registers hooks in it.
-pub(super) fn missing_hook_registrations(settings: &Value) -> Vec<String> {
-    let registered = |spec: &HookSpec| {
+/// Issue #1526: the amplihack hook registrations this build would add or
+/// change in `settings`, as `Event (subcommand)`: missing, or registered
+/// with another `timeout` or `asyncRewake` (#1659). `StopFailure` counts
+/// only with `limit_resume`. Empty when `settings` holds no amplihack hook
+/// at all: that file is unconfigured rather than out of date, and the launch
+/// bootstrap registers hooks in it.
+pub(super) fn missing_hook_registrations(settings: &Value, limit_resume: bool) -> Vec<String> {
+    let wrappers = |spec: &HookSpec| {
         settings
             .get("hooks")
             .and_then(|hooks| hooks.get(spec.event))
             .and_then(Value::as_array)
-            .is_some_and(|wrappers| {
-                wrappers
-                    .iter()
-                    .any(|wrapper| wrapper_matches(wrapper, spec, "amplihack"))
-            })
+            .map(Vec::as_slice)
+            .unwrap_or_default()
     };
-    if !AMPLIHACK_HOOK_SPECS.iter().any(registered) {
+    let specs = amplihack_specs(limit_resume);
+    let ours = |spec: &HookSpec| {
+        wrappers(spec)
+            .iter()
+            .any(|wrapper| is_own_wrapper(wrapper, spec, "amplihack"))
+    };
+    if !specs.iter().any(ours) {
         return Vec::new();
     }
+    let current = |spec: &HookSpec| {
+        wrappers(spec)
+            .iter()
+            .any(|wrapper| wrapper_matches(wrapper, spec, "amplihack"))
+    };
     let mut missing = BTreeSet::new();
-    for spec in AMPLIHACK_HOOK_SPECS.iter().filter(|spec| !registered(spec)) {
+    for spec in specs.iter().filter(|spec| !current(spec)) {
         let HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
         missing.insert(format!("{} ({subcmd})", spec.event));
     }
@@ -327,11 +410,19 @@ pub(super) fn ensure_permissions(settings: &mut Value) {
     }
 }
 
-pub(super) fn validate_amplihack_native_hook_contract(settings: &Value) -> Vec<String> {
+/// Drift between `settings` and the canonical hook contract. `StopFailure`
+/// is checked only with `limit_resume`.
+pub(super) fn validate_amplihack_native_hook_contract(
+    settings: &Value,
+    limit_resume: bool,
+) -> Vec<String> {
     let mut drift = Vec::new();
     let mut seen_events = Vec::new();
 
     for entry in CANONICAL_AMPLIHACK_HOOK_CONTRACT {
+        if !limit_resume && entry.event == LIMIT_RESUME_EVENT {
+            continue;
+        }
         if !seen_events.contains(&entry.event) {
             seen_events.push(entry.event);
         }
@@ -632,7 +723,7 @@ mod tests {
     #[test]
     fn validate_empty_settings_reports_missing() {
         let settings = json!({});
-        let drift = validate_amplihack_native_hook_contract(&settings);
+        let drift = validate_amplihack_native_hook_contract(&settings, true);
         // With no hooks configured, all expected hooks should be missing
         assert!(!drift.is_empty());
         assert!(drift.iter().any(|d| d.contains("missing")));

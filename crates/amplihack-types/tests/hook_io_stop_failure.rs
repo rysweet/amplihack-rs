@@ -1,7 +1,7 @@
 //! Issue #1658 (B): `HookInput::StopFailure`, the payload Claude Code sends
 //! when a turn ends on an API error (rate limit, overload, auth failure).
-//! Parsed by hand like the other variants: snake_case and camelCase aliases,
-//! no `#[serde(default)]`, a wrongly typed known field is an error.
+//! Parsed by hand like the other variants, with snake_case and camelCase
+//! aliases, but loosely (issue #1659): a wrongly typed field reads as absent.
 
 use amplihack_types::HookInput;
 use serde_json::{Value, json};
@@ -138,21 +138,41 @@ fn null_fields_are_none() {
 }
 
 #[test]
-fn numeric_error_is_a_parse_error_not_unknown() {
-    let err = parse(json!({"hook_event_name": "StopFailure", "error": 429}));
-    assert!(err.is_err(), "a non-string error must not parse");
+fn wrongly_typed_fields_are_dropped_and_the_rest_kept() {
+    let input = parse(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s-1",
+        "error": "rate_limit",
+        "error_details": {"code": 429},
+        "last_assistant_message": ["not", "text"],
+        "stop_hook_active": "yes",
+        "transcript_path": 7
+    }))
+    .unwrap();
+    let HookInput::StopFailure {
+        session_id,
+        error,
+        error_details,
+        last_assistant_message,
+        stop_hook_active,
+        transcript_path,
+        ..
+    } = input
+    else {
+        panic!("not StopFailure: {input:?}");
+    };
+    assert_eq!(session_id.as_deref(), Some("s-1"));
+    assert_eq!(error.as_deref(), Some("rate_limit"));
+    assert_eq!(error_details, None);
+    assert_eq!(last_assistant_message, None);
+    assert_eq!(stop_hook_active, None);
+    assert_eq!(transcript_path, None);
 }
 
 #[test]
-fn wrongly_typed_stop_hook_active_is_a_parse_error() {
-    assert!(parse(json!({"hook_event_name": "StopFailure", "stop_hook_active": "yes"})).is_err());
-}
-
-#[test]
-fn error_detail_object_is_a_parse_error_not_silently_dropped() {
-    assert!(
-        parse(json!({"hook_event_name": "StopFailure", "error_details": {"code": 429}})).is_err()
-    );
+fn a_numeric_error_is_no_error() {
+    let input = parse(json!({"hook_event_name": "StopFailure", "error": 429})).unwrap();
+    assert!(matches!(input, HookInput::StopFailure { error: None, .. }));
 }
 
 #[test]

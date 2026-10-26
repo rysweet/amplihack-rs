@@ -88,6 +88,8 @@ pub struct Measurement {
     pub note: Option<String>,
     /// Consecutive failed live probes, including this cycle's.
     pub failed: u32,
+    /// When measuring started, epoch seconds.
+    pub measured_at: i64,
 }
 
 pub fn measure_and_decide(
@@ -95,12 +97,13 @@ pub fn measure_and_decide(
     binary: &crate::binary_finder::BinaryInfo,
     snap: &Snap,
 ) -> Result<Measurement, ProfileError> {
-    let t = now();
+    let measured_at = now();
     let live = match &snap.live {
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
     };
-    let (reading, others) = measure::measure(&ctx.store, binary, live, &snap.candidates, t);
+    let (reading, others) =
+        measure::measure(&ctx.store, binary, live, &snap.candidates, measured_at);
     let measured: Vec<Measured> = others
         .iter()
         .map(|(name, reading)| Measured {
@@ -119,6 +122,7 @@ pub fn measure_and_decide(
         decision,
         note,
         failed,
+        measured_at,
     })
 }
 

@@ -141,6 +141,8 @@ struct Fake {
     prompt_at: Option<i64>,
     /// The Claude Code session exits at this many seconds since START.
     gone_at: Option<i64>,
+    /// No rotator can record a cycle.
+    rotator_down: bool,
 }
 
 impl Fake {
@@ -157,6 +159,7 @@ impl Fake {
             panic_on_now: false,
             prompt_at: None,
             gone_at: None,
+            rotator_down: false,
         }
     }
 
@@ -196,11 +199,16 @@ impl Deps for Fake {
     fn session_alive(&mut self) -> bool {
         self.gone_at.is_none_or(|t| self.clock - START < t)
     }
+    fn rotator_down(&mut self, _now: i64) -> bool {
+        self.rotator_down
+    }
 }
 
+/// A cycle measured and recorded `at_offset` seconds after START.
 fn cycle(outcome: &str, at_offset: i64, alert: bool) -> CycleStatus {
     CycleStatus {
         at: Some(START + at_offset),
+        measured_at: Some(START + at_offset),
         outcome: Some(outcome.into()),
         alert,
         live: Some("spare".into()),
@@ -258,6 +266,8 @@ fn outcome_strings_and_exit_codes() {
         (Outcome::Cap, "cap", 0),
         (Outcome::StopHookActive, "stop-hook-active", 0),
         (Outcome::GuardFailed, "guard-failed", 0),
+        (Outcome::SessionGone, "session-gone", 0),
+        (Outcome::RotatorDown, "rotator-down", 0),
         (Outcome::Disabled, "disabled", 0),
         (Outcome::NotLimit, "not-limit", 0),
     ];
@@ -418,18 +428,30 @@ fn gate_order_is_disabled_notlimit_stopactive_duplicate_cap_proceed() {
 // ── fresh_capacity ──────────────────────────────────────────────────────────
 
 #[test]
-fn fresh_capacity_needs_a_cycle_recorded_after_the_margin() {
-    assert_eq!(FRESH_MARGIN_SECS, 60);
-    let at = |o| Some(cycle("swapped", o, false));
+fn fresh_capacity_needs_a_cycle_measured_after_the_hook_started() {
+    let measured = |m: i64| CycleStatus {
+        measured_at: Some(START + m),
+        ..cycle("swapped", 600, false)
+    };
     assert!(
-        !fresh_capacity(at(-5).as_ref(), START),
-        "older than the hook"
+        !fresh_capacity(Some(&measured(-30)), START),
+        "measured before"
     );
-    assert!(!fresh_capacity(at(0).as_ref(), START));
-    assert!(!fresh_capacity(at(59).as_ref(), START));
-    assert!(!fresh_capacity(at(60).as_ref(), START), "margin is strict");
-    assert!(fresh_capacity(at(61).as_ref(), START));
-    assert!(fresh_capacity(Some(&cycle("stayed", 61, false)), START));
+    assert!(!fresh_capacity(Some(&measured(0)), START), "strictly after");
+    assert!(fresh_capacity(Some(&measured(1)), START));
+    assert!(fresh_capacity(Some(&cycle("stayed", 1, false)), START));
+}
+
+#[test]
+fn without_measured_at_a_cycle_must_be_recorded_after_the_margin() {
+    // A ledger from a rotator older than #1659.
+    assert_eq!(FRESH_MARGIN_SECS, 60);
+    let at = |o| CycleStatus {
+        measured_at: None,
+        ..cycle("swapped", o, false)
+    };
+    assert!(!fresh_capacity(Some(&at(60)), START), "margin is strict");
+    assert!(fresh_capacity(Some(&at(61)), START));
 }
 
 #[test]
@@ -441,6 +463,7 @@ fn fresh_capacity_refuses_no_capacity_states() {
     }
     let no_at = CycleStatus {
         at: None,
+        measured_at: None,
         outcome: Some("swapped".into()),
         alert: false,
         live: None,
@@ -535,8 +558,13 @@ fn b3_cycle_older_than_the_hook_never_resumes() {
 }
 
 #[test]
-fn b4_cycle_inside_the_freshness_margin_never_resumes() {
-    let mut d = Fake::new(true, Box::new(|_| Some(cycle("swapped", 59, false))));
+fn b4_cycle_measured_before_the_limit_never_resumes() {
+    // A long probe: measured before the hook started, recorded well after.
+    let measured_early = CycleStatus {
+        measured_at: Some(START - 1),
+        ..cycle("swapped", 300, false)
+    };
+    let mut d = Fake::new(true, Box::new(move |_| Some(measured_early.clone())));
     let out = run_with(&limit_input("s", "hit your limit"), &mut d);
     assert_timeout(&d, out);
 }
@@ -840,7 +868,47 @@ fn loop_resume_then_same_limit_again_is_not_resumed() {
     assert!(outcomes[1..].iter().all(|o| *o == Outcome::Duplicate));
 }
 
+// ── rotator down ────────────────────────────────────────────────────────────
+
+#[test]
+fn rotator_down_at_the_start_ends_without_waiting() {
+    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    d.rotator_down = true;
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::RotatorDown);
+    assert_eq!(out.exit_code(), 0);
+    assert!(d.sleeps.is_empty(), "no wait");
+    assert!(d.guard.events.is_empty() && d.guard.sessions.is_empty());
+    assert_eq!(d.logs.len(), 1);
+    assert_eq!(d.logs[0].outcome, Outcome::RotatorDown);
+}
+
+#[test]
+fn a_duplicate_event_is_reported_before_a_down_rotator() {
+    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let input = limit_input("s", "hit your limit");
+    assert_eq!(run_with(&input, &mut d), Outcome::Resumed);
+    d.rotator_down = true;
+    assert_eq!(run_with(&input, &mut d), Outcome::Duplicate);
+}
+
 // ── run_with_io: stdin/stderr protocol ──────────────────────────────────────
+
+#[test]
+fn run_with_io_resumes_despite_an_unexpected_field_type() {
+    let mut d = Fake::new(true, appears_at("swapped", 61, false));
+    let payload = json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s",
+        "error": "rate_limit",
+        "error_details": {"type": "rate_limit_error", "code": 429},
+        "stop_hook_active": "no"
+    })
+    .to_string();
+    let mut stderr = Vec::new();
+    assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 2);
+    assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+}
 
 #[test]
 fn run_with_io_resume_writes_exactly_the_message_to_stderr() {

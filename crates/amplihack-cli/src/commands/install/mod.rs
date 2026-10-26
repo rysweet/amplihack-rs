@@ -424,13 +424,14 @@ pub(super) fn warn_implicit_hook_drift<W: std::io::Write>(notice: &mut W, settin
     let Ok(settings) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return;
     };
-    let missing = missing_hook_registrations(&settings);
+    let missing =
+        missing_hook_registrations(&settings, claude_too_old_for_limit_resume().is_none());
     if missing.is_empty() {
         return;
     }
     let _ = writeln!(
         notice,
-        "amplihack: warning: {} lacks hook registrations this version ({}) adds: {}. \
+        "amplihack: warning: {} lacks hook registrations this version ({}) adds or changes: {}. \
          An automatic re-stage never edits settings.json; run `amplihack install` to add them.",
         paths::sanitize_path(settings_path),
         crate::VERSION,
@@ -694,6 +695,11 @@ fn local_install_scoped(
             // Profiles copy the user's settings, not a repo's (issue #1661).
             if effective_scope == interactive::HookScope::Global {
                 refresh_profile_hooks(&durable_hooks_bin);
+            }
+            // A rotator started before this upgrade keeps its old code (#1659).
+            #[cfg(unix)]
+            if !cfg!(test) {
+                crate::commands::profile::warn_foreign_rotator(None);
             }
             configured
         }

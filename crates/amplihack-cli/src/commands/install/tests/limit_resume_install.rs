@@ -269,6 +269,68 @@ fn xpia_install_does_not_register_stop_failure() {
     assert!(settings["hooks"].get("StopFailure").is_none());
 }
 
+// ── Claude Code version gate (#1659) ────────────────────────────────────────
+
+#[test]
+fn claude_code_before_2_1_306_is_too_old_for_limit_resume() {
+    for old in ["2.1.305", "2.1.77", "2.0.99", "1.9.0"] {
+        assert!(settings::too_old_for_limit_resume(old), "{old}");
+    }
+    for ok in ["2.1.306", "2.1.310", "2.2.0", "3.0.0"] {
+        assert!(!settings::too_old_for_limit_resume(ok), "{ok}");
+    }
+    assert!(
+        !settings::too_old_for_limit_resume("unknown"),
+        "unknown is not old"
+    );
+}
+
+#[test]
+fn too_old_a_claude_gets_no_stop_failure_and_loses_a_stale_one() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let user = json!({
+        "matcher": "overloaded",
+        "hooks": [{"type": "command", "command": "/usr/local/bin/notify-me"}]
+    });
+    let mut settings = json!({});
+    settings::register_hooks(&mut settings, &bin, false, true);
+    settings["hooks"]["StopFailure"]
+        .as_array_mut()
+        .unwrap()
+        .push(user.clone());
+
+    settings::register_hooks(&mut settings, &bin, false, false);
+    assert_eq!(
+        settings["hooks"]["StopFailure"],
+        json!([user]),
+        "{settings:#}"
+    );
+    assert!(settings["hooks"].get("SessionStart").is_some());
+    assert!(settings::missing_hook_registrations(&settings, false).is_empty());
+    assert!(settings::validate_amplihack_native_hook_contract(&settings, false).is_empty());
+
+    let mut only_ours = json!({});
+    settings::register_hooks(&mut only_ours, &bin, false, true);
+    settings::register_hooks(&mut only_ours, &bin, false, false);
+    assert!(
+        only_ours["hooks"].get("StopFailure").is_none(),
+        "{only_ours:#}"
+    );
+}
+
+#[test]
+fn wrapper_with_an_outdated_timeout_does_not_match() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let spec = stop_failure_spec();
+    let mut w = hooks::build_hook_wrapper(spec, &bin);
+    w["hooks"][0]["timeout"] = json!(18_000);
+    assert!(!hooks::wrapper_matches(&w, spec, "amplihack"));
+    w["hooks"][0].as_object_mut().unwrap().remove("timeout");
+    assert!(!hooks::wrapper_matches(&w, spec, "amplihack"));
+}
+
 // ── Claude Code plugin manifest ─────────────────────────────────────────────
 
 #[test]

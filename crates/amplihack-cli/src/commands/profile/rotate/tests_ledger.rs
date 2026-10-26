@@ -6,7 +6,8 @@
 //!   `ledger`, `journal`, `pid`, `log`, `log1`; `ensure()` creates `dir`
 //!   (and `.auto-switch.d`) private.
 //! - `RotateLedger { version, live, account, since, swapped_at, previous,
-//!   alert, last_cycle: Option<LastCycle { at, outcome }> }`, `Default`
+//!   alert, last_cycle: Option<LastCycle { at, measured_at, outcome }> }`,
+//!   `Default`
 //!   with `version: 1`.
 //! - `RotateJournal { version, from, to, adopt, phase: Phase, home,
 //!   live_ino, target_ino, home_lock_ino, to_lock_ino, started_at, pid }`.
@@ -17,7 +18,7 @@
 
 use super::ledger::{
     LastCycle, Phase, RotateJournal, RotateLedger, RotateState, alert_key, clear_alert,
-    should_alert,
+    for_older_readers, should_alert,
 };
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -46,6 +47,7 @@ fn ledger() -> RotateLedger {
         previous: Some("work".into()),
         last_cycle: Some(LastCycle {
             at: 160,
+            measured_at: Some(130),
             outcome: "stayed".into(),
         }),
         ..RotateLedger::default()
@@ -144,10 +146,9 @@ fn journal_round_trips_with_lower_case_phases() {
 }
 
 #[test]
-fn unknown_fields_and_versions_fail_closed_and_leave_the_file() {
+fn unknown_versions_fail_closed_and_leave_the_file() {
     let r = root();
     for body in [
-        r#"{"version":1,"live":"spare","surprise":true}"#,
         r#"{"version":2,"live":"spare"}"#,
         r#"{"live":"spare"}"#,
         "not json",
@@ -248,4 +249,85 @@ fn alert_state_persists_through_the_file() {
     r.rs.save_ledger(&l).unwrap();
     let mut again = r.rs.load_ledger().unwrap().unwrap();
     assert!(!should_alert(&mut again, "no-capacity:spare"));
+}
+
+/// Issue #1659: the limit-resume hook reads the ledger the rotator writes,
+/// through `amplihack_utils::rotator_status`, and judges freshness by
+/// `measured_at`.
+#[test]
+fn the_hooks_reader_sees_when_the_cycle_measured() {
+    let r = root();
+    r.rs.save_ledger(&ledger()).unwrap();
+    let status = amplihack_utils::rotator_status::read_cycle(&r.rs.root, 200).unwrap();
+    assert_eq!((status.at, status.measured_at), (Some(160), Some(130)));
+    assert!(status.fresh_capacity(129), "measured after a limit at 129");
+    assert!(
+        !status.fresh_capacity(130),
+        "measured before a limit at 130"
+    );
+}
+
+#[test]
+fn a_cycle_that_measured_nothing_writes_no_measured_at() {
+    let r = root();
+    let mut l = ledger();
+    l.last_cycle = Some(LastCycle {
+        at: 160,
+        measured_at: None,
+        outcome: "alerted".into(),
+    });
+    r.rs.save_ledger(&l).unwrap();
+    let raw = fs::read_to_string(&r.rs.ledger).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(json["last_cycle"].get("measured_at").is_none(), "{raw}");
+    assert_eq!(r.rs.load_ledger().unwrap(), Some(l));
+}
+
+/// Issue #1659: a field this binary does not know, at the top or in
+/// `last_cycle`, is ignored, so a newer amplihack's ledger never makes this
+/// rotator report an inconsistency.
+#[test]
+fn unknown_ledger_fields_are_ignored() {
+    let r = root();
+    let body = r#"{"version":1,"live":"spare","surprise":true,
+        "last_cycle":{"at":5,"outcome":"stayed","from_the_future":[1]}}"#;
+    fs::write(&r.rs.ledger, body).unwrap();
+    fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o600)).unwrap();
+    let l = r.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.live.as_deref(), Some("spare"));
+    assert_eq!(l.last_cycle.unwrap().outcome, "stayed");
+}
+
+/// The ledger as amplihack before #1659 read it: unknown fields rejected.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldLedger {
+    version: u32,
+    live: Option<String>,
+    account: Option<String>,
+    since: Option<i64>,
+    swapped_at: Option<i64>,
+    previous: Option<String>,
+    alert: Option<String>,
+    last_cycle: Option<OldLastCycle>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldLastCycle {
+    at: i64,
+    outcome: String,
+}
+
+/// Issue #1659: while a rotator from an older binary runs, what this binary
+/// writes is a ledger that rotator parses, so a one-shot `rotate` beside it
+/// cannot start an "inconsistent" ALERT loop. Without the downgrade it would.
+#[test]
+fn a_ledger_written_beside_an_older_rotator_is_one_it_can_read() {
+    let full = serde_json::to_vec(&for_older_readers(&ledger(), false)).unwrap();
+    assert!(serde_json::from_slice::<OldLedger>(&full).is_err());
+    let older = serde_json::to_vec(&for_older_readers(&ledger(), true)).unwrap();
+    serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
 }
