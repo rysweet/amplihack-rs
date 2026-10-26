@@ -18,17 +18,24 @@ use std::process::{Command, Output};
 pub const WAIT_PREFIX: &str = "amplihack.recipe.usage_limit_wait ";
 /// 2026-10-18 08:00:00 -07:00.
 pub const TEST_NOW: i64 = 1_792_335_600;
-pub const LIMIT_TEXT: &str = "You've hit your usage limit · resets 8:30am (America/Los_Angeles)";
+/// Claude's session-limit message as seen on real hosts, with a reset 30
+/// minutes after `TEST_NOW`.
+pub const LIMIT_TEXT: &str = "You've hit your session limit · resets 8:30am (America/Los_Angeles)";
+/// Real messages that are not waited out.
+pub const SPEND_TEXT: &str = "You've hit your org's monthly spend limit · run /usage-credits to raise it, or visit claude.ai/admin-settings/usage";
+pub const WEEKLY_TEXT: &str =
+    "You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)";
 
 /// The stub `claude`:
 /// - `--version` answers like Claude Code;
 /// - counts its calls per `$STEP` in `$RECORD_DIR/count.<step>`;
 /// - records argv, `pwd -P`, `HOME`, `CLAUDE_CONFIG_DIR`, the inherited
-///   profile and the SHA-256 of all of stdin in `call.<step>.<n>`;
+///   profile and the SHA-256 of all of stdin (not read with `$SKIP_STDIN`)
+///   in `call.<step>.<n>`;
 /// - with `$CHANGE_LOGIN_AFTER`, on its first call, starts a detached
 ///   process that creates `$CLAUDE_CONFIG_DIR/.credentials.json` after that
 ///   many seconds (a login moved into place during the wait);
-/// - prints `attempt <n> output` on stdout;
+/// - prints `attempt <n> output` on stdout, then `$STDOUT_TEXT` if set;
 /// - for its first `$LIMIT_CALLS` calls (default 0) in step `$LIMIT_STEP`
 ///   (any step when unset), and only under profile `$LIMIT_PROFILE` when that
 ///   is set, prints `$LIMIT_MESSAGE` on stderr and exits `$LIMIT_EXIT`
@@ -41,7 +48,7 @@ esac
 step="${STEP:-0}"
 n=$(( $(cat "$RECORD_DIR/count.$step" 2>/dev/null || echo 0) + 1 ))
 echo "$n" > "$RECORD_DIR/count.$step"
-sum=$(sha256sum | cut -d' ' -f1)
+if [ -n "$SKIP_STDIN" ]; then sum=skipped; else sum=$(sha256sum | cut -d' ' -f1); fi
 {
   printf 'ARGV='
   for a in "$@"; do printf '%s|' "$a"; done
@@ -59,6 +66,7 @@ limit="${LIMIT_CALLS:-0}"
 if [ -n "$LIMIT_STEP" ] && [ "$LIMIT_STEP" != "$step" ]; then limit=0; fi
 if [ -n "$LIMIT_PROFILE" ] && [ "$LIMIT_PROFILE" != "${AMPLIHACK_CLAUDE_PROFILE-}" ]; then limit=0; fi
 echo "attempt $n output"
+if [ -n "$STDOUT_TEXT" ]; then printf '%s\n' "$STDOUT_TEXT"; fi
 if [ "$n" -le "$limit" ]; then
   printf '%s\n' "$LIMIT_MESSAGE" >&2
   exit "${LIMIT_EXIT:-1}"
@@ -181,27 +189,13 @@ impl Fixture {
             .collect()
     }
 
-    pub fn write_config(&self, body: &str, mode: u32) {
-        let p = self.home.join(".amplihack").join("config");
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(&p, body).unwrap();
-        fs::set_permissions(&p, fs::Permissions::from_mode(mode)).unwrap();
+    /// Writes the user `config.toml`.
+    pub fn write_config(&self, body: &str) {
+        private_file(&self.home.join(".amplihack").join("config.toml"), body);
     }
 
     pub fn rerun_dir(&self) -> PathBuf {
         self.home.join(".amplihack").join("rerun")
-    }
-
-    /// `.in` stdin copies left in the home scratch directory.
-    pub fn stdin_copies(&self) -> Vec<String> {
-        fs::read_dir(self.rerun_dir())
-            .map(|d| {
-                d.flatten()
-                    .map(|e| e.file_name().to_string_lossy().to_string())
-                    .filter(|n| n.ends_with(".in"))
-                    .collect()
-            })
-            .unwrap_or_default()
     }
 
     /// AC13: every path a call recorded lies under the temporary root.

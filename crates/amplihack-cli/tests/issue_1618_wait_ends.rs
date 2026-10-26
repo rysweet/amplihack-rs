@@ -82,7 +82,6 @@ fn ac4_a_step_timeout_of_sixty_seconds_or_less_ends_the_step_without_a_retry() {
         "attempt 1 output\n",
         "the failed attempt's held-back stdout is printed"
     );
-    assert!(f.stdin_copies().is_empty());
 }
 
 #[test]

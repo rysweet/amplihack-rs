@@ -2,9 +2,10 @@
 //! their own clock. Each pass checks, in order: a stop signal, the end of
 //! the session that started the step, the deadline, the login fingerprint
 //! and the rotator's capacity (every 30 s), and the progress line (every
-//! 60 s), then sleeps at most one second. A login change needs two probes in
-//! a row that both differ from the first one, so one torn or failed read of
-//! `.claude.json` does not end the wait.
+//! 60 s), then sleeps at most one second. The login baseline is the first
+//! value two probes in a row agree on, and a change is a different value
+//! that two probes in a row agree on, so a torn or failed read of
+//! `.claude.json`, first or later, never ends the wait.
 
 use super::plan::{Bound, Plan};
 use super::{Event, line};
@@ -60,7 +61,7 @@ impl End {
 
     fn at_deadline(bound: Bound) -> Self {
         match bound {
-            Bound::ResetMargin | Bound::Default => End::ResetReached,
+            Bound::ResetMargin => End::ResetReached,
             Bound::MaxWait => End::MaxReached,
             Bound::StepTimeout => End::StepTimeout,
         }
@@ -72,9 +73,10 @@ impl End {
 /// `start`, `end` and `resume` are the caller's.
 pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
     let start = deps.now();
-    let first = deps.fingerprint();
+    // The previous probe, and the value two probes in a row agreed on.
+    let mut last = deps.fingerprint();
+    let mut baseline: Option<Option<D::Print>> = None;
     let mut next_poll = start.saturating_add(POLL_SECS);
-    let mut changed_once = false;
     let mut next_progress = start.saturating_add(PROGRESS_SECS);
     loop {
         if let Some(sig) = deps.signal() {
@@ -88,11 +90,18 @@ pub(crate) fn wait<D: WaitDeps>(plan: &Plan, deps: &mut D) -> End {
             return End::at_deadline(plan.bound);
         }
         if now >= next_poll {
-            let changed = deps.fingerprint() != first;
-            if changed && changed_once {
-                return End::LoginChanged;
+            let probe = deps.fingerprint();
+            match baseline.take() {
+                None if probe == last => baseline = Some(std::mem::replace(&mut last, probe)),
+                None => last = probe,
+                Some(base) => {
+                    if probe != base && probe == last {
+                        return End::LoginChanged;
+                    }
+                    baseline = Some(base);
+                    last = probe;
+                }
             }
-            changed_once = changed;
             if deps.rotator_capacity(start) {
                 return End::RotatorCapacity;
             }

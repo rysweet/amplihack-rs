@@ -1,20 +1,18 @@
-//! Scratch directory and stdin copy (issue #1618): `$HOME/.amplihack/rerun`
-//! ownership and mode rules, the `<pid>-0.in` copy (0600, no size cap,
-//! device and inode checked on every reopen, removed on drop), the two copy
-//! failure kinds, and the `rerun/` sweep that now also removes `.in` files.
+//! Scratch directory and rerun stdin (issue #1618): `$HOME/.amplihack/rerun`
+//! ownership and mode rules, what a rerun reads on stdin (a regular file
+//! from where the step started, a terminal unchanged, anything else
+//! `/dev/null`, never a held-open pipe), and the `rerun/` sweep.
 //!
 //! Wired from `limit_wait/mod.rs` with `#[cfg(test)] mod tests_scratch;`.
-//! The sweep is reached through `auto_switch`'s
-//! `pub(crate) use swap::{rerun_owner, sweep_rerun};`.
 
 use super::super::auto_switch::{rerun_owner, sweep_rerun};
-use super::scratch::{CopyError, StdinCopy, home_rerun_dir};
+use super::scratch::{RerunStdin, home_rerun_dir};
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{Read, Write};
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 fn mode(p: &Path) -> u32 {
@@ -28,40 +26,22 @@ fn home() -> (tempfile::TempDir, PathBuf) {
     (tmp, home)
 }
 
-/// A private `rerun/` ready for copies.
+/// A private `rerun/`.
 fn rerun() -> (tempfile::TempDir, PathBuf) {
     let (tmp, home) = home();
     let dir = home_rerun_dir(&home).unwrap();
     (tmp, dir)
 }
 
-/// Runs `cat` with the copy as its stdin and returns what it read.
-fn cat(copy: &StdinCopy) -> io::Result<Vec<u8>> {
-    let out = Command::new("cat").stdin(copy.stdio()?).output()?;
+/// What `cat` reads from `input`.
+fn cat(input: Stdio) -> Vec<u8> {
+    let out = Command::new("cat")
+        .stdin(input)
+        .stdout(Stdio::piped())
+        .output()
+        .unwrap();
     assert!(out.status.success());
-    Ok(out.stdout)
-}
-
-/// A reader that must never be read: proves a failure came before input.
-struct Untouched;
-impl Read for Untouched {
-    fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-        panic!("stdin was read although the copy could not be made");
-    }
-}
-
-/// Yields `n` bytes, then fails.
-struct FailsAfter(usize);
-impl Read for FailsAfter {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if self.0 == 0 {
-            return Err(io::Error::other("disk full"));
-        }
-        let k = buf.len().min(self.0);
-        buf[..k].fill(b'x');
-        self.0 -= k;
-        Ok(k)
-    }
+    out.stdout
 }
 
 // --- home_rerun_dir ------------------------------------------------------
@@ -123,124 +103,65 @@ fn rerun_must_be_a_real_directory_with_mode_0700() {
     assert!(home_rerun_dir(&home).is_err(), "symlinked rerun/");
 }
 
-// --- StdinCopy -----------------------------------------------------------
+// --- RerunStdin ----------------------------------------------------------
 
 #[test]
-fn the_copy_is_a_private_file_named_for_this_process() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, &b"prompt"[..], false).unwrap();
-    let path = copy.path().expect("piped stdin is copied").to_path_buf();
-    assert_eq!(path, dir.join(format!("{}-0.in", std::process::id())));
-    assert_eq!(mode(&path), 0o600);
-    assert_eq!(fs::read(&path).unwrap(), b"prompt");
-}
-
-#[test]
-fn the_copy_has_no_size_cap_and_every_attempt_reads_it_from_the_start() {
-    let (_t, dir) = rerun();
-    let input: Vec<u8> = (0..3 * 1024 * 1024u32).map(|i| (i % 251) as u8).collect();
-    let copy = StdinCopy::take_from(&dir, input.as_slice(), false).unwrap();
-    assert_eq!(cat(&copy).unwrap(), input, "first attempt");
-    assert_eq!(cat(&copy).unwrap(), input, "second attempt");
-}
-
-#[test]
-fn an_empty_stdin_is_copied_as_an_empty_file() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, io::empty(), false).unwrap();
-    assert_eq!(cat(&copy).unwrap(), b"");
-}
-
-#[test]
-fn a_replaced_copy_is_refused() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, &b"original"[..], false).unwrap();
-    let path = copy.path().unwrap().to_path_buf();
-    fs::remove_file(&path).unwrap();
-    fs::write(&path, b"swapped").unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+fn a_regular_file_is_read_again_from_where_the_step_started() {
+    let (tmp, _) = home();
+    let path = tmp.path().join("input");
+    fs::write(&path, b"head|prompt").unwrap();
+    let mut step_stdin = fs::File::open(&path).unwrap();
+    let mut skipped = [0u8; 5];
+    step_stdin.read_exact(&mut skipped).unwrap();
+    let policy = RerunStdin::from_file(step_stdin.try_clone().unwrap());
     assert!(
-        copy.stdio().is_err(),
-        "a new inode must not be fed to an attempt"
+        matches!(policy, RerunStdin::File { start: 5, .. }),
+        "{policy:?}"
     );
+    // The first attempt reads it to the end through the shared offset.
+    let mut rest = Vec::new();
+    step_stdin.read_to_end(&mut rest).unwrap();
+    assert_eq!(rest, b"prompt");
+    for n in [2, 3] {
+        assert_eq!(
+            cat(policy.for_attempt(n).unwrap()),
+            b"prompt",
+            "attempt {n}"
+        );
+    }
 }
 
 #[test]
-fn a_copy_replaced_by_a_symlink_is_refused() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, &b"original"[..], false).unwrap();
-    let path = copy.path().unwrap().to_path_buf();
-    let other = dir.join("other");
-    fs::write(&other, b"evil").unwrap();
-    fs::remove_file(&path).unwrap();
-    symlink(&other, &path).unwrap();
-    assert!(copy.stdio().is_err());
+fn a_held_open_pipe_gives_reruns_dev_null_without_reading_it() {
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    writer.write_all(b"never read").unwrap();
+    let policy = RerunStdin::from_file(fs::File::from(std::os::fd::OwnedFd::from(reader)));
+    assert!(matches!(policy, RerunStdin::Null), "{policy:?}");
+    // The writer is still open: a rerun reading the pipe would hang here.
+    assert_eq!(cat(policy.for_attempt(2).unwrap()), b"");
+    drop(writer);
 }
 
 #[test]
-fn dropping_the_copy_removes_the_file() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, &b"x"[..], false).unwrap();
-    let path = copy.path().unwrap().to_path_buf();
-    drop(copy);
-    assert!(!path.exists());
-}
-
-#[test]
-fn a_terminal_is_not_copied_and_is_inherited() {
-    let (_t, dir) = rerun();
-    let copy = StdinCopy::take_from(&dir, Untouched, true).unwrap();
-    assert!(copy.path().is_none());
-    assert!(copy.stdio().is_ok());
-    assert_eq!(fs::read_dir(&dir).unwrap().count(), 0, "no file for a TTY");
-}
-
-#[test]
-fn a_file_that_cannot_be_created_fails_before_any_input_is_read() {
-    let (_t, dir) = rerun();
-    let missing = dir.join("missing");
-    assert!(matches!(
-        StdinCopy::take_from(&missing, Untouched, false),
-        Err(CopyError::BeforeRead(_))
-    ));
-    // A leftover file of the same name is never reused or truncated.
-    let taken = dir.join(format!("{}-0.in", std::process::id()));
-    fs::write(&taken, b"stale").unwrap();
-    assert!(matches!(
-        StdinCopy::take_from(&dir, Untouched, false),
-        Err(CopyError::BeforeRead(_))
-    ));
-    assert_eq!(fs::read(&taken).unwrap(), b"stale");
-}
-
-#[test]
-fn a_read_error_part_way_fails_after_read_and_leaves_no_file() {
-    let (_t, dir) = rerun();
-    assert!(matches!(
-        StdinCopy::take_from(&dir, FailsAfter(100_000), false),
-        Err(CopyError::AfterRead(_))
-    ));
-    assert_eq!(
-        fs::read_dir(&dir).unwrap().count(),
-        0,
-        "partial copy removed"
-    );
+fn a_character_device_is_passed_through() {
+    let policy = RerunStdin::from_file(fs::File::open("/dev/null").unwrap());
+    assert!(matches!(policy, RerunStdin::Inherit), "{policy:?}");
 }
 
 // --- rerun/ sweep --------------------------------------------------------
 
 #[test]
-fn rerun_owner_parses_in_and_out_names() {
-    assert_eq!(rerun_owner(OsStr::new("123-0.in")), Some(123));
+fn rerun_owner_parses_out_names_only() {
     assert_eq!(rerun_owner(OsStr::new("123-4.out")), Some(123));
     for bad in [
         "123-0.txt",
-        "abc-0.in",
-        "0-0.in",
-        "123.in",
-        "123-x.in",
-        "-1-0.in",
-        ".in",
+        "123-0.in",
+        "abc-0.out",
+        "0-0.out",
+        "123.out",
+        "123-x.out",
+        "-1-0.out",
+        ".out",
     ] {
         assert_eq!(rerun_owner(OsStr::new(bad)), None, "{bad}");
     }
@@ -255,30 +176,30 @@ fn dead_pid() -> u32 {
 }
 
 #[test]
-fn the_sweep_removes_orphaned_in_files_and_nothing_it_cannot_parse() {
+fn the_sweep_removes_orphaned_buffers_and_nothing_it_cannot_parse() {
     let (_t, dir) = rerun();
     let dead = dead_pid();
     let me = std::process::id();
-    let orphan_in = dir.join(format!("{dead}-0.in"));
+    let orphan_old = dir.join(format!("{dead}-0.out"));
     let orphan_out = dir.join(format!("{dead}-1.out"));
-    let live_in = dir.join(format!("{me}-0.in"));
+    let live = dir.join(format!("{me}-0.out"));
     let unknown = dir.join("notes.txt");
-    for p in [&orphan_in, &orphan_out, &live_in, &unknown] {
+    for p in [&orphan_old, &orphan_out, &live, &unknown] {
         fs::write(p, b"x").unwrap();
     }
     let target = dir.join("target");
     fs::write(&target, b"keep").unwrap();
-    let link = dir.join(format!("{dead}-2.in"));
+    let link = dir.join(format!("{dead}-2.out"));
     symlink(&target, &link).unwrap();
-    let subdir = dir.join(format!("{dead}-3.in"));
+    let subdir = dir.join(format!("{dead}-3.out"));
     fs::create_dir(&subdir).unwrap();
-    fs::write(subdir.join(format!("{dead}-4.in")), b"x").unwrap();
+    fs::write(subdir.join(format!("{dead}-4.out")), b"x").unwrap();
 
     sweep_rerun(&dir);
 
-    assert!(!orphan_in.exists(), "orphaned .in removed");
+    assert!(!orphan_old.exists(), "orphaned buffer removed");
     assert!(!orphan_out.exists(), "orphaned .out removed");
-    assert!(live_in.exists(), "a live process's copy is kept");
+    assert!(live.exists(), "a live process's buffer is kept");
     assert!(unknown.exists(), "unparseable names are kept");
     assert!(
         fs::symlink_metadata(&link).is_ok(),
@@ -289,14 +210,17 @@ fn the_sweep_removes_orphaned_in_files_and_nothing_it_cannot_parse() {
         b"keep",
         "symlinks are not followed"
     );
-    assert!(subdir.join(format!("{dead}-4.in")).exists(), "no recursion");
+    assert!(
+        subdir.join(format!("{dead}-4.out")).exists(),
+        "no recursion"
+    );
 }
 
 #[test]
 fn the_age_rule_applies_only_to_names_that_parse() {
     let (_t, dir) = rerun();
     let me = std::process::id();
-    let old_live = dir.join(format!("{me}-0.in"));
+    let old_live = dir.join(format!("{me}-0.out"));
     let old_unknown = dir.join("notes.txt");
     let two_days_ago = std::time::SystemTime::now() - Duration::from_secs(2 * 24 * 3600);
     for p in [&old_live, &old_unknown] {

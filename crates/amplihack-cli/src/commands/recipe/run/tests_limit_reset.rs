@@ -1,6 +1,7 @@
-//! `limit_reset::parse` (issue #1618): the text grammar after `resets `, the
-//! today-or-tomorrow rule with its 10-minute grace, and daylight-saving
-//! changes. `parse` never clamps; `limit_patterns::read_reset` does that.
+//! `limit_reset::parse` (issue #1618): the text grammar after `resets `, with
+//! and without a date, the today-or-tomorrow (or this-year-or-next) rule with
+//! its 10-minute grace, and daylight-saving changes. `parse` never clamps;
+//! the wait's plan refuses a reset more than five hours away.
 //!
 //! Wired from `recipe/run/mod.rs` with `#[cfg(test)] mod tests_limit_reset;`.
 
@@ -94,6 +95,10 @@ fn documented_rejections_give_no_reset() {
         "8:30am",
         "8:30am (Mars/Olympus)",
         "Oct 20 at 9am (UTC)",
+        "Oct 20 9am (UTC)",
+        "October 20, 9am (UTC)",
+        "Oct 32, 9am (UTC)",
+        "Oct 20, (UTC)",
         "99:99pm (UTC)",
     ] {
         assert_eq!(parse(f, NOW), None, "fragment {f:?}");
@@ -184,7 +189,7 @@ fn a_time_more_than_ten_minutes_past_is_tomorrow() {
 
 #[test]
 fn parse_never_clamps() {
-    // Tomorrow 07:45 is 23 h 45 m away; the clamp is read_reset's job.
+    // Tomorrow 07:45 is 23 h 45 m away; refusing it is the plan's job.
     let got = parse("7:45am (America/Los_Angeles)", NOW).unwrap();
     assert!(got > NOW + 5 * 3600, "{got} was clamped");
     // A time inside the grace stays in the past; it is not raised to now.
@@ -238,4 +243,26 @@ fn hostile_input_never_panics() {
     }
     let _ = parse(&"9".repeat(10_000), NOW);
     let _ = parse(&format!("{}:30am (UTC)", "9".repeat(40)), NOW);
+}
+
+#[test]
+fn a_dated_reset_is_read_in_this_year_or_next() {
+    // The real weekly-limit form. Oct 8 has passed, so next year's.
+    assert_eq!(
+        parse("Oct 8, 12am (America/Los_Angeles)", NOW),
+        Some(at(LA, 2027, 10, 8, 0, 0))
+    );
+    assert_eq!(
+        parse("oct 20, 9:15PM (America/Los_Angeles)", NOW),
+        Some(at(LA, 2026, 10, 20, 21, 15))
+    );
+    // Today, within the grace, stays today.
+    assert_eq!(
+        parse("Oct 18, 7:55am (America/Los_Angeles)", NOW),
+        Some(at(LA, 2026, 10, 18, 7, 55))
+    );
+    assert_eq!(
+        parse("Jan 2, 13:00 (UTC)", NOW),
+        Some(at(chrono_tz::UTC, 2027, 1, 2, 13, 0))
+    );
 }

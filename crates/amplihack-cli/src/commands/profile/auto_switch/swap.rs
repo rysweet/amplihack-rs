@@ -392,7 +392,7 @@ fn cleanup_rerun(state: &State) {
     sweep_rerun(&state.dir.join("rerun"));
 }
 
-/// Removes regular `<pid>-<n>.{out,in}` files in `dir` (no recursion) whose
+/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
 /// supervisor is gone or that are over 24 h old. Other names are left.
 pub(crate) fn sweep_rerun(dir: &Path) {
     let Ok(entries) = fs::read_dir(dir) else {
@@ -415,10 +415,9 @@ pub(crate) fn sweep_rerun(dir: &Path) {
     }
 }
 
-/// The supervisor pid in a rerun file name `<pid>-<n>.out` or `<pid>-<n>.in`.
+/// The supervisor pid in a rerun buffer name `<pid>-<n>.out`.
 pub fn rerun_owner(name: &std::ffi::OsStr) -> Option<u32> {
-    let name = name.to_str()?;
-    let name = name.strip_suffix(".out").or(name.strip_suffix(".in"))?;
+    let name = name.to_str()?.strip_suffix(".out")?;
     let (pid, n) = name.split_once('-')?;
     n.parse::<u32>().ok()?;
     pid.parse().ok().filter(|&p| p > 0)

@@ -47,6 +47,10 @@ steps:
 "#;
 
 fn run_recipe(f: &Fixture, limited_step: &str) -> Output {
+    run_recipe_with(f, limited_step, &[])
+}
+
+fn run_recipe_with(f: &Fixture, limited_step: &str, env: &[(&str, &str)]) -> Output {
     let runner = f.tools.join("recipe-runner-rs");
     executable(&runner, STUB_RUNNER);
     let recipe = f.root.join("recipe.yaml");
@@ -59,6 +63,9 @@ fn run_recipe(f: &Fixture, limited_step: &str) -> Output {
         .env("AMPLIHACK_AGENT_BINARY", "claude")
         .env("AMPLIHACK_HOME", f.home.join(".amplihack"))
         .env("LIMIT_STEP", limited_step);
+    for (k, v) in env {
+        c.env(k, v);
+    }
     f.run(&mut c)
 }
 
@@ -115,8 +122,9 @@ fn disabled_the_limited_step_ends_the_run_as_before() {
         "disabled_the_limited_step_ends_the_run_as_before",
         || {
             let f = Fixture::new();
-            f.write_config(r#"{"usage_limit_wait":{"enabled":false}}"#, 0o600);
-            let out = run_recipe(&f, "2");
+            // Under `in_quiet_process` the test guard keeps the user
+            // config.toml unread, so the variable turns the wait off.
+            let out = run_recipe_with(&f, "2", &[("AMPLIHACK_USAGE_LIMIT_WAIT", "0")]);
             assert!(!out.status.success(), "{}", describe(&out));
             assert_eq!([f.count("1"), f.count("2"), f.count("3")], [1, 1, 0]);
         },

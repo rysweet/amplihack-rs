@@ -65,9 +65,9 @@ mod tests_usage_parse;
 mod tests_verify;
 
 use anyhow::Result;
-/// File helpers shared with the usage-limit wait and its settings (#1618).
+/// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]
-pub(crate) use auto_switch::fsx;
+use auto_switch::fsx;
 pub(crate) use auto_switch::{
     launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
 };

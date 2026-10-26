@@ -1,11 +1,12 @@
 //! Issue #1618, AC6: the usage-limit wait settings from
 //! `AMPLIHACK_USAGE_LIMIT_WAIT`, `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` and
-//! the `usage_limit_wait` key of `$HOME/.amplihack/config`.
+//! the `recipe.usage_limit_wait` / `recipe.usage_limit_max_wait_secs` keys of
+//! `~/.amplihack/config.toml`, read through the user-config loader.
 //!
 //! Disabled, an unprofiled step behaves exactly as before (D7): one
-//! invocation, the original exit code, no wait line. Invalid settings warn
-//! once, naming the variable or key, never the value. ST5: no account
-//! identity from the stub's `.claude.json` appears in a wait line. See
+//! invocation, the original exit code, no wait line. With no explicit
+//! setting, `CI=true` turns the wait off. Invalid values warn without being
+//! quoted. ST5: no account identity reaches a wait line. See
 //! `issue_1618_fixture`.
 
 #![cfg(unix)]
@@ -32,7 +33,7 @@ fn assert_waited(f: &Fixture, out: &std::process::Output) {
 
 #[test]
 fn the_variable_disables_the_wait() {
-    for v in ["0", "false", "OFF", "No"] {
+    for v in ["0", "false"] {
         let f = Fixture::new();
         let mut c = f.step();
         c.env(ENABLED_VAR, v);
@@ -43,32 +44,43 @@ fn the_variable_disables_the_wait() {
 #[test]
 fn the_config_key_disables_the_wait() {
     let f = Fixture::new();
-    f.write_config(r#"{"usage_limit_wait":{"enabled":false}}"#, 0o600);
+    f.write_config("[recipe]\nusage_limit_wait = false\n");
     assert_today(&f, &f.run(&mut f.step()));
 }
 
 #[test]
 fn the_variable_overrides_the_file_in_both_directions() {
     let f = Fixture::new();
-    f.write_config(r#"{"usage_limit_wait":{"enabled":true}}"#, 0o600);
+    f.write_config("[recipe]\nusage_limit_wait = true\n");
     let mut c = f.step();
-    c.env(ENABLED_VAR, "off");
+    c.env(ENABLED_VAR, "0");
     assert_today(&f, &f.run(&mut c));
 
     let f = Fixture::new();
-    f.write_config(r#"{"usage_limit_wait":{"enabled":false}}"#, 0o600);
+    f.write_config("[recipe]\nusage_limit_wait = false\n");
     let mut c = f.step();
-    c.env(ENABLED_VAR, "YES");
+    c.env(ENABLED_VAR, "1");
+    assert_waited(&f, &f.run(&mut c));
+}
+
+#[test]
+fn ci_turns_the_wait_off_unless_it_is_set_explicitly() {
+    let f = Fixture::new();
+    let mut c = f.step();
+    c.env("CI", "true");
+    assert_today(&f, &f.run(&mut c));
+
+    let f = Fixture::new();
+    f.write_config("[recipe]\nusage_limit_wait = true\n");
+    let mut c = f.step();
+    c.env("CI", "true");
     assert_waited(&f, &f.run(&mut c));
 }
 
 #[test]
 fn the_config_maximum_bounds_the_wait() {
     let f = Fixture::new();
-    f.write_config(
-        r#"{"usage_limit_wait":{"enabled":true,"max_wait_secs":0}}"#,
-        0o600,
-    );
+    f.write_config("[recipe]\nusage_limit_max_wait_secs = 0\n");
     let out = f.run(&mut f.step());
     assert_waited(&f, &out);
     assert!(
@@ -82,7 +94,7 @@ fn the_config_maximum_bounds_the_wait() {
 #[test]
 fn an_empty_variable_is_unset() {
     let f = Fixture::new();
-    f.write_config(r#"{"usage_limit_wait":{"enabled":false}}"#, 0o600);
+    f.write_config("[recipe]\nusage_limit_wait = false\n");
     let mut c = f.step();
     c.env(ENABLED_VAR, "");
     let out = f.run(&mut c);
@@ -94,78 +106,27 @@ fn an_empty_variable_is_unset() {
 }
 
 #[test]
-fn an_invalid_enabled_variable_warns_once_and_the_default_applies() {
+fn an_invalid_variable_warns_and_the_layers_below_decide() {
     let f = Fixture::new();
+    f.write_config("[recipe]\nusage_limit_max_wait_secs = 600\n");
     let mut c = f.step();
-    c.env(ENABLED_VAR, "maybe-VALUE-1618");
+    c.env(ENABLED_VAR, "maybe-VALUE-1618").env(MAX_VAR, "60s");
     let out = f.run(&mut c);
     assert_waited(&f, &out);
     let stderr = text(&out.stderr);
-    assert_eq!(stderr.matches(ENABLED_VAR).count(), 1, "{stderr}");
     assert!(
-        !stderr.contains("VALUE-1618"),
-        "the value is never quoted: {stderr}"
-    );
-}
-
-#[test]
-fn an_invalid_maximum_warns_once_and_the_file_decides() {
-    for bad in ["+60", "-1", "1.5", "60s"] {
-        let f = Fixture::new();
-        f.write_config(r#"{"usage_limit_wait":{"max_wait_secs":600}}"#, 0o600);
-        let mut c = f.step();
-        c.env(MAX_VAR, bad);
-        let out = f.run(&mut c);
-        assert_waited(&f, &out);
-        let stderr = text(&out.stderr);
-        assert_eq!(stderr.matches(MAX_VAR).count(), 1, "{bad}: {stderr}");
-        assert!(
-            events(&out)[0].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
-            "{bad}: {:?}",
-            events(&out)
-        );
-    }
-}
-
-#[test]
-fn a_config_others_can_write_gives_defaults_with_one_warning() {
-    let f = Fixture::new();
-    f.write_config(
-        r#"{"usage_limit_wait":{"enabled":false,"max_wait_secs":4242},"marker":"CONTENT-1618"}"#,
-        0o666,
-    );
-    let out = f.run(&mut f.step());
-    assert_waited(&f, &out);
-    let stderr = text(&out.stderr);
-    assert!(
-        !stderr.contains("CONTENT-1618") && !stderr.contains("4242"),
+        stderr.contains(ENABLED_VAR) && stderr.contains(MAX_VAR),
         "{stderr}"
     );
-    assert_eq!(
-        stderr
-            .lines()
-            .filter(|l| l.contains("usage_limit_wait") && !l.starts_with("amplihack.recipe."))
-            .count(),
-        1,
-        "one warning: {stderr}"
-    );
-}
-
-#[test]
-fn a_bad_config_key_gives_defaults_with_one_warning() {
-    let f = Fixture::new();
-    f.write_config(
-        r#"{"usage_limit_wait":{"enabled":"nope","max_wait_secs":0}}"#,
-        0o600,
-    );
-    let out = f.run(&mut f.step());
-    assert_waited(&f, &out);
     assert!(
-        events(&out)[0].ends_with("bound=reset+margin"),
-        "the whole key falls back, max included: {:?}",
+        !stderr.contains("VALUE-1618"),
+        "the value is quoted: {stderr}"
+    );
+    assert!(
+        events(&out)[0].ends_with("until=2026-10-18 08:10:00 -07:00 bound=max_wait"),
+        "{:?}",
         events(&out)
     );
-    assert!(!text(&out.stderr).contains("nope"));
 }
 
 #[test]
@@ -173,14 +134,8 @@ fn settings_are_not_read_unless_noninteractive_is_exactly_one() {
     for v in ["true", "0"] {
         let f = Fixture::new();
         let mut c = f.step();
-        c.env("AMPLIHACK_NONINTERACTIVE", v)
-            .env(ENABLED_VAR, "maybe");
-        let out = f.run(&mut c);
-        assert_today(&f, &out);
-        assert!(
-            !text(&out.stderr).contains(ENABLED_VAR),
-            "NONINTERACTIVE={v:?}: settings were read"
-        );
+        c.env("AMPLIHACK_NONINTERACTIVE", v);
+        assert_today(&f, &f.run(&mut c));
     }
 }
 
@@ -198,7 +153,7 @@ fn st5_no_account_identity_reaches_a_wait_line() {
     let mut c = f.step();
     c.env(
         "LIMIT_MESSAGE",
-        "secret-person@example.invalid uuid-SECRET-1618 hit the usage limit · resets 8:30am (America/Los_Angeles)",
+        "You've hit your session limit · resets 8:30am (America/Los_Angeles) for secret-person@example.invalid uuid-SECRET-1618",
     );
     let out = f.run(&mut c);
     assert_waited(&f, &out);

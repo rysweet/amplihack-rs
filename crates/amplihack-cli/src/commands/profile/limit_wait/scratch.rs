@@ -1,131 +1,103 @@
-//! Scratch files of a supervised step (issue #1618): the home scratch
-//! directory `$HOME/.amplihack/rerun/` and the copy of the step's stdin.
+//! Scratch and stdin of a supervised step (issue #1618): the home scratch
+//! directory `$HOME/.amplihack/rerun/`, and what each attempt reads on
+//! stdin.
 //!
-//! The stdin copy lets every attempt read the same prompt from the start.
-//! Its device and inode are recorded, and each attempt reopens it read-only
-//! and no-follow and is refused anything else, so a swapped file is never
-//! fed to an attempt. No descriptor is shared between attempts. Dropping the
-//! copy deletes the file, on every exit path of the supervisor.
+//! Nothing here reads stdin, so a pipe the step inherited and nobody closes
+//! cannot hold the supervisor up. The first attempt inherits stdin
+//! unchanged. A rerun gets a regular file again from where the step started
+//! reading it, a terminal unchanged, and anything else (a pipe, a socket, a
+//! closed descriptor) `/dev/null`: what the first attempt read from it is
+//! gone. Recipe agent steps get their prompt as `-p` argv, so stdin is not
+//! their prompt.
 
 use super::super::fsx;
 use std::fs;
-use std::io::{self, Read};
-use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+use std::io::{self, Seek, SeekFrom};
+use std::os::fd::AsFd;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 
-/// `$HOME/.amplihack/rerun`, checked or created: `$HOME/.amplihack` must
-/// pass `wait_config::private_amplihack_dir`, and `rerun/` must be a
-/// private (`0700`) directory owned by the current user.
+/// `$HOME/.amplihack/rerun`, checked or created: `$HOME/.amplihack` must be
+/// a real directory owned by the current user that group and others cannot
+/// write (created at `0700` when missing, never `chmod`ed), and `rerun/`
+/// must be a private (`0700`) directory owned by the current user.
 pub(crate) fn home_rerun_dir(home: &Path) -> io::Result<PathBuf> {
-    let rerun = crate::wait_config::private_amplihack_dir(home)?.join("rerun");
+    use std::os::unix::fs::MetadataExt;
+    let dot = home.join(".amplihack");
+    match fs::symlink_metadata(&dot) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => fsx::ensure_private_dir(&dot)?,
+        Err(e) => return Err(e),
+        Ok(m) if m.file_type().is_symlink() || !m.is_dir() => {
+            return Err(fsx::invalid("~/.amplihack is not a real directory"));
+        }
+        Ok(m) if m.uid() != fsx::euid() => {
+            return Err(fsx::invalid("~/.amplihack is owned by another user"));
+        }
+        Ok(m) if fsx::writable_by_others(&m) => {
+            return Err(fsx::invalid("~/.amplihack is writable by other users"));
+        }
+        Ok(_) => {}
+    }
+    let rerun = dot.join("rerun");
     fsx::ensure_private_dir(&rerun)?;
     Ok(rerun)
 }
 
-/// Why the stdin copy could not be made.
+/// What a rerun reads on stdin.
 #[derive(Debug)]
-pub(crate) enum CopyError {
-    /// Nothing was read: the launch can still run unsupervised.
-    BeforeRead(io::Error),
-    /// Input was consumed: an unsupervised run would get a truncated prompt.
-    AfterRead(io::Error),
+pub(crate) enum RerunStdin {
+    /// A terminal, or the platform cannot tell: passed through unchanged.
+    Inherit,
+    /// A regular file: a duplicate of the step's descriptor and the offset
+    /// the step started at. Seeking it moves the shared offset back.
+    File { file: fs::File, start: u64 },
+    /// A pipe, socket or closed descriptor: `/dev/null`.
+    Null,
 }
 
-impl std::fmt::Display for CopyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            CopyError::BeforeRead(e) | CopyError::AfterRead(e) => e.fmt(f),
-        }
-    }
-}
-
-/// The step's stdin, copied to `rerun/<pid>-0.in`, or inherited when it is
-/// a terminal or closed.
-pub(crate) struct StdinCopy {
-    file: Option<Copied>,
-}
-
-struct Copied {
-    path: PathBuf,
-    dev: u64,
-    ino: u64,
-}
-
-impl StdinCopy {
-    /// Copies this process's stdin into `dir`.
-    pub(crate) fn take(dir: &Path) -> Result<Self, CopyError> {
-        // SAFETY: isatty and fcntl(F_GETFD) only inspect descriptor 0.
-        let (tty, open) = unsafe { (libc::isatty(0) == 1, libc::fcntl(0, libc::F_GETFD) != -1) };
-        StdinCopy::take_from(dir, io::stdin().lock(), tty || !open)
-    }
-
-    /// Copies `reader` into `dir`, or keeps nothing when `inherit`.
-    pub(crate) fn take_from<R: Read>(
-        dir: &Path,
-        mut reader: R,
-        inherit: bool,
-    ) -> Result<Self, CopyError> {
-        if inherit {
-            return Ok(Self { file: None });
-        }
-        let path = dir.join(format!("{}-0.in", std::process::id()));
-        let mut opts = fs::OpenOptions::new();
-        opts.write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        let mut file = opts.open(&path).map_err(CopyError::BeforeRead)?;
-        let made = (|| {
-            // `mode` on open is filtered by the umask; set it exactly.
-            file.set_permissions(fs::Permissions::from_mode(0o600))?;
-            let meta = file.metadata()?;
-            Ok::<_, io::Error>((meta.dev(), meta.ino()))
-        })();
-        let (dev, ino) = match made {
-            Ok(id) => id,
-            Err(e) => {
-                let _ = fs::remove_file(&path);
-                return Err(CopyError::BeforeRead(e));
-            }
+impl RerunStdin {
+    /// Looks at this process's stdin without reading it.
+    pub(crate) fn capture() -> Self {
+        let stdin = io::stdin();
+        let Ok(owned) = stdin.as_fd().try_clone_to_owned() else {
+            return RerunStdin::Null; // closed
         };
-        // From here on the copy is owned, so any failure removes the file.
-        let copy = Self {
-            file: Some(Copied { path, dev, ino }),
+        Self::from_file(fs::File::from(owned))
+    }
+
+    /// The policy for `file`, a duplicate of the step's stdin.
+    pub(crate) fn from_file(mut file: fs::File) -> Self {
+        let Ok(meta) = file.metadata() else {
+            return RerunStdin::Null;
         };
-        // No fsync: attempts read the copy through the page cache, and the
-        // file is deleted when the supervisor ends, so durability buys nothing.
-        io::copy(&mut reader, &mut file).map_err(CopyError::AfterRead)?;
-        Ok(copy)
+        if meta.is_file() {
+            return match file.stream_position() {
+                Ok(start) => RerunStdin::File { file, start },
+                Err(_) => RerunStdin::Null,
+            };
+        }
+        use std::os::unix::fs::FileTypeExt;
+        if meta.file_type().is_char_device() {
+            // A terminal, or /dev/null itself: never waits for input that
+            // a held-open pipe would withhold.
+            return RerunStdin::Inherit;
+        }
+        RerunStdin::Null
     }
 
-    /// The copy's path; `None` when stdin is inherited.
-    pub(crate) fn path(&self) -> Option<&Path> {
-        self.file.as_ref().map(|c| c.path.as_path())
-    }
-
-    /// A fresh read-only handle on the copy for one attempt, refused unless
-    /// it is the same regular file that was written.
-    pub(crate) fn stdio(&self) -> io::Result<Stdio> {
-        let Some(c) = &self.file else {
+    /// The stdin for attempt `n` (from 1).
+    pub(crate) fn for_attempt(&self, n: u32) -> io::Result<Stdio> {
+        if n == 1 {
             return Ok(Stdio::inherit());
-        };
-        let mut opts = fs::OpenOptions::new();
-        opts.read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
-        let f = opts.open(&c.path)?;
-        let m = f.metadata()?;
-        if !m.is_file() || m.dev() != c.dev || m.ino() != c.ino {
-            return Err(fsx::invalid("the stdin copy was replaced"));
         }
-        Ok(Stdio::from(f))
-    }
-}
-
-impl Drop for StdinCopy {
-    fn drop(&mut self) {
-        if let Some(c) = &self.file {
-            let _ = fs::remove_file(&c.path);
+        match self {
+            RerunStdin::Inherit => Ok(Stdio::inherit()),
+            RerunStdin::File { file, start } => {
+                let mut f = file.try_clone()?;
+                f.seek(SeekFrom::Start(*start))?;
+                Ok(Stdio::from(f))
+            }
+            RerunStdin::Null => Ok(Stdio::null()),
         }
     }
 }

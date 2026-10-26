@@ -237,8 +237,7 @@ const ENVIRONMENTAL_MARKERS: &[&str] = &[
     "api error: 404",
     "404 not found",
     "not_found_error",
-    // Also a usage-limit marker; this tier is checked first and claims it.
-    limit_patterns::CREDIT_BALANCE_LOW,
+    "credit balance is too low",
     "command not found",
     "no such file or directory",
     "permission denied",

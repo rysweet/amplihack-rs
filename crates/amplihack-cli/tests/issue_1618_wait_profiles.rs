@@ -7,6 +7,8 @@
 //!   under the profile root.
 //! - D7: with the wait disabled, auto-switch's last failure is passed up
 //!   with one `skipped reason=disabled` line.
+//! - With no inherited profile but a `.default` pointer, the wait watches
+//!   the pointed-to profile's login, the one the launch uses.
 //!
 //! See `issue_1618_fixture`.
 
@@ -154,5 +156,32 @@ fn d7_disabled_with_a_profile_writes_one_skipped_line_and_passes_the_failure_up(
     assert_eq!(out.status.code(), Some(1), "{}", describe(&out));
     assert_eq!(f.count("0"), 2, "X then Y, no wait");
     assert_eq!(wait_lines(&out), vec!["skipped reason=disabled"]);
-    assert!(text(&out.stderr).contains("usage limit"));
+    assert!(text(&out.stderr).contains("session limit"));
+}
+
+#[test]
+fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
+    let f = with_profiles();
+    let out = f.run(&mut f.cmd(&["profile", "switch", "X"]));
+    assert!(out.status.success(), "profile switch X: {}", describe(&out));
+    // X's login arrives during the wait (the stub creates the file in the
+    // directory it runs with); nothing changes in CLAUDE_CONFIG_DIR.
+    std::fs::remove_file(f.profiles.join("X").join(".credentials.json")).unwrap();
+    let mut c = f.step();
+    c.env("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE", "100")
+        .env("CHANGE_LOGIN_AFTER", "1");
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", describe(&out));
+    let x = f.profiles.join("X").to_string_lossy().to_string();
+    assert_eq!(
+        f.call("0", 1)["CLAUDE_CONFIG_DIR"],
+        x,
+        "the launch applied X"
+    );
+    let ev = events(&out);
+    assert_eq!(
+        ev[1..],
+        ["end reason=login changed", "resume attempt=2"],
+        "{ev:?}"
+    );
 }

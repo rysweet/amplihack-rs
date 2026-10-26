@@ -1472,17 +1472,17 @@ repeated. The wait is **on by default** and needs no profiles.
 It applies to the `amplihack claude -p` launch of a recipe step
 (`amplihack recipe run` sets `AMPLIHACK_NONINTERACTIVE=1`), without
 `--profile`, `--docker` or `--auto`. Interactive sessions and launches typed
-at a terminal never wait. A failure that is not a usage limit is passed back
-at once.
+at a terminal never wait, and with no setting the wait is off under
+`CI=true`. A failure that is not a usage limit is passed back at once.
 
 ### What happens
 
 1. If [auto-switch](#switch-accounts-automatically) is on and another
    profile has quota left, the step first runs again under that profile.
-2. Otherwise amplihack reads the reset time from Claude's message, such as
-   `resets 8:30am (America/Los_Angeles)`, and waits until the earliest of:
-   - the reset plus two minutes, or 30 minutes when no reset can be read
-     (never more than five hours);
+2. Otherwise amplihack reads the reset time from Claude's own message, such
+   as `You've hit your session limit · resets 1pm (America/Los_Angeles)`,
+   and waits until the earliest of:
+   - the reset plus two minutes;
    - a different account becoming live for the step's login directory;
    - for a step that uses `~/.claude`, the
      [login rotator](claude-profile-rotation.md) recording a fresh cycle
@@ -1492,6 +1492,11 @@ at once.
 3. The step runs once more with the same arguments, environment and input.
    If it hits the limit again, the run ends with the usual usage-limit
    message.
+
+It does not wait, and the run ends as before, when the limit is an
+organisation spend limit, when the reset is more than five hours away (a
+weekly limit), or when Claude's message states no reset amplihack can read.
+Model output that merely mentions a usage limit never starts a wait.
 
 The wait stops without a rerun when the run is stopped (Ctrl-C, `SIGTERM`
 or `SIGHUP`), when the process that started the step exits, or when the
@@ -1518,34 +1523,35 @@ event and reason.
 
 ### Turn it off or shorten it
 
-```bash
-export AMPLIHACK_USAGE_LIMIT_WAIT=0               # off
-export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600   # wait at most an hour
-```
-
-Or, for every run, set the `usage_limit_wait` key in the JSON file
-`~/.amplihack/config`, changing only that key:
+For every run, set it in `~/.amplihack/config.toml`:
 
 ```bash
-cfg="$HOME/.amplihack/config"
-[ -f "$cfg" ] || echo '{}' > "$cfg"
-jq '.usage_limit_wait = {"enabled": true, "max_wait_secs": 3600}' "$cfg" > "$cfg.new" \
-  && chmod 600 "$cfg.new" && mv "$cfg.new" "$cfg"
+amplihack config set recipe.usage_limit_wait false
+amplihack config set recipe.usage_limit_max_wait_secs 3600   # at most an hour
 ```
 
-A variable overrides the file. A maximum only shortens the wait;
-`"max_wait_secs": 0` means no wait but one more attempt.
+For one run or one shell, the variables outrank the file:
+
+```bash
+export AMPLIHACK_USAGE_LIMIT_WAIT=0
+export AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=3600
+```
+
+A maximum only shortens the wait; `0` means no wait but one more attempt.
 
 ### Limits of the wait
 
 - **Standard output is held back.** While the wait is on, a recipe step's
   standard output is printed when the step ends, even for steps that never
   hit a limit. Error output still streams.
-- **Piped input is copied to disk** under `~/.amplihack/rerun/` (or
-  `<root>/.auto-switch.d/rerun/` with auto-switch on) and deleted when the
-  step ends. `~/.amplihack` must be owned by you and not writable by
-  others; otherwise the step writes `skipped reason=not_supervised` and
-  runs once without the wait.
+- **Piped input is not replayed.** The rerun reads a file given as stdin
+  again from the start, but gets nothing from a pipe, whose contents went
+  to the first attempt. Recipe steps pass their prompt as an argument, so
+  this only matters for hand-built pipelines.
+- **`~/.amplihack` must be private.** Held-back output goes under
+  `~/.amplihack/rerun/` (or `<root>/.auto-switch.d/rerun/` with
+  auto-switch on). If `~/.amplihack` is not owned by you or others can
+  write it, the step writes `skipped reason=not_supervised` and runs once.
 - **Claude Code and Unix only.**
 
 ## Limits
@@ -1662,13 +1668,14 @@ if [ "$(wc -l < "$HOME/calls")" -eq 1 ]; then
   echo "Claude AI usage limit reached|$(( $(date +%s) + 3600 ))" >&2
   exit 1
 fi
-cat    # echo the prompt piped in
+cat    # echo the prompt it was given on stdin
 STUB
 chmod +x "$d/claude"
-echo "summarise CHANGELOG.md" | PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 \
-  AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5 amplihack claude -p
+echo "summarise CHANGELOG.md" > "$HOME/prompt"
+PATH="$d:$PATH" AMPLIHACK_NONINTERACTIVE=1 AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS=5 \
+  amplihack claude -p < "$HOME/prompt"
 ```
 
 The launch writes a `start` line with `bound=max_wait`, waits five seconds,
 writes `end reason=max reached` and `resume attempt=2`, and then prints
-`summarise CHANGELOG.md`, the input given to both calls.
+`summarise CHANGELOG.md`: the retry reads the file from the start again.

@@ -1,6 +1,6 @@
 //! Issue #1618, AC8: SIGINT, SIGTERM or SIGHUP during the usage-limit wait
-//! ends it. The failed attempt's held-back stdout is printed, the stdin copy
-//! is deleted, there is no retry, and the step exits 128 plus the signal.
+//! ends it. The failed attempt's held-back stdout is printed, there is no
+//! retry, and the step exits 128 plus the signal.
 //!
 //! The wait runs in real time here (scale 1, a 32-minute deadline), so the
 //! step is still waiting when the signal arrives. Each test runs in its own
@@ -104,11 +104,6 @@ fn assert_signal_ends_the_step(sig: i32) {
         claude_stdout(&out),
         "attempt 1 output\n",
         "the held-back stdout is printed"
-    );
-    assert!(
-        f.stdin_copies().is_empty(),
-        "stdin copy left behind: {:?}",
-        f.stdin_copies()
     );
 }
 

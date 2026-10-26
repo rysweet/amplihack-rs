@@ -2,16 +2,15 @@
 //! rerun supervisor (#1569) and the usage-limit wait (#1618).
 //!
 //! An attempt runs the same amplihack command line as a child with
-//! `AMPLIHACK_AUTO_SWITCH_SUPERVISED=1`, reads its stdin from the step's
-//! stdin copy, streams its stderr while keeping the last 64 KiB, and buffers
-//! its stdout in a private file that is printed only for the final attempt.
+//! `AMPLIHACK_AUTO_SWITCH_SUPERVISED=1` and the stdin `RerunStdin` gives it,
+//! streams its stderr while keeping the last 64 KiB, and buffers its stdout
+//! in a private file that is printed only for the final attempt.
 
 use super::PROFILE_ENV;
 use super::auto_switch::SUPERVISED_ENV;
 use super::fsx;
-use super::limit_wait::scratch::StdinCopy;
+use super::limit_wait::plan::{self, WaitFor};
 use super::name::ProfileName;
-use crate::commands::recipe::run::limit_patterns::{self, Harness};
 use crate::commands::recipe::run::{FailureClass, classify_failure_text};
 use anyhow::{Context, Result};
 use std::fs;
@@ -134,7 +133,7 @@ pub(crate) fn run_attempt(
     args: &[std::ffi::OsString],
     rerun_dir: &Path,
     env: Option<(&ProfileName, &Path)>,
-    stdin: &StdinCopy,
+    stdin: std::io::Result<Stdio>,
     n: u32,
     signals: &Signals,
 ) -> Result<Attempt> {
@@ -147,8 +146,7 @@ pub(crate) fn run_attempt(
         .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
     let stdout = opts.open(&stdout_path)?;
     let mut cmd = Command::new(exe);
-    let input = stdin.stdio();
-    let spawned = input.and_then(|input| {
+    let spawned = stdin.and_then(|input| {
         cmd.args(args)
             .env(SUPERVISED_ENV, "1")
             .stdin(input)
@@ -219,11 +217,10 @@ pub(crate) fn run_attempt(
 
 /// What an attempt that hit its usage limit said about it.
 pub(crate) struct Limited {
-    pub(crate) harness: Harness,
     /// For the auto-switch ledger: the stated reset or five hours from now.
     pub(crate) ledger_reset: i64,
-    /// For the wait: the stated reset capped at `now` + 5 h; `None` unparsed.
-    pub(crate) wait_reset: Option<i64>,
+    /// Whether, and until when, the usage-limit wait may wait.
+    pub(crate) wait: WaitFor,
 }
 
 /// `Some` when `attempt` hit its usage limit. `now` is the wait's clock.
@@ -239,10 +236,8 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
     let text = joined(err, out);
     let ledger_reset = classified_reset(&text, err, out, fsx::now())?;
     Some(Limited {
-        // `UsageLimit` means a marker matched, so `detect` is `Some` here.
-        harness: limit_patterns::detect(&text).unwrap_or(Harness::Claude),
         ledger_reset,
-        wait_reset: limit_patterns::read_reset(err, out, now),
+        wait: plan::wait_for(err, out, now),
     })
 }
 

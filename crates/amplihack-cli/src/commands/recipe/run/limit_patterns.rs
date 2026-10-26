@@ -5,11 +5,11 @@
 //! the anchor that starts the text form of the reset time. Only Claude Code
 //! is described today; Codex and Copilot get their own rows later.
 //!
-//! Two readers use the tables. The classifier (`failure_class`) and the
-//! rerun supervisor decide *whether* an attempt hit a limit; the readers here
-//! only say *when* it resets. `epoch_reset` is the auto-switch ledger's
-//! reading (unclamped); `read_reset` is the usage-limit wait's (capped at now
-//! plus five hours, never raised to now).
+//! The classifier (`failure_class`) and the auto-switch rerun supervisor
+//! decide *whether* an attempt hit a limit from the markers. The usage-limit
+//! wait is stricter: it needs the harness's own message shape
+//! ([`limit_message`]), so model output that merely talks about a usage limit
+//! never starts a wait. `epoch_marker` is the auto-switch ledger's reading.
 
 use super::limit_reset;
 
@@ -43,15 +43,14 @@ struct Patterns {
     epoch_marker: &'static str,
     /// The text form of the reset follows the first occurrence of this.
     anchor: &'static str,
+    /// A line starting with this (either apostrophe) that also contains
+    /// `limit` and `·` is the harness's own limit message.
+    message_prefix: &'static str,
 }
 
 /// The organisation spend-limit phrase. `profile usage` also reads it, from
 /// Claude's `/usage` screen, so it is named once here.
 pub(crate) const SPEND_LIMIT: &str = "spend limit";
-
-/// Claude's out-of-credit message. Also an environmental marker, which the
-/// classifier checks first, so it never starts a rerun or a wait.
-pub(crate) const CREDIT_BALANCE_LOW: &str = "credit balance is too low";
 
 /// Claude Code's patterns.
 ///
@@ -72,20 +71,11 @@ const CLAUDE: Patterns = Patterns {
         "monthly limit",
         "weekly limit",
         SPEND_LIMIT,
-        CREDIT_BALANCE_LOW,
     ],
     epoch_marker: "Claude AI usage limit reached",
     anchor: "resets ",
+    message_prefix: "You've hit your ",
 };
-
-/// The harness whose marker appears in `text`, matched case-insensitively.
-pub(crate) fn detect(text: &str) -> Option<Harness> {
-    let lower = text.to_ascii_lowercase();
-    Harness::ALL
-        .iter()
-        .copied()
-        .find(|h| h.patterns().markers.iter().any(|m| lower.contains(m)))
-}
 
 /// Every harness's markers, for the classifier.
 pub(crate) fn all_markers() -> Vec<&'static str> {
@@ -108,12 +98,6 @@ pub(crate) fn epoch_marker(stderr: &[u8], stdout: &[u8]) -> Option<Option<i64>> 
     })
 }
 
-/// The reset an epoch marker line states: 1 to 19 ASCII digits right after
-/// `|`, which must fit in an `i64`. Not clamped.
-pub(crate) fn epoch_reset(stderr: &[u8], stdout: &[u8]) -> Option<i64> {
-    epoch_marker(stderr, stdout).flatten()
-}
-
 fn last_line_starting<'a>(bytes: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
     bytes
         .split(|&b| b == b'\n')
@@ -131,25 +115,64 @@ fn epoch_digits(rest: &[u8]) -> Option<i64> {
     })
 }
 
-/// The reset the usage-limit wait uses: the epoch form, else the text form
-/// after the first anchor (stderr, then stdout). Capped at `now` plus five
-/// hours; a reset in the past is kept as read. `None` means unparsed.
-pub(crate) fn read_reset(stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> {
-    const FIVE_HOURS: i64 = 5 * 3600;
-    let reset = epoch_reset(stderr, stdout).or_else(|| {
-        [stderr, stdout]
-            .into_iter()
-            .find_map(|bytes| text_reset(&String::from_utf8_lossy(bytes), now))
-    })?;
-    Some(reset.min(now.saturating_add(FIVE_HOURS)))
+/// A harness's own usage-limit message, as the usage-limit wait reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LimitMessage {
+    pub(crate) harness: Harness,
+    /// An organisation spend limit: waiting for a reset cannot lift it.
+    pub(crate) spend: bool,
+    /// The reset the message states, not clamped; `None` when it states
+    /// none that parses.
+    pub(crate) reset: Option<i64>,
 }
 
-fn text_reset(text: &str, now: i64) -> Option<i64> {
-    Harness::ALL.iter().find_map(|h| {
-        let anchor = h.patterns().anchor;
-        let at = text.to_ascii_lowercase().find(anchor)?;
-        limit_reset::parse(&text[at + anchor.len()..], now)
+/// The harness's own limit message in an attempt's output: the last stderr
+/// line that has its shape, else the last non-empty line of the stdout tail
+/// when that line has it. In `-p` mode stdout is the model's answer, so
+/// only a whole line in the message's shape counts there. The shape is a
+/// line starting with the epoch marker and `|`, or with the message prefix
+/// and also containing `limit` and `·`.
+pub(crate) fn limit_message(stderr: &[u8], stdout: &[u8], now: i64) -> Option<LimitMessage> {
+    let err = String::from_utf8_lossy(stderr);
+    let out = String::from_utf8_lossy(stdout);
+    Harness::ALL.iter().find_map(|&h| {
+        let p = h.patterns();
+        let line = err
+            .lines()
+            .map(str::trim)
+            .rfind(|l| shaped(p, l))
+            .or_else(|| {
+                out.lines()
+                    .map(str::trim)
+                    .rfind(|l| !l.is_empty())
+                    .filter(|l| shaped(p, l))
+            })?;
+        let reset = match line.strip_prefix(p.epoch_marker) {
+            Some(rest) => epoch_digits(rest.as_bytes()),
+            None => line
+                .to_ascii_lowercase()
+                .find(p.anchor)
+                .and_then(|at| limit_reset::parse(&line[at + p.anchor.len()..], now)),
+        };
+        Some(LimitMessage {
+            harness: h,
+            spend: line.to_ascii_lowercase().contains(SPEND_LIMIT),
+            reset,
+        })
     })
+}
+
+fn shaped(p: &Patterns, line: &str) -> bool {
+    if line
+        .strip_prefix(p.epoch_marker)
+        .is_some_and(|rest| rest.starts_with('|'))
+    {
+        return true;
+    }
+    let curly = p.message_prefix.replace('\'', "\u{2019}");
+    (line.starts_with(p.message_prefix) || line.starts_with(curly.as_str()))
+        && line.contains("limit")
+        && line.contains('\u{b7}')
 }
 
 /// The reset a usage-limit message states, quoted verbatim for the

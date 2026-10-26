@@ -13,7 +13,7 @@ use super::fsx;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
-use crate::commands::profile::limit_wait::scratch::{self, CopyError, StdinCopy};
+use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -207,19 +207,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
         Err(e) => return unsupervised(&waiter, on, &e),
     };
     super::sweep_rerun(&rerun_dir);
+    // Never reads stdin, so nothing here can block before signals are caught.
+    let stdin = RerunStdin::capture();
     let signals = match Signals::register() {
         Ok(s) => s,
         Err(e) => return unsupervised(&waiter, on, &format!("cannot catch stop signals: {e}")),
-    };
-    let stdin = match StdinCopy::take(&rerun_dir) {
-        Ok(c) => c,
-        Err(CopyError::BeforeRead(e)) => return unsupervised(&waiter, on, &e),
-        Err(e @ CopyError::AfterRead(_)) => {
-            eprintln!(
-                "error: could not copy this step's input for its supervisor ({e}); not running it"
-            );
-            return Ok(Some(1));
-        }
     };
     let args: Vec<_> = std::env::args_os().skip(1).collect();
 
@@ -242,10 +234,11 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             .zip(profile.as_ref())
             .map(|(sw, p)| (p, sw.state.profile_dir(p.as_str())));
         let env = switch_dir.as_ref().map(|(p, d)| (*p, d.as_path()));
-        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, &stdin, n, &signals) {
+        let input = stdin.for_attempt(n);
+        let attempt = match run_attempt(&exe, &args, &rerun_dir, env, input, n, &signals) {
             Ok(a) => a,
-            // Only before any input was consumed can a plain launch follow.
-            Err(e) if n == 1 && profile.is_none() && stdin.path().is_none() => {
+            // The first attempt never started, so a plain launch can follow.
+            Err(e) if n == 1 && profile.is_none() => {
                 return unsupervised(&waiter, on, &e);
             }
             Err(e) => return Err(e),

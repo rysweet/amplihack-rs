@@ -18,7 +18,7 @@ mod cli;
 #[cfg(unix)]
 mod config;
 #[cfg(unix)]
-pub(crate) mod fsx;
+pub(super) mod fsx;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
@@ -26,7 +26,7 @@ mod liveness;
 #[cfg(unix)]
 mod mv;
 #[cfg(unix)]
-pub(crate) mod rerun;
+pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]

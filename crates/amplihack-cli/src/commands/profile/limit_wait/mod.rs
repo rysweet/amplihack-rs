@@ -9,27 +9,34 @@
 //! `auto_switch::rerun::run`, runs the attempts with or without auto-switch.
 //! Log lines are built only from static text, integers and parsed instants.
 
+mod clock;
 pub(crate) mod fingerprint;
 pub(crate) mod plan;
 pub(crate) mod scratch;
+pub(crate) mod settings;
 pub(crate) mod wait;
 
 #[cfg(test)]
 mod tests_fingerprint;
 #[cfg(test)]
+mod tests_log;
+#[cfg(test)]
 mod tests_plan;
 #[cfg(test)]
 mod tests_scratch;
+#[cfg(test)]
+mod tests_settings;
 #[cfg(test)]
 mod tests_wait;
 
 use super::attempt::{Limited, Signals};
 use crate::commands::recipe::run::limit_patterns::Harness;
-use crate::wait_config::WaitSettings;
 use anyhow::Result;
 use chrono::TimeZone;
+use clock::Clock;
 use fingerprint::{Fingerprint, Watch};
-use plan::{Bound, plan};
+use plan::{Bound, NoWait, WaitFor, plan};
+pub(crate) use settings::WaitSettings;
 use std::fmt::Display;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -42,7 +49,7 @@ const STEP_TIMEOUT_ENV: &str = "AMPLIHACK_STEP_TIMEOUT";
 pub(crate) enum Event {
     Start {
         harness: Harness,
-        reset: Option<i64>,
+        reset: i64,
         until: i64,
         bound: Bound,
     },
@@ -61,6 +68,8 @@ pub(crate) enum Skip {
     Disabled,
     AlreadyWaited,
     NotSupervised,
+    /// The limit is not one a wait can outlast.
+    Cannot(NoWait),
 }
 
 /// The log line for `e`, times in zone `tz`.
@@ -81,7 +90,7 @@ where
         } => format!(
             "start reason=usage_limit harness={} reset={} until={} bound={}",
             harness.as_str(),
-            reset.map_or_else(|| "unparsed".to_string(), time),
+            time(*reset),
             time(*until),
             bound.as_str()
         ),
@@ -94,6 +103,7 @@ where
                 Skip::Disabled => "disabled",
                 Skip::AlreadyWaited => "already_waited",
                 Skip::NotSupervised => "not_supervised",
+                Skip::Cannot(why) => why.as_str(),
             }
         ),
     };
@@ -110,59 +120,6 @@ pub(crate) enum AfterLimit {
     Finish(Option<i32>),
     /// Run the step once more under the inherited profile.
     Retry,
-}
-
-/// Wall time, or with the debug-only test seams a virtual clock that starts
-/// at `TEST_NOW` and moves only when the wait sleeps.
-struct Clock {
-    base: Option<i64>,
-    scale: f64,
-    /// Virtual time slept minus real time slept.
-    skew: Duration,
-}
-
-impl Clock {
-    fn new() -> Self {
-        let (base, scale) = seams();
-        Self {
-            base,
-            scale,
-            skew: Duration::ZERO,
-        }
-    }
-
-    fn now(&self) -> i64 {
-        let skew = i64::try_from(self.skew.as_secs()).unwrap_or(i64::MAX);
-        self.base
-            .unwrap_or_else(super::fsx::now)
-            .saturating_add(skew)
-    }
-
-    fn sleep(&mut self, d: Duration) {
-        let real = d.div_f64(self.scale).min(Duration::from_secs(1));
-        std::thread::sleep(real);
-        self.skew += if self.base.is_some() { d } else { d - real };
-    }
-}
-
-/// `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW` and `_TEST_SCALE`, read only in
-/// debug builds.
-#[cfg(debug_assertions)]
-fn seams() -> (Option<i64>, f64) {
-    let var = |n: &str| std::env::var(n).ok().filter(|v| !v.is_empty());
-    let base = var("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW")
-        .filter(|v| v.bytes().all(|b| b.is_ascii_digit()))
-        .and_then(|v| v.parse().ok());
-    let scale = var("AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE")
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|s| s.is_finite() && (1.0..=1_000_000.0).contains(s))
-        .unwrap_or(1.0);
-    (base, scale)
-}
-
-#[cfg(not(debug_assertions))]
-fn seams() -> (Option<i64>, f64) {
-    (None, 1.0)
 }
 
 struct RealDeps<'a> {
@@ -276,12 +233,19 @@ impl Waiter {
             log(&Event::Skipped(Skip::AlreadyWaited));
             return AfterLimit::Finish(None);
         }
+        let (harness, reset) = match lim.wait {
+            WaitFor::Reset { harness, reset } => (harness, reset),
+            WaitFor::Skip(why) => {
+                log(&Event::Skipped(Skip::Cannot(why)));
+                return AfterLimit::Finish(None);
+            }
+        };
         self.used = true;
         let now = self.clock.now();
         let step = self.step_timeout.map(|t| (self.step_start, t));
-        let p = plan(now, lim.wait_reset, settings.max_wait_secs, step);
+        let p = plan(now, reset, settings.max_wait_secs, step);
         log(&Event::Start {
-            harness: lim.harness,
+            harness,
             reset: p.reset,
             until: p.until,
             bound: p.bound,
@@ -314,22 +278,22 @@ pub(crate) fn not_supervised(settings: Option<WaitSettings>) {
     }
 }
 
-fn env_path(name: &str) -> Option<PathBuf> {
-    std::env::var_os(name)
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-}
-
 /// Supervises a `-p` step with no inherited profile and the wait enabled:
 /// no profile substitution, no ledger, scratch in `$HOME/.amplihack/rerun`.
+/// `default` is the profile the launch will apply from the `.default`
+/// pointer, if any; the wait then watches that profile's login.
 /// `Ok(None)` when the step could not be supervised and runs once as before.
-pub(crate) fn supervise_unprofiled(settings: WaitSettings) -> Result<Option<i32>> {
-    let home = env_path("HOME");
-    let config_dir = env_path("CLAUDE_CONFIG_DIR");
-    // The error can quote the profile root, so only a fixed reason is shown.
-    let store = super::store::ProfileStore::from_env()
-        .map_err(|_| eprintln!("amplihack: usage-limit wait: profile store unavailable"))
-        .ok();
-    let watch = Watch::new(store.as_ref(), None, config_dir.as_deref(), home.as_deref());
+pub(crate) fn supervise_unprofiled(
+    settings: WaitSettings,
+    store: Option<&super::store::ProfileStore>,
+    default: Option<&super::name::ProfileName>,
+) -> Result<Option<i32>> {
+    let path = |name: &str| {
+        std::env::var_os(name)
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
+    let (home, config_dir) = (path("HOME"), path("CLAUDE_CONFIG_DIR"));
+    let watch = Watch::new(store, default, config_dir.as_deref(), home.as_deref());
     super::auto_switch::rerun::run(None, Waiter::new(Some(settings), watch))
 }
