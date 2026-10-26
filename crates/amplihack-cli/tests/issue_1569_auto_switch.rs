@@ -216,6 +216,8 @@ impl Fixture {
             .env("AMPLIHACK_NO_FRESHNESS_CHECK", "1")
             .env("AMPLIHACK_SKIP_AUTO_INSTALL", "1")
             .env("AMPLIHACK_SKIP_POWER_STEERING", "1")
+            // Launches never start a real background rotator here (autostart).
+            .env("AMPLIHACK_ROTATE_AUTOSTART", "0")
             .env("AMPLIHACK_SKIP_REFLECTION", "1")
             .env("AMPLIHACK_CLAUDE_PROFILE_ROOT", &self.root);
         c
@@ -1888,17 +1890,42 @@ fn shared_account_is_a_note_without_the_uuid() {
     let f = Fixture::new();
     private_file(
         &f.dir("Z").join(".claude.json"),
-        "{\"oauthAccount\":{\"accountUuid\":\"uuid-X\",\"emailAddress\":\"x@example.invalid\"}}",
+        "{\"oauthAccount\":{\"accountUuid\":\"uuid-X\",\"organizationUuid\":\"org-X\",\"emailAddress\":\"x@example.invalid\"}}",
     );
     let status = f.stdout(&["profile", "auto-switch", "status"]);
     assert!(
         status.contains(
-            "note: profiles X and Z are signed in to the same account; their readings are not reliable\n"
+            "note: profiles 'X' and 'Z' are signed in to the same account and organization \
+             (duplicate login); fix: run 'amplihack profile login Z' with the browser signed \
+             out of claude.ai or in a private window.\n"
         ),
         "{status}"
     );
-    assert!(!status.contains("uuid-"), "{status}");
-    assert!(!status.contains("profiles X and Y"), "{status}");
+    assert!(!status.contains("readings are not reliable"), "{status}");
+    assert!(
+        !status.contains("uuid-") && !status.contains("org-"),
+        "{status}"
+    );
+    assert!(!status.contains("profiles 'X' and 'Y'"), "{status}");
+    f.assert_no_leak();
+}
+
+#[test]
+fn one_user_in_two_organizations_is_not_a_shared_account() {
+    // Bug 1: the same accountUuid in another organization is another
+    // subscription with its own limits.
+    let f = Fixture::new();
+    for (p, org) in [("X", "org-team"), ("Z", "org-personal")] {
+        private_file(
+            &f.dir(p).join(".claude.json"),
+            &format!(
+                "{{\"oauthAccount\":{{\"accountUuid\":\"uuid-X\",\"organizationUuid\":\"{org}\",\"emailAddress\":\"x@example.invalid\"}}}}"
+            ),
+        );
+    }
+    let status = f.stdout(&["profile", "auto-switch", "status"]);
+    assert!(!status.contains("same account"), "{status}");
+    assert!(!status.contains("org-"), "{status}");
     f.assert_no_leak();
 }
 
@@ -2516,4 +2543,64 @@ fn every_sentinel_survives_a_full_flow_without_being_printed() {
     f.ok(&["profile", "auto-switch", "status"]);
     f.assert_one_place_each();
     f.assert_no_leak();
+}
+
+/// Rotator autostart opt-out: with auto-switch on and
+/// `AMPLIHACK_ROTATE_AUTOSTART=0` (set by every fixture command), a launch
+/// behaves as before and starts no rotator.
+#[cfg(unix)]
+#[test]
+fn launch_with_autostart_off_starts_no_rotator() {
+    let f = Fixture::new();
+    let off = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    assert!(off.status.success(), "{}", text(&off.stderr));
+    f.switch_on();
+    let out = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert_eq!(out.status.code(), off.status.code());
+    assert_eq!(claude_stdout(&out), claude_stdout(&off), "stdout unchanged");
+    assert!(
+        !text(&out.stderr).contains("started Claude login rotator"),
+        "{}",
+        text(&out.stderr)
+    );
+    let rotate = f.state().join("rotate");
+    assert!(!rotate.join("rotate.pid").exists(), "no rotator started");
+    assert!(
+        !rotate.join("autostart").exists(),
+        "the setting is not written"
+    );
+}
+
+/// `auto-switch status` shows the autostart state right after `switch:`, and
+/// marks it inactive while auto-switch is off.
+#[cfg(unix)]
+#[test]
+fn auto_switch_status_shows_autostart() {
+    let f = Fixture::new();
+    let lines = |s: String| s.lines().map(str::to_string).collect::<Vec<_>>();
+    let off = lines(f.stdout(&["profile", "auto-switch", "status"]));
+    let i = off.iter().position(|l| l.starts_with("switch:")).unwrap();
+    assert_eq!(
+        off.get(i + 1).map(String::as_str),
+        Some("autostart: off (env) — inactive (auto-switch off)"),
+        "{off:?}"
+    );
+    f.switch_on();
+    let on = lines(f.stdout(&["profile", "auto-switch", "status"]));
+    let i = on.iter().position(|l| l.starts_with("switch:")).unwrap();
+    assert_eq!(
+        on.get(i + 1).map(String::as_str),
+        Some("autostart: off (env)"),
+        "{on:?}"
+    );
+    let mut c = f.cmd(&["profile", "auto-switch", "status"]);
+    c.env_remove("AMPLIHACK_ROTATE_AUTOSTART");
+    let out = f.run(&mut c);
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    assert!(
+        text(&out.stdout).contains("\nautostart: on (default)\n"),
+        "{}",
+        text(&out.stdout)
+    );
 }

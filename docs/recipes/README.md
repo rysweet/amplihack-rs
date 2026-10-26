@@ -86,7 +86,7 @@ Complete documentation for using the Recipe Runner:
 - **[Scoped Workflow Closure](../reference/scoped-workflow-closure.md)** - Persisted PR, process, and workstream ownership contract for default-workflow closure
 - **[Leak-Proof, Self-Healing Worktree Setup (#840)](issue-840-leak-proof-worktree.md)** - Orphan-worktree sweep and cleanup-on-failure for `step-04-setup-worktree`, with the `workflow_worktree_sweep.sh` helper API, the data-loss safety gate, and `AMPLIHACK_WORKTREE_STALE_SECS` configuration
 - **[Relative-Path-Safe, Idempotent Worktree Setup (#1121)](issue-1121-relative-repo-path.md)** - Canonicalizes `repo_path` (`pwd -P`) and routes every `git worktree add` through a guarded `wt_add_idempotent` helper so `step-04-setup-worktree` reuses an already-present worktree instead of hard-failing with `already exists` (exit 128) under a relative `repo_path`
-- **[Re-runs Never Destroy an Existing Worktree's Work (#1565)](issue-1565-rerun-preserves-worktree.md)** - `step-04-setup-worktree` keeps a dirty or ahead branch and worktree untouched and moves the re-run to a fresh branch via `workflow_worktree_deconflict.sh resolve --base`; how to continue the kept branch with `existing_branch`
+- **[Re-runs Never Destroy an Existing Worktree's Work (#1565, #1626)](issue-1565-rerun-preserves-worktree.md)** - `step-04-setup-worktree` and consensus `step3-setup-worktree` keep a dirty or ahead branch and worktree untouched and move the re-run to a fresh branch via `workflow_worktree_deconflict.sh resolve --base`; how to continue the kept branch with `existing_branch`
 
 ## Why It Exists
 

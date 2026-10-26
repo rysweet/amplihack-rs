@@ -13,14 +13,21 @@ credentials live outside the configuration directory. See Claude Code's
 > `CLAUDE_CONFIG_DIR` Claude Code runs with.
 
 Profiles rely on Claude Code's documented `CLAUDE_CONFIG_DIR` variable.
-amplihack never modifies `~/.claude` and makes no network calls for this
-feature. See [What a new profile inherits](#what-a-new-profile-inherits).
+Logins stay separate, but sessions are shared: every profile's `projects/`,
+`file-history/` and `session-env/` is a link to the same directory in
+`~/.claude`, so `claude --resume <id>` finds a session whatever profile
+started it. Apart from those three directories, amplihack never modifies
+`~/.claude` for this feature, and it makes no network calls. See
+[What a new profile inherits](#what-a-new-profile-inherits) and
+[Share sessions across profiles](#share-sessions-across-profiles).
 To see which accounts have quota left, see
 [Check usage across profiles](#check-usage-across-profiles). To move work to
 another account automatically when one runs out of quota, see
 [Switch accounts automatically](#switch-accounts-automatically). To keep the
 default `~/.claude` login on the account with the most capacity, see
 [Rotate Claude logins automatically](claude-profile-rotation.md).
+To be told when every account is out of capacity, see
+[When no account has capacity](#when-no-account-has-capacity).
 
 ## What a new profile inherits
 
@@ -39,18 +46,28 @@ the official [environment variable reference](https://code.claude.com/docs/en/en
 | `agents/`, `commands/`, `output-styles/`, `rules/`, `skills/` | Copied recursively |
 | `settings.json` (filtered) | Only allowlisted top-level keys: `alwaysThinkingEnabled`, `attribution`, `cleanupPeriodDays`, `hooks`, `includeCoAuthoredBy`, `language`, `model`, `outputStyle`, `permissions`, `respectGitignore`, `spinnerVerbs`, `statusLine` |
 
-Never copied: `.credentials.json`, `.claude.json`, `history*`, `projects/`,
+The copy is made once, when the profile is added. After that, `amplihack install`
+keeps the amplihack hooks in each profile's `settings.json` current: it replaces
+amplihack's hook entries with the ones it writes to `~/.claude/settings.json`
+and leaves the rest of the file alone. A profile without a `settings.json` is
+left without one.
+
+Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
 on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
-key not on the allowlist). If `~/.claude` does not exist, the profile is simply
-created empty.
+key not on the allowlist). `projects/`, `file-history/` and `session-env/` are
+not copied either: they are linked, see
+[Share sessions across profiles](#share-sessions-across-profiles). If
+`~/.claude` does not exist, the profile is simply created empty and gets no
+links.
 If the path exists but is not a directory, `profile add` fails and removes the
 new profile directory rather than silently creating an unseeded profile.
 
 Caveats:
 
-- **Copy by value.** Nothing is linked. Later edits to `~/.claude` do not
-  propagate to existing profiles; re-add the profile to pick them up.
+- **Copy by value.** The allowlisted assets are copies, not links. Later
+  edits to `~/.claude` do not propagate to existing profiles; re-add the
+  profile to pick them up. The only links are the three session directories.
 - **Allowlisted setting values are copied verbatim.** Review hooks and
   status-line commands for embedded secrets or machine-specific paths before
   adding a profile; what they contain is your responsibility. Values are never
@@ -95,6 +112,270 @@ amplihack profile add work
 # (exact wording may vary; no profile directory is left behind)
 ```
 
+## Share sessions across profiles
+
+Every profile uses the same session store, so a conversation started under
+one account can be resumed under another. Logins are never shared.
+
+| Shared (one copy, in `~/.claude`) | Per profile (never shared) |
+|-----------------------------------|----------------------------|
+| `projects/`: session transcripts (`<session-id>.jsonl`), grouped by working directory | `.credentials.json`, `.claude.json` (login and account) |
+| `file-history/`: file snapshots, one directory per session id | `settings.json`, `CLAUDE.md` and the other seeded assets |
+| `session-env/`: per-session environment, one directory per session id | `history*`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/` |
+
+`file-history/` and `session-env/` are shared along with `projects/` because
+both are keyed by session id and `--resume` needs them: without them a
+resumed session can't rewind file edits or restore its environment.
+
+In each profile directory the three names are symbolic links:
+
+```bash
+ls -l ~/.amplihack/claude-profiles/work/
+# lrwxrwxrwx ... file-history -> /home/you/.claude/file-history
+# lrwxrwxrwx ... projects -> /home/you/.claude/projects
+# lrwxrwxrwx ... session-env -> /home/you/.claude/session-env
+```
+
+### Resume a session from another profile
+
+```bash
+amplihack claude --profile work      # session 0f6c…e1 is written to ~/.claude/projects
+amplihack claude --profile personal -- --resume 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1
+```
+
+Plain `claude --resume` (no profile) sees the same sessions, because the
+store is `~/.claude` itself.
+
+### When the links are made
+
+amplihack makes or checks the links at each of these points. When there is
+nothing to do it prints nothing.
+
+| Command | What happens |
+|---------|--------------|
+| `profile add <name>` | Links are created in the new profile. Nothing is printed unless something went wrong. |
+| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed: by `switch` after the pointer is written, by `login` before `claude` starts. |
+| `amplihack claude` / `launch` with any profile (`--profile`, inherited, default pointer), `profile run` | Checked just before spawn, after the usual directory check. |
+| `profile rotate` | After a swap that actually ran, for both profiles in it. `--dry-run` and refused rotates change nothing. |
+
+Auto-switch makes no check of its own. Its swap moves only the login files,
+and the rerun after a usage limit is an ordinary launch, so the launch row
+covers it.
+
+Problems are printed to stderr as warnings, for example
+`amplihack: profile work: projects is a symlink to /mnt/old/projects; left alone`.
+They never stop a launch, an `add`, a `switch`, a `login` or a rotate.
+
+### Moving an existing profile's sessions into the shared store
+
+Profiles made before sessions were shared have real `projects/`,
+`file-history/` and `session-env/` directories. The first launch, `switch` or
+`login` of such a profile merges them into `~/.claude` and replaces each with
+a link. The merge runs before `claude` starts. It prints
+`amplihack: profile work: merging session history into ~/.claude (one-time; may take a while)`
+when it begins and the results when it finishes. When the profile and `~/.claude` are on different filesystems every
+file is copied, so a profile with gigabytes of history can take minutes;
+let it finish rather than interrupting it (an interrupted merge is safe and
+resumes on the next launch, but it starts by re-checking every file).
+
+```
+amplihack: profile work: projects: moved 41 files into ~/.claude/projects, 2 identical, 1 conflict
+amplihack: profile work: projects: conflict: -home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl kept the shared copy; this profile's copy saved as ~/.claude/projects/-home-you-src-app/0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work
+amplihack: profile work: projects: old directory kept as ~/.amplihack/claude-profiles/work/projects.pre-share-20261020T141503Z
+```
+
+The merge never deletes or overwrites a session:
+
+- **Only in the profile:** the file is moved into the shared store, keeping
+  its modification time. Its mode is limited to the owner (a `0644`
+  transcript becomes `0600`), because `~/.claude` may be readable by other
+  users where the profile directory was not.
+- **Same bytes in both:** the shared copy stays. The profile's copy is left
+  behind and ends up in the backup.
+- **Different contents:** the shared copy always keeps the real name. The
+  profile's copy is moved beside it as `<file>.conflict-<profile>`, or
+  `.conflict-<profile>-2`, `-3` and so on if that name is taken. The shared
+  file is never renamed, so a session another profile has open is never
+  split and its name never goes missing, even for a moment. If the
+  profile's copy was the one you wanted, see
+  [Resume the losing copy of a conflict](#resume-the-losing-copy-of-a-conflict).
+- **Claude's memory index:** Claude reads per-project memory only through
+  `projects/<project>/memory/MEMORY.md`, which lists the memory files beside
+  it. When the profile's `MEMORY.md` differs from the shared one, the shared
+  file keeps its name and the profile's copy is saved as
+  `MEMORY.md.conflict-<profile>` like any conflict, and then every entry of
+  the profile's index that the shared index lacks is appended to the shared
+  `MEMORY.md` (headings and blank lines are left out; a link to a memory file
+  that was itself saved under a conflict name points at that name). This
+  append is the only change the merge ever makes to an existing shared file.
+  amplihack prints
+  `projects: memory index <project>/memory/MEMORY.md: added <n> entries from this profile to the shared copy`.
+  Read the shared `MEMORY.md` afterwards and tidy any entries that now say
+  the same thing twice.
+- **Skipped and left in the backup:** credential files (`.credentials*`,
+  `.claude.json`) at any depth, symbolic links, and special files.
+
+When the merge finishes, the old directory is renamed to
+`<name>.pre-share-<UTC time>` inside the profile, holding whatever was left
+behind, and the link takes its place. The merge is safe to stop and re-run;
+the next launch picks up where it stopped. A second run on a merged profile
+changes nothing.
+
+If the link is put in place but the old directory can't then be renamed to
+its `.pre-share-` backup name, amplihack warns
+`rename failed: ...; nothing removed, the old directory is at <profile>/.<name>.share-tmp`.
+That warning is printed only once: on later runs `<name>` is a correct link
+and the leftover isn't mentioned again. Check its contents, move anything you
+still want into `~/.claude/<name>`, then remove it by hand. While it is still
+there, a later swap of the same name refuses to run.
+
+### Resume the losing copy of a conflict
+
+The `.conflict-<profile>` suffix stops Claude from listing the file as a
+second session. To resume that copy instead, end every session that has the
+shared copy open, then put the losing copy under the session's own name and
+keep the shared copy aside:
+
+```bash
+cd ~/.claude/projects/-home-you-src-app
+mv 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-shared
+mv 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl.conflict-work 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1.jsonl
+amplihack claude --profile work -- --resume 0f6c9b2a-4d1e-4c7a-9a55-3b8f2f7d10e1
+```
+
+### Delete the backups
+
+Backups are never deleted automatically. They can hold full transcripts, so
+once you have checked the merge, delete them rather than copying them
+anywhere:
+
+```bash
+ls -d ~/.amplihack/claude-profiles/*/*.pre-share-*
+rm -rf ~/.amplihack/claude-profiles/work/projects.pre-share-20261020T141503Z
+```
+
+`profile remove` deletes a profile's backups along with its directory. It
+removes only the links, never the shared sessions they point to.
+
+### A running session delays the merge
+
+If a Claude session is running with the profile's directory, its real
+directories are not merged; you see
+`amplihack: profile work: projects: migration deferred: live session`.
+If amplihack can't read the list of running processes (on Linux, `/proc`), it
+also waits, and says
+`projects: migration deferred: could not check for running sessions (retried next launch)`
+instead.
+Missing names still get links straight away. The merge happens on the first
+launch, `switch` or `login` after every session using that profile has ended.
+
+On systems other than Linux, amplihack can't see which sessions are running,
+so it never merges automatically there. New profiles and missing names still
+get links. While a profile still has a real directory, each launch, `switch`
+and `login` of it prints
+`amplihack: profile work: projects: not merged: running sessions can't be checked on this system; merge by hand, see docs/howto/claude-profiles.md#merge-by-hand-on-macos`
+until you merge it as shown below.
+
+On Windows the store is not shared and each profile keeps its own
+directories. `profile add` prints
+`shared session dirs not supported on this platform; profiles keep separate projects/`
+once; other commands log it at debug level only.
+
+### Merge by hand on macOS
+
+End every session that uses the profile, then run:
+
+```bash
+p=~/.amplihack/claude-profiles/work
+for d in projects file-history session-env; do
+  [ -d "$p/$d" ] && [ ! -L "$p/$d" ] || continue      # only real directories
+  rsync -a --no-links --ignore-existing \
+    --exclude='.credentials*' --exclude='.claude.json' \
+    "$p/$d/" "$HOME/.claude/$d/" &&
+  mv "$p/$d" "$p/$d.pre-share-manual" &&
+  ln -s "$HOME/.claude/$d" "$p/$d" ||
+  { echo "stopped at $d; nothing was linked for it" >&2; break; }
+done
+```
+
+- `--ignore-existing` never overwrites a shared file.
+- `--no-links` (after `-a`) skips symbolic links, and the two `--exclude`
+  options keep credential files out of the shared store.
+- A file that exists in both places with different contents is not copied:
+  the profile's copy stays only in `$d.pre-share-manual`. Run
+  `diff -rq "$p/projects.pre-share-manual" ~/.claude/projects` to list
+  them before you delete the backup.
+
+If the system `rsync` rejects one of these options, install rsync 3 (for
+example `brew install rsync`) and run the loop again.
+
+### Privacy: every profile can read every session
+
+With a shared store, any profile, and anyone using it, can read every
+transcript and file snapshot from every other profile. Only the logins stay
+separate. [Stop sharing for one profile](#stop-sharing-for-one-profile)
+keeps that profile's new sessions out of the shared store, so other profiles
+don't list them, but they are still files your OS user can read. If you need
+an account whose sessions the others can't read, use a different OS user
+rather than a profile.
+
+All profiles also share one `session-env/`. If you keep accounts separate
+for trust reasons, for example a client's account next to your own, create
+`.no-shared-sessions` in that profile before its first launch after the
+upgrade (see [Stop sharing for one profile](#stop-sharing-for-one-profile)).
+
+### When nothing is linked
+
+amplihack leaves a profile's directories as they are, with a warning, when:
+
+- the profile has a `.no-shared-sessions` file (no warning; see
+  [Stop sharing for one profile](#stop-sharing-for-one-profile));
+- `$HOME` is unset, or `~/.claude` doesn't exist (no warning in this case;
+  amplihack doesn't create `~/.claude`);
+- `~/.claude` is itself a symlink, as in many dotfile setups (a warning is
+  printed). Point the profiles at the real directory instead, or keep
+  sharing off;
+- `~/.claude` is not owned by you, or is writable by group or others (a
+  group-writable directory is accepted when the group is your own private
+  group, as with Ubuntu's default umask of `002`);
+- the profile directory is not owned by you, or has any group or other
+  permission bit (`mode & 0o077` is not zero, the same rule as the
+  launch check);
+- `~/.claude/projects` (or one of the other two) is a symlink, not a
+  directory, not owned by you, or writable by group or others (same rule as
+  `~/.claude`). Only that name is skipped;
+- the profile directory is inside `~/.claude` (a warning is printed; move
+  the profile root elsewhere to share sessions);
+- the profile's `projects/` is already a symlink to somewhere else, or is a
+  file rather than a directory. amplihack never follows or replaces it.
+
+A missing `~/.claude/projects` (or `file-history/`, `session-env/`) is created
+with mode `0700`.
+
+### Stop sharing for one profile
+
+A `.no-shared-sessions` file in the profile directory turns sharing off for
+that profile. amplihack checks for it before anything else and, when it is
+there, never links or merges that profile's directories. End the profile's
+sessions, then create the file and replace each link with a real directory:
+
+```bash
+p=~/.amplihack/claude-profiles/work
+touch "$p/.no-shared-sessions"
+for d in projects file-history session-env; do
+  [ -L "$p/$d" ] && rm "$p/$d"        # removes the link only, never the shared files
+  [ -e "$p/$d" ] || mkdir -m 700 "$p/$d"
+done
+```
+
+Sessions the profile wrote while it was shared stay in `~/.claude`. Copy back
+the ones you want, or move a `*.pre-share-*` backup into place instead of the
+`mkdir`; a backup holds only what the merge left behind.
+
+To share again, delete `.no-shared-sessions`. The next launch, `switch` or
+`login` merges the profile's directories into `~/.claude` as described in
+[Moving an existing profile's sessions into the shared store](#moving-an-existing-profiles-sessions-into-the-shared-store).
+
 ## Create and log in
 
 ```bash
@@ -111,6 +392,9 @@ also saves the profile root it used; see
 [Choose where profiles live](#choose-where-profiles-live). `login`
 always runs the `claude` binary (not the configured launch binary) with
 `CLAUDE_CONFIG_DIR` pointing at the profile so the login is stored there.
+If the new login is an account another profile already has, `login` refuses
+it and puts the previous login back; see
+[Duplicate logins](#duplicate-logins).
 
 ## Choose a profile
 
@@ -127,7 +411,12 @@ As a persistent default:
 amplihack profile switch work
 amplihack claude              # uses "work"
 amplihack profile show        # prints name and directory, or "none"
+amplihack profile switch --none   # no default again
 ```
+
+See [Clearing the default profile](#clearing-the-default-profile). If the
+default is the profile the rotator has moved into `~/.claude`, see
+[Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
 Resolution order: `--profile` flag, then an inherited
 `AMPLIHACK_CLAUDE_PROFILE`, then the default pointer, then none. An explicit
@@ -180,6 +469,54 @@ hint: unset AMPLIHACK_CLAUDE_PROFILE, or create the profile with `amplihack prof
 See the
 [resolution reference](../reference/profile-command.md#resolution-and-environment)
 for how the name reaches each kind of nested launch.
+
+## Clearing the default profile
+
+```bash
+amplihack profile switch --none
+# Default profile cleared.
+amplihack profile show
+# none
+```
+
+After this, `amplihack claude` runs with no profile and leaves
+`CLAUDE_CONFIG_DIR` alone. If no default was set, the command prints
+`No default profile was set.` and still exits 0. `--none` cannot be combined
+with a name, and `switch` with neither is a usage error (exit 2).
+
+There is no `switch default` form: `default` is a valid profile name, so
+`amplihack profile switch default` selects a profile called `default`.
+
+## Launching the rotator's live profile
+
+When [`amplihack profile rotate`](claude-profile-rotation.md) has moved a
+profile's login into `~/.claude`, that profile's own directory has no login.
+Launching Claude in that directory would ask you to log in, and logging in
+there would create a [duplicate login](#duplicate-logins).
+
+So when the profile a launch resolves to is the rotator's live profile,
+`amplihack claude` and `amplihack launch` run against `~/.claude` instead,
+with `CLAUDE_CONFIG_DIR` unset and no profile pinned. This applies whether
+the profile came from `--profile`, an inherited `AMPLIHACK_CLAUDE_PROFILE`,
+or the default pointer. One line goes to stderr:
+
+```
+note: profile 'team' is the rotator's live login, which is in ~/.claude; launching against ~/.claude.
+```
+
+The session uses the right account because `~/.claude` is where that
+account's login is. Because no profile is pinned, nested launches inside
+the session also run against `~/.claude`.
+
+The live profile is the one shown as `live in ~/.claude` by
+[`profile usage`](#a-profile-shows-live-in-claude). If amplihack cannot tell
+which profile is live (no ledger and no single account match, or Windows or
+another platform without Unix file semantics), it launches the profile directory as before and prints
+nothing. Docker and `--auto` launches are not affected.
+
+`amplihack profile run <name>` does not redirect; it always uses the
+profile's own directory. Use `amplihack claude --profile <name>` for the
+live profile.
 
 ## Choose where profiles live
 
@@ -316,7 +653,9 @@ line with the default marked `*`.
 
 `remove` deletes only the verified profile directory, requires `--yes`, and
 clears the default pointer if it named that profile. This deletes that
-account's local Claude login and history.
+account's local Claude login, its history and any `*.pre-share-*` backups.
+The shared session links are removed without being followed, so sessions in
+`~/.claude/projects`, `file-history/` and `session-env/` are kept.
 
 `remove` reads the default pointer before deleting anything. A missing pointer
 means "no default" and removal proceeds. A corrupt, unreadable or dangling
@@ -474,6 +813,171 @@ away and back again when the ledger has no `since` time. See
 [Logins in `~/.claude`](../reference/profile-command.md#logins-in-claude)
 for the exact rules and warnings.
 
+## Accounts, organizations and duplicate logins
+
+### Which logins count as the same account
+
+One Claude user can belong to several organizations, for example a team
+organization and a personal one. Each organization has its own subscription
+and its own usage limits, so a profile per organization is a normal setup.
+
+amplihack reads two values from the `oauthAccount` block of each
+`.claude.json`: `accountUuid` (the user) and `organizationUuid` (the
+organization). Two logins are the same account only when both match:
+
+| Login A | Login B | Same account? |
+|---------|---------|---------------|
+| user U, org O1 | user U, org O1 | yes |
+| user U, org O1 | user U, org O2 | no |
+| user U, org O1 | user U, no org | no |
+| user U, no org | user U, no org | yes |
+| different users | (any) | no |
+| no user on either side | — | compared by e-mail address, ignoring case |
+
+A missing value never makes two logins look the same. This one rule is used
+by `profile login`, `profile usage`, `auto-switch status`, auto-switch swaps
+and the rotator. No credentials file is read to decide it, and the values
+are never printed.
+
+For example, profiles `ryan-mistt-org` and `ryan-mistt-personal` share a user
+but have different organizations. They are two accounts, and no command
+warns about them.
+
+### Duplicate logins
+
+Claude's login opens claude.ai in your browser and signs in whichever
+account the browser is already signed in to. If that account is already in
+another profile, you get two profiles with the same login.
+
+`amplihack profile login` checks for this after Claude exits. It compares the
+new login with every other profile and with the login in `~/.claude`. If it
+matches one, the login is refused:
+
+```bash
+amplihack profile login rssourcelabs
+```
+
+```
+note: holding the previous login of profile 'rssourcelabs' in /home/ryan/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z while you log in
+...interactive claude session...
+note: moving the new login of profile 'rssourcelabs' to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z
+error: profile 'rssourcelabs' was signed in to the same account and organization as profile 'ryan-ryansweet'. The new login was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/rssourcelabs-20261020T171502Z; 'rssourcelabs' is back to its previous login.
+hint: sign out of claude.ai in your browser (or use a private/incognito window), then run 'amplihack profile login rssourcelabs' again.
+```
+
+The command exits with status 1. The profile has the login it had before
+(or no login, if it had none), and its `oauthAccount` block is restored.
+Other `.claude.json` keys Claude changed during the login stay as Claude
+left them. The refused login is moved, not deleted.
+
+To fix it, sign out of claude.ai in the browser, or open a private window,
+and run `amplihack profile login rssourcelabs` again. Sign in to the account
+this profile is meant for.
+
+If the account is the one in `~/.claude`, the holder is named
+`~/.claude (rotator live profile 'team')` when the rotator's live profile is
+known, otherwise just `~/.claude`.
+
+The rotator's live profile cannot be logged in to at all: its login is the
+one in `~/.claude`, and the rotator refuses to swap it back into a profile
+directory that has a login of its own. `login` refuses before Claude starts
+and moves nothing:
+
+```
+error: profile 'team' is the rotator's live profile; its login is ~/.claude. Nothing was moved.
+hint: log in with plain 'claude', or stop the rotator first.
+```
+
+When the login is accepted and the profile had a previous login, that login
+is kept too:
+
+```
+note: the previous login of profile 'work' was moved to /home/ryan/.amplihack/claude-profiles/.rejected-logins/work-20261020T171502Z-replaced
+```
+
+If Claude exits with an error, or you press Ctrl-C, the previous login is
+put back, Claude's exit status is kept, and no check is made. A login Claude
+wrote anyway goes to `.rejected-logins/` like a refused one.
+
+#### What is in `.rejected-logins`
+
+```
+<root>/.rejected-logins/                         0700
+├── .pending-<name>-<time>/                       the previous login while Claude runs
+├── <name>-<time>/                                a refused login
+│   ├── .credentials.json                         0600, moved, not copied
+│   └── oauthAccount.json                         its oauthAccount block, 0600
+└── <name>-<time>-replaced/                       a previous login replaced by an accepted one
+```
+
+`<time>` is UTC, for example `20261020T171502Z`. amplihack never deletes
+anything here. Each login file is in one place only: the profile directory
+or one of these directories. To use a kept login again, move it back with
+`mv -n` into a profile that has no `.credentials.json`, never `cp`.
+
+If amplihack itself is killed while Claude runs, the previous login stays in
+the `.pending-…` directory printed at the start. Ctrl-C is handled, but
+closing the terminal (SIGHUP) or `kill` (SIGTERM) ends amplihack before it
+can restore anything. The previous login is then at
+`<root>/.rejected-logins/.pending-<name>-<time>/.credentials.json`, and its
+`oauthAccount` block is next to it in `oauthAccount.json`. If Claude wrote a
+new login, move that one aside first (or delete it if you do not want it),
+then move the previous one back into the profile directory with one `mv`.
+This example uses the default root; if you chose another root (`amplihack
+profile root` prints it), use that path instead:
+
+```bash
+mv -n ~/.amplihack/claude-profiles/.rejected-logins/.pending-rssourcelabs-20261020T171502Z/.credentials.json \
+      ~/.amplihack/claude-profiles/rssourcelabs/
+```
+
+#### When the check cannot move the login
+
+- **macOS.** Claude keeps the login in the Keychain, not in
+  `.credentials.json`. A duplicate is still reported and `login` exits 1,
+  but there is no file to move aside. The profile's `oauthAccount` block is
+  left as Claude wrote it, so `.claude.json` still matches the login in the
+  Keychain. Sign out in the browser and log in again.
+- **No login file after a previous one.** If the profile had a
+  `.credentials.json` and Claude exits 0 without writing a new one, the
+  login did not finish: the previous login and its `oauthAccount` block are
+  both put back, and `login` exits 1.
+- **The profiles cannot be read.** If the profile root cannot be listed or
+  the auto-switch state cannot be opened, the new login cannot be compared,
+  so it is treated like a refused one: moved to `.rejected-logins/`, the
+  previous login put back, exit 1.
+- **The rotator swapped the profile in during the login.** `profile rotate`
+  takes no lease. If it made this profile the live one while Claude ran,
+  amplihack stops without moving anything and prints where each login is.
+- **A login file that is not private.** If the new `.credentials.json` is
+  not a private regular file (for example mode `0644`, or a symlink),
+  amplihack does not move it or change its mode. It exits 1, reports the
+  mode, and leaves the previous login in the `.pending-…` directory, whose
+  path the hint prints. Treat the new login as exposed: log in again.
+- **A session started using the profile during the login.** If auto-switch
+  lent the profile's login to a session or the profile now hosts another
+  account, amplihack stops without moving anything and prints where each
+  login is.
+
+#### `/login` inside a running session
+
+Running `/login` inside a Claude session is not checked when it happens.
+`amplihack profile usage` and `amplihack profile auto-switch status` find the
+duplicate afterwards:
+
+```
+note: profiles 'rssourcelabs' and 'ryan-ryansweet' are signed in to the same account and organization (duplicate login); fix: run 'amplihack profile login ryan-ryansweet' with the browser signed out of claude.ai or in a private window.
+```
+
+Profile names are listed in sorted order and the fix names the second one.
+If the second profile is the one with the right login, log in the first one
+again instead.
+
+`status` prints it as a `note:` line; `usage` prints the same text on stderr
+as a `warning:` line, after the table. The login in `~/.claude` takes part
+too, named `~/.claude`. The rotator's live profile is not compared with
+`~/.claude`, since that is where its own login is.
+
 ## Switch accounts automatically
 
 When one account is close to its five-hour or seven-day usage limit,
@@ -591,6 +1095,12 @@ export AMPLIHACK_CLAUDE_AUTO_SWITCH=1   # on in this shell
 An empty value means unset. Any other value prints one warning, `status`
 notes it, and the file decides.
 
+With auto-switch on, `amplihack claude`, `amplihack launch` and
+`amplihack profile run` also start the
+[login rotator](claude-profile-rotation.md#start-the-rotator-automatically)
+for `~/.claude` if it is not running, and print one line when they do. To
+keep auto-switch without that, run `amplihack profile rotate autostart off`.
+
 ### 3. Check what it sees
 
 ```bash
@@ -600,6 +1110,7 @@ amplihack profile auto-switch status
 ```
 root: /home/ryan/.claude-profiles
 switch: on (file)
+autostart: on (default)
 threshold: 90%
 exclude: review
 in-session swap: available (Linux)
@@ -636,8 +1147,9 @@ without returning its login, `status` says so and tells you to run
 update fixes it too.
 
 Usage is tracked per profile. If two profiles are signed in to the same
-Anthropic account, `status` warns that their readings are not reliable;
-this setup is not supported.
+account and organization, `status` prints a duplicate-login note with the
+fix; see [Duplicate logins](#duplicate-logins). Two profiles for the same
+user in different organizations are separate accounts and get no note.
 
 ### What happens inside a running session
 
@@ -747,6 +1259,59 @@ attempt's output is passed back and amplihack exits with `128` plus the
 signal number.
 A rerun starts the step from the beginning, so anything the failed attempt
 had already done (a push, a comment) may be done again.
+
+### When no account has capacity
+
+When every account is at or above the threshold, auto-switch has nowhere to
+go and stops switching. amplihack then tells you instead of letting Claude go
+quiet:
+
+- **Status line.** A line is added below your usual status line:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am
+  ```
+
+  It reads `at limit` instead of `≥90%` when every account has hit its hard
+  limit.
+- **Claude Code.** At session start, or on the next prompt, Claude Code shows
+  the same line followed by `— run 'amplihack profile usage'`. It is shown
+  once per session for each state, and again if things get worse (from
+  `≥90%` to `at limit`). Claude is also told that capacity is low, so it
+  prefers small sequential steps over large parallel workflows.
+- **`amplihack claude`.** One line on stderr when it starts:
+
+  ```
+  ⚠ all Claude accounts ≥90% · next reset Oct 22 2am — run 'amplihack profile usage'
+  ```
+
+- **`amplihack recipe run`.** One line on stderr before the recipe starts.
+  The recipe still runs; you may know an account is about to reset.
+
+  ```
+  amplihack recipe run: ⚠ all Claude accounts at limit · next reset Oct 22 2am — run 'amplihack profile usage' (continuing anyway)
+  ```
+
+The reset time is the earliest one across your accounts, in local time. To
+see every account's numbers:
+
+```bash
+amplihack profile usage
+```
+
+The notice clears by itself when the first account's window resets. If no
+reset time is known, it clears 5 hours after it was last confirmed. A profile
+in the exclusion list does not count, and a profile with no reading yet
+counts as having capacity, so it never causes a notice.
+
+The state is worked out from readings amplihack already has: the status-line
+wrapper, `amplihack profile usage` and the
+[rotator](claude-profile-rotation.md#when-no-account-has-capacity) each
+update it when they record usage. It is kept in
+`<root>/.auto-switch.d/capacity.json`, which holds profile names and times,
+never logins. Nothing is shown, and nothing is written, while auto-switch is
+off. The file format and exact rules are in the
+[capacity notice reference](../reference/profile-command.md#capacity-notice).
 
 ### Turn it off
 
@@ -859,9 +1424,10 @@ do not depend on these two behaviours.
 - **Helper processes keep a session alive.** A login returns home only when
   no process (including MCP servers Claude started) still has the directory
   in its environment.
-- **Two profiles signed in to the same account** are not supported. An
-  account is identified by the profile that owns its login, so they are
-  treated as two accounts with separate readings; `status` warns about it.
+- **Two profiles signed in to the same account and organization** are not
+  supported. An account is identified by the profile that owns its login,
+  so they are treated as two accounts with separate readings; `status`
+  warns about it. See [Duplicate logins](#duplicate-logins).
 - **`/status` can lag.** It may name the previous account after a swap
   until Claude rewrites `.claude.json`; see above.
 - **Leases protect against accidents, not attacks.** Any process running as
@@ -879,6 +1445,10 @@ do not depend on these two behaviours.
   happen twice.
 - **File modes are kept.** Patching `.claude.json` or `settings.json` keeps
   the file's mode; a `settings.json` that `install` creates is `0600`.
+- **The capacity notice can lag by one reading.** It is updated only when
+  the status line, `profile usage` or the rotator records usage. A step that
+  fails with a usage limit and finds no profile left to rerun on does not
+  update it.
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.
@@ -942,8 +1512,23 @@ do not depend on these two behaviours.
   `~/.claude/settings.json` as trusted input.
 - If the default pointer names a deleted profile, launch fails with a hint
   (`amplihack profile switch <name>`); it does not fall back silently.
+- `profile run <name>` with the rotator's live profile still runs in the
+  profile's empty directory; only `amplihack claude` and `amplihack launch`
+  [redirect to `~/.claude`](#launching-the-rotators-live-profile).
+- A redirected launch skips the auto-switch launch checks, as a launch with
+  no profile does.
 - Profiles are not a security boundary against other processes of the same OS
-  user. Anyone able to read your home directory can read the profile.
+  user. Anyone able to read your home directory can read the profile. Every
+  profile can read every other profile's sessions through the shared store;
+  see [Privacy](#privacy-every-profile-can-read-every-session).
+- Two profiles writing the same session at once behave as two `claude`
+  processes writing it under `~/.claude` without profiles do. Session ids are
+  UUIDs, so separate sessions never collide.
+- Claude Code is expected to follow the `projects/` link. If a Claude version
+  replaces the link with a real directory, the next launch merges it back.
+- A first launch that merges a large `projects/` held on another filesystem
+  copies every file, so it can take a while. One line is printed when it
+  starts and the results when it finishes; free space is checked before each file, and it happens once.
 - No token vault or token refresh exists by design. Usage is checked only
   when you run `amplihack profile usage`, which asks Claude itself. Automatic
   switching is opt-in and only moves logins between your own profiles; see
@@ -963,5 +1548,7 @@ PATH="$d:$PATH" amplihack profile run demo
 
 The fake `claude` prints `$CLAUDE_CONFIG_DIR`, which should be the demo profile
 directory. The temporary `HOME` keeps the saved root
-(`$HOME/.amplihack/profile-root`, written by the first `add`) and the seeding
-source (`$HOME/.claude`) away from your real files.
+(`$HOME/.amplihack/profile-root`, written by the first `add`), the seeding
+source and the shared session store (`$HOME/.claude`) away from your real
+files. The temporary `$HOME/.claude` doesn't exist, so `demo` gets no links;
+run `mkdir -m 700 "$HOME/.claude"` before `profile add` to see them made.

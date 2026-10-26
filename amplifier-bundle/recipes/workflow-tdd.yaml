@@ -273,14 +273,11 @@ steps:
       fi
       { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || { echo "ERROR: checkpoint-after-implementation: $(pwd -P) is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)" >&2; exit 1; }
       echo "=== Checkpoint: Staging Implementation ==="
-      # NOTE (#1075): if `cargo fmt --all` below fails with
+      # NOTE (#1075): if the Rust formatting check below fails with
       # `couldn't read .../tests/*.rs: No such file or directory`, a prior step
       # almost certainly deleted a test source file but left a
       # dangling [[test]] stanza in the owning crate's Cargo.toml. Fix = remove
       # that stanza (see step-08-implement Rule 9). Do NOT auto-parse Cargo.toml here.
-      if [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
-        cargo fmt --all
-      fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
@@ -288,25 +285,83 @@ steps:
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       amplihack hygiene artifact-guard --repo . --mode pre-publish
-      git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish
+      # #1671: a rejecting git hook goes to a fixing agent before the commit is
+      # retried. Loaded before staging: the untracked paths are filtered through
+      # workflow_stage_filter, so build artefacts stay out of the checkpoint.
+      WF_TOOLS="${RUNTIME_ARTIFACT_HELPER%/*}"
+      for wf_root in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(git rev-parse --show-toplevel)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -f "$WF_TOOLS/workflow_hook_repair.sh" ] && break; WF_TOOLS="${wf_root}/amplifier-bundle/tools"; done
+      wf_helper="${WORKFLOW_STAGE_CHANGES_HELPER:-$WF_TOOLS/workflow_stage_changes.sh}"; [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"
+      # Capture the task worktree's existing edits before any validation. A
+      # workspace-wide mutating formatter used to create unrelated Rust edits
+      # here, which `git add -A` then swept into the checkpoint.
+      # Use a subshell so temporary-file cleanup cannot replace a runner's
+      # existing EXIT trap (for example its step observer).
+      (
+      checkpoint_paths=$(mktemp -t checkpoint-paths-XXXXXX)
+      stage_paths=$(mktemp -t checkpoint-stage-paths-XXXXXX)
+      after_paths=$(mktemp -t checkpoint-after-paths-XXXXXX)
+      trap 'rm -f "$checkpoint_paths" "$stage_paths" "$after_paths"' EXIT
+      # Empty NUL entries separate staged, unstaged, and untracked paths, so
+      # moving a path between Git states changes the snapshot bytes.
+      git -c diff.renames=false diff --cached --name-only -z HEAD > "$checkpoint_paths"
+      printf '\0' >> "$checkpoint_paths"
+      git -c diff.renames=false diff --name-only -z >> "$checkpoint_paths"
+      printf '\0' >> "$checkpoint_paths"
+      git ls-files --others --exclude-standard -z >> "$checkpoint_paths"
+      # Paths already staged (including git mv's old name) need no second add.
+      git -c diff.renames=false diff --name-only -z > "$stage_paths"
+      git ls-files --others --exclude-standard -z | workflow_stage_filter . >> "$stage_paths"
+      rust_changed=false
+      while IFS= read -r -d '' path; do
+        case "$path" in *.rs) rust_changed=true ;; esac
+      done < "$checkpoint_paths"
+      if [ "$rust_changed" = true ] && [ -f Cargo.toml ] && command -v cargo >/dev/null 2>&1; then
+        cargo fmt --all -- --check
+      fi
+      # Compare all three Git states. `git diff HEAD` alone misses a file that
+      # a tool stages and then removes from the worktree. Byte comparison is
+      # NUL-safe and works on macOS Bash 3.2 without associative arrays.
+      git -c diff.renames=false diff --cached --name-only -z HEAD > "$after_paths"
+      printf '\0' >> "$after_paths"
+      git -c diff.renames=false diff --name-only -z >> "$after_paths"
+      printf '\0' >> "$after_paths"
+      git ls-files --others --exclude-standard -z >> "$after_paths"
+      if ! cmp -s "$checkpoint_paths" "$after_paths"; then
+        echo "ERROR: checkpoint scope changed before staging; no commit created" >&2
+        git --no-pager status --short >&2
+        exit 1
+      fi
+      if [ -s "$stage_paths" ]; then
+        git --literal-pathspecs add -A --pathspec-from-file="$stage_paths" --pathspec-file-nul
+      fi
+      )
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
       STAGED=$(git diff --cached --name-only)
       if [ -n "$STAGED" ]; then
+        echo "Checkpoint staged paths (review against the task scope):"
+        git --no-pager diff --cached --name-status
+        # The commit helpers are needed only when something is staged.
         GIT_IDENTITY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(git rev-parse --show-toplevel)}}/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(git rev-parse --show-toplevel)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="$(pwd)/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || GIT_IDENTITY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/git-identity.sh"; [ -f "$GIT_IDENTITY_HELPER" ] || { echo "ERROR: git identity helper not found: $GIT_IDENTITY_HELPER" >&2; exit 2; }; . "$GIT_IDENTITY_HELPER"
+        wf_helper="${WORKFLOW_HOOK_REPAIR_HELPER:-$WF_TOOLS/workflow_hook_repair.sh}"; [ -f "$wf_helper" ] || { echo "ERROR: workflow helper not found: $wf_helper" >&2; exit 2; }; . "$wf_helper"
         CHECKPOINT_COMMIT_HELPER="${GIT_IDENTITY_HELPER%/*}/workflow_checkpoint_commit.sh"
         [ -f "$CHECKPOINT_COMMIT_HELPER" ] || { echo "ERROR: checkpoint commit helper not found: $CHECKPOINT_COMMIT_HELPER" >&2; exit 2; }
         . "$CHECKPOINT_COMMIT_HELPER"
         commit_output_file=$(mktemp -t checkpoint-implementation-commit-XXXXXX)
-        if commit_with_pre_commit_guard -m "wip: checkpoint after implementation (steps 7-8)
+        if hook_repair_run commit checkpoint-after-implementation --output "$commit_output_file" -- commit_with_pre_commit_guard -m "wip: checkpoint after implementation (steps 7-8)
 
       Automatic checkpoint to preserve work in progress.
-      Tests and implementation saved before refactoring phase." >"$commit_output_file" 2>&1; then
+      Tests and implementation saved before refactoring phase."; then
           cat "$commit_output_file"
           rm -f "$commit_output_file"
           echo "Checkpoint commit created with $(wc -l <<< "$STAGED") file(s)"
         else
           commit_rc=$?
           echo "ERROR: git commit failed during checkpoint-after-implementation (exit $commit_rc)" >&2
-          cat "$commit_output_file" >&2
+          # hook_repair_run has already printed the output of a hook rejection it gave up on.
+          case "${HOOK_REPAIR_STATUS:-}" in
+            stuck|refused|evaluator_done_unresolved) ;;
+            *) cat "$commit_output_file" >&2 ;;
+          esac
           rm -f "$commit_output_file"
           git --no-pager diff --cached --name-status >&2
           git --no-pager status --short >&2

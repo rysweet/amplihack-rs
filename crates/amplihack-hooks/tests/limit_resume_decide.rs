@@ -24,7 +24,9 @@ use amplihack_hooks::limit_resume::{
     Deps, MAX_RESUMES_PER_SESSION, Outcome, RESUME_MSG, run_with, run_with_io,
 };
 use amplihack_types::HookInput;
-use amplihack_utils::rotator_status::{CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL};
+use amplihack_utils::rotator_status::{
+    CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
+};
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
 use std::io;
@@ -137,6 +139,8 @@ struct Fake {
     panic_on_now: bool,
     /// The user sends a prompt at this many seconds since START.
     prompt_at: Option<i64>,
+    /// The Claude Code session exits at this many seconds since START.
+    gone_at: Option<i64>,
 }
 
 impl Fake {
@@ -152,6 +156,7 @@ impl Fake {
             logs: Vec::new(),
             panic_on_now: false,
             prompt_at: None,
+            gone_at: None,
         }
     }
 
@@ -187,6 +192,9 @@ impl Deps for Fake {
     }
     fn log(&mut self, _now: i64, entry: &LogEntry) {
         self.logs.push(entry.clone());
+    }
+    fn session_alive(&mut self) -> bool {
+        self.gone_at.is_none_or(|t| self.clock - START < t)
     }
 }
 
@@ -498,7 +506,7 @@ fn assert_timeout(d: &Fake, out: Outcome) {
         "one final read exactly at the deadline"
     );
     for s in &d.sleeps {
-        assert!(*s <= POLL_INTERVAL && !s.is_zero(), "sleep {s:?}");
+        assert!(*s <= SLOW_POLL_INTERVAL && !s.is_zero(), "sleep {s:?}");
     }
     assert_eq!(d.logs.len(), 1);
     assert_eq!(d.logs[0].outcome, Outcome::NoCapacityTimeout);
@@ -1071,4 +1079,56 @@ fn two_waiters_for_one_session_with_distinct_events_resume_once() {
     assert_eq!(outs.iter().filter(|o| **o == Outcome::Resumed).count(), 1);
     assert!(outs.contains(&Outcome::Duplicate), "{outs:?}");
     assert_eq!(d.guard.sessions[&session_key("s")].len(), 1);
+}
+
+// ── Long waits (issue #1659) ────────────────────────────────────────────────
+
+#[test]
+fn polling_slows_after_the_first_hour() {
+    let mut d = Fake::new(true, appears_at("swapped", 3 * 3600, false));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+    let slow_after = SLOW_POLL_AFTER.as_secs() as i64;
+    let mut elapsed = 0;
+    for s in &d.sleeps {
+        let want = if elapsed < slow_after {
+            POLL_INTERVAL
+        } else {
+            SLOW_POLL_INTERVAL
+        };
+        assert_eq!(*s, want, "sleep at {elapsed}s");
+        elapsed += s.as_secs() as i64;
+    }
+    assert!(
+        d.sleeps.len() < 300,
+        "three hours is {} reads, not one every 15 s",
+        d.sleeps.len()
+    );
+}
+
+#[test]
+fn a_session_stopped_while_every_login_is_spent_resumes_days_later() {
+    let three_days = 3 * 24 * 3600;
+    let mut d = Fake::new(true, appears_at("swapped", three_days, false));
+    assert_eq!(
+        run_with(&limit_input("s", "hit your limit"), &mut d),
+        Outcome::Resumed
+    );
+    assert!(d.clock - START >= three_days);
+    assert!(d.clock - START < three_days + SLOW_POLL_INTERVAL.as_secs() as i64 + 1);
+}
+
+#[test]
+fn the_wait_ends_when_its_session_exits() {
+    let mut d = Fake::new(true, appears_at("swapped", 2 * 24 * 3600, false));
+    d.gone_at = Some(5 * 3600);
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_eq!(out, Outcome::SessionGone);
+    assert_eq!(out.exit_code(), 0);
+    assert!(d.clock - START < 5 * 3600 + SLOW_POLL_INTERVAL.as_secs() as i64 + 1);
+    assert!(d.guard.sessions.is_empty(), "no resume recorded");
+    assert_eq!(d.logs.len(), 1);
+    assert_eq!(d.logs[0].outcome, Outcome::SessionGone);
 }

@@ -530,6 +530,9 @@ fn fallback_when_nothing_set() {
     let _snap = EnvSnapshot::scrub_all();
 
     let tmp = tempfile::tempdir().unwrap();
+    // A `.git` boundary stops the launcher_context walk-up here, so a context
+    // in an ancestor of TMPDIR cannot answer for this directory.
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
     let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
     assert_eq!(active_agent_binary(), "copilot");
@@ -545,6 +548,9 @@ fn empty_override_falls_through_to_detection() {
     unsafe { env::set_var("AMPLIHACK_AGENT_BINARY", "   ") };
 
     let tmp = tempfile::tempdir().unwrap();
+    // A `.git` boundary stops the launcher_context walk-up here, so a context
+    // in an ancestor of TMPDIR cannot answer for this directory.
+    std::fs::create_dir(tmp.path().join(".git")).unwrap();
     let _cwd = crate::test_support::CwdGuard::set(tmp.path()).unwrap();
 
     assert_eq!(active_agent_binary(), "copilot");

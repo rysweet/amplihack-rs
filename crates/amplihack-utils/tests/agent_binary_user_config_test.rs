@@ -24,6 +24,9 @@ use amplihack_utils::agent_binary::{
 };
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
+mod common;
+use common::bounded_tempdir;
+
 fn env_lock() -> MutexGuard<'static, ()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -308,7 +311,7 @@ fn with_env(vars: &[(&str, &str)], f: impl FnOnce()) {
 
 #[test]
 fn acceptance_config_beats_a_foreign_tmux_marker() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(
         &[
             (BINARY_ENV, "copilot"),
@@ -332,7 +335,7 @@ fn acceptance_config_beats_a_foreign_tmux_marker() {
 
 #[test]
 fn a_marker_the_tmux_server_does_not_hold_beats_config() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(&[("COPILOT_CLI", "1")], || {
         let asked = std::cell::Cell::new(false);
         let held = |_| {
@@ -354,7 +357,7 @@ fn a_marker_the_tmux_server_does_not_hold_beats_config() {
 #[test]
 fn a_launchers_session_tag_beats_config() {
     // What `amplihack claude` exports to its children.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(
         &[(BINARY_ENV, "claude"), (SOURCE_ENV, "session:claude")],
         || {
@@ -372,7 +375,7 @@ fn a_launchers_session_tag_beats_config() {
 
 #[test]
 fn the_tmux_server_is_not_asked_when_nothing_below_could_answer() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(&[("CLAUDECODE", "1")], || {
         let held = |_| panic!("asked without a contest");
         let r = agent_binary::resolve_detailed_configured(
@@ -387,7 +390,7 @@ fn the_tmux_server_is_not_asked_when_nothing_below_could_answer() {
 
 #[test]
 fn acceptance_untagged_env_beats_config() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(&[(BINARY_ENV, "codex")], || {
         let r = agent_binary::resolve_detailed_with(dir.path(), Some("claude")).unwrap();
         assert_eq!(r.binary, "codex");
@@ -399,7 +402,7 @@ fn acceptance_untagged_env_beats_config() {
 fn this_process_config_beats_an_inherited_user_config_tag() {
     // Review of #1647: a `config set` takes effect even under a tmux server
     // whose panes captured the old value.
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(
         &[(BINARY_ENV, "claude"), (SOURCE_ENV, "user_config:claude")],
         || {
@@ -426,7 +429,7 @@ fn this_process_config_beats_an_inherited_user_config_tag() {
 
 #[test]
 fn stale_user_config_tag_makes_the_value_explicit() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(
         &[(BINARY_ENV, "codex"), (SOURCE_ENV, "user_config:claude")],
         || {
@@ -439,7 +442,7 @@ fn stale_user_config_tag_makes_the_value_explicit() {
 
 #[test]
 fn configured_value_is_validated() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(&[], || {
         let r = agent_binary::resolve_detailed_with(dir.path(), Some("/bin/sh")).unwrap();
         assert_eq!(r.binary, DEFAULT_BINARY);
@@ -449,7 +452,7 @@ fn configured_value_is_validated() {
 
 #[test]
 fn resolve_detailed_equals_resolve_detailed_with_none() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(&[("CLAUDECODE", "1")], || {
         let a = agent_binary::resolve_detailed(dir.path()).unwrap();
         let b = agent_binary::resolve_detailed_with(dir.path(), None).unwrap();
@@ -459,7 +462,7 @@ fn resolve_detailed_equals_resolve_detailed_with_none() {
 
 #[test]
 fn default_guess_tag_is_still_ignored_below_config() {
-    let dir = tempfile::tempdir().unwrap();
+    let dir = bounded_tempdir();
     with_env(
         &[(BINARY_ENV, "copilot"), (SOURCE_ENV, "default:copilot")],
         || {

@@ -12,11 +12,13 @@ use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::path::Path;
 
-/// An `oauthAccount`: its uuid and its e-mail (lower-cased). `Debug` hides
-/// both.
+/// An `oauthAccount`: its user (`accountUuid`), its organization
+/// (`organizationUuid`) and its e-mail (lower-cased). `Debug` hides all
+/// three. [`Account::same`] is the only identity comparison in amplihack.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Account {
     uuid: Option<String>,
+    org: Option<String>,
     email: Option<String>,
 }
 
@@ -32,10 +34,16 @@ impl Account {
         Self::from_value(&serde_json::from_slice(raw).ok()?)
     }
 
-    /// From a parsed `.claude.json`. A value over 320 bytes, with control
-    /// characters, empty or not a string counts as missing.
+    /// From a parsed `.claude.json`.
     pub fn from_value(v: &serde_json::Value) -> Option<Self> {
-        let block = v.get("oauthAccount")?;
+        Self::from_block(v.get("oauthAccount")?)
+    }
+
+    /// From an `oauthAccount` block itself (as saved by auto-switch). A
+    /// value over 320 bytes, with control characters, empty or not a string
+    /// counts as missing; a block with neither a uuid nor an e-mail is no
+    /// account.
+    pub fn from_block(block: &serde_json::Value) -> Option<Self> {
         let field = |k: &str| {
             block
                 .get(k)
@@ -45,6 +53,7 @@ impl Account {
         };
         let a = Self {
             uuid: field("accountUuid"),
+            org: field("organizationUuid"),
             email: field("emailAddress").map(|e| e.to_lowercase()),
         };
         (a.uuid.is_some() || a.email.is_some()).then_some(a)
@@ -55,11 +64,17 @@ impl Account {
         Self::from_value(&read_claude_json(dir)?.0)
     }
 
-    /// The uuids decide when both have one; otherwise the e-mails do.
+    /// Two logins are one account when they are the same user in the same
+    /// organization: one user in two organizations has two subscriptions,
+    /// each with its own limits. With a uuid on both sides the uuids and
+    /// the organizations (both present and equal, or both missing) decide;
+    /// with a uuid on neither side the e-mails do; with a uuid on one side
+    /// only they are different accounts.
     pub fn same(&self, other: &Self) -> bool {
         match (&self.uuid, &other.uuid) {
-            (Some(a), Some(b)) => a == b,
-            _ => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
+            (Some(a), Some(b)) => a == b && self.org == other.org,
+            (None, None) => matches!((&self.email, &other.email), (Some(a), Some(b)) if a == b),
+            _ => false,
         }
     }
 

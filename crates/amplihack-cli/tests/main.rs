@@ -110,6 +110,10 @@ mod issue_1592_root_rotator;
 mod issue_1606_config_cli;
 #[path = "issue_1606_detach.rs"]
 mod issue_1606_detach;
+#[path = "issue_1634_shared_sessions.rs"]
+mod issue_1634_shared_sessions;
+#[path = "issue_1650_profile_identity.rs"]
+mod issue_1650_profile_identity;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -134,6 +138,8 @@ mod issue_833_merge_validations_json_tolerance;
 mod issue_860_pr_guide_present;
 #[path = "issue_899_merge_validations_abstention.rs"]
 mod issue_899_merge_validations_abstention;
+#[path = "no_capacity_notice_statusline.rs"]
+mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
 #[path = "remote_cli_contract.rs"]
