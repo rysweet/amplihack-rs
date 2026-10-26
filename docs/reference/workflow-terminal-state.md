@@ -625,6 +625,35 @@ underneath it.
 
 The scope match is now a **signal**, not the arbiter.
 
+### A PR behind local HEAD is unpushed work
+
+Issue #1467. An agent step can open the PR early, and a later step can commit
+without pushing (the pre-commit phase's fixes, the step-20c quality audit). The
+PR's `headRefOid` is then an ancestor of local `HEAD`: the branch is ahead, not
+stale. While the PR is `OPEN`:
+
+- the terminal-state probe accepts it, prints
+  `INFO: ... commit(s) ahead of open PR head ...; the next push step pushes them (#1467)`,
+  and skips the failing-checks gate, because those checks ran on the superseded
+  head (often the very commit the unpushed fix repairs). `step-15-commit-push`,
+  or `step-20b-push-cleanup` in finalize, then pushes the commits;
+- the probe passes `--allow-head-behind` to `workflow_pr_scope.sh`, which then
+  accepts a named PR that is `OPEN` and whose head is an ancestor of local
+  `HEAD`; every other discriminator stays a hard filter. End-of-run callers
+  (`workflow_final_status.sh`, `workflow_pr_ready.sh`) do not pass it: after
+  the last push, a PR behind `HEAD` lacks the run's work and must not count.
+
+A merged or closed PR, a head that is not an ancestor of local `HEAD`, or a
+remote branch rewound behind any value this checkout's `origin/<branch>` held
+(its current value or its last 50 reflog entries, so a rewind that was already
+fetched is caught too), still fails as
+`stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits must not be
+reported as `MERGED`, because the local commits would be lost.
+
+In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
+and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
+before `step-21-pr-ready` validates the PR.
+
 ### The three-verdict contract
 
 `amplifier-bundle/tools/workflow_terminal_evidence.sh` has two modes:

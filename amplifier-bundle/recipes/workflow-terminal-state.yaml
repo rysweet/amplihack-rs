@@ -361,6 +361,7 @@ steps:
       pr_json=""
       pr_target=""
       pr_lookup_failed="false"
+      pr_behind="false"
       if [ -n "$PR_URL_INPUT" ] && [ "$PR_URL_INPUT" != "''" ]; then
         if parse_github_pr_url "$PR_URL_INPUT" >/dev/null 2>&1; then
           supports_github_pr_metadata="true"
@@ -390,6 +391,8 @@ steps:
           --issue "$scoped_issue_id"
           --work-item "$scoped_issue_id"
           --head-sha "$local_head"
+          # #1467: this probe runs before the push steps, so a PR behind HEAD is unpushed work.
+          --allow-head-behind
         )
         title_prefix="${EXPECTED_PR_TITLE_PREFIX:-${PR_EXPECTED_TITLE_PREFIX:-}}"
         [ -n "$title_prefix" ] && scope_args+=(--expected-pr-title-prefix "$title_prefix")
@@ -442,7 +445,26 @@ steps:
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: baseRefName '$pr_base' does not match base_ref '$expected_base'"
         fi
         if [ "$pr_head_oid" != "$local_head" ]; then
-          fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
+          # Issue #1467: an open PR whose head is an ancestor of local HEAD is
+          # behind, not stale: an agent opened it early and a later step
+          # committed without pushing; the next push step pushes them. A merged
+          # or closed PR, a head that is not an ancestor, or a remote branch
+          # rewound behind any value origin/<branch> held here (current or in
+          # its reflog, so a fetched rewind counts too), still fails.
+          remote_rewound="false"
+          for seen_oid in $(git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH_INPUT}^{commit}" 2>/dev/null || true) \
+              $(git reflog -n 50 --format=%H "refs/remotes/origin/${BRANCH_INPUT}" -- 2>/dev/null || true); do
+            [[ "$seen_oid" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$seen_oid" "$pr_head_oid" 2>/dev/null || remote_rewound="true"
+          done
+          if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] && [ "$remote_rewound" = "false" ] \
+              && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
+            pr_behind="true"
+            echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
+          elif [ "$remote_rewound" = "true" ]; then
+            fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head', and origin/$BRANCH_INPUT has held a commit that is not an ancestor of the PR head (history rewritten or rewound; #1467)"
+          else
+            fail_terminal_state "FAILED_INVALID_INPUT" "stale PR metadata: headRefOid '$pr_head_oid' does not match local HEAD '$local_head'"
+          fi
         fi
         if [ "$pr_cross_repo" = "true" ] || [ "$pr_head_owner/$pr_head_repo" != "$repo_owner/$repo_name" ] || [ "$pr_base_identity" != "$repo_owner/$repo_name" ]; then
           fail_terminal_state "FAILED_INVALID_INPUT" "ambiguous PR metadata: PR repo '$pr_head_owner/$pr_head_repo' -> '$pr_base_identity' does not match current repo '$repo_owner/$repo_name'"
@@ -464,7 +486,8 @@ steps:
         fail_terminal_state "FAILED_CLOSED_UNMERGED" "closed-unmerged PR still has meaningful diff"
       fi
 
-      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ]; then
+      # #1467: a PR behind local HEAD reports checks for a superseded commit.
+      if [ -n "$pr_json" ] && [ "$pr_json" != "{}" ] && [ "${failing_checks:-0}" -gt 0 ] && [ "${pr_behind:-false}" != "true" ]; then
         fail_terminal_state "BLOCKED_CI" "real failing checks block terminal success"
       fi
 

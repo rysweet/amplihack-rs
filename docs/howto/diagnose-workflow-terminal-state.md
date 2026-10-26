@@ -100,6 +100,7 @@ git -C "$wt" rev-parse HEAD
 | Branch is empty, a base branch, or not `worktree_setup.branch_name` | Nothing trustworthy to look up. | Check out the run's branch in the worktree. |
 | `gh pr list` returns `[]`, or only fork PRs | No same-repository open PR on the branch. | Publish the PR from the origin repository. |
 | The PR's `headRefOid` is not the worktree's `HEAD` | The PR does not hold this run's latest work (issue #1679). | Push the worktree's commits to the PR branch. |
+| `stale PR metadata: headRefOid '…' does not match local HEAD '…'` | The PR head is not an ancestor of local `HEAD` (force-push, other branch), or the PR is merged or closed with local commits on top. An open PR that is merely behind is accepted (issue #1467). | Check `git merge-base --is-ancestor <headRefOid> HEAD`; reconcile the branch, or open a follow-up PR for the extra commits. |
 | `stderr` shows `INFO: branch PR lookup skipped (#1679): <reason>` | The run's worktree or branch could not be established. | Act on the reason: for example, record `worktree_setup` or keep the worktree until finalize. |
 | `stderr` shows `WARNING: branch PR lookup failed (#1596): <reason>` | `gh` failed, or returned data the helper will not trust. | Run `gh auth status`; check `origin` points at the PR's repository. |
 | `terminal_state=EXISTING_OPEN_PR` but exit `1` or `terminal_verdict=UNCERTAIN` | The PR was found and then failed the scope check. | See [Scoped-PR Signal and Agentic Adjudication](../reference/workflow-terminal-state.md#scoped-pr-signal-and-agentic-adjudication). |

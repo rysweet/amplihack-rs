@@ -283,9 +283,10 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     // Phase 8: workflow-finalize (terminal gate + steps 20-22b + complete)
     "finalize-terminal-state",
     "step-20-final-cleanup",
+    // Issue #1467: the audit runs before the guard and push, so its fixes are pushed.
+    "step-20c-quality-audit",
     "step-20a-artifact-guard",
     "step-20b-push-cleanup",
-    "step-20c-quality-audit",
     "step-21-pr-ready",
     "step-22-ensure-mergeable",
     // Issue #1268: evidence + judgement between the scoped-PR signal and the

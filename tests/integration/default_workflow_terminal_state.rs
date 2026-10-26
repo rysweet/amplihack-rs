@@ -1158,3 +1158,347 @@ steps:
         fs::read_to_string(&marker).unwrap_or_default()
     );
 }
+
+// --- Issue #1467: an open PR behind local HEAD is unpushed work, not stale ---
+
+/// Like `fake_gh`, but `pr list` answers `[body]`, so the probe finds the PR in
+/// discovery mode (no pr_url), as it does when an agent opened the PR early.
+fn fake_gh_listing(tmp: &TempDir, body: &str) -> PathBuf {
+    let bin_dir = tmp.path().join("bin");
+    fs::create_dir_all(&bin_dir).expect("create fake gh bin");
+    let gh = bin_dir.join("gh");
+    let script = format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+if [ "${{1:-}}" = "pr" ] && [ "${{2:-}}" = "list" ]; then
+  cat <<'JSON'
+[{body}]
+JSON
+  exit 0
+fi
+cat <<'JSON'
+{body}
+JSON
+"#
+    );
+    fs::write(&gh, script).expect("write fake gh");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod fake gh");
+    }
+    bin_dir
+}
+
+/// Move refs/remotes/origin/feature, recording the move in its reflog as a push
+/// or fetch would.
+fn set_tracking_ref(worktree: &Path, oid: &str) {
+    run_cmd(
+        worktree,
+        "git",
+        &[
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "test: tracking ref",
+            "refs/remotes/origin/feature",
+            oid,
+        ],
+    );
+}
+
+fn commit_file(worktree: &Path, name: &str, message: &str) {
+    write_file(&worktree.join(name), &format!("{message}\n"));
+    run_cmd(worktree, "git", &["add", name]);
+    run_cmd(worktree, "git", &["commit", "-m", message]);
+}
+
+/// A feature worktree whose PR (`state`) has its head one commit behind local
+/// HEAD. origin/feature is at the PR head, as after the agent's `git push`.
+fn pr_behind_local_head(state: &str) -> (GitFixture, PathBuf, JsonValue) {
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let pr_head = git_head(&worktree);
+    set_tracking_ref(&worktree, &pr_head);
+    commit_file(&worktree, "later.txt", "later local commit, not pushed");
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, state, "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String(pr_head);
+    (fixture, worktree, pr)
+}
+
+fn assert_publish_continues(run: &TerminalRun, why: &str) {
+    assert!(
+        run.success
+            && run.json["terminal_state"] == "FOLLOWUP_CREATED"
+            && run.json["should_publish"] == "true",
+        "{why}: the probe must hand over to publish\nstdout:\n{}\nstderr:\n{}",
+        run.stdout,
+        run.stderr
+    );
+}
+
+fn assert_stale(run: &TerminalRun, why: &str) {
+    assert!(
+        !run.success,
+        "{why}\nstdout:\n{}\nstderr:\n{}",
+        run.stdout, run.stderr
+    );
+    assert_eq!(run.json["terminal_state"], "FAILED_INVALID_INPUT", "{why}");
+    assert!(
+        run.stderr.contains("stale PR metadata") || run.stderr.contains("no_scoped_pr"),
+        "{why}: stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_accepts_open_pr_behind_local_head_in_discovery_mode() {
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_publish_continues(&run, "open PR one commit behind HEAD, found by branch");
+    assert!(
+        run.stderr.contains("ahead of open PR head"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_accepts_named_open_pr_behind_local_head() {
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+
+    let run = run_terminal_state(
+        &fixture.repo,
+        Some(&worktree),
+        "feature",
+        Some("https://github.com/owner/repo/pull/7"),
+        &fake_path,
+    );
+
+    assert_publish_continues(&run, "named open PR one commit behind HEAD");
+    assert!(
+        run.stderr.contains("behind local HEAD"),
+        "stderr: {}",
+        run.stderr
+    );
+}
+
+#[test]
+fn terminal_state_accepts_a_tracking_ref_that_moved_forward_through_several_pushes() {
+    // The agent pushed the base commit, then the PR head; both reflog entries
+    // are ancestors of the PR head, so this is the normal flow, not a rewind.
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let pr_head = pr["headRefOid"].as_str().expect("pr head").to_string();
+    let parent = String::from_utf8(
+        amplihack_git::command()
+            .current_dir(&worktree)
+            .args(["rev-parse", &format!("{pr_head}~1")])
+            .output()
+            .expect("rev-parse parent")
+            .stdout,
+    )
+    .expect("utf8 sha")
+    .trim()
+    .to_string();
+    set_tracking_ref(&worktree, &parent);
+    set_tracking_ref(&worktree, &pr_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_publish_continues(&run, "tracking ref advanced through two pushes");
+}
+
+#[test]
+fn terminal_state_ignores_failing_checks_on_a_head_behind_local_head() {
+    // The checks ran on the superseded head; the unpushed commit may be the fix.
+    let (fixture, worktree, mut pr) = pr_behind_local_head("OPEN");
+    pr["statusCheckRollup"] = serde_json::json!([{ "conclusion": "FAILURE" }]);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_publish_continues(
+        &run,
+        "failing checks on a head behind HEAD must not block the push",
+    );
+}
+
+#[test]
+fn terminal_state_still_rejects_merged_pr_behind_local_head() {
+    // A merged PR with unpushed local commits must not be reported as MERGED:
+    // the local commits would be dropped.
+    for named in [false, true] {
+        let (fixture, worktree, pr) = pr_behind_local_head("MERGED");
+        let fake_tmp = TempDir::new().expect("fake gh tempdir");
+        let (fake_path, pr_url) = if named {
+            (
+                fake_gh(&fake_tmp, &pr.to_string(), 0),
+                Some("https://github.com/owner/repo/pull/7"),
+            )
+        } else {
+            (fake_gh_listing(&fake_tmp, &pr.to_string()), None)
+        };
+
+        let run = run_terminal_state(
+            &fixture.repo,
+            Some(&worktree),
+            "feature",
+            pr_url,
+            &fake_path,
+        );
+
+        assert_stale(&run, &format!("merged PR behind HEAD (named={named})"));
+    }
+}
+
+#[test]
+fn terminal_state_still_rejects_open_pr_whose_head_diverged() {
+    // A real commit that is not an ancestor of HEAD (e.g. after a force-push).
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    commit_file(&worktree, "diverged.txt", "commit that will be rewritten");
+    let diverged = git_head(&worktree);
+    run_cmd(&worktree, "git", &["reset", "--hard", "HEAD~1"]);
+    commit_file(&worktree, "local.txt", "local replacement commit");
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String(diverged);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_stale(&run, "open PR whose head diverged from HEAD");
+}
+
+#[test]
+fn terminal_state_still_rejects_a_remote_rewound_behind_what_was_pushed() {
+    // origin/feature says this checkout last pushed a newer commit; the PR head
+    // is older, so the remote was rewound. Pushing would restore removed work.
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let local_head = git_head(&worktree);
+    set_tracking_ref(&worktree, &local_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_stale(&run, "remote rewound behind origin/feature");
+}
+
+#[test]
+fn terminal_state_still_rejects_a_rewind_that_was_already_fetched() {
+    // The newer commit was pushed, the remote was rewound, and a later fetch
+    // moved origin/feature back to the PR head. Its reflog still shows the
+    // newer commit, so pushing would restore removed work.
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let local_head = git_head(&worktree);
+    let pr_head = pr["headRefOid"].as_str().expect("pr head").to_string();
+    set_tracking_ref(&worktree, &local_head);
+    set_tracking_ref(&worktree, &pr_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_stale(&run, "rewind already fetched into origin/feature");
+    assert!(
+        run.stderr.contains("history rewritten or rewound"),
+        "the refusal must name the rewind: {}",
+        run.stderr
+    );
+}
+
+/// workflow_pr_scope.sh in named mode, run directly in the worktree.
+fn run_scope_helper(worktree: &Path, fake_path: &Path, allow_behind: bool) -> (bool, String) {
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let mut cmd = Command::new("bash");
+    cmd.arg(workspace_helper_path("workflow_pr_scope.sh"))
+        .args([
+            "--repo",
+            "owner/repo",
+            "--head",
+            "feature",
+            "--base",
+            "main",
+        ])
+        .args(["--pr-number", "7", "--head-sha"])
+        .arg(git_head(worktree))
+        .current_dir(worktree)
+        .env("PATH", format!("{}:{old_path}", fake_path.display()));
+    if allow_behind {
+        cmd.arg("--allow-head-behind");
+    }
+    let out = cmd.output().expect("run workflow_pr_scope.sh");
+    (
+        out.status.success(),
+        format!(
+            "{}{}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        ),
+    )
+}
+
+#[test]
+fn scope_helper_accepts_a_head_behind_only_when_asked_and_only_when_open() {
+    for (state, allow, expect_ok) in [
+        ("OPEN", true, true),
+        // End-of-run callers (final status, PR ready) do not opt in: behind
+        // there means the PR lacks the run's work.
+        ("OPEN", false, false),
+        ("MERGED", true, false),
+        ("CLOSED", true, false),
+    ] {
+        let (_fixture, worktree, pr) = pr_behind_local_head(state);
+        let fake_tmp = TempDir::new().expect("fake gh tempdir");
+        let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+        let (ok, out) = run_scope_helper(&worktree, &fake_path, allow);
+        assert_eq!(ok, expect_ok, "state={state} allow={allow}\n{out}");
+        if !expect_ok {
+            assert!(
+                out.contains("no_scoped_pr"),
+                "state={state} allow={allow}\n{out}"
+            );
+        }
+    }
+}
+
+#[test]
+fn final_status_does_not_count_a_named_pr_behind_local_head_as_published() {
+    // workflow_final_status.sh never opts in, so the PR fails the scope check
+    // and goes to #1268 adjudication rather than straight to success.
+    let fixture = setup_repo();
+    let worktree = create_feature_worktree(&fixture);
+    commit_feature_change(&worktree);
+    let pr_head = git_head(&worktree);
+    commit_file(&worktree, "later.txt", "later local commit, not pushed");
+    let mut pr: JsonValue =
+        serde_json::from_str(&matching_pr_json(&worktree, "OPEN", "")).expect("matching PR JSON");
+    pr["headRefOid"] = JsonValue::String(pr_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh(&fake_tmp, &pr.to_string(), 0);
+    let (ok, out) = run_scope_helper(&worktree, &fake_path, false);
+    assert!(!ok && out.contains("no_scoped_pr"), "{out}");
+    let helper = helper_text("workflow_final_status.sh");
+    assert!(
+        !helper.contains("--allow-head-behind"),
+        "workflow_final_status.sh must not opt in to --allow-head-behind"
+    );
+    assert!(
+        !helper_text("workflow_pr_ready.sh").contains("--allow-head-behind"),
+        "workflow_pr_ready.sh must not opt in to --allow-head-behind"
+    );
+}
