@@ -79,6 +79,29 @@ steps:
       **FINAL CHECK:** All explicit user requirements preserved.
     output: "final_cleanup"
 
+  - id: "step-20c-quality-audit"
+    agent: "amplihack:core:reviewer"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    prompt: |
+      # Step 20c: Quality Audit Loop (runs before 20a/20b, so its fixes are guarded and pushed; #1467)
+
+      **Requirements:** {{final_requirements}}
+      **PR URL:** {{pr_publish_result.pr_url}}
+      **Repository:** {{repo_path}}
+
+      Run 3-6 quality-audit cycles over the branch's changed files (`git diff <base>...HEAD`; recent commits may be unpushed). Each cycle must:
+      1. Seek issues in security, reliability, dead code, test/doc gaps,
+         silent fallbacks, swallowed errors, structural complexity, and docs.
+      2. Validate findings with technical, skeptical, and adversarial reads;
+         confirm only when at least two perspectives agree.
+      3. Fix confirmed findings minimally, with tests where appropriate.
+      4. Continue until at least cycle 3; after that stop only when no
+         high/critical and at most three medium findings remain, or at cycle 6.
+
+      Finish with a self-improvement pass for systemic critical issues.
+      Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
+    output: "quality_audit_results"
+
   - id: "step-20a-artifact-guard"
     type: "bash"
     condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
@@ -191,29 +214,6 @@ steps:
       fi
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"
-
-  - id: "step-20c-quality-audit"
-    agent: "amplihack:core:reviewer"
-    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
-    prompt: |
-      # Step 20c: Quality Audit Loop
-
-      **Requirements:** {{final_requirements}}
-      **PR URL:** {{pr_publish_result.pr_url}}
-      **Repository:** {{repo_path}}
-
-      Run 3-6 quality-audit cycles over changed PR files. Each cycle must:
-      1. Seek issues in security, reliability, dead code, test/doc gaps,
-         silent fallbacks, swallowed errors, structural complexity, and docs.
-      2. Validate findings with technical, skeptical, and adversarial reads;
-         confirm only when at least two perspectives agree.
-      3. Fix confirmed findings minimally, with tests where appropriate.
-      4. Continue until at least cycle 3; after that stop only when no
-         high/critical and at most three medium findings remain, or at cycle 6.
-
-      Finish with a self-improvement pass for systemic critical issues.
-      Output "QUALITY AUDIT: CLEAN" or list remaining findings and fixes.
-    output: "quality_audit_results"
 
   - id: "step-21-pr-ready"
     type: "bash"
