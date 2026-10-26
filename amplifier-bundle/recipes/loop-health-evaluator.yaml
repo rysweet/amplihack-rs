@@ -34,8 +34,8 @@ tags: ["loop", "convergence", "evaluation", "verdict", "agentic", "issue-1337"]
 #     round-N+1 condition is false, so nothing proceeds either way.
 #
 # JSON-object step outputs get only `RECIPE_VAR_<name>` from recipe-runner-rs,
-# so every step-output read below uses the dual-name idiom; drop it and the
-# recipe goes silently inert.
+# so every step-output read below uses that name alone (#1561); a bare name
+# would be inherited from whatever launched the runner, never this run's output.
 #
 # No step here declares a timeout: per issue #439 the recipe runner owns the
 # ceiling, so no step has a seconds-scale or single-digit-minute bound.
@@ -68,6 +68,9 @@ context:
   loop_round_verdict: ""  # #1597: the reviewer's verdict for the round just finished
   # "false": step-04 reports STUCK loudly but exits 0; the caller's `condition:` owns the stop.
   loop_health_enforce: "true"
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  loop_evidence: ""
+  loop_health_assessment: ""
 
 steps:
   # ---------------------------------------------------------------------------
@@ -216,10 +219,8 @@ steps:
     type: "bash"
     command: |
       set -uo pipefail
-      # DUAL-NAME READ (required): recipe-runner-rs adds the plain alias only for
-      # SCALAR outputs, and both outputs read here are usually JSON objects.
-      RAW="${LOOP_HEALTH_ASSESSMENT:-${RECIPE_VAR_loop_health_assessment:-}}"
-      EV="${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}"
+      RAW="${RECIPE_VAR_loop_health_assessment:-}"
+      EV="${RECIPE_VAR_loop_evidence:-}"
       # Caller and evidence text reaches the JSON and the messages only after
       # jsafe: quotes, backslashes and control bytes are deleted, never escaped.
       jsafe() { LC_ALL=C tr -d '"\\[:cntrl:]'; }
@@ -344,9 +345,8 @@ steps:
     type: "bash"
     command: |
       set -uo pipefail
-      # step-03 declares parse_json, so LOOP_HEALTH is an object and the runner
-      # never creates the plain alias — see the dual-name note in step-03.
-      HEALTH_JSON=$(printf '%s' "${LOOP_HEALTH:-${RECIPE_VAR_loop_health:-}}" \
+      # Step outputs are read as RECIPE_VAR_<key> only (#1561).
+      HEALTH_JSON=$(printf '%s' "${RECIPE_VAR_loop_health:-}" \
         | amplihack orch helper extract-json)
       VERDICT=$(printf '%s' "$HEALTH_JSON" \
         | amplihack orch helper extract-field --field loop_verdict --default STUCK \
@@ -375,7 +375,7 @@ steps:
           {
             echo "LOOP_HEALTH: STUCK — '${NAME}' is not converging (source=${SOURCE}). [loop-health-evaluator]"
             echo "  Round: $(printf '%s' "${LOOP_ROUND_LABEL:-?}" | jsafe)"
-            echo "  Evidence: $(printf '%s' "${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-<none>}}" | jsafe | head -c 2000)"
+            echo "  Evidence: $(printf '%s' "${RECIPE_VAR_loop_evidence:-<none>}" | jsafe | head -c 2000)"
             echo "  Not converging: ${DETAIL}"
             echo "  No further round is authorised. This is a judgement about absence of progress, not an attempt count."
           } >&2

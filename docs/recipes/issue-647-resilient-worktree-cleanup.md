@@ -108,6 +108,18 @@ its refusal to commit on `main` or `master`.
 
 ### Fallback Pattern
 
+Each step sets the local `WORKTREE_SETUP_WORKTREE_PATH` from
+[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
+which reads only `RECIPE_VAR_worktree_setup` and checks the path, so an
+inherited `WORKTREE_SETUP_WORKTREE_PATH` is never used (issue #1561). Step 21
+in `workflow-finalize.yaml`:
+
+```bash
+if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-21-pr-ready)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-21 worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-21 worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
+```
+
+The forms below show the original #647 shape of the same fallback.
+
 **Compact form** (used in `workflow-pr-review.yaml` which is at 399/400 LOC brick limit):
 
 ```bash

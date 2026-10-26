@@ -335,22 +335,69 @@ fn workflow_publish_outside_in_fix_loop_guards_its_inline_git_add_all() {
 // ---------------------------------------------------------------------------
 
 const GUARD: &str = "amplihack hygiene artifact-guard";
+const SCOPED_TDD_ADD: &str = "git --literal-pathspecs add -A --pathspec-from-file";
+
+/// Byte offset of a shell command at the start of an executable line.
+fn shell_command_offset(text: &str, command: &str) -> Option<usize> {
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let indent = line.len() - line.trim_start().len();
+        if line[indent..].starts_with(command) {
+            return Some(line_start + indent);
+        }
+        line_start += line.len();
+    }
+    None
+}
+
+/// End of executable shell text on one line; a `#` inside quotes is data.
+fn shell_code_end(line: &str) -> usize {
+    let (mut single, mut double, mut escaped) = (false, false, false);
+    for (at, ch) in line.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' if !single => escaped = true,
+            '\'' if !double => single = !single,
+            '"' if !single => double = !double,
+            '#' if !single
+                && !double
+                && line[..at]
+                    .chars()
+                    .last()
+                    .is_none_or(|prev| prev.is_whitespace() || matches!(prev, ';' | '&' | '|')) =>
+            {
+                return at;
+            }
+            _ => {}
+        }
+    }
+    line.len()
+}
 
 /// `(start, end)` byte spans of every broad add (`git add -A`, `git add --all`,
 /// `git add .`) in `text`. `git add .gitignore` and `git add -Ab` are not broad
-/// adds of the whole tree, so a needle must end at a word boundary.
+/// adds of the whole tree, so a needle must end at a word boundary. Shell
+/// comments do not count as staging commands.
 fn broad_add_spans(text: &str) -> Vec<(usize, usize)> {
     let mut spans = Vec::new();
-    for needle in ["git add -A", "git add --all", "git add ."] {
-        for (start, _) in text.match_indices(needle) {
-            let end = start + needle.len();
-            let boundary = text[end..].chars().next().is_none_or(|c| {
-                c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '`' | '"' | '\'')
-            });
-            if boundary {
-                spans.push((start, end));
+    let mut line_start = 0;
+    for line in text.split_inclusive('\n') {
+        let code = &line[..shell_code_end(line)];
+        for needle in ["git add -A", "git add --all", "git add ."] {
+            for (at, _) in code.match_indices(needle) {
+                let end = at + needle.len();
+                let boundary = code[end..].chars().next().is_none_or(|c| {
+                    c.is_whitespace() || matches!(c, ';' | '&' | '|' | ')' | '`' | '"' | '\'')
+                });
+                if boundary {
+                    spans.push((line_start + at, line_start + end));
+                }
             }
         }
+        line_start += line.len();
     }
     spans.sort_unstable();
     spans
@@ -416,6 +463,16 @@ fn broad_add_recheck_scanner_flags_a_synthetic_unguarded_commit() {
         broad_add_spans("git add .gitignore && git commit -m x").is_empty(),
         "`git add .gitignore` is not a broad add"
     );
+    assert_eq!(
+        broad_add_spans("# git add -A\necho ready # git add --all\ngit add -A\n").len(),
+        1,
+        "shell comments must not count as broad staging"
+    );
+    assert_eq!(
+        broad_add_spans("echo '# in quotes'; git add -A\n").len(),
+        1,
+        "a quoted hash must not hide a later staging command"
+    );
     assert!(
         adds_committed_without_recheck("git add -A\necho 'no commit follows'\n").is_empty(),
         "an add with no following commit is out of scope for this rule"
@@ -448,9 +505,13 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
         }
     }
 
+    // The three phase-1 commit sites no longer use a broad add: the TDD
+    // checkpoint stages captured paths (#1672) and the refactor and publish
+    // steps use `stage_workflow_changes` (#1671). Both are checked in
+    // `phase1_commit_sites_never_fall_back_to_repo_path`.
     assert!(
-        checked >= 10,
-        "expected the ten known broad-add commit sites to be scanned, found {checked}"
+        checked >= 7,
+        "expected the seven executable broad-add commit sites to be scanned, found {checked}"
     );
     assert!(
         missing.is_empty(),
@@ -763,7 +824,10 @@ mod finalize_runtime {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                    "RECIPE_VAR_worktree_setup",
+                    crate::artifact_guard_workflow::worktree_setup_json(worktree),
+                );
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -966,22 +1030,32 @@ fn every_guard_call_in_every_recipe_can_stop_its_step() {
 }
 
 #[test]
-fn recipes_at_the_line_budget_recheck_on_the_add_line() {
-    // D3: workflow-tdd and workflow-pr-review sit at 399 lines, so their
-    // post-add guard shares the `git add -A` line. `;` (not `&&`) keeps a
-    // failed add binding under `set -e`.
-    for (recipe, step) in [
-        ("workflow-tdd.yaml", "checkpoint-after-implementation"),
-        ("workflow-pr-review.yaml", "step-18c-push-feedback-changes"),
-    ] {
-        let recipe_doc = load_recipe(recipe);
-        let command = step_text(&recipe_doc, step, "command");
-        assert!(
-            command.lines().any(|line| line.trim()
-                == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
-            "{recipe} {step}: expected `git add -A; {GUARD} --repo . --mode pre-publish`:\n{command}"
-        );
-    }
+fn checkpoint_and_review_recheck_after_staging() {
+    let tdd = load_recipe("workflow-tdd.yaml");
+    let command = step_text(&tdd, "checkpoint-after-implementation", "command");
+    let scoped_add = shell_command_offset(command, SCOPED_TDD_ADD)
+        .expect("TDD checkpoint must stage only captured paths");
+    let commit = command
+        .find("commit_with_pre_commit_guard -m")
+        .expect("TDD checkpoint must invoke the guarded commit helper");
+    assert!(
+        scoped_add < commit
+            && command[scoped_add + SCOPED_TDD_ADD.len()..commit]
+                .lines()
+                .any(|line| line.trim()
+                    == "amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "TDD checkpoint must recheck artifacts between scoped staging and commit: {command}"
+    );
+
+    // Review feedback still uses broad staging and keeps the guard on the
+    // same line, so `set -e` binds a failed add before the guard can run.
+    let review = load_recipe("workflow-pr-review.yaml");
+    let command = step_text(&review, "step-18c-push-feedback-changes", "command");
+    assert!(
+        command.lines().any(|line| line.trim()
+            == "git add -A; amplihack hygiene artifact-guard --repo . --mode pre-publish"),
+        "workflow-pr-review.yaml must recheck artifacts after broad staging: {command}"
+    );
 }
 
 #[test]
@@ -1006,8 +1080,17 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     }
 }
 
-const STEP_20B_CONTEXT_DEFAULT: &str =
-    r#": "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}""#;
+// #1561: the worktree path comes from worktree_setup_path.sh, which reads only
+// the JSON in RECIPE_VAR_worktree_setup and checks it, so neither an inherited
+// WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
+// can outrank the recipe's own worktree. A rejected or unset path skips the step
+// ("worktree path gone"); a missing tool skips with "worktree_setup_path.sh not found".
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
+
+/// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
+pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
+    serde_json::json!({ "worktree_path": worktree.to_string_lossy() }).to_string()
+}
 
 fn step_20b_warning(reason: &str) -> String {
     format!(
@@ -1025,8 +1108,8 @@ fn finalize_push_cleanup_skips_before_the_runtime_preflight() {
     assert!(
         command
             .lines()
-            .any(|line| line.trim() == STEP_20B_CONTEXT_DEFAULT),
-        "step-20b keeps `{STEP_20B_CONTEXT_DEFAULT}` byte-identical:\n{command}"
+            .any(|line| line.trim().starts_with(STEP_20B_CONTEXT_DEFAULT)),
+        "step-20b reads its worktree with `{STEP_20B_CONTEXT_DEFAULT}`:\n{command}"
     );
     for reason in [
         "worktree path gone",
@@ -1145,17 +1228,13 @@ mod finalize_skip_reasons {
 
         let gone = "worktree path gone";
         let not_linked = "worktree path is not a linked worktree";
-        let not_a_repo = format!(
-            "not a git repo at {} (#537)",
-            fs::canonicalize(&plain)
-                .expect("canonicalize plain")
-                .display()
-        );
         let cases: [(&str, Option<&Path>, &str); 5] = [
             ("unset", None, gone),
             ("missing", Some(&root.join("missing")), gone),
             ("a file", Some(&file), gone),
-            ("not a git directory", Some(&plain), &not_a_repo),
+            // #1561: a directory that is not a worktree root fails the path
+            // checks, so it is treated as missing before the #537 repo check.
+            ("not a git directory", Some(&plain), gone),
             ("main checkout", Some(&launch), not_linked),
         ];
         for (label, worktree, reason) in cases {
@@ -1174,12 +1253,21 @@ mod finalize_skip_reasons {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                    "RECIPE_VAR_worktree_setup",
+                    crate::artifact_guard_workflow::worktree_setup_json(worktree),
+                );
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
 
             assert_eq!(output.status.code(), Some(0), "{label}\nstderr:\n{stderr}");
+            if label == "not a git directory" {
+                assert!(
+                    stderr.contains("worktree-setup-rejected: "),
+                    "{label}: the #1561 path check names why the path was dropped\nstderr:\n{stderr}"
+                );
+            }
             assert!(
                 stderr.lines().any(|line| line == step_20b_warning(reason)),
                 "{label}: expected `{}`\nstderr:\n{stderr}",
@@ -1218,6 +1306,10 @@ const PHASE1_COMMIT_SITES: [(&str, &str); 3] = [
     ("workflow-publish.yaml", "step-15-commit-push"),
 ];
 
+/// The commit sites' worktree read: a failure empties the path, so the
+/// `${WORKTREE_SETUP_WORKTREE_PATH:?…}` check after it stops the step (#1528).
+const COMMIT_SITE_WORKTREE_READ: &str = r#")" || WORKTREE_SETUP_WORKTREE_PATH="""#;
+
 const PHASE1_REFUSAL_TAIL: &str = " is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)";
 
 #[test]
@@ -1225,12 +1317,17 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
     for (recipe, step) in PHASE1_COMMIT_SITES {
         let loaded = load_recipe(recipe);
         let command = step_text(&loaded, step, "command");
-        let add = command
-            .find("git add -A")
-            .unwrap_or_else(|| panic!("{step} stages"));
+        let add_command = if step == "checkpoint-after-implementation" {
+            SCOPED_TDD_ADD
+        } else {
+            "stage_workflow_changes; amplihack hygiene artifact-guard"
+        };
+        let add = shell_command_offset(command, add_command)
+            .unwrap_or_else(|| panic!("{recipe}/{step} must execute `{add_command}`"));
         assert!(
-            command.contains(STEP_20B_CONTEXT_DEFAULT),
-            "{recipe}/{step}: the worktree default must not fall back to REPO_PATH"
+            command.contains(COMMIT_SITE_WORKTREE_READ),
+            "{recipe}/{step}: the worktree path must come from worktree_setup_path.sh and \
+             a rejected or unset one must stop at the `:?` check, never fall back to REPO_PATH"
         );
         assert!(
             !command[..add].contains("${REPO_PATH:-}}}"),
@@ -1330,7 +1427,10 @@ mod phase1_commit_runtime {
             .env("REPO_PATH", launch)
             .env("AMPLIHACK_HOME", workspace_root());
         if let Some(worktree) = worktree {
-            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                "RECIPE_VAR_worktree_setup",
+                crate::artifact_guard_workflow::worktree_setup_json(worktree),
+            );
         }
         run.output().expect("run step")
     }
@@ -1380,7 +1480,9 @@ mod phase1_commit_runtime {
                 ("unset", None, false),
                 ("missing directory", Some(&missing), false),
                 ("main checkout, not a linked worktree", Some(&launch), true),
-                ("subdirectory of a linked worktree", Some(&subdir), true),
+                // #1561: a subdirectory is not a worktree root, so the path
+                // check drops it and the step hard-fails as for a missing path.
+                ("subdirectory of a linked worktree", Some(&subdir), false),
             ];
             for (label, worktree, names_1528) in cases {
                 let before = (state(&launch), state(&cwd), state(&linked));
@@ -1399,6 +1501,12 @@ mod phase1_commit_runtime {
                             .any(|line| line.starts_with(&format!("ERROR: {step}: "))
                                 && line.ends_with(PHASE1_REFUSAL_TAIL)),
                         "{step}/{label}: expected the #1528 refusal\nstderr:\n{stderr}"
+                    );
+                }
+                if label == "subdirectory of a linked worktree" {
+                    assert!(
+                        stderr.contains("worktree-setup-rejected: "),
+                        "{step}/{label}: expected the #1561 path-check warning\nstderr:\n{stderr}"
                     );
                 }
                 assert_eq!(

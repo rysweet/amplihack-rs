@@ -138,6 +138,12 @@ jobs:
       - name: Final status — resolves agent-opened branch PR (issue #1596)
         shell: bash
         run: bash tests/issue_1596_final_status_branch_pr_lookup.sh
+      - name: Auto-drive build — resolves agent-opened PR on the run's branch (issue #1676)
+        shell: bash
+        run: bash tests/issue_1676_build_resolves_agent_pr.sh
+      - name: Auto-drive build — a fresh run's state is keyed by its PR (issue #1680)
+        shell: bash
+        run: bash tests/issue_1680_fresh_run_state_key.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -248,6 +254,9 @@ jobs:
       - name: Recipes — PR always opens after successful push (issue #495)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-pr-always-opens.sh
+      - name: Recipes — checkpoint formatting stays within task edits
+        shell: bash
+        run: bash amplifier-bundle/recipes/tests/test-checkpoint-scoped-format.sh
       - name: Recipes — existing open PR makes step-16 idempotent (issue #1060)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-1060-existing-pr-is-idempotent.sh
@@ -285,6 +294,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+      - name: Recipes — a rejected git hook is repaired, never bypassed (issue #1671)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh

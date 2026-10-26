@@ -230,6 +230,9 @@ steps:
 
         # Stdout is reserved for the JSON contract. printf (not heredoc): a heredoc
         # terminator must sit at column 0 once YAML strips the block indent.
+        # Consumers accept worktree_setup.worktree_path only as an already-resolved
+        # worktree root (#1561 V4), so emit the physical path.
+        WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
         printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "", "base_branch": "", "created": %s}\n' \
           "$(json_escape "$WORKTREE_PATH")" "$(json_escape "$BRANCH_NAME")" "$CREATED"
         exit 0
@@ -373,6 +376,9 @@ steps:
 
       # Output structured JSON for subsequent steps.
       # created=false signals that an existing worktree was reused (diagnostic for re-runs).
+      # Consumers accept worktree_setup.worktree_path only as an already-resolved
+      # worktree root (#1561 V4), so emit the physical path.
+      WORKTREE_PATH="$(cd -P -- "$WORKTREE_PATH" && pwd -P)" || { echo "ERROR: cannot resolve the worktree path to a physical directory (#1561)" >&2; exit 1; }
       printf '{"worktree_path": "%s", "branch_name": "%s", "base_ref": "%s", "base_branch": "%s", "runtime_root": "%s", "created": %s}\n' \
         "$(json_escape "$WORKTREE_PATH")" \
         "$(json_escape "$BRANCH_NAME")" \

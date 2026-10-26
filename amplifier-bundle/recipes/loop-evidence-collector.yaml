@@ -24,7 +24,7 @@ tags: ["loop", "convergence", "evidence", "agentic", "issue-1337"]
 # Because it parses as an object the runner exports it as
 # `RECIPE_VAR_loop_evidence` (plus flattened `RECIPE_VAR_loop_evidence__*`)
 # and does NOT create a plain `LOOP_EVIDENCE` alias — consumers must read it
-# with the dual-name idiom `${LOOP_EVIDENCE:-${RECIPE_VAR_loop_evidence:-}}`.
+# as `${RECIPE_VAR_loop_evidence:-}` only (#1561).
 #
 # No step in this file declares a timeout. Per issue #439 the recipe runner
 # owns the ceiling; there is deliberately no seconds-scale or single-digit-

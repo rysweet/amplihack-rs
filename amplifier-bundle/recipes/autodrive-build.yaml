@@ -37,6 +37,9 @@ context:
   pr_number: ""
   pr_url: ""
   autodrive_state_dir: ""
+  # Set by step-02's default-workflow sub-recipe; step-03 reads the worktree
+  # path and branch from its JSON (#1676, #1561).
+  worktree_setup: ""
   # Phase 1 never merges. auto-drive-to-merge owns that decision.
   no_merge: "true"
 
@@ -100,7 +103,11 @@ steps:
       # merge guard on PATH is the control. Values come from the environment
       # and leave through jq, so no text is pasted into this script.
       DIRECTIVE='[amplihack:no-merge] Do NOT run "gh pr merge" or call the pulls/<N>/merge API, and do not list merging in requirements or acceptance criteria. Leave the PR open. Auto-drive'"'"'s merge gate merges it after a Crusty CLEAN and the merge-ready loop; any other merge attempt is refused.'
-      NM="${NO_MERGE:-${RECIPE_VAR_no_merge:-}}"
+      # no_merge (#1561): the recipe value decides; a bare NO_MERGE can only switch merging off.
+      RV="${AMPLIHACK_HOME:-}/amplifier-bundle/tools/recipe_var.sh"
+      case "${AMPLIHACK_HOME:-}" in /*) [ -f "$RV" ] && . "$RV" ;; *) false ;; esac \
+        || { echo "ERROR: #1551: recipe_var.sh not found under AMPLIHACK_HOME; cannot decide no_merge [autodrive-build/step-01b]" >&2; exit 1; }
+      NM="$(no_merge_flag autodrive-build/step-01b-no-merge-directive)"
       with_directive() {
         if [ "$NM" != "true" ]; then printf '%s' "$1"; return; fi
         case "$1" in
@@ -110,8 +117,8 @@ steps:
         esac
       }
       # jq is a hard dependency: both branches emit their output through it.
-      TD="$(with_directive "${TASK_DESCRIPTION:-${RECIPE_VAR_task_description:-}}"; printf x)"
-      RQ="$(with_directive "${REQUIREMENTS:-${RECIPE_VAR_requirements:-}}"; printf x)"
+      TD="$(with_directive "${RECIPE_VAR_task_description:-}"; printf x)"
+      RQ="$(with_directive "${RECIPE_VAR_requirements:-}"; printf x)"
       OUT="$(jq -n --arg t "${TD%x}" --arg r "${RQ%x}" '{task_description: $t, requirements: $r}')"
       RC=$?
       if [ "$RC" -ne 0 ] || [ -z "$OUT" ]; then
@@ -151,7 +158,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-build/step-03]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      g() { printf '%s' "${BUILD_PREFLIGHT:-${RECIPE_VAR_build_preflight:-}}" | amplihack orch helper extract-json --require-field "$1" \
+      g() { printf '%s' "${RECIPE_VAR_build_preflight:-}" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"; DIR="$(g state_dir)"; BRANCH="$(g branch)"
       # An empty state_dir means there is nothing to record; an unsafe one is
@@ -167,6 +174,34 @@ steps:
       if [ -z "$PR" ]; then
         PR="$(gh pr view --json number --jq .number 2>/dev/null || printf '')"
       fi
+      # Issue #1676: an agent step can open the PR on the branch default-workflow
+      # created in its own worktree, which neither lookup above sees (they ask
+      # about REPO_PATH's branch). worktree_setup comes back from step-02's
+      # sub-recipe; the helper applies #1596's open-PR check there, plus head ==
+      # the worktree's HEAD. Only the installed bundle's copy is sourced (#1551).
+      case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      if [ -z "$PR" ]; then
+        # #1561: the run's worktree path and branch come only from worktree_setup's base key.
+        # worktree_setup_path.sh checks the path; unset skips the lookup, rejected adds the INFO line.
+        AD_TOOLS="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+        case "${AMPLIHACK_HOME:-}" in /*) ;; *) AD_TOOLS="" ;; esac
+        RUN_DIR=""; RUN_BRANCH=""; RUN_PR_HELPER=""
+        if [ -n "$AD_TOOLS" ] && [ -f "$AD_TOOLS/worktree_setup_path.sh" ] && [ -f "$AD_TOOLS/recipe_var.sh" ] && . "$AD_TOOLS/recipe_var.sh"; then
+          RUN_PR_HELPER="$AD_TOOLS/autodrive_run_pr.sh"
+          RUN_DIR="$(bash "$AD_TOOLS/worktree_setup_path.sh" autodrive-build/step-03)" || {
+            [ $? -eq 3 ] || echo "INFO: #1676: worktree_setup.worktree_path is not a worktree root; skipping the run-branch lookup [autodrive-build/step-03]" >&2
+            RUN_DIR=""; }
+          RUN_BRANCH="$(rv_field worktree_setup branch_name)"
+        fi
+        # A branch that is not a valid branch name is dropped; the helper then
+        # takes the branch from the worktree.
+        case "$RUN_BRANCH" in -*) RUN_BRANCH="" ;; esac
+        [ -z "$RUN_BRANCH" ] || git check-ref-format --branch "$RUN_BRANCH" >/dev/null 2>&1 || RUN_BRANCH=""
+        if [ -n "$RUN_DIR" ] && [ -n "$RUN_PR_HELPER" ] && [ -f "$RUN_PR_HELPER" ] && . "$RUN_PR_HELPER"; then
+          PR="$(autodrive_open_pr_for_run_branch "$RUN_DIR" "$RUN_BRANCH")"
+          [ -z "$PR" ] || echo "INFO: #1676: found open PR #${PR} for the run's branch ${RUN_BRANCH:-<from worktree>} at its HEAD" >&2
+        fi
+      fi
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
       if [ -z "$PR" ]; then
         echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
@@ -178,10 +213,26 @@ steps:
       case "${AMPLIHACK_HOME:-}" in /*) ;; *) STATE_HELPER="" ;; esac
       HAVE_HELPER="false"
       [ -n "$STATE_HELPER" ] && [ -f "$STATE_HELPER" ] && . "$STATE_HELPER" && HAVE_HELPER="true"
+      # Issue #1680: with no PR, the preflight keyed state_dir by REPO_PATH's
+      # branch (main, say), which every fresh run in this repository shares.
+      # Now the PR is known, key the state by it, as a later pr_number=N run's
+      # preflight does. An explicit autodrive_state_dir is kept.
+      if [ -n "$DIR" ] && [ -z "$(g pr)" ] && [ -z "${RECIPE_VAR_autodrive_state_dir:-}" ]; then
+        NEW_DIR=""
+        [ "$HAVE_HELPER" = "true" ] && NEW_DIR="$(autodrive_state_dir "${REPO_PATH:-.}" "$PR")"
+        if [ -n "$NEW_DIR" ]; then
+          [ "$NEW_DIR" = "$DIR" ] || echo "INFO: #1680: state for PR #${PR} is kept in ${NEW_DIR}, not ${DIR}" >&2
+          DIR="$NEW_DIR"
+        else
+          echo "WARNING: #1680: could not key the state by PR #${PR}; keeping ${DIR}" >&2
+        fi
+      fi
       # Issue #1551: a phase 1 that built under no_merge must leave its PR
       # unmerged. MERGED here means something merged around the gh merge guard.
+      # no_merge (#1561): the recipe value decides; a bare NO_MERGE can only switch merging off.
+      if [ "$HAVE_HELPER" = "true" ] && . "${STATE_HELPER%/*}/recipe_var.sh"; then NM="$(no_merge_flag autodrive-build/step-03-resolve-pr)"; else NM=true; fi
       PRE_STATE="$(g pr_state)"
-      if [ "$(g should_run)" = "true" ] && [ "${NO_MERGE:-${RECIPE_VAR_no_merge:-}}" = "true" ]; then
+      if [ "$(g should_run)" = "true" ] && [ "$NM" = "true" ]; then
         [ "$HAVE_HELPER" = "true" ] || { echo "ERROR: #1551: autodrive_state.sh not found under AMPLIHACK_HOME; cannot check that phase 1 left PR #${PR} unmerged [autodrive-build/step-03]" >&2; exit 1; }
         autodrive_require_unmerged "$PR" "phase 1 (build)" || exit 1
       fi

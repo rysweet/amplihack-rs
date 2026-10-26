@@ -438,13 +438,17 @@ adjudicate() {
   esac
 }
 
+# rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+  || { echo "ERROR: workflow_terminal_evidence.sh: recipe_var.sh not found beside it" >&2; exit 2; }
+
 # Recipe-facing wrappers (issue #1268). These keep the recipe steps to a couple
 # of lines each: the env-variable precedence and the fail-soft fallbacks live
 # here, next to the logic they feed, instead of being duplicated across recipes.
 collect_for_step() {
   local pr_url pr_number
-  pr_url="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-  pr_number="${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}"
+  pr_url="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+  pr_number="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
   [ "$pr_url" = "''" ] && pr_url=""
   PR_URL="$pr_url"
   case "$pr_number" in ''|"''"|*[!0-9]*) PR_NUMBER="" ;; *) PR_NUMBER="$pr_number" ;; esac
@@ -459,7 +463,7 @@ collect_for_step() {
 # as "no judgement offered" and which therefore lifts nothing on its own.
 verdict_token() {
   local narrative token
-  narrative="${TERMINAL_ADJUDICATION_NARRATIVE:-${RECIPE_VAR_terminal_adjudication_narrative:-}}"
+  narrative="${RECIPE_VAR_terminal_adjudication_narrative:-}"
   token="$(printf '%s\n' "$narrative" \
     | grep -Eo '^[[:space:]]*TERMINAL_VERDICT:[[:space:]]*[A-Za-z_]+' \
     | tail -1 \

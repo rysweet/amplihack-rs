@@ -41,6 +41,16 @@ context:
   terminal_fail_mode: "exit"
   task_description: ""
   no_merge: ""
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  worktree_setup: ""
+  issue_number: ""
+  allow_no_op: ""
+  pr_publish_result: ""
+  implementation_terminal_evidence: ""
+  verification_terminal_evidence: ""
+  publish_terminal_evidence: ""
+  terminal_adjudication: ""
+  terminal_state: ""
 
 steps:
   - id: "probe-terminal-state"
@@ -97,9 +107,10 @@ steps:
         should_merge="false"
         emit_terminal_state
         echo "ERROR: workflow-terminal-state: $terminal_state: $terminal_reason" >&2
-        fail_mode="${TERMINAL_FAIL_MODE:-${RECIPE_VAR_terminal_fail_mode:-}}"
-        [ -n "$fail_mode" ] || fail_mode="{{terminal_fail_mode}}"
-        case "$fail_mode" in "{{terminal_fail_mode}}"|"") fail_mode="exit" ;; esac
+        # Issue #1561: read the recipe value only. Anything but `report`,
+        # including an empty value, keeps the fail-closed exit.
+        fail_mode="${RECIPE_VAR_terminal_fail_mode:-}"
+        [ "$fail_mode" = "report" ] || fail_mode="exit"
         if [ "$fail_mode" = "report" ]; then
           exit 0
         fi
@@ -208,55 +219,43 @@ steps:
         printf '%s\n' "$ref"
       }
 
-      WORKTREE_INPUT="${WORKTREE_SETUP_WORKTREE_PATH:-}"
-      [ -n "$WORKTREE_INPUT" ] || WORKTREE_INPUT="${RECIPE_VAR_worktree_setup__worktree_path:-}"
-      REPO_DIR="${REPO_PATH:-}"
-      [ -n "$REPO_DIR" ] || REPO_DIR="${RECIPE_VAR_repo_path:-}"
-      [ -n "$REPO_DIR" ] || REPO_DIR="{{repo_path}}"
-      BRANCH_INPUT="${BRANCH_NAME:-}"
-      [ -n "$BRANCH_INPUT" ] || BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"
-      [ -n "$BRANCH_INPUT" ] || BRANCH_INPUT="{{branch_name}}"
-      BASE_INPUT="${BASE_REF:-}"
-      [ -n "$BASE_INPUT" ] || BASE_INPUT="${RECIPE_VAR_base_ref:-}"
-      [ -n "$BASE_INPUT" ] || BASE_INPUT="{{base_ref}}"
-      PR_NUMBER_INPUT="${PR_NUMBER:-}"
-      [ -n "$PR_NUMBER_INPUT" ] || PR_NUMBER_INPUT="${RECIPE_VAR_pr_number:-}"
-      [ -n "$PR_NUMBER_INPUT" ] || PR_NUMBER_INPUT="{{pr_number}}"
-      PR_URL_INPUT="${PR_URL:-}"
-      [ -n "$PR_URL_INPUT" ] || PR_URL_INPUT="${RECIPE_VAR_pr_url:-}"
-      [ -n "$PR_URL_INPUT" ] || PR_URL_INPUT="{{pr_url}}"
-      GOAL_ALREADY_MET_INPUT="${GOAL_ALREADY_MET:-}"
-      [ -n "$GOAL_ALREADY_MET_INPUT" ] || GOAL_ALREADY_MET_INPUT="${RECIPE_VAR_goal_already_met:-}"
-      [ -n "$GOAL_ALREADY_MET_INPUT" ] || GOAL_ALREADY_MET_INPUT="{{goal_already_met}}"
-      [ "$REPO_DIR" != "{{repo_path}}" ] || REPO_DIR="."
-      case "$BRANCH_INPUT" in "{{branch_name}}"|"''") BRANCH_INPUT="" ;; esac
-      case "$BASE_INPUT" in "{{base_ref}}"|"''") BASE_INPUT="" ;; esac
-      case "$PR_NUMBER_INPUT" in "{{pr_number}}"|"''") PR_NUMBER_INPUT="" ;; esac
-      case "$PR_URL_INPUT" in "{{pr_url}}"|"''") PR_URL_INPUT="" ;; esac
-      case "$GOAL_ALREADY_MET_INPUT" in "{{goal_already_met}}"|"''") GOAL_ALREADY_MET_INPUT="false" ;; esac
+      # Issue #1561: every input is the recipe's own RECIPE_VAR_<key>. A bare
+      # name inherited from whatever launched the runner is not read, and no
+      # value is compared with its own template placeholder (render_shell turns
+      # that into "$RECIPE_VAR_key", so the comparison discarded the value).
+      # #1561: worktree_setup is read only from its base key, checked by worktree_setup_path.sh. Unset
+      # uses repo_path; anything else it rejects is invalid input. no_merge comes from recipe_var.sh.
+      RV_TOOLS=""
+      for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do
+        [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/recipe_var.sh" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { RV_TOOLS="$c/amplifier-bundle/tools"; break; }
+      done
+      [ -n "$RV_TOOLS" ] || fail_terminal_state "FAILED_INVALID_INPUT" "recipe_var.sh and worktree_setup_path.sh not found under AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot or ~/.amplihack"
+      . "$RV_TOOLS/recipe_var.sh"
+      WORKTREE_INPUT="$(bash "$RV_TOOLS/worktree_setup_path.sh" workflow-terminal-state/probe-terminal-state)" || {
+        [ $? -eq 3 ] || fail_terminal_state "FAILED_INVALID_INPUT" "worktree_setup.worktree_path is not a resolved worktree root"
+        WORKTREE_INPUT=""
+      }
+      REPO_DIR="${RECIPE_VAR_repo_path:-}"
+      case "$REPO_DIR" in ""|"''") REPO_DIR="." ;; esac
+      BRANCH_INPUT="${RECIPE_VAR_branch_name:-}"
+      BASE_INPUT="${RECIPE_VAR_base_ref:-}"
+      PR_NUMBER_INPUT="${RECIPE_VAR_pr_number:-}"
+      PR_URL_INPUT="${RECIPE_VAR_pr_url:-}"
+      GOAL_ALREADY_MET_INPUT="${RECIPE_VAR_goal_already_met:-}"
+      case "$BRANCH_INPUT" in ""|"''") BRANCH_INPUT="" ;; esac
+      case "$BASE_INPUT" in ""|"''") BASE_INPUT="" ;; esac
+      case "$PR_NUMBER_INPUT" in ""|"''") PR_NUMBER_INPUT="" ;; esac
+      case "$PR_URL_INPUT" in ""|"''") PR_URL_INPUT="" ;; esac
+      case "$GOAL_ALREADY_MET_INPUT" in ""|"''") GOAL_ALREADY_MET_INPUT="false" ;; esac
 
       # Issue #929 + #1062 (finding B): honor a no-merge directive so the
-      # workflow never auto-merges when told not to. The intent is now a
+      # workflow never auto-merges when told not to. The intent is a
       # *structured* flag emitted by the classifier (smart-classify-route's
       # `no_merge` parse_json field), NOT a bash regex guessing intent from the
-      # user's prose (unusual phrasings silently auto-merged before). We read
-      # the flag from the explicit `no_merge` context var / `NO_MERGE` env.
-      # Additive gate: a truthy flag can only *suppress* auto-merge; when the
-      # flag is absent the merge decision stays at the prior default ("true"),
-      # preserving existing behavior.
-      NO_MERGE_FLAG_INPUT="${NO_MERGE:-}"
-      [ -n "$NO_MERGE_FLAG_INPUT" ] || NO_MERGE_FLAG_INPUT="${RECIPE_VAR_no_merge:-}"
-      [ -n "$NO_MERGE_FLAG_INPUT" ] || NO_MERGE_FLAG_INPUT="{{no_merge}}"
-      case "$NO_MERGE_FLAG_INPUT" in "{{no_merge}}"|"''") NO_MERGE_FLAG_INPUT="" ;; esac
-
-      normalise_no_merge_flag() {
-        # $1 structured flag value. Truthy tokens suppress auto-merge; anything
-        # else (including empty/false) preserves the default merge behavior.
-        local flag
-        flag="$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-        case "$flag" in true|1|yes|on) printf 'true\n' ;; *) printf 'false\n' ;; esac
-      }
-      NO_MERGE_DIRECTIVE="$(normalise_no_merge_flag "$NO_MERGE_FLAG_INPUT")"
+      # user's prose. Additive gate: a truthy flag can only *suppress*
+      # auto-merge; when the flag is absent the merge decision stays at the
+      # prior default ("true"), preserving existing behavior.
+      NO_MERGE_DIRECTIVE="$(no_merge_flag workflow-terminal-state/probe-terminal-state)"
       if [ "$NO_MERGE_DIRECTIVE" = "true" ]; then
         echo "INFO: workflow-terminal-state: explicit no-merge directive detected; auto-merge will be suppressed (should_merge=false)" >&2
       fi
@@ -393,7 +392,7 @@ steps:
         # (#815, #804). PR-scope matching only understands numeric GitHub issue /
         # AzDO work-item ids, so coerce a non-numeric ref to empty: a local ref
         # must never filter out the legitimate current-work PR.
-        scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+        scoped_issue_id="${RECIPE_VAR_issue_number:-}"
         case "$scoped_issue_id" in ''|*[!0-9]*) scoped_issue_id="" ;; esac
         scope_args=(
           --repo "$repo_identity"
@@ -515,7 +514,7 @@ steps:
     command: |
       set -euo pipefail
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      if [ "${TERMINAL_GATE_MODE:-${RECIPE_VAR_terminal_gate_mode:-probe}}" != "strict" ]; then
+      if [ "${RECIPE_VAR_terminal_gate_mode:-probe}" != "strict" ]; then
         exit 0
       fi
 

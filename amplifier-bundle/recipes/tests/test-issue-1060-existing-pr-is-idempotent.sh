@@ -38,7 +38,7 @@ for tool in git jq; do
 done
 [[ -f "${PUBLISH_RECIPE}" ]] || { echo "HARNESS-ERROR: ${PUBLISH_RECIPE} not found" >&2; exit 2; }
 
-WORK="$(mktemp -d -t issue-1060-XXXXXX)"
+WORK="$(cd "$(mktemp -d -t issue-1060-XXXXXX)" && pwd -P)"
 trap 'rm -rf "${WORK}"' EXIT
 
 PASS_COUNT=0
@@ -121,6 +121,8 @@ run_step16() {
         export GH_INVOCATIONS_LOG="${WORK}/gh.log"
         export GH_PR_LIST_RESULT="${pr_list_result}"
         export WORKTREE_SETUP_WORKTREE_PATH="${worktree}"
+        export RECIPE_VAR_worktree_setup__worktree_path="${worktree}"
+        export RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${worktree}" '{worktree_path: $p}')"
         export REMOTE_HOST_TYPE="github"
         export ISSUE_NUMBER="1060"
         export AMPLIHACK_HOME="${REPO_ROOT}"

@@ -55,14 +55,21 @@ set -uo pipefail
 
 # This test runs inside auto-drive's own qa-team step, whose recipe runner
 # exports every step output as AUTODRIVE_*/upper-case and RECIPE_VAR_* names.
-# The step bodies read `${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir}}`,
+# The step bodies once read the bare AUTODRIVE_TOOLS_DIR first and
+# RECIPE_VAR_autodrive_tools_dir second,
 # so an inherited AUTODRIVE_TOOLS_DIR overrode the per-case tools dir and
-# MERGEREADY-no-round-tool found the real tool (PR #1588 round-1 QA). Start
-# from none of the caller's run context; every case sets what it needs.
-while IFS= read -r _inherited; do
-  case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
-done < <(compgen -e)
-unset _inherited
+# MERGEREADY-no-round-tool found the real tool (PR #1588 round-1 QA, #1607).
+# They now read RECIPE_VAR_ only (#1561), and every case sets what it needs.
+# By default the test still starts from none of the caller's run context, so
+# a developer's shell cannot change its result. AUTODRIVE_TEST_KEEP_INHERITED=1
+# skips this removal only (test-only; the #1551 merge guard below and the gh
+# stubs stay), which proves the step bodies ignore the inherited names.
+if [ "${AUTODRIVE_TEST_KEEP_INHERITED:-}" != "1" ]; then
+  while IFS= read -r _inherited; do
+    case "${_inherited}" in AUTODRIVE_*|RECIPE_VAR_*) unset "${_inherited}" ;; esac
+  done < <(compgen -e)
+  unset _inherited
+fi
 # The same goes for the #1551 gh merge guard. An auto-drive run exports
 # BASH_ENV=<guard>/bash-env and AMPLIHACK_MERGE_GUARD=1 to every bash in it,
 # this one included, and bash-env has already run before this line: it put
@@ -155,9 +162,17 @@ fail() { FAIL_COUNT=$((FAIL_COUNT + 1)); echo "  FAIL[$1]: $2" >&2; }
 
 echo "=== auto-drive-to-merge contract ==="
 
-WORK="$(mktemp -d)"
+# mktemp -d uses TMPDIR when it is set and /tmp otherwise.
+WORK="$(mktemp -d)" || { echo "HARNESS-ERROR: mktemp -d failed (TMPDIR=${TMPDIR:-unset})" >&2; exit 2; }
 trap 'chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
 WORK_PHYS="$(cd "${WORK}" && pwd -P)"
+# The resolver cases run from a directory that must not be inside any git work
+# tree; scratch space under a checkout (say <repo>/target/tmp) would let them
+# find that checkout's bundle and fail for the wrong reason.
+if git -C "${WORK_PHYS}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "HARNESS-ERROR: the scratch dir ${WORK_PHYS} (TMPDIR=${TMPDIR:-unset}) is inside a git work tree; point TMPDIR at scratch space outside any repository" >&2
+  exit 2
+fi
 # Every step body runs with HOME here, never the real one (issue #1517).
 TEST_HOME="${WORK_PHYS}/home"; mkdir -p "${TEST_HOME}"
 STUB_BIN="${WORK}/bin"; mkdir -p "${STUB_BIN}"
@@ -1915,11 +1930,11 @@ for spec in autodrive-crusty-round:step-02-crusty-review:step-02b-review-dir-unc
   COND_CHECK="$(step_condition "${RECIPES}/${r}.yaml" "${check}")"
   IX_ENV=(REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${TOOLS}")
   STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"; rc0=$?
-  env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
+  env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" >/dev/null 2>&1; rc_same=$?
   printf 'x\n' > "${IX_FILE}"; git -C "${LAUNCH}" add -f -- "${IX_FILE}" >/dev/null 2>&1
-  IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
+  IX_ERR="$(env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc_staged=$?
   git -C "${LAUNCH}" rm -q --cached -- "${IX_FILE}" >/dev/null 2>&1; rm -f -- "${IX_FILE}"
-  env -u REVIEW_INDEX "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
+  env -u RECIPE_VAR_review_index "${IX_ENV[@]}" bash -c "${G2}" >/dev/null 2>&1; rc_nostamp=$?
   if [ -n "${G2}" ] && [ "$rc0" -eq 0 ] && [ -n "${STAMP}" ] && [ "$rc_same" -eq 0 ] && [ "$rc_staged" -ne 0 ] && [ "$rc_nostamp" -ne 0 ] \
      && printf '%s' "${IX_ERR}" | grep -qF "STOP: ${agent} changed the index or HEAD of the review dir" \
      && printf '%s' "${AFTER}" | grep -qF "id: \"${check}\"" \
@@ -1937,7 +1952,7 @@ G2="$(extract_step_command "${RECIPES}/autodrive-crusty-round.yaml" step-02b-rev
 STAMP="$(env "${IX_ENV[@]}" bash -c "${G0}" 2>/dev/null)"
 IX_GD="$(git -C "${LAUNCH}" rev-parse --absolute-git-dir)"
 cp -p -- "${IX_GD}/index" "${WORK}/launch-index.bak" && printf 'not an index' > "${IX_GD}/index"
-IX_ERR="$(env "${IX_ENV[@]}" REVIEW_INDEX="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc=$?
+IX_ERR="$(env "${IX_ENV[@]}" RECIPE_VAR_review_index="${STAMP}" bash -c "${G2}" 2>&1 >/dev/null)"; rc=$?
 cp -p -- "${WORK}/launch-index.bak" "${IX_GD}/index"
 if [ "$rc" -ne 0 ] && printf '%s' "${IX_ERR}" | grep -qF "could not be stamped again, so its index was not compared and no change is claimed" \
    && ! printf '%s' "${IX_ERR}" | grep -qF "changed the index or HEAD"; then
@@ -2030,8 +2045,96 @@ else
   fail "1528-step-00-other-gitlink" "rc=${rc} mode=${GL_MODE}"
 fi
 
+# ---------------------------------------------------------------------------
+# 5z2. AUTODRIVE_LAUNCH_TOOLS is checked before a round trusts the guard
+#      it names (#1561, #1543).
+# ---------------------------------------------------------------------------
+# The rounds run "/${AUTODRIVE_LAUNCH_TOOLS#/}/autodrive_worktree_guard.sh", so
+# an empty or relative value is looked up under / and never reaches a guard in
+# the working directory, and the guard itself refuses a value that is not one
+# absolute line naming its own directory. A decoy guard that writes a marker
+# sits where an unchecked relative path would reach it. A positive control
+# first proves the same step reaches a valid stub guard.
+LT_MARK="${WORK}/lt-marker"
+lt_guard() { # lt_guard <dir>: a stub autodrive_worktree_guard.sh that writes LT_MARK and exits 0
+  mkdir -p -- "$1"
+  printf '#!/usr/bin/env bash\nprintf "%%s\\n" "$*" >> "%s"\nprintf "lt-stamp\\n"\nexit 0\n' "${LT_MARK}" > "$1/autodrive_worktree_guard.sh"
+  chmod 0700 -- "$1/autodrive_worktree_guard.sh"
+}
+lt_snapshot() { # lt_snapshot <cwd>: files under the cwd, and the review dir's status
+  find "$1" -print 2>/dev/null | LC_ALL=C sort
+  git -C "${LAUNCH}" status --porcelain --ignored 2>/dev/null
+}
+lt_run() { # lt_run <cwd> <body> <AUTODRIVE_LAUNCH_TOOLS value> -> LT_RC, LT_ERR
+  LT_ERR="$(cd -- "$1" && env REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" RECIPE_VAR_review_index="lt-stamp" \
+    AUTODRIVE_LAUNCH_TOOLS="$3" bash -c "$2" 2>&1 >/dev/null)"; LT_RC=$?
+}
+for r in autodrive-crusty-round autodrive-merge-round; do
+  rshort="${r#autodrive-}"; rshort="${rshort%-round}"
+  for st in step-00-review-dir-guard step-02b-review-dir-unchanged; do
+    LT_BODY="$(extract_step_command "${RECIPES}/${r}.yaml" "${st}")"
+    [ -n "${LT_BODY}" ] || { fail "1561-launch-tools-body-${rshort}-${st}" "could not extract ${st} from ${r}.yaml"; continue; }
+    case "${st}" in step-00-*) sfx="" ;; *) sfx="-index-check" ;; esac
+
+    # Positive control: a valid absolute directory holding the guard is used.
+    LT_CWD="$(mktemp -d "${WORK}/lt-cwd.XXXXXX")"; rm -f -- "${LT_MARK}"
+    lt_guard "${LT_CWD}/launch-tools"
+    lt_run "${LT_CWD}" "${LT_BODY}" "${LT_CWD}/launch-tools"
+    if [ "${LT_RC}" -eq 0 ] && [ -s "${LT_MARK}" ]; then
+      pass "1561-launch-tools-valid-${rshort}${sfx}" "${r}/${st} runs the guard from a valid AUTODRIVE_LAUNCH_TOOLS"
+    else
+      fail "1561-launch-tools-valid-${rshort}${sfx}" "rc=${LT_RC} marker=$( [ -s "${LT_MARK}" ] && echo written || echo missing ) err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+    fi
+
+    for kind in empty relative not-dir no-guard; do
+      LT_CWD="$(mktemp -d "${WORK}/lt-cwd.XXXXXX")"; rm -f -- "${LT_MARK}"
+      lt_guard "${LT_CWD}/tools"                         # decoy a relative path would reach
+      case "${kind}" in
+        empty)    LT_VAL="" ;;                           # deliberately stale (#1561)
+        relative) LT_VAL="tools" ;;                      # deliberately stale (#1561)
+        not-dir)  LT_VAL="${LT_CWD}/plain-file"; printf 'not a dir\n' > "${LT_VAL}" ;; # deliberately stale (#1561)
+        no-guard) LT_VAL="${LT_CWD}/guardless"; mkdir -p -- "${LT_VAL}" ;;              # deliberately stale (#1561)
+      esac
+      LT_BEFORE="$(lt_snapshot "${LT_CWD}")"
+      lt_run "${LT_CWD}" "${LT_BODY}" "${LT_VAL}"
+      LT_AFTER="$(lt_snapshot "${LT_CWD}")"
+      LT_WHY=""
+      [ "${LT_RC}" -ne 0 ] || LT_WHY="${LT_WHY} exited 0;"
+      [ ! -e "${LT_MARK}" ] || LT_WHY="${LT_WHY} a decoy guard ran;"
+      [ "${LT_BEFORE}" = "${LT_AFTER}" ] || LT_WHY="${LT_WHY} files appeared or the review dir changed;"
+      if [ -z "${LT_WHY}" ]; then
+        pass "1561-launch-tools-${kind}-${rshort}${sfx}" "${r}/${st} stops on a ${kind} AUTODRIVE_LAUNCH_TOOLS without running any guard"
+      else
+        fail "1561-launch-tools-${kind}-${rshort}${sfx}" "rc=${LT_RC};${LT_WHY} err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+      fi
+    done
+  done
+done
+# The guard's own check: run directly, it refuses a value that is empty,
+# relative, two lines, or a directory other than its own.
+LT_OTHER="$(mktemp -d "${WORK}/lt-other.XXXXXX")"
+for kind in empty relative two-lines other-dir; do
+  case "${kind}" in
+    empty)     LT_VAL="" ;;                                   # deliberately stale (#1561)
+    relative)  LT_VAL="amplifier-bundle/tools" ;;             # deliberately stale (#1561)
+    two-lines) LT_VAL="${TOOLS}"$'\n'"${TOOLS}" ;;            # deliberately stale (#1561)
+    other-dir) LT_VAL="${LT_OTHER}" ;;                        # deliberately stale (#1561)
+  esac
+  for sub in round-guard "round-index-check ${LAUNCH} lt-stamp step-x"; do
+    # shellcheck disable=SC2086 # $sub is the subcommand and its arguments
+    LT_ERR="$(cd -- "${REPO_ROOT}" && env REVIEW_DIR="${LAUNCH}" REPO_PATH="${TAMPERED}" AUTODRIVE_LAUNCH_TOOLS="${LT_VAL}" \
+      bash "${TOOLS}/autodrive_worktree_guard.sh" ${sub} 2>&1 >/dev/null)"; LT_RC=$?
+    if [ "${LT_RC}" -eq 1 ] && printf '%s' "${LT_ERR}" | grep -qF 'STOP: autodrive-launch-tools-invalid'; then
+      pass "1561-launch-tools-guard-${kind}-${sub%% *}" "the guard refuses a ${kind} AUTODRIVE_LAUNCH_TOOLS"
+    else
+      fail "1561-launch-tools-guard-${kind}-${sub%% *}" "rc=${LT_RC} err: $(printf '%s' "${LT_ERR}" | head -c 300 | tr '\n' ' ')"
+    fi
+  done
+done
+unset LT_BODY LT_CWD LT_VAL LT_BEFORE LT_AFTER LT_WHY LT_ERR LT_RC LT_OTHER
+
 crusty_verdict() {
-  PATH="${STUB_BIN}:${PATH}" CRUSTY_REVIEW="$1" AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" \
+  PATH="${STUB_BIN}:${PATH}" RECIPE_VAR_crusty_review="$1" AUTODRIVE_ROUND_RECORD="${WORK}/cr.json" \
     AUTODRIVE_ROUND_LABEL="r" bash -c "$CRUSTY_BODY" 2>/dev/null \
     | "$REAL_AMPLIHACK" orch helper extract-json \
     | "$REAL_AMPLIHACK" orch helper extract-field --field crusty_verdict --default MISSING
@@ -2194,8 +2297,10 @@ mr_step() { # mr_step <raw> <qa_status> <ci_status> <crusty_status> -> the step'
     RECIPE_VAR_qa_evidence="{\"qa_status\":\"${2:-PASS}\"}" RECIPE_VAR_ci_evidence="{\"ci_status\":\"${3:-GREEN}\"}" \
     RECIPE_VAR_merge_sync='{"conflict":"false"}' RECIPE_VAR_platform_facts="${MR_FACTS-${MR_FACTS_MET}}" \
     RECIPE_VAR_crusty_evidence="$(mr_crusty_json "${4:-DONE_CLEAN}")" \
+    ${MR_EXTRA_ENV[@]+"${MR_EXTRA_ENV[@]}"} \
     bash -c "$MR_BODY" 2>/dev/null
 }
+MR_EXTRA_ENV=() # VAR=value pairs set last, over everything above (#1561 rows)
 mr_verdict() { # mr_verdict <raw> <qa_status> <ci_status> [crusty_status]
   mr_step "$@" \
     | "$REAL_AMPLIHACK" orch helper extract-json \
@@ -2307,6 +2412,261 @@ if [ "$(printf '%s' "$out" | jq -r .merge_ready_verdict 2>/dev/null)" = "NOT_MER
   pass "MERGEREADY-no-round-tool" "without autodrive_round_evidence.sh, MERGE_READY is downgraded: measured_evidence=unreadable"
 else
   fail "MERGEREADY-no-round-tool" "got: ${out}"
+fi
+
+# ---------------------------------------------------------------------------
+# Issues #1561 / #1607 — a recipe's own step output wins over a conflicting
+# bare variable inherited from whatever launched the runner. The pinned
+# runner always exports RECIPE_VAR_<key>, adds the upper-case alias only for
+# a top-level scalar, and starts each step from its own inherited
+# environment, so a stale QA_EVIDENCE (an object: never aliased) reached the
+# step and, read first, outranked the round's value. Every row sets the bare
+# name to one value and RECIPE_VAR_ to a conflicting one, in both directions,
+# then a passing bare value with an empty RECIPE_VAR_ value, which must take
+# the read's own deny default.
+# ---------------------------------------------------------------------------
+MR_PASS_REVIEW='{"merge_ready_verdict":"MERGE_READY","blockers":[]}'
+MR_FAIL_REVIEW='{"merge_ready_verdict":"NOT_MERGE_READY","blockers":[{"id":"b1","summary":"stale"}]}'
+s1561_step03() { # s1561_step03 <row> <want-verdict> <want-reason-substring|-> <raw> <qa> <ci> [VAR=value ...]
+  local row="$1" want="$2" want_reason="$3" raw="$4" qa="$5" ci="$6" out v reason; shift 6
+  MR_EXTRA_ENV=("$@")
+  out="$(mr_step "$raw" "$qa" "$ci" DONE_CLEAN)"
+  MR_EXTRA_ENV=()
+  v="$(printf '%s' "$out" | jq -r '.merge_ready_verdict // "MISSING"' 2>/dev/null)"
+  reason="$(printf '%s' "$out" | jq -r '.downgrade_reason // ""' 2>/dev/null)"
+  if [ "$v" = "$want" ] && { [ "$want_reason" = "-" ] || printf '%s' "$reason" | grep -qF "$want_reason"; }; then
+    pass "$row" "step-03 follows RECIPE_VAR_ over the stale bare value: ${v} (reason: ${reason:-none})"
+  else
+    fail "$row" "step-03 gave '${v}' (reason: '${reason}'), want ${want} / ${want_reason}; the inherited bare name won"
+  fi
+}
+# CI_EVIDENCE: the bare name passes, the round's own CI is RED; the reverse; empty.
+s1561_step03 "1561-stale-CI_EVIDENCE" NOT_MERGE_READY "ci_status=RED" "$MR_PASS_REVIEW" PASS RED \
+  CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}'  # deliberately stale (#1561)
+s1561_step03 "1561-stale-CI_EVIDENCE-reverse" MERGE_READY "-" "$MR_PASS_REVIEW" PASS GREEN \
+  CI_EVIDENCE='{"ci_status":"RED","ci_signal":"red"}'  # deliberately stale (#1561)
+s1561_step03 "1561-stale-CI_EVIDENCE-empty" NOT_MERGE_READY "ci_status=MISSING" "$MR_PASS_REVIEW" PASS GREEN \
+  CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_ci_evidence=''  # deliberately stale (#1561)
+# QA_EVIDENCE
+s1561_step03 "1561-stale-QA_EVIDENCE" NOT_MERGE_READY "qa_status=FAIL" "$MR_PASS_REVIEW" FAIL GREEN \
+  QA_EVIDENCE='{"qa_status":"PASS"}'  # deliberately stale (#1561)
+s1561_step03 "1561-stale-QA_EVIDENCE-reverse" MERGE_READY "-" "$MR_PASS_REVIEW" PASS GREEN \
+  QA_EVIDENCE='{"qa_status":"FAIL"}'  # deliberately stale (#1561)
+s1561_step03 "1561-stale-QA_EVIDENCE-empty" NOT_MERGE_READY "qa_status=MISSING" "$MR_PASS_REVIEW" PASS GREEN \
+  QA_EVIDENCE='{"qa_status":"PASS"}' RECIPE_VAR_qa_evidence=''  # deliberately stale (#1561)
+# MERGE_READY_REVIEW: the agent's own review for this round, against a stale one.
+s1561_step03 "1561-stale-MERGE_READY_REVIEW" NOT_MERGE_READY "-" "$MR_FAIL_REVIEW" PASS GREEN \
+  MERGE_READY_REVIEW="$MR_PASS_REVIEW"  # deliberately stale (#1561)
+s1561_step03 "1561-stale-MERGE_READY_REVIEW-reverse" MERGE_READY "-" "$MR_PASS_REVIEW" PASS GREEN \
+  MERGE_READY_REVIEW="$MR_FAIL_REVIEW"  # deliberately stale (#1561)
+s1561_step03 "1561-stale-MERGE_READY_REVIEW-empty" NOT_MERGE_READY "-" "" PASS GREEN \
+  MERGE_READY_REVIEW="$MR_PASS_REVIEW"  # deliberately stale (#1561)
+# The other measured inputs of step-03 (merge_sync, platform_facts,
+# crusty_evidence, qa_evidence_hash): a passing stale bare value never rescues
+# an empty RECIPE_VAR_ value.
+s1561_step03 "1561-stale-MERGE_SYNC-empty" NOT_MERGE_READY "conflict=unknown" "$MR_PASS_REVIEW" PASS GREEN \
+  MERGE_SYNC='{"conflict":"false"}' RECIPE_VAR_merge_sync=''  # deliberately stale (#1561)
+s1561_step03 "1561-stale-PLATFORM_FACTS-empty" NOT_MERGE_READY "unresolved_threads=unreadable" "$MR_PASS_REVIEW" PASS GREEN \
+  PLATFORM_FACTS="${MR_FACTS_MET}" RECIPE_VAR_platform_facts=''  # deliberately stale (#1561)
+s1561_step03 "1561-stale-CRUSTY_EVIDENCE-empty" NOT_MERGE_READY "crusty_status=MISSING" "$MR_PASS_REVIEW" PASS GREEN \
+  CRUSTY_EVIDENCE="$(mr_crusty_json DONE_CLEAN)" RECIPE_VAR_crusty_evidence=''  # deliberately stale (#1561)
+s1561_step03 "1561-stale-QA_EVIDENCE_HASH-empty" NOT_MERGE_READY "qa_evidence=modified" "$MR_PASS_REVIEW" PASS GREEN \
+  QA_EVIDENCE_HASH="$(mr_qa_hash_json)" RECIPE_VAR_qa_evidence_hash=''  # deliberately stale (#1561)
+
+# The round record (step-05, autodrive_round_evidence.sh round-record) is what
+# the merge gate reads: its verdict and evidence fields follow RECIPE_VAR_.
+R1561_BODY="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "step-05-write-round-record")"
+[[ -n "${R1561_BODY}" ]] || { echo "HARNESS-ERROR: could not extract the round-record step body" >&2; exit 2; }
+R1561_REC="${WORK_PHYS}/1561-round.json"
+s1561_record() { # s1561_record [VAR=value ...] -> the record line; the recipe values pass by default
+  rm -f -- "${R1561_REC}" "${R1561_REC}.findings"
+  env -u MERGE_READY_VERDICT -u QA_EVIDENCE -u CI_EVIDENCE -u QA_EVIDENCE_HASH \
+    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" REPO_PATH="${FX}" \
+    AUTODRIVE_ROUND_RECORD="${R1561_REC}" AUTODRIVE_ROUND_LABEL="r" \
+    RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
+    RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' \
+    RECIPE_VAR_qa_evidence_hash="$(mr_qa_hash_json)" \
+    "$@" bash -c "${R1561_BODY}" >/dev/null 2>"${R1561_REC}.err"
+  cat -- "${R1561_REC}" 2>/dev/null
+}
+s1561_record_row() { # s1561_record_row <row> <jq-expected> [VAR=value ...]; jq-expected is "a b c d e"
+  local row="$1" want="$2" got; shift 2
+  got="$(s1561_record "$@" | jq -r '"\(.merge_ready_verdict) \(.blocker_count) \(.qa_status) \(.ci_status) \(.ci_signal)"' 2>/dev/null)"
+  if [ "$got" = "$want" ]; then
+    pass "$row" "the round record follows RECIPE_VAR_ over the stale bare value: ${got}"
+  else
+    fail "$row" "the round record is '${got}', want '${want}'; the inherited bare name won ($(tr '\n' ' ' < "${R1561_REC}.err" 2>/dev/null))"
+  fi
+}
+s1561_record_row "1561-record-baseline" "MERGE_READY 0 PASS GREEN green"
+# deliberately stale (#1561): the bare MERGE_READY_VERDICT below
+s1561_record_row "1561-stale-MERGE_READY_VERDICT" "NOT_MERGE_READY 2 PASS GREEN green" \
+  MERGE_READY_VERDICT='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
+  RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"NOT_MERGE_READY","verdict_source":"assessment","blocker_count":2}'
+s1561_record_row "1561-stale-MERGE_READY_VERDICT-reverse" "MERGE_READY 0 PASS GREEN green" \
+  MERGE_READY_VERDICT='{"merge_ready_verdict":"NOT_MERGE_READY","verdict_source":"assessment","blocker_count":2}'  # deliberately stale (#1561)
+# deliberately stale (#1561): the bare MERGE_READY_VERDICT below
+s1561_record_row "1561-stale-MERGE_READY_VERDICT-empty" "NOT_MERGE_READY 0 PASS GREEN green" \
+  MERGE_READY_VERDICT='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
+  RECIPE_VAR_merge_ready_verdict=''
+s1561_record_row "1561-record-stale-CI_EVIDENCE" "MERGE_READY 0 PASS RED red" \
+  CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_ci_evidence='{"ci_status":"RED","ci_signal":"red"}'  # deliberately stale (#1561)
+s1561_record_row "1561-record-stale-CI_EVIDENCE-empty" "MERGE_READY 0 PASS MISSING unreadable" \
+  CI_EVIDENCE='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_ci_evidence=''  # deliberately stale (#1561)
+s1561_record_row "1561-record-stale-QA_EVIDENCE" "MERGE_READY 0 FAIL GREEN green" \
+  QA_EVIDENCE='{"qa_status":"PASS"}' RECIPE_VAR_qa_evidence='{"qa_status":"FAIL"}'  # deliberately stale (#1561)
+s1561_record_row "1561-record-stale-QA_EVIDENCE-empty" "MERGE_READY 0 MISSING GREEN green" \
+  QA_EVIDENCE='{"qa_status":"PASS"}' RECIPE_VAR_qa_evidence=''  # deliberately stale (#1561)
+
+# #1607: the outer run's real tools as an inherited AUTODRIVE_TOOLS_DIR, not
+# scrubbed, while this round's own tools directory has no round tool. The
+# round must not find the outer tool and keep MERGE_READY.
+MR_EXTRA_ENV=(AUTODRIVE_TOOLS_DIR="${TOOLS}")
+out="$(RECIPE_VAR_autodrive_tools_dir="${WORK_PHYS}/mr-no-tools" \
+  mr_step "$MR_PASS_REVIEW" PASS GREEN DONE_CLEAN)"
+MR_EXTRA_ENV=()
+if [ "$(printf '%s' "$out" | jq -r .merge_ready_verdict 2>/dev/null)" = "NOT_MERGE_READY" ] \
+   && [ "$(printf '%s' "$out" | jq -r .downgrade_reason 2>/dev/null)" = "measured_evidence=unreadable " ]; then
+  pass "MERGEREADY-no-round-tool-inherited" "an inherited AUTODRIVE_TOOLS_DIR at the real tools does not rescue a round with no round tool: measured_evidence=unreadable"
+else
+  fail "MERGEREADY-no-round-tool-inherited" "the inherited AUTODRIVE_TOOLS_DIR was used (#1607); got: ${out}"
+fi
+
+# #1607: every tools-resolving step of the merge round uses
+# RECIPE_VAR_autodrive_tools_dir. A decoy directory whose tools print a
+# sentinel is the inherited AUTODRIVE_TOOLS_DIR; it must never run. The
+# positive control (decoy as RECIPE_VAR_) proves each step reaches its tool,
+# so an absent sentinel is not a step that stopped early.
+DECOY_1607="$(mktemp -d "${WORK_PHYS}/decoy-1607.XXXXXX")" || { echo "HARNESS-ERROR: mktemp" >&2; exit 2; }
+chmod 0700 "${DECOY_1607}"
+trap 'rm -rf "${DECOY_1607}"; chmod -R u+rwx "${WORK}" 2>/dev/null; rm -rf "${WORK}"' EXIT
+SENTINEL_1607="DECOY-1607-SENTINEL"
+# Each decoy tool records that it ran in a marker file, prints the sentinel
+# and exits 0, so a step that sourced it ends "successfully": only the marker
+# shows which tools directory was used, whatever the step prints.
+R1607_MARK="${WORK_PHYS}/1607-decoy.ran"
+for t in "${AUTODRIVE_TOOLS[@]}" git-identity.sh; do
+  cat > "${DECOY_1607}/${t}" <<EOF
+printf '%s\n' "${t}" >> "${R1607_MARK}"
+printf '%s\n' "${SENTINEL_1607}" >&2
+printf '%s\n' "${SENTINEL_1607}"
+exit 0
+EOF
+done
+R1607_OUT="${WORK_PHYS}/1607-step.out"
+s1607_decoy_ran() { [ -e "${R1607_MARK}" ] || grep -qF "${SENTINEL_1607}" "${R1607_OUT}"; }
+s1607_run() { # s1607_run <step-id> [VAR=value ...] -> rc; stdout+stderr in R1607_OUT; marker reset
+  local id="$1" body; shift
+  rm -f -- "${R1607_MARK}"
+  body="$(extract_step_command "${RECIPES}/autodrive-merge-round.yaml" "$id")"
+  [ -n "$body" ] || { echo "HARNESS-ERROR: could not extract ${id}" >&2; exit 2; }
+  env -u QA_EVIDENCE_HASH -u QA_EVIDENCE -u CI_EVIDENCE -u MERGE_SYNC -u PLATFORM_FACTS -u CRUSTY_EVIDENCE \
+      -u MERGE_READY_VERDICT -u MERGE_READY_REVIEW \
+    PATH="${STUB_BIN}:${PATH}" HOME="${TEST_HOME}" AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${FX}" PR_NUMBER=42 \
+    AUTODRIVE_ROUND_RECORD="${WORK_PHYS}/1607-round.json" AUTODRIVE_ROUND_LABEL="r" AUTODRIVE_QA_EVIDENCE="${MR_QA_FILE}" \
+    RECIPE_VAR_merge_ready_review="$MR_PASS_REVIEW" \
+    RECIPE_VAR_merge_ready_verdict='{"merge_ready_verdict":"MERGE_READY","verdict_source":"assessment","blocker_count":0}' \
+    RECIPE_VAR_qa_evidence_hash="$(mr_qa_hash_json)" RECIPE_VAR_qa_evidence='{"qa_status":"PASS"}' \
+    RECIPE_VAR_ci_evidence='{"ci_status":"GREEN","ci_signal":"green"}' RECIPE_VAR_merge_sync='{"conflict":"false"}' \
+    RECIPE_VAR_platform_facts="${MR_FACTS_MET}" RECIPE_VAR_crusty_evidence="$(mr_crusty_json DONE_CLEAN)" \
+    "$@" bash -c "$body" >"${R1607_OUT}" 2>&1 </dev/null
+}
+for id in step-00-merge-ready-files step-00d-qa-evidence-hash step-01-platform-facts \
+          step-01b-crusty-evidence step-03-extract-merge-ready-verdict step-05-write-round-record; do
+  s1607_run "$id" RECIPE_VAR_autodrive_tools_dir="${DECOY_1607}"
+  if [ -s "${R1607_MARK}" ]; then
+    s1607_run "$id" AUTODRIVE_TOOLS_DIR="${DECOY_1607}" RECIPE_VAR_autodrive_tools_dir="${TOOLS}"  # deliberately stale (#1561)
+    if s1607_decoy_ran; then
+      fail "1607-stale-tools-dir-${id}" "${id} ran a tool from the inherited AUTODRIVE_TOOLS_DIR instead of RECIPE_VAR_autodrive_tools_dir"
+    else
+      pass "1607-stale-tools-dir-${id}" "${id} ignores an inherited AUTODRIVE_TOOLS_DIR and runs its tool from RECIPE_VAR_autodrive_tools_dir"
+    fi
+  else
+    fail "1607-stale-tools-dir-${id}" "positive control: ${id} never reached its tool with RECIPE_VAR_autodrive_tools_dir at the decoy; the row would be vacuous: $(head -c 300 "${R1607_OUT}" | tr '\n' ' ')"
+  fi
+done
+# An empty RECIPE_VAR_autodrive_tools_dir fails closed by name; the inherited
+# decoy is never used and nothing reports MERGE_READY.
+for id in step-00-merge-ready-files step-00d-qa-evidence-hash step-01-platform-facts step-01b-crusty-evidence \
+          step-03-extract-merge-ready-verdict step-05-write-round-record; do
+  s1607_run "$id" AUTODRIVE_TOOLS_DIR="${DECOY_1607}" RECIPE_VAR_autodrive_tools_dir=''; rc=$?  # deliberately stale (#1561)
+  if [ "$rc" -ne 0 ] && grep -qF 'autodrive-tools-not-found' "${R1607_OUT}" \
+     && ! s1607_decoy_ran && ! grep -qF '"MERGE_READY"' "${R1607_OUT}"; then
+    pass "1607-stale-tools-dir-empty-${id}" "${id} exits ${rc} with autodrive-tools-not-found; the inherited AUTODRIVE_TOOLS_DIR is not a fallback"
+  else
+    fail "1607-stale-tools-dir-empty-${id}" "rc=${rc}: $(head -c 300 "${R1607_OUT}" | tr '\n' ' ')"
+  fi
+done
+# An empty value must stop before a path is built: "${D}/x.sh" with D empty is
+# /x.sh at the filesystem root, which nothing here controls (#1561 S3).
+s1607_run step-00d-qa-evidence-hash AUTODRIVE_TOOLS_DIR="${DECOY_1607}" RECIPE_VAR_autodrive_tools_dir=''  # deliberately stale (#1561)
+if grep -qE 'autodrive-tools-not-found: /autodrive_' "${R1607_OUT}"; then
+  fail "1561-empty-tools-dir-fails-closed" "an empty RECIPE_VAR_autodrive_tools_dir built a path at the filesystem root: $(head -c 300 "${R1607_OUT}" | tr '\n' ' ')"
+else
+  pass "1561-empty-tools-dir-fails-closed" "an empty RECIPE_VAR_autodrive_tools_dir is refused before any /autodrive_*.sh path is built"
+fi
+# A relative tools dir would resolve against the cwd, which is the PR checkout
+# under review. Run from the decoy's parent so the relative name is a real
+# directory: the step must stop by name before it runs anything (#1561 L2).
+for id in step-00-merge-ready-files step-00d-qa-evidence-hash step-01-platform-facts step-01b-crusty-evidence \
+          step-03-extract-merge-ready-verdict step-05-write-round-record; do
+  rc=0; ( cd "$(dirname "${DECOY_1607}")" && s1607_run "$id" RECIPE_VAR_autodrive_tools_dir="$(basename "${DECOY_1607}")" ) || rc=$?
+  if [ "$rc" -ne 0 ] && grep -qF 'STOP: autodrive-tools-dir-invalid' "${R1607_OUT}" && ! s1607_decoy_ran; then
+    pass "1561-relative-tools-dir-${id}" "${id} stops with autodrive-tools-dir-invalid on a relative autodrive_tools_dir"
+  else
+    fail "1561-relative-tools-dir-${id}" "rc=${rc}: $(head -c 300 "${R1607_OUT}" | tr '\n' ' ')"
+  fi
+done
+
+# #1561 D2: NO_MERGE is the one bare name kept, as an override that can only
+# tighten. The recipe's no_merge decides; a bare NO_MERGE that normalises to
+# true (true|1|yes|on, trimmed, any case) adds a no-merge on top, and nothing
+# a bare NO_MERGE says can lift a recipe no_merge=true. Run against
+# autodrive-build step-01b, whose output carries the directive iff no-merge.
+NM_BODY="$(extract_step_command "${RECIPES}/autodrive-build.yaml" "step-01b-no-merge-directive")"
+[ -n "${NM_BODY}" ] || { echo "HARNESS-ERROR: could not extract autodrive-build step-01b" >&2; exit 2; }
+NM_ERR="${WORK_PHYS}/1561-nm.err"
+nm_row() { # nm_row <row> <want: blocks|merges> [VAR=value ...]
+  local row="$1" want="$2" out got; shift 2
+  out="$(env -u NO_MERGE -u RECIPE_VAR_no_merge -u TASK_DESCRIPTION -u REQUIREMENTS AMPLIHACK_HOME="${REPO_ROOT}" \
+    RECIPE_VAR_task_description='build the thing' RECIPE_VAR_requirements='it works' \
+    "$@" bash -c "${NM_BODY}" 2>"${NM_ERR}" </dev/null)"
+  if [[ "$(printf '%s' "$out" | jq -r .task_description 2>/dev/null)" == *"${NM_MARKER}"* ]]; then got=blocks; else got=merges; fi
+  if [ "$got" = "$want" ] && printf '%s' "$out" | jq -e . >/dev/null 2>&1; then
+    pass "$row" "effective no-merge: ${got}"
+  else
+    fail "$row" "want ${want}, got ${got}: $(head -c 300 "${NM_ERR}" | tr '\n' ' ') ${out:0:200}"
+  fi
+}
+nm_row "1561-NO_MERGE-bare-true-blocks" blocks RECIPE_VAR_no_merge='false' NO_MERGE='true'
+nm_row "1561-NO_MERGE-bare-false-does-not-override-recipe-true" blocks RECIPE_VAR_no_merge='true' NO_MERGE='false'
+nm_row "1561-NO_MERGE-bare-empty-does-not-override-recipe-true" blocks RECIPE_VAR_no_merge='true' NO_MERGE=''
+nm_row "1561-NO_MERGE-recipe-true" blocks RECIPE_VAR_no_merge='true'
+if grep -qF 'bare NO_MERGE env' "${NM_ERR}"; then
+  fail "1561-NO_MERGE-recipe-true-no-info" "an INFO line names the bare NO_MERGE env though only the recipe value is set"
+else
+  pass "1561-NO_MERGE-recipe-true-no-info" "a recipe no_merge=true alone prints no INFO line"
+fi
+nm_row "1561-NO_MERGE-recipe-YES-normalised" blocks RECIPE_VAR_no_merge=' YES '
+nm_row "1561-NO_MERGE-neither" merges RECIPE_VAR_no_merge='false'
+nm_row "1561-NO_MERGE-neither-empty" merges RECIPE_VAR_no_merge=''
+nm_row "1561-NO_MERGE-bare-false-alone" merges RECIPE_VAR_no_merge='false' NO_MERGE='false'
+nm_row "1561-NO_MERGE-bare-On-blocks" blocks RECIPE_VAR_no_merge='' NO_MERGE=' On '
+nm_row "1561-NO_MERGE-bare-1-blocks" blocks RECIPE_VAR_no_merge='false' NO_MERGE='1'
+nm_row "1561-NO_MERGE-bare-junk-ignored" merges RECIPE_VAR_no_merge='false' NO_MERGE='maybe'
+# The override announces itself, naming its source and nothing else.
+nm_row "1561-NO_MERGE-override-info" blocks RECIPE_VAR_no_merge='false' NO_MERGE='true'
+if grep -qF 'bare NO_MERGE env' "${NM_ERR}"; then
+  pass "1561-NO_MERGE-override-info-line" "the override writes an INFO line naming the bare NO_MERGE env"
+else
+  fail "1561-NO_MERGE-override-info-line" "no INFO line names 'bare NO_MERGE env': $(head -c 300 "${NM_ERR}" | tr '\n' ' ')"
+fi
+nm_row "1561-NO_MERGE-both-true-blocks" blocks RECIPE_VAR_no_merge='true' NO_MERGE='true'
+nm_row "1561-NO_MERGE-no-info-when-unset" merges RECIPE_VAR_no_merge='false'
+if grep -qF 'bare NO_MERGE env' "${NM_ERR}"; then
+  fail "1561-NO_MERGE-no-info-when-unset-line" "an INFO line names the bare NO_MERGE env though none is set"
+else
+  pass "1561-NO_MERGE-no-info-when-unset-line" "no bare NO_MERGE, no INFO line"
 fi
 
 # The qa evidence step-03 is about to trust must be the file step-00d hashed,
@@ -2608,12 +2968,21 @@ else
   else
     fail "STEP00-skill-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
-  # No root has the resolver at all.
-  s00_run "${WORK_PHYS}/no-such-root"
+  # The tools dir exists but holds no resolver.
+  EMPTY_ROOT="${WORK_PHYS}/empty-root"; mkdir -p "${EMPTY_ROOT}/amplifier-bundle/tools"
+  s00_run "${EMPTY_ROOT}"
   if [ "${S00_RC}" -ne 0 ] && printf '%s' "${S00_ERR}" | grep -qF 'merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found'; then
     pass "STEP00-resolver-missing-fails" "a missing resolver fails step-00 with the named error"
   else
     fail "STEP00-resolver-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
+  fi
+  # No tools dir at all: refused by name before any path is built from it (#1607).
+  s00_run "${WORK_PHYS}/no-such-root"
+  if [ "${S00_RC}" -ne 0 ] && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found:' \
+     && printf '%s' "${S00_ERR}" | grep -qF 'autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00-merge-ready-files]'; then
+    pass "STEP00-tools-dir-missing-fails" "a tools dir that does not exist fails step-00 with the named error"
+  else
+    fail "STEP00-tools-dir-missing-fails" "rc=${S00_RC} err=$(printf '%s' "${S00_ERR}" | tail -n 3 | tr '\n' ' ')"
   fi
   # gadugi-test is not on PATH in a Node repository, where criterion 1 needs
   # it: the round stops here by name, before any test run, instead of
@@ -4558,12 +4927,20 @@ s01_run() { # s01_run <tools dir> -> PF_OUT, PF_RC (#1518 case: non-admin 404, n
 }
 s01_run "${TOOLS}"
 pf_expect "PF-step-01-uses-tool" MET merge-state "" "merge-round step-01 reports the tool's facts" pr=42 head_sha="${PF_HEAD_SHA}"
-s01_run "${WORK_PHYS}/no-such-tools"
+mkdir -p "${WORK_PHYS}/empty-tools"
+s01_run "${WORK_PHYS}/empty-tools"
 if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
-   && grep -q '^ERROR: autodrive-tools-not-found: .*/no-such-tools/autodrive_platform_facts.sh$' "${WORK_PHYS}/pf-${PF_N}.err"; then
+   && grep -q '^ERROR: autodrive-tools-not-found: .*/empty-tools/autodrive_platform_facts.sh$' "${WORK_PHYS}/pf-${PF_N}.err"; then
   pass "PF-step-01-no-tool" "without the tool step-01 fails by name and reports no facts"
 else
   fail "PF-step-01-no-tool" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
+fi
+s01_run "${WORK_PHYS}/no-such-tools"
+if [ "${PF_RC}" = 1 ] && [ -z "${PF_OUT}" ] \
+   && grep -qx 'ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory \[autodrive-merge-round/step-01-platform-facts\]' "${WORK_PHYS}/pf-${PF_N}.err"; then
+  pass "PF-step-01-no-tools-dir" "a tools dir that does not exist fails step-01 by name and reports no facts"
+else
+  fail "PF-step-01-no-tools-dir" "rc=${PF_RC} out=${PF_OUT} err=$(tr '\n' ' ' < "${WORK_PHYS}/pf-${PF_N}.err")"
 fi
 PF_MUTE="${WORK_PHYS}/pf-mute-tools"; mkdir -p "${PF_MUTE}"; printf '#!/bin/sh\nexit 0\n' > "${PF_MUTE}/autodrive_platform_facts.sh"
 s01_run "${PF_MUTE}"
@@ -4778,7 +5155,7 @@ e2e_loop crusty autodrive-crusty-round CLEAN crusty_verdict "${S6_BODY}" \
   RECIPE_VAR_crusty_round_context="{\"pr\":\"42\",\"head_sha\":\"${CR_SHA2}\",\"resolved_concerns\":\"\",\"round_label\":\"round-1\"}" \
   RECIPE_VAR_crusty_verdict='{"crusty_verdict":"CLEAN","verdict_source":"crusty","concern_count":0}'
 E2E_CRUSTY_RC=$?
-env -i "${E2E_ENV[@]}" CRUSTY_LOOP_PREFLIGHT="${E2E_PRE}" CRUSTY_LOOP_RESULT="$(cat "${E2E}.crusty.out")" \
+env -i "${E2E_ENV[@]}" RECIPE_VAR_crusty_loop_preflight="${E2E_PRE}" RECIPE_VAR_crusty_loop_result="$(cat "${E2E}.crusty.out")" \
   bash -c "umask 0002; $(extract_step_command "${RECIPES}/autodrive-crusty-loop.yaml" step-03-record-crusty-phase)" 2>"${E2E}.rec.err"
 ( umask 077; rm -f -- "${E2E_DIR}/qa-evidence.json"; qa_fixture "${CR_SHA2}" PASS 3 > "${E2E_DIR}/qa-evidence.json" )
 E2E_QH="$(git hash-object --no-filters "${E2E_DIR}/qa-evidence.json")"
@@ -4848,16 +5225,16 @@ for r in "${READ_RECIPES[@]}"; do
   f="${RECIPES}/${r}.yaml"; file_reads=0
   for name in "${OUT_NAMES[@]}"; do
     up="$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')"
+    # Issue #1561: a read is ${RECIPE_VAR_<output>:- alone. Any read of the
+    # bare name (plain, length or indirect expansion, or $UP at a name boundary) is a violation:
+    # an inherited variable of that name would outrank the recipe's value.
+    n_reads="$(grep -oE "\\\$\{RECIPE_VAR_${name}:-" "$f" | grep -c . || true)"
+    file_reads=$((file_reads + n_reads))
     while IFS= read -r hit; do
-      ln="${hit%%:*}"; line="${hit#*:}"
-      bare="$(printf '%s' "$line" | grep -oF "\${${up}:-" | grep -c . || true)"
-      dual="$(printf '%s' "$line" | grep -oF "\${${up}:-\${RECIPE_VAR_${name}:-" | grep -c . || true)"
-      file_reads=$((file_reads + bare))
-      if [ "$dual" -lt "$bare" ]; then
-        audit_bad=$((audit_bad + bare - dual))
-        echo "    ${r}.yaml:${ln}: reads \${${up}:- without the RECIPE_VAR_${name} fallback" >&2
-      fi
-    done < <(grep -nF "\${${up}:-" "$f" || true)
+      ln="${hit%%:*}"
+      audit_bad=$((audit_bad + 1))
+      echo "    ${r}.yaml:${ln}: reads the bare ${up}; read RECIPE_VAR_${name} only" >&2
+    done < <(grep -nE "\\\$(\{[#!]?)?${up}([^A-Za-z0-9_]|\$)" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)
   done
   audit_reads=$((audit_reads + file_reads))
   if [ "$file_reads" -ge 1 ]; then
@@ -4867,28 +5244,39 @@ for r in "${READ_RECIPES[@]}"; do
   fi
 done
 if [ "$audit_bad" -eq 0 ]; then
-  pass "1511-static-audit" "all ${audit_reads} step-output reads use \${UPPER:-\${RECIPE_VAR_<output>:-...}}"
+  pass "1511-static-audit" "all ${audit_reads} step-output reads use \${RECIPE_VAR_<output>:-...} and none reads the bare name"
 else
-  fail "1511-static-audit" "${audit_bad} of ${audit_reads} step-output read(s) have no RECIPE_VAR_ fallback"
+  fail "1511-static-audit" "${audit_bad} line(s) read a step output through its bare upper-case name (#1561)"
 fi
 
 # 14a2. The reproduction from the reference doc, without the runner: with only
 # RECIPE_VAR_my_out set, as the runner leaves an object output, the bare read
-# is empty and the dual-name read returns the object, which both helpers accept.
-# These are the doc's console lines; the variable is unset again afterwards.
+# is empty and the RECIPE_VAR_ read returns the object, which both helpers
+# accept. Issue #1561: a conflicting inherited MY_OUT changes nothing, because
+# the bare name is never read. These are the doc's console lines; the
+# variables are unset again afterwards.
 unset MY_OUT; export RECIPE_VAR_my_out='{"a":"1"}'
-r_reads="[${MY_OUT:-}] [${MY_OUT:-${RECIPE_VAR_my_out:-}}]"
-r_json="$(printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+r_reads="[${MY_OUT:-}] [${RECIPE_VAR_my_out:-}]"
+r_json="$(printf '%s' "${RECIPE_VAR_my_out:-}" \
   | "$REAL_AMPLIHACK" orch helper extract-json --require-field a)"
 r_json_rc=$?
-r_field="$(printf '%s' "${MY_OUT:-${RECIPE_VAR_my_out:-}}" \
+r_field="$(printf '%s' "${RECIPE_VAR_my_out:-}" \
   | "$REAL_AMPLIHACK" orch helper extract-field --field a --default MISSING)"
-unset RECIPE_VAR_my_out
+r_stale="$(MY_OUT='{"a":"stale"}' bash -c 'printf "%s" "${RECIPE_VAR_my_out:-}"')"
+r_stale_empty="$(MY_OUT='{"a":"stale"}' RECIPE_VAR_my_out='' bash -c 'printf "[%s]" "${RECIPE_VAR_my_out:-}"')"
+unset RECIPE_VAR_my_out MY_OUT
 if [[ "${r_reads}" == '[] [{"a":"1"}]' && "${r_json}" == '{"a":"1"}' && "${r_json_rc}" -eq 0 \
-      && "${r_field}" == '1' ]]; then
-  pass "1511-repro" "bare read is empty, dual-name read and both helpers see RECIPE_VAR_my_out"
+      && "${r_field}" == '1' && "${r_stale}" == '{"a":"1"}' && "${r_stale_empty}" == '[]' ]]; then
+  pass "1511-repro" "bare read is empty, the RECIPE_VAR_ read and both helpers see RECIPE_VAR_my_out, and a stale MY_OUT never wins"
 else
-  fail "1511-repro" "reads=${r_reads}; extract-json=${r_json} (rc=${r_json_rc}); extract-field=${r_field}; expected [] [{\"a\":\"1\"}]; {\"a\":\"1\"} (rc=0); 1"
+  fail "1511-repro" "reads=${r_reads}; extract-json=${r_json} (rc=${r_json_rc}); extract-field=${r_field}; stale=${r_stale}; stale-empty=${r_stale_empty}; expected [] [{\"a\":\"1\"}]; {\"a\":\"1\"} (rc=0); 1; {\"a\":\"1\"}; []"
+fi
+# The same lines, as a guard: the recipes must not still use the #1511 dual
+# read anywhere (the bare name first wins over the step output, #1561).
+if grep -nE '\$\{[A-Z][A-Z0-9_]*:[-=]\$\{RECIPE_VAR_' "${RECIPES}"/*.yaml "${TOOLS}/autodrive_round_evidence.sh" >"${WORK}/1561-dual.txt"; then
+  fail "1561-no-dual-read" "$(grep -c . "${WORK}/1561-dual.txt") line(s) still read \${UPPER:-\${RECIPE_VAR_...}}: $(head -n 3 "${WORK}/1561-dual.txt" | tr '\n' ' ')"
+else
+  pass "1561-no-dual-read" "no recipe and no round-evidence read lets a bare UPPER outrank RECIPE_VAR_"
 fi
 
 # 14b. Runtime: run the REAL step bodies with ONLY RECIPE_VAR_ set — the
@@ -5001,7 +5389,7 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
-   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "$(cd "${FAKE_HOME}" && pwd -P)/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
    && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
   pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir, pr and repo through RECIPE_VAR_crusty_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
@@ -5025,7 +5413,7 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
-   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "$(cd "${FAKE_HOME}" && pwd -P)/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
   pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir and repo through RECIPE_VAR_merge_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"
@@ -5128,13 +5516,20 @@ if [ "$(out_field outcome)" = "MERGED" ] && [ "$(out_field pr)" = "42" ] && [ "$
 else
   fail "1511-report" "the final report lost a sub-recipe output: ${BODY_OUT}"
 fi
-# The bare alias is tried first; an EMPTY bare value (a context default such
-# as `build_result: ""`) still falls through to RECIPE_VAR_.
+# #1561: the bare name is never read. A conflicting inherited BUILD_RESULT
+# does not outrank the recipe's own RECIPE_VAR_build_result, and an EMPTY bare
+# value (a context default such as `build_result: ""`) changes nothing either.
 run_body "$REPORT" BUILD_RESULT='{"pr":"7"}' RECIPE_VAR_build_result='{"pr":"42"}'
-if [ "$(out_field pr)" = "7" ]; then
-  pass "1511-bare-first" "a non-empty bare alias is read first"
+if [ "$(out_field pr)" = "42" ]; then
+  pass "1561-bare-ignored" "a conflicting inherited BUILD_RESULT is ignored; RECIPE_VAR_build_result wins"
 else
-  fail "1511-bare-first" "the bare alias did not take precedence: ${BODY_OUT}"
+  fail "1561-bare-ignored" "the inherited bare BUILD_RESULT outranked RECIPE_VAR_build_result: ${BODY_OUT}"
+fi
+run_body "$REPORT" BUILD_RESULT='{"pr":"7"}' RECIPE_VAR_build_result=''
+if [ "$(out_field pr)" != "7" ]; then
+  pass "1561-bare-ignored-empty" "an empty RECIPE_VAR_build_result does not fall through to a stale BUILD_RESULT"
+else
+  fail "1561-bare-ignored-empty" "an empty step output fell through to the inherited BUILD_RESULT: ${BODY_OUT}"
 fi
 run_body "$REPORT" BUILD_RESULT='' RECIPE_VAR_build_result='{"pr":"42"}'
 if [ "$(out_field pr)" = "42" ]; then

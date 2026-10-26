@@ -6,12 +6,19 @@ echo ""
 
 export GH_PAGER=cat PAGER=cat LESS=FRX
 
+command -v jq >/dev/null 2>&1 || { echo "ERROR: workflow_final_status.sh requires jq to read step outputs" >&2; exit 2; }
+
+# rv_field <key> <field>: this run's own field from the base RECIPE_VAR_<key> (#1561).
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recipe_var.sh" \
+  || { echo "ERROR: workflow_final_status.sh: recipe_var.sh not found beside it" >&2; exit 2; }
+
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-PR_URL="${PR_URL:-${PR_PUBLISH_RESULT_PR_URL:-${RECIPE_VAR_pr_publish_result__pr_url:-}}}"
-PR_NUMBER="${PR_NUMBER:-${PR_PUBLISH_RESULT_PR_NUMBER:-${RECIPE_VAR_pr_publish_result__pr_number:-}}}"
-PUBLISH_STATE="${PR_PUBLISH_RESULT_STATE:-${RECIPE_VAR_pr_publish_result__state:-}}"
+PR_URL="${RECIPE_VAR_pr_url:-$(rv_field pr_publish_result pr_url)}"
+PR_NUMBER="${RECIPE_VAR_pr_number:-$(rv_field pr_publish_result pr_number)}"
+PUBLISH_STATE="$(rv_field pr_publish_result state)"
+PUBLISH_MESSAGE="$(rv_field pr_publish_result message)"
 TASK_DESC="${TASK_DESCRIPTION:-}"
-ISSUE_NUMBER="${ISSUE_NUMBER:-}"
+ISSUE_NUMBER="${RECIPE_VAR_issue_number:-}"
 
 terminal_success="false"
 terminal_state_out=""
@@ -98,14 +105,16 @@ emit_terminal_evidence() {
   [ -z "$invalid_evidence" ] || echo "invalid_evidence=$invalid_evidence"
 }
 
-impl_input="${IMPLEMENTATION_COMPLETED:-${IMPLEMENTATION_TERMINAL_EVIDENCE_IMPLEMENTATION_COMPLETED:-${RECIPE_VAR_implementation_terminal_evidence__implementation_completed:-}}}"
-verify_input="${VERIFICATION_COMPLETED:-${VERIFICATION_TERMINAL_EVIDENCE_VERIFICATION_COMPLETED:-${RECIPE_VAR_verification_terminal_evidence__verification_completed:-}}}"
-publish_input="${PUBLISH_STATE_REACHED:-${PUBLISH_TERMINAL_EVIDENCE_PUBLISH_STATE_REACHED:-${RECIPE_VAR_publish_terminal_evidence__publish_state_reached:-}}}"
-no_op_input="${TERMINAL_NO_OP:-${IMPLEMENTATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_implementation_terminal_evidence__terminal_no_op:-${VERIFICATION_TERMINAL_EVIDENCE_TERMINAL_NO_OP:-${RECIPE_VAR_verification_terminal_evidence__terminal_no_op:-}}}}}"
-failure_input="${TERMINAL_FAILURE:-${TERMINAL_STATE_TERMINAL_FAILURE:-${RECIPE_VAR_terminal_state__terminal_failure:-}}}"
-allow_no_op_input="${ALLOW_NO_OP:-${RECIPE_VAR_allow_no_op:-false}}"
-probe_success_input="${TERMINAL_STATE_TERMINAL_SUCCESS:-${RECIPE_VAR_terminal_state__terminal_success:-}}"
-probe_state_input="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-}}}"
+impl_input="$(rv_field implementation_terminal_evidence implementation_completed)"
+verify_input="$(rv_field verification_terminal_evidence verification_completed)"
+publish_input="$(rv_field publish_terminal_evidence publish_state_reached)"
+no_op_input="$(rv_field implementation_terminal_evidence terminal_no_op)"
+no_op_input="${no_op_input:-$(rv_field verification_terminal_evidence terminal_no_op)}"
+failure_input="$(rv_field terminal_state terminal_failure)"
+allow_no_op_input="${RECIPE_VAR_allow_no_op:-false}"
+probe_success_input="$(rv_field terminal_state terminal_success)"
+probe_state_input="$(rv_field terminal_state terminal_state)"
+probe_reason_input="$(rv_field terminal_state terminal_reason)"
 
 normalize_bool "IMPLEMENTATION_COMPLETED" "$impl_input"
 implementation_completed="$normalized_bool"
@@ -138,7 +147,7 @@ case "$PUBLISH_STATE" in
   BLOCKED_PROVIDER)
     terminal_success="false"
     terminal_state_out="BLOCKED_PROVIDER"
-    terminal_reason_out="${PR_PUBLISH_RESULT_MESSAGE:-${RECIPE_VAR_pr_publish_result__message:-provider publication failed or was ambiguous}}"
+    terminal_reason_out="${PUBLISH_MESSAGE:-provider publication failed or was ambiguous}"
     terminal_failure="true"
     emit_terminal_evidence
     echo "ERROR: workflow publish provider is blocked: $terminal_reason_out" >&2
@@ -191,7 +200,7 @@ validate_final_pr_scope() {
     return 1
   }
   created_after="${WORKFLOW_STARTED_AT:-${RECIPE_STARTED_AT:-${TASK_STARTED_AT:-}}}"
-  scoped_issue_id="${ISSUE_NUMBER:-${RECIPE_VAR_issue_number:-}}"
+  scoped_issue_id="${RECIPE_VAR_issue_number:-}"
   # issue_number can carry a non-numeric local tracking reference (e.g.
   # local-5d904cff4398) when the workflow fell back to local tracking (#815,
   # #804). PR-scope matching only understands numeric ids, so coerce a
@@ -279,7 +288,7 @@ adjudicate_terminal_state() {
   # SAME lattice as any other judgement — it can downgrade freely, but it can
   # only confirm success when the collected evidence carries a positive
   # artifact, and it can never lift a hard negative.
-  agent_verdict="${WORKFLOW_TERMINAL_AGENT_VERDICT:-${TERMINAL_ADJUDICATION_AGENT_VERDICT:-${RECIPE_VAR_terminal_adjudication__agent_verdict:-}}}"
+  agent_verdict="$(rv_field terminal_adjudication agent_verdict)"
   rc=0
   adjudication="$(printf '%s' "$terminal_evidence_json" \
     | bash "$TERMINAL_EVIDENCE_HELPER" adjudicate - --agent-verdict "$agent_verdict" --report-only)" || rc=$?
@@ -303,26 +312,40 @@ adjudicate_terminal_state() {
 # publish evidence is missing, ask GitHub (read-only) whether the run's branch
 # already has an open, same-repository PR.
 #
-# The run's branch is read from the run's worktree (WORKTREE_SETUP_WORKTREE_PATH),
+# The run's branch is read from the run's worktree (worktree_setup.worktree_path),
 # never blindly from cwd: the finalize step historically ran from REPO_PATH, the
 # main checkout, whose branch is main, detached, or something unrelated. When a
 # worktree path is given but is gone, or the observed branch disagrees with
-# WORKTREE_SETUP_BRANCH_NAME / BRANCH_NAME, the lookup does not run. cwd is used
+# worktree_setup.branch_name, the lookup does not run. cwd is used
 # only when the caller gives no worktree path at all AND cwd is not the REPO_PATH
 # checkout (same toplevel); a caller that runs in REPO_PATH without a worktree
 # path, such as step-22b's fallback, gets no lookup.
 #
+# Issue #1679: the lookup must not depend on outputs a run may not have
+# recorded. When REMOTE_HOST_TYPE is unset (no workflow-prep output), the host
+# is taken from the run worktree's origin: only a github.com origin parses, so
+# any other host still gets no lookup. An explicit non-GitHub host type still
+# wins. The PR's head commit must be the run worktree's HEAD, so a PR that does
+# not hold exactly this run's work never counts.
+#
 # Fail closed: every guard, gh error, malformed result or candidate that fails
 # validation leaves PR_URL, PR_NUMBER and PUBLISH_STATE untouched. stdout is
-# never written; at most one fixed-phrase line goes to stderr. Always returns
-# 0 and never exits, so it is safe under `set -euo pipefail`.
+# never written; at most one fixed-phrase line goes to stderr. When the run has
+# no recorded PR and the lookup is skipped because the run's worktree or branch
+# cannot be established, one fixed-phrase INFO line names the reason, so a
+# missing-evidence failure says which check stopped the lookup (#1679). Always
+# returns 0 and never exits, so it is safe under `set -euo pipefail`.
 branch_pr_lookup_warn() {
   echo "WARNING: branch PR lookup failed (#1596): $1" >&2
 }
+branch_pr_lookup_skip() {
+  echo "INFO: branch PR lookup skipped (#1679): $1" >&2
+}
 
 resolve_open_pr_for_current_branch() {
-  local branch base repo json pick cand_url cand_number url_number previous run_dir expected_branch
-  [ "$HOST_TYPE" = "github" ] || return 0
+  local branch base repo json pick cand_url cand_number url_number previous run_dir expected_branch head
+  # Unset host type: decided below from the run worktree's origin (#1679).
+  [ "$HOST_TYPE" = "github" ] || [ -z "${REMOTE_HOST_TYPE:-}" ] || return 0
   [ -z "$PR_URL" ] || return 0
   [ "$publish_state_reached" != "true" ] || return 0
   case "$PUBLISH_STATE" in
@@ -338,13 +361,13 @@ resolve_open_pr_for_current_branch() {
   fi
   command -v gh >/dev/null 2>&1 || return 0
   command -v jq >/dev/null 2>&1 || return 0
-  run_dir="${WORKTREE_SETUP_WORKTREE_PATH:-${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+  run_dir="$(rv_field worktree_setup worktree_path)"
   if [ -n "$run_dir" ]; then
-    [ -d "$run_dir" ] || return 0
+    [ -d "$run_dir" ] || { branch_pr_lookup_skip "recorded worktree path is gone"; return 0; }
   else
     run_dir="."
   fi
-  git -C "$run_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  git -C "$run_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1 || { branch_pr_lookup_skip "run directory is not a git work tree"; return 0; }
   # No worktree path and cwd is the REPO_PATH checkout: REPO_PATH's branch is
   # not the run's branch (step-22b lands here on its unset-worktree fallback),
   # so do not look it up.
@@ -352,13 +375,13 @@ resolve_open_pr_for_current_branch() {
     local cwd_top repo_top
     cwd_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
     repo_top="$(git -C "$REPO_PATH" rev-parse --show-toplevel 2>/dev/null || true)"
-    [ -z "$repo_top" ] || [ "$cwd_top" != "$repo_top" ] || return 0
+    [ -z "$repo_top" ] || [ "$cwd_top" != "$repo_top" ] || { branch_pr_lookup_skip "no worktree path recorded and cwd is REPO_PATH"; return 0; }
   fi
 
   branch="$(git -C "$run_dir" branch --show-current 2>/dev/null || true)"
-  [ -n "$branch" ] || return 0
-  expected_branch="${WORKTREE_SETUP_BRANCH_NAME:-${BRANCH_NAME:-${RECIPE_VAR_worktree_setup__branch_name:-}}}"
-  [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || return 0
+  [ -n "$branch" ] || { branch_pr_lookup_skip "detached HEAD"; return 0; }
+  expected_branch="$(rv_field worktree_setup branch_name)"
+  [ -z "$expected_branch" ] || [ "$branch" = "$expected_branch" ] || { branch_pr_lookup_skip "worktree branch is not the recorded branch"; return 0; }
   case "$branch" in -*|main|master) return 0 ;; esac
   git check-ref-format --branch "$branch" >/dev/null 2>&1 || return 0
   base="$(cd "$run_dir" && resolve_expected_base_branch 2>/dev/null || true)"
@@ -367,20 +390,23 @@ resolve_open_pr_for_current_branch() {
   # Never log the raw origin URL: it may embed credentials.
   repo="$(parse_github_repo_identity "$(git -C "$run_dir" config --get remote.origin.url 2>/dev/null || true)" 2>/dev/null || true)"
   [[ "$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 0
+  head="$(git -C "$run_dir" rev-parse --verify HEAD 2>/dev/null || true)"
+  [[ "$head" =~ ^[0-9a-f]{40}$ ]] || return 0
 
   # Raw gh/retry stderr is dropped: it is untrusted and may carry PR content.
   if ! json="$(GH_RETRY_MAX_RL_WINDOWS=0 GH_RETRY_REST_FALLBACK="" _gh_retry_core "final status branch PR lookup" \
       pr list --repo "$repo" --head "$branch" --state open \
-      --json url,number,isCrossRepository 2>/dev/null)"; then
+      --json url,number,isCrossRepository,headRefOid 2>/dev/null)"; then
     branch_pr_lookup_warn "gh failed"
     return 0
   fi
-  # First same-repository entry with a non-empty url; fork PRs never count.
-  # Anything other than a JSON array is malformed.
-  if ! pick="$(printf '%s' "$json" | jq -c 'if type != "array" then error("not an array") else
+  # First same-repository entry with a non-empty url whose head is the run's
+  # HEAD; fork PRs never count. Anything other than a JSON array is malformed.
+  if ! pick="$(printf '%s' "$json" | jq -c --arg h "$head" 'if type != "array" then error("not an array") else
       [.[] | objects
       | select((.isCrossRepository // false) == false)
-      | select((.url // "") != "")][0] // empty end' 2>/dev/null)"; then
+      | select((.url // "") != "")
+      | select(.headRefOid == $h)][0] // empty end' 2>/dev/null)"; then
     branch_pr_lookup_warn "malformed JSON"
     return 0
   fi
@@ -404,6 +430,8 @@ resolve_open_pr_for_current_branch() {
   fi
 
   previous="${PUBLISH_STATE//[^A-Za-z0-9_-]/}"
+  # The PR came from a github.com origin, so the status block below may use gh.
+  HOST_TYPE="github"
   PR_URL="$cand_url"
   PR_NUMBER="$cand_number"
   PUBLISH_STATE="EXISTING_OPEN_PR"
@@ -433,8 +461,8 @@ fi
 
 if [ "$terminal_failure" = "true" ]; then
   terminal_success="false"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-TERMINAL_FAILURE}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-explicit terminal failure evidence was reported}}}"
+  terminal_state_out="${probe_state_input:-TERMINAL_FAILURE}"
+  terminal_reason_out="${probe_reason_input:-explicit terminal failure evidence was reported}"
   emit_terminal_evidence
   echo "ERROR: workflow terminal failure: $terminal_state_out: $terminal_reason_out" >&2
   exit 1
@@ -442,16 +470,16 @@ fi
 
 if [ "$terminal_no_op" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-ALLOW_NO_OP}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-allow_no_op was explicitly selected for a non-code-change path}}}"
+  terminal_state_out="${probe_state_input:-ALLOW_NO_OP}"
+  terminal_reason_out="${probe_reason_input:-allow_no_op was explicitly selected for a non-code-change path}"
 elif [ "$publish_state_reached" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-${PR_PUBLISH_RESULT_MESSAGE:-${RECIPE_VAR_pr_publish_result__message:-publish/PR state reached}}}}}"
+  terminal_state_out="${probe_state_input:-${PUBLISH_STATE:-FOLLOWUP_CREATED}}"
+  terminal_reason_out="${probe_reason_input:-${PUBLISH_MESSAGE:-publish/PR state reached}}"
 elif [ "$implementation_completed" = "true" ] && [ "$verification_completed" = "true" ]; then
   terminal_success="true"
-  terminal_state_out="${TERMINAL_STATE:-${TERMINAL_STATE_TERMINAL_STATE:-${RECIPE_VAR_terminal_state__terminal_state:-IMPLEMENTED_VERIFIED}}}"
-  terminal_reason_out="${TERMINAL_REASON:-${TERMINAL_STATE_TERMINAL_REASON:-${RECIPE_VAR_terminal_state__terminal_reason:-implementation and verification evidence present}}}"
+  terminal_state_out="${probe_state_input:-IMPLEMENTED_VERIFIED}"
+  terminal_reason_out="${probe_reason_input:-implementation and verification evidence present}"
 else
   terminal_success="false"
   terminal_state_out="FAILED_MISSING_TERMINAL_EVIDENCE"

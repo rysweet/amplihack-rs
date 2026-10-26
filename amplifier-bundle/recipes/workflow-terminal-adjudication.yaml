@@ -35,6 +35,10 @@ context:
   terminal_adjudication_evidence: ""
   terminal_adjudication_narrative: ""
   terminal_adjudication: ""
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  pr_number: ""
+  pr_url: ""
+  pr_publish_result: ""
 
 steps:
   # Deterministic, fail-soft. A missing collector degrades to UNCERTAIN rather

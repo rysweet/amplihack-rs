@@ -424,6 +424,13 @@ mod ci_wallclock_parallelize;
 #[path = "issue_1337_loop_health_evaluator_test.rs"]
 mod issue_1337_loop_health_evaluator;
 
+// Issue #1671: a rejected git hook in a checkpoint or publish step goes to a
+// fixing agent and the step retries until the loop-health evaluator ends the
+// loop. Pins the fixing recipe, its manifest entry, the brick budget, the
+// reference page links, and runs the executable shell contract.
+#[path = "issue_1671_hook_rejection_repair_test.rs"]
+mod issue_1671_hook_rejection_repair;
+
 // Issue #1510: the loop-evidence collector drops agent output lines
 // (`[HH:MM:SS] [amplihack:...]`) before its BLOCKED_TERMINAL and exit-79
 // detectors, the same rule as terminal_refusal() in autodrive_loop.sh, so a

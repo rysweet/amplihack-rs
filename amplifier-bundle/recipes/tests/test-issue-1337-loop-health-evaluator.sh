@@ -112,13 +112,25 @@ run_step() { printf '%s\n' "$1" | bash; }
 
 # resolve_verdict <loop_evidence-json> <raw-assessment> -> canonical token on stdout
 resolve_verdict() {
-    LOOP_EVIDENCE="$1" LOOP_HEALTH_ASSESSMENT="$2" LOOP_NAME="t" LOOP_ROUND_LABEL="r" \
+    RECIPE_VAR_loop_evidence="$1" RECIPE_VAR_loop_health_assessment="$2" LOOP_NAME="t" LOOP_ROUND_LABEL="r" \
         run_step "${RESOLVE}" 2>/dev/null \
         | amplihack orch helper extract-json \
         | amplihack orch helper extract-field --field loop_verdict --default MISSING
 }
 
 CLEAN_EV='{"terminal_refusal":"false","terminal_reason":"","commits_since_baseline":3,"diff_lines":120,"repeated_output":"false"}'
+
+# #1561: the steps read their step outputs only as RECIPE_VAR_<key>. A bare
+# LOOP_EVIDENCE / LOOP_HEALTH_ASSESSMENT / LOOP_HEALTH inherited from a parent
+# run conflicts with this run's own values here and must lose.
+V="$(LOOP_EVIDENCE='{"terminal_refusal":"true","terminal_reason":"stale"}' \
+     LOOP_HEALTH_ASSESSMENT='{"loop_verdict":"STUCK","not_converging":["stale parent run"]}' \
+     resolve_verdict "${CLEAN_EV}" '{"loop_verdict":"CONTINUE","not_converging":[]}')"  # deliberately stale (#1561)
+if [[ "${V}" == "CONTINUE" ]]; then
+    pass "1561-stale-bare-resolve" "own RECIPE_VAR_ evidence and assessment win over stale bare LOOP_EVIDENCE/LOOP_HEALTH_ASSESSMENT"
+else
+    fail "1561-stale-bare-resolve" "expected CONTINUE from the own values, got '${V}'"
+fi
 
 # ---------------------------------------------------------------------------
 # 1. STUCK path — the evaluator says stop, and nothing proceeds.
@@ -131,7 +143,7 @@ else
 fi
 
 STUCK_HEALTH='{"loop_verdict":"STUCK","verdict_source":"evaluator","loop_name":"t","not_converging":["zero commits in 7 rounds"]}'
-out="$(LOOP_HEALTH="${STUCK_HEALTH}" LOOP_EVIDENCE="${CLEAN_EV}" LOOP_NAME="t" LOOP_ROUND_LABEL="r" run_step "${ENFORCE}" 2>&1)"; rc=$?
+out="$(RECIPE_VAR_loop_health="${STUCK_HEALTH}" RECIPE_VAR_loop_evidence="${CLEAN_EV}" LOOP_NAME="t" LOOP_ROUND_LABEL="r" run_step "${ENFORCE}" 2>&1)"; rc=$?
 if [[ ${rc} -ne 0 ]]; then
     pass "STUCK-enforce" "STUCK exits non-zero — the loop stops, nothing proceeds (rc=${rc})"
 else
@@ -187,7 +199,7 @@ fi
 
 # And the enforcement step must fail safe on garbage too.
 for bad in "" "not json at all" '{"loop_verdict":"DISCONTINUE"}'; do
-    out="$(LOOP_HEALTH="${bad}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="${bad}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
     if [[ ${rc} -ne 0 ]]; then
         pass "MALFORMED-enforce" "enforcement on [${bad:-<empty>}] stops the loop (rc=${rc})"
     else
@@ -205,7 +217,7 @@ for tok in CONTINUE DONE; do
     else
         fail "PASSTHRU" "${tok} resolved to '${V}'"
     fi
-    out="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\"}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\"}" LOOP_NAME="t" run_step "${ENFORCE}" 2>&1)"; rc=$?
     if [[ ${rc} -eq 0 ]]; then
         pass "PASSTHRU-enforce" "${tok} does not stop the loop (rc=0)"
     else
@@ -426,7 +438,7 @@ RS_OUT=""; RS_ERR=""; RS_VERDICT=""; RS_SOURCE=""
 resolve_verdict_and_source() { # <evidence> <raw> [loop_name] -> sets RS_*
     local errf json
     errf="$(mktemp)"
-    RS_OUT="$(LOOP_EVIDENCE="$1" LOOP_HEALTH_ASSESSMENT="$2" LOOP_NAME="${3-t}" \
+    RS_OUT="$(RECIPE_VAR_loop_evidence="$1" RECIPE_VAR_loop_health_assessment="$2" LOOP_NAME="${3-t}" \
         LOOP_ROUND_LABEL="r" run_step "${RESOLVE}" 2>"${errf}")"
     RS_ERR="$(cat "${errf}")"; rm -f "${errf}"
     json="$(printf '%s' "${RS_OUT}" | amplihack orch helper extract-json)"
@@ -674,7 +686,7 @@ fi
 # A prose token must still survive step-04: CONTINUE/DONE exit 0.
 for tok in CONTINUE DONE; do
     resolve_verdict_and_source "${CLEAN_EV}" "${tok} — from prose"
-    out="$(LOOP_HEALTH="${RS_OUT}" LOOP_NAME="t" run_step "${ENFORCE}" 2>/dev/null)"; rc=$?
+    out="$(RECIPE_VAR_loop_health="${RS_OUT}" LOOP_NAME="t" run_step "${ENFORCE}" 2>/dev/null)"; rc=$?
     if [[ ${rc} -eq 0 && "${out}" == "LOOP_HEALTH: ${tok}"* ]]; then
         pass "1513-prose-enforce" "a prose ${tok} reaches step-04 as ${tok} (rc=0)"
     else
@@ -780,8 +792,8 @@ for raw in '{"loop_verdict":"STUCK","not_converging":["x"]}' 'no verdict at all'
     fi
 done
 for tok in CONTINUE DONE STUCK; do
-    all="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[]}" \
-        LOOP_NAME="${ANSI_NAME}" LOOP_EVIDENCE="${CLEAN_EV}" run_step "${ENFORCE}" 2>&1)"
+    all="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[]}" \
+        LOOP_NAME="${ANSI_NAME}" RECIPE_VAR_loop_evidence="${CLEAN_EV}" run_step "${ENFORCE}" 2>&1)"
     if [[ "${all}" != *"${ESC}"* && "${all}" != *'"name\'* ]]; then
         pass "GUARD-step04-name" "step-04 ${tok} messages carry no raw quote, backslash or escape from LOOP_NAME"
     else
@@ -796,7 +808,7 @@ done
 # ---------------------------------------------------------------------------
 for case_ in "CONTINUE:true" "DONE:true" "STUCK:true" "STUCK:false"; do
     tok="${case_%%:*}"; enforce="${case_#*:}"
-    out="$(LOOP_HEALTH="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[\"x\"]}" \
+    out="$(RECIPE_VAR_loop_health="{\"loop_verdict\":\"${tok}\",\"verdict_source\":\"evaluator\",\"not_converging\":[\"x\"]}" \
         LOOP_NAME="${EVIL_NAME}" LOOP_HEALTH_ENFORCE="${enforce}" run_step "${ENFORCE}" 2>/dev/null)"
     n="$(printf '%s' "${out}" | grep -c '' || true)"
     if [[ "${tok}" == "STUCK" ]]; then
@@ -816,8 +828,8 @@ done
 # comments, CI logs): no control bytes, and the echoed part is capped.
 BIG="$(head -c 6000 /dev/zero | tr '\0' 'A')"
 EV_EVIL="{\"terminal_refusal\":\"false\",\"note\":\"${ESC}[2J${BIG}\"}"
-err="$(LOOP_HEALTH='{"loop_verdict":"STUCK","verdict_source":"evaluator","not_converging":["y"]}' \
-    LOOP_NAME="t" LOOP_EVIDENCE="${EV_EVIL}" run_step "${ENFORCE}" 2>&1 >/dev/null)"
+err="$(RECIPE_VAR_loop_health='{"loop_verdict":"STUCK","verdict_source":"evaluator","not_converging":["y"]}' \
+    LOOP_NAME="t" RECIPE_VAR_loop_evidence="${EV_EVIL}" run_step "${ENFORCE}" 2>&1 >/dev/null)"
 ev_line="$(printf '%s\n' "${err}" | grep -F 'Evidence:' | head -n1)"
 if [[ "${err}" != *"${ESC}"* && -n "${ev_line}" && "${#ev_line}" -le 2100 ]]; then
     pass "STEP04-stderr-sanitised" "STUCK's evidence echo has no control bytes and is capped (${#ev_line} bytes)"
@@ -962,7 +974,7 @@ fi
 
 # Step-04 stops the loop on the refusal and names the source.
 resolve_verdict_and_source "" '{"loop_verdict":"DONE"}'
-err="$(LOOP_HEALTH="${RS_OUT}" LOOP_NAME="t" LOOP_EVIDENCE="" run_step "${ENFORCE}" 2>&1 >/dev/null)"; rc=$?
+err="$(RECIPE_VAR_loop_health="${RS_OUT}" LOOP_NAME="t" RECIPE_VAR_loop_evidence="" run_step "${ENFORCE}" 2>&1 >/dev/null)"; rc=$?
 if [[ ${rc} -ne 0 && "${err}" == *'source=terminal_policy_refusal'* ]]; then
     pass "NOEV-enforce" "step-04 exits non-zero on a missing-evidence refusal and names terminal_policy_refusal"
 else

@@ -122,6 +122,7 @@ nav:
       - GitHub Repo Identity Parser: reference/workflow-github-repo-identity.md
       - Evidence & Bookkeeping Gate Hardening: reference/workflow-implementation-evidence.md
       - Publish Lockfile Sync: reference/workflow-publish-lockfile-sync.md
+      - Commit Hook Repair: reference/recipe-commit-hook-repair.md
       - Local Tracking Issue-Number Extraction: recipes/issue-815-804-local-tracking-issue-number.md
       - Tracking Issue Selection: reference/workflow-tracking-issue-selection.md
   - Agents:
