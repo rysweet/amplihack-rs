@@ -824,7 +824,10 @@ mod finalize_runtime {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                    "RECIPE_VAR_worktree_setup",
+                    crate::artifact_guard_workflow::worktree_setup_json(worktree),
+                );
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1077,8 +1080,17 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
     }
 }
 
-const STEP_20B_CONTEXT_DEFAULT: &str =
-    r#": "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}""#;
+// #1561: the worktree path comes from worktree_setup_path.sh, which reads only
+// the JSON in RECIPE_VAR_worktree_setup and checks it, so neither an inherited
+// WORKTREE_SETUP_WORKTREE_PATH nor a nested RECIPE_VAR_worktree_setup__worktree_path
+// can outrank the recipe's own worktree. A rejected or unset path skips the step
+// ("worktree path gone"); a missing tool skips with "worktree_setup_path.sh not found".
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20b-push-cleanup)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt""#;
+
+/// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
+pub(crate) fn worktree_setup_json(worktree: &Path) -> String {
+    serde_json::json!({ "worktree_path": worktree.to_string_lossy() }).to_string()
+}
 
 fn step_20b_warning(reason: &str) -> String {
     format!(
@@ -1096,8 +1108,8 @@ fn finalize_push_cleanup_skips_before_the_runtime_preflight() {
     assert!(
         command
             .lines()
-            .any(|line| line.trim() == STEP_20B_CONTEXT_DEFAULT),
-        "step-20b keeps `{STEP_20B_CONTEXT_DEFAULT}` byte-identical:\n{command}"
+            .any(|line| line.trim().starts_with(STEP_20B_CONTEXT_DEFAULT)),
+        "step-20b reads its worktree with `{STEP_20B_CONTEXT_DEFAULT}`:\n{command}"
     );
     for reason in [
         "worktree path gone",
@@ -1216,17 +1228,13 @@ mod finalize_skip_reasons {
 
         let gone = "worktree path gone";
         let not_linked = "worktree path is not a linked worktree";
-        let not_a_repo = format!(
-            "not a git repo at {} (#537)",
-            fs::canonicalize(&plain)
-                .expect("canonicalize plain")
-                .display()
-        );
         let cases: [(&str, Option<&Path>, &str); 5] = [
             ("unset", None, gone),
             ("missing", Some(&root.join("missing")), gone),
             ("a file", Some(&file), gone),
-            ("not a git directory", Some(&plain), &not_a_repo),
+            // #1561: a directory that is not a worktree root fails the path
+            // checks, so it is treated as missing before the #537 repo check.
+            ("not a git directory", Some(&plain), gone),
             ("main checkout", Some(&launch), not_linked),
         ];
         for (label, worktree, reason) in cases {
@@ -1245,12 +1253,21 @@ mod finalize_skip_reasons {
                 .env("REPO_PATH", &launch)
                 .env("AMPLIHACK_HOME", workspace_root());
             if let Some(worktree) = worktree {
-                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+                run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                    "RECIPE_VAR_worktree_setup",
+                    crate::artifact_guard_workflow::worktree_setup_json(worktree),
+                );
             }
             let output = run.output().expect("run step-20b");
             let stderr = String::from_utf8_lossy(&output.stderr);
 
             assert_eq!(output.status.code(), Some(0), "{label}\nstderr:\n{stderr}");
+            if label == "not a git directory" {
+                assert!(
+                    stderr.contains("worktree-setup-rejected: "),
+                    "{label}: the #1561 path check names why the path was dropped\nstderr:\n{stderr}"
+                );
+            }
             assert!(
                 stderr.lines().any(|line| line == step_20b_warning(reason)),
                 "{label}: expected `{}`\nstderr:\n{stderr}",
@@ -1289,6 +1306,10 @@ const PHASE1_COMMIT_SITES: [(&str, &str); 3] = [
     ("workflow-publish.yaml", "step-15-commit-push"),
 ];
 
+/// The commit sites' worktree read: a failure empties the path, so the
+/// `${WORKTREE_SETUP_WORKTREE_PATH:?…}` check after it stops the step (#1528).
+const COMMIT_SITE_WORKTREE_READ: &str = r#")" || WORKTREE_SETUP_WORKTREE_PATH="""#;
+
 const PHASE1_REFUSAL_TAIL: &str = " is not the top of a linked task worktree; refusing to stage or commit; never commits in REPO_PATH (#1528)";
 
 #[test]
@@ -1304,8 +1325,9 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
         let add = shell_command_offset(command, add_command)
             .unwrap_or_else(|| panic!("{recipe}/{step} must execute `{add_command}`"));
         assert!(
-            command.contains(STEP_20B_CONTEXT_DEFAULT),
-            "{recipe}/{step}: the worktree default must not fall back to REPO_PATH"
+            command.contains(COMMIT_SITE_WORKTREE_READ),
+            "{recipe}/{step}: the worktree path must come from worktree_setup_path.sh and \
+             a rejected or unset one must stop at the `:?` check, never fall back to REPO_PATH"
         );
         assert!(
             !command[..add].contains("${REPO_PATH:-}}}"),
@@ -1405,7 +1427,10 @@ mod phase1_commit_runtime {
             .env("REPO_PATH", launch)
             .env("AMPLIHACK_HOME", workspace_root());
         if let Some(worktree) = worktree {
-            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree);
+            run.env("WORKTREE_SETUP_WORKTREE_PATH", worktree).env(
+                "RECIPE_VAR_worktree_setup",
+                crate::artifact_guard_workflow::worktree_setup_json(worktree),
+            );
         }
         run.output().expect("run step")
     }
@@ -1455,7 +1480,9 @@ mod phase1_commit_runtime {
                 ("unset", None, false),
                 ("missing directory", Some(&missing), false),
                 ("main checkout, not a linked worktree", Some(&launch), true),
-                ("subdirectory of a linked worktree", Some(&subdir), true),
+                // #1561: a subdirectory is not a worktree root, so the path
+                // check drops it and the step hard-fails as for a missing path.
+                ("subdirectory of a linked worktree", Some(&subdir), false),
             ];
             for (label, worktree, names_1528) in cases {
                 let before = (state(&launch), state(&cwd), state(&linked));
@@ -1474,6 +1501,12 @@ mod phase1_commit_runtime {
                             .any(|line| line.starts_with(&format!("ERROR: {step}: "))
                                 && line.ends_with(PHASE1_REFUSAL_TAIL)),
                         "{step}/{label}: expected the #1528 refusal\nstderr:\n{stderr}"
+                    );
+                }
+                if label == "subdirectory of a linked worktree" {
+                    assert!(
+                        stderr.contains("worktree-setup-rejected: "),
+                        "{step}/{label}: expected the #1561 path-check warning\nstderr:\n{stderr}"
                     );
                 }
                 assert_eq!(

@@ -19,6 +19,11 @@
 #       autodrive_qa_evidence_sha computes it, or nothing when the file is not
 #       a regular file.
 #
+#   autodrive_round_evidence.sh qa-evidence-hash <file>
+#       step-00d-qa-evidence-hash itself: qa-evidence-sha as the step's one JSON
+#       line, {"qa_evidence_sha":"..."}, empty unless whole 40- or 64-digit
+#       lowercase hex. Moved here from the step at its brick budget (#1561).
+#
 #   autodrive_round_evidence.sh crusty-evidence
 #       step-01b-crusty-evidence, criterion 3: autodrive_crusty_final (the
 #       merge gate runs it too), then the range from the reviewed head to HEAD.
@@ -30,6 +35,14 @@
 #       with MERGE_READY, as `name=value ` tokens on one line, or `none` when
 #       every one agrees. Missing evidence disagrees; it never passes.
 #
+#   autodrive_round_evidence.sh merge-ready-verdict <verdict> <source> < blockers.json
+#       step-03 again, after it has parsed the review: applies measured-downgrade
+#       to <verdict> (MERGE_READY or NOT_MERGE_READY) and writes the findings,
+#       then prints the step's one JSON line:
+#       {"merge_ready_verdict":"...","verdict_source":"...","blocker_count":N,"downgrade_reason":"..."}
+#       It moved here from the step when the recipe reached its brick budget
+#       (#1561); the review itself is still parsed in the step.
+#
 #   autodrive_round_evidence.sh findings [downgrade] < blockers.json
 #       step-03 too: the recurring-findings signal. The `id` of each blocker
 #       in the JSON array on stdin, one per line, and measured-evidence-disagrees
@@ -40,9 +53,11 @@
 #       step-05-write-round-record: writes AUTODRIVE_ROUND_RECORD, private, as
 #       one JSON line starting with {"merge_ready_verdict":", and prints it.
 #
-# Step outputs are read from the environment the way recipe-runner exports
-# them: "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" and the like (see
-# docs/reference/auto-drive-to-merge.md, "How a step output reaches bash").
+# Step outputs are read only as recipe-runner's RECIPE_VAR_<key> export:
+# "${RECIPE_VAR_qa_evidence:-}" and the like. A bare QA_EVIDENCE, CI_EVIDENCE
+# or MERGE_READY_VERDICT inherited from whatever launched the runner is never
+# read (#1561; docs/reference/auto-drive-to-merge.md, "Step outputs ignore
+# inherited bare variables").
 # AUTODRIVE_STATE_DIR, AUTODRIVE_QA_EVIDENCE, AUTODRIVE_ROUND_RECORD,
 # AUTODRIVE_ROUND_LABEL, PR_NUMBER and REPO_PATH come from there too.
 # crusty-range, qa-evidence-sha and crusty-evidence print only fixed tokens and
@@ -125,6 +140,13 @@ qa_evidence_sha() {
   [ -z "$sha" ] || printf '%s\n' "$sha"
 }
 
+qa_evidence_hash() {
+  local q
+  q="$(hex_or_empty "$(qa_evidence_sha "${1:-}")")"
+  [ -n "$q" ] || echo "WARNING: the qa evidence is not a regular file; qa_evidence_sha is empty, so this round cannot reach MERGE_READY." >&2
+  printf '{"qa_evidence_sha":"%s"}\n' "$q"
+}
+
 crusty_evidence() {
   local dir="${AUTODRIVE_STATE_DIR:-}" token="crusty-loop-not-done" sha="" first="" status out head_now range
   if [ -z "$dir" ]; then
@@ -164,16 +186,16 @@ crusty_evidence() {
 
 measured_downgrade() {
   local qa ci conflict threads crusty approval qh qnow d=""
-  qa="$(token "$(field "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)")"
-  ci="$(token "$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)")"
-  conflict="$(token "$(field "${MERGE_SYNC:-${RECIPE_VAR_merge_sync:-}}" conflict unknown)")"
-  threads="$(token "$(field "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" unresolved_threads unreadable)")"
-  crusty="$(field "${CRUSTY_EVIDENCE:-${RECIPE_VAR_crusty_evidence:-}}" crusty_status MISSING)"
-  approval="$(field "${PLATFORM_FACTS:-${RECIPE_VAR_platform_facts:-}}" approval_status MISSING)"
+  qa="$(token "$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)")"
+  ci="$(token "$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)")"
+  conflict="$(token "$(field "${RECIPE_VAR_merge_sync:-}" conflict unknown)")"
+  threads="$(token "$(field "${RECIPE_VAR_platform_facts:-}" unresolved_threads unreadable)")"
+  crusty="$(field "${RECIPE_VAR_crusty_evidence:-}" crusty_status MISSING)"
+  approval="$(field "${RECIPE_VAR_platform_facts:-}" approval_status MISSING)"
   case "$crusty" in DONE_CLEAN|ABSENT|NOT_CLEAN|UNTRUSTED|UNREVIEWED_COMMITS|MISSING) ;; *) crusty="OTHER" ;; esac
   case "$approval" in MET|NOT_MET|PENDING|UNREADABLE|MISSING) ;; *) approval="OTHER" ;; esac
   # D5: the qa evidence must still be the file step-00d hashed before any agent ran.
-  qh="$(hex_or_empty "$(field "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')")"
+  qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
   qnow="$(qa_evidence_sha "${AUTODRIVE_QA_EVIDENCE:-}")"
   [ "$qa" = "PASS" ] || d="${d}qa_status=${qa} "
   [ "$ci" = "GREEN" ] || d="${d}ci_status=${ci} "
@@ -204,6 +226,35 @@ round_findings() {
   printf '%s\n' "$count"
 }
 
+merge_ready_verdict() {
+  local verdict="${1:-NOT_MERGE_READY}" source="${2:-missing_verdict}" blockers d downgrade count
+  case "$verdict" in MERGE_READY|NOT_MERGE_READY) ;; *) verdict="NOT_MERGE_READY"; source="unparseable_verdict" ;; esac
+  source="$(token "$source")"
+  blockers="$(cat)"
+  case "$blockers" in \[*\]) ;; *) blockers='[]' ;; esac
+  # Measured evidence outranks the model: measured_downgrade names every
+  # measurement that disagrees (qa, CI, conflict, threads, crusty, approval,
+  # and the qa evidence hash step-00d took), or prints `none`. Missing
+  # evidence, or no answer, disagrees.
+  d="$(measured_downgrade)" || d=""
+  case "$d" in
+    none) downgrade="" ;;
+    '') echo "WARNING: no measured evidence could be compared; it disagrees." >&2; downgrade="measured_evidence=unreadable " ;;
+    *) downgrade="$d" ;;
+  esac
+  if [ -n "$downgrade" ] && [ "$verdict" = "MERGE_READY" ]; then
+    echo "WARNING: downgrading MERGE_READY to NOT_MERGE_READY — measured evidence disagrees: ${downgrade}" >&2
+    verdict="NOT_MERGE_READY"; source="evidence_downgrade"
+  fi
+  # The recurring-findings signal for the loop evaluator: blocker ids, and
+  # measured-evidence-disagrees on a downgrade, in the record's .findings.
+  count="$(printf '%s' "$blockers" | round_findings "$downgrade")"
+  case "$count" in '' | *[!0-9]*) count=0 ;; esac
+  echo "INFO: merge-ready ${AUTODRIVE_ROUND_LABEL:-round}: verdict=${verdict} (source=${source}) blockers=${count}" >&2
+  printf '{"merge_ready_verdict":"%s","verdict_source":"%s","blocker_count":%s,"downgrade_reason":"%s"}\n' \
+    "$verdict" "$source" "$count" "$(printf '%s' "$downgrade" | tr -d '"')"
+}
+
 round_record() {
   local record="${AUTODRIVE_ROUND_RECORD:-}" head="" verdict count qa ci_signal ci_status qh
   [ -n "$record" ] || { echo "ERROR: autodrive_round_record is required; the loop driver reads the round record from a file, never from stdout." >&2; return 1; }
@@ -212,15 +263,15 @@ round_record() {
   else
     echo "[skip] not a git repo; the head sha is left empty so the merge gate refuses rather than merging unbound evidence" >&2
   fi
-  verdict="$(field "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" merge_ready_verdict NOT_MERGE_READY)"
+  verdict="$(field "${RECIPE_VAR_merge_ready_verdict:-}" merge_ready_verdict NOT_MERGE_READY)"
   case "$verdict" in MERGE_READY|NOT_MERGE_READY) ;; *) verdict="NOT_MERGE_READY" ;; esac
-  count="$(field "${MERGE_READY_VERDICT:-${RECIPE_VAR_merge_ready_verdict:-}}" blocker_count 0)"
+  count="$(field "${RECIPE_VAR_merge_ready_verdict:-}" blocker_count 0)"
   case "$count" in '' | *[!0-9]*) count=0 ;; esac
-  qa="$(field "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}" qa_status MISSING)"
-  ci_signal="$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_signal unreadable)"
-  ci_status="$(field "${CI_EVIDENCE:-${RECIPE_VAR_ci_evidence:-}}" ci_status MISSING)"
+  qa="$(field "${RECIPE_VAR_qa_evidence:-}" qa_status MISSING)"
+  ci_signal="$(field "${RECIPE_VAR_ci_evidence:-}" ci_signal unreadable)"
+  ci_status="$(field "${RECIPE_VAR_ci_evidence:-}" ci_status MISSING)"
   # step-00d's hash, whole hex or "": the gate trusts the qa evidence only at this hash (#1517 D5).
-  qh="$(hex_or_empty "$(field "${QA_EVIDENCE_HASH:-${RECIPE_VAR_qa_evidence_hash:-}}" qa_evidence_sha '')")"
+  qh="$(hex_or_empty "$(field "${RECIPE_VAR_qa_evidence_hash:-}" qa_evidence_sha '')")"
   # The record and its findings file are private: the state dir must stay private.
   ( umask 077
     [ -f "${record}.findings" ] || : > "${record}.findings"
@@ -236,11 +287,14 @@ round_record() {
 case "${1:-}" in
   crusty-range) crusty_range ;;
   qa-evidence-sha) qa_evidence_sha "${2:-}" ;;
+  qa-evidence-hash) qa_evidence_hash "${2:-}" ;;
   crusty-evidence) crusty_evidence ;;
   measured-downgrade) measured_downgrade ;;
+  merge-ready-verdict) merge_ready_verdict "${2:-}" "${3:-}" ;;
   findings) round_findings "${2:-}" ;;
   round-record) round_record ;;
   *) echo "ERROR: autodrive_round_evidence.sh: unknown subcommand '${1:-}' (crusty-range," \
-       "qa-evidence-sha <file>, crusty-evidence, measured-downgrade, findings [downgrade], round-record)" >&2
+       "qa-evidence-sha <file>, qa-evidence-hash <file>, crusty-evidence, measured-downgrade, merge-ready-verdict <verdict> <source>," \
+       "findings [downgrade], round-record)" >&2
      exit 2 ;;
 esac

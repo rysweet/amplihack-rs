@@ -252,6 +252,40 @@ else
     fail "B2-registered" "converged path is not a registered worktree"
 fi
 
+# --- C1/C2 (#1561): consumers accept worktree_setup.worktree_path only when it
+#         is already resolved (worktree_setup_path.sh), so the step must emit
+#         the physical path. C1 reaches the repo through a symlinked parent
+#         directory; C2 makes the repo's worktrees/ directory a symlink, the
+#         layout where the step's own `cd -P` before each JSON printf is what
+#         resolves the path (REPO_PATH and the main checkout are already
+#         canonical). Each output path must equal its realpath and pass
+#         worktree_setup_path.sh with exit 0. ---
+WT_TOOL="${REPO_ROOT}/amplifier-bundle/tools/worktree_setup_path.sh"
+check_resolved() { # check_resolved <id> <why>: RUN_RC/RUN_OUT from run_step_body
+    local id="$1" why="$2" json wt real rc=0
+    json="$(printf '%s\n' "${RUN_OUT}" | awk '/^\{"worktree_path"/ { last = $0 } END { print last }')"
+    wt="$(printf '%s' "${json}" | jq -r '.worktree_path // empty' 2>/dev/null)"
+    real="$(realpath -- "${wt}" 2>/dev/null || true)"
+    RECIPE_VAR_worktree_setup="${json}" bash "${WT_TOOL}" "test-${id}" >/dev/null 2>&1 || rc=$?
+    if [[ "${RUN_RC}" -eq 0 && -n "${wt}" && "${wt}" == "${real}" && "${rc}" -eq 0 ]]; then
+        pass "${id}" "${why}: worktree_path is resolved and worktree_setup_path.sh accepts it"
+    else
+        fail "${id}" "${why}: step rc=${RUN_RC}, worktree_path='${wt}', realpath='${real}', worktree_setup_path.sh rc=${rc}"
+    fi
+}
+REPO="$(build_repo c1)"
+mkdir -p "${TEST_TMP}/c1-parent"
+mv "${REPO}" "${TEST_TMP}/c1-parent/c1"
+ln -s "${TEST_TMP}/c1-parent" "${TEST_TMP}/c1-link"
+run_step_body "${TEST_TMP}/c1-link/c1"
+check_resolved "C1-symlinked-parent" "repo_path reached through a symlinked parent"
+
+REPO="$(build_repo c2)"
+mkdir -p "${TEST_TMP}/c2-worktrees-store"
+ln -s "${TEST_TMP}/c2-worktrees-store" "${REPO}/worktrees"
+run_step_body "${REPO}"
+check_resolved "C2-symlinked-worktrees-dir" "worktrees/ is a symlink"
+
 # ===========================================================================
 # Summary
 # ===========================================================================

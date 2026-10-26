@@ -301,29 +301,46 @@ amplifier-bundle/tools/workflow_final_status.sh
 
 ### Inputs
 
-The helper reads normalized environment variables. Recipe context fields map to
-the same names through `RECIPE_VAR_*` variables when invoked by the runner.
+The helper reads recipe values from `RECIPE_VAR_<key>`, as the runner exports
+them. A dotted input `key.field` is the `field` of the JSON object in
+`RECIPE_VAR_<key>`, read with `rv_field` from
+[`recipe_var.sh`](../../amplifier-bundle/tools/recipe_var.sh); a nested
+`RECIPE_VAR_<key>__<field>` name or a bare upper-case name such as `PR_NUMBER`
+is never read. When you run the helper directly, set the `RECIPE_VAR_` names;
+in a recipe run, pass values with `-c <key>=<value>` (see
+[Step outputs ignore inherited bare variables](auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
+`workflow_pr_ready.sh` and `workflow_terminal_evidence.sh` read the PR inputs
+the same way.
 
-| Environment variable | Type | Description |
+The `probe-terminal-state` step reads its own inputs (`repo_path`,
+`branch_name`, `base_ref`, `pr_number`, `pr_url`, `goal_already_met`) from
+`RECIPE_VAR_<key>`, the worktree from
+[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh)
+(no path uses `repo_path`; a rejected path is `FAILED_INVALID_INPUT`), and
+`no_merge` through `no_merge_flag`, so a bare `NO_MERGE` can only switch
+merging off (see the [`NO_MERGE` override](auto-drive-to-merge.md#no_merge-override)).
+
+| Input | Type | Description |
 | --- | --- | --- |
 | `WORKFLOW_CLASSIFICATION` | enum string | Workflow class such as `Development`, `Default`, `Investigation`, or `Ops`. |
 | `RECIPE_NAME` | string | Current recipe name. Used for diagnostics and protected-workflow detection. |
 | `REPO_PATH` | path | Repository root used for Git evidence. |
-| `WORKTREE_SETUP_WORKTREE_PATH` | path | Preferred workflow checkout when step 04 created or reused a worktree. |
-| `BRANCH_NAME` | git ref name | Expected branch for development completion. |
+| `worktree_setup.worktree_path` | path | Preferred workflow checkout when step 04 created or reused a worktree. |
+| `worktree_setup.branch_name` | git ref name | Expected branch for development completion. |
 | `BASE_REF` | git ref name | Intended comparison base. |
-| `PR_URL` | URL string | Pull request URL, when publication happened or recovery is in progress. |
-| `PR_NUMBER` | positive integer string | Pull request number, when available. |
+| `RECIPE_VAR_pr_url`, then `pr_publish_result.pr_url` | URL string | Pull request URL, when publication happened or recovery is in progress. |
+| `RECIPE_VAR_pr_number`, then `pr_publish_result.pr_number` | positive integer string | Pull request number, when available. |
+| `RECIPE_VAR_issue_number` | string | Tracking issue, used to scope the PR. |
 | `REMOTE_HOST_TYPE` | `github`, `azdo`, or `other` | Remote provider. Defaults to `other`. The [branch PR lookup](#branch-pr-lookup) runs only for `github`. |
-| `PR_PUBLISH_RESULT_STATE` | enum string | State reported by the publish step, such as `FOLLOWUP_CREATED`, `EXISTING_OPEN_PR`, or `unknown`. |
-| `ALLOW_NO_OP` | boolean string | Explicit opt-out for eligible no-op paths. Defaults to `false`. |
-| `IMPLEMENTATION_COMPLETED` | boolean string | Direct implementation evidence. |
-| `VERIFICATION_COMPLETED` | boolean string | Direct verification evidence. |
-| `PUBLISH_STATE_REACHED` | boolean string | Direct publish/finalize evidence. |
-| `TERMINAL_NO_OP` | boolean string | Direct no-op evidence. |
-| `TERMINAL_FAILURE` | boolean string | Direct failure evidence. |
-| `TERMINAL_STATE` | enum string | Existing state from a publish/finalize step. |
-| `TERMINAL_REASON` | string | Existing reason from a publish/finalize step. |
+| `pr_publish_result.state` | enum string | State reported by the publish step, such as `FOLLOWUP_CREATED`, `EXISTING_OPEN_PR`, or `unknown`. |
+| `RECIPE_VAR_allow_no_op` | boolean string | Explicit opt-out for eligible no-op paths. Defaults to `false`. |
+| `implementation_terminal_evidence.implementation_completed` | boolean string | Direct implementation evidence. |
+| `verification_terminal_evidence.verification_completed` | boolean string | Direct verification evidence. |
+| `publish_terminal_evidence.publish_state_reached` | boolean string | Direct publish/finalize evidence. |
+| `implementation_terminal_evidence.terminal_no_op`, then `verification_terminal_evidence.terminal_no_op` | boolean string | Direct no-op evidence. |
+| `terminal_state.terminal_failure` | boolean string | Direct failure evidence. |
+| `terminal_state.terminal_state` | enum string | Existing state from a publish/finalize step. |
+| `terminal_state.terminal_reason` | string | Existing reason from a publish/finalize step. |
 | `OBSERVED_PHASES` | comma-separated string | Optional explicit phase list. |
 
 ### Outputs
@@ -370,7 +387,7 @@ A PR counts only when its head commit is the worktree's `HEAD` (issue #1679), so
 a PR that does not hold exactly this run's work is ignored.
 
 **Which branch.** The branch is read from the run's worktree
-(`WORKTREE_SETUP_WORKTREE_PATH`, or `RECIPE_VAR_worktree_setup__worktree_path`).
+(`worktree_setup.worktree_path`).
 `REPO_PATH` is the main checkout, and its branch is `main`, a detached `HEAD`,
 or something unrelated to the run, so the lookup never uses it.
 `step-22b-final-status` enters the worktree before calling the helper, as
@@ -408,7 +425,7 @@ did before, when any of the following is true:
 - the worktree path is unset and the current directory is the `REPO_PATH`
   checkout
 - the branch is detached, is the base branch, or differs from
-  `WORKTREE_SETUP_BRANCH_NAME`
+  `worktree_setup.branch_name`
 - `gh` errors
 - the JSON is malformed
 - only fork PRs exist
@@ -439,7 +456,7 @@ specification. Section 15 runs step-22b's own command from
 
 In each, the run's branch lives in a separate `git worktree`. Section 15 also
 runs step-22b with the worktree path set-but-missing and unset; in both, an
-open PR on `REPO_PATH`'s unrelated branch is never looked up. Section 16
+open PR on `REPO_PATH`'s unrelated branch is never looked up. Section 17
 (issue #1679) runs step-22b with no recorded outputs at all, not even
 `REMOTE_HOST_TYPE`: an open PR at the worktree's `HEAD` resolves, a PR at
 another commit does not, and with no PR the run still fails.
@@ -666,9 +683,9 @@ the incident's own path. The sub-recipe is three steps:
    (`workflow_terminal_evidence.sh verdict-token`) into
    `terminal_adjudication.agent_verdict`.
 
-`workflow_final_status.sh` reads that verdict from
-`WORKFLOW_TERMINAL_AGENT_VERDICT`, `TERMINAL_ADJUDICATION_AGENT_VERDICT`, or
-`RECIPE_VAR_terminal_adjudication__agent_verdict`, and adjudicates from the
+`workflow_final_status.sh` reads that verdict with
+`rv_field terminal_adjudication agent_verdict` (the `agent_verdict` field of
+the `terminal_adjudication` step output), and adjudicates from the
 collected evidence whenever the scope match misses — including on the
 `strict-terminal-state` path, which reaches the same helper without an agent
 verdict and so gets the deterministic half of the contract. Outstanding open

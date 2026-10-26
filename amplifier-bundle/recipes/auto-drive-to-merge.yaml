@@ -194,7 +194,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" || { echo "ERROR: #1551: cannot enter REPO_PATH; refusing to check PR state in the wrong repo [autodrive-check-unmerged]" >&2; exit 1; }
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
-      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
+      BR="${RECIPE_VAR_build_result:-}"
       g() { printf '%s' "$BR" | amplihack orch helper extract-json --require-field "$1" \
               | amplihack orch helper extract-field --field "$1" --default ''; }
       PR="$(g pr)"
@@ -244,11 +244,11 @@ steps:
       # pr follow it. The composed-recipe run in
       # tests/test-issue-1543-pr-head-worktree.sh (T20, T21) checks the report
       # through the real runner.
-      BR="${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}"
-      MG="${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}"
-      CR="${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}"
+      BR="${RECIPE_VAR_build_result:-}"
+      MG="${RECIPE_VAR_merge_gate_result:-}"
+      CR="${RECIPE_VAR_crusty_loop_result:-}"
       PR=""
-      for C in "${PR_NUMBER:-}" "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
+      for C in "${RECIPE_VAR_pr_number:-}" "$(g "$MG" pr '')" "$(g "$BR" pr '')"; do
         case "$C" in ''|*[!0-9]*) continue ;; esac
         PR="$C"; break
       done

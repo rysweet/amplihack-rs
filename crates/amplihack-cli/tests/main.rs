@@ -72,6 +72,8 @@ mod issue_1551_merge_guard;
 mod issue_1552_investigation_report_written;
 #[path = "issue_1553_max_total_steps_cap.rs"]
 mod issue_1553_max_total_steps_cap;
+#[path = "issue_1561_step_outputs_prefer_recipe_var.rs"]
+mod issue_1561_step_outputs_prefer_recipe_var;
 #[path = "issue_1567_nested_profile.rs"]
 mod issue_1567_nested_profile;
 #[path = "issue_1569_auto_switch.rs"]

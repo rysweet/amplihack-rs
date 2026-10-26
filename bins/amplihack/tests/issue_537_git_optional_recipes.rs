@@ -194,7 +194,7 @@ fn direct_git_recipe_steps_are_guarded_or_visibly_skipped() {
             let Some(command) = step.get("command").and_then(Value::as_str) else {
                 continue;
             };
-            if !contains_git_command(command) {
+            if !contains_git_command(&without_worktree_path_probes(command)) {
                 continue;
             }
 
@@ -334,6 +334,31 @@ fn step_command<'a>(recipe: &'a Value, step_id: &str) -> Option<&'a str> {
             .then(|| step.get("command").and_then(Value::as_str))
             .flatten()
     })
+}
+
+/// `command` without the #1561 checks on a worktree path or branch read from
+/// `worktree_setup`. They need no repository: in a non-git directory
+/// `git -C "$p" rev-parse --show-toplevel` prints nothing, the path is
+/// treated as missing, and the step says so on stderr, which is the visible
+/// skip #537 asks for. `git check-ref-format --branch` only parses its
+/// argument. The exemption applies only to a step that prints that message,
+/// and only to the probe lines; any other git use in the step is still
+/// checked.
+fn without_worktree_path_probes(command: &str) -> String {
+    let announces = command
+        .contains("worktree_setup.worktree_path is not a resolved worktree root")
+        || command.contains("worktree_setup.worktree_path is not a worktree root");
+    if !announces {
+        return command.to_string();
+    }
+    command
+        .lines()
+        .filter(|line| {
+            !(line.contains("rev-parse --show-toplevel 2>/dev/null)\" = \"$")
+                || line.contains("git check-ref-format --branch \"$RUN_BRANCH\""))
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn contains_git_command(command: &str) -> bool {

@@ -1555,6 +1555,7 @@ run_step() {
         AMPLIHACK_HOME="${REPO_ROOT}" REPO_PATH="${dir}/main" \
         WORKFLOW_HOOK_REPAIR_HELPER="${RUN_STEP_HOOK_HELPER:-${DRIVER}}" WORKFLOW_STAGE_CHANGES_HELPER="${STAGE_HELPER}" \
         WORKTREE_SETUP_WORKTREE_PATH="${dir}/repo" \
+        RECIPE_VAR_worktree_setup="$(jq -nc --arg p "${dir}/repo" '{worktree_path: $p}')" \
         bash "${step}" >"${dir}/step.out" 2>"${dir}/step.err"; then
         echo 0 > "${dir}/rc"
     else

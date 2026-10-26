@@ -93,7 +93,13 @@ fn run_step15(repo: &Path, command: &str) -> std::process::Output {
         .arg(command)
         .current_dir(repo)
         .env("PATH", crate::amplihack_path::path_with_amplihack_bin())
+        // step-15 runs worktree_setup_path.sh from the bundle, AMPLIHACK_HOME first.
+        .env("AMPLIHACK_HOME", workspace_root())
         .env("WORKTREE_SETUP_WORKTREE_PATH", repo)
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            serde_json::json!({ "worktree_path": repo.to_string_lossy() }).to_string(),
+        )
         .env(
             "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
             workspace_helper_path("workflow_runtime_artifacts.sh"),

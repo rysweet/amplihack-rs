@@ -118,9 +118,9 @@ tracking issue differs from the issue referenced in the PR body.
 Use workflow-owned readiness, not a broad PR survey:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_pr_ready.sh
@@ -157,13 +157,17 @@ Only `scope: valid` can trigger monitor notifications or closure behavior.
 Terminal status uses the same PR identity:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
+
+The helpers read the PR and issue only from `RECIPE_VAR_` names, never from a
+bare `PR_NUMBER`, `PR_URL` or `ISSUE_NUMBER` (see
+[Step outputs ignore inherited bare variables](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
 
 If another PR is newer, authored by the same user, or mentions the same issue in
 free text, it is ignored unless it matches the explicit scope.

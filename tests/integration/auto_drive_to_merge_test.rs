@@ -18,9 +18,10 @@
 //!   bound to one head SHA; an unreadable criterion is a failure.
 //! - Exit 79 is terminal and is never retried into.
 //! - No step declares a timeout at any scale.
-//! - Every step-output read reaches `RECIPE_VAR_<output>` (issue #1511): no
-//!   form that skips the fallback, no output templated into a `command:`, and
-//!   the read counts match the table in the reference.
+//! - Every step-output read is `RECIPE_VAR_<output>` alone (issues #1511,
+//!   #1561): no read of the bare upper-case name in any form, no bare name as
+//!   a `RECIPE_VAR_` read's default, no output templated into a `command:`,
+//!   and the read counts match the table in the reference.
 
 use serde_yaml::Value;
 use std::collections::BTreeMap;
@@ -481,12 +482,17 @@ fn verdict_gates_use_the_canonical_orch_helper_pipeline() {
         // Agent output is untrusted data: env var + stdin, never interpolated
         // into a command position. A review that is only the JSON verdict is
         // an object, which recipe-runner exports as RECIPE_VAR_<output> alone,
-        // so the read falls back to it, in the form the #1511 branch uses.
+        // and an inherited bare name must not outrank it (#1561), so the read
+        // is RECIPE_VAR_<output> only.
         let runner_var = format!("RECIPE_VAR_{}", env_var.to_ascii_lowercase());
         assert!(
-            cmd.contains(&format!("${{{env_var}:-${{{runner_var}:-}}}}")),
-            "{step_id} must read the agent output from the environment, \
-             falling back to {runner_var}"
+            cmd.contains(&format!("${{{runner_var}:-}}")),
+            "{step_id} must read the agent output from {runner_var}"
+        );
+        assert!(
+            !reads_the_bare_name(cmd, env_var),
+            "{step_id} must not read the bare `{env_var}`: an inherited value would \
+             outrank the review this round produced (#1561)"
         );
         assert!(
             cmd.contains("printf '%s' \""),
@@ -1798,10 +1804,15 @@ fn merge_ready_files_are_resolved_by_a_bash_step_before_the_round() {
         "step-00 must run before the merge evidence, so a missing install costs no test run"
     );
     let cmd = field(s, "command");
+    assert!(
+        !reads_the_bare_name(cmd, "AUTODRIVE_TOOLS_DIR"),
+        "step-00 must not read an inherited AUTODRIVE_TOOLS_DIR (#1607)"
+    );
     for needle in [
         "autodrive_merge_ready_files.sh",
-        // From the directory step-00-tools-dir found (merge_round_finds_its_tools_once).
-        "${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}",
+        // From the directory step-00-tools-dir found (merge_round_finds_its_tools_once),
+        // never an inherited AUTODRIVE_TOOLS_DIR (#1607).
+        "${RECIPE_VAR_autodrive_tools_dir:-}",
         "merge-ready-skill-files-not-found",
         "resolver autodrive_merge_ready_files.sh not found",
         // gadugi-test is part of the install criterion 1 needs where
@@ -1960,7 +1971,7 @@ fn merge_round_reads_crusty_evidence_through_autodrive_crusty_final() {
     // The measured downgrade covers crusty, UNTRUSTED included.
     let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
     for needle in [
-        "CRUSTY_EVIDENCE",
+        "RECIPE_VAR_crusty_evidence",
         "crusty_status",
         "DONE_CLEAN",
         "UNTRUSTED",
@@ -2257,9 +2268,10 @@ fn crusty_round_records_the_reviewed_head_sha_every_round() {
         "step-01 must read the reviewed head with git, in bash"
     );
     let cmd = field(step(&recipe, "step-06-write-round-record"), "command");
+    // #1561: step outputs are read only as RECIPE_VAR_<key>.
     for needle in [
-        "CRUSTY_ROUND_CONTEXT",
-        "CRUSTY_FIX_EVIDENCE",
+        "RECIPE_VAR_crusty_round_context",
+        "RECIPE_VAR_crusty_fix_evidence",
         "\"reviewed_head_sha\":\"%s\"",
         "\"head_sha\":\"%s\"",
         "crusty-head-sha-unavailable",
@@ -3043,24 +3055,37 @@ fn step_command<'a>(recipe: &'a Value, id: &str) -> &'a str {
 }
 
 /// The subcommands of autodrive_round_evidence.sh and the function each runs.
-const ROUND_SUBCOMMANDS: [(&str, &str); 6] = [
+const ROUND_SUBCOMMANDS: [(&str, &str); 8] = [
     ("crusty-range", "crusty_range"),
     ("qa-evidence-sha", "qa_evidence_sha"),
+    ("qa-evidence-hash", "qa_evidence_hash"),
     ("crusty-evidence", "crusty_evidence"),
     ("measured-downgrade", "measured_downgrade"),
+    ("merge-ready-verdict", "merge_ready_verdict"),
     ("findings", "round_findings"),
     ("round-record", "round_record"),
 ];
 
 /// The bash a merge-round step runs: its own command and, for each
 /// `bash "$T" <subcommand>` of autodrive_round_evidence.sh it calls, the body
-/// of the function that subcommand dispatches to. The step bodies moved into
-/// that tool when the recipe reached its brick budget (PR #1520 review), so a
-/// check on what a step does reads both.
+/// of the function that subcommand dispatches to, and of every subcommand
+/// function that body calls in turn. The step bodies moved into that tool when
+/// the recipe reached its brick budget (PR #1520 review, #1561), so a check on
+/// what a step does reads both.
 fn round_step_bash(recipe: &Value, id: &str) -> String {
     let cmd = step_command(recipe, id);
     let tool = read(&tool_path("autodrive_round_evidence.sh"));
+    let body_of = |func: &str| -> String {
+        let start = tool
+            .find(&format!("\n{func}() {{\n"))
+            .unwrap_or_else(|| panic!("autodrive_round_evidence.sh has no {func}()"));
+        let len = tool[start + 1..]
+            .find("\n}\n")
+            .unwrap_or_else(|| panic!("{func}() has no closing brace"));
+        tool[start + 1..start + 1 + len + 2].to_string()
+    };
     let mut out = cmd.to_string();
+    let mut pending: Vec<&str> = Vec::new();
     for (sub, func) in ROUND_SUBCOMMANDS {
         let call = format!("bash \"$T\" {sub}");
         if !cmd.contains(&call) {
@@ -3074,14 +3099,27 @@ fn round_step_bash(recipe: &Value, id: &str) -> String {
             tool.contains(&format!("  {sub}) {func}")),
             "autodrive_round_evidence.sh must dispatch `{sub}` to {func}"
         );
-        let start = tool
-            .find(&format!("\n{func}() {{\n"))
-            .unwrap_or_else(|| panic!("autodrive_round_evidence.sh has no {func}()"));
-        let len = tool[start + 1..]
-            .find("\n}\n")
-            .unwrap_or_else(|| panic!("{func}() has no closing brace"));
+        pending.push(func);
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    while let Some(func) = pending.pop() {
+        if seen.contains(&func) {
+            continue;
+        }
+        seen.push(func);
+        let body = body_of(func);
+        for (_, callee) in ROUND_SUBCOMMANDS {
+            let called = body
+                .lines()
+                .skip(1)
+                .filter(|l| !l.trim_start().starts_with('#'))
+                .any(|l| l.contains(&format!("{callee} ")) || l.contains(&format!("{callee})")));
+            if called && !seen.contains(&callee) {
+                pending.push(callee);
+            }
+        }
         out.push('\n');
-        out.push_str(&tool[start + 1..start + 1 + len + 2]);
+        out.push_str(&body);
     }
     out
 }
@@ -3135,7 +3173,10 @@ fn merge_round_finds_its_tools_once() {
         1,
         "autodrive-merge-round.yaml must search the tool roots in one place only"
     );
-    let read = "\"${AUTODRIVE_TOOLS_DIR:-${RECIPE_VAR_autodrive_tools_dir:-}}/";
+    // RECIPE_VAR_ only: an AUTODRIVE_TOOLS_DIR inherited from an outer run
+    // must never pick the round's tools (#1607). Each step copies the value
+    // into TOOLS_D and refuses an empty or missing directory (#1561).
+    let read = "TOOLS_D=\"${RECIPE_VAR_autodrive_tools_dir:-}\"";
     for id in [
         "step-00-merge-ready-files",
         "step-00d-qa-evidence-hash",
@@ -3144,11 +3185,20 @@ fn merge_round_finds_its_tools_once() {
         "step-03-extract-merge-ready-verdict",
         "step-05-write-round-record",
     ] {
+        let cmd = step_command(&recipe, id);
         assert!(
-            step_command(&recipe, id).contains(read),
+            cmd.contains(read),
             "{id} must run its tool from step-00-tools-dir's directory"
         );
+        assert!(
+            !reads_the_bare_name(cmd, "AUTODRIVE_TOOLS_DIR"),
+            "{id} must not read an inherited AUTODRIVE_TOOLS_DIR (#1607)"
+        );
     }
+    assert!(
+        !reads_the_bare_name(&text, "AUTODRIVE_TOOLS_DIR"),
+        "no step of autodrive-merge-round.yaml may read the bare AUTODRIVE_TOOLS_DIR (#1607)"
+    );
     let fix = field(step(&recipe, "step-04-address-blockers"), "prompt");
     assert!(
         fix.contains(". \"{{autodrive_tools_dir}}/git-identity.sh\"")
@@ -3621,8 +3671,9 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
     );
 
     let verdict = round_step_bash(&recipe, "step-03-extract-merge-ready-verdict");
+    // #1561: the step-00d hash is read only as RECIPE_VAR_qa_evidence_hash.
     for needle in [
-        "QA_EVIDENCE_HASH",
+        "RECIPE_VAR_qa_evidence_hash",
         "AUTODRIVE_QA_EVIDENCE",
         "qa_evidence_sha \"${AUTODRIVE_QA_EVIDENCE:-}\"",
         "qa_evidence=modified",
@@ -3636,7 +3687,7 @@ fn merge_round_hashes_qa_evidence_before_any_agent_step() {
 
     let record = round_step_bash(&recipe, "step-05-write-round-record");
     for needle in [
-        "QA_EVIDENCE_HASH",
+        "RECIPE_VAR_qa_evidence_hash",
         "\"qa_evidence_sha\":\"%s\"",
         "umask 077",
     ] {
@@ -3985,10 +4036,10 @@ fn the_reference_documents_the_range_rule_and_the_qa_chain() {
 /// recipe-runner 0.3.8 (`context.rs`, `shell_env_vars`) exports a step output
 /// that parsed as a JSON object as `RECIPE_VAR_<name>` only; the bare
 /// upper-case alias is added for scalars alone. A round body that reads
-/// `${QA_EVIDENCE:-}` therefore sees "" under the real runner. Every bash read
-/// of a step output in the two round recipes must fall back to
-/// `RECIPE_VAR_<name>`, in the form the #1511 branch uses. The loop recipes'
-/// reads predate this change and are #1511's.
+/// `${QA_EVIDENCE:-}` therefore sees "" under the real runner, and since #1561
+/// an inherited bare `QA_EVIDENCE` must not be read at all: every bash read of
+/// a step output in the two round recipes and the evidence tool is
+/// `RECIPE_VAR_<name>` alone. The loop recipes' reads are #1511's.
 #[test]
 fn round_recipes_read_step_outputs_through_recipe_var() {
     // The round recipes' outputs, plus merge-evidence's: the runner merges a
@@ -4021,7 +4072,6 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
             "expected step output `{name}` in the round recipes"
         );
     }
-    let ident = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let mut reads = 0;
     let mut bad = Vec::new();
     // autodrive_round_evidence.sh holds merge-round step bodies (PR #1520
@@ -4042,28 +4092,20 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
     ];
     for (r, text) in &sources {
         for (n, line) in text.lines().enumerate() {
+            if line.trim_start().starts_with('#') {
+                continue;
+            }
             for name in &outputs {
-                let upper = name.to_ascii_uppercase();
-                let dual = format!("${{{upper}:-${{RECIPE_VAR_{name}:-");
-                let mut from = 0;
-                while let Some(p) = line[from..].find(&upper) {
-                    let at = from + p;
-                    from = at + upper.len();
-                    if line[from..].starts_with(ident) {
-                        continue; // QA_EVIDENCE inside QA_EVIDENCE_HASH
-                    }
-                    let before = &line[..at];
-                    let start = if before.ends_with("${") {
-                        at - 2
-                    } else if before.ends_with('$') || before.ends_with("${#") {
-                        at - 1
-                    } else {
-                        continue; // AUTODRIVE_QA_EVIDENCE, prose, a template
-                    };
-                    reads += 1;
-                    if !line[start..].starts_with(&dual) {
-                        bad.push(format!("{r}:{}: {}", n + 1, line.trim()));
-                    }
+                reads += bounded_matches(line, &format!("${{RECIPE_VAR_{name}"))
+                    .filter(|&end| line[end..].starts_with(":-"))
+                    .count();
+                // QA_EVIDENCE inside QA_EVIDENCE_HASH or AUTODRIVE_QA_EVIDENCE
+                // is not a read: the matcher checks the name boundary and the
+                // `$` before it.
+                if reads_the_bare_name(line, &name.to_ascii_uppercase())
+                    || recipe_var_read_has_a_bare_tail(line, name)
+                {
+                    bad.push(format!("{r}:{}: {}", n + 1, line.trim()));
                 }
             }
         }
@@ -4072,10 +4114,11 @@ fn round_recipes_read_step_outputs_through_recipe_var() {
         reads >= 18,
         "found only {reads} step-output reads in the round recipes; the scan is broken"
     );
+    bad.dedup();
     assert!(
         bad.is_empty(),
-        "step-output reads without the RECIPE_VAR_ fallback \
-         (write \"${{UPPER:-${{RECIPE_VAR_<output>:-}}}}\"):\n{}",
+        "step-output reads that let an inherited bare variable win (#1561, #1607); \
+         write \"${{RECIPE_VAR_<output>:-<default>}}\" and no bare name:\n{}",
         bad.join("\n")
     );
 }
@@ -4341,18 +4384,34 @@ fn bounded_matches<'a>(line: &'a str, pat: &'a str) -> impl Iterator<Item = usiz
         .filter(move |&end| boundary_after(line, end))
 }
 
-/// Static check 2: `line` reads the step output `upper` in a form that never
-/// reaches its `RECIPE_VAR_` fallback — `${X` not followed by `:-`, `${#X`,
-/// `${!X` or `$X`.
-fn skips_the_fallback(line: &str, upper: &str) -> bool {
-    bounded_matches(line, &format!("${{{upper}")).any(|end| !line[end..].starts_with(":-"))
-        || [
-            format!("${{#{upper}"),
-            format!("${{!{upper}"),
-            format!("${upper}"),
-        ]
-        .iter()
-        .any(|pat| bounded_matches(line, pat).next().is_some())
+/// Static check 1: `line` reads the bare name `upper` in any form — `${X`
+/// with or without a default, `${#X`, `${!X` or `$X`. Any of these can read a
+/// value inherited from outside the run instead of `RECIPE_VAR_<x>` (#1561).
+fn reads_the_bare_name(line: &str, upper: &str) -> bool {
+    [
+        format!("${{{upper}"),
+        format!("${{#{upper}"),
+        format!("${{!{upper}"),
+        format!("${upper}"),
+    ]
+    .iter()
+    .any(|pat| bounded_matches(line, pat).next().is_some())
+}
+
+/// Static check 2: a `${RECIPE_VAR_<name>` read in `line` has no `:-` default,
+/// or its default is a bare read of the same output, so an empty step output
+/// would fall through to an inherited value (`${RECIPE_VAR_x:-${X:-}}`).
+fn recipe_var_read_has_a_bare_tail(line: &str, name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    bounded_matches(line, &format!("${{RECIPE_VAR_{name}")).any(|end| {
+        let Some(rest) = line[end..].strip_prefix(":-") else {
+            return true;
+        };
+        let rest = rest.trim_start_matches('"');
+        [format!("${{{upper}"), format!("${upper}")]
+            .iter()
+            .any(|pat| rest.starts_with(pat.as_str()) && boundary_after(rest, pat.len()))
+    })
 }
 
 /// Static check 3: `command` templates the step output `name` — `{{`, optional
@@ -4440,11 +4499,14 @@ fn documented_read_counts() -> (BTreeMap<String, usize>, usize) {
         .unwrap_or_else(|e| panic!("{}: cannot read the read table: {e}", path.display()))
 }
 
-/// The matchers behind static checks 2 and 3, against the forms the reference
-/// lists and the near misses the name boundary must reject.
+/// The matchers behind static checks 1, 2 and 3, against the forms the
+/// reference lists and the near misses the name boundary must reject.
 #[test]
 fn step_output_read_matchers_respect_the_name_boundary() {
     for line in [
+        // The #1511 dual read is a violation since #1561: the bare name wins.
+        "${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}",
+        "${QA_EVIDENCE:-}",
         "${QA_EVIDENCE}",
         "${QA_EVIDENCE-}",
         "${QA_EVIDENCE:=}",
@@ -4458,31 +4520,61 @@ fn step_output_read_matchers_respect_the_name_boundary() {
         "$QA_EVIDENCE",
         "printf '%s' \"$QA_EVIDENCE\" | amplihack orch helper extract-json",
         // A good read does not excuse a bad one on the same line.
-        "A=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\" B=\"$QA_EVIDENCE\"",
+        "A=\"${RECIPE_VAR_qa_evidence:-}\" B=\"$QA_EVIDENCE\"",
     ] {
         assert!(
-            skips_the_fallback(line, "QA_EVIDENCE"),
-            "`{line}` skips the fallback and must be a violation"
+            reads_the_bare_name(line, "QA_EVIDENCE"),
+            "`{line}` reads the bare name and must be a violation"
         );
     }
     for line in [
-        "QA=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\"",
+        "QA=\"${RECIPE_VAR_qa_evidence:-}\"",
+        "QA=\"${RECIPE_VAR_qa_evidence:-MISSING}\"",
         "${QA_EVIDENCE_2}",
         "$QA_EVIDENCE_X",
         "${#QA_EVIDENCE_X}",
         "${!QA_EVIDENCE_X}",
         "${RECIPE_VAR_qa_evidence:-}",
+        "${AUTODRIVE_QA_EVIDENCE:-}",
         "# QA_EVIDENCE is declared in autodrive-merge-evidence.yaml",
     ] {
         assert!(
-            !skips_the_fallback(line, "QA_EVIDENCE"),
+            !reads_the_bare_name(line, "QA_EVIDENCE"),
             "`{line}` must not be a violation"
         );
     }
     assert!(
-        !skips_the_fallback("${QA_EVIDENCE} $QA_EVIDENCE", "QA"),
+        !reads_the_bare_name("${QA_EVIDENCE} $QA_EVIDENCE", "QA"),
         "`QA` must not match `QA_EVIDENCE`"
     );
+
+    for line in [
+        "${RECIPE_VAR_qa_evidence:-${QA_EVIDENCE:-}}",
+        "${RECIPE_VAR_qa_evidence:-$QA_EVIDENCE}",
+        "${RECIPE_VAR_qa_evidence:-\"${QA_EVIDENCE:-}\"}",
+        "${RECIPE_VAR_qa_evidence}",
+        "${RECIPE_VAR_qa_evidence-}",
+        "${RECIPE_VAR_qa_evidence:=}",
+        "A=\"${RECIPE_VAR_qa_evidence:-}\" B=\"${RECIPE_VAR_qa_evidence}\"",
+    ] {
+        assert!(
+            recipe_var_read_has_a_bare_tail(line, "qa_evidence"),
+            "`{line}` lets an empty step output fall through and must be a violation"
+        );
+    }
+    for line in [
+        "${RECIPE_VAR_qa_evidence:-}",
+        "${RECIPE_VAR_qa_evidence:-MISSING}",
+        "${RECIPE_VAR_qa_evidence:-${QA_EVIDENCE_HASH:-}}",
+        "${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}",
+        "${RECIPE_VAR_qa_evidence_hash}",
+        "${RECIPE_VAR_qa_evidence_hash:-}",
+    ] {
+        assert!(
+            !recipe_var_read_has_a_bare_tail(line, "qa_evidence"),
+            "`{line}` must not be a violation"
+        );
+    }
 
     for (command, name) in [
         ("echo {{qa_evidence}}", "qa_evidence"),
@@ -4502,10 +4594,7 @@ fn step_output_read_matchers_respect_the_name_boundary() {
         ("echo {{qa_evidence}}", "qa"),
         ("{qa_evidence}", "qa_evidence"),
         ("echo {{ repo_path }}", "qa_evidence"),
-        (
-            "QA=\"${QA_EVIDENCE:-${RECIPE_VAR_qa_evidence:-}}\"",
-            "qa_evidence",
-        ),
+        ("QA=\"${RECIPE_VAR_qa_evidence:-}\"", "qa_evidence"),
         ("echo qa_evidence }}", "qa_evidence"),
     ] {
         assert!(
@@ -4591,6 +4680,11 @@ fn read_table_parse_fails_closed() {
 /// a bare `${CRUSTY_LOOP_PREFLIGHT:-}` read is always empty — every loop lost
 /// its state_dir and every run stopped as STUCK.
 ///
+/// Issue #1561 / #1607. The #1511 fix read `${UPPER:-${RECIPE_VAR_x:-}}`, so a
+/// bare `UPPER` inherited from whatever launched the runner outranked the
+/// recipe's own value. Every read is now `${RECIPE_VAR_<output>:-<default>}`
+/// alone, with no bare read anywhere and no bare tail.
+///
 /// Output names are collected across ALL autodrive recipes into one set: a
 /// recipe reads outputs its sub-recipes declare (`autodrive-merge-round` reads
 /// `QA_EVIDENCE`, declared in `autodrive-merge-evidence`).
@@ -4598,7 +4692,7 @@ fn read_table_parse_fails_closed() {
 /// Enforces "The static check" in docs/reference/auto-drive-to-merge.md: two
 /// sanity checks, then checks 1–4 in the order the reference gives them.
 #[test]
-fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
+fn autodrive_step_outputs_are_read_from_recipe_var_only() {
     let mut outputs: Vec<String> = AUTODRIVE_RECIPES
         .iter()
         .flat_map(|r| {
@@ -4625,8 +4719,8 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
         "autodrive-merge-loop",
         "autodrive-merge-round",
     ];
-    let mut missing = Vec::new();
     let mut bare = Vec::new();
+    let mut tails = Vec::new();
     let mut per_file = BTreeMap::new();
     for r in READERS {
         let text = recipe_text(r);
@@ -4634,51 +4728,52 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
         for (idx, line) in text.lines().enumerate() {
             for name in &outputs {
                 let upper = name.to_ascii_uppercase();
-                if skips_the_fallback(line, &upper) {
+                if reads_the_bare_name(line, &upper) {
                     bare.push(format!(
-                        "{r}.yaml:{}: reads `{upper}` in a form that never reaches RECIPE_VAR_{name}",
+                        "{r}.yaml:{}: reads the bare `{upper}`, which an inherited variable \
+                         can set; read RECIPE_VAR_{name} only",
                         idx + 1
                     ));
                 }
-                let read = format!("${{{upper}:-");
-                let dual = format!("${{{upper}:-${{RECIPE_VAR_{name}:-");
-                let reads = line.matches(&read).count();
-                if reads == 0 {
-                    continue;
-                }
-                file_reads += reads;
-                if line.matches(&dual).count() < reads {
-                    missing.push(format!(
-                        "{r}.yaml:{}: reads `{read}` without the RECIPE_VAR_{name} fallback",
+                if recipe_var_read_has_a_bare_tail(line, name) {
+                    tails.push(format!(
+                        "{r}.yaml:{}: RECIPE_VAR_{name} has no `:-` default or falls back to \
+                         the bare `{upper}`",
                         idx + 1
                     ));
                 }
+                // A read is one `${RECIPE_VAR_<name>:-` at a name boundary.
+                file_reads += bounded_matches(line, &format!("${{RECIPE_VAR_{name}"))
+                    .filter(|&end| line[end..].starts_with(":-"))
+                    .count();
             }
         }
         assert!(
             file_reads > 0,
-            "{r}.yaml: no step-output reads found; the check is not looking at the right names"
+            "{r}.yaml: no `${{RECIPE_VAR_<output>:-` reads found; the check is not looking \
+             at the right names"
         );
         per_file.insert(r.to_string(), file_reads);
     }
     let total: usize = per_file.values().sum();
 
-    // Check 1: every read has the fallback.
-    assert!(
-        missing.is_empty(),
-        "{} of {total} step-output reads have no RECIPE_VAR_ fallback \
-         (use \"${{UPPER:-${{RECIPE_VAR_<output>:-<default>}}}}\"):\n{}",
-        missing.len(),
-        missing.join("\n")
-    );
-
-    // Check 2: no read skips the fallback.
+    // Check 1: no read uses the bare name.
     assert!(
         bare.is_empty(),
-        "{} step-output reads skip the RECIPE_VAR_ fallback; `${{UPPER` must be followed \
-         by `:-`, and `${{#UPPER`, `${{!UPPER` and `$UPPER` are never allowed:\n{}",
+        "{} step-output reads use the bare upper-case name, so a variable inherited from \
+         the launcher outranks the recipe's own value (#1561, #1607); write \
+         \"${{RECIPE_VAR_<output>:-<default>}}\":\n{}",
         bare.len(),
         bare.join("\n")
+    );
+
+    // Check 2: every RECIPE_VAR_ read has a default and no bare tail.
+    assert!(
+        tails.is_empty(),
+        "{} RECIPE_VAR_ reads have no default or a bare tail; an empty step output must \
+         take its own default, never an inherited value:\n{}",
+        tails.len(),
+        tails.join("\n")
     );
 
     // Check 3: no step output is templated into a `command:`.
@@ -4702,7 +4797,7 @@ fn autodrive_step_outputs_are_read_with_the_recipe_var_fallback() {
     assert!(
         templated.is_empty(),
         "{} step outputs are pasted into bash before it parses them; read them from the \
-         environment as \"${{UPPER:-${{RECIPE_VAR_<output>:-}}}}\" instead:\n{}",
+         environment as \"${{RECIPE_VAR_<output>:-}}\" instead:\n{}",
         templated.len(),
         templated.join("\n")
     );
@@ -4750,9 +4845,89 @@ fn inherited_autodrive_context(root: &Path) -> Vec<(String, String)> {
 /// `AMPLIHACK_MERGE_GUARD=1`. That is where this test runs as phase-1 tests and
 /// as the merge round's QA, and where it failed twice in PR #1644 crusty round
 /// 11. The script drops the guard at its top, so a run without the guard
-/// covers nothing this one does not; it is not run twice (it takes minutes).
+/// covers nothing this one does not. The other two runs keep the injected
+/// context instead of letting the script remove it; see [`Inherited`].
 #[test]
 fn auto_drive_contract_shell_test_passes() {
+    run_auto_drive_contract_shell_test(Inherited::Scrubbed);
+}
+
+/// The same suite with `AUTODRIVE_TEST_KEEP_INHERITED=1` and an inherited
+/// `AUTODRIVE_TOOLS_DIR` that points somewhere else than the round's own
+/// `RECIPE_VAR_autodrive_tools_dir` (#1607). Every case must still pass,
+/// because no step body reads an inherited bare name (#1561). The #1551 merge
+/// guard and the gh stubs stay in place, so no case can merge a real PR.
+#[test]
+fn auto_drive_contract_shell_test_passes_with_conflicting_inherited_tools_dir() {
+    run_auto_drive_contract_shell_test(Inherited::Conflicting);
+}
+
+/// The #1607 reproduction: the outer run's tools directory inherited as both
+/// `AUTODRIVE_TOOLS_DIR` and `RECIPE_VAR_autodrive_tools_dir`, as a nested
+/// auto-drive round saw them. Every case sets the tools dir it needs, so the
+/// suite must still pass, MERGEREADY-no-round-tool included.
+#[test]
+fn auto_drive_contract_shell_test_passes_with_inherited_context() {
+    run_auto_drive_contract_shell_test(Inherited::Same);
+}
+
+/// What the contract shell test inherits from the process that starts it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Inherited {
+    /// The script removes every `AUTODRIVE_*` / `RECIPE_VAR_*` name first.
+    Scrubbed,
+    /// Kept (`AUTODRIVE_TEST_KEEP_INHERITED=1`): `AUTODRIVE_TOOLS_DIR` is a
+    /// decoy whose tools print a sentinel and exit 97, and
+    /// `RECIPE_VAR_autodrive_tools_dir` is the real tools directory.
+    Conflicting,
+    /// Kept: both names are the real tools directory (#1607 as observed).
+    Same,
+}
+
+/// Sentinel printed by every decoy tool of [`Inherited::Conflicting`].
+const DECOY_1561_SENTINEL: &str = "DECOY-1561-INHERITED-TOOLS-DIR";
+
+/// A tools directory holding a decoy for every tool the real one ships. Each
+/// decoy prints [`DECOY_1561_SENTINEL`] and exits 97: no network, no gh, no
+/// git writes. Created under `CARGO_TARGET_TMPDIR`, never under /tmp.
+#[cfg(unix)]
+fn decoy_tools_dir(root: &Path) -> tempfile::TempDir {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::Builder::new()
+        .prefix("decoy-1561-")
+        .tempdir_in(env!("CARGO_TARGET_TMPDIR"))
+        .expect("decoy tools dir under CARGO_TARGET_TMPDIR");
+    let real = root.join("amplifier-bundle/tools");
+    let mut n = 0;
+    for e in fs::read_dir(&real)
+        .expect("read amplifier-bundle/tools")
+        .flatten()
+    {
+        let name = e.file_name();
+        if !e.path().is_file() || !name.to_string_lossy().ends_with(".sh") {
+            continue;
+        }
+        let p = dir.path().join(&name);
+        fs::write(
+            &p,
+            format!(
+                "printf '%s\\n' '{DECOY_1561_SENTINEL}' >&2\n\
+                 printf '%s\\n' '{DECOY_1561_SENTINEL}'\n\
+                 return 97 2>/dev/null || exit 97\n"
+            ),
+        )
+        .expect("write decoy tool");
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o755)).expect("chmod decoy tool");
+        n += 1;
+    }
+    assert!(
+        n >= 10,
+        "only {n} decoy tools written; the conflicting run would prove nothing"
+    );
+    dir
+}
+
+fn run_auto_drive_contract_shell_test(inherited: Inherited) {
     let root = workspace_root();
     let script = root.join("amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh");
     assert!(script.is_file(), "missing {}", script.display());
@@ -4766,25 +4941,70 @@ fn auto_drive_contract_shell_test_passes() {
         Ok(p) => format!("{}:{}:{p}", guard.display(), bin_dir.display()),
         Err(_) => format!("{}:{}", guard.display(), bin_dir.display()),
     };
+    // The script's resolver cases need scratch space outside every git work
+    // tree. CARGO_TARGET_TMPDIR is inside this checkout, so pass TMPDIR
+    // explicitly, falling back to the system temp dir when it is unset.
+    let tmpdir = std::env::var_os("TMPDIR")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
 
-    let out = Command::new("bash")
-        .arg(&script)
+    let decoy = (inherited == Inherited::Conflicting).then(|| decoy_tools_dir(&root));
+    let mut context = inherited_autodrive_context(&root);
+    if let Some(d) = &decoy {
+        for (k, v) in context.iter_mut() {
+            if k == "AUTODRIVE_TOOLS_DIR" {
+                *v = d.path().display().to_string();
+            }
+        }
+    }
+
+    let mut cmd = Command::new("bash");
+    cmd.arg(&script)
         .current_dir(&root)
         .env_remove("AMPLIHACK_MERGE_GUARD_USER_BASH_ENV")
         .env("PATH", path)
+        .env("TMPDIR", &tmpdir)
         .env("BASH_ENV", &bash_env)
-        .env("AMPLIHACK_MERGE_GUARD", "1")
-        .envs(inherited_autodrive_context(&root))
+        .env("AMPLIHACK_MERGE_GUARD", "1");
+    if inherited != Inherited::Scrubbed {
+        cmd.envs(context).env("AUTODRIVE_TEST_KEEP_INHERITED", "1");
+    } else {
+        cmd.envs(context);
+    }
+    let out = cmd
         .output()
         .expect("run the auto-drive contract shell test");
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
 
     assert!(
         out.status.success(),
-        "test-auto-drive-to-merge.sh failed ({:?})\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        "test-auto-drive-to-merge.sh failed (inherited={inherited:?}, {:?})\n\
+         --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         out.status.code(),
-        String::from_utf8_lossy(&out.stdout),
-        String::from_utf8_lossy(&out.stderr),
     );
+    let failed: Vec<&str> = stdout
+        .lines()
+        .chain(stderr.lines())
+        .filter(|l| l.trim_start().starts_with("FAIL["))
+        .collect();
+    assert!(
+        failed.is_empty(),
+        "test-auto-drive-to-merge.sh reported failures (inherited={inherited:?}):\n{}",
+        failed.join("\n")
+    );
+    assert!(
+        stdout.contains("PASS[MERGEREADY-no-round-tool]"),
+        "MERGEREADY-no-round-tool did not pass (inherited={inherited:?}); a round with no \
+         round tool must not find one through an inherited AUTODRIVE_TOOLS_DIR (#1607)\n{stdout}"
+    );
+    if inherited == Inherited::Conflicting {
+        assert!(
+            !stdout.contains(DECOY_1561_SENTINEL) && !stderr.contains(DECOY_1561_SENTINEL),
+            "a step ran a tool from the inherited AUTODRIVE_TOOLS_DIR decoy (#1561, #1607)"
+        );
+    }
 }
 
 // ── Which `amplihack` the shell test runs ────────────────────────────────────
@@ -4938,10 +5158,12 @@ fn issue_1543_pr_head_worktree_shell_test_passes() {
         Err(_) => bin_dir.display().to_string(),
     };
 
+    // The amplihack under test runs from PATH: keep it off the real ~/.amplihack.
     let out = Command::new("bash")
         .arg(&script)
         .current_dir(&root)
         .env("PATH", path)
+        .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
         .envs(inherited_autodrive_context(&root))
         .output()
         .expect("run the #1543 shell test");
@@ -5076,7 +5298,7 @@ fn both_loops_resolve_the_pr_worktree_in_their_preflight() {
         }
         let pf = field(step(&recipe, preflight), "command");
         assert!(
-            pf.contains("autodrive_pr_head.sh") && pf.contains("AUTODRIVE_PR_INPUT"),
+            pf.contains("autodrive_pr_head.sh") && pf.contains("RECIPE_VAR_autodrive_pr_input"),
             "{loop_name} {preflight} must resolve the PR head when pr_number was supplied"
         );
         assert!(
@@ -5181,14 +5403,14 @@ fn the_merge_gate_never_receives_resolver_output() {
 }
 
 #[test]
-fn the_report_reads_phase_outputs_through_recipe_var_fallbacks() {
+fn the_report_reads_phase_outputs_through_recipe_var_only() {
     let recipe = recipe_yaml("auto-drive-to-merge");
     let body = field(step(&recipe, "autodrive-report"), "command");
     for spelling in [
-        "${BUILD_RESULT:-${RECIPE_VAR_build_result:-}}",
-        "${MERGE_GATE_RESULT:-${RECIPE_VAR_merge_gate_result:-}}",
-        "${CRUSTY_LOOP_RESULT:-${RECIPE_VAR_crusty_loop_result:-}}",
-        "RECIPE_VAR_pr_number",
+        "${RECIPE_VAR_build_result:-}",
+        "${RECIPE_VAR_merge_gate_result:-}",
+        "${RECIPE_VAR_crusty_loop_result:-}",
+        "\"${RECIPE_VAR_pr_number:-}\"",
     ] {
         assert!(
             body.contains(spelling),
@@ -5196,4 +5418,163 @@ fn the_report_reads_phase_outputs_through_recipe_var_fallbacks() {
              phases were skipped otherwise reports NOT_MERGED with an empty pr (#1543)"
         );
     }
+    // #1561: an inherited bare name must not pick the outcome or the pr. The
+    // candidate loop tries RECIPE_VAR_pr_number, never a bare PR_NUMBER.
+    for bare in [
+        "BUILD_RESULT",
+        "MERGE_GATE_RESULT",
+        "CRUSTY_LOOP_RESULT",
+        "PR_NUMBER",
+    ] {
+        assert!(
+            !reads_the_bare_name(body, bare),
+            "autodrive-report must not read the bare `{bare}`: an inherited value would \
+             outrank this run's own output (#1561)"
+        );
+    }
+}
+
+/// #1561 residual: the runner passes an inherited `RECIPE_VAR_<key>` through to
+/// a nested run that does not declare `<key>`. The merge round therefore
+/// declares every gate key it reads with an empty default, so a parent's value
+/// is replaced at the start of the round and a key no step fills takes the
+/// read's deny default. See "What is still read through a bare name".
+#[test]
+fn merge_round_declares_every_gate_key_it_reads() {
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let context = recipe
+        .get("context")
+        .and_then(Value::as_mapping)
+        .expect("autodrive-merge-round.yaml has a context: mapping");
+    for key in [
+        "ci_evidence",
+        "qa_evidence",
+        "qa_evidence_hash",
+        "merge_ready_verdict",
+        "merge_sync",
+        "platform_facts",
+        "crusty_evidence",
+        "autodrive_tools_dir",
+    ] {
+        let value = context.get(Value::from(key));
+        assert_eq!(
+            value.and_then(Value::as_str),
+            Some(""),
+            "autodrive-merge-round.yaml must declare `{key}: \"\"` in context:, so an \
+             inherited RECIPE_VAR_{key} from a parent run cannot reach the round (#1561)"
+        );
+    }
+}
+
+/// #1607, on a child process: the outer run's real tools are inherited as
+/// `AUTODRIVE_TOOLS_DIR` (not scrubbed), and this round's own tools directory
+/// has no round tool. step-03 must compare nothing and fail closed, not run
+/// the outer tool and keep MERGE_READY. The environment is set only on the
+/// child `Command`, never with `std::env::set_var`.
+#[cfg(unix)]
+#[test]
+fn autodrive_round_with_inherited_stale_tools_dir_uses_its_own() {
+    use std::os::unix::fs::PermissionsExt;
+    let root = workspace_root();
+    let tools = root.join("amplifier-bundle/tools");
+    let recipe = recipe_yaml("autodrive-merge-round");
+    let body = step_command(&recipe, "step-03-extract-merge-ready-verdict").to_string();
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    fs::set_permissions(tmp.path(), fs::Permissions::from_mode(0o700)).expect("chmod tmp");
+    let own_tools = tmp.path().join("round-tools");
+    fs::create_dir_all(&own_tools).expect("round tools dir");
+    let qa_file = tmp.path().join("qa-evidence.json");
+    fs::write(&qa_file, "{\"qa_status\":\"PASS\"}\n").expect("qa evidence");
+    fs::set_permissions(&qa_file, fs::Permissions::from_mode(0o600)).expect("chmod qa");
+    // The hash step-00d would record, from the round tool itself.
+    let sha = Command::new("bash")
+        .arg(tools.join("autodrive_round_evidence.sh"))
+        .arg("qa-evidence-sha")
+        .arg(&qa_file)
+        .env_remove("BASH_ENV")
+        .output()
+        .expect("hash the qa evidence");
+    let sha = String::from_utf8_lossy(&sha.stdout).trim().to_string();
+    assert!(
+        sha.len() == 40 || sha.len() == 64,
+        "autodrive_round_evidence.sh qa-evidence-sha printed `{sha}`"
+    );
+
+    let bin = PathBuf::from(env!("CARGO_BIN_EXE_amplihack"));
+    let path = format!(
+        "{}:{}",
+        bin.parent().expect("binary dir").display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let run = |round_tools: &Path, inherited: Option<&Path>| {
+        let mut cmd = Command::new("bash");
+        cmd.arg("-c").arg(&body).current_dir(tmp.path());
+        for bare in [
+            "AUTODRIVE_TOOLS_DIR",
+            "QA_EVIDENCE",
+            "CI_EVIDENCE",
+            "MERGE_SYNC",
+            "PLATFORM_FACTS",
+            "CRUSTY_EVIDENCE",
+            "QA_EVIDENCE_HASH",
+            "MERGE_READY_REVIEW",
+            "BASH_ENV",
+        ] {
+            cmd.env_remove(bare);
+        }
+        cmd.env("PATH", &path)
+            .env("HOME", tmp.path())
+            .env(crate::isolated_amplihack::HOME_GUARD_ENV, "1")
+            .env("AUTODRIVE_ROUND_RECORD", tmp.path().join("round.json"))
+            .env("AUTODRIVE_ROUND_LABEL", "r")
+            .env("AUTODRIVE_QA_EVIDENCE", &qa_file)
+            .env("RECIPE_VAR_autodrive_tools_dir", round_tools)
+            .env(
+                "RECIPE_VAR_merge_ready_review",
+                r#"{"merge_ready_verdict":"MERGE_READY","blockers":[]}"#,
+            )
+            .env("RECIPE_VAR_qa_evidence", r#"{"qa_status":"PASS"}"#)
+            .env(
+                "RECIPE_VAR_ci_evidence",
+                r#"{"ci_status":"GREEN","ci_signal":"green"}"#,
+            )
+            .env("RECIPE_VAR_merge_sync", r#"{"conflict":"false"}"#)
+            .env(
+                "RECIPE_VAR_platform_facts",
+                r#"{"unresolved_threads":"0","approval_status":"MET"}"#,
+            )
+            .env(
+                "RECIPE_VAR_crusty_evidence",
+                r#"{"crusty_status":"DONE_CLEAN","crusty_reason":"","crusty_reviewed_head_sha":"","crusty_first_unreviewed_sha":""}"#,
+            )
+            .env(
+                "RECIPE_VAR_qa_evidence_hash",
+                format!("{{\"qa_evidence_sha\":\"{sha}\"}}"),
+            );
+        if let Some(dir) = inherited {
+            cmd.env("AUTODRIVE_TOOLS_DIR", dir);
+        }
+        let out = cmd.output().expect("run step-03");
+        (
+            String::from_utf8_lossy(&out.stdout).to_string(),
+            String::from_utf8_lossy(&out.stderr).to_string(),
+        )
+    };
+
+    // Control: with the round's own tools the fixture's evidence all agrees,
+    // so MERGE_READY stands. Otherwise the row below would pass vacuously.
+    let (stdout, stderr) = run(&tools, None);
+    assert!(
+        stdout.contains(r#""merge_ready_verdict":"MERGE_READY""#),
+        "control: the fixture must reach MERGE_READY with real round tools\n{stdout}\n{stderr}"
+    );
+
+    let (stdout, stderr) = run(&own_tools, Some(&tools));
+    assert!(
+        stdout.contains(r#""merge_ready_verdict":"NOT_MERGE_READY""#)
+            && stdout.contains("measured_evidence=unreadable"),
+        "a round whose own tools dir has no round tool used the inherited \
+         AUTODRIVE_TOOLS_DIR and kept its verdict (#1607):\n{stdout}\n{stderr}"
+    );
 }

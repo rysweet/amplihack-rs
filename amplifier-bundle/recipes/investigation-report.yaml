@@ -12,7 +12,16 @@ recursion:
   max_depth: 6
   max_total_steps: 60
 
-context: {}
+context:
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  investigation_question: ""
+  investigation_type: ""
+  output_dir: ""
+  discoveries_path: ""
+  patterns_path: ""
+  synthesis: ""
+  tracking: ""
+  tracking_start_time: ""
 
 steps:
   # ==========================================================================
@@ -23,7 +32,7 @@ steps:
     type: "bash"
     command: |
       set -euo pipefail
-      out_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
+      out_dir="${RECIPE_VAR_output_dir:-}"
       case "$out_dir" in
         ""|*..*) echo "invalid output_dir" >&2; exit 1 ;;
       esac
@@ -38,8 +47,8 @@ steps:
     condition: "patterns_analysis and patterns_analysis.patterns_discovered"
     command: |
       set -euo pipefail
-      patterns_path="${PATTERNS_PATH:-${RECIPE_VAR_patterns_path:-}}"
-      investigation_type="${INVESTIGATION_TYPE:-${RECIPE_VAR_investigation_type:-}}"
+      patterns_path="${RECIPE_VAR_patterns_path:-}"
+      investigation_type="${RECIPE_VAR_investigation_type:-}"
       jq -cn --arg patterns_path "$patterns_path" --arg investigation_type "$investigation_type" \
         '{patterns_updated: true, patterns_path: $patterns_path, investigation_type: $investigation_type}'
     output: "patterns_update"
@@ -50,8 +59,8 @@ steps:
     command: |
       set -euo pipefail
       umask 022
-      out_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
-      synthesis="${SYNTHESIS:-${RECIPE_VAR_synthesis:-}}"
+      out_dir="${RECIPE_VAR_output_dir:-}"
+      synthesis="${RECIPE_VAR_synthesis:-}"
       case "$out_dir" in
         ""|*..*) echo "invalid output_dir: '$out_dir'" >&2; exit 1 ;;
       esac
@@ -131,8 +140,8 @@ steps:
   - id: "efficiency-report"
     type: "bash"
     command: |
-      tracking_raw="${TRACKING:-${RECIPE_VAR_tracking:-}}"
-      START_TIME="${TRACKING_START_TIME:-${RECIPE_VAR_tracking_start_time:-}}"
+      tracking_raw="${RECIPE_VAR_tracking:-}"
+      START_TIME="${RECIPE_VAR_tracking_start_time:-}"
       if [ -z "$START_TIME" ]; then
         START_TIME="$(jq -rn --arg raw "$tracking_raw" 'try (($raw | fromjson).start_time // "") catch ""')"
       fi
@@ -173,14 +182,14 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      output_dir="${OUTPUT_DIR:-${RECIPE_VAR_output_dir:-}}"
-      question="${INVESTIGATION_QUESTION:-${RECIPE_VAR_investigation_question:-}}"
-      investigation_type="${INVESTIGATION_TYPE:-${RECIPE_VAR_investigation_type:-}}"
-      discoveries_path="${DISCOVERIES_PATH:-${RECIPE_VAR_discoveries_path:-}}"
-      patterns_path="${PATTERNS_PATH:-${RECIPE_VAR_patterns_path:-}}"
-      synthesis_raw="${SYNTHESIS:-${RECIPE_VAR_synthesis:-}}"
-      transition_raw="${TRANSITION_GUIDANCE:-${RECIPE_VAR_transition_guidance:-}}"
-      efficiency_raw="${EFFICIENCY_METRICS:-${RECIPE_VAR_efficiency_metrics:-}}"
+      output_dir="${RECIPE_VAR_output_dir:-}"
+      question="${RECIPE_VAR_investigation_question:-}"
+      investigation_type="${RECIPE_VAR_investigation_type:-}"
+      discoveries_path="${RECIPE_VAR_discoveries_path:-}"
+      patterns_path="${RECIPE_VAR_patterns_path:-}"
+      synthesis_raw="${RECIPE_VAR_synthesis:-}"
+      transition_raw="${RECIPE_VAR_transition_guidance:-}"
+      efficiency_raw="${RECIPE_VAR_efficiency_metrics:-}"
       report_path="$output_dir/investigation_report.md"
       synthesis_json="$(jq -cn --arg raw "$synthesis_raw" 'try ($raw | fromjson) catch {}')"
       transition_json="$(jq -cn --arg raw "$transition_raw" 'try ($raw | fromjson) catch {}')"

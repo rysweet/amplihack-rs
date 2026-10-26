@@ -103,6 +103,10 @@ grep -n 'WORKTREE_SETUP_WORKTREE_PATH:?' \
 
 Steps 15, 16, and 18c should still contain `:?` guards (they need the worktree).
 Steps 19c, 20a, 20b, and 21 should contain `-d` directory checks instead.
+Each of these steps gets the path from
+[`worktree_setup_path.sh`](../../amplifier-bundle/tools/worktree_setup_path.sh),
+which reads only `RECIPE_VAR_worktree_setup`, so exporting
+`WORKTREE_SETUP_WORKTREE_PATH` in your shell has no effect on where they run.
 
 See [Issue #647 — Resilient Worktree Cleanup](../recipes/issue-647-resilient-worktree-cleanup.md)
 for full detail.

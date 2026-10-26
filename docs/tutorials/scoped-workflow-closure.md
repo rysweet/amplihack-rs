@@ -157,9 +157,9 @@ workstream is active and does not close the current workflow based on it.
 Run readiness with the same scope:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_pr_ready.sh
@@ -168,13 +168,19 @@ amplifier-bundle/tools/workflow_pr_ready.sh
 Then read terminal status:
 
 ```bash
-PR_NUMBER="$PR_NUMBER" \
-PR_URL="$PR_URL" \
-ISSUE_NUMBER="$ISSUE_NUMBER" \
+RECIPE_VAR_pr_number="$PR_NUMBER" \
+RECIPE_VAR_pr_url="$PR_URL" \
+RECIPE_VAR_issue_number="$ISSUE_NUMBER" \
 EXPECTED_PR_TITLE_PREFIX="Fix issue #754:" \
 WORKFLOW_STARTED_AT="$STARTED_AT" \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
+
+The helpers read the PR and issue only from the `RECIPE_VAR_` names, the same
+names the recipe runner exports to a step. A bare `PR_NUMBER`, `PR_URL` or
+`ISSUE_NUMBER` in your shell is ignored, so it cannot point the helpers at
+another PR (see
+[Step outputs ignore inherited bare variables](../reference/auto-drive-to-merge.md#step-outputs-ignore-inherited-bare-variables)).
 
 Both commands validate PR scope before reporting readiness or terminal status.
 If the PR head changes, `headRefOid` validation blocks stale success and the

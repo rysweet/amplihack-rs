@@ -185,10 +185,9 @@ steps:
     condition: "terminal_state.terminal_success != 'true'"
     command: |
       set -euo pipefail
-      export GIT_PAGER=cat
-      export PAGER=cat
-      export LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      export GIT_PAGER=cat PAGER=cat LESS=FRX
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-18c-push-feedback-changes)" || WORKTREE_SETUP_WORKTREE_PATH=""
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-18c-push-feedback-changes requires worktree_setup.worktree_path; ensure parent recipe ran worktree-setup and propagated outputs}"
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         echo "ERROR: step-18c-push-feedback-changes requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2
@@ -347,8 +346,9 @@ steps:
     condition: "terminal_state.terminal_success != 'true'"
     command: |
       set -euo pipefail; umask 077
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
-      if [ -d "${WORKTREE_SETUP_WORKTREE_PATH:-}" ]; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-19c worktree path gone, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-19c worktree path gone and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WT_GONE="${WT_TOOL:+worktree path gone}"
+      if WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-19c-zero-bs-verification)"; then cd "$WORKTREE_SETUP_WORKTREE_PATH"; elif [ -d "${REPO_PATH:-}" ]; then echo "WARNING: step-19c ${WT_GONE:-worktree_setup_path.sh not found}, falling back to REPO_PATH=$REPO_PATH" >&2; cd "$REPO_PATH"; else echo "WARNING: step-19c ${WT_GONE:-worktree_setup_path.sh not found} and REPO_PATH unset, using cwd=$(pwd)" >&2; fi
       if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then echo "ERROR: step-19c-zero-bs-verification requires a git repo; run git init or rerun from a checkout" >&2; exit 1; fi
       selected_root=${TMPDIR-/tmp}; [ -n "$selected_root" ] || { echo 'ERROR: step-19c TMPDIR is empty' >&2; exit 1; }; root=$(cd -- "$selected_root" && pwd -P && printf '.') || exit $?; root=${root%$'\n.'}
       storage=$(mktemp -d "${root%/}/step19c.XXXXXXXXXXXX") || exit $?; case "$storage" in "${root%/}"/step19c.*) ;; *) echo 'ERROR: step-19c unsafe allocation' >&2; exit 1;; esac

@@ -27,6 +27,9 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
+  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  repo_path: ""
+  version_bump: ""
 
 steps:
   - id: "publish-terminal-state"
@@ -83,7 +86,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14b-sync-lockfile)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14b requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       # Issue #915: step-14's version bump leaves Cargo.lock stale, so --locked
       # pre-commit gates fail deterministically. Keep the lock IN SYNC (do NOT
@@ -100,7 +104,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14c-sync-package-json)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14c requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       SP=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/workflow_sync_package_version.sh" ] && { SP="$c/amplifier-bundle/tools/workflow_sync_package_version.sh"; break; }; done
       # A missing mirror helper must not fail a publish; the version sync is advisory.
@@ -111,7 +116,8 @@ steps:
     condition: "goal_already_met != 'true' && terminal_state.terminal_success != 'true' && terminal_state.should_publish == 'true'"
     command: |
       set -euo pipefail
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-14g-artifact-guard)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-14g requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       amplihack hygiene artifact-guard --repo . --mode pre-publish
 
@@ -123,7 +129,8 @@ steps:
       export GIT_PAGER=cat
       export PAGER=cat
       export LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-15-commit-push)" || WORKTREE_SETUP_WORKTREE_PATH=""
       # Issue #1528: stage and commit only at the top of the linked task worktree; no REPO_PATH fallback.
       # Hard-fail rather than skip: a skipped commit here would lose work silently.
       cd -P "${WORKTREE_SETUP_WORKTREE_PATH:?step-15 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
@@ -177,7 +184,7 @@ steps:
       ISSUE_NUMBER="${ISSUE_NUMBER:-}"
       # FIX (#944): commit prefix from step-14's real change type (PATCH->fix:,
       # MINOR->feat:, MAJOR->feat!:), not a hardcoded 'feat:'. Unknown -> bugfix heuristic.
-      CHANGE_CLASS="${VERSION_BUMP_CHANGE_CLASSIFICATION:-${RECIPE_VAR_version_bump__change_classification:-}}"
+      CHANGE_CLASS="$(printf '%s' "${RECIPE_VAR_version_bump:-}" | jq -r 'if type=="object" and has("change_classification") and .change_classification != null then .change_classification | tostring else empty end' 2>/dev/null)" || { echo "WARNING: step-15-commit-push: version_bump is not valid JSON; treated as missing (#1561)" >&2; CHANGE_CLASS=""; }
       case "$(printf '%s' "$CHANGE_CLASS" | tr '[:lower:]' '[:upper:]')" in
         PATCH) COMMIT_PREFIX="fix: " ;;
         MINOR) COMMIT_PREFIX="feat: " ;;
@@ -322,7 +329,8 @@ steps:
     command: |
       set -euo pipefail
       export GIT_PAGER=cat PAGER=cat LESS=FRX
-      : "${WORKTREE_SETUP_WORKTREE_PATH:=${RECIPE_VAR_worktree_setup__worktree_path:-${REPO_PATH:-}}}"
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      WORKTREE_SETUP_WORKTREE_PATH="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-16-create-draft-pr)" || { [ $? -eq 3 ] || exit 1; WORKTREE_SETUP_WORKTREE_PATH="${RECIPE_VAR_repo_path:-}"; }
       cd "${WORKTREE_SETUP_WORKTREE_PATH:?step-16 requires worktree_setup.worktree_path from step-04 (workflow-worktree); ensure parent recipe ran worktree-setup and propagated outputs}"
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")

@@ -337,12 +337,14 @@ terminal evidence, the routing layer is incorrectly masking failure.
 ## Run the Terminal-State Evaluator Directly
 
 The shell helper can be run from a checkout to inspect normalized evidence.
+It reads recipe values only from their `RECIPE_VAR_` names, and an evidence
+field from the JSON of its step output, as the runner exports them (see the
+[helper inputs](../reference/workflow-terminal-state.md#inputs)).
 
 ```bash
 WORKFLOW_CLASSIFICATION=Development \
 RECIPE_NAME=default-workflow \
 REPO_PATH=. \
-BRANCH_NAME="$(git branch --show-current)" \
 OBSERVED_PHASES="workflow-prep,workflow-worktree,workflow-design" \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
@@ -361,11 +363,8 @@ Add implementation and verification evidence to confirm a valid success path:
 WORKFLOW_CLASSIFICATION=Development \
 RECIPE_NAME=default-workflow \
 REPO_PATH=. \
-BRANCH_NAME="$(git branch --show-current)" \
-IMPLEMENTATION_COMPLETED=true \
-VERIFICATION_COMPLETED=true \
-TERMINAL_STATE=IMPLEMENTED_VERIFIED \
-TERMINAL_REASON="implementation and targeted tests completed" \
+RECIPE_VAR_implementation_terminal_evidence='{"implementation_completed":true}' \
+RECIPE_VAR_verification_terminal_evidence='{"verification_completed":true}' \
 amplifier-bundle/tools/workflow_final_status.sh
 ```
 
