@@ -1190,18 +1190,37 @@ JSON
     bin_dir
 }
 
+/// Move refs/remotes/origin/feature, recording the move in its reflog as a push
+/// or fetch would.
+fn set_tracking_ref(worktree: &Path, oid: &str) {
+    run_cmd(
+        worktree,
+        "git",
+        &[
+            "update-ref",
+            "--create-reflog",
+            "-m",
+            "test: tracking ref",
+            "refs/remotes/origin/feature",
+            oid,
+        ],
+    );
+}
+
 fn commit_file(worktree: &Path, name: &str, message: &str) {
     write_file(&worktree.join(name), &format!("{message}\n"));
     run_cmd(worktree, "git", &["add", name]);
     run_cmd(worktree, "git", &["commit", "-m", message]);
 }
 
-/// A feature worktree whose PR (`state`) has its head one commit behind local HEAD.
+/// A feature worktree whose PR (`state`) has its head one commit behind local
+/// HEAD. origin/feature is at the PR head, as after the agent's `git push`.
 fn pr_behind_local_head(state: &str) -> (GitFixture, PathBuf, JsonValue) {
     let fixture = setup_repo();
     let worktree = create_feature_worktree(&fixture);
     commit_feature_change(&worktree);
     let pr_head = git_head(&worktree);
+    set_tracking_ref(&worktree, &pr_head);
     commit_file(&worktree, "later.txt", "later local commit, not pushed");
     let mut pr: JsonValue =
         serde_json::from_str(&matching_pr_json(&worktree, state, "")).expect("matching PR JSON");
@@ -1343,17 +1362,31 @@ fn terminal_state_still_rejects_a_remote_rewound_behind_what_was_pushed() {
     // is older, so the remote was rewound. Pushing would restore removed work.
     let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
     let local_head = git_head(&worktree);
-    run_cmd(
-        &worktree,
-        "git",
-        &["update-ref", "refs/remotes/origin/feature", &local_head],
-    );
+    set_tracking_ref(&worktree, &local_head);
     let fake_tmp = TempDir::new().expect("fake gh tempdir");
     let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
 
     let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
 
     assert_stale(&run, "remote rewound behind origin/feature");
+}
+
+#[test]
+fn terminal_state_still_rejects_a_rewind_that_was_already_fetched() {
+    // The newer commit was pushed, the remote was rewound, and a later fetch
+    // moved origin/feature back to the PR head. Its reflog still shows the
+    // newer commit, so pushing would restore removed work.
+    let (fixture, worktree, pr) = pr_behind_local_head("OPEN");
+    let local_head = git_head(&worktree);
+    let pr_head = pr["headRefOid"].as_str().expect("pr head").to_string();
+    set_tracking_ref(&worktree, &local_head);
+    set_tracking_ref(&worktree, &pr_head);
+    let fake_tmp = TempDir::new().expect("fake gh tempdir");
+    let fake_path = fake_gh_listing(&fake_tmp, &pr.to_string());
+
+    let run = run_terminal_state(&fixture.repo, Some(&worktree), "feature", None, &fake_path);
+
+    assert_stale(&run, "rewind already fetched into origin/feature");
 }
 
 /// workflow_pr_scope.sh in named mode, run directly in the worktree.

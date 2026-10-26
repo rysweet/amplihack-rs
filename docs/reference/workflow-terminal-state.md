@@ -644,7 +644,9 @@ stale. While the PR is `OPEN`:
   the last push, a PR behind `HEAD` lacks the run's work and must not count.
 
 A merged or closed PR, a head that is not an ancestor of local `HEAD`, or a
-remote branch rewound behind this checkout's `origin/<branch>`, still fails as
+remote branch rewound behind any value this checkout's `origin/<branch>` held
+(its current value or its last 50 reflog entries, so a rewind that was already
+fetched is caught too), still fails as
 `stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits must not be
 reported as `MERGED`, because the local commits would be lost.
 

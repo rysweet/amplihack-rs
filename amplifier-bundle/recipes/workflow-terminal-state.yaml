@@ -449,10 +449,14 @@ steps:
           # behind, not stale: an agent opened it early and a later step
           # committed without pushing; the next push step pushes them. A merged
           # or closed PR, a head that is not an ancestor, or a remote branch
-          # rewound behind what this checkout last saw pushed, still fails.
-          tracking_oid="$(git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH_INPUT}^{commit}" 2>/dev/null || true)"
-          if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] \
-              && { [ -z "$tracking_oid" ] || [ "$tracking_oid" = "$pr_head_oid" ]; } \
+          # rewound behind any value origin/<branch> held here (current or in
+          # its reflog, so a fetched rewind counts too), still fails.
+          remote_rewound="false"
+          for seen_oid in $(git rev-parse --verify --quiet "refs/remotes/origin/${BRANCH_INPUT}^{commit}" 2>/dev/null || true) \
+              $(git reflog -n 50 --format=%H "refs/remotes/origin/${BRANCH_INPUT}" -- 2>/dev/null || true); do
+            [[ "$seen_oid" =~ ^[0-9a-f]{40}$ ]] && git merge-base --is-ancestor "$seen_oid" "$pr_head_oid" 2>/dev/null || remote_rewound="true"
+          done
+          if [ "$pr_state" = "OPEN" ] && [[ "$pr_head_oid" =~ ^[0-9a-f]{40}$ ]] && [ "$remote_rewound" = "false" ] \
               && git merge-base --is-ancestor "$pr_head_oid" "$local_head" 2>/dev/null; then
             pr_behind="true"
             echo "INFO: workflow-terminal-state: local HEAD is $(git rev-list --count "${pr_head_oid}..${local_head}") commit(s) ahead of open PR head '$pr_head_oid'; the next push step pushes them (#1467)" >&2
