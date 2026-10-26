@@ -291,6 +291,11 @@ jobs:
         env:
           TMPDIR: ${{ runner.temp }}
         run: bash amplifier-bundle/recipes/tests/test-issue-1626-consensus-rerun-preserves-work.sh
+      - name: Recipes — a rejected git hook is repaired, never bypassed (issue #1671)
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+        run: bash amplifier-bundle/recipes/tests/test-issue-1671-hook-rejection-repair.sh
       - name: Recipes — evidence gate resolves via full ladder + no-discard (issue #962)
         shell: bash
         run: bash amplifier-bundle/recipes/tests/test-issue-962-implementation-evidence-fallback.sh

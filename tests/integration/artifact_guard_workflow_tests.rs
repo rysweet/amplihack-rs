@@ -505,10 +505,13 @@ fn every_recipe_broad_add_followed_by_commit_is_rechecked_by_the_guard() {
         }
     }
 
-    // The TDD checkpoint uses a scoped add, checked separately below.
+    // The three phase-1 commit sites no longer use a broad add: the TDD
+    // checkpoint stages captured paths (#1672) and the refactor and publish
+    // steps use `stage_workflow_changes` (#1671). Both are checked in
+    // `phase1_commit_sites_never_fall_back_to_repo_path`.
     assert!(
-        checked >= 9,
-        "expected the nine executable broad-add commit sites to be scanned, found {checked}"
+        checked >= 7,
+        "expected the seven executable broad-add commit sites to be scanned, found {checked}"
     );
     assert!(
         missing.is_empty(),
@@ -1030,7 +1033,7 @@ fn checkpoint_and_review_recheck_after_staging() {
     let scoped_add = shell_command_offset(command, SCOPED_TDD_ADD)
         .expect("TDD checkpoint must stage only captured paths");
     let commit = command
-        .find("if commit_with_pre_commit_guard -m")
+        .find("commit_with_pre_commit_guard -m")
         .expect("TDD checkpoint must invoke the guarded commit helper");
     assert!(
         scoped_add < commit
@@ -1296,7 +1299,7 @@ fn phase1_commit_sites_never_fall_back_to_repo_path() {
         let add_command = if step == "checkpoint-after-implementation" {
             SCOPED_TDD_ADD
         } else {
-            "git add -A; amplihack hygiene artifact-guard"
+            "stage_workflow_changes; amplihack hygiene artifact-guard"
         };
         let add = shell_command_offset(command, add_command)
             .unwrap_or_else(|| panic!("{recipe}/{step} must execute `{add_command}`"));
