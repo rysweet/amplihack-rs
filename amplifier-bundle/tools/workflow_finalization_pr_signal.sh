@@ -19,39 +19,20 @@
 # fallback, and its stderr is never emitted. Retry scratch files live in a
 # private mktemp -d directory that is removed on every return path.
 #
-# This file only DEFINES functions; sourcing it has no side effects.
+# This file only DEFINES functions (and sources the shared parser
+# workflow_github_repo.sh); sourcing it has no other side effects.
 
-# _finalization_github_repo <origin_url> -> echoes owner/repo, or returns 1.
-# Accepts the same forms as parse_github_repo_identity in the publish helpers.
-_finalization_github_repo() {
-  local url="${1:-}" path owner repo
-  case "$url" in
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*)
-      path="${url#*://}"
-      # The userinfo must not contain '/', '?', '#' or a backslash: otherwise
-      # https://evil.example/x@github.com/o/r (or evil.example#@github.com/o/r)
-      # would be read as github.com/o/r while git contacts evil.example.
-      case "${path%%@github.com/*}" in */*|*\?*|*#*|*\\*) return 1 ;; esac
-      path="${path#*@github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"
-  path="${path%%#*}"
-  path="${path%/}"
-  path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"
-  repo="${path#*/}"
-  repo="${repo%%/*}"
-  case "$owner" in .|..) return 1 ;; esac
-  case "$repo" in .|..) return 1 ;; esac
-  [[ "$owner/$repo" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
-}
+# parse_github_repo_identity comes from the shared parser next to this file
+# (issue #1642). When it is missing the function stays undefined, every call
+# fails, and the open-PR signal fails closed; this file is sourced, so it never exits.
+_finalization_pr_signal_repo_helper="${WORKFLOW_GITHUB_REPO_HELPER:-$(dirname "${BASH_SOURCE[0]}")/workflow_github_repo.sh}"
+if [ -f "$_finalization_pr_signal_repo_helper" ] && [ -r "$_finalization_pr_signal_repo_helper" ]; then
+  # shellcheck source=workflow_github_repo.sh disable=SC1090
+  . "$_finalization_pr_signal_repo_helper"
+else
+  echo "WARNING: shared GitHub repo identity parser not found at $_finalization_pr_signal_repo_helper" >&2
+fi
+unset _finalization_pr_signal_repo_helper
 
 # _finalization_pr_number_valid <n> -> 0 when <n> is a canonical PR number.
 _finalization_pr_number_valid() {
@@ -159,7 +140,8 @@ _finalization_open_pr_signal_in() {
   [[ "$head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { _finalization_no_signal "local HEAD could not be resolved"; return 1; }
 
   origin="$(git -C "$dir" config --get remote.origin.url 2>/dev/null || :)"
-  repo="$(_finalization_github_repo "$origin")" || { _finalization_no_signal "origin is not a recognised github.com repository"; return 1; }
+  declare -F parse_github_repo_identity >/dev/null 2>&1 || { _finalization_no_signal "GitHub repo identity parser is not loaded"; return 1; }
+  repo="$(parse_github_repo_identity "$origin")" || { _finalization_no_signal "origin is not a recognised github.com repository"; return 1; }
   prefix="https://github.com/$repo/pull/"
 
   if [ -n "$ref" ]; then

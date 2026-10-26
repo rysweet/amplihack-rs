@@ -252,6 +252,7 @@ Proven methodologies for consistent, high-quality results.
 - [PR Recovery Readiness](PR_RECOVERY_READINESS.md) - Entry point for existing-PR recovery docs and the canonical readiness contract
 - [Publish Workflow Versioning](WORKFLOW_PUBLISH_VERSIONING.md) - Classification-driven commit prefix and version bump (bugfix branches stay on `fix:` and do not bump the workspace version)
 - [GitHub API Rate-Limit Tolerance](WORKFLOW_GH_RATE_LIMIT_TOLERANCE.md) - Shared `gh` retry library: classify auth/rate-limit/transient errors, wait for the authoritative reset or fall back to REST, with credential redaction
+- [GitHub Repo Identity Parser](reference/workflow-github-repo-identity.md) - The one shared `parse_github_repo_identity` used by every workflow helper and the terminal-state recipe: accepted origin forms, hostile-userinfo rejection, helper lookup, the self-hosting reinstall requirement, and the Rust parsers (issue #1642)
 - [Document-Driven Development (DDD)](document_driven_development/README.md) - Documentation-first approach for large features
 
 ### DDD Deep Dive

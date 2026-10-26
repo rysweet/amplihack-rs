@@ -20,7 +20,7 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
     // Already in owner/repo format
     let simple_re = regex::Regex::new(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$").unwrap();
     if simple_re.is_match(uri) {
-        return Ok(uri.to_string());
+        return checked_owner_repo(uri, uri);
     }
 
     // HTTPS URL
@@ -28,7 +28,7 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
         regex::Regex::new(r"^https://github\.com/([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
             .unwrap();
     if let Some(caps) = https_re.captures(uri) {
-        return Ok(caps[1].to_string());
+        return checked_owner_repo(&caps[1], uri);
     }
 
     // SSH URL
@@ -36,10 +36,23 @@ pub fn parse_github_uri(uri: &str) -> anyhow::Result<String> {
         regex::Regex::new(r"^git@github\.com:([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+?)(?:\.git)?$")
             .unwrap();
     if let Some(caps) = ssh_re.captures(uri) {
-        return Ok(caps[1].to_string());
+        return checked_owner_repo(&caps[1], uri);
     }
 
     anyhow::bail!("Invalid GitHub URI: {uri}")
+}
+
+/// Reject `.` and `..` segments and an owner starting with `-` (issue #1642):
+/// the former name another path once resolved, the latter reaches `git clone`
+/// as an option.
+fn checked_owner_repo(owner_repo: &str, uri: &str) -> anyhow::Result<String> {
+    let (owner, repo) = owner_repo
+        .split_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Invalid GitHub URI: {uri}"))?;
+    if matches!(owner, "." | "..") || matches!(repo, "." | "..") || owner.starts_with('-') {
+        anyhow::bail!("Invalid GitHub URI: {uri}");
+    }
+    Ok(owner_repo.to_string())
 }
 
 /// Checkout a GitHub repository.
@@ -174,5 +187,73 @@ mod tests {
         let result = checkout_repository("owner/repo", Some(dir.path()));
         assert!(result.is_some());
         assert_eq!(result.unwrap(), target);
+    }
+
+    // Issue #1642: this parser already rejects every hostile origin; these
+    // tests pin that so a later loosening (userinfo, other hosts) fails CI.
+    const ISSUE_1642_HOSTILE: &[&str] = &[
+        "https://evil.example/x@github.com/a/b",
+        "https://evil.example#@github.com/o/r",
+        "https://evil.example?@github.com/o/r",
+        r"https://evil.example\@github.com/o/r",
+        "https://a@b@github.com/o/r",
+        "https://a@github.com/x@github.com/o/r",
+        "https://tok@github.com/o/r",
+        concat!("https://x:", "tok@github.com/o/r"),
+        r"evil.example\@github.com:o/r",
+        "-oProxyCommand=x:o/r",
+    ];
+
+    #[test]
+    fn issue_1642_hostile_origins_are_rejected() {
+        for uri in ISSUE_1642_HOSTILE {
+            assert!(parse_github_uri(uri).is_err(), "{uri:?} must be rejected");
+        }
+    }
+
+    // Path shape and segments (docs/reference/workflow-github-repo-identity.md):
+    // exactly two segments, never `.` or `..`, owner never starting with `-`,
+    // in the bare form and both URL forms.
+    const ISSUE_1642_PATH_SHAPE: &[&str] = &[
+        "o/r/extra",
+        "https://github.com/o/r/extra",
+        "https://github.com/o/r/../../x/y",
+        "https://github.com/o/r/pull/5",
+        "git@github.com:o/r/tree/main",
+        "./r",
+        "../r",
+        "o/.",
+        "o/..",
+        "-o/r",
+        "https://github.com/./r",
+        "https://github.com/../r",
+        "https://github.com/o/..",
+        "https://github.com/o/.",
+        "https://github.com/-o/r",
+        "https://github.com/o/...git",
+        "git@github.com:../r",
+        "git@github.com:o/..",
+        "git@github.com:-o/r",
+        "git@github.com:o/..git",
+    ];
+
+    #[test]
+    fn issue_1642_path_shape_and_segment_rules_are_enforced() {
+        for uri in ISSUE_1642_PATH_SHAPE {
+            assert!(parse_github_uri(uri).is_err(), "{uri:?} must be rejected");
+        }
+    }
+
+    #[test]
+    fn issue_1642_supported_forms_parse_to_owner_repo() {
+        for uri in [
+            "o/r",
+            "https://github.com/o/r",
+            "https://github.com/o/r.git",
+            "git@github.com:o/r",
+            "git@github.com:o/r.git",
+        ] {
+            assert_eq!(parse_github_uri(uri).unwrap(), "o/r", "{uri:?}");
+        }
     }
 }

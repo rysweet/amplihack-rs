@@ -4,6 +4,9 @@ use super::models::{Workstream, WorkstreamScope};
 use super::process_scope::normalize_path;
 use super::utils::rand_u32;
 use amplihack_types::workflow;
+use amplihack_workflows::remote_repository::{
+    github_repository_from_remote_url, redact_remote_url,
+};
 use anyhow::{Result, bail};
 use chrono::Utc;
 use std::collections::HashMap;
@@ -28,8 +31,12 @@ pub(super) fn detect_delegate() -> String {
     "amplihack claude".to_string()
 }
 
+/// The scope's repository is `owner/repo` for a GitHub origin (issue #1642).
+/// Any other URL is stored with its userinfo, which may be a token, redacted;
+/// a local path is stored as is.
 pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, base_ref: &str) {
-    let repository = parse_github_repo_identity(repo_url).unwrap_or_else(|| repo_url.to_string());
+    let repository =
+        github_repository_from_remote_url(repo_url).unwrap_or_else(|| redact_remote_url(repo_url));
     let repo_root = normalize_path(&ws.work_dir);
     let tree_id =
         std::env::var("AMPLIHACK_TREE_ID").unwrap_or_else(|_| format!("{:08x}", rand_u32()));
@@ -51,39 +58,6 @@ pub(super) fn populate_workstream_scope(ws: &mut Workstream, repo_url: &str, bas
         expected_title_prefix: ws.description.clone(),
         started_at: Utc::now().to_rfc3339(),
     };
-}
-
-fn parse_github_repo_identity(url: &str) -> Option<String> {
-    let mut path = if let Some(rest) = url.strip_prefix("git@github.com:") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("ssh://git@github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("https://github.com/") {
-        rest.to_string()
-    } else if let Some(rest) = url.strip_prefix("http://github.com/") {
-        rest.to_string()
-    } else if (url.starts_with("https://") || url.starts_with("http://"))
-        && url.contains("@github.com/")
-    {
-        url.split("@github.com/").nth(1)?.to_string()
-    } else {
-        return None;
-    };
-    if let Some((before, _)) = path.split_once('?') {
-        path = before.to_string();
-    }
-    if let Some((before, _)) = path.split_once('#') {
-        path = before.to_string();
-    }
-    path = path.trim_end_matches(".git").to_string();
-    let mut parts = path.split('/');
-    let owner = parts.next()?.trim();
-    let repo = parts.next()?.trim();
-    if owner.is_empty() || repo.is_empty() {
-        None
-    } else {
-        Some(format!("{owner}/{repo}"))
-    }
 }
 
 /// Build context map for recipe-based resume.

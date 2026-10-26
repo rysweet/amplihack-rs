@@ -27,6 +27,14 @@ GH_RETRY_HELPER="${WORKFLOW_GH_RETRY_HELPER:-${SCRIPT_DIR}/workflow_gh_retry.sh}
 [ -f "$GH_RETRY_HELPER" ] || { echo "ERROR: workflow_publish_pr.sh requires the shared retry helper at $GH_RETRY_HELPER" >&2; exit 2; }
 # shellcheck source=/dev/null
 . "$GH_RETRY_HELPER"
+GITHUB_REPO_HELPER="${WORKFLOW_GITHUB_REPO_HELPER:-${SCRIPT_DIR}/workflow_github_repo.sh}"
+if [ ! -f "$GITHUB_REPO_HELPER" ] || [ ! -r "$GITHUB_REPO_HELPER" ]; then
+  echo "ERROR: workflow_publish_pr.sh requires the shared GitHub repo identity parser at $GITHUB_REPO_HELPER" >&2
+  exit 2
+fi
+# Defines parse_github_repo_identity (issue #1642).
+# shellcheck source=workflow_github_repo.sh disable=SC1090
+. "$GITHUB_REPO_HELPER"
 # write_body_file keeps the PR body out of argv: gh reads it with --body-file,
 # truncated below GitHub's 65,536-character limit (issue #1570).
 BODY_FILE_HELPER="${WORKFLOW_BODY_FILE_HELPER:-${SCRIPT_DIR}/workflow_body_file.sh}"
@@ -121,27 +129,6 @@ resolve_pr_base_ref() {
   done
   echo "ERROR: no supported remote base ref found. Expected origin/HEAD, origin/main, origin/master, or origin/develop." >&2
   return 1
-}
-
-parse_github_repo_identity() {
-  local url="$1" path owner repo
-  case "$url" in
-    git@github.com:*) path="${url#git@github.com:}" ;;
-    ssh://git@github.com/*) path="${url#ssh://git@github.com/}" ;;
-    https://*@github.com/*|http://*@github.com/*) path="${url#*://}"; path="${path#*@github.com/}" ;;
-    https://github.com/*) path="${url#https://github.com/}" ;;
-    http://github.com/*) path="${url#http://github.com/}" ;;
-    *) return 1 ;;
-  esac
-  path="${path%%\?*}"
-  path="${path%%#*}"
-  path="${path%.git}"
-  case "$path" in */*) ;; *) return 1 ;; esac
-  owner="${path%%/*}"
-  repo="${path#*/}"
-  repo="${repo%%/*}"
-  [ -n "$owner" ] && [ -n "$repo" ] || return 1
-  printf '%s/%s\n' "$owner" "$repo"
 }
 
 # Rate-limit-aware retry wrappers. Retry logic is centralised in the shared
