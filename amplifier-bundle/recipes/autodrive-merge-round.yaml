@@ -93,7 +93,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00-merge-ready-files]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-00-merge-ready-files]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00-merge-ready-files]" >&2; exit 1; }
       R="${TOOLS_D}/autodrive_merge_ready_files.sh"
       [ -f "$R" ] || { echo "ERROR: merge-ready-skill-files-not-found: resolver autodrive_merge_ready_files.sh not found (${R})" >&2; exit 1; }
       # Executed, never sourced: it prints one JSON line or a named ERROR.
@@ -127,7 +127,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00d-qa-evidence-hash]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-00d-qa-evidence-hash]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-00d-qa-evidence-hash]" >&2; exit 1; }
       T="${TOOLS_D}/autodrive_round_evidence.sh"
       [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
       bash "$T" qa-evidence-hash "${AUTODRIVE_QA_EVIDENCE:-}"
@@ -142,7 +142,7 @@ steps:
       export GIT_PAGER=cat GH_PAGER=cat PAGER=cat LESS=FRX
       PR="${PR_NUMBER:-}"; case "$PR" in *[!0-9]*) PR="" ;; esac
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-01-platform-facts]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-01-platform-facts]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-01-platform-facts]" >&2; exit 1; }
       T="${TOOLS_D}/autodrive_platform_facts.sh"
       [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
       OUT="$(bash "$T" "$PR")" || OUT=""
@@ -159,7 +159,7 @@ steps:
       set -uo pipefail
       cd "${REPO_PATH:-.}" 2>/dev/null || { echo "ERROR: cannot cd to REPO_PATH" >&2; exit 1; }
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-01b-crusty-evidence]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-01b-crusty-evidence]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-01b-crusty-evidence]" >&2; exit 1; }
       T="${TOOLS_D}/autodrive_round_evidence.sh"
       [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
       bash "$T" crusty-evidence
@@ -276,7 +276,7 @@ steps:
       fi
       # Measured evidence outranks the model: the tool's merge-ready-verdict (#1517).
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-03-extract-merge-ready-verdict]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-03-extract-merge-ready-verdict]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-03-extract-merge-ready-verdict]" >&2; exit 1; }
       T="${TOOLS_D}/autodrive_round_evidence.sh"
       if [ -f "$T" ]; then printf '%s' "$BLOCKERS" | bash "$T" merge-ready-verdict "$VERDICT" "$SOURCE"; exit $?; fi
       # No round tool, nothing measured: unmeasured evidence disagrees, so never MERGE_READY.
@@ -386,7 +386,7 @@ steps:
     command: |
       set -uo pipefail
       TOOLS_D="${RECIPE_VAR_autodrive_tools_dir:-}"
-      [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1; }
+      case "$TOOLS_D" in *$'\n'*|[!/]*) echo "STOP: autodrive-tools-dir-invalid: autodrive_tools_dir is not one absolute line [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1 ;; esac; [ -n "$TOOLS_D" ] && [ -d "$TOOLS_D" ] || { echo "ERROR: autodrive-tools-not-found: autodrive_tools_dir is empty or not a directory [autodrive-merge-round/step-05-write-round-record]" >&2; exit 1; }
       T="${TOOLS_D}/autodrive_round_evidence.sh"
       [ -f "$T" ] || { echo "ERROR: autodrive-tools-not-found: ${T}" >&2; exit 1; }
       bash "$T" round-record

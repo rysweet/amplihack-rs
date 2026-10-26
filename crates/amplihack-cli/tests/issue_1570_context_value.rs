@@ -335,6 +335,10 @@ fn dotted_key_with_unusable_base_exits_3() {
         ("a JSON array", r#"[{"summary":"x"}]"#),
         ("a JSON number", "5"),
         ("an object without the field", r#"{"other":"x"}"#),
+        (
+            "two JSON documents",
+            r#"{"summary":"own"} {"summary":"/evil"}"#,
+        ),
     ];
     for mode in MODES {
         let dir = tempfile::tempdir().unwrap();
@@ -351,6 +355,33 @@ fn dotted_key_with_unusable_base_exits_3() {
                 &format!("base is {what}"),
             );
         }
+    }
+}
+
+#[test]
+fn dotted_key_with_two_json_documents_exits_3() {
+    if !jq_available() {
+        return;
+    }
+    // Each document alone is an object, so a per-document check would join
+    // the two fields into `own/evil` (#1561, security review L1).
+    for mode in MODES {
+        let dir = tempfile::tempdir().unwrap();
+        assert_exit_3(
+            mode,
+            "a.b",
+            &[("RECIPE_VAR_a", r#"{"b":"own"} {"b":"/evil"}"#)],
+            dir.path(),
+            "a base holding two JSON documents is not one object",
+        );
+        let out = run(
+            mode,
+            dir.path(),
+            &["a.b", "-"],
+            &[("RECIPE_VAR_a", r#"{"b":"own"} {"b":"/evil"}"#)],
+        );
+        assert_eq!(out.status.code(), Some(3), "{mode:?} a.b -: exit 3");
+        assert!(out.stdout.is_empty(), "{mode:?} a.b -: prints nothing");
     }
 }
 

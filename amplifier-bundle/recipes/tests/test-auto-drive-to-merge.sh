@@ -2584,6 +2584,18 @@ if grep -qE 'autodrive-tools-not-found: /autodrive_' "${R1607_OUT}"; then
 else
   pass "1561-empty-tools-dir-fails-closed" "an empty RECIPE_VAR_autodrive_tools_dir is refused before any /autodrive_*.sh path is built"
 fi
+# A relative tools dir would resolve against the cwd, which is the PR checkout
+# under review. Run from the decoy's parent so the relative name is a real
+# directory: the step must stop by name before it runs anything (#1561 L2).
+for id in step-00-merge-ready-files step-00d-qa-evidence-hash step-01-platform-facts step-01b-crusty-evidence \
+          step-03-extract-merge-ready-verdict step-05-write-round-record; do
+  rc=0; ( cd "$(dirname "${DECOY_1607}")" && s1607_run "$id" RECIPE_VAR_autodrive_tools_dir="$(basename "${DECOY_1607}")" ) || rc=$?
+  if [ "$rc" -ne 0 ] && grep -qF 'STOP: autodrive-tools-dir-invalid' "${R1607_OUT}" && ! s1607_decoy_ran; then
+    pass "1561-relative-tools-dir-${id}" "${id} stops with autodrive-tools-dir-invalid on a relative autodrive_tools_dir"
+  else
+    fail "1561-relative-tools-dir-${id}" "rc=${rc}: $(head -c 300 "${R1607_OUT}" | tr '\n' ' ')"
+  fi
+done
 
 # #1561 D2: NO_MERGE is the one bare name kept, as an override that can only
 # tighten. The recipe's no_merge decides; a bare NO_MERGE that normalises to
@@ -5356,7 +5368,7 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
-   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "$(cd "${FAKE_HOME}" && pwd -P)/amplifier-bundle/recipes/autodrive-crusty-round.yaml" ] \
    && [[ "${BODY_ERR}" != *'no state_dir'* ]]; then
   pass "1511-crusty-loop-02" "crusty-loop step-02 reads state_dir, pr and repo through RECIPE_VAR_crusty_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
@@ -5380,7 +5392,7 @@ if [ "$BODY_RC" -eq 0 ] && [ "$(arg_after --state-dir "${CALLS}/loop-args")" = "
    && [ "$(arg_after --pr "${CALLS}/resolver-args")" = "42" ] \
    && [ "$(arg_after --repo "${CALLS}/resolver-args")" = "${PR_REPO}" ] \
    && [ "$(arg_after --repo "${CALLS}/loop-args")" = "${CALLS}/pr-worktree" ] \
-   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "${FAKE_HOME}/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
+   && [ "$(arg_after --round-recipe "${CALLS}/loop-args")" = "$(cd "${FAKE_HOME}" && pwd -P)/amplifier-bundle/recipes/autodrive-merge-round.yaml" ]; then
   pass "1511-merge-loop-02" "merge-loop step-02 reads state_dir and repo through RECIPE_VAR_merge_loop_preflight, resolves the PR worktree from that repo and runs the loop there"
 else
   fail "1511-merge-loop-02" "merge-loop step-02 did not get past the state_dir guard (rc=${BODY_RC}): ${BODY_ERR}"

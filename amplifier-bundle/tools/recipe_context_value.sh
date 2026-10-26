@@ -10,8 +10,8 @@
 #      <base> is the part of <KEY> before the first `.`, with `-` replaced by
 #      `_`. An undotted key writes the value as it is. A dotted key `a.b.c`
 #      parses RECIPE_VAR_a as JSON and walks the path `b`, `c` one object key
-#      at a time (#1561); a base that is not a JSON object, or lacks a key on
-#      the path, exits 3. A nested name such as RECIPE_VAR_<a>__<b> is never
+#      at a time (#1561); a base that is not exactly one JSON object, or
+#      lacks a key on the path, exits 3. A nested name such as RECIPE_VAR_<a>__<b> is never
 #      built or read: the runner writes those only for fields the current
 #      object has, so one can hold a parent run's value.
 #   2. Only when the base variable is unset: AMPLIHACK_CONTEXT_FILE, read with
@@ -73,8 +73,8 @@ write_context_value() (
       printf '%s\n' "write_context_value: jq is required to read dotted key '$key'" >&2
       exit 1
     }
-    if ! printf '%s' "${!var}" | jq -e 'type == "object"' >/dev/null 2>&1; then
-      printf '%s\n' "write_context_value: context key '$key' is not available ($var is set but is not a JSON object)" >&2
+    if ! printf '%s' "${!var}" | jq -e -s 'length == 1 and (.[0] | type == "object")' >/dev/null 2>&1; then
+      printf '%s\n' "write_context_value: context key '$key' is not available ($var is set but is not a single JSON object)" >&2
       exit 3
     fi
     rc=0

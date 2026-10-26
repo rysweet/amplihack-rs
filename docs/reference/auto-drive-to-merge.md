@@ -1718,7 +1718,7 @@ Each step starts from the runner's inherited environment, with the recipe's
 values laid over it (`src/adapters/cli_subprocess.rs:603-616`). A nested name
 for a field the current object lacks is never written, so it keeps whatever
 the parent run or the launching shell exported. For example, a parent run's
-`RECIPE_VAR_worktree_setup__worktree_path=/home/ryan/src/other-run` survives
+`RECIPE_VAR_worktree_setup__worktree_path=/srv/runs/other-run` survives
 into a child whose own `worktree_setup` is `""`, or whose object has no
 `worktree_path`. Before this fix, `autodrive-build` step-03 and
 `probe-terminal-state` would then look for a pull request, or judge the
@@ -1743,12 +1743,14 @@ each tool stays self-contained:
 # rv_field <key> <field>: print <field> of the JSON object in RECIPE_VAR_<key>,
 # or nothing. Never reads RECIPE_VAR_<key>__<field> (#1561).
 rv_field() {
-  local key=$1 field=$2 var
+  local key="$1" field="$2" var out
   [[ "$key" =~ ^[A-Za-z0-9_]+$ && "$field" =~ ^[A-Za-z0-9_]+$ ]] || return 0
   var="RECIPE_VAR_${key}"
-  printf '%s' "${!var:-}" | jq -r --arg f "$field" \
-    'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end' \
-    2>/dev/null || true
+  [ -n "${!var:-}" ] || return 0
+  out="$(printf '%s' "${!var}" \
+    | jq -r -s --arg f "$field" 'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one object") end | if has($f) and .[$f] != null then .[$f] | tostring else empty end' 2>/dev/null)" \
+    || { echo "WARNING: rv_field: RECIPE_VAR_${key} is not a single JSON object; treated as missing (#1561)" >&2; return 0; }
+  printf '%s' "$out"
 }
 ```
 
@@ -1765,8 +1767,16 @@ $ echo "[$(rv_field terminal_state terminal_reason)]"
 []
 $ RECIPE_VAR_terminal_state='not json'
 $ echo "[$(rv_field terminal_state terminal_state)]"
+WARNING: rv_field: RECIPE_VAR_terminal_state is not a single JSON object; treated as missing (#1561)
 []
 ```
+
+`jq -s` reads every JSON document in the value, and anything other than
+exactly one object is treated as missing. A value such as
+`{"b":"own"} {"b":"/evil"}` would otherwise print one result per document.
+An unset or empty key prints nothing and no warning; a set value that is not
+one object prints the warning, so a corrupt value is not mistaken for an
+absent one.
 
 The filter must test `has($f)` and `null` itself. The shorter
 `.[$f] // empty` treats `false` as missing, so a `false` evidence flag would
@@ -1822,24 +1832,57 @@ worktree root (`cd -P -- "$WORKTREE_PATH" && pwd -P`), so a run started from
 a `repo_path` that goes through a symlink still passes the resolved-path
 check.
 
-Where a path fails, the step does what it already did for a missing path:
-step-20a and step-20b skip; step-15, step-18c and the checkpoint commits stop
-on their `:?` message; step-14b, step-14c, step-14g and step-16 fall back to
-`repo_path`; and step-19c, step-21 and step-22b fall back to `REPO_PATH`. Each
-first prints
+Where a path fails, step-20a and step-20b skip; step-15, step-18c and the
+checkpoint commits stop on their `:?` message; and step-19c, step-21 and
+step-22b fall back to `REPO_PATH`. Each first prints
 `WARNING: <step>: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)`.
+
 The terminal-state probe (`workflow-terminal-state.yaml`) is the exception: a
-path that fails stops it with `FAILED_INVALID_INPUT`, because a verdict
-measured in another checkout would be wrong.
+path that fails, including a relative or multi-line one, stops it with
+`FAILED_INVALID_INPUT`, because a verdict measured in another checkout would
+be wrong. A `worktree_setup` that is not JSON is treated as missing there,
+after the warning described below.
+
+#### `STOP: worktree-setup-invalid`
+
+Step-14b, step-14c, step-14g and step-16 of `workflow-publish.yaml` fall back
+to `repo_path` only when `worktree_setup` is unset, empty, or an object with
+no `worktree_path`. When a path is present but fails the checks above (it is
+relative, spans more than one line, or is not a resolved worktree root), or
+when `worktree_setup` is not valid JSON, the step stops instead:
+
+```text
+STOP: worktree-setup-invalid: step-16-create-draft-pr: worktree_setup.worktree_path is present but not a resolved worktree root (#1561, #1528)
+```
+
+A rejected path previously fell back to the main checkout, where step-16 would
+run `gh pr create`. As with #1528, a value that is present but wrong stops the
+step rather than being replaced by a default.
+
+#### A `worktree_setup` that is not JSON
+
+Every inline `jq` read of a base key names its failure instead of hiding it.
+When `RECIPE_VAR_worktree_setup` (or `pr_publish_result` or `version_bump`) is
+set but is not valid JSON, the step prints
+
+```text
+WARNING: <step>: worktree_setup is not valid JSON; treated as missing (#1561)
+```
+
+and continues as for a missing value: step-20a and step-20b skip, and the
+other steps take the path described above. In the four publish steps a
+corrupt value is a `STOP: worktree-setup-invalid`. No read ends in
+`|| true`; the guard test requires the `|| {` arm with its `WARNING:` or
+`STOP:` text after every such read.
 
 In the phase recipes held to the 400-line brick budget, the read and its
 checks are one line, in the same style as those recipes' helper lookups.
 These steps run under `set -euo pipefail` and the commit steps may not use
-`|| true` (#573), so the `jq` read has no `|| true` and no `2>/dev/null`: a
-`worktree_setup` that is not JSON stops the step with `jq`'s own parse error.
+`|| true` (#573). `jq`'s own message is dropped only because the `|| {` arm
+prints a named warning in its place.
 
 ```bash
-WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp="" ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-15-commit-push: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; } ;; *) _wsp="" ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
+_ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: step-15-commit-push: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_SETUP_WORKTREE_PATH=""; _ws_corrupt=1; }; _wsp="$WORKTREE_SETUP_WORKTREE_PATH"; case "$_wsp" in *$'\n'*) _wsp=""; _wsp_rejected=1 ;; /*) { [ -d "$_wsp" ] && [ ! -L "$_wsp" ] && [ "$(realpath -- "$_wsp" 2>/dev/null)" = "$_wsp" ] && [ "$(git -C "$_wsp" rev-parse --show-toplevel 2>/dev/null)" = "$_wsp" ]; } || { echo "WARNING: step-15-commit-push: worktree_setup.worktree_path is not a resolved worktree root; treating it as missing (#1561)" >&2; _wsp=""; _wsp_rejected=1; } ;; ?*) _wsp=""; _wsp_rejected=1 ;; esac; WORKTREE_SETUP_WORKTREE_PATH="$_wsp"
 ```
 
 #### Dotted keys in `write_context_value`
@@ -1851,7 +1894,7 @@ with `--arg`. It never builds or reads `RECIPE_VAR_a__b`:
 | `RECIPE_VAR_a` | Result |
 | --- | --- |
 | an object with field `b` | `b` is written: a string raw, anything else as compact JSON. Exit `0` |
-| set, but not JSON, not an object, or without `b` (including `""`) | exit `3`, nothing written |
+| set, but not JSON, not an object, more than one JSON document, or without `b` (including `""`) | exit `3`, nothing written |
 | unset | the `AMPLIHACK_CONTEXT_FILE` fallback, as for an undotted key |
 
 This covers `consensus-issue-worktree.yaml` and `consensus-publish.yaml`, which

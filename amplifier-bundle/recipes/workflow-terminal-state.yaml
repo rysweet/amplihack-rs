@@ -257,8 +257,13 @@ steps:
       # or bare name can hold a parent run's value. The path must be one absolute
       # line, not a symlink, already resolved and a worktree root (V4).
       WORKTREE_INPUT="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
-        | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
-      case "$WORKTREE_INPUT" in *$'\n'*) WORKTREE_INPUT="!" ;; /*) ;; ?*) WORKTREE_INPUT="!" ;; esac
+        | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" \
+        || { echo "WARNING: probe-terminal-state: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; WORKTREE_INPUT=""; }
+      case "$WORKTREE_INPUT" in
+        *$'\n'*) fail_terminal_state "FAILED_INVALID_INPUT" "worktree_setup.worktree_path spans more than one line" ;;
+        /*|"") ;;
+        *) fail_terminal_state "FAILED_INVALID_INPUT" "worktree_setup.worktree_path is not an absolute path" ;;
+      esac
       if [ -n "$WORKTREE_INPUT" ] && ! { [ -d "$WORKTREE_INPUT" ] && [ ! -L "$WORKTREE_INPUT" ] \
           && [ "$(realpath -- "$WORKTREE_INPUT" 2>/dev/null)" = "$WORKTREE_INPUT" ] \
           && [ "$(git -C "$WORKTREE_INPUT" rev-parse --show-toplevel 2>/dev/null)" = "$WORKTREE_INPUT" ]; }; then

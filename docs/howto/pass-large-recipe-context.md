@@ -126,7 +126,7 @@ Nested values use a dotted key, for example
 the base key `RECIPE_VAR_final_requirements` and writes its `summary` field. It
 never reads `RECIPE_VAR_final_requirements__summary`, which can hold a value
 inherited from a parent run when the run's own object has no `summary`. If the
-base key is set but is not a JSON object, or has no such field (including an
+base key is set but is not exactly one JSON object, or has no such field (including an
 empty value), the helper exits 3 and writes nothing. It reads
 `AMPLIHACK_CONTEXT_FILE` only when the base key is not set at all. See
 [Nested step outputs are read from the base key](../reference/auto-drive-to-merge.md#nested-step-outputs-are-read-from-the-base-key).

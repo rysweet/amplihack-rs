@@ -1084,8 +1084,9 @@ fn recipes_touched_by_issue_1528_stay_under_the_brick_budget() {
 // so neither an inherited WORKTREE_SETUP_WORKTREE_PATH nor a nested
 // RECIPE_VAR_worktree_setup__worktree_path (written only for fields the
 // current object has) can outrank the recipe's own worktree. The read is the
-// start of a line that then applies the path checks.
-const STEP_20B_CONTEXT_DEFAULT: &str = r#"WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end')"; "#;
+// start of a line that then applies the path checks. A value that is not
+// JSON is named by a WARNING rather than aborting the step with jq's error.
+const STEP_20B_CONTEXT_DEFAULT: &str = r#"_ws_corrupt=0; _wsp_rejected=0; WORKTREE_SETUP_WORKTREE_PATH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" || { echo "WARNING: "#;
 
 /// `worktree_setup` as the runner hands it back: JSON in the base key (#1561).
 pub(crate) fn worktree_setup_json(worktree: &Path) -> String {

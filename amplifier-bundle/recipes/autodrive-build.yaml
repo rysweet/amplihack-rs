@@ -190,9 +190,11 @@ steps:
         # #1561: only the JSON in the base key belongs to this run; nested
         # names and bare WORKTREE_SETUP_* can hold a parent run's values.
         RUN_DIR="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
-          | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null || true)"
+          | jq -r 'if type=="object" then .worktree_path // empty else empty end' 2>/dev/null)" \
+          || { echo "WARNING: step-03-resolve-pr: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; RUN_DIR=""; }
         RUN_BRANCH="$(printf '%s' "${RECIPE_VAR_worktree_setup:-}" \
-          | jq -r 'if type=="object" then .branch_name // empty else empty end' 2>/dev/null || true)"
+          | jq -r 'if type=="object" then .branch_name // empty else empty end' 2>/dev/null)" \
+          || { echo "WARNING: step-03-resolve-pr: worktree_setup is not valid JSON; treated as missing (#1561)" >&2; RUN_BRANCH=""; }
         # A branch that is not a valid branch name is dropped; the helper then
         # takes the branch from the worktree.
         case "$RUN_BRANCH" in -*) RUN_BRANCH="" ;; esac

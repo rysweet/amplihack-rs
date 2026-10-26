@@ -2550,8 +2550,12 @@ const RV_FIELD_TOOLS: &[&str] = &[
 
 /// The one filter `rv_field` may use. `.[$f] // empty` would turn `false`
 /// into empty and change which branch a gate takes.
-const RV_FIELD_FILTER: &str =
-    r#"'if type=="object" and has($f) and .[$f] != null then .[$f] | tostring else empty end'"#;
+/// It slurps the value and accepts exactly one object, so two concatenated
+/// documents cannot print two results.
+const RV_FIELD_FILTER: &str = r#"'if length == 1 and (.[0] | type) == "object" then .[0] else error("not one object") end | if has($f) and .[$f] != null then .[$f] | tostring else empty end'"#;
+
+/// The warning `rv_field` prints for a set value that is not one JSON object.
+const RV_FIELD_WARNING: &str = "is not a single JSON object; treated as missing (#1561)";
 
 /// Whether the site at `line` (1-based) of `text` meets its `RuntimeNameUse`.
 fn runtime_site_problem(
@@ -2946,6 +2950,11 @@ fn each_rv_field_tool_defines_the_same_safe_rv_field() {
              turns false into empty:\n{def}"
         );
         assert!(
+            def.contains("echo \"WARNING: rv_field: ") && def.contains(RV_FIELD_WARNING),
+            "{rel}: a value that is set but is not one object must print a named \
+             WARNING, not be dropped silently:\n{def}"
+        );
+        assert!(
             def.contains(r#"--arg f "$field""#),
             "{rel}: the field reaches jq only through --arg:\n{def}"
         );
@@ -2958,7 +2967,13 @@ fn each_rv_field_tool_defines_the_same_safe_rv_field() {
             def.contains(r#"var="RECIPE_VAR_${key}""#),
             "{rel}: rv_field reads the base key RECIPE_VAR_<key>:\n{def}"
         );
-        for bad in ["__", "eval", "// empty", "AMPLIHACK_CONTEXT_FILE"] {
+        for bad in [
+            "__",
+            "eval",
+            "// empty",
+            "AMPLIHACK_CONTEXT_FILE",
+            "|| true",
+        ] {
             assert!(
                 !def.contains(bad),
                 "{rel}: rv_field must not contain `{bad}`:\n{def}"
@@ -3110,6 +3125,12 @@ fn rv_field_reads_the_base_key_ignores_nested_names_and_keeps_false() {
                 "terminal_state",
                 "",
                 "an array is not an object",
+            ),
+            (
+                Some(r#"{"terminal_state":"own"} {"terminal_state":"/evil"}"#),
+                "terminal_state",
+                "",
+                "two JSON documents are not one object",
             ),
         ];
         for (base, field, want, why) in cases {
@@ -3647,6 +3668,182 @@ fn an_unused_or_unchecked_bare_name_allowlist_entry_fails() {
         )],
     );
     assert!(report.iter().any(|r| r.contains("outside")), "{report:?}");
+}
+
+// ── Inline jq reads of a base key name their failure ────────────────────────
+
+/// `(line, source)` of every inline `jq` read of `"${RECIPE_VAR_<base>:-}"`
+/// whose failure is not named. Lines ending in `\` are joined first, so a
+/// read and its `|| {` arm may sit on separate lines. The first `||` after
+/// the read must open a `{ … }` block that prints `WARNING:` or `STOP:`;
+/// `|| true`, or no `||` at all (a raw jq abort under `set -e`), is flagged.
+/// The `${!…}` helpers (`rv_field`, `write_context_value`) never spell a
+/// literal `RECIPE_VAR_` name, so they are checked by their own tests.
+fn unnamed_jq_reads(text: &str) -> Vec<(usize, String)> {
+    let read = Regex::new(r#""\$\{RECIPE_VAR_[A-Za-z0-9_]+(:-)?\}"\s*\|\s*jq\b"#).unwrap();
+    let quoted = Regex::new(r"'[^']*'").unwrap();
+    let mut found = Vec::new();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        let start = i;
+        let mut logical = strip_comment(lines[i]).trim_end().to_string();
+        while logical.ends_with('\\') && i + 1 < lines.len() {
+            logical.pop();
+            i += 1;
+            logical.push(' ');
+            logical.push_str(strip_comment(lines[i]).trim());
+        }
+        i += 1;
+        if is_comment(lines[start]) {
+            continue;
+        }
+        for m in read.find_iter(&logical) {
+            // Single-quoted jq text is blanked so a `;` or `||` in a filter
+            // cannot end the statement early.
+            let rest = quoted.replace_all(&logical[m.end()..], "''").into_owned();
+            let named = rest.find("||").is_some_and(|at| {
+                // The `||` must belong to the read's own statement: a `;`
+                // before it means the read ended with no arm of its own.
+                if rest[..at].contains(';') {
+                    return false;
+                }
+                let arm = rest[at + 2..].trim_start();
+                arm.starts_with('{')
+                    && arm.find('}').is_some_and(|end| {
+                        arm[..end].contains("WARNING:") || arm[..end].contains("STOP:")
+                    })
+            });
+            if !named {
+                found.push((start + 1, lines[start].trim().to_string()));
+            }
+        }
+    }
+    found
+}
+
+#[test]
+fn every_inline_jq_read_of_a_base_key_names_its_failure() {
+    let mut report = Vec::new();
+    let mut seen = 0;
+    let read = Regex::new(r#""\$\{RECIPE_VAR_[A-Za-z0-9_]+(:-)?\}"\s*(\\\s*)?\|\s*jq\b"#).unwrap();
+    for (path, text) in scanned_files() {
+        seen += read.find_iter(&text.replace("\\\n", " ")).count();
+        for (line, src) in unnamed_jq_reads(&text) {
+            report.push(format!("{path}:{line}: {src}"));
+        }
+    }
+    assert!(
+        seen >= 20,
+        "found only {seen} inline jq reads of a base key; the check would pass without \
+         inspecting the recipes"
+    );
+    assert!(
+        report.is_empty(),
+        "{} inline jq reads of RECIPE_VAR_<base> hide or skip their failure (#1561). A \
+         value that is not JSON must not abort the step with jq's raw error, nor be \
+         dropped by `|| true`: follow the read with \
+         `|| {{ echo \"WARNING: <step>: <key> is not valid JSON; treated as missing (#1561)\" >&2; …; }}` \
+         or a `STOP:`. See \"A `worktree_setup` that is not JSON\" in {DOCS_PAGE}:\n{}",
+        report.len(),
+        report.join("\n")
+    );
+}
+
+#[test]
+fn the_unnamed_jq_read_detector_flags_the_old_forms() {
+    for (text, why) in [
+        (
+            "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b // empty' 2>/dev/null || true)\"\n",
+            "`2>/dev/null || true` hides a corrupt value",
+        ),
+        (
+            "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b // empty')\"\n",
+            "no `||`: jq's raw error aborts the step",
+        ),
+        (
+            "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" \\\n  | jq -r '.b // empty' 2>/dev/null || true)\"\n",
+            "`|| true` on the continuation line",
+        ),
+        (
+            "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b' 2>/dev/null)\" || { X=\"\"; }\n",
+            "an arm that prints nothing",
+        ),
+        (
+            "X=\"${RECIPE_VAR_x:-$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b' 2>/dev/null || true)}\"\n",
+            "the default-expansion form",
+        ),
+        (
+            "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b')\"; [ -d \"$X\" ] || { echo \"WARNING: s: not a directory\" >&2; X=\"\"; }\n",
+            "a later statement's warning arm does not cover the read",
+        ),
+    ] {
+        assert_eq!(unnamed_jq_reads(text).len(), 1, "{why}: {text}");
+    }
+}
+
+#[test]
+fn the_unnamed_jq_read_detector_accepts_the_named_forms() {
+    for text in [
+        "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b // empty' 2>/dev/null)\" || { echo \"WARNING: s: a is not valid JSON; treated as missing (#1561)\" >&2; X=\"\"; }\n",
+        "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" \\\n  | jq -r '.b // empty' 2>/dev/null)\" \\\n  || { echo \"WARNING: s: a is not valid JSON\" >&2; X=\"\"; }\n",
+        "X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b' 2>/dev/null)\" || { echo \"STOP: bad-input: a\" >&2; exit 1; }\n",
+        "# X=\"$(printf '%s' \"${RECIPE_VAR_a:-}\" | jq -r '.b' || true)\"\n",
+        "Y=\"$(gh pr view 1 --json state --jq '.state' 2>/dev/null || true)\"\n",
+        "Z=\"${RECIPE_VAR_a:-}\"\n",
+    ] {
+        assert!(unnamed_jq_reads(text).is_empty(), "{text}");
+    }
+}
+
+#[test]
+fn rv_field_warns_on_a_value_that_is_not_one_object() {
+    if !jq_on_path() {
+        return;
+    }
+    for rel in RV_FIELD_TOOLS {
+        let def = rv_field_definition(&read_repo_file(rel)).expect("rv_field");
+        for (value, warns) in [
+            (r#"{"b":"own"} {"b":"/evil"}"#, true),
+            ("not json", true),
+            (r#"{"b":"own"}"#, false),
+            ("", false),
+        ] {
+            let out = Command::new("bash")
+                .arg("-c")
+                .arg(format!(
+                    "set -u\n{def}\nv=\"$(rv_field a b)\"; printf '%s' \"$v\""
+                ))
+                .env_clear()
+                .env(
+                    "PATH",
+                    std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into()),
+                )
+                .env("RECIPE_VAR_a", value)
+                .output()
+                .expect("spawn bash");
+            assert!(
+                out.status.success(),
+                "{rel}: rv_field exits 0 for {value:?}"
+            );
+            let stdout = String::from_utf8_lossy(&out.stdout);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            if warns {
+                assert_eq!(stdout, "", "{rel}: {value:?} prints nothing");
+                assert!(
+                    stderr.contains(&format!(
+                        "WARNING: rv_field: RECIPE_VAR_a {RV_FIELD_WARNING}"
+                    )),
+                    "{rel}: {value:?} must print the named warning, got {stderr:?}"
+                );
+            } else {
+                assert!(
+                    stderr.is_empty(),
+                    "{rel}: {value:?} warns nothing, got {stderr:?}"
+                );
+            }
+        }
+    }
 }
 
 // ── Soundness of the declared-key check, and no way to skip the guard ────────
