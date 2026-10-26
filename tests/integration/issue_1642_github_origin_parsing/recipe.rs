@@ -108,11 +108,13 @@ pub(super) fn run_probe(fx: &Fixture, pr_url: &str, envs: &[(&str, &std::ffi::Os
     cmd.arg("-c")
         .arg(probe_command())
         .env("REPO_PATH", &fx.repo)
-        .env("BRANCH_NAME", super::fixture::BRANCH)
-        .env("BASE_REF", "main")
-        .env("PR_NUMBER", "")
-        .env("PR_URL", pr_url)
-        .env("GOAL_ALREADY_MET", "false")
+        // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
+        .env("RECIPE_VAR_repo_path", &fx.repo)
+        .env("RECIPE_VAR_branch_name", super::fixture::BRANCH)
+        .env("RECIPE_VAR_base_ref", "main")
+        .env("RECIPE_VAR_pr_number", "")
+        .env("RECIPE_VAR_pr_url", pr_url)
+        .env("RECIPE_VAR_goal_already_met", "false")
         .env(
             "WORKFLOW_PR_SCOPE_HELPER",
             tool_path("workflow_pr_scope.sh"),

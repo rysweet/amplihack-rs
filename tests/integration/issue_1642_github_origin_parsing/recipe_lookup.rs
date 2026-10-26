@@ -22,11 +22,13 @@ pub(super) fn run_probe_bare(fx: &Fixture, envs: &[(&str, &std::ffi::OsStr)]) ->
         .arg(probe_command())
         .env("HOME", &empty_home)
         .env("REPO_PATH", &fx.repo)
-        .env("BRANCH_NAME", BRANCH)
-        .env("BASE_REF", "main")
-        .env("PR_NUMBER", "")
-        .env("PR_URL", "")
-        .env("GOAL_ALREADY_MET", "false")
+        // #1561: the probe reads its inputs only as RECIPE_VAR_<key>.
+        .env("RECIPE_VAR_repo_path", &fx.repo)
+        .env("RECIPE_VAR_branch_name", BRANCH)
+        .env("RECIPE_VAR_base_ref", "main")
+        .env("RECIPE_VAR_pr_number", "")
+        .env("RECIPE_VAR_pr_url", "")
+        .env("RECIPE_VAR_goal_already_met", "false")
         // Keep the scope helper resolvable so only the identity helper
         // lookup can make this run fail.
         .env(
