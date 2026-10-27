@@ -11,6 +11,8 @@
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
+mod backup;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -20,6 +22,10 @@ mod daemon;
 mod damp;
 #[cfg(unix)]
 mod decide;
+#[cfg(unix)]
+mod guide;
+#[cfg(unix)]
+mod handfix;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -47,6 +53,8 @@ mod tests_daemon;
 mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
+#[cfg(all(test, unix))]
+mod tests_handfix;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]

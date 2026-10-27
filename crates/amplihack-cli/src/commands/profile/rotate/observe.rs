@@ -5,6 +5,7 @@
 use super::cycle::{Ctx, CycleOutcome};
 use super::damp::{damp, next_failed};
 use super::decide::{Decision, Measured, Reading, decide};
+use super::handfix;
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
 use super::ledger::Phase;
 use super::log::{Sink, msg};
@@ -12,7 +13,7 @@ use super::measure::{self, Live};
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    Liveness, State, effective, exists, now, scan_system,
+    Liveness, Rotated, State, effective, exists, now, scan_system,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
@@ -160,9 +161,18 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             Err(_) => out.emit(0, "would alert: the rotate journal is damaged"),
         }
     }
+    let state = State::new(ctx.store.root())?;
+    // Issue #1693: what hand-change recovery would do; it stops here.
+    let env = handfix::Env::system(ctx.store.root(), &state);
+    let lines = handfix::preview(&ctx.store, &ctx.rs, &ctx.home, &env, now())?;
+    if !lines.is_empty() {
+        for l in &lines {
+            out.emit(0, l);
+        }
+        return Ok(CycleOutcome::Alerted);
+    }
     let binary = resolve_claude_binary()
         .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
-    let state = State::new(ctx.store.root())?;
     let snap = snapshot(ctx, &state)?;
     if let Some((_, line)) = live_alert(&snap.live) {
         let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
@@ -214,4 +224,37 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     Ok(outcome)
+}
+
+/// The ALERT key kind for a refused swap: its reason, without control
+/// characters and short enough that the key passes the ledger's 320-byte
+/// check with any profile name.
+pub(super) fn refusal_kind(e: &ProfileError) -> String {
+    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
+    let mut kind = String::from("refused ");
+    for c in reason.chars() {
+        if kind.len() + c.len_utf8() > 200 {
+            break;
+        }
+        kind.push(c);
+    }
+    kind
+}
+
+/// This cycle's readings for the no-capacity file: the live profile's and
+/// every other candidate's, as measured.
+pub(super) fn rotated(
+    live: Option<&ProfileName>,
+    reading: &Reading,
+    others: &[(ProfileName, Reading)],
+) -> Vec<(ProfileName, Rotated)> {
+    let of = |r: &Reading| match *r {
+        Reading::Measured { session, week } => Rotated::Measured { session, week },
+        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Failed => Rotated::Failed,
+    };
+    live.map(|n| (n.clone(), of(reading)))
+        .into_iter()
+        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .collect()
 }

@@ -495,3 +495,60 @@ fn docs_state_the_identity_rule() {
     }
     assert!(REFERENCE.contains("| uuid on one side only | (any) | no |"));
 }
+
+/// The docs wrap lines; compare with runs of whitespace collapsed.
+fn flat(doc: &str) -> String {
+    doc.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Issue #1693: both docs say what a manual `/login` does, and quote the
+/// hand-change recovery lines and guidance as the rotator writes them.
+#[test]
+fn docs_describe_hand_change_recovery() {
+    let sentence = "A manual `/login` in `~/.claude` replaces whatever login was there; \
+                    the profile that login belonged to is left with no login.";
+    for (name, doc) in [("reference", REFERENCE), ("rotation how-to", ROTATE_HOWTO)] {
+        let doc = flat(doc);
+        assert!(
+            doc.contains(sentence),
+            "{name} is missing the /login sentence"
+        );
+        for stem in [
+            "recovered: ~/.claude holds",
+            "recovered: ~/.claude and",
+            "has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login",
+            "ALERT: the account in ~/.claude is not the one the ledger names (live=",
+            "fix 1: amplihack profile login",
+            "no profile has that account; no swap",
+            "the next cycle then recovers",
+            "run claude with no CLAUDE_CONFIG_DIR and /login again",
+            "close the claude sessions that use",
+            "wait; the next cycle retries",
+            "wait for the auto-switch session to end; the next cycle retries",
+            "'s copy by hand: mkdir -m 700",
+            "none needed; the next cycle retries",
+            "see the Recovery section of docs/howto/claude-profile-rotation.md",
+            "Claude holds its refresh lock",
+            "an earlier swap stopped half way",
+            "~/.claude changed during recovery",
+            ".rejected-logins/rotate-",
+        ] {
+            assert!(doc.contains(stem), "{name} is missing `{stem}`");
+        }
+    }
+    let reference = flat(REFERENCE);
+    for line in [
+        "would recover: <recovered line>",
+        "move <what> by hand; its path cannot be printed safely",
+        "alert: <line>",
+        "warning: <line>",
+        "lost_login",
+        "it matches more than one profile (<M1>, <M2>);",
+        "the account of profile <P1>, <P2> cannot be read, so the match is uncertain;",
+        "the account in ~/.claude.json cannot be read;",
+        "~/.claude has no login;",
+        "recovery refused: <reason>;",
+    ] {
+        assert!(reference.contains(line), "reference is missing `{line}`");
+    }
+}

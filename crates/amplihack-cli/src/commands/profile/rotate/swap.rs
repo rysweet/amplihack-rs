@@ -26,8 +26,10 @@ const ADOPT_NAME: &str = "default-original";
 // docs to them.
 const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
 const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
-const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with one link";
-const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
+pub(super) const LOGIN_NOT_MOVABLE: &str =
+    "a login file is not a private regular file with one link";
+pub(super) const DIFFERENT_DEVICES: &str =
+    "~/.claude and the profile root are on different devices";
 const NO_EXCHANGE: &str = "atomic exchange is not supported here";
 const ALREADY_LOGGED_IN: &str = "already has a login";
 pub(super) const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
@@ -92,7 +94,7 @@ pub fn adoption_name(store: &ProfileStore) -> Result<ProfileName, ProfileError> 
 }
 
 /// `$HOME` and `~/.claude` may be changed by this user only.
-fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
+pub(super) fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
     if !home.is_absolute() {
         return Err(refused("HOME is not an absolute path"));
     }

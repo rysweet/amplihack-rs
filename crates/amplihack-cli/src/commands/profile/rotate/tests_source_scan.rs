@@ -59,6 +59,7 @@ fn rotate_has_the_planned_files() {
         "daemon.rs",
         "damp.rs",
         "autostart.rs",
+        "handfix.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }
@@ -111,4 +112,29 @@ fn unsafe_blocks_carry_a_safety_comment() {
             );
         }
     }
+}
+
+/// Issue #1693: hand-change recovery moves a login by rename only, so it
+/// must name the login file only next to `lstat`-style checks and the move.
+#[test]
+fn handfix_moves_logins_only_through_the_shared_move() {
+    let text = fs::read_to_string(rotate_dir().join("handfix.rs")).expect("rotate/handfix.rs");
+    for f in [
+        "fs::rename",
+        "remove_file",
+        "remove_dir",
+        "fs::write",
+        "hard_link",
+    ] {
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.split("//").next().unwrap_or_default().contains(f)),
+            "handfix.rs calls `{f}`"
+        );
+    }
+    assert!(
+        text.contains("move_login"),
+        "the login is moved with move_login"
+    );
 }

@@ -103,6 +103,9 @@ pub(super) struct Row {
     pub(super) leased_to: Option<String>,
     /// The login is live in `~/.claude` and the numbers were read there.
     pub(super) live_in: bool,
+    /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
+    /// never recorded.
+    pub(super) live_in_home: bool,
     pub(super) report: UsageReport,
     pub(super) error: Option<ErrorReason>,
     pub(super) raw: Option<Raw>,
@@ -132,7 +135,7 @@ pub(super) fn run(
     }
     let binary = run::resolve_claude_binary()?;
     let home = home_dir();
-    let live = detect_live(store, home.as_deref(), &profiles);
+    let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
     let live_name = live.as_ref().map(|l| l.name.clone());
     // Read before probing: the account each row is recorded under must be
     // the one live when its probe started, so that a swap during the probe
@@ -153,6 +156,11 @@ pub(super) fn run(
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
+    // Only when every profile is listed: naming profiles asks about those.
+    if home_row && names.is_empty() {
+        let cmd = run::build_home_command(&binary, &["-p".into(), "/usage".into()]);
+        rows.push(home_row_of(probe(cmd, Duration::from_secs(secs), now, raw)));
+    }
     order(&mut rows, now_secs());
     print_output(&rows, json, swapped.as_ref());
     #[cfg(unix)]
@@ -187,17 +195,37 @@ fn record(store: &ProfileStore, rows: &[Row], swapped: Option<&ProfileName>, jso
 
 /// The selected profile whose login is live in `~/.claude`, printing at
 /// most one warning, and none when every selected profile has its own login
-/// (so none of them could be live).
+/// (so none of them could be live); and whether `~/.claude` holds a login no
+/// profile has, after a manual `/login` (issue #1693).
 fn detect_live(
     store: &ProfileStore,
     home: Option<&std::path::Path>,
     profiles: &[ProfileName],
-) -> Option<default_live::Live> {
-    let (live, warning) = default_live::detect(store, home);
+) -> (Option<default_live::Live>, bool) {
+    let (live, warning) = match default_live::detect_for_usage(store, home) {
+        default_live::UsageLive::Profile(name) => (Some(default_live::Live::holder(name)), None),
+        default_live::UsageLive::Home => return (None, true),
+        default_live::UsageLive::Detected(live, warning) => (live, warning),
+    };
     if let Some(w) = warning.filter(|w| live_warning_applies(store, profiles, w)) {
         eprintln!("{w}");
     }
-    live.filter(|l| profiles.contains(&l.name))
+    (live.filter(|l| profiles.contains(&l.name)), false)
+}
+
+/// The `~/.claude` row, probed with no `CLAUDE_CONFIG_DIR`.
+fn home_row_of(p: Probe) -> Row {
+    Row {
+        profile: default_live::LABEL.to_string(),
+        account: default_live::LABEL.to_string(),
+        default: false,
+        leased_to: None,
+        live_in: true,
+        live_in_home: true,
+        report: p.report,
+        error: p.error,
+        raw: p.raw,
+    }
 }
 
 /// Whether a live-detection warning can concern any selected profile. The
@@ -267,6 +295,7 @@ fn build_rows(
                     .and_then(|l| l.leased_to(n))
                     .map(str::to_string),
                 live_in: live == Some(name),
+                live_in_home: false,
                 report: p.report,
                 error: p.error,
                 raw: p.raw,
@@ -859,10 +888,11 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
     };
     rows.iter()
         .filter(|r| {
-            matches!(
-                r.report.state,
-                UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
-            )
+            !r.live_in_home
+                && matches!(
+                    r.report.state,
+                    UsageState::Ok | UsageState::SessionExhausted | UsageState::WeeklyExhausted
+                )
         })
         .map(|r| Observation {
             profile: r.profile.clone(),

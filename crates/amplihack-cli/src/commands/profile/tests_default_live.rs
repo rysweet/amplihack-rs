@@ -500,3 +500,91 @@ fn a_rotate_ledger_for_another_account_is_ignored_after_a_hand_change() {
         "the account match decides"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1693: `profile usage` reports the account actually in `~/.claude`
+// while the rotate ledger names a profile whose account is not there.
+//
+// Contract: `default_live::detect_for_usage(&ProfileStore, Option<&Path>) ->
+// UsageLive`, with `UsageLive::Profile(ProfileName)` (exactly one profile
+// holds the account, with or without its own login), `UsageLive::Home` (no
+// profile holds it) and a fallback to `detect` otherwise. `detect` and
+// `live_name` are unchanged.
+// ---------------------------------------------------------------------------
+
+mod usage_live {
+    use super::super::default_live::{UsageLive, detect_for_usage, live_name};
+    use super::*;
+
+    /// The rotate ledger names `a`, whose account is not the one in
+    /// `~/.claude.json` (u1).
+    fn hand_changed() -> Env {
+        let e = env();
+        e.claude_json("a", &account("u-a", "a@example.com"));
+        e.rotate_ledger(r#"{"version":1,"live":"a","account":"u-a","since":10}"#);
+        e
+    }
+
+    fn usage(e: &Env) -> UsageLive {
+        detect_for_usage(&e.store, Some(&e.home))
+    }
+
+    #[test]
+    fn the_one_holder_is_live_even_with_its_own_login() {
+        let e = hand_changed();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        private(&e.store.root().join("b/.credentials.json"), "{}");
+        assert!(matches!(usage(&e), UsageLive::Profile(n) if n.as_str() == "b"));
+        // The `profile login` refusal and the duplicate warning still go by
+        // the ledger: in this state nobody is live for them.
+        assert_eq!(live_name(&e.store, Some(&e.home)), None);
+    }
+
+    #[test]
+    fn the_one_holder_without_a_login_is_live() {
+        let e = hand_changed();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        assert!(matches!(usage(&e), UsageLive::Profile(n) if n.as_str() == "b"));
+    }
+
+    #[test]
+    fn no_holder_gives_the_home_row() {
+        let e = hand_changed();
+        assert!(matches!(usage(&e), UsageLive::Home));
+    }
+
+    #[test]
+    fn several_holders_mark_nothing_new() {
+        let e = hand_changed();
+        e.store.add(&ProfileName::parse("c").unwrap()).unwrap();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        e.claude_json("c", &account("u1", "me@example.com"));
+        assert!(!matches!(
+            usage(&e),
+            UsageLive::Profile(_) | UsageLive::Home
+        ));
+    }
+
+    #[test]
+    fn a_matching_or_missing_rotate_ledger_falls_back_to_detect() {
+        let e = env();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        assert!(!matches!(usage(&e), UsageLive::Home), "no rotate ledger");
+        e.rotate_ledger(&rotate_ledger("b", Some(10)));
+        assert!(!matches!(usage(&e), UsageLive::Home), "the ledger matches");
+        assert!(!matches!(
+            detect_for_usage(&e.store, None),
+            UsageLive::Profile(_) | UsageLive::Home
+        ));
+    }
+
+    #[test]
+    fn detecting_for_usage_writes_nothing() {
+        let e = hand_changed();
+        let p = e.store.root().join(".auto-switch.d/rotate/ledger.json");
+        let before = fs::read(&p).unwrap();
+        let _ = usage(&e);
+        assert_eq!(fs::read(&p).unwrap(), before);
+        assert_eq!(fs::read_dir(p.parent().unwrap()).unwrap().count(), 1);
+    }
+}

@@ -17,6 +17,10 @@ use std::path::{Path, PathBuf};
 
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
+/// Limits on the hand-change fields (issue #1693).
+pub const MAX_GUIDANCE_LINES: usize = 16;
+pub const MAX_GUIDANCE_LINE: usize = 1024;
+pub const MAX_LOST_LOGIN: usize = 64;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
 
@@ -54,6 +58,13 @@ pub struct RotateLedger {
     pub alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
+    /// The current hand-change ALERT and `fix` lines (issue #1693), written
+    /// every cycle while `~/.claude` holds another account than `account`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<Vec<String>>,
+    /// Profiles recorded as live that lost their login to a manual `/login`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost_login: Vec<String>,
 }
 
 impl Default for RotateLedger {
@@ -67,6 +78,8 @@ impl Default for RotateLedger {
             previous: None,
             alert: None,
             last_cycle: None,
+            guidance: None,
+            lost_login: Vec::new(),
         }
     }
 }
@@ -142,6 +155,27 @@ pub fn safe_account(v: &str) -> bool {
     !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
 }
 
+/// A control or bidirectional-override character: never stored in, or
+/// printed from, a guidance line or a command.
+pub fn unprintable(c: char) -> bool {
+    c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+fn valid_guidance(g: Option<&[String]>) -> bool {
+    g.is_none_or(|g| {
+        g.len() <= MAX_GUIDANCE_LINES
+            && g.iter()
+                .all(|l| l.len() <= MAX_GUIDANCE_LINE && !l.chars().any(unprintable))
+    })
+}
+
+fn valid_lost_login(v: &[String]) -> bool {
+    v.len() <= MAX_LOST_LOGIN
+        && v.iter()
+            .enumerate()
+            .all(|(i, n)| ProfileName::parse(n).is_ok() && !v[..i].contains(n))
+}
+
 fn valid_name(v: Option<&str>) -> bool {
     v.is_none_or(|n| ProfileName::parse(n).is_ok())
 }
@@ -207,6 +241,11 @@ impl RotateState {
         {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
         }
+        if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
+            return Err(inconsistent(format!(
+                "{WHAT}: invalid guidance or lost_login"
+            )));
+        }
         Ok(Some(l))
     }
 
@@ -265,11 +304,16 @@ impl RotateState {
 /// another binary runs), fields added after the ledger first shipped are
 /// left out, because amplihack before #1659 rejects unknown ledger fields:
 /// today `last_cycle.measured_at`, without which the limit-resume hook
-/// falls back to its 60-second margin.
+/// falls back to its 60-second margin, and `guidance` and `lost_login`
+/// (issue #1693), which only `rotate status` shows.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
-    if older && let Some(c) = &mut out.last_cycle {
-        c.measured_at = None;
+    if older {
+        if let Some(c) = &mut out.last_cycle {
+            c.measured_at = None;
+        }
+        out.guidance = None;
+        out.lost_login.clear();
     }
     out
 }

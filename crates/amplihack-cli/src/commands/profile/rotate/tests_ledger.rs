@@ -340,3 +340,103 @@ fn a_ledger_written_beside_an_older_rotator_is_one_it_can_read() {
     let older = serde_json::to_vec(&for_older_readers(&ledger(), true)).unwrap();
     serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
 }
+
+// --- Issue #1693: `guidance` and `lost_login` -------------------------------
+//
+// Contract: `RotateLedger.guidance: Option<Vec<String>>` (at most 16 lines,
+// each at most 1024 bytes, no control or bidirectional-override
+// characters) and `RotateLedger.lost_login: Vec<String>` (at most 64
+// distinct valid profile names). Both are omitted when empty, checked on
+// load (a failure is `RotateInconsistent`) and left out for older readers.
+
+fn with_handfix() -> RotateLedger {
+    RotateLedger {
+        guidance: Some(vec![
+            "ALERT: the account in ~/.claude is not the one the ledger names (live=work); no profile has that account; no swap".into(),
+            "fix 1: amplihack profile login work".into(),
+        ]),
+        lost_login: vec!["work".into()],
+        ..ledger()
+    }
+}
+
+fn write_raw(r: &Root, v: &serde_json::Value) {
+    fs::write(&r.rs.ledger, serde_json::to_vec(v).unwrap()).unwrap();
+    fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
+fn guidance_and_lost_login_round_trip() {
+    let r = root();
+    let l = with_handfix();
+    r.rs.save_ledger(&l).unwrap();
+    assert_eq!(r.rs.load_ledger().unwrap(), Some(l));
+}
+
+#[test]
+fn a_ledger_without_the_new_fields_loads_and_writes_none() {
+    let r = root();
+    write_raw(&r, &serde_json::json!({"version": 1, "live": "spare"}));
+    let l = r.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.guidance, None);
+    assert!(l.lost_login.is_empty());
+    r.rs.save_ledger(&l).unwrap();
+    let raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&r.rs.ledger).unwrap()).unwrap();
+    assert!(raw.get("guidance").is_none(), "{raw}");
+    assert!(raw.get("lost_login").is_none(), "{raw}");
+    assert_eq!(RotateLedger::default().guidance, None);
+    assert!(RotateLedger::default().lost_login.is_empty());
+}
+
+#[test]
+fn older_readers_get_a_ledger_without_the_new_fields() {
+    let older = for_older_readers(&with_handfix(), true);
+    assert_eq!(older.guidance, None);
+    assert!(older.lost_login.is_empty());
+    serde_json::from_slice::<OldLedger>(&serde_json::to_vec(&older).unwrap())
+        .expect("the old reader accepts it");
+    assert_eq!(for_older_readers(&with_handfix(), false), with_handfix());
+}
+
+#[test]
+fn guidance_at_the_limits_loads() {
+    let r = root();
+    let mut v = serde_json::to_value(ledger()).unwrap();
+    v["guidance"] = serde_json::json!(vec!["x".repeat(1024); 16]);
+    v["lost_login"] = serde_json::json!((0..64).map(|i| format!("p{i}")).collect::<Vec<_>>());
+    write_raw(&r, &v);
+    let l = r.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.guidance.unwrap().len(), 16);
+    assert_eq!(l.lost_login.len(), 64);
+}
+
+#[test]
+fn guidance_or_lost_login_outside_the_limits_fails_closed() {
+    let r = root();
+    let base = serde_json::to_value(ledger()).unwrap();
+    let cases: Vec<(&str, serde_json::Value)> = vec![
+        ("guidance", serde_json::json!(vec!["x"; 17])),
+        ("guidance", serde_json::json!(["x".repeat(1025)])),
+        ("guidance", serde_json::json!(["bell \u{7}"])),
+        ("guidance", serde_json::json!(["escape \u{1b}[2J"])),
+        ("guidance", serde_json::json!(["newline\nfix 9: rm -rf ~"])),
+        ("guidance", serde_json::json!(["override \u{202e}"])),
+        ("guidance", serde_json::json!(["isolate \u{2066}"])),
+        ("lost_login", serde_json::json!(["../escape"])),
+        ("lost_login", serde_json::json!(["work", "work"])),
+        ("lost_login", serde_json::json!([""])),
+        (
+            "lost_login",
+            serde_json::json!((0..65).map(|i| format!("p{i}")).collect::<Vec<_>>()),
+        ),
+    ];
+    for (key, value) in cases {
+        let mut v = base.clone();
+        v[key] = value;
+        write_raw(&r, &v);
+        let before = fs::read(&r.rs.ledger).unwrap();
+        inconsistent(r.rs.load_ledger());
+        assert_eq!(fs::read(&r.rs.ledger).unwrap(), before, "left as it was");
+    }
+}

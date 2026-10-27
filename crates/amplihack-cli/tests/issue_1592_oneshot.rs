@@ -309,24 +309,39 @@ fn no_login_in_home_is_an_alert_and_nothing_moves_in() {
     assert_eq!(ino(&f.slot("spare")), Some(f.spare_ino));
 }
 
+/// Issue #1693: a manual `/login` in `~/.claude` as `extra`'s account left
+/// `spare` (the ledger's live profile) with no login and two copies of
+/// `extra`'s account. The cycle moves `extra`'s own copy aside, records
+/// `extra` as live, warns that `spare` has no login, and carries on.
 #[test]
-fn a_hand_change_is_an_alert_and_nothing_moves() {
+fn a_hand_change_to_a_logged_in_profile_recovers_without_losing_a_login() {
     let f = Fixture::new();
     f.ok(&["profile", "rotate"]);
     // Someone ran /login in ~/.claude as `extra`'s account.
     let home_json = serde_json::json!({"oauthAccount": account_json("extra")});
     private_file(&f.home.join(".claude.json"), &home_json.to_string());
     f.usage("extra", 95, 95);
-    let before = f.logins();
+    let mut before: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
+    before.sort();
     let out = f.ok(&["profile", "rotate"]);
-    assert!(
-        text(&out.stdout).contains(
-            "ALERT: the account in ~/.claude is not the one the ledger names (live=spare); no swap"
-        ),
-        "{}",
-        text(&out.stdout)
-    );
-    assert_eq!(f.logins(), before);
+    let stdout = text(&out.stdout);
+    for want in [
+        "recovered: ~/.claude and extra held the same account; kept ~/.claude, moved extra's copy to ",
+        "ALERT: profile spare has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login spare",
+    ] {
+        assert!(stdout.contains(want), "missing {want:?} in {stdout}");
+    }
+    assert!(!stdout.contains("(live=spare); no swap"), "{stdout}");
+    // Every login still exists exactly once: in a profile, in ~/.claude or
+    // in the backup under .rejected-logins.
+    let mut after: Vec<u64> = f.logins().iter().map(|(_, i)| *i).collect();
+    for e in fs::read_dir(f.root.join(".rejected-logins")).unwrap() {
+        if let Ok(m) = fs::symlink_metadata(e.unwrap().path().join(CREDS)) {
+            after.push(m.ino());
+        }
+    }
+    after.sort();
+    assert_eq!(after, before, "no login lost or copied");
 }
 
 #[test]

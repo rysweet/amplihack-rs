@@ -2,18 +2,20 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::decide::{Decision, Reading};
+use super::decide::Decision;
+use super::handfix;
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
-    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
+    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of,
+    refusal_kind, rotated, snapshot,
 };
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    Rotated, State, capacity_from_rotation, exists, now, recover_auto_switch,
+    State, capacity_from_rotation, exists, now, recover_auto_switch,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
@@ -191,21 +193,6 @@ fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
     }
 }
 
-/// The ALERT key kind for a refused swap: its reason, without control
-/// characters and short enough that the key passes the ledger's 320-byte
-/// check with any profile name.
-fn refusal_kind(e: &ProfileError) -> String {
-    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
-    let mut kind = String::from("refused ");
-    for c in reason.chars() {
-        if kind.len() + c.len_utf8() > 200 {
-            break;
-        }
-        kind.push(c);
-    }
-    kind
-}
-
 /// Records a known live profile and its account, so `profile usage` and the
 /// next cycle read it from the ledger.
 fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
@@ -272,6 +259,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             Mode::Watch => Ok(CycleOutcome::Alerted),
             _ => Err(ProfileError::RotateInconsistent(reason)),
         };
+    }
+    // Issue #1693: a manual `/login` in `~/.claude`; recovery or guidance.
+    if handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
+        let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+        record(ctx, &mut l, CycleOutcome::Alerted, now(), None)?;
+        return Ok(CycleOutcome::Alerted);
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
@@ -379,22 +372,4 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         shared_dirs::ensure_for(&ctx.store, p);
     }
     Ok(outcome)
-}
-
-/// This cycle's readings for the no-capacity file: the live profile's and
-/// every other candidate's, as measured.
-fn rotated(
-    live: Option<&ProfileName>,
-    reading: &Reading,
-    others: &[(ProfileName, Reading)],
-) -> Vec<(ProfileName, Rotated)> {
-    let of = |r: &Reading| match *r {
-        Reading::Measured { session, week } => Rotated::Measured { session, week },
-        Reading::Exhausted => Rotated::Exhausted,
-        Reading::Failed => Rotated::Failed,
-    };
-    live.map(|n| (n.clone(), of(reading)))
-        .into_iter()
-        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
-        .collect()
 }
