@@ -10,7 +10,6 @@
 
 use chrono::{DateTime, Local, TimeDelta, Timelike, Utc};
 use serde::{Deserialize, Serialize};
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 pub mod dedupe;
@@ -19,12 +18,7 @@ mod fs;
 #[cfg(all(test, unix))]
 mod tests;
 
-/// The profile-root variable (same as amplihack-cli's `ROOT_ENV`).
-pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
-/// The auto-switch override: exactly `1` or `0` wins over the file.
-pub const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
-/// The auto-switch settings file under the root.
-pub const TOGGLE_FILE: &str = ".auto-switch";
+pub use crate::rotator_status::{ROOT_ENV, TOGGLE_ENV, TOGGLE_FILE};
 /// The auto-switch state directory under the root.
 pub const STATE_DIR: &str = ".auto-switch.d";
 /// The capacity file under [`STATE_DIR`].
@@ -41,8 +35,6 @@ pub const MAX_RESET_AHEAD_SECS: i64 = 8 * 86_400;
 /// The command every notice tells the user to run.
 pub const INSPECT: &str = "amplihack profile usage";
 
-/// The saved-root file and the toggle file are refused above this size.
-const MAX_SMALL_FILE: u64 = 4096;
 const DEPTH_ENV: &str = "AMPLIHACK_SESSION_DEPTH";
 
 /// Ordered `Ok < Low < Exhausted`, so "worse" is `>`.
@@ -86,130 +78,11 @@ pub fn path(root: &Path) -> PathBuf {
     root.join(STATE_DIR).join(FILE)
 }
 
-/// The profile root for this process's environment and `HOME`, or `None`
-/// when it cannot be resolved safely.
-pub fn resolve_root() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .filter(|h| !h.is_empty())
-        .map(PathBuf::from);
-    resolve_root_with(|k| std::env::var_os(k), home.as_deref())
-}
-
-/// [`resolve_root`] with the environment and `HOME` passed in. Matches
-/// amplihack-cli's `root_config::resolve_with`, except that every error is
-/// `None` (fail closed, never the default root).
-pub fn resolve_root_with(
-    env: impl Fn(&str) -> Option<OsString>,
-    home: Option<&Path>,
-) -> Option<PathBuf> {
-    if let Some(raw) = env(ROOT_ENV).filter(|v| !v.is_empty()) {
-        let raw = raw.into_string().ok()?;
-        return check_root_value(&raw).then(|| PathBuf::from(raw));
-    }
-    let config = home?.join(".amplihack");
-    match fs::read_small(&config.join("profile-root"), false) {
-        Read::Missing => Some(config.join("claude-profiles")),
-        Read::Refused => None,
-        Read::Bytes(bytes) => {
-            if bytes.len() as u64 > MAX_SMALL_FILE {
-                return None;
-            }
-            let raw = std::str::from_utf8(&bytes).ok()?.trim();
-            check_root_value(raw).then(|| PathBuf::from(raw))
-        }
-    }
-}
-
-/// The content rule amplihack-cli's `root_config::check_value` applies.
-fn check_root_value(raw: &str) -> bool {
-    !raw.is_empty()
-        && !raw.chars().any(char::is_control)
-        && Path::new(raw).is_absolute()
-        && !Path::new(raw)
-            .components()
-            .any(|c| c == std::path::Component::ParentDir)
-}
-
-/// Whether auto-switch is on for `root`: the same answer as amplihack-cli's
-/// `config::effective(root).on`, without printing anything.
-pub fn auto_switch_on(root: &Path) -> bool {
-    match std::env::var_os(TOGGLE_ENV)
-        .as_deref()
-        .map(|v| v.as_encoded_bytes())
-    {
-        Some(b"1") => return true,
-        Some(b"0") => return false,
-        // Unset, empty or anything else: the file decides.
-        _ => {}
-    }
-    match fs::read_small(&root.join(TOGGLE_FILE), true) {
-        Read::Bytes(raw) => toggle_enabled(&raw).unwrap_or(false),
-        Read::Missing | Read::Refused => false,
-    }
-}
-
-/// `enabled` from a `.auto-switch` file, or `None` when amplihack-cli's
-/// `config::parse` would call it corrupt.
-fn toggle_enabled(raw: &[u8]) -> Option<bool> {
-    if raw.len() as u64 > MAX_SMALL_FILE {
-        return None;
-    }
-    let text = std::str::from_utf8(raw).ok()?;
-    let body = text.strip_suffix('\n').unwrap_or(text);
-    let (mut enabled, mut threshold, mut exclude) = (None, false, false);
-    for line in body.split('\n') {
-        let (key, value) = line.split_once('=')?;
-        match key {
-            "enabled" => {
-                let on = match value {
-                    "on" => true,
-                    "off" => false,
-                    _ => return None,
-                };
-                if enabled.replace(on).is_some() {
-                    return None;
-                }
-            }
-            "threshold" => {
-                let valid = !value.is_empty()
-                    && value.bytes().all(|b| b.is_ascii_digit())
-                    && matches!(value.parse::<u8>(), Ok(1..=100));
-                if !valid || std::mem::replace(&mut threshold, true) {
-                    return None;
-                }
-            }
-            "exclude" => {
-                let valid = value.is_empty() || value.split(',').all(profile_name_ok);
-                if !valid || std::mem::replace(&mut exclude, true) {
-                    return None;
-                }
-            }
-            _ => return None,
-        }
-    }
-    enabled
-}
-
-/// amplihack-cli's `ProfileName::parse` rule.
-fn profile_name_ok(raw: &str) -> bool {
-    let mut chars = raw.chars();
-    let Some(first) = chars.next() else {
-        return false;
-    };
-    let stem = raw.split('.').next().unwrap_or(raw).to_ascii_uppercase();
-    let reserved = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"].contains(&stem.as_str())
-        || ["COM", "LPT"].iter().any(|p| {
-            stem.strip_prefix(p)
-                .is_some_and(|d| d.len() == 1 && matches!(d.as_bytes()[0], b'1'..=b'9'))
-        });
-    raw.len() <= 64
-        && first.is_ascii_alphanumeric()
-        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
-        && !raw.contains("..")
-        && !raw.ends_with('.')
-        && !reserved
-}
+/// The profile root and the auto-switch gate, read as the CLI and the
+/// limit-resume hook read them.
+pub use crate::rotator_status::{
+    auto_switch_on, resolve_root, resolve_root_from as resolve_root_with,
+};
 
 /// The capacity file, checked against the current time. A convenience
 /// wrapper over [`read_at`] for callers and tests that use the current time;
@@ -317,15 +190,4 @@ pub fn nested_session() -> bool {
         .ok()
         .and_then(|v| v.parse::<u32>().ok())
         .is_some_and(|d| d > 0)
-}
-
-/// What a bounded small-file read found.
-#[cfg_attr(not(unix), allow(dead_code))]
-enum Read {
-    Missing,
-    /// A symlink, not a regular file, someone else's, writable by others, or
-    /// unreadable.
-    Refused,
-    /// At most the limit plus one byte, so the caller can tell it was cut.
-    Bytes(Vec<u8>),
 }

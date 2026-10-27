@@ -132,7 +132,7 @@ fn alert(
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     alert_once(out, &mut l, &alert_key(kind, live), t, line);
-    record(ctx, &mut l, CycleOutcome::Alerted, t)
+    record(ctx, &mut l, CycleOutcome::Alerted, t, None)
 }
 
 /// Logs the ALERT only when its key changed; the one-shot command still
@@ -145,14 +145,17 @@ fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &st
     }
 }
 
+/// Records the cycle as ended at `t`, after measuring from `measured_at`.
 fn record(
     ctx: &Ctx,
     l: &mut super::ledger::RotateLedger,
     o: CycleOutcome,
     t: i64,
+    measured_at: Option<i64>,
 ) -> Result<(), ProfileError> {
     l.last_cycle = Some(LastCycle {
         at: t,
+        measured_at,
         outcome: o.as_str().into(),
     });
     ctx.rs.save_ledger(l)
@@ -288,6 +291,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         decision,
         note,
         failed,
+        measured_at,
     } = measure_and_decide(ctx, &binary, &first)?;
     ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
@@ -307,7 +311,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Skipped, t)?;
+        record(ctx, &mut l, CycleOutcome::Skipped, t, Some(measured_at))?;
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -367,7 +371,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         &rotated(live_name(&first.live), &live, &others),
         t,
     );
-    record(ctx, &mut l, outcome, now())?;
+    record(ctx, &mut l, outcome, now(), Some(measured_at))?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

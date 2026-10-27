@@ -3,7 +3,7 @@
 //! whether the rotator has recorded a fresh cycle with capacity.
 
 use amplihack_utils::rotator_status::{
-    CycleStatus, FRESH_MARGIN_SECS, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
+    CycleStatus, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
 };
 use sha2::{Digest, Sha256};
 
@@ -113,14 +113,10 @@ pub fn gate(f: &Facts) -> Gate {
     }
 }
 
-/// The rotator recorded a cycle with capacity more than
-/// `FRESH_MARGIN_SECS` after the hook started at `start`.
+/// The rotator recorded a cycle with capacity, measured after the hook
+/// started at `start` (see [`CycleStatus::fresh_capacity`]).
 pub fn fresh_capacity(status: Option<&CycleStatus>, start: i64) -> bool {
-    status.is_some_and(|s| {
-        s.has_capacity()
-            && s.at
-                .is_some_and(|at| at > start.saturating_add(FRESH_MARGIN_SECS))
-    })
+    status.is_some_and(|s| s.fresh_capacity(start))
 }
 
 /// How long to sleep between ledger reads, `elapsed` seconds into a wait:

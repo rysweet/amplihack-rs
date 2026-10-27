@@ -8,7 +8,15 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  task_type: ""
+  workstream_count: ""
+  force_single_workstream: ""
+  decomposition_json: ""
+  session_info: ""
+  recursion_guard: ""
+  workstreams_file: ""
+  adaptive_recipe: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -76,7 +84,7 @@ steps:
     condition: "'Development' in task_type or 'Investigation' in task_type"
     command: |
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      SESSION_JSON="$SESSION_INFO"
+      SESSION_JSON="${RECIPE_VAR_session_info:-}"
       # Issue #1062 (finding D1): read `status` through the tested
       # extract-json|extract-field pipeline; unknown -> BLOCKED:unknown fail-safe.
       STATUS=$(printf '%s' "$SESSION_JSON" \
@@ -152,7 +160,7 @@ steps:
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
-      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 
@@ -166,9 +174,9 @@ steps:
       # Emit step-transition marker for progress tracking (#3625)
       echo '{"transition":"step_started","step":"launch-parallel-round-1","timestamp":'$(date +%s)'}' >&2
       REPO_PATH="$REPO_PATH"
-      WS_FILE="$WORKSTREAMS_FILE"
+      WS_FILE="${RECIPE_VAR_workstreams_file:-}"
       # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      SESSION_JSON="$SESSION_INFO"
+      SESSION_JSON="${RECIPE_VAR_session_info:-}"
       # #283: parse tree_id, depth, and workstreams count using jq instead of
       # inline scripting. jq is a standard CLI tool and keeps parsing in shell.
       TREE_ID=$(printf '%s' "$SESSION_JSON" | jq -r '.tree_id // ""' 2>/dev/null || echo "")
@@ -264,10 +272,10 @@ steps:
     condition: |
       ('Development' in task_type or 'Investigation' in task_type) and not round_1_result
     command: |
-      TASK_TYPE="$TASK_TYPE"
-      WS_COUNT="$WORKSTREAM_COUNT"
-      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
-      GUARD="$RECURSION_GUARD"
+      TASK_TYPE="${RECIPE_VAR_task_type:-}"
+      WS_COUNT="${RECIPE_VAR_workstream_count:-}"
+      FORCE_SINGLE="${RECIPE_VAR_force_single_workstream:-}"
+      GUARD="${RECIPE_VAR_recursion_guard:-}"
 
       cat >&2 <<ERRMSG
 
@@ -302,63 +310,11 @@ steps:
     condition: |
       adaptive_recipe and adaptive_recipe != ''
     command: |
-      TASK_TYPE="$TASK_TYPE"
-      WS_COUNT="$WORKSTREAM_COUNT"
-      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
-      GUARD="$RECURSION_GUARD"
-      RECIPE="$ADAPTIVE_RECIPE"
-      # FIX (#469/#311): Use env var — safe against injection and word-splitting.
-      TASK_DESC="$TASK_DESCRIPTION"
-
-      # Build diagnostic body
-      BODY=$(cat <<EOFBODY
-      ## smart-orchestrator routing gap: no execution path ran
-
-      **Symptom**: All execution routing conditions evaluated to false.
-      No execution step (single, parallel, or blocked-fallback) ran.
-
-      ### Diagnostic context
-      - task_type: \`$TASK_TYPE\`
-      - workstream_count: \`$WS_COUNT\`
-      - force_single_workstream: \`$FORCE_SINGLE\`
-      - recursion_guard: \`$GUARD\`
-      - adaptive_recipe selected: \`$RECIPE\`
-
-      ### Task description (truncated)
-      $(echo "$TASK_DESC" | head -c 500)
-
-      ### Environment
-      - AMPLIHACK_HOME: \`${AMPLIHACK_HOME:-<unset>}\`
-      - recipe-runner-rs: \`$(which recipe-runner-rs 2>/dev/null || echo '<not found>')\`
-      - hostname: \`$(hostname -s 2>/dev/null || echo unknown)\`
-      - date: \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\`
-
-      ### Expected behavior
-      At least one execution path should have run based on the classification.
-      The adaptive strategy step ran \`$RECIPE\` directly to recover.
-
-      ---
-      *Auto-filed by smart-orchestrator adaptive error recovery — fix #3132*
-      EOFBODY
-      )
-
-      # Attempt to file a GH issue — non-fatal if gh is unavailable or auth fails
-      ISSUE_URL=$(gh issue create \
-        --title "smart-orchestrator routing gap: $TASK_TYPE task, workstream_count=$WS_COUNT" \
-        --body "$BODY" \
-        --label "bug" 2>/dev/null) || true
-
-      if [ -n "$ISSUE_URL" ]; then
-        echo "[ADAPTIVE] Filed infrastructure bug: $ISSUE_URL" >&2
-        echo "$ISSUE_URL"
-      else
-        # Log the diagnostic info so it's preserved even if filing fails
-        DIAG_FILE=$(mktemp /tmp/smart-orch-diag-XXXXXX.md)
-        echo "$BODY" > "$DIAG_FILE"
-        echo "[ADAPTIVE] Could not file GH issue (gh unavailable or auth failed)." >&2
-        echo "[ADAPTIVE] Diagnostic info saved to: $DIAG_FILE" >&2
-        echo "diag:$DIAG_FILE"
-      fi
+      # The report lives in amplifier-bundle/tools/smart_routing_gap_report.sh, extracted to keep this brick within its line budget (#1684).
+      T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/smart_routing_gap_report.sh" ] && { T="$c/amplifier-bundle/tools/smart_routing_gap_report.sh"; break; }; done
+      # A missing helper still leaves a trace in infra_error_details: the sentinel goes to stdout (#1688).
+      [ -n "$T" ] || { echo "WARNING: routing gap report helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/smart_routing_gap_report.sh" >&2; echo "diag:helper-not-found"; exit 0; }
+      bash "$T"
     output: "infra_error_details"
 
   - id: "adaptive-execute-development"

@@ -513,30 +513,27 @@ fn explicit_install_still_refreshes_copilot_config() {
 // ── Hook drift after an implicit upgrade ──
 
 fn settings_with(specs: &[&types::HookSpec]) -> tempfile::NamedTempFile {
+    settings_file(&specs_json(specs))
+}
+
+/// `{"hooks": …}` with this build's wrapper for each of `specs`.
+fn specs_json(specs: &[&types::HookSpec]) -> serde_json::Value {
+    let bin = Path::new("/home/u/.local/bin/amplihack-hooks");
     let mut hooks = serde_json::Map::new();
     for spec in specs {
-        let types::HookCommandKind::BinarySubcmd { subcmd } = spec.cmd;
-        let mut wrapper = serde_json::json!({ "hooks": [{ "type": "command",
-            "command": format!("/home/u/.local/bin/amplihack-hooks {subcmd}") }] });
-        if let Some(matcher) = spec.matcher {
-            wrapper["matcher"] = serde_json::json!(matcher);
-        }
-        if spec.async_rewake {
-            wrapper["hooks"][0]["asyncRewake"] = serde_json::json!(true);
-        }
         hooks
             .entry(spec.event.to_string())
             .or_insert_with(|| serde_json::json!([]))
             .as_array_mut()
             .unwrap()
-            .push(wrapper);
+            .push(hooks::build_hook_wrapper(spec, bin));
     }
+    serde_json::json!({ "hooks": hooks })
+}
+
+fn settings_file(settings: &serde_json::Value) -> tempfile::NamedTempFile {
     let file = tempfile::NamedTempFile::new().unwrap();
-    fs::write(
-        file.path(),
-        serde_json::json!({ "hooks": hooks }).to_string(),
-    )
-    .unwrap();
+    fs::write(file.path(), settings.to_string()).unwrap();
     file
 }
 
@@ -576,6 +573,18 @@ fn hook_drift_is_silent_when_settings_are_current() {
     let all: Vec<&types::HookSpec> = types::AMPLIHACK_HOOK_SPECS.iter().collect();
     let file = settings_with(&all);
     assert_eq!(drift_notice(file.path()), "");
+}
+
+/// Issue #1659: a hook registered with an outdated `timeout` is named too,
+/// so `amplihack install` rewrites it.
+#[test]
+fn hook_drift_names_an_outdated_timeout() {
+    let all: Vec<&types::HookSpec> = types::AMPLIHACK_HOOK_SPECS.iter().collect();
+    let mut settings = specs_json(&all);
+    settings["hooks"]["StopFailure"][0]["hooks"][0]["timeout"] = serde_json::json!(18_000);
+    let notice = drift_notice(settings_file(&settings).path());
+    assert!(notice.contains("StopFailure (limit-resume)"), "{notice}");
+    assert!(!notice.contains("SessionStart"), "{notice}");
 }
 
 /// A file with no amplihack hooks, a missing file and a non-JSON file are

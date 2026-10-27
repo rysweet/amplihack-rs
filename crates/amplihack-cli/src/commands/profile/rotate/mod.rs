@@ -62,8 +62,6 @@ mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
-mod tests_status_drift;
-#[cfg(all(test, unix))]
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
@@ -73,6 +71,21 @@ use super::store::ProfileStore;
 
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
+
+/// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
+/// the rotator for `root` (default: this environment's root) runs another
+/// amplihack binary, which keeps reading the ledger in its own format until
+/// it is restarted.
+#[cfg(unix)]
+pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
+    let root = match root {
+        Some(r) => Some(r.to_path_buf()),
+        None => amplihack_utils::rotator_status::resolve_root(),
+    };
+    if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
+        eprintln!("{}", ledger::foreign_rotator_note(pid));
+    }
+}
 
 /// Starts the rotator from a launch when auto-switch is on; see
 /// `autostart`. Nothing to start off Unix.
@@ -166,6 +179,9 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 } else {
                     cycle::Mode::OneShot
                 };
+                if mode == cycle::Mode::OneShot {
+                    warn_foreign_rotator(Some(store.root()));
+                }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
                 cycle::run_cycle(&mut ctx, mode)?;
             }

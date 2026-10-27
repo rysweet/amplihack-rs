@@ -162,7 +162,8 @@ while [ "$#" -gt 0 ]; do
     *) shift ;;
   esac
 done
-[ -n "$ISSUE" ] || ISSUE="${ISSUE_NUMBER:-}"
+# No fallback to a bare ISSUE_NUMBER: an empty --issue means this run has no
+# issue, and an inherited name would be a parent run's issue (#1684).
 
 TIMEOUT_S="${AMPLIHACK_CLAIM_CHECK_TIMEOUT:-45}"
 WINDOW_H="${AMPLIHACK_CLAIM_CHECK_MERGED_WINDOW_HOURS:-24}"

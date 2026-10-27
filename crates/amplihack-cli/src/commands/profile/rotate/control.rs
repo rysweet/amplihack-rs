@@ -59,7 +59,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Err(_) => "- (ledger unreadable)".into(),
     };
     let last = match ledger.ok().flatten().and_then(|l| l.last_cycle) {
-        Some(LastCycle { at, outcome }) => {
+        Some(LastCycle { at, outcome, .. }) => {
             format!("{} {}", timestamp(at), sanitize_display(&outcome, false))
         }
         None => "-".into(),

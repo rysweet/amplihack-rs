@@ -508,7 +508,9 @@ PR_TITLE="${PR_TITLE} (#${ISSUE_NUM})"
 PR_TITLE="${PR_TITLE:0:200}"
 CHANGED_FILES_BODY=$(printf '%s\n' "$CHANGED_FILES" | sed '/^$/d; s/^/- /')
 [ -n "$CHANGED_FILES_BODY" ] || CHANGED_FILES_BODY="- No changed files detected by git diff"
-VALIDATION_SOURCE="${LOCAL_TESTING_GATE:-${local_testing_gate:-${PRECOMMIT_RESULTS:-${precommit_results:-}}}}"
+# Both outputs are parse_json objects, which the runner never exports under a
+# bare name, so only RECIPE_VAR_<key> holds this run's evidence (#1684).
+VALIDATION_SOURCE="${RECIPE_VAR_local_testing_gate:-${RECIPE_VAR_precommit_results:-}}"
 if [ -n "$VALIDATION_SOURCE" ]; then VALIDATION_BODY=$(printf '%s\n' "$VALIDATION_SOURCE" | sed -n '1,12p'); else VALIDATION_BODY="step-13 local testing gate is expected before ready-for-review; no structured step-13 output was available to step-16."; fi
 if [ -n "$RECENT_COMMITS" ]; then BEHAVIOR_BODY=$(printf 'Implemented behavior through these branch commits:\n%s' "$RECENT_COMMITS"); else BEHAVIOR_BODY="Branch is ${COMMITS_AHEAD} commit(s) ahead of ${BASE_BRANCH}; behavior impact is represented by the changed files and diff stat."; fi
 case "$CHANGED_FILES" in *amplifier-bundle/recipes/*) RISK_BODY="Workflow behavior changed; review recipe gates and regression coverage carefully." ;; *crates/amplihack-cli/*) RISK_BODY="CLI behavior changed; verify command help, exit codes, and JSON/table output contracts." ;; *) RISK_BODY="No high-risk subsystem pattern detected from changed paths." ;; esac

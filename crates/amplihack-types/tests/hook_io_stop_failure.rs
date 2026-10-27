@@ -1,7 +1,7 @@
 //! Issue #1658 (B): `HookInput::StopFailure`, the payload Claude Code sends
 //! when a turn ends on an API error (rate limit, overload, auth failure).
-//! Parsed by hand like the other variants: snake_case and camelCase aliases,
-//! no `#[serde(default)]`, a wrongly typed known field is an error.
+//! Parsed by hand like the other variants, with snake_case and camelCase
+//! aliases, but loosely (issue #1659): a wrongly typed field reads as absent.
 
 use amplihack_types::HookInput;
 use serde_json::{Value, json};
@@ -138,21 +138,76 @@ fn null_fields_are_none() {
 }
 
 #[test]
-fn numeric_error_is_a_parse_error_not_unknown() {
-    let err = parse(json!({"hook_event_name": "StopFailure", "error": 429}));
-    assert!(err.is_err(), "a non-string error must not parse");
+fn wrongly_typed_fields_are_dropped_except_the_loop_guard() {
+    let input = parse(json!({
+        "hook_event_name": "StopFailure",
+        "session_id": "s-1",
+        "error": "rate_limit",
+        "error_details": {"code": 429},
+        "last_assistant_message": ["not", "text"],
+        "stop_hook_active": "yes",
+        "transcript_path": 7
+    }))
+    .unwrap();
+    let HookInput::StopFailure {
+        session_id,
+        error,
+        error_details,
+        last_assistant_message,
+        stop_hook_active,
+        transcript_path,
+        ..
+    } = input
+    else {
+        panic!("not StopFailure: {input:?}");
+    };
+    assert_eq!(session_id.as_deref(), Some("s-1"));
+    assert_eq!(error.as_deref(), Some("rate_limit"));
+    assert_eq!(error_details, None);
+    assert_eq!(last_assistant_message, None);
+    // The loop guard fails closed: present but not a boolean reads as set.
+    assert_eq!(stop_hook_active, Some(true));
+    assert_eq!(transcript_path, None);
+}
+
+/// Crusty #1687 round 1: a loop guard that Claude Code sends with another
+/// type must stop the hook, not read as absent (false) and let it run.
+#[test]
+fn a_wrongly_typed_stop_hook_active_reads_as_true() {
+    for (key, value) in [
+        ("stop_hook_active", json!("true")),
+        ("stop_hook_active", json!("false")),
+        ("stop_hook_active", json!(0)),
+        ("stop_hook_active", json!({})),
+        ("stopHookActive", json!([false])),
+    ] {
+        let input = parse(json!({"hook_event_name": "StopFailure", key: value.clone()})).unwrap();
+        assert!(
+            matches!(
+                input,
+                HookInput::StopFailure {
+                    stop_hook_active: Some(true),
+                    ..
+                }
+            ),
+            "{key}: {value} gave {input:?}"
+        );
+    }
+    let input =
+        parse(json!({"hook_event_name": "StopFailure", "stop_hook_active": false})).unwrap();
+    assert!(matches!(
+        input,
+        HookInput::StopFailure {
+            stop_hook_active: Some(false),
+            ..
+        }
+    ));
 }
 
 #[test]
-fn wrongly_typed_stop_hook_active_is_a_parse_error() {
-    assert!(parse(json!({"hook_event_name": "StopFailure", "stop_hook_active": "yes"})).is_err());
-}
-
-#[test]
-fn error_detail_object_is_a_parse_error_not_silently_dropped() {
-    assert!(
-        parse(json!({"hook_event_name": "StopFailure", "error_details": {"code": 429}})).is_err()
-    );
+fn a_numeric_error_is_no_error() {
+    let input = parse(json!({"hook_event_name": "StopFailure", "error": 429})).unwrap();
+    assert!(matches!(input, HookInput::StopFailure { error: None, .. }));
 }
 
 #[test]

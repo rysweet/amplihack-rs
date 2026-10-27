@@ -1,21 +1,35 @@
 //! A read-only view of the Claude login rotator (`amplihack profile rotate`)
-//! for the limit-resume hook (issue #1658), which cannot depend on the CLI.
+//! and the auto-switch settings, shared by the CLI and the hooks (which
+//! cannot depend on the CLI).
 //!
-//! - [`resolve_root`]: where the profile root is (`root.rs`).
-//! - [`auto_switch_on`]: whether auto-switch is on (`gate.rs`).
+//! - [`resolve_root`], [`locate_root`]: where the profile root is (`root.rs`).
+//! - [`auto_switch_on`], [`parse_toggle`]: the auto-switch toggle (`gate.rs`).
 //! - [`read_cycle`]: the rotate ledger's last cycle (`ledger.rs`).
+//! - [`rotator_down`], [`daemon_state`]: whether the rotator runs (`daemon.rs`).
 //!
-//! The CLI owns the same rules (`root_config`, `auto_switch::config`,
-//! `rotate::ledger`); its `tests_status_drift.rs` files check that both
-//! sides agree. Nothing here creates, changes or locks a file.
+//! Nothing here creates, changes or locks a file.
 
+#[cfg(unix)]
+mod daemon;
 mod gate;
 mod ledger;
 mod root;
 
-pub use gate::{TOGGLE_ENV, auto_switch_on, auto_switch_on_from, valid_live_name};
-pub use ledger::{CycleStatus, ledger_path, parse_cycle, read_cycle};
-pub use root::{ROOT_ENV, resolve_root, resolve_root_from};
+#[cfg(unix)]
+pub use daemon::{
+    DaemonState, daemon_state, foreign_rotator, is_rotator, parse_pid, pid_path, rotator_down,
+    rotator_down_at,
+};
+pub use gate::{
+    DEFAULT_THRESHOLD, EnvToggle, MAX_TOGGLE_BYTES, TOGGLE_ENV, TOGGLE_FILE, Toggle, ToggleFile,
+    auto_switch_on, auto_switch_on_from, env_toggle, parse_threshold, parse_toggle, read_toggle,
+    valid_live_name,
+};
+pub use ledger::{CycleStatus, Ledger, ledger_path, parse_cycle, read_cycle, read_ledger};
+pub use root::{
+    PROFILE_ROOT_FILE, ROOT_ENV, RootError, RootSource, check_root_value, config_dir,
+    home_from_env, locate_root, read_saved_root, resolve_root, resolve_root_from,
+};
 
 use std::time::Duration;
 
@@ -34,9 +48,10 @@ pub const SLOW_POLL_AFTER: Duration = Duration::from_secs(60 * 60);
 /// a week of waiting is about 2,000 small reads.
 pub const SLOW_POLL_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-/// A cycle counts as fresh only when it was recorded more than this many
-/// seconds after the hook started, so its usage probe (30 s by default)
-/// began after the limit was hit.
+/// For a ledger without `last_cycle.measured_at` (a rotator older than
+/// #1659), a cycle counts as fresh only when it was recorded more than this
+/// many seconds after the hook started, so its usage probe (30 s by
+/// default) began after the limit was hit.
 pub const FRESH_MARGIN_SECS: i64 = 60;
 
 /// The `timeout` registered for the `StopFailure` hook. It must exceed

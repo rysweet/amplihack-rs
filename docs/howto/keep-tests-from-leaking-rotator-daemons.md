@@ -164,18 +164,36 @@ environment can hold tokens.
 
 To find the test that started it:
 
-1. Search the tests for fixtures that launch with auto-switch on and drop the
-   guard. `env_clear()` without a following `AMPLIHACK_TEST_HOME_GUARD` (or
-   `HOME_GUARD_ENV`) is the usual cause. This lists files that call
-   `env_clear()` and name neither:
+1. Start from the `AMPLIHACK_CLAUDE_PROFILE_ROOT` in the leak line. If that
+   directory still exists, read its `rotate.err`:
 
    ```bash
-   grep -rln 'env_clear()' crates/amplihack-cli/tests tests \
+   cat /tmp/.tmpQ3x9aB/profiles/rotate.err
+   ```
+
+   An `autostart: started pid 48213 exe …` line with the leaked pid confirms
+   that a launch autostarted it. The profile names under that root, and the
+   files the fixture wrote there, tell you which fixture built it. If the
+   file has no `autostart:` line, the daemon came from an explicit
+   `profile rotate start`. That test must stop it itself; see the
+   `issue_1592_daemon` tests.
+2. If the root is gone, narrow the search. A launch can only autostart when
+   auto-switch is on for a profile root and the guard is missing. So the
+   culprit is a test file that calls `.env_clear()`, turns on auto-switch or
+   sets a profile root, and never sets the guard again:
+
+   ```bash
+   grep -rlE '\.env_clear\(\)' --include='*.rs' crates bins tests \
+     | xargs -r grep -lE 'AMPLIHACK_ROTATE_AUTOSTART|auto_switch|auto-switch|AMPLIHACK_CLAUDE_PROFILE_ROOT' \
      | xargs -r grep -LE 'AMPLIHACK_TEST_HOME_GUARD|HOME_GUARD_ENV'
    ```
 
-2. If the profile root still exists, its `rotate.err` names the launch that
-   started the daemon.
+   On a clean tree this prints nothing. A plain `env_clear()` search is not
+   useful, because most of its matches clear the environment for `git`, `sh`
+   or `bash`, and those can never start a rotator. If the narrow search
+   prints a file, that file is the place to look. If it prints nothing, the
+   fixture writes its config in a way the pattern does not match: check the
+   fixtures that changed in the failing commit.
 3. Fix the fixture by setting the guard again after `env_clear()`, or by using
    `isolated(..)` unchanged.
 
