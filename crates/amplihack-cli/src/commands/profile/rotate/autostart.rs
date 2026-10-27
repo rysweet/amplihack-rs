@@ -299,6 +299,11 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     Outcome::Started(pid)
 }
 
+/// The refusing spawner's fixed error text. Tests assert on it so they know
+/// `run` reached the spawner rather than failing at an earlier step.
+#[cfg(test)]
+pub(super) const REFUSED_SPAWN: &str = "a unit test never starts a real rotator";
+
 /// Unit tests get this in place of `daemon::spawn` (#1690), so an in-crate
 /// test can never start a real rotator, whatever its environment holds.
 #[cfg(test)]
@@ -307,9 +312,7 @@ fn refuse_spawn(
     _: &super::settings::Settings,
     _: &Path,
 ) -> Result<u32, ProfileError> {
-    Err(ProfileError::RotateConfig(
-        "a unit test never starts a real rotator".into(),
-    ))
+    Err(ProfileError::RotateConfig(REFUSED_SPAWN.into()))
 }
 
 /// The launch hook: runs `run` with this process's environment, `/proc`

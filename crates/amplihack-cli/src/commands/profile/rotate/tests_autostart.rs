@@ -992,9 +992,11 @@ fn on_launch_reaching_the_spawner() -> Fx {
 fn on_launch_in_a_test_build_refuses_to_spawn() {
     let f = on_launch_reaching_the_spawner();
     let log = f.rotate_err();
+    // `run` logs `autostart: failed` from several steps; only the refusing
+    // spawner's own text shows the spawner was actually reached.
     assert!(
-        log.contains("autostart: failed"),
-        "the cfg(test) spawner refuses and run() logs the failure: {log:?}"
+        log.contains("autostart: failed: ") && log.contains(autostart::REFUSED_SPAWN),
+        "the cfg(test) spawner refuses and run() logs its error: {log:?}"
     );
     assert!(
         !log.contains("autostart: started"),
@@ -1008,8 +1010,9 @@ fn the_refusing_spawner_reveals_no_path() {
     let f = on_launch_reaching_the_spawner();
     let log = f.rotate_err();
     let tmp = f.tmp.path().to_str().unwrap();
-    // Without this the absence check below would pass on an empty log.
-    assert!(log.contains("autostart: failed"), "{log:?}");
+    // Without this the absence check below would pass on an empty log, or on
+    // a failure logged before the spawner was reached.
+    assert!(log.contains(autostart::REFUSED_SPAWN), "{log:?}");
     assert!(
         !log.contains(tmp),
         "fixed error text, no root or home path: {log:?}"

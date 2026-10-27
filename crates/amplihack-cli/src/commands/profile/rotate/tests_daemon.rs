@@ -309,10 +309,13 @@ fn the_leak_scan_matches_the_argv_spawn_builds() {
             args.iter().any(|a| a == marker),
             "spawned argv {args:?} lacks `{marker}`, which scripts/check-leaked-rotators.sh matches on"
         );
-        let arm = format!("\n        {marker}) have_");
+        // The `case` arm for this marker, whatever its indentation, must set
+        // the flag named after it (`--spawned` sets `have_spawned`).
+        let flag = marker.trim_start_matches('-');
+        let arm = format!("{marker}) have_{flag}=1");
         assert!(
-            LEAK_SCAN.contains(&arm),
-            "scripts/check-leaked-rotators.sh no longer matches `{marker}` as an argv entry"
+            LEAK_SCAN.lines().any(|l| l.trim_start().starts_with(&arm)),
+            "scripts/check-leaked-rotators.sh no longer matches `{marker}` with `{arm}`"
         );
     }
 }
