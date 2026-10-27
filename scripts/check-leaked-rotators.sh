@@ -36,16 +36,20 @@ if ! stat -c %u "/proc/$$" >/dev/null 2>&1 \
   exit 2
 fi
 
-# clean VALUE: control characters removed, at most 256 bytes.
+# clean VALUE: control characters removed, at most 256 bytes. The cut is a
+# shell substring under LC_ALL=C (bytes, not characters), not `head -c`: a
+# stage that stops reading early is banned in CI scripts (issue #1434).
 clean() {
-  printf '%s' "$1" | LC_ALL=C tr -d '\000-\037\177' | head -c 256
+  local LC_ALL=C s
+  s=$(printf '%s' "$1" | tr -d '\000-\037\177')
+  printf '%s' "${s:0:256}"
 }
 
-# env_value PID NAME: the first NAME=... entry of the process's environ.
+# env_value PID NAME: the first NAME=... entry of the process's environ. One
+# awk reads all its input, for the same reason as above.
 env_value() {
   tr '\0' '\n' <"/proc/$1/environ" 2>/dev/null \
-    | grep -m1 -E "^$2=" 2>/dev/null \
-    | cut -d= -f2-
+    | awk -v k="$2=" 'index($0, k) == 1 && !f { print substr($0, length(k) + 1); f = 1 }'
 }
 
 # Build directories besides `*/target*/*`: $CARGO_TARGET_DIR and this repo's
