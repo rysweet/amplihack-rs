@@ -52,10 +52,18 @@ This step:
 
 ### Stage 2: File infrastructure bug
 
-Step `file-routing-bug` runs when `adaptive_recipe` is non-empty. It:
+Step `file-routing-bug` runs when `adaptive_recipe` is non-empty. It calls
+`amplifier-bundle/tools/smart_routing_gap_report.sh`, which:
 1. Assembles diagnostic context (task type, workstream count, environment)
 2. Attempts to create a GitHub issue labeled `bug`
 3. Falls back to writing a local diagnostic file if `gh` is unavailable
+
+The step's output, `infra_error_details`, is always non-empty: the issue URL,
+`diag:<file>` for the local fallback, or `diag:helper-not-found` when the
+helper is not in `AMPLIHACK_HOME`, `REPO_PATH`, the current directory,
+`~/.copilot` or `~/.amplihack`. In every case the step exits 0 so recovery
+continues. `crates/amplihack-cli/tests/issue_1688_routing_gap_report.rs` runs
+the real step body against each of these cases.
 
 ```yaml
 condition: |

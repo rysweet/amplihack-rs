@@ -134,6 +134,8 @@ mod issue_1634_shared_sessions;
 mod issue_1650_profile_identity;
 #[path = "issue_1659_limit_resume_gate.rs"]
 mod issue_1659_limit_resume_gate;
+#[path = "issue_1688_routing_gap_report.rs"]
+mod issue_1688_routing_gap_report;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
 #[path = "issue_439_no_per_step_timeout.rs"]

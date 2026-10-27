@@ -22,5 +22,5 @@ TASK_DESCRIPTION_INPUT="${2:-}"
 # be read stops the harness with the extractor's named ERROR.
 STEP_BODY="$(bash "$SCRIPT_DIR/recipe-step-command.sh" "$RECIPE" step-03b-extract-issue-number)"
 
-ISSUE_CREATION="$ISSUE_CREATION_INPUT" TASK_DESCRIPTION="$TASK_DESCRIPTION_INPUT" \
+RECIPE_VAR_issue_creation="$ISSUE_CREATION_INPUT" TASK_DESCRIPTION="$TASK_DESCRIPTION_INPUT" \
   bash -c "$STEP_BODY"
