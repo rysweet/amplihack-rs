@@ -73,6 +73,15 @@ The markers are `session limit`, `usage limit`, `usage_limit_reached`,
 
   reports `spend limit`, and its reset hint is `Oct 10, ...`, the text after the
   first `resets `.
+- **Spend limit on a credit-backed profile.** The classifier files it as
+  `usage_limit` like any other limit. Separately, when the
+  [login rotator](./profile-command.md#rotate-overflow) reads this message in
+  `claude -p /usage` for a profile marked as overflow, it blocks that profile
+  until the 1st of the next month and moves work elsewhere; see
+  [Use usage credits when every plan login is exhausted](../howto/claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
+  The retry rules here do not change, and neither the classifier nor the
+  usage-limit wait ever writes an overflow block: only the rotator's probe
+  does.
 - **Checked after work and environmental, before transient.** The order is
   `work` → `environmental` → `usage_limit` → `transient_transport`, and the
   first class with a match wins. A usage-limit marker inside a 429 envelope is

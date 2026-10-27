@@ -22,7 +22,9 @@ amplihack profile auto-switch threshold <1-100>
 amplihack profile auto-switch exclude [<name>...]
 amplihack profile auto-switch install
 amplihack profile auto-switch repair
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
+amplihack profile overflow add|remove|clear <name>
+amplihack profile overflow list
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS]
 amplihack profile rotate start|watch [<tuning flags>] [--interval SECS]
 amplihack profile rotate stop|status
 amplihack profile rotate autostart [on|off]
@@ -44,6 +46,7 @@ amplihack launch|claude --profile <name> [...]
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
 | `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
+| `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
 
 `remove` and `login` are also refused while auto-switch has an account's
@@ -279,10 +282,35 @@ Rows are in three groups, and the JSON uses the same order:
 | `leased→<dir>` | This profile's login is live in profile `<dir>`'s directory, lent by [auto-switch](#leases). |
 | `hosts:<account>` | This profile's directory currently holds the login of profile `<account>`, so the numbers on this row belong to `<account>`. |
 | `live in ~/.claude` | This profile's login is in the default directory `~/.claude`, and the numbers on this row were read from there. See [Logins in `~/.claude`](#logins-in-claude). |
+| `overflow` | The profile is marked as [credit-backed overflow](#rotate-overflow) in `<root>/.auto-switch`. |
+| `overflow, blocked until <time>` | As `overflow`, and the rotator has [blocked](#overflow-spend-limit-block) it after a spend-limit reading until `<time>` (UTC, `YYYY-MM-DDTHH:MM:SSZ`). |
 
 Several marks are separated by a space (`* live in ~/.claude`); none
 prints `-`. A row marked `live in ~/.claude` is placed by its state and
-numbers like any other row.
+numbers like any other row. An overflow row is placed by its state like any
+other row too; its session and week numbers are its plan limits, which it can
+work past on credits.
+
+When the row marked `live in ~/.claude` is also marked `overflow`, and that
+row's own probe in this run reached the session or weekly limit (state
+`session_exhausted` or `weekly_exhausted`), the table is followed by one
+line:
+
+```
+running on credits: ryan-mistt-org
+```
+
+A live overflow row whose probe shows plan capacity left prints no footer:
+work on it is still covered by the plan. A live overflow row whose probe
+failed prints no footer either, because nothing in the run shows the limit
+was reached.
+
+The overflow marks come from `<root>/.auto-switch`, read once before
+probing; the block comes from the rotate ledger, read at the same time. A
+corrupt `.auto-switch` gives no overflow marks, and a rotate ledger that
+cannot be read gives no block, each with a warning on stderr. The `live in
+~/.claude` mark, and so the footer, needs the live profile to be identified
+by account; see [Logins in `~/.claude`](#logins-in-claude).
 
 While a profile's login is lent out, its own directory has no login, so its
 row usually shows `not_logged_in`. That account's numbers are on the row of
@@ -459,6 +487,8 @@ there is no version field.
     "default": true,
     "leased_to": null,
     "live_in": null,
+    "overflow": false,
+    "overflow_blocked_until": null,
     "state": "ok",
     "session": {
       "label": "session",
@@ -492,6 +522,8 @@ there is no version field.
 | `default` | bool | Whether this is the default profile. |
 | `leased_to` | string or `null` | The directory this profile's login is lent to. |
 | `live_in` | string or `null` | `"~/.claude"` when this profile's login is [live in `~/.claude`](#logins-in-claude) and its numbers were read from there; otherwise `null`. The key is always present, and at most one row has a non-null value. The value is always the literal `~/.claude`, never the expanded home path. |
+| `overflow` | bool | Whether the profile is marked as [credit-backed overflow](#rotate-overflow). Always present. |
+| `overflow_blocked_until` | integer or `null` | Unix epoch seconds until which the rotator has [blocked](#overflow-spend-limit-block) this overflow profile after a spend limit; `null` when it is not blocked or not marked. Always present. |
 | `state` | string | One of the [states](#states). |
 | `session` | window or `null` | The `Current session` line. |
 | `week_all` | window or `null` | The `Current week (all models)` line. |
@@ -506,6 +538,23 @@ the model name as printed (for example `Fable`) for a model week.
 `null` when the line had no reset. `resets_at` is Unix epoch seconds, or
 `null` when there was no [reset text](#what-is-read) or it could not be
 resolved. JSON strings are not cleaned; they use JSON escaping.
+
+The output stays a single array; there is no top-level object and no
+`on_credits` key. The live login is running on credits exactly when one row
+has `live_in` equal to `"~/.claude"`, `overflow` equal to `true` and a
+`state` of `"session_exhausted"` or `"weekly_exhausted"`, the same test the
+footer uses:
+
+```bash
+amplihack profile usage --json | jq -r '.[]
+  | select(.live_in == "~/.claude" and .overflow
+           and (.state == "session_exhausted" or .state == "weekly_exhausted"))
+  | .profile'
+```
+
+```
+ryan-mistt-org
+```
 
 #### Refreshing auto-switch readings
 
@@ -1425,7 +1474,7 @@ so a login moved while the switch was on stays protected after `off`.
 | `auto-switch off` | Writes `enabled=off`. The threshold and exclusions are kept. Logins in running sessions are not moved; they return when each session ends. |
 | `auto-switch status` | **Read-only.** Takes no lock, runs no recovery and changes nothing on disk. Prints the effective setting and where it comes from (`env`, `file`, `default` or `corrupt`), the threshold, the exclusions, whether in-session swaps are available, one row per profile (latest readings, where its login is, wrapper state), the hosted directories, an invariant line, and then any [notes](#status-notes). Prints profile names, percentages and times only. |
 | `auto-switch threshold N` | Sets the threshold, `1` to `100`. Keeps `enabled` and `exclude`. |
-| `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled` and `threshold`. |
+| `auto-switch exclude [names…]` | Replaces the exclusion list. With no names, clears it. Each name must pass the [name rules](#name-rules); it does not have to exist (`status` lists names that do not). Keeps `enabled`, `threshold` and `overflow`. |
 | `auto-switch install` | Adds the [status-line wrapper](#status-line-wrapper) to every profile that does not have it. Leaves a stale wrapper alone and reports it. Prints the root it acts on. |
 | `auto-switch repair` | If `<root>/.auto-switch.d/` exists, takes the global lock and runs [recovery](#session-end-and-recovery). Then does everything `install` does, and also rewrites stale wrappers (old or moved binary path, wrapped twice, edited by hand) to the canonical one. Prints the install lines, then one `recovery:` line per thing recovery did, or `recovery: nothing to do`. This is the only command whose purpose is recovery. |
 
@@ -1494,6 +1543,7 @@ with status 1 on error with the usual `error:`/`hint:` lines.
 enabled=on
 threshold=90
 exclude=review,shared
+overflow=ryan-mistt-org
 ```
 
 | Key | Values | Default |
@@ -1501,16 +1551,46 @@ exclude=review,shared
 | `enabled` | `on` or `off`. Required. | — |
 | `threshold` | Integer `1` to `100`, in percent. | `90` |
 | `exclude` | Comma-separated profile names, may be empty. | empty |
+| `overflow` | Comma-separated profile names, in the order the rotator tries them. See [Rotate overflow](#rotate-overflow). Written only by [`profile overflow`](#overflow-commands). | empty |
+
+`overflow` is written last, and only when the list is not empty, so a file
+with no overflow profiles is byte-identical to one written before the key
+existed. A missing key or an empty value means no overflow profiles. Every
+command that rewrites the file keeps the `overflow` list.
 
 It is written like `.default`: a new temp file in the same directory
 (`create_new`, mode `0600`, never through a symlink), synced, renamed over the
 file, and the directory synced. Rewrites produce identical bytes for an
 identical setting.
 
+Every command that changes the file (`auto-switch on`, `off`, `threshold`
+and `exclude`, and `profile overflow add` and `remove`) reads it, changes
+its own key and writes it back while holding the auto-switch state lock in
+`<root>/.auto-switch.d/`, the lock the rotator and in-session swaps hold
+while they work. Two writers therefore never lose each other's change. A
+command waits up to 10 seconds for the lock and otherwise fails, leaving the
+file unchanged, with `AutoSwitchConfig` and the message:
+
+```
+.auto-switch is being changed by another process (the rotator or auto-switch); retry
+```
+
+It never falls back to an unlocked write. When the change leaves every key as
+it was, for example `overflow add` on a name already marked, nothing is
+written. A change that would make the file larger than 4096 bytes is refused
+with `AutoSwitchConfig` and the file is left as it was.
+
 The file is *corrupt*, and the switch counts as off, if it is larger than
 4096 bytes, not UTF-8, not a regular file, not owned by the current user,
-has an unknown or repeated key, has no `enabled`, or has an out-of-range
-value. `status` shows `switch: off (corrupt)`.
+writable by group or others, has an unknown or repeated key, has no `enabled`, has an out-of-range
+value, or has an `overflow` list with an invalid or repeated name.
+`status` shows `switch: off (corrupt)`. A corrupt file also gives no overflow
+profiles, so the rotator never moves onto credits because of it.
+
+An `amplihack` binary older than the `overflow` key counts a file that has
+the key as corrupt: auto-switch counts as off and the exclusion list is
+lost for that binary. Upgrade every `amplihack` binary that uses the root
+before running `profile overflow add`.
 
 What each command writes depends on the current file:
 
@@ -1520,6 +1600,7 @@ What each command writes depends on the current file:
 | missing | creates it | creates it with `enabled=off`, defaults for the key not given |
 | corrupt regular file owned by you | replaces it; `threshold` and `exclude` start from their defaults unless given | refused with `AutoSwitchConfig`; run `on` or `off` first |
 | owned by another user | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
+| owned by you, writable by group or others | replaced with mode `0600`, as for a corrupt file | refused with `AutoSwitchConfig`; run `on` or `off` first |
 | symlink or not a regular file | refused with `AutoSwitchConfig` | refused with `AutoSwitchConfig` |
 
 A file is never written through a symlink, and a file owned by someone else
@@ -1615,6 +1696,13 @@ The first one is chosen. A known reading below the threshold always beats
 no reading. If none is eligible, nothing is switched. The
 exclusion list only stops an account being chosen; an excluded account that
 is current can still be switched away from.
+
+Auto-switch never chooses an [overflow](#rotate-overflow) profile, even when
+it is the only account below the threshold. Every selection, for in-session
+swaps, nested launches and [usage-limit reruns](#usage-limit-reruns), treats
+the `overflow` list as part of the exclusion list. Auto-switch has no reset
+times to apply the overflow wait to, so only the rotator moves work onto
+credits.
 
 ### Status-line wrapper
 
@@ -2052,6 +2140,13 @@ the readings taken in between.
 runs out of profiles shows no notice until one of the three writers next
 runs.
 
+When the rotator's cycle ends on an [overflow](#rotate-overflow) profile
+(`last_cycle.overflow` is `in` or `on`), the `rotate` writer records `ok`
+whatever the readings say, because work can go on at the cost of credits.
+Like any `ok`, this replaces an existing file but never creates one. The
+`statusline` and `usage` writers do not know about credits and may write an
+exhausted state in between; the rotator's next cycle replaces it.
+
 Write rules:
 
 - The file is written only while the [effective setting](#toggle-and-precedence)
@@ -2233,9 +2328,9 @@ exclusion list and its state lock.
 ### Rotate commands
 
 ```
-amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS]
-amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
-amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--interval SECS]
+amplihack profile rotate [--dry-run] [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS]
+amplihack profile rotate start  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--interval SECS]
+amplihack profile rotate watch  [--session-at N] [--week-at N] [--margin N] [--upgrade-margin N] [--hold SECS] [--overflow-wait SECS] [--interval SECS]
 amplihack profile rotate stop
 amplihack profile rotate status
 amplihack profile rotate autostart [on|off]
@@ -2262,6 +2357,69 @@ with `RotateUnsupported` before doing anything else. That is the only use of
 files atomically, the swap is refused with `RotateRefused`; see
 [Rotate swap](#rotate-swap).
 
+### Overflow commands
+
+```
+amplihack profile overflow add <name>
+amplihack profile overflow remove <name>
+amplihack profile overflow list
+amplihack profile overflow clear <name>
+```
+
+These act on the resolved [profile root](#profile-root), the same root the
+rotator uses. The marks are kept in the `overflow` key of
+[`<root>/.auto-switch`](#settings-file); spend blocks are kept in the
+[rotate ledger](#rotate-state-directory). What the rotator does with them is
+in [Rotate overflow](#rotate-overflow).
+
+The marks live in `.auto-switch`, not in the layered `config.toml`, because
+the rotator and auto-switch already re-read that file on every cycle and
+every check, and auto-switch takes its exclusions from it. Keeping the marks
+there gives one source of truth for which profiles are skipped and when.
+
+| Command | Behaviour |
+|---------|-----------|
+| `overflow add <name>` | Appends `<name>` to the `overflow` list. The name must pass the [name rules](#name-rules) and be an existing profile directory under the root (not a symlink); otherwise the command fails, names the profile and changes nothing. Prints `overflow: added <name>` and the cost note below, or `overflow: <name> is already marked` and exits 0. Prints a warning when `<name>` is in the `exclude` list, and another when the [default pointer](#clearing-the-default) names it. |
+| `overflow remove <name>` | Removes `<name>` from the list. The name must pass the name rules; it does not have to exist. Prints `overflow: removed <name>`, or `overflow: <name> is not marked` and exits 0. A spend block for the profile is left in the ledger and expires on its own. |
+| `overflow list` | **Read-only.** Prints one line per marked profile, in list order, which is the order the rotator tries them: the name, then `blocked until <time> (spend_limit)` when it has an active block, then `missing` when the root has no profile directory of that name. Prints `overflow: none` when the list is empty. Takes no lock. A rotate ledger that cannot be read prints a warning on stderr and the marks without blocks; the command still exits 0. |
+| `overflow clear <name>` | Removes the spend block for `<name>` from the rotate ledger. Takes the rotate state lock, retrying for up to 10 seconds; if it is still held, fails with `RotateDaemon` and the message `rotator busy, retry`. Prints `overflow: cleared the spend block on <name>`, or `overflow: <name> has no spend block` and exits 0. The name must pass the name rules; it does not have to be marked or exist, so a block left after `overflow remove` can still be cleared. Never creates the ledger. |
+
+The cost note `add` prints:
+
+```
+note: ryan-mistt-org is used only when every plan login is exhausted, and work on it is billed to that account's usage credits.
+note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
+```
+
+The warnings `add` prints, on stderr:
+
+```
+warning: ryan-mistt-org is in the auto-switch exclude list; excluded profiles are never used, even as overflow
+warning: the default profile is ryan-mistt-org; launches use it directly and spend credits whatever the rotator does (run: amplihack profile switch --none)
+```
+
+`overflow list` with one blocked profile:
+
+```
+ryan-mistt-org  blocked until 2026-11-01T00:00:00Z (spend_limit)
+team-credits
+old-credits  missing
+```
+
+`add` and `remove` change only the `overflow` key of `<root>/.auto-switch`,
+through the same locked write as the [auto-switch commands](#auto-switch-commands)
+(see [Settings file](#settings-file)). A missing file is created with
+`enabled=off`. A corrupt file is refused with `AutoSwitchConfig` and left
+unchanged. Because the write holds the lock, a `remove` that reports success
+is never lost to a concurrent `auto-switch exclude`, `on` or rotator cycle.
+If the lock is busy for 10 seconds, the command fails with the
+`.auto-switch is being changed by another process` message and changes
+nothing; run it again. Messages and warnings are printed after the lock is
+released.
+
+All four commands exit 0 on success and 1 with the usual `error:`/`hint:`
+lines on failure. Output holds profile names, times and fixed text only.
+
 ### Rotate settings
 
 | Flag | Variable | Default | Range |
@@ -2271,6 +2429,7 @@ files atomically, the swap is refused with `RotateRefused`; see
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | `0`-`100` (points) |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | `0`-`100` (points) |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | `0` or more (seconds); `0` disables the hold |
+| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | `0`-`604800` (seconds); see [Rotate overflow](#rotate-overflow) |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | `1`-`86400` (seconds); `start` and `watch` only |
 
 A flag beats its variable, and the variable beats the default. An empty
@@ -2291,7 +2450,9 @@ background process sets no `AMPLIHACK_ROTATE*` variable in the environment of
 the `claude` processes it starts.
 
 The thresholds and margins are independent of the auto-switch `threshold`.
-The auto-switch `exclude` list applies to rotation.
+The auto-switch `exclude` list applies to rotation, and so does the
+`overflow` list in the same file; see [Rotate overflow](#rotate-overflow).
+`--overflow-wait` has no effect while no profile is marked as overflow.
 
 ### Rotate cycle
 
@@ -2325,9 +2486,19 @@ Every non-dry-run cycle runs these steps in order:
    and end the cycle. Otherwise run the [swap](#rotate-swap). After a swap
    that ran, check the [shared session links](#shared-session-directories)
    of `to` and `from`.
-7. **Record.** Write the log lines and the ledger's `last_cycle`. When the
+7. **Record.** Write the log lines and the ledger's `last_cycle`, with
+   `overflow` set when the cycle moved onto, off or stayed on an
+   [overflow](#rotate-overflow) profile. Add any new
+   [spend blocks](#overflow-spend-limit-block) and drop expired ones. When the
    cycle stays or raises the no-capacity ALERT and the live profile is known,
    also record it as `live`, with its `account`.
+
+The overflow list is read in step 3 with the exclusion list. A change to it
+between steps 3 and 6 counts as a state change, so the cycle ends with
+`skip: state changed during measurement`. When overflow profiles are marked,
+a rotate ledger that cannot be read ends the cycle before the decision with
+the `RotateInconsistent` ALERT; the rotator never moves onto credits without
+knowing the spend blocks. A missing ledger means no blocks.
 
 Between steps 6 and 7, after the swap, stay or ALERT and still under the
 lock taken in step 6, the cycle updates the
@@ -2390,6 +2561,200 @@ Nothing else changes: an ALERT when no candidate meets the margin, swaps on
 a measured threshold, swaps on an exhausted live login and upgrade swaps
 behave as in the table above. A damped stay counts as a stay without an
 alert, so it clears the stored ALERT key.
+
+### Rotate overflow
+
+An *overflow profile* is one whose account has usage credits turned on at
+<https://claude.ai/settings/usage>, so it keeps working after its plan's
+session or weekly limit and the extra use is billed to the credits. A
+*plan profile* is any other profile. Profiles are marked with
+[`profile overflow add`](#overflow-commands); with no profile marked, every
+rule in this section is inactive and the rotator behaves exactly as described
+above.
+
+Credits cost money and plan capacity does not, so the rotator:
+
+- never moves onto an overflow profile while a plan profile has capacity;
+- moves onto one only when the live plan login has reached a threshold, no
+  plan profile has capacity, and the next plan reset is more than
+  `--overflow-wait` seconds away;
+- moves back to a plan profile in the first cycle in which one has capacity.
+
+Only the rotator moves work onto credits. [Auto-switch](#candidate-selection)
+never chooses an overflow profile.
+
+#### Plan pool
+
+The *plan pool* is the live login, when it is not an overflow profile, plus
+every [candidate](#rotate-candidates) that is not marked overflow. Excluded,
+leased, hosting, parked, session-running and login-less profiles are not
+candidates, so they neither offer capacity nor shorten the wait.
+
+A plan candidate *has capacity* when all of these hold:
+
+- its probe this cycle gave `ok`;
+- its session use is below `--session-at`;
+- its week use is below `--week-at`.
+
+`--margin`, `--hold` and `--upgrade-margin` play no part in this test. A
+plan login that has capacity is one the rotator would not swap away from
+for reaching a threshold, which is what stops the [overflow decision](#overflow-decision)
+from flapping. For example, with `--session-at 80`, a plan login at `s=85%`
+does not have capacity, so the rotator stays on credits rather than moving
+to it and back.
+
+#### Overflow candidates
+
+An overflow profile can be moved to when all of these hold:
+
+- it is a [candidate](#rotate-candidates): the `exclude` list and every other
+  skip reason apply to it as to any profile, so an excluded overflow profile
+  is never used;
+- it has no active [spend block](#overflow-spend-limit-block);
+- its probe this cycle gave `ok`, `session_exhausted` or `weekly_exhausted`.
+  Its session and week numbers are its plan limits and do not stop it being
+  used. Any other state, including `timeout`, `unparsed` and
+  `not_logged_in`, means it is not used this cycle.
+
+The first eligible profile in `overflow` list order is chosen. There is no
+other ranking among overflow profiles.
+
+#### Earliest plan reset
+
+For each profile in the plan pool, the time it *regains capacity* is:
+
+| Live or candidate reading | Regains capacity at |
+|---------------------------|---------------------|
+| Only the session window is at `--session-at` or exhausted | the session reset |
+| Only the week window is at `--week-at` or exhausted | the week reset |
+| Both are | the later of the two resets |
+| Neither is | now |
+| Probe failed, or a needed reset time is missing | unknown |
+
+The *earliest plan reset* is the earliest of these times. Unknown counts as
+infinitely far away. A plan login whose probe failed therefore never
+shortens the wait: during a probe outage, for example a network failure or
+an expired plan login, the rotator can move onto credits even though that
+login would have had capacity again within `--overflow-wait`. Reset times are the `resets_at` values that
+[`profile usage`](#what-is-read) reads, kept for exhausted readings too.
+
+#### Overflow decision
+
+While the live login is a plan profile, the rotator first applies the
+[decision rule](#rotate-decision-rule) and the
+[failed-probe rules](#rotate-failed-live-probes) to the plan pool alone.
+Only when that gives `ALERT no-capacity` on a measured live reading does it
+consider overflow:
+
+| Condition | Outcome |
+|-----------|---------|
+| Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
+| A plan candidate has capacity (it is below both thresholds but short of `--margin`) | ALERT `no-capacity`, as without overflow. Credits are never used while a plan login has capacity. |
+| `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one, `reason=overflow-in`. The `--hold` does not apply. |
+| `earliest plan reset - now <= overflow-wait` | ALERT `no-capacity`, as without overflow. |
+| No overflow candidate is eligible | ALERT `no-capacity`, as without overflow. |
+
+The comparison is strict: a reset exactly `--overflow-wait` seconds away
+stays. With `--overflow-wait 0` the rotator moves onto credits as soon as
+every plan profile is out of capacity and the earliest reset is in the
+future.
+
+While the live login is an overflow profile, these rules apply in order:
+
+| Condition | Outcome |
+|-----------|---------|
+| A plan candidate has capacity | Swap to the plan candidate that has capacity with the most headroom, `reason=overflow-out`. `--margin`, `--hold` and `--upgrade-margin` do not apply. |
+| The live reading is `spend_limit` | [Block](#overflow-spend-limit-block) the live profile, then swap to the next eligible overflow candidate if the wait rule above still holds, else to the plan candidate with the most headroom that is not exhausted and whose probe did not fail, else ALERT `no-capacity`. |
+| Live probe failed | [Failed-probe rules](#rotate-failed-live-probes), with plan candidates as the only targets; otherwise stay on credits. |
+| Otherwise | Stay on credits. |
+
+`--session-at` and `--week-at` are never applied to a live overflow profile:
+reaching its plan limit is expected. An overflow profile is never swapped for
+another overflow profile except after a spend limit.
+
+The rules do not flap. `overflow-out` moves only to a plan login that is
+below both thresholds, so the next cycle does not swap away from it. The
+rotator moves back onto credits only once that login reaches a threshold
+again and every rule above holds again.
+
+If an overflow profile's login is live in `~/.claude` while a plan profile
+has capacity, for example after you put it there by hand, the next cycle
+moves it out with `reason=overflow-out`. To keep running on it, remove the
+mark or stop the rotator.
+
+Removing the mark from the live overflow profile does not by itself stop
+credit spending. From the next cycle the login is a plan profile at or past
+its limits, so the ordinary [decision rule](#rotate-decision-rule) applies:
+it is swapped out only when a candidate meets `--margin`, and otherwise the
+cycle writes `ALERT: no profile has capacity` and leaves the login in
+`~/.claude`, where Claude keeps billing work to the credits. See
+[Stopping credit use](#stopping-credit-use).
+
+The [default pointer](#clearing-the-default) is outside this policy. A
+launch that resolves to a profile through `.default` uses that profile
+directly, whether it is a plan profile or an overflow profile, so leave the
+pointer unset (`amplihack profile switch --none`) when using overflow.
+
+#### Overflow spend-limit block
+
+Claude's `You've hit your org's monthly spend limit …` message, and the
+older `Your organization has reached its monthly spend limit` wording, mean
+the account's credits are used up or not turned on. The
+[usage probe](#what-is-read) matches both, without regard to case, and
+classifies the profile as `spend_limit`. The probe is the only detector:
+the rotator probes the live overflow profile on every cycle, so a block is
+recorded within one cycle. The [usage-limit wait](#usage-limit-wait) and the
+recipe-run classifier see the same message in an agent's output but never
+write a block. A probe that reads
+[`spend_limit`](#states) for an overflow profile, live or candidate, *blocks*
+that profile:
+
+1. Under the lock taken in [step 6](#rotate-cycle), the rotator adds
+   `{"at": <now>, "until": <reset>, "reason": "spend_limit"}` to
+   `overflow_blocked` in the [ledger](#rotate-state-directory). `<reset>` is
+   00:00 UTC on the first day of the next month. The probe text, including
+   any reset Claude states, is not stored.
+2. It writes `ALERT: overflow profile <name> hit its spend limit; blocked until <time>`
+   once for that block. The block record, not the ledger's `alert` key,
+   prevents a repeat, so the ALERT does not stop the
+   [hook](#capacity-for-a-resume) from seeing capacity when the cycle moves
+   somewhere else.
+3. A blocked profile is not an overflow candidate. If it was live, the
+   cycle moves away as in the table above.
+
+A block ends at its `until` time or with
+[`profile overflow clear <name>`](#overflow-commands). Expired blocks are
+removed from the ledger the next time the rotator records a cycle. The reset
+time Claude prints in the spend-limit message is not read; a spend limit
+raised or credits added before the 1st need `overflow clear`.
+
+A `spend_limit` reading on a plan profile is a failed probe, as it always
+was. A `spend_limit` reading on a live overflow profile does not count
+towards the three failed live probes.
+
+The block depends on the spend-limit text appearing in the output of
+`claude -p /usage` for that login. If it does not appear there, the rotator
+cannot see that credits have run out, and sessions on that login keep
+failing. The two ways out behave differently:
+
+- `profile overflow remove <name>` makes the login a plan profile. A
+  `spend_limit` reading on it is then a failed live probe, so the
+  [failed-probe rules](#rotate-failed-live-probes) swap it out only after
+  three consecutive failed cycles, and only to a plan candidate. Any other
+  reading is judged by the ordinary decision rule, as described above.
+- `profile rotate stop` stops all swapping and leaves the login in
+  `~/.claude`. Nothing moves it until you start the rotator again.
+
+#### Stopping credit use
+
+No `amplihack` command puts a plan login into `~/.claude` when no plan
+login has capacity, so neither `overflow remove` nor `rotate stop` stops
+spending on its own. To stop spending at once, turn off usage credits or
+lower the spend limit at <https://claude.ai/settings/usage>. Claude then
+refuses work on that login, the next probe reads `spend_limit`, and the
+rotator [blocks](#overflow-spend-limit-block) the profile and moves away from
+it as described above. Ending the Claude sessions that run on the login also
+stops spending, but a new launch uses it again.
 
 ### Rotate live profile
 
@@ -2561,7 +2926,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at` and `outcome`). |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, `outcome` and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `rotate.log` | The log. |
@@ -2586,6 +2951,57 @@ Example ledger, with the account value replaced:
 }
 ```
 
+Overflow fields:
+
+| Field | Values | Written |
+|-------|--------|---------|
+| `last_cycle.overflow` | `in` (the cycle swapped onto an overflow profile), `out` (it swapped off one onto a plan profile) or `on` (it stayed on one) | Only for those cycles; absent otherwise. |
+| `overflow_blocked` | Object keyed by profile name; each value is `{"at": <epoch>, "until": <epoch>, "reason": "spend_limit"}` | Only while at least one block exists; absent otherwise. |
+
+A ledger with no overflow activity is byte-identical to one written before
+these fields existed. The rotator rejects the ledger as `RotateInconsistent`,
+with the message `rotate ledger: invalid overflow field` and without echoing
+the value, when a block key fails the [name rules](#name-rules), `reason` is
+not `spend_limit`, `at` is not above `0`, `until` is not later than `at`,
+`until` is more than 62 days after `at` (a sum that would overflow counts as
+more), there are more than 256 blocks, or `last_cycle.overflow` is not `in`,
+`out` or `on`. The rotator writes `until` as 00:00 UTC on the 1st of the
+month after `at`, which always meets this rule; the wider window lets a
+later reader keep a block whose end came from elsewhere. An unknown key
+inside a block record is ignored, so a newer writer's extra block fields do
+not make the ledger invalid. `last_cycle` and the top level of the ledger
+still reject unknown keys.
+
+Ledger on credits, with one block on another overflow profile:
+
+```json
+{
+  "version": 1,
+  "live": "ryan-mistt-org",
+  "account": "<accountUuid>",
+  "since": 1792832405,
+  "swapped_at": 1792832405,
+  "previous": "work",
+  "last_cycle": { "at": 1792833005, "outcome": "stayed", "overflow": "on" },
+  "overflow_blocked": {
+    "team-credits": { "at": 1792826100, "until": 1793491200, "reason": "spend_limit" }
+  }
+}
+```
+
+An `amplihack` binary older than these fields rejects a ledger that has them,
+because it rejects unknown fields everywhere in the ledger. This binary
+relaxes that rule only inside a block record; `last_cycle` and the top level
+stay strict, so a future field there is rejected in the same way. The
+rejection fails safe: the older binary leaves the ledger unchanged, reports
+`RotateInconsistent` and makes no swap, so rotation stops instead of acting
+on a ledger it cannot read. A version gate that names the newer writer
+instead of failing on the field is a follow-up in #1687. Upgrade every
+binary that uses the root before the first `overflow add`, then restart the
+rotator (`rotate stop`, `rotate start`). To go back to an older binary,
+follow
+[Upgrading and rolling back](../howto/claude-profile-rotation.md#upgrading-and-rolling-back).
+
 ### Rotate log
 
 Each line is `YYYY-MM-DDTHH:MM:SSZ <message>`, in UTC. The one-shot command
@@ -2595,7 +3011,11 @@ stdout only, without the time.
 | Message | Meaning |
 |---------|---------|
 | `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. |
-| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). |
+| `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
+| `credits: on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
+| `credits: staying on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `credits: on` line is written instead. |
+| `credits: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
+| `ALERT: overflow profile <name> hit its spend limit; blocked until <time>` | A [spend block](#overflow-spend-limit-block) was recorded. Written once per block. |
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
@@ -2611,7 +3031,7 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
-| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
+| `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
 `hand-change`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
@@ -2726,6 +3146,22 @@ autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
+overflow: -
+on credits: no
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+On credits, with a second overflow profile blocked:
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default)
+pid: 48213
+live: ryan-mistt-org
+last cycle: 2026-10-24T09:10:05Z stayed overflow=on
+overflow: ryan-mistt-org, team-credits (blocked until 2026-11-01T00:00:00Z)
+on credits: yes (ryan-mistt-org)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -2736,7 +3172,10 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
-| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
+| `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. |
+| `on credits` | `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
+| `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
 
 Run from a shell where the root now resolves elsewhere, for example cron with
@@ -2749,6 +3188,8 @@ autostart: on (default)
 pid: 48213
 live: spare
 last cycle: 2026-10-18T12:50:05Z stayed
+overflow: -
+on credits: no
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
@@ -2972,6 +3413,13 @@ above about 50 seconds, an older cycle can still count, and one resume may be
 spent on a login that is still at its limit; the per-event and per-session
 caps bound the cost.
 
+A cycle that moved onto or stayed on an [overflow](#rotate-overflow)
+profile records `swapped` or `stayed` with no `alert`, so it counts as
+capacity and the hook resumes the session, which then runs on credits.
+`last_cycle.overflow` does not change the verdict; the hook ignores
+`overflow_blocked`. A spend block with nowhere to move ends the cycle on the
+no-capacity ALERT, which is not capacity.
+
 Any outcome other than `swapped` or `stayed` (`alerted`, `skipped`, `idle`,
 or one the hook does not know), a missing ledger, or a ledger that is not
 trusted means no capacity yet. The hook does not apply the
@@ -3055,7 +3503,7 @@ failures use this format.
 | Condition | Hint |
 |-----------|------|
 | Invalid name | Lists the allowed pattern |
-| Profile exists / not found | `amplihack profile list` |
+| Profile exists / not found (including `overflow add` on a name with no profile directory) | `amplihack profile list` |
 | Symlinked or out-of-root profile | Remove the symlink and re-add |
 | Pointer dangling (names a missing profile) | `amplihack profile switch <name>` |
 | Pointer corrupt or oversized | Re-run `profile switch <name>` |
@@ -3072,7 +3520,7 @@ failures use this format.
 | `InvalidSavedRoot`: `~/.amplihack/profile-root` is invalid (the message names the file and the [reason](#saved-root-file-format)), or `profile root <dir>` cannot write it safely | `fix or remove ~/.amplihack/profile-root, or run: amplihack profile root <absolute dir>` |
 | `Leased`: the profile's login is live in another profile's session | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
 | `HostsForeignAccount`: the profile's directory holds another account's login | `` wait for that session to end, or run `amplihack profile auto-switch status` `` |
-| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
+| `AutoSwitchConfig`: `.auto-switch` is a symlink or cannot be written, is corrupt when `threshold`, `exclude`, `overflow add` or `overflow remove` needs to keep its other keys, the change would exceed 4096 bytes, or the [settings lock](#settings-file) stayed busy for 10 seconds (the message ends in `retry`; run the command again) | `` remove <root>/.auto-switch and run `amplihack profile auto-switch on` or `off` `` |
 | `AutoSwitchUnsupported`: an `auto-switch` command on a platform without Unix file semantics | `auto-switch needs Linux or another Unix; leave it off` |
 | `AutoSwitchInvariant`: the state files are damaged or a login is not where the state says | `see the Recovery section of docs/howto/claude-profiles.md` |
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
@@ -3081,7 +3529,7 @@ failures use this format.
 | `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
 | `RotateInconsistent`: the rotate ledger or journal is damaged, or recovery cannot tell which way is safe | `see the Recovery section of docs/howto/claude-profile-rotation.md` |
 | `RotateUnsupported`: `profile rotate` on a platform without Unix file semantics | `rotate needs Linux or another Unix` |
-| `RotateDaemon`: `start` found a rotator running, `stop` timed out, or the process cannot be verified | `` run `amplihack profile rotate status` `` |
+| `RotateDaemon`: `start` found a rotator running, `stop` timed out, the process cannot be verified, or `overflow clear` could not take the state lock within 10 seconds (`rotator busy, retry`) | `` run `amplihack profile rotate status` `` |
 
 Auto-switch errors name profiles in the message; hints are fixed text. For
 example:
@@ -3154,6 +3602,22 @@ and runs nothing as root, so another user cannot use the setting or the pid
 file to start a process for you. The rotator it starts keeps the
 `AMPLIHACK_ROTATE_*` values and the binary of the launch that started it;
 `rotate.err` records which binary that was.
+
+Overflow spends real money, so every uncertain case fails towards not
+spending: a corrupt `.auto-switch` gives no overflow profiles, an unreadable
+rotate ledger stops the cycle, a failed live probe never moves onto credits,
+an overflow profile whose probe failed is not used, `exclude` beats
+`overflow`, and auto-switch never chooses an overflow profile. The rotator is
+not a spending cap: the organization spend limit at
+<https://claude.ai/settings/usage> is the only hard limit, and a session
+resumed by the [hook](#capacity-for-a-resume) while on credits spends them.
+Spend-block records are checked when the ledger is loaded, so a hand-edited
+block cannot last more than 62 days after its `at`. A group- or
+other-writable `.auto-switch` is corrupt and gives no overflow profiles, and
+every change to it goes through one locked writer that fails rather than
+write unlocked, so a `remove` that reports success is never silently undone. Overflow output holds
+profile names, times and the fixed usage URL; Claude's output and account
+e-mail addresses are never stored or printed.
 
 Residual risks of auto-switch:
 

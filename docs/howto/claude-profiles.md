@@ -480,7 +480,11 @@ amplihack profile show
 ```
 
 After this, `amplihack claude` runs with no profile and leaves
-`CLAUDE_CONFIG_DIR` alone. If no default was set, the command prints
+`CLAUDE_CONFIG_DIR` alone. Clear the default when the
+[rotator](claude-profile-rotation.md) uses a
+[credit-backed overflow profile](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted):
+a default always wins over the rotator, so a default that names the overflow
+profile spends credits on every launch. If no default was set, the command prints
 `No default profile was set.` and still exits 0. `--none` cannot be combined
 with a name, and `switch` with neither is a usage error (exit 2).
 
@@ -742,6 +746,15 @@ to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
 for when a reading is not recorded.
+
+A profile marked as credit-backed overflow
+(`amplihack profile overflow add <name>`) shows the mark `overflow`, and
+`overflow, blocked until <time>` after the rotator has blocked it on a spend
+limit. When its login is the one in `~/.claude` and its probe shows the
+session or weekly limit reached, the table ends with
+`running on credits: <name>`. In `--json`, every row has `overflow` and
+`overflow_blocked_until`. See
+[Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
@@ -1449,6 +1462,12 @@ do not depend on these two behaviours.
   the status line, `profile usage` or the rotator records usage. A step that
   fails with a usage limit and finds no profile left to rerun on does not
   update it.
+- **Overflow profiles are never chosen.** A profile marked with
+  `amplihack profile overflow add` counts as excluded for every auto-switch
+  choice, even when it is the only account with room. Only the
+  [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+  moves work onto credits, because only it knows when the next plan reset
+  is.
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.

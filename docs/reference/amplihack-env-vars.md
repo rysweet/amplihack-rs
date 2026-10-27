@@ -170,6 +170,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_HOLD` | user preference |  | Default for `amplihack profile rotate --hold`. |
 | `AMPLIHACK_ROTATE_INTERVAL` | user preference |  | Default for `amplihack profile rotate --interval`. |
 | `AMPLIHACK_ROTATE_MARGIN` | user preference |  | Default for `amplihack profile rotate --margin`. |
+| `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | user preference |  | Default for `amplihack profile rotate --overflow-wait`. |
 | `AMPLIHACK_ROTATE_SESSION_AT` | user preference |  | Default for `amplihack profile rotate --session-at`. |
 | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | user preference |  | Default for `amplihack profile rotate --upgrade-margin`. |
 | `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`. |

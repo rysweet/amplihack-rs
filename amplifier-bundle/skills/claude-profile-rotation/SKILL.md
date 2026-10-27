@@ -23,6 +23,9 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 - The user has two or more Claude accounts and wants plain `claude` to use
   whichever has capacity.
 - The user hits session or weekly usage limits and asks to switch accounts.
+- The user has usage credits on an account and wants the rotator to use it
+  when every plan login is exhausted, or mentions overflow or "running on
+  credits".
 - The user mentions rotating, swapping or balancing Claude logins, or the
   `claude-rotator` tmux session.
 - A session stopped with "You've hit your ... limit" and did not resume, or
@@ -108,6 +111,7 @@ profile it names has a login or a different account, and never writes to
 | `--margin` | 5 | A threshold swap needs this many more points of headroom. |
 | `--upgrade-margin` | 30 | Swap early when a profile has this many more points of headroom. |
 | `--hold` | 3600 | Seconds after a swap during which no early swap happens. |
+| `--overflow-wait` | 1800 | Use an overflow profile only when the next plan reset is further away than this many seconds. |
 | `--interval` | 600 | Seconds between checks (`start` and `watch` only). |
 
 Flags go after `start`:
@@ -135,6 +139,82 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 | `the account in ~/.claude is not the one the ledger names` | Someone ran `/login` in `~/.claude`. Log the named profile in again with `amplihack profile login <name>`, then delete `<root>/.auto-switch.d/rotate/ledger.json`. |
 | `rotate recovery is inconsistent` | Follow manual recovery below. |
 | `auto-switch recovery is inconsistent` | Run `amplihack profile auto-switch repair`. |
+
+## Overflow onto usage credits
+
+An account with usage credits turned on keeps working past its plan limit,
+and the extra use is billed to the credits. Marked as an *overflow profile*,
+the rotator moves work onto it only when every plan login is out of capacity
+and the next plan reset is more than `--overflow-wait` seconds away (default
+1800), and moves work back in the first cycle in which a plan login has
+capacity. Auto-switch never chooses an overflow profile.
+
+Before marking a profile, tell the user:
+
+- **It costs real money**, and the rotator is not a spending cap. They must
+  turn on usage credits and set an organization spend limit at
+  https://claude.ai/settings/usage themselves; amplihack cannot change that
+  setting.
+- **Leave the default profile unset** (`amplihack profile switch --none`).
+  A default wins over the rotator, so a default naming the overflow profile
+  spends credits on every launch.
+- **Upgrade every amplihack binary first** and restart the rotator. Older
+  binaries treat the `overflow=` line in `<root>/.auto-switch` as corrupt and
+  reject the new ledger fields.
+
+```bash
+amplihack profile overflow add ryan-mistt-org
+amplihack profile overflow list
+amplihack profile rotate stop
+amplihack profile rotate start --overflow-wait 1800
+amplihack profile rotate status
+```
+
+The mark is the `overflow=` line in `<root>/.auto-switch`, not a
+`config.toml` key: the rotator and auto-switch already re-read that file on
+every cycle, and one location avoids two sources of truth. `add` and
+`remove` wait up to 10 seconds for a running cycle; if they fail with
+`.auto-switch is being changed by another process ...; retry`, run them
+again. `overflow list` prints `missing` after a marked name with no profile
+directory.
+
+`--overflow-wait` takes `0` to `604800` seconds; `0` uses credits as soon as
+plan capacity is gone. A plan login loses capacity when either its session
+or its week use reaches the threshold.
+
+`rotate status` shows `overflow:` and `on credits:` lines. `on credits: yes
+(<name>)` needs the live login to be marked and the last cycle to have
+recorded `overflow=in` or `on`; `no (<name> is overflow; plan capacity
+remains)` means it was put there while a plan login had room. A `default:`
+line appears when the default pointer names an overflow profile. `profile
+usage` marks the profile `overflow` and ends with `running on credits:
+<name>` only when its login is in `~/.claude` and its probe shows the session
+or weekly limit reached. Log lines: `reason=overflow-in`,
+`reason=overflow-out`, `credits: on|staying on|off ...`.
+
+An excluded profile is never used, even when marked. If the user moves an
+overflow login into `~/.claude` by hand while a plan login has capacity, the
+next cycle moves it out; to stay on it, remove the mark or stop the rotator.
+
+While on credits the rotator reports capacity, so the limit-resume hook
+resumes stopped sessions and they spend credits.
+
+| ALERT | What to tell the user |
+|-------|-----------------------|
+| `overflow profile <name> hit its spend limit; blocked until <time>` | The probe read `You've hit your org's monthly spend limit` or `... has reached its monthly spend limit`: the credits are used up or turned off. The profile is not used until 00:00 UTC on the 1st of next month. After raising the limit or adding credits, run `amplihack profile overflow clear <name>`. If it says `rotator busy, retry`, run it again. |
+
+A plan login *has capacity* when its probe gave `ok` and its session and
+week use are below `--session-at` and `--week-at`; `--margin` does not
+apply. The rotator never moves onto credits while one has capacity.
+
+To turn it off: `amplihack profile overflow remove <name>`. Removing the
+mark, or `rotate stop`, does not stop spending while that login is in
+`~/.claude` and no plan login has the margin: the login stays there. To stop
+spending at once, tell the user to turn off usage credits or lower the spend
+limit at https://claude.ai/settings/usage, then remove the mark. If sessions
+on the overflow profile fail with the spend-limit message but `overflow list`
+shows no block: after `remove`, the rotator swaps it out only after three
+failed probes in a row; after `rotate stop`, nothing moves it.
 
 ## Resuming sessions stopped by a limit
 
