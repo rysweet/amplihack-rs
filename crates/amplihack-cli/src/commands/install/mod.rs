@@ -378,7 +378,25 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     }
     let settings_path = global_settings_path()?;
     match hooks_registered_in_settings(&settings_path)? {
-        HookRegistration::Registered => return Ok(()),
+        HookRegistration::Registered => {
+            // #1659: a settings.json from #1660 registers `StopFailure` for
+            // every user. A Claude Code too old for it ignores the whole
+            // file, so the entry is drift even though every hook is present.
+            let Some(version) =
+                harmful_limit_resume_registration(&settings_path, claude_too_old_for_limit_resume)
+            else {
+                return Ok(());
+            };
+            tracing::warn!(
+                "settings.json registers StopFailure, which Claude Code {version} does not know \
+                 — auto-repairing"
+            );
+            println!(
+                "⚠️  Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: removing the \
+                 usage-limit resume hook (StopFailure) from settings.json, which this Claude \
+                 Code would otherwise read as invalid and run no amplihack hook"
+            );
+        }
         HookRegistration::Missing => {}
         HookRegistration::Unparseable => {
             // Issue #1526 (SR-8): never back up or rewrite a file we cannot read.
@@ -402,7 +420,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
         );
     }
     // Verify the repair actually worked
-    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered {
+    if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered
+        || harmful_limit_resume_registration(&settings_path, claude_too_old_for_limit_resume)
+            .is_some()
+    {
         bail!(
             "hooks still not registered after auto-repair.\n\
              Run `amplihack install` manually to fix hook wiring."
@@ -418,14 +439,43 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
 /// that is absent, unreadable or not JSON is not reported here: the launch
 /// bootstrap repairs the first and warns about the last.
 pub(super) fn warn_implicit_hook_drift<W: std::io::Write>(notice: &mut W, settings_path: &Path) {
+    warn_implicit_hook_drift_for(
+        notice,
+        settings_path,
+        claude_too_old_for_limit_resume().as_deref(),
+    );
+}
+
+/// [`warn_implicit_hook_drift`] for a `claude` whose version is `old_claude`
+/// when it is older than [`LIMIT_RESUME_MIN_CLAUDE`] (`None` otherwise).
+/// With an old `claude`, an amplihack `StopFailure` registration still in
+/// the file (#1660 wrote one for every user) is reported too: that Claude
+/// Code ignores the whole file, so no amplihack hook runs until it is gone.
+pub(super) fn warn_implicit_hook_drift_for<W: std::io::Write>(
+    notice: &mut W,
+    settings_path: &Path,
+    old_claude: Option<&str>,
+) {
     let Ok(raw) = fs::read_to_string(settings_path) else {
         return;
     };
     let Ok(settings) = serde_json::from_str::<serde_json::Value>(&raw) else {
         return;
     };
-    let missing =
-        missing_hook_registrations(&settings, claude_too_old_for_limit_resume().is_none());
+    if let Some(version) = old_claude
+        && has_limit_resume_registration(&settings)
+    {
+        let _ = writeln!(
+            notice,
+            "amplihack: warning: {} registers the usage-limit resume hook (StopFailure), and \
+             Claude Code {version} is older than {LIMIT_RESUME_MIN_CLAUDE}: a Claude Code too \
+             old for StopFailure ignores the whole file, so no amplihack hook runs. An \
+             automatic re-stage never edits settings.json; run `amplihack install` to remove \
+             it (the next launch also removes it).",
+            paths::sanitize_path(settings_path),
+        );
+    }
+    let missing = missing_hook_registrations(&settings, old_claude.is_none());
     if missing.is_empty() {
         return;
     }
@@ -437,6 +487,23 @@ pub(super) fn warn_implicit_hook_drift<W: std::io::Write>(notice: &mut W, settin
         crate::VERSION,
         missing.join(", ")
     );
+}
+
+/// #1659: the version of the `claude` a launch would run, when
+/// `settings_path` holds amplihack's `StopFailure` registration and that
+/// `claude` is older than [`LIMIT_RESUME_MIN_CLAUDE`]. `old_claude` is only
+/// called when the registration is there, so a launch without it never
+/// probes. A file that is absent, unreadable or not JSON gives `None`.
+pub(super) fn harmful_limit_resume_registration(
+    settings_path: &Path,
+    old_claude: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    let raw = fs::read_to_string(settings_path).ok()?;
+    let settings = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
+    if !has_limit_resume_registration(&settings) {
+        return None;
+    }
+    old_claude()
 }
 
 /// Whether `~/.claude/settings.json` holds an `amplihack-hooks` command.

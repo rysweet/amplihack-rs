@@ -367,3 +367,132 @@ fn plugin_manifest_has_async_rewake_nowhere_else() {
         );
     }
 }
+
+// ── #1660 leftovers on the implicit path (crusty #1687 round 1) ────────────
+
+/// settings.json as #1660 left it: every hook registered, `StopFailure`
+/// included, written literally rather than by this build.
+fn settings_from_1660(bin: &std::path::Path) -> Value {
+    let mut settings = json!({});
+    settings::register_hooks(&mut settings, bin, false, false);
+    settings["hooks"]["StopFailure"] = json!([{
+        "matcher": "rate_limit",
+        "hooks": [{
+            "type": "command",
+            "command": format!("\"{}\" limit-resume", bin.display()),
+            "timeout": LIMIT_RESUME_TIMEOUT_SECS,
+            "asyncRewake": true
+        }]
+    }]);
+    settings
+}
+
+fn write_settings(dir: &std::path::Path, settings: &Value) -> std::path::PathBuf {
+    let path = dir.join("settings.json");
+    std::fs::write(&path, settings.to_string()).unwrap();
+    path
+}
+
+#[test]
+fn a_1660_stop_failure_entry_is_a_limit_resume_registration() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    assert!(settings::has_limit_resume_registration(
+        &settings_from_1660(&bin)
+    ));
+
+    // A user's own StopFailure hook is not ours.
+    let mut users_only = json!({});
+    settings::register_hooks(&mut users_only, &bin, false, false);
+    users_only["hooks"]["StopFailure"] = json!([{
+        "matcher": "rate_limit",
+        "hooks": [{"type": "command", "command": "/usr/local/bin/notify-me"}]
+    }]);
+    assert!(!settings::has_limit_resume_registration(&users_only));
+}
+
+/// The launch bootstrap's check: a #1660 entry with an old `claude` is
+/// harmful and the version comes back; with a current `claude` it is not.
+#[test]
+fn the_bootstrap_flags_a_1660_entry_only_for_an_old_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let path = write_settings(temp.path(), &settings_from_1660(&bin));
+
+    assert_eq!(
+        harmful_limit_resume_registration(&path, || Some("2.1.76".to_string())),
+        Some("2.1.76".to_string())
+    );
+    assert_eq!(harmful_limit_resume_registration(&path, || None), None);
+    // The bootstrap still sees every hook as registered, which is why the
+    // presence check alone never repaired this file.
+    assert_eq!(
+        hooks_registered_in_settings(&path).unwrap(),
+        HookRegistration::Registered
+    );
+}
+
+/// Without the entry, the bootstrap never asks for the `claude` version.
+#[test]
+fn the_bootstrap_does_not_probe_claude_without_a_stop_failure_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let mut settings = json!({});
+    settings::register_hooks(&mut settings, &bin, false, false);
+    let path = write_settings(temp.path(), &settings);
+
+    assert_eq!(
+        harmful_limit_resume_registration(&path, || panic!("probed claude")),
+        None
+    );
+}
+
+/// The repair the bootstrap runs on a flagged file removes the entry.
+#[test]
+fn the_bootstrap_repair_removes_a_1660_entry_for_an_old_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let mut settings = settings_from_1660(&bin);
+    settings::register_hooks(&mut settings, &bin, false, false);
+    assert!(!settings::has_limit_resume_registration(&settings));
+    assert!(
+        settings["hooks"].get("StopFailure").is_none(),
+        "{settings:#}"
+    );
+}
+
+fn implicit_notice(path: &std::path::Path, old_claude: Option<&str>) -> String {
+    let mut notice = Vec::new();
+    warn_implicit_hook_drift_for(&mut notice, path, old_claude);
+    String::from_utf8(notice).unwrap()
+}
+
+/// The implicit re-stage reports a #1660 entry to a user whose Claude Code
+/// is too old, and names `amplihack install`.
+#[test]
+fn the_implicit_restage_reports_a_1660_entry_for_an_old_claude() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let path = write_settings(temp.path(), &settings_from_1660(&bin));
+
+    let notice = implicit_notice(&path, Some("2.1.76"));
+    assert!(notice.contains("StopFailure"), "{notice}");
+    assert!(notice.contains("2.1.76"), "{notice}");
+    assert!(notice.contains("amplihack install"), "{notice}");
+    assert!(notice.contains("ignores the whole file"), "{notice}");
+
+    // A current claude keeps the entry, so there is nothing to report.
+    assert_eq!(implicit_notice(&path, None), "");
+}
+
+/// An old `claude` with no `StopFailure` entry: nothing to report.
+#[test]
+fn the_implicit_restage_is_silent_for_an_old_claude_without_the_entry() {
+    let temp = tempfile::tempdir().unwrap();
+    let bin = create_exe_stub(temp.path(), "amplihack-hooks");
+    let mut settings = json!({});
+    settings::register_hooks(&mut settings, &bin, false, false);
+    let path = write_settings(temp.path(), &settings);
+
+    assert_eq!(implicit_notice(&path, Some("2.1.76")), "");
+}

@@ -189,8 +189,12 @@ tool event is invalid input. The compatibility layer is intentionally narrow: it
 accepts known host schema drift without treating incomplete tool payloads as
 valid or silently mapping them to `Unknown`.
 
-A `StopFailure` payload whose `error`, `error_details` or
-`last_assistant_message` is present but not a string is invalid input.
+A `StopFailure` payload is read loosely, so a change in Claude Code's payload
+cannot turn the hook off: a field with an unexpected type, such as an `error`
+that is not a string, is read as absent and the rest of the payload is kept.
+The exception is the loop guard: a `stop_hook_active` that is present but not
+a boolean (for example `"true"`) is read as `true`, so the hook stops instead
+of skipping the guard. `null` is read as absent.
 
 Example `StopFailure` input from Claude Code:
 
@@ -279,7 +283,10 @@ credentials or token file or the transcript. The 608400-second timeout covers th
 plus one 5-minute ledger read; Claude Code 2.1.307 accepts it. Requires Claude Code 2.1.306 or later:
 `amplihack install` runs `claude --version` and leaves this entry out (removing
 an earlier one) for an older version, because Claude Code before 2.1.78
-ignores a settings file that names `StopFailure`. Full
+ignores a settings file that names `StopFailure`. An entry an earlier release
+wrote is also removed by the next launch when that `claude` is too old, and an
+automatic re-stage after an upgrade, which never edits `settings.json`, prints a
+warning naming `amplihack install`. Full
 rules: [Rotate session resume](profile-command.md#rotate-session-resume).
 
 ## Capacity notice in hooks

@@ -254,6 +254,28 @@ pub(super) fn missing_hook_registrations(settings: &Value, limit_resume: bool) -
     missing.into_iter().collect()
 }
 
+/// Whether `settings` holds amplihack's usage-limit resume registration
+/// (`StopFailure` running `amplihack-hooks limit-resume`). #1660 wrote it for
+/// every user; with a Claude Code older than [`LIMIT_RESUME_MIN_CLAUDE`] it
+/// has to go, and neither the drift list nor the `amplihack-hooks` presence
+/// check sees an entry that should not be there.
+pub(super) fn has_limit_resume_registration(settings: &Value) -> bool {
+    AMPLIHACK_HOOK_SPECS
+        .iter()
+        .filter(|spec| spec.event == LIMIT_RESUME_EVENT)
+        .any(|spec| {
+            settings
+                .get("hooks")
+                .and_then(|hooks| hooks.get(spec.event))
+                .and_then(Value::as_array)
+                .is_some_and(|wrappers| {
+                    wrappers
+                        .iter()
+                        .any(|wrapper| is_own_wrapper(wrapper, spec, "amplihack"))
+                })
+        })
+}
+
 pub(super) fn verify_framework_assets(claude_dir: &Path) -> Result<()> {
     let (report, missing) = render_framework_asset_verification(
         missing_framework_paths(claude_dir)?,

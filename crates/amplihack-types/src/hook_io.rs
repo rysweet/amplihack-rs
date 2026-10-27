@@ -128,13 +128,16 @@ impl<'de> Deserialize<'de> for HookInput {
                 session_id: optional_typed_field(map, SESSION_ID_FIELDS)?,
             }),
             // Read loosely (issue #1659): a field of an unexpected type is
-            // dropped, so a payload change cannot turn the hook off.
+            // dropped, so a payload change cannot turn the hook off. The one
+            // exception is the loop guard `stop_hook_active`: a wrongly typed
+            // value there reads as `true`, so a payload change stops the hook
+            // instead of skipping the guard.
             Some("stopfailure") => Ok(HookInput::StopFailure {
                 session_id: loose_field(map, SESSION_ID_FIELDS),
                 error: loose_field(map, ERROR_FIELDS),
                 error_details: loose_field(map, ERROR_DETAILS_FIELDS),
                 last_assistant_message: loose_field(map, LAST_ASSISTANT_MESSAGE_FIELDS),
-                stop_hook_active: loose_field(map, STOP_HOOK_ACTIVE_FIELDS),
+                stop_hook_active: guard_field(map, STOP_HOOK_ACTIVE_FIELDS),
                 transcript_path: loose_field(map, TRANSCRIPT_PATH_FIELDS),
                 extra: extra_without(
                     map,
@@ -208,6 +211,17 @@ where
     optional_typed_field::<T, serde_json::Error>(map, names)
         .ok()
         .flatten()
+}
+
+/// A loop-guard flag read so that it fails closed: a boolean is itself,
+/// absent or `null` is `None`, and any other value (such as the string
+/// `"true"`) is `Some(true)`, which stops the hook.
+fn guard_field(map: &JsonMap, names: &[&str]) -> Option<bool> {
+    match find_field(map, names)? {
+        Value::Null => None,
+        Value::Bool(flag) => Some(*flag),
+        _ => Some(true),
+    }
 }
 
 fn required_typed_field<T, E>(map: &JsonMap, names: &[&str], event: &str) -> Result<T, E>

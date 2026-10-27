@@ -138,7 +138,7 @@ fn null_fields_are_none() {
 }
 
 #[test]
-fn wrongly_typed_fields_are_dropped_and_the_rest_kept() {
+fn wrongly_typed_fields_are_dropped_except_the_loop_guard() {
     let input = parse(json!({
         "hook_event_name": "StopFailure",
         "session_id": "s-1",
@@ -165,8 +165,43 @@ fn wrongly_typed_fields_are_dropped_and_the_rest_kept() {
     assert_eq!(error.as_deref(), Some("rate_limit"));
     assert_eq!(error_details, None);
     assert_eq!(last_assistant_message, None);
-    assert_eq!(stop_hook_active, None);
+    // The loop guard fails closed: present but not a boolean reads as set.
+    assert_eq!(stop_hook_active, Some(true));
     assert_eq!(transcript_path, None);
+}
+
+/// Crusty #1687 round 1: a loop guard that Claude Code sends with another
+/// type must stop the hook, not read as absent (false) and let it run.
+#[test]
+fn a_wrongly_typed_stop_hook_active_reads_as_true() {
+    for (key, value) in [
+        ("stop_hook_active", json!("true")),
+        ("stop_hook_active", json!("false")),
+        ("stop_hook_active", json!(0)),
+        ("stop_hook_active", json!({})),
+        ("stopHookActive", json!([false])),
+    ] {
+        let input = parse(json!({"hook_event_name": "StopFailure", key: value.clone()})).unwrap();
+        assert!(
+            matches!(
+                input,
+                HookInput::StopFailure {
+                    stop_hook_active: Some(true),
+                    ..
+                }
+            ),
+            "{key}: {value} gave {input:?}"
+        );
+    }
+    let input =
+        parse(json!({"hook_event_name": "StopFailure", "stop_hook_active": false})).unwrap();
+    assert!(matches!(
+        input,
+        HookInput::StopFailure {
+            stop_hook_active: Some(false),
+            ..
+        }
+    ));
 }
 
 #[test]
