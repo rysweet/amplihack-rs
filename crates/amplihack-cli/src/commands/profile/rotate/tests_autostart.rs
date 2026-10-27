@@ -962,10 +962,10 @@ fn empty_guard_still_starts() {
 /// Runs `autostart_on_launch` with every gate open, the guard unset and a
 /// valid hold, so the only thing between it and a spawner is Stop C.
 ///
-/// Before Stop C exists this reaches the real `daemon::spawn`, which execs
-/// `current_exe()`: the libtest harness binary. libtest rejects the unknown
-/// `--interval`/`--spawned` options and exits at once, so even the red run
-/// leaves no process behind.
+/// If Stop C were removed this would reach the real `daemon::spawn`, which
+/// execs `current_exe()`: the libtest harness binary. libtest rejects the
+/// unknown `--interval`/`--spawned` options and exits at once, so no process
+/// is left behind.
 fn on_launch_reaching_the_spawner() -> Fx {
     let f = fx();
     let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
