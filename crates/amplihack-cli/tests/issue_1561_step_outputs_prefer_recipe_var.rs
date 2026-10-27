@@ -326,9 +326,16 @@ const NESTED_NAME: &str = r"RECIPE_VAR_[A-Za-z0-9]+(_[A-Za-z0-9]+)*__[A-Za-z0-9_
 /// single or double quotes, after a backslash, or inside a word (`${#x}`,
 /// `$#`, `a#b`) is code. A quote left open at the end of the line keeps the
 /// rest of the line as code, which can only make the scan see more.
-fn strip_comment(line: &str) -> &str {
+///
+/// `open` is the quote state at the start of the line, carried from the lines
+/// before it by [`Quotes::mask`]. On the second line of
+/// `--body "Summary` / `Closes #$ISSUE_NUMBER"` the `#` is inside the double
+/// quotes, so it is text and the read after it is code. Starting every line
+/// with no quote open would cut that read off as a comment, and the guards
+/// would pass for the wrong reason. Use [`code_lines`] to scan a whole text.
+fn strip_comment<'a>(line: &'a str, open: &Quotes) -> &'a str {
     let b = line.as_bytes();
-    let (mut sq, mut dq, mut esc) = (false, false, false);
+    let (mut sq, mut dq, mut esc) = (open.sq, open.dq, false);
     // Index of the last escaped byte: `a\ #b` is one word, not a comment.
     let mut escaped_at = usize::MAX;
     for (i, &c) in b.iter().enumerate() {
@@ -361,8 +368,8 @@ fn strip_comment(line: &str) -> &str {
 fn nested_reads(text: &str) -> Vec<(usize, String)> {
     let re = Regex::new(NESTED_NAME).unwrap();
     let mut found = Vec::new();
-    for (i, raw) in text.lines().enumerate() {
-        for m in re.find_iter(strip_comment(raw)) {
+    for (i, code) in code_lines(text).into_iter().enumerate() {
+        for m in re.find_iter(code) {
             found.push((i + 1, m.as_str().to_string()));
         }
     }
@@ -803,7 +810,7 @@ fn only_recipe_var_sh_reads_the_bare_no_merge() {
     let re = Regex::new(r"\$\{?NO_MERGE\b").unwrap();
     let mut readers = BTreeSet::new();
     for (path, text) in scanned_files() {
-        if text.lines().any(|l| re.is_match(strip_comment(l))) {
+        if code_lines(&text).into_iter().any(|l| re.is_match(l)) {
             readers.insert(path);
         }
     }
@@ -1261,11 +1268,25 @@ fn step_output_keys(recipes: &[(String, String)]) -> BTreeSet<String> {
 }
 
 /// Quote state carried from line to line, so a string that spans lines stays
-/// a string.
+/// a string. Both [`strip_comment`] and [`Quotes::mask`] start from it, so the
+/// two never disagree about where a quote is open.
 #[derive(Default)]
 struct Quotes {
     sq: bool,
     dq: bool,
+}
+
+/// The code part of every line of `text`, in order, with the quote state
+/// carried from each line to the next (see [`strip_comment`]).
+fn code_lines(text: &str) -> Vec<&str> {
+    let mut quotes = Quotes::default();
+    text.lines()
+        .map(|raw| {
+            let code = strip_comment(raw, &quotes);
+            quotes.mask(code);
+            code
+        })
+        .collect()
 }
 
 impl Quotes {
@@ -1349,7 +1370,9 @@ fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, S
             }
             continue;
         }
-        let code = strip_comment(raw);
+        // Comment-stripping starts from the same carried quote state as the
+        // mask below: inside a multi-line `"…"`, `#` is text.
+        let code = strip_comment(raw, &quotes);
         // Reads count inside double quotes; bindings count only outside any
         // quotes, so `echo "no ISSUE_NUMBER= given"` binds nothing.
         let bare_code = quotes.mask(code);
@@ -1568,4 +1591,29 @@ steps:
     let mut want = vec!["ISSUE_NUMBER"; 5];
     want.push("LOCAL_TESTING_GATE");
     assert_eq!(got, want);
+
+    // On a continuation line of a double-quoted string, `#` after a space is
+    // text, not a comment: bash expands the read after it. A real comment
+    // after the string closes is still a comment.
+    let multiline = "gh pr create --body \"Summary\n\
+                     Closes #$ISSUE_NUMBER\"\n\
+                     echo done # was $LOCAL_TESTING_GATE\n";
+    let got: Vec<String> = plain_bare_reads_in(multiline, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER"]);
+}
+
+/// The other comment-stripping scans carry quote state the same way: a nested
+/// name or `$NO_MERGE` after `#` on a continuation line of a multi-line
+/// double-quoted string is code, not a comment.
+#[test]
+fn comment_stripping_carries_quotes_across_lines() {
+    let text = "MSG=\"one\n  #$RECIPE_VAR_a__b and #$NO_MERGE\"\n# $RECIPE_VAR_c__d\n";
+    assert_eq!(
+        code_lines(text),
+        vec!["MSG=\"one", "  #$RECIPE_VAR_a__b and #$NO_MERGE\"", ""]
+    );
+    assert_eq!(nested_reads(text), vec![(2, "RECIPE_VAR_a__b".to_string())]);
 }
