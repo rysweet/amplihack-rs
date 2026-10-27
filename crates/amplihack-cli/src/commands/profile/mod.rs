@@ -6,10 +6,14 @@
 //! (off by default) it may move a login file between profile directories;
 //! see `auto_switch`.
 
+#[cfg(unix)]
+mod attempt;
 mod auto_switch;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
+#[cfg(unix)]
+mod limit_wait;
 #[cfg(unix)]
 mod login_check;
 mod name;
@@ -22,6 +26,7 @@ mod run;
 mod settings_refresh;
 mod shared_dirs;
 mod store;
+mod supervise_gate;
 mod usage_cmd;
 mod usage_parse;
 
@@ -61,6 +66,9 @@ mod tests_usage_parse;
 mod tests_verify;
 
 use anyhow::Result;
+/// File helpers shared with the usage-limit wait (#1618).
+#[cfg(unix)]
+use auto_switch::fsx;
 pub(crate) use auto_switch::{
     launch_warning as capacity_launch_warning, recipe_warning as capacity_recipe_warning,
 };
@@ -74,6 +82,7 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use store::ProfileStore;
 pub(crate) use store::ROOT_ENV;
+pub use supervise_gate::maybe_supervise;
 
 /// Name of the profile a parent launch resolved. Every launch that applies a
 /// profile sets it on its child, so nested `amplihack` launches keep the same
@@ -564,51 +573,6 @@ pub(crate) const AUTO_SWITCH_SUPERVISED_ENV: &str = auto_switch::SUPERVISED_ENV;
 /// export, when auto-switch picks another one.
 pub(crate) fn substitute_inherited_profile(inherited: &str) -> Option<String> {
     auto_switch::substitute_name(inherited)
-}
-
-/// Runs a nested `-p` launch under the usage-limit rerun supervisor when
-/// auto-switch is on and the profile is inherited. Returns the exit code to
-/// use, or `None` to launch normally. Off, this reads the environment and at
-/// most the settings file.
-pub fn maybe_supervise(
-    flag: Option<&str>,
-    docker: bool,
-    auto: bool,
-    claude_args: &[String],
-) -> Result<Option<i32>> {
-    // Only an inherited profile is supervised.
-    if flag.is_some() {
-        return Ok(None);
-    }
-    let printing = claude_args
-        .iter()
-        .any(|a| a == "-p" || a == "--print" || a.starts_with("--print="));
-    if !printing {
-        return Ok(None);
-    }
-    let Some(inherited) = std::env::var_os(PROFILE_ENV).filter(|v| !v.is_empty()) else {
-        return Ok(None);
-    };
-    let Some(inherited) = inherited.to_str().map(str::to_string) else {
-        return Ok(None);
-    };
-    // Never where a profile cannot be applied (the check `launch_profile_dir`
-    // makes). After the cheap checks above, so `docker_env_active()` only
-    // runs for an inherited `-p` launch.
-    if unsupported_mode(docker, docker_env_active(), auto).is_some() {
-        return Ok(None);
-    }
-    let store = match ProfileStore::from_env() {
-        Ok(store) => store,
-        Err(e) => {
-            // The launch reports a bad root itself; say why it is unsupervised.
-            if auto_switch::env_forces_on() {
-                eprintln!("warning: auto-switch cannot supervise this step ({e}); running it once");
-            }
-            return Ok(None);
-        }
-    };
-    auto_switch::supervise(&store, &inherited)
 }
 
 /// Profile directory for an interactive `launch`/`claude`: `--profile`, then

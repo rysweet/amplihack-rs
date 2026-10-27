@@ -265,3 +265,63 @@ fn every_pool_construction_uses_selection_exclude() {
         "expected the rerun and swap Pool sites, found {sites}"
     );
 }
+
+/// The rerun path (`nested_candidate`, used by `substitute` and the agent
+/// step's rerun) never offers an overflow profile while a plan profile is
+/// usable, nor when it is the only profile with quota.
+#[test]
+fn the_rerun_candidate_never_offers_an_overflow_profile() {
+    use super::config::Config;
+    use super::fsx;
+    use super::rerun::nested_candidate;
+    use super::state::{CREDS, Ledger, State};
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    for p in ["work", "spare", "cred"] {
+        let dir = tmp.path().join(p);
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(CREDS), "x").unwrap();
+    }
+    let state = State::new(tmp.path()).unwrap();
+    let profiles = vec![n("work"), n("spare"), n("cred")];
+    let now = fsx::now();
+    let live = |five: f64, seven: f64| Reading {
+        five_hour: Some(Window {
+            used_percentage: five,
+            resets_at: now + 3600,
+        }),
+        seven_day: Some(Window {
+            used_percentage: seven,
+            resets_at: now + 86_400,
+        }),
+        observed_at: now - 10,
+        source: ReadingSource::Statusline,
+    };
+    let cfg = Config {
+        enabled: true,
+        threshold: 90,
+        exclude: Vec::new(),
+        overflow: vec![n("cred")],
+    };
+    let mut readings = BTreeMap::new();
+    readings.insert("work".to_string(), live(95.0, 50.0));
+    readings.insert("spare".to_string(), live(40.0, 40.0));
+    readings.insert("cred".to_string(), live(0.0, 0.0));
+    let pick = |readings: &BTreeMap<String, Reading>| {
+        nested_candidate(
+            &state,
+            &Ledger::default(),
+            &profiles,
+            readings,
+            &cfg,
+            "work",
+            &[],
+        )
+        .map(|p| p.to_string())
+    };
+    assert_eq!(pick(&readings).as_deref(), Some("spare"));
+    readings.insert("spare".to_string(), live(99.0, 99.0));
+    assert_eq!(pick(&readings), None, "only the rotator spends credits");
+}

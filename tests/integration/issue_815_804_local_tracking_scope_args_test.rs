@@ -114,7 +114,10 @@ fn arg_value(log: &str, flag: &str) -> String {
 /// The helpers read the issue only as RECIPE_VAR_issue_number (#1561). An
 /// enclosing recipe run's RECIPE_VAR_* would hide the input each test sets, so
 /// they are cleared, and a conflicting stale bare ISSUE_NUMBER is set to show
-/// it is never read.
+/// it is never read. Call it before setting any RECIPE_VAR_ of the test's own:
+/// `env_remove` after `env` drops the test's value whenever the parent process
+/// also exports that key, as an auto-drive QA step does with
+/// RECIPE_VAR_pr_url.
 fn clear_inherited_issue_env(cmd: &mut Command) {
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("RECIPE_VAR_") {
@@ -141,6 +144,7 @@ fn run_pr_ready(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &s
 fn run_final_status(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str, &str)]) {
     let old_path = std::env::var("PATH").unwrap_or_default();
     let mut cmd = Command::new("bash");
+    clear_inherited_issue_env(&mut cmd);
     cmd.arg(helper_path("workflow_final_status.sh"))
         .current_dir(repo)
         .env("PATH", format!("{}:{old_path}", bin_dir.display()))
@@ -148,7 +152,6 @@ fn run_final_status(repo: &Path, bin_dir: &Path, stub: &Path, issue_env: &[(&str
         .env("REMOTE_HOST_TYPE", "github")
         .env("RECIPE_VAR_pr_url", "https://github.com/owner/repo/pull/7")
         .env("TASK_DESCRIPTION", "test task");
-    clear_inherited_issue_env(&mut cmd);
     for (k, v) in issue_env {
         cmd.env(k, v);
     }

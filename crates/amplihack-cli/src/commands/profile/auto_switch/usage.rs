@@ -4,6 +4,7 @@
 //! only: nothing here makes a request.
 
 use super::state::HostEntry;
+use crate::commands::recipe::run::limit_patterns;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -11,7 +12,6 @@ use sha2::{Digest, Sha256};
 pub const MAX_INPUT: usize = 1 << 20;
 /// Readings from a directory are ignored for this long after a swap.
 pub const COOLDOWN_SECS: i64 = 300;
-pub const LIMIT_MARKER: &str = "Claude AI usage limit reached";
 const FIVE_HOURS: i64 = 5 * 3600;
 const DAY: i64 = 86_400;
 
@@ -166,18 +166,14 @@ pub fn merge(old: Option<&Reading>, new: Reading) -> Reading {
 }
 
 /// The reset time Claude's own usage-limit message states, or `None` when no
-/// line starts with the marker. This only reads the time: whether an attempt
-/// hit its limit is decided by the recipe runner's classifier. The last
-/// marker line in stderr wins, then the last in stdout. The reset is never
-/// later than five hours from now.
+/// line starts with its epoch marker. This only reads the time: whether an
+/// attempt hit its limit is decided by the recipe runner's classifier. The
+/// last marker line in stderr wins, then the last in stdout. The reset is
+/// never later than five hours from now. The patterns live in
+/// `recipe::run::limit_patterns` (#1618).
 pub fn usage_limit_reset(stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> {
-    let line = last_marker_line(stderr).or_else(|| last_marker_line(stdout))?;
-    let rest = &line[LIMIT_MARKER.len()..];
-    let latest = now + FIVE_HOURS;
-    let epoch = rest.strip_prefix(b"|").and_then(|r| {
-        let digits: Vec<u8> = r.iter().copied().take_while(u8::is_ascii_digit).collect();
-        std::str::from_utf8(&digits).ok()?.parse::<i64>().ok()
-    });
+    let epoch = limit_patterns::epoch_marker(stderr, stdout)?;
+    let latest = now.saturating_add(FIVE_HOURS);
     Some(epoch.map_or(latest, |e| e.min(latest)))
 }
 
@@ -185,10 +181,4 @@ pub fn usage_limit_reset(stderr: &[u8], stdout: &[u8], now: i64) -> Option<i64> 
 /// time, or five hours from now.
 pub fn reset_or_default(stderr: &[u8], stdout: &[u8], now: i64) -> i64 {
     usage_limit_reset(stderr, stdout, now).unwrap_or(now + FIVE_HOURS)
-}
-
-fn last_marker_line(bytes: &[u8]) -> Option<&[u8]> {
-    bytes
-        .split(|&b| b == b'\n')
-        .rfind(|l| l.starts_with(LIMIT_MARKER.as_bytes()))
 }

@@ -301,9 +301,15 @@ fn env_layer(def: &KeyDef, env: &dyn Fn(&str) -> Option<String>) -> EnvLayer {
             _ => EnvLayer::Unset,
         };
     }
-    match parse_raw(def.kind, raw.trim()) {
+    // A boolean variable also takes `1` and `0`, the usual shell spelling.
+    let raw = match (def.kind, raw.trim()) {
+        (ValueKind::Bool, "1") => "true",
+        (ValueKind::Bool, "0") => "false",
+        (_, raw) => raw,
+    };
+    match parse_raw(def.kind, raw) {
         Ok(value) => EnvLayer::Valid(var, value),
-        Err(_) => EnvLayer::Invalid(var, env_reason(def.kind, var, raw.trim())),
+        Err(_) => EnvLayer::Invalid(var, env_reason(def.kind, var, raw)),
     }
 }
 
@@ -316,7 +322,7 @@ fn env_reason(kind: ValueKind, var: &str, raw: &str) -> String {
         ValueKind::Int { min, max } if max == u64::MAX => format!("{var} is below {min}"),
         ValueKind::Int { min, max } => format!("{var} is outside {min} to {max}"),
         ValueKind::AbsPath => format!("{var} is not a valid absolute path"),
-        ValueKind::Bool => format!("{var} is not true or false"),
+        ValueKind::Bool => format!("{var} is not true, false, 1 or 0"),
         ValueKind::Choice(_) | ValueKind::SessionPattern => format!("{var} is not a valid value"),
         ValueKind::AgentBinary => {
             format!("{var} is not one of amplifier, claude, codex or copilot")

@@ -388,25 +388,28 @@ fn return_dir(
     Ok(())
 }
 
-/// Removes rerun buffers whose supervisor (`<pid>-<n>.out`) is no longer
-/// running, and any buffer older than 24 hours. Best effort: errors are
-/// ignored because every later `recover` retries the same sweep.
 fn cleanup_rerun(state: &State) {
-    let Ok(entries) = fs::read_dir(state.dir.join("rerun")) else {
+    sweep_rerun(&state.dir.join("rerun"));
+}
+
+/// Removes regular `<pid>-<n>.out` files in `dir` (no recursion) whose
+/// supervisor is gone or that are over 24 h old. Other names are left.
+pub(crate) fn sweep_rerun(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for e in entries.flatten() {
-        if !e.file_type().is_ok_and(|t| t.is_file()) {
+        let file = e.file_type().is_ok_and(|t| t.is_file());
+        let Some(pid) = rerun_owner(&e.file_name()).filter(|_| file) else {
             continue;
-        }
+        };
         let old = e
             .metadata()
             .ok()
             .and_then(|m| m.modified().ok())
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > RERUN_MAX_AGE_SECS);
-        let orphan = rerun_owner(&e.file_name()).is_some_and(|pid| !pid_running(pid));
-        if old || orphan {
+        if old || !pid_running(pid) {
             let _ = fs::remove_file(e.path());
         }
     }

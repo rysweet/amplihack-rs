@@ -592,3 +592,61 @@ fn a_ledger_without_overflow_reads_as_before() {
     assert!(!s.on_overflow());
     assert!(s.has_capacity());
 }
+
+// ── fresh_capacity on credits (issue #1606) ─────────────────────────────────
+//
+// A cycle that moved onto an overflow profile (`swapped`, overflow `in`) or
+// stayed on one (`stayed`, overflow `on`) left a login that can work, so the
+// limit-resume hook and the recipe-run wait see capacity. `fresh_capacity`
+// stays `has_capacity` plus the time check; the overflow tag adds nothing
+// and takes nothing away.
+
+fn on_credits(outcome: &str, tag: &str, at: i64) -> CycleStatus {
+    CycleStatus {
+        at: Some(at),
+        outcome: Some(outcome.into()),
+        alert: false,
+        live: Some("cred".into()),
+        overflow: Some(tag.into()),
+    }
+}
+
+#[test]
+fn moving_onto_or_staying_on_credits_is_fresh_capacity() {
+    let start = NOW - 600;
+    let after = start + FRESH_MARGIN_SECS + 1;
+    for (outcome, tag) in [("swapped", "in"), ("stayed", "on")] {
+        let s = on_credits(outcome, tag, after);
+        assert!(s.on_overflow(), "{outcome}/{tag}");
+        assert!(s.has_capacity(), "{outcome}/{tag}");
+        assert!(s.fresh_capacity(start), "{outcome}/{tag}");
+    }
+}
+
+#[test]
+fn a_credits_cycle_before_the_limit_hit_is_not_fresh() {
+    let start = NOW - 600;
+    for at in [start - 1, start, start + FRESH_MARGIN_SECS] {
+        let s = on_credits("swapped", "in", at);
+        assert!(!s.fresh_capacity(start), "at {at}");
+    }
+}
+
+#[test]
+fn an_alerted_cycle_with_a_credits_tag_is_not_capacity() {
+    let mut s = on_credits("stayed", "on", NOW);
+    s.alert = true;
+    assert!(!s.fresh_capacity(NOW - 600));
+    let s = on_credits("alerted", "in", NOW);
+    assert!(!s.fresh_capacity(NOW - 600));
+}
+
+#[test]
+fn a_ledger_that_moved_onto_credits_reads_as_fresh_capacity() {
+    let raw = ledger(
+        r#"{"version":1,"live":"cred","last_cycle":{"at":1760000000,"outcome":"swapped","overflow":"in"}}"#,
+    );
+    let s = parse_cycle(&raw, 1_760_000_100).unwrap();
+    assert_eq!(s.overflow.as_deref(), Some("in"));
+    assert!(s.fresh_capacity(1_760_000_000 - FRESH_MARGIN_SECS - 1));
+}
