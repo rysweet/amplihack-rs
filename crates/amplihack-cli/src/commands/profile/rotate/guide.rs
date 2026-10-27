@@ -128,7 +128,10 @@ pub fn lines(l: &ProfileName, l_lost: bool, kind: &Kind<'_>, p: &Paths) -> Vec<S
     let mut out = vec![clean(&head)];
     for (i, f) in fixes.into_iter().enumerate() {
         let prefix = format!("fix {}: ", i + 1);
-        let full = f.text.map(|t| clean(&format!("{prefix}{t}")));
+        // Never cut a line that names a path: a cut path is another path.
+        let full = f
+            .text
+            .map(|t| sanitize_display(&format!("{prefix}{t}"), false));
         let line = match (full, f.what) {
             (Some(line), _) if line.len() <= MAX_GUIDANCE_LINE => line,
             (_, Some(what)) => {
@@ -143,6 +146,7 @@ pub fn lines(l: &ProfileName, l_lost: bool, kind: &Kind<'_>, p: &Paths) -> Vec<S
     out
 }
 
+/// Sanitized and cut: only for lines that name no path.
 fn clean(s: &str) -> String {
     cut(&sanitize_display(s, false), MAX_GUIDANCE_LINE)
 }
