@@ -136,6 +136,8 @@ mod issue_1650_profile_identity;
 mod issue_1659_limit_resume_gate;
 #[path = "issue_1688_routing_gap_report.rs"]
 mod issue_1688_routing_gap_report;
+#[path = "issue_1690_isolated_autostart.rs"]
+mod issue_1690_isolated_autostart;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

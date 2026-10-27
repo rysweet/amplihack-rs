@@ -2556,14 +2556,52 @@ fn every_sentinel_survives_a_full_flow_without_being_printed() {
 /// Rotator autostart opt-out: with auto-switch on and
 /// `AMPLIHACK_ROTATE_AUTOSTART=0` (set by every fixture command), a launch
 /// behaves as before and starts no rotator.
+///
+/// The launch under test runs without `AMPLIHACK_TEST_HOME_GUARD`. With the
+/// guard set, the binary returns before it reads the opt-out (#1690), so
+/// this test would pass even if the opt-out were broken. Without it, the
+/// opt-out is the only thing between this launch and a real `profile rotate
+/// watch --spawned`. If it ever breaks, the test fails on `rotate.pid` and
+/// `KillRotator` kills the daemon it started, so nothing outlives the test.
 #[cfg(unix)]
 #[test]
 fn launch_with_autostart_off_starts_no_rotator() {
+    /// Kills the rotator named by `rotate.pid`, if a broken opt-out started one.
+    struct KillRotator(PathBuf);
+    impl Drop for KillRotator {
+        fn drop(&mut self) {
+            if let Ok(s) = fs::read_to_string(&self.0)
+                && let Ok(pid) = s.trim().parse::<i32>()
+                && pid > 1
+            {
+                let cmdline = fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+                if String::from_utf8_lossy(&cmdline).contains("rotate") {
+                    // SAFETY: plain kill(2) of a process this test started.
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
+    }
+
     let f = Fixture::new();
-    let off = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    let rotate = f.state().join("rotate");
+    let _reap = KillRotator(rotate.join("rotate.pid"));
+    // As root the launch skips autostart before the opt-out is read, so the
+    // opt-out would not be what this test checks.
+    // SAFETY: geteuid has no preconditions.
+    if unsafe { libc::geteuid() } == 0 {
+        eprintln!("skip: running as root, autostart stops before the opt-out");
+        return;
+    }
+    let launch = || {
+        let mut c = f.cmd(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+        c.env_remove(crate::isolated_amplihack::HOME_GUARD_ENV);
+        f.run(&mut c)
+    };
+    let off = launch();
     assert!(off.status.success(), "{}", text(&off.stderr));
     f.switch_on();
-    let out = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
+    let out = launch();
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert_eq!(out.status.code(), off.status.code());
     assert_eq!(claude_stdout(&out), claude_stdout(&off), "stdout unchanged");
@@ -2572,7 +2610,6 @@ fn launch_with_autostart_off_starts_no_rotator() {
         "{}",
         text(&out.stderr)
     );
-    let rotate = f.state().join("rotate");
     assert!(!rotate.join("rotate.pid").exists(), "no rotator started");
     assert!(
         !rotate.join("autostart").exists(),
