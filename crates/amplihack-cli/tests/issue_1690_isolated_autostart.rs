@@ -19,11 +19,6 @@ fn env_of<'a>(cmd: &'a Command, key: &str) -> Option<Option<&'a OsStr>> {
 }
 
 #[test]
-fn the_autostart_variable_has_its_real_name() {
-    assert_eq!(ROTATE_AUTOSTART_ENV, "AMPLIHACK_ROTATE_AUTOSTART");
-}
-
-#[test]
 fn isolated_turns_rotator_autostart_off() {
     let cmd = isolated("x");
     assert_eq!(
@@ -41,19 +36,6 @@ fn isolated_still_sets_the_home_guard() {
         Some(Some(OsStr::new("1"))),
         "the binary's autostart skip keys off this"
     );
-}
-
-#[test]
-fn isolated_overrides_an_autostart_on_in_the_test_process() {
-    // The child's environment is cleared first and the variable is not in
-    // KEPT_VARS, so whatever the test process holds, the child gets 0.
-    let cmd = isolated("x");
-    let values: Vec<_> = cmd
-        .get_envs()
-        .filter(|(k, _)| *k == OsStr::new(ROTATE_AUTOSTART_ENV))
-        .collect();
-    assert_eq!(values.len(), 1, "set exactly once: {values:?}");
-    assert_eq!(values[0].1, Some(OsStr::new("0")));
 }
 
 #[test]

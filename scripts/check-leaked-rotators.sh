@@ -26,7 +26,6 @@ if [ ! -r /proc/self/cmdline ]; then
   exit 0
 fi
 
-me=$(id -u)
 tmp_root="${TMPDIR:-/tmp}"
 tmp_root="${tmp_root%/}"
 

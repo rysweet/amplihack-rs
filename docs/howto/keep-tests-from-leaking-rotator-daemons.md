@@ -110,9 +110,10 @@ bash scripts/check-leaked-rotators.sh
 echo "exit: $?"
 ```
 
-On a clean run it prints nothing:
+On a clean run:
 
 ```
+check-leaked-rotators: no leaked rotator daemons
 exit: 0
 ```
 
@@ -206,8 +207,8 @@ starts. No test does this today.
 
 - A fixture that runs `env_clear()` and never sets the guard again bypasses
   stops A and B. Only the leak check catches it.
-- A guard value that is not valid UTF-8 counts as unset. The harness always
-  sets `1`.
+- Only an empty or unset guard lets autostart run. Any other value, even
+  one that is not valid UTF-8, skips it. The harness always sets `1`.
 - The leak check misses a daemon whose `HOME` is outside `$TMPDIR` and
   `/tmp`. Test homes are always `tempfile` directories.
 - On a developer machine the leak check can report a daemon from another

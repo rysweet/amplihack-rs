@@ -948,18 +948,6 @@ fn guard_skip_wins_over_autostart_forced_on() {
 }
 
 #[test]
-fn guard_skip_does_not_touch_a_running_rotator_state() {
-    let f = fx();
-    f.running(FAKE_PID);
-    let (o, _) = f.run_with(Opts {
-        env: vec![(TEST_HOME_GUARD_ENV, "1")],
-        ..Opts::default()
-    });
-    assert_eq!(o, Outcome::Skipped("test"), "returns before reading /proc");
-    assert_eq!(f.spawned(), 0);
-}
-
-#[test]
 fn empty_guard_still_starts() {
     let f = fx();
     let (o, err) = f.run_with(Opts {

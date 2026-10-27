@@ -53,9 +53,11 @@ tmp=""
 decoys=()
 cleanup() {
   local p
+  # Signal only decoys still running from $tmp: a reaped PID may be reused.
   for p in "${decoys[@]}"; do
-    kill "$p" 2>/dev/null
-    wait "$p" 2>/dev/null
+    case "$(readlink "/proc/$p/exe" 2>/dev/null)" in
+      "$tmp"/*) kill "$p" 2>/dev/null; wait "$p" 2>/dev/null ;;
+    esac
   done
   [ -n "$tmp" ] && [ -d "$tmp" ] && rm -rf -- "$tmp"
 }
@@ -81,8 +83,8 @@ start_decoy() {
   decoys+=("$decoy_pid")
   # Wait for the exec to replace the fork's argv (bounded, never forever).
   # Every decoy has `profile`; the near misses may lack `watch`.
-  local i
-  for i in 1 2 3 4 5 6 7 8 9 10; do
+  local _
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
     if tr '\0' ' ' <"/proc/$decoy_pid/cmdline" 2>/dev/null | grep -q -- "profile"; then
       return 0
     fi
@@ -93,6 +95,10 @@ start_decoy() {
 stop_decoy() {
   kill "$1" 2>/dev/null
   wait "$1" 2>/dev/null
+  # Forget the reaped PID so cleanup never signals a process that reused it.
+  local keep=() p
+  for p in "${decoys[@]}"; do [ "$p" = "$1" ] || keep+=("$p"); done
+  decoys=("${keep[@]}")
 }
 
 run_detect() {
