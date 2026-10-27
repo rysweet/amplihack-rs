@@ -16,6 +16,9 @@ pub struct Settings {
     pub hold: u64,
     /// Seconds between `watch` cycles.
     pub interval: u64,
+    /// Seconds: the rotator moves onto a credit-backed overflow profile only
+    /// when the earliest plan reset is further away than this.
+    pub overflow_wait: u64,
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -61,6 +64,13 @@ const HOLD: Spec = Spec {
     default: 3600,
     min: 0,
     max: None,
+};
+const OVERFLOW_WAIT: Spec = Spec {
+    flag: "--overflow-wait",
+    var: "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+    default: 1800,
+    min: 0,
+    max: Some(604_800),
 };
 const INTERVAL: Spec = Spec {
     flag: "--interval",
@@ -134,6 +144,7 @@ pub fn resolve(
         upgrade_margin: pct(&UPGRADE_MARGIN, &tune.upgrade_margin)?,
         hold: HOLD.resolve(tune.hold.as_deref(), env)?,
         interval: INTERVAL.resolve(interval, env)?,
+        overflow_wait: OVERFLOW_WAIT.resolve(tune.overflow_wait.as_deref(), env)?,
     })
 }
 
@@ -147,6 +158,7 @@ impl Settings {
             (MARGIN.flag, u64::from(self.margin)),
             (UPGRADE_MARGIN.flag, u64::from(self.upgrade_margin)),
             (HOLD.flag, self.hold),
+            (OVERFLOW_WAIT.flag, self.overflow_wait),
         ] {
             args.push(flag.to_string());
             args.push(v.to_string());

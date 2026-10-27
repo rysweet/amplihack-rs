@@ -16,7 +16,7 @@ pub(super) mod capacity;
 #[cfg(unix)]
 mod cli;
 #[cfg(unix)]
-mod config;
+pub(super) mod config;
 #[cfg(unix)]
 mod fsx;
 #[cfg(unix)]

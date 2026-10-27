@@ -293,6 +293,7 @@ fn parse_cycle_reads_the_four_fields() {
             outcome: Some("stayed".into()),
             alert: true,
             live: Some("work".into()),
+            overflow: None,
         }
     );
 }
@@ -419,6 +420,7 @@ fn status(outcome: &str, alert: bool) -> CycleStatus {
         outcome: Some(outcome.into()),
         alert,
         live: Some("work".into()),
+        overflow: None,
     }
 }
 
@@ -511,4 +513,82 @@ fn read_cycle_refuses_a_directory_in_place_of_the_ledger() {
     fs::remove_file(&p).unwrap();
     private_dir(&p);
     assert_eq!(read_cycle(root.path(), NOW), None);
+}
+
+// ── Overflow (issue #1606) ──────────────────────────────────────────────────
+//
+// `CycleStatus.overflow` is `Some` only for `last_cycle.overflow` in
+// {"in","out","on"}; anything else, or a wrong type, is `None`.
+// `on_overflow()` is true for "in" and "on". `has_capacity()` is unchanged:
+// overflow moves and stays use `swapped` / `stayed`.
+
+fn overflow_ledger(outcome: &str, tag: serde_json::Value, alert: bool) -> Vec<u8> {
+    let mut v = serde_json::json!({
+        "version": 1,
+        "live": "cred",
+        "last_cycle": { "at": NOW - 5, "outcome": outcome, "overflow": tag },
+        "overflow_blocked": {
+            "cred2": { "at": NOW - 60, "until": NOW + 86_400, "reason": "spend_limit" }
+        }
+    });
+    if alert {
+        v["alert"] = "all-over:cred".into();
+    }
+    v.to_string().into_bytes()
+}
+
+#[test]
+fn overflow_moves_and_stays_are_capacity() {
+    for (outcome, tag, on) in [
+        ("swapped", "in", true),
+        ("stayed", "on", true),
+        ("swapped", "out", false),
+    ] {
+        let s = parse_cycle(&overflow_ledger(outcome, tag.into(), false), NOW).expect("readable");
+        assert_eq!(s.overflow.as_deref(), Some(tag));
+        assert!(s.has_capacity(), "{tag}");
+        assert_eq!(s.on_overflow(), on, "{tag}");
+    }
+}
+
+#[test]
+fn a_blocked_overflow_with_no_fallback_is_no_capacity() {
+    let s = parse_cycle(&overflow_ledger("alerted", "on".into(), true), NOW).unwrap();
+    assert!(!s.has_capacity());
+}
+
+#[test]
+fn unknown_or_wrongly_typed_overflow_tags_read_as_none() {
+    for tag in [
+        serde_json::json!("IN"),
+        serde_json::json!("sideways"),
+        serde_json::json!(""),
+        serde_json::json!(1),
+        serde_json::json!(null),
+        serde_json::json!({"x": 1}),
+    ] {
+        let s = parse_cycle(&overflow_ledger("stayed", tag.clone(), false), NOW).expect("lenient");
+        assert_eq!(s.overflow, None, "{tag}");
+        assert!(!s.on_overflow(), "{tag}");
+        assert!(
+            s.has_capacity(),
+            "the outcome still decides capacity: {tag}"
+        );
+    }
+}
+
+#[test]
+fn a_ledger_without_overflow_reads_as_before() {
+    let s = parse_cycle(
+        format!(
+            r#"{{"version":1,"live":"work","last_cycle":{{"at":{},"outcome":"stayed"}}}}"#,
+            NOW - 5
+        )
+        .as_bytes(),
+        NOW,
+    )
+    .unwrap();
+    assert_eq!(s.overflow, None);
+    assert!(!s.on_overflow());
+    assert!(s.has_capacity());
 }

@@ -211,3 +211,57 @@ fn eligibility_filter_is_only_asked_about_other_profiles() {
     });
     assert_eq!(picked.map(|p| p.to_string()).as_deref(), Some("a"));
 }
+
+// --- Overflow profiles (issue #1606, D7) -----------------------------------
+
+#[test]
+fn auto_switch_never_picks_an_overflow_profile_even_as_the_only_option() {
+    use super::config::Config;
+    let cfg = Config {
+        enabled: true,
+        threshold: 90,
+        exclude: Vec::new(),
+        overflow: vec![n("cred")],
+    };
+    let mut c = Case::new(&["work", "spare", "cred"])
+        .with("work", reading(95.0, 50.0))
+        .with("spare", reading(99.0, 99.0))
+        .with("cred", reading(0.0, 0.0));
+    c.exclude = cfg.selection_exclude();
+    assert_eq!(c.pick("work"), None, "only the rotator spends credits");
+    c.readings.insert("spare".into(), reading(10.0, 10.0));
+    assert_eq!(c.pick("work").as_deref(), Some("spare"));
+}
+
+/// AU4: every `Pool` built outside tests takes its exclusions from
+/// `Config::selection_exclude()`, so a new call site cannot let auto-switch
+/// spend credits by using `exclude` alone.
+#[test]
+fn every_pool_construction_uses_selection_exclude() {
+    let dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/auto_switch");
+    let mut sites = 0;
+    for entry in std::fs::read_dir(&dir).unwrap() {
+        let path = entry.unwrap().path();
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !file.ends_with(".rs") || file.starts_with("tests_") || file == "candidate.rs" {
+            continue;
+        }
+        let src = std::fs::read_to_string(&path).unwrap();
+        for (i, _) in src.match_indices("Pool {") {
+            sites += 1;
+            // The Pool literal and the few lines that build its inputs.
+            let start = src[..i].char_indices().rev().nth(400).map_or(0, |(j, _)| j);
+            let end = src[i..].find("};").map_or(src.len(), |e| i + e);
+            let body = &src[start..end];
+            assert!(
+                body.contains("selection_exclude()") && !body.contains("exclude: &cfg.exclude"),
+                "{file}: a Pool built without selection_exclude():\n{body}"
+            );
+        }
+    }
+    assert!(
+        sites >= 2,
+        "expected the rerun and swap Pool sites, found {sites}"
+    );
+}

@@ -36,11 +36,13 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<ProfileName> {
+    // Overflow profiles are never auto-switch candidates (issue #1606).
+    let exclude = cfg.selection_exclude();
     let pool = Pool {
         profiles,
         readings,
         threshold: cfg.threshold,
-        exclude: &cfg.exclude,
+        exclude: &exclude,
         now: fsx::now(),
     };
     candidate::select(&pool, current, |c| {

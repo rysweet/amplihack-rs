@@ -204,6 +204,7 @@ fn cycle(outcome: &str, at_offset: i64, alert: bool) -> CycleStatus {
         outcome: Some(outcome.into()),
         alert,
         live: Some("spare".into()),
+        overflow: None,
     }
 }
 
@@ -444,6 +445,7 @@ fn fresh_capacity_refuses_no_capacity_states() {
         outcome: Some("swapped".into()),
         alert: false,
         live: None,
+        overflow: None,
     };
     assert!(!fresh_capacity(Some(&no_at), START));
 }
@@ -1131,4 +1133,46 @@ fn the_wait_ends_when_its_session_exits() {
     assert!(d.guard.sessions.is_empty(), "no resume recorded");
     assert_eq!(d.logs.len(), 1);
     assert_eq!(d.logs[0].outcome, Outcome::SessionGone);
+}
+
+// ── fresh_capacity on credits (issue #1606) ─────────────────────────────────
+
+fn overflow_cycle(outcome: &str, tag: &str, at_offset: i64, alert: bool) -> CycleStatus {
+    CycleStatus {
+        overflow: Some(tag.into()),
+        live: Some("cred".into()),
+        ..cycle(outcome, at_offset, alert)
+    }
+}
+
+#[test]
+fn fresh_capacity_counts_a_move_onto_or_a_stay_on_credits() {
+    assert!(fresh_capacity(
+        Some(&overflow_cycle("swapped", "in", 61, false)),
+        START
+    ));
+    assert!(fresh_capacity(
+        Some(&overflow_cycle("stayed", "on", 61, false)),
+        START
+    ));
+    assert!(fresh_capacity(
+        Some(&overflow_cycle("swapped", "out", 61, false)),
+        START
+    ));
+}
+
+#[test]
+fn fresh_capacity_on_credits_still_needs_a_fresh_cycle_and_no_alert() {
+    assert!(!fresh_capacity(
+        Some(&overflow_cycle("swapped", "in", 60, false)),
+        START
+    ));
+    assert!(!fresh_capacity(
+        Some(&overflow_cycle("stayed", "on", 120, true)),
+        START
+    ));
+    assert!(!fresh_capacity(
+        Some(&overflow_cycle("alerted", "on", 120, false)),
+        START
+    ));
 }

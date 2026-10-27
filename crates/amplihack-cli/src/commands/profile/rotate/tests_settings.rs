@@ -199,6 +199,7 @@ fn to_args_round_trips_through_resolve() {
             "--margin" => back.margin = v,
             "--upgrade-margin" => back.upgrade_margin = v,
             "--hold" => back.hold = v,
+            "--overflow-wait" => back.overflow_wait = v,
             "--interval" => interval = v,
             other => panic!("unexpected flag {other}"),
         }
@@ -206,4 +207,94 @@ fn to_args_round_trips_through_resolve() {
     let again = resolve(&back, interval.as_deref(), &no_env()).unwrap();
     assert_eq!(again, s);
     assert!(!s.to_args(false).iter().any(|a| a == "--interval"));
+}
+
+// --- --overflow-wait (issue #1606) -----------------------------------------
+
+#[test]
+fn overflow_wait_defaults_to_half_an_hour() {
+    assert_eq!(
+        resolve(&flags(), None, &no_env()).unwrap().overflow_wait,
+        1800
+    );
+}
+
+#[test]
+fn overflow_wait_flag_beats_variable_beats_default() {
+    let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "60")]);
+    assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 60);
+    let f = TuneFlags {
+        overflow_wait: Some("0".into()),
+        ..flags()
+    };
+    assert_eq!(
+        resolve(&f, None, &env).unwrap().overflow_wait,
+        0,
+        "0 is allowed"
+    );
+    let empty = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "")]);
+    assert_eq!(resolve(&flags(), None, &empty).unwrap().overflow_wait, 1800);
+}
+
+#[test]
+fn overflow_wait_is_zero_to_a_week_and_rejected_not_clamped() {
+    let f = |v: &str| TuneFlags {
+        overflow_wait: Some(v.into()),
+        ..flags()
+    };
+    assert_eq!(
+        resolve(&f("604800"), None, &no_env())
+            .unwrap()
+            .overflow_wait,
+        604_800
+    );
+    let e = err(resolve(&f("604801"), None, &no_env()));
+    assert!(e.contains("--overflow-wait"), "{e}");
+    assert!(e.contains("0 to 604800"), "{e}");
+    for bad in ["-1", "1.5", " 60", "1e3", "abc"] {
+        let e = err(resolve(&f(bad), None, &no_env()));
+        assert!(e.contains("--overflow-wait"), "{bad:?}: {e}");
+    }
+    let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "999999")]);
+    let e = err(resolve(&flags(), None, &env));
+    assert!(e.contains("AMPLIHACK_ROTATE_OVERFLOW_WAIT"), "{e}");
+}
+
+#[test]
+fn to_args_passes_overflow_wait_to_the_background_process() {
+    let f = TuneFlags {
+        overflow_wait: Some("90".into()),
+        ..flags()
+    };
+    let args = resolve(&f, None, &no_env()).unwrap().to_args(false);
+    let i = args
+        .iter()
+        .position(|a| a == "--overflow-wait")
+        .expect("--overflow-wait in to_args");
+    assert_eq!(args[i + 1], "90");
+}
+
+#[test]
+fn rotate_help_lists_overflow_wait() {
+    use clap::CommandFactory;
+    let mut cmd = crate::Cli::command();
+    let mut out = Vec::new();
+    let rotate = cmd
+        .find_subcommand_mut("profile")
+        .and_then(|p| p.find_subcommand_mut("rotate"))
+        .expect("profile rotate");
+    rotate.write_long_help(&mut out).unwrap();
+    let help = String::from_utf8(out).unwrap();
+    assert!(help.contains("--overflow-wait"), "{help}");
+}
+
+#[test]
+fn overflow_wait_variable_must_be_a_whole_number_of_seconds() {
+    for bad in ["-1", "1.5", "abc", "30m"] {
+        let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", bad)]);
+        let e = err(resolve(&flags(), None, &env));
+        assert!(e.contains("AMPLIHACK_ROTATE_OVERFLOW_WAIT"), "{bad:?}: {e}");
+    }
+    let env = env_of(&[("AMPLIHACK_ROTATE_OVERFLOW_WAIT", "0")]);
+    assert_eq!(resolve(&flags(), None, &env).unwrap().overflow_wait, 0);
 }

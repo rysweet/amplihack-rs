@@ -2,19 +2,21 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::decide::{Decision, Reading};
+use super::credits::{block_spend_limited, note_move, refresh_capacity, stay_note};
+use super::decide::Decision;
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
+use super::ledger::{
+    LastCycle, RotateLedger, RotateState, alert_key, clear_alert, prune_blocks, should_alert,
+};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
     Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
 };
+use super::overflow::Tag;
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{
-    Rotated, State, capacity_from_rotation, exists, now, recover_auto_switch,
-};
+use crate::commands::profile::auto_switch::kit::{State, exists, now, recover_auto_switch};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -132,7 +134,7 @@ fn alert(
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     alert_once(out, &mut l, &alert_key(kind, live), t, line);
-    record(ctx, &mut l, CycleOutcome::Alerted, t)
+    record(ctx, &mut l, CycleOutcome::Alerted, t, None)
 }
 
 /// Logs the ALERT only when its key changed; the one-shot command still
@@ -145,16 +147,20 @@ fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &st
     }
 }
 
+/// Records the cycle, with its overflow tag, and drops expired spend blocks.
 fn record(
     ctx: &Ctx,
     l: &mut super::ledger::RotateLedger,
     o: CycleOutcome,
     t: i64,
+    tag: Option<Tag>,
 ) -> Result<(), ProfileError> {
     l.last_cycle = Some(LastCycle {
         at: t,
         outcome: o.as_str().into(),
+        overflow: tag.map(|t| t.as_str().to_string()),
     });
+    prune_blocks(l, t);
     ctx.rs.save_ledger(l)
 }
 
@@ -288,6 +294,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         decision,
         note,
         failed,
+        tag,
+        new_blocks,
+        next_plan_reset,
     } = measure_and_decide(ctx, &binary, &first)?;
     ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
@@ -307,10 +316,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Skipped, t)?;
+        record(ctx, &mut l, CycleOutcome::Skipped, t, None)?;
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+    let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
+    // Saved before any swap, which reloads the ledger from disk.
+    if block_spend_limited(&mut out, &mut l, &new_blocks, t) {
+        ctx.rs.save_ledger(&l)?;
+    }
     let mut swapped = None;
     let outcome = match decision {
         Decision::Swap { to, reason } => {
@@ -341,6 +355,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
+            note_move(&mut out, tag, &from, &to, next_plan_reset);
             ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
@@ -348,6 +363,9 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Decision::Stay => {
             if let Some(n) = &note {
                 out.emit(t, n);
+            }
+            if let Some(line) = &stay_line {
+                out.emit(t, line);
             }
             note_live(&mut l, &first, t);
             // A damped stay is a stay: no alert applies, so it clears one.
@@ -362,12 +380,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             CycleOutcome::Alerted
         }
     };
-    capacity_from_rotation(
+    refresh_capacity(
         ctx.store.root(),
-        &rotated(live_name(&first.live), &live, &others),
+        live_name(&first.live),
+        &live,
+        &others,
         t,
+        tag,
     );
-    record(ctx, &mut l, outcome, now())?;
+    record(ctx, &mut l, outcome, now(), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);
@@ -375,22 +396,4 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         shared_dirs::ensure_for(&ctx.store, p);
     }
     Ok(outcome)
-}
-
-/// This cycle's readings for the no-capacity file: the live profile's and
-/// every other candidate's, as measured.
-fn rotated(
-    live: Option<&ProfileName>,
-    reading: &Reading,
-    others: &[(ProfileName, Reading)],
-) -> Vec<(ProfileName, Rotated)> {
-    let of = |r: &Reading| match *r {
-        Reading::Measured { session, week } => Rotated::Measured { session, week },
-        Reading::Exhausted => Rotated::Exhausted,
-        Reading::Failed => Rotated::Failed,
-    };
-    live.map(|n| (n.clone(), of(reading)))
-        .into_iter()
-        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
-        .collect()
 }

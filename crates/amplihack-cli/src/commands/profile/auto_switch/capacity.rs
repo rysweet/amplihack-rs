@@ -241,7 +241,17 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
 
 /// Recomputes and writes the capacity file from the rotator's readings.
 /// Reset times come from `usage.json`. Never fails, never prints.
-pub fn refresh_from_rotation(root: &Path, readings: &[(ProfileName, Rotated)], now: i64) {
+///
+/// `on_credits`: the live login runs on a credit-backed overflow profile
+/// (issue #1606), so work can go on whatever the plan readings say. The
+/// result is then `ok`, which replaces an existing file but never creates
+/// one (an `ok` result never does).
+pub fn refresh_from_rotation(
+    root: &Path,
+    readings: &[(ProfileName, Rotated)],
+    now: i64,
+    on_credits: bool,
+) {
     // See `refresh` on catch_unwind.
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let eff = config::effective(root);
@@ -275,11 +285,13 @@ pub fn refresh_from_rotation(root: &Path, readings: &[(ProfileName, Rotated)], n
                 )
             })
             .collect();
-        write_if_changed(
-            &state,
-            &compute(&profiles, &evidence, &eff.config, now, "rotate"),
-            now,
-        );
+        let mut file = compute(&profiles, &evidence, &eff.config, now, "rotate");
+        if on_credits {
+            file.state = Cap::Ok;
+            file.over.clear();
+            file.earliest_reset = None;
+        }
+        write_if_changed(&state, &file, now);
     }));
 }
 

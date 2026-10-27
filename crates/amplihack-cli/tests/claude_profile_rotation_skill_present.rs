@@ -116,7 +116,7 @@ fn every_flag_the_skill_cites_exists() {
     assert!(!cited.is_empty());
     for f in cited {
         // Flags of other amplihack commands the skill mentions.
-        if matches!(f, "--json" | "--yes") {
+        if matches!(f, "--json" | "--yes" | "--none") {
             continue;
         }
         assert!(

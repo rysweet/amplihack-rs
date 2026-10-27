@@ -13,6 +13,8 @@ mod autostart;
 #[cfg(unix)]
 mod control;
 #[cfg(unix)]
+mod credits;
+#[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
 mod daemon;
@@ -30,6 +32,8 @@ mod log;
 mod measure;
 #[cfg(unix)]
 mod observe;
+#[cfg(unix)]
+mod overflow;
 #[cfg(unix)]
 mod recover;
 #[cfg(unix)]
@@ -56,6 +60,8 @@ mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
+mod tests_overflow;
+#[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
 mod tests_settings;
@@ -73,6 +79,10 @@ use super::store::ProfileStore;
 
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
+#[cfg(unix)]
+pub(super) use control::{clear_overflow_block, overflow_blocks};
+#[cfg(unix)]
+pub(super) use log::timestamp;
 
 /// Starts the rotator from a launch when auto-switch is on; see
 /// `autostart`. Nothing to start off Unix.
@@ -135,6 +145,9 @@ pub struct TuneFlags {
     /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
+    /// Move onto a credit-backed overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
+    #[arg(long, value_name = "SECS")]
+    pub overflow_wait: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]

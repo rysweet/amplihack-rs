@@ -1,6 +1,6 @@
 //! The rotate ledger, `<root>/.auto-switch.d/rotate/ledger.json`, read
-//! loosely: only `version`, `live`, `alert` and `last_cycle.{at,outcome}`
-//! matter, unknown fields are ignored, and a wrongly typed field reads as
+//! loosely: only `version`, `live`, `alert` and
+//! `last_cycle.{at,outcome,overflow}` matter, unknown fields are ignored, and a wrongly typed field reads as
 //! absent. The rotator's own reader is strict; the hook must keep working
 //! across ledger additions (#1656, #1657), so it is not reused.
 
@@ -24,6 +24,10 @@ pub struct CycleStatus {
     pub alert: bool,
     /// The live profile, when it passes the profile-name rule.
     pub live: Option<String>,
+    /// The last cycle's credit-backed overflow tag (issue #1606): `in` (moved
+    /// onto an overflow profile), `out` (moved off one) or `on` (stayed on
+    /// one). `None` for no overflow activity or any other value.
+    pub overflow: Option<String>,
 }
 
 impl CycleStatus {
@@ -32,6 +36,13 @@ impl CycleStatus {
     /// Any other outcome, known or not, is no capacity.
     pub fn has_capacity(&self) -> bool {
         !self.alert && matches!(self.outcome.as_deref(), Some("swapped" | "stayed"))
+    }
+
+    /// The live login runs on usage credits after the last cycle: it moved
+    /// onto an overflow profile or stayed on one. Capacity is still decided
+    /// by [`Self::has_capacity`]; this only says what the capacity costs.
+    pub fn on_overflow(&self) -> bool {
+        matches!(self.overflow.as_deref(), Some("in" | "on"))
     }
 }
 
@@ -66,6 +77,11 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         .and_then(|c| c.get("outcome"))
         .and_then(Value::as_str)
         .map(str::to_string);
+    let overflow = last
+        .and_then(|c| c.get("overflow"))
+        .and_then(Value::as_str)
+        .filter(|t| matches!(*t, "in" | "out" | "on"))
+        .map(str::to_string);
     let alert = map.get("alert").is_some_and(|a| !a.is_null());
     let live = map
         .get("live")
@@ -77,6 +93,7 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         outcome,
         alert,
         live,
+        overflow,
     })
 }
 

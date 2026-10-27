@@ -50,6 +50,7 @@ fn cfg(threshold: u8, exclude: &[&str]) -> Config {
         enabled: true,
         threshold,
         exclude: names(exclude),
+        overflow: Vec::new(),
     }
 }
 
@@ -602,6 +603,7 @@ fn refresh_does_not_write_while_auto_switch_is_off() {
         &r.root,
         &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
         now(),
+        false,
     );
     assert!(!r.capacity().exists());
 }
@@ -708,17 +710,17 @@ fn a_null_reset_state_gets_a_heartbeat_rewrite_after_an_hour() {
         (names(&["a"])[0].clone(), Rotated::Exhausted),
         (names(&["b"])[0].clone(), Rotated::Exhausted),
     ];
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     let f = cap::read(&r.root).expect("written");
     assert_eq!((f.state, f.earliest_reset), (Cap::Exhausted, None));
     assert_eq!(f.writer, "rotate");
 
     let recent = backdate(&r, 10 * 60);
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     assert_eq!(fs::read(r.capacity()).unwrap(), recent, "under 1h: skipped");
 
     backdate(&r, 2 * HOUR);
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     let f = cap::read(&r.root).unwrap();
     assert!(
         (f.written_at.timestamp() - now()).abs() <= 5,
@@ -764,6 +766,7 @@ fn rotation_resets_come_from_usage_json_and_the_auto_switch_threshold() {
             ),
         ],
         t,
+        false,
     );
     let f = cap::read(&r.root).expect("written");
     assert_eq!(f.state, Cap::Low);
@@ -783,6 +786,7 @@ fn rotation_with_a_failed_probe_is_ok_and_writes_nothing_new() {
             (names(&["b"])[0].clone(), Rotated::Failed),
         ],
         now(),
+        false,
     );
     assert!(!r.capacity().exists());
 }
@@ -803,6 +807,7 @@ fn write_errors_are_swallowed() {
         &r.root,
         &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
         now(),
+        false,
     );
     assert!(r.capacity().is_dir(), "left alone, no panic");
 }
@@ -1126,4 +1131,65 @@ fn recipe_warning_is_silent_when_off_or_ok() {
         let _p = planted(Cap::Ok, "1");
         assert_eq!(recipe(), "");
     }
+}
+
+// ---------------------------------------------------------------------------
+// refresh_from_rotation on credits (issue #1606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn on_credits_overwrites_an_exhausted_file_with_ok() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a", "cred"]);
+    let a = names(&["a"])[0].clone();
+    let cred = names(&["cred"])[0].clone();
+    let both = [(a, Rotated::Exhausted), (cred, Rotated::Exhausted)];
+    refresh_from_rotation(&r.root, &both, now(), false);
+    assert_eq!(cap::read(&r.root).expect("written").state, Cap::Exhausted);
+    refresh_from_rotation(&r.root, &both, now(), true);
+    let f = cap::read(&r.root).expect("still a file");
+    assert_eq!(
+        f.state,
+        Cap::Ok,
+        "the live login runs on credits: work can go on"
+    );
+    assert_eq!(f.writer, "rotate");
+}
+
+#[test]
+fn on_credits_never_creates_the_file() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a", "cred"]);
+    let both = [
+        (names(&["a"])[0].clone(), Rotated::Exhausted),
+        (names(&["cred"])[0].clone(), Rotated::Exhausted),
+    ];
+    refresh_from_rotation(&r.root, &both, now(), true);
+    assert!(!r.capacity().exists());
+}
+
+#[test]
+fn off_credits_the_result_is_as_before() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a"]);
+    let one = [(names(&["a"])[0].clone(), Rotated::Exhausted)];
+    refresh_from_rotation(&r.root, &one, now(), false);
+    assert_eq!(cap::read(&r.root).expect("written").state, Cap::Exhausted);
+}
+
+#[test]
+fn on_credits_writes_nothing_while_auto_switch_is_off() {
+    let _l = lock();
+    let _off = EnvGuard::set([(config::TOGGLE_ENV, "0")]);
+    let r = root(&["a"]);
+    refresh_from_rotation(
+        &r.root,
+        &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
+        now(),
+        true,
+    );
+    assert!(!r.capacity().exists());
 }

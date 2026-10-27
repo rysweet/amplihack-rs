@@ -1,7 +1,7 @@
 //! `amplihack profile auto-switch …`: the toggle, threshold, exclusions,
 //! `status`, `install` and `repair`.
 
-use super::config::{self, Config, FileState};
+use super::config::{self, ReadMode};
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::state::{CREDS, Ledger, PHASE_INCONSISTENT, State};
@@ -63,36 +63,22 @@ fn exclude_arg(names: &[String]) -> Result<Vec<ProfileName>, ProfileError> {
         .collect()
 }
 
-/// The current file as a starting point for a key-only rewrite.
-fn editable(root: &std::path::Path) -> Result<Config, ProfileError> {
-    match config::read(root) {
-        FileState::Valid(c) => Ok(c),
-        FileState::Missing => Ok(Config::default()),
-        FileState::Corrupt => Err(ProfileError::AutoSwitchConfig(format!(
-            "{} is unreadable or invalid",
-            config::FILE
-        ))),
-    }
-}
-
 pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
     let root = store.root();
     match cmd {
         AutoSwitchCommand::On { threshold, exclude } => {
             let threshold = threshold.as_deref().map(threshold_arg).transpose()?;
             let exclude = exclude.as_deref().map(exclude_arg).transpose()?;
-            let mut c = match config::read(root) {
-                FileState::Valid(c) => c,
-                _ => Config::default(),
-            };
-            c.enabled = true;
-            if let Some(t) = threshold {
-                c.threshold = t;
-            }
-            if let Some(e) = exclude {
-                c.exclude = e;
-            }
-            config::write(root, &c)?;
+            let c = config::update(root, ReadMode::DefaultOnInvalid, |c| {
+                c.enabled = true;
+                if let Some(t) = threshold {
+                    c.threshold = t;
+                }
+                if let Some(e) = exclude {
+                    c.exclude = e;
+                }
+                Ok(())
+            })?;
             println!("auto-switch: on (threshold {}%)", c.threshold);
             warn_env_override(true);
             if let Ok(state) = State::new(root) {
@@ -104,27 +90,27 @@ pub fn handle(store: &ProfileStore, cmd: AutoSwitchCommand) -> Result<()> {
             }
         }
         AutoSwitchCommand::Off => {
-            let mut c = match config::read(root) {
-                FileState::Valid(c) => c,
-                _ => Config::default(),
-            };
-            c.enabled = false;
-            config::write(root, &c)?;
+            config::update(root, ReadMode::DefaultOnInvalid, |c| {
+                c.enabled = false;
+                Ok(())
+            })?;
             println!("auto-switch: off");
             warn_env_override(false);
         }
         AutoSwitchCommand::Threshold { value } => {
             let t = threshold_arg(&value)?;
-            let mut c = editable(root)?;
-            c.threshold = t;
-            config::write(root, &c)?;
+            config::update(root, ReadMode::Editable, |c| {
+                c.threshold = t;
+                Ok(())
+            })?;
             println!("auto-switch threshold: {t}%");
         }
         AutoSwitchCommand::Exclude { names } => {
             let exclude = exclude_arg(&names)?;
-            let mut c = editable(root)?;
-            c.exclude = exclude;
-            config::write(root, &c)?;
+            let c = config::update(root, ReadMode::Editable, |c| {
+                c.exclude = exclude;
+                Ok(())
+            })?;
             println!("auto-switch exclusions: {}", list(&c.exclude));
         }
         AutoSwitchCommand::Status => print!("{}", status(store)?),

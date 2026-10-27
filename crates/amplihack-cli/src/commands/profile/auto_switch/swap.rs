@@ -491,11 +491,14 @@ pub fn swap_check(
         return Ok(()); // no file to move (Keychain, logged out, or linked)
     }
     let readings = state.load_usage().accounts;
+    // Overflow profiles are never auto-switch candidates (issue #1606): only
+    // the rotator spends credits.
+    let exclude = cfg.selection_exclude();
     let pool = Pool {
         profiles,
         readings: &readings,
         threshold: cfg.threshold,
-        exclude: &cfg.exclude,
+        exclude: &exclude,
         now,
     };
     // A candidate's home slot must hold its login; when that slot is its own

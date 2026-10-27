@@ -10,6 +10,7 @@ use crate::commands::profile::auto_switch::kit::{
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -23,6 +24,42 @@ pub const MAX_ACCOUNT: usize = 320;
 pub struct LastCycle {
     pub at: i64,
     pub outcome: String,
+    /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<String>,
+}
+
+/// The tags `LastCycle.overflow` may hold.
+pub const OVERFLOW_TAGS: [&str; 3] = ["in", "out", "on"];
+/// The only reason an overflow profile is blocked.
+pub const SPEND_LIMIT: &str = "spend_limit";
+/// The most overflow blocks a ledger may hold.
+pub const MAX_BLOCKS: usize = 256;
+/// The longest a loaded block may last. The writer uses the next spend
+/// reset, at most 31 days away; the slack lets a later change take the
+/// reset from Claude's message without invalidating older ledgers.
+pub const MAX_BLOCK_SECS: i64 = 62 * 86_400;
+
+/// An overflow profile that reported the organisation's spend limit: not
+/// used from `at` until `until` (the 1st of the next month, 00:00 UTC) or
+/// until `profile overflow clear`. Unknown fields are ignored, so a later
+/// binary can add one without making this ledger unreadable here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverflowBlock {
+    pub at: i64,
+    pub until: i64,
+    pub reason: String,
+}
+
+impl OverflowBlock {
+    /// A spend-limit block recorded at `at`.
+    pub fn spend_limit(at: i64) -> Self {
+        Self {
+            at,
+            until: spend_reset(at),
+            reason: SPEND_LIMIT.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +85,9 @@ pub struct RotateLedger {
     pub alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
+    /// Overflow profiles blocked by a spend limit, by profile name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overflow_blocked: BTreeMap<String, OverflowBlock>,
 }
 
 impl Default for RotateLedger {
@@ -61,6 +101,7 @@ impl Default for RotateLedger {
             previous: None,
             alert: None,
             last_cycle: None,
+            overflow_blocked: BTreeMap::new(),
         }
     }
 }
@@ -140,6 +181,30 @@ fn valid_name(v: Option<&str>) -> bool {
     v.is_none_or(|n| ProfileName::parse(n).is_ok())
 }
 
+/// The overflow fields of a loaded ledger: a known tag, at most
+/// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
+/// recorded at a positive time and ending after it but within
+/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. An end
+/// that cannot be computed counts as invalid.
+fn valid_overflow(l: &RotateLedger) -> bool {
+    let tag_ok = l
+        .last_cycle
+        .as_ref()
+        .and_then(|c| c.overflow.as_deref())
+        .is_none_or(|t| OVERFLOW_TAGS.contains(&t));
+    tag_ok
+        && l.overflow_blocked.len() <= MAX_BLOCKS
+        && l.overflow_blocked.iter().all(|(name, b)| {
+            ProfileName::parse(name).is_ok()
+                && b.reason == SPEND_LIMIT
+                && b.at > 0
+                && b.at < b.until
+                && b.at
+                    .checked_add(MAX_BLOCK_SECS)
+                    .is_some_and(|max| b.until <= max)
+        })
+}
+
 impl RotateState {
     /// `root` is canonicalised when it exists.
     pub fn new(root: &Path) -> Self {
@@ -201,6 +266,9 @@ impl RotateState {
         {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
         }
+        if !valid_overflow(&l) {
+            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
+        }
         Ok(Some(l))
     }
 
@@ -260,4 +328,36 @@ pub fn should_alert(l: &mut RotateLedger, key: &str) -> bool {
 
 pub fn clear_alert(l: &mut RotateLedger) {
     l.alert = None;
+}
+
+/// When an organisation's monthly spend resets, as assumed for a block
+/// recorded at `at`: the 1st of the next calendar month, 00:00 UTC. Claude's
+/// message gives no reset time, so this is the documented assumption.
+pub fn spend_reset(at: i64) -> i64 {
+    use chrono::{Datelike, TimeZone, Utc};
+    let Some(t) = chrono::DateTime::from_timestamp(at, 0) else {
+        return at;
+    };
+    let (y, m) = if t.month() == 12 {
+        (t.year() + 1, 1)
+    } else {
+        (t.year(), t.month() + 1)
+    };
+    Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
+        .single()
+        .map_or(at, |d| d.timestamp())
+}
+
+/// The blocks still in force at `now` (`now < until`).
+pub fn active_blocks(l: &RotateLedger, now: i64) -> BTreeMap<String, OverflowBlock> {
+    l.overflow_blocked
+        .iter()
+        .filter(|(_, b)| now < b.until)
+        .map(|(n, b)| (n.clone(), b.clone()))
+        .collect()
+}
+
+/// Drops the blocks that ended at or before `now`.
+pub fn prune_blocks(l: &mut RotateLedger, now: i64) {
+    l.overflow_blocked.retain(|_, b| now < b.until);
 }

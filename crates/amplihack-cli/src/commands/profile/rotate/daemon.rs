@@ -344,6 +344,7 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
         l.last_cycle = Some(LastCycle {
             at: now(),
             outcome: "idle".into(),
+            overflow: None,
         });
         if let Err(e) = rs.save_ledger(&l) {
             log_line(rs, &format!("skip: could not record the idle cycle: {e}"));

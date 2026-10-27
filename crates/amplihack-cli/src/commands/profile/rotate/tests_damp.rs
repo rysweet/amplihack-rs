@@ -21,7 +21,7 @@
 //! - `Reason::FailedProbe.as_str()` is `failed-probe`.
 
 use super::damp::{FAILED_PROBE_LIMIT, damp, next_failed};
-use super::decide::{Decision, Measured, Reading, Reason, decide, held};
+use super::decide::{Decision, Measured, Reading, Reason, Windows, decide, held};
 use super::ledger::{RotateLedger, alert_key, should_alert};
 use super::log::msg;
 use super::settings::Settings;
@@ -38,6 +38,7 @@ fn settings() -> Settings {
         upgrade_margin: 30,
         hold: 3600,
         interval: 600,
+        overflow_wait: 1800,
     }
 }
 
@@ -53,6 +54,8 @@ fn c(n: &str, reading: Reading) -> Measured {
     Measured {
         name: name(n),
         reading,
+        windows: Windows::default(),
+        spend_limit: false,
     }
 }
 
@@ -483,4 +486,38 @@ fn a_failed_live_probe_with_no_usable_candidate_alerts_and_never_swaps() {
     }
     assert!(sim.swaps.is_empty());
     assert!(sim.notes.is_empty(), "an alert is not damped");
+}
+
+// --- Overflow (issue #1606) ------------------------------------------------
+
+#[test]
+fn overflow_moves_pass_through_damping_on_a_failed_live_probe() {
+    // A spend-limit reading on a live overflow profile reads Failed; the move
+    // it causes is an overflow move, not a threshold swap, so damping must
+    // not hold it for three cycles or the hold.
+    for reason in [Reason::OverflowIn, Reason::OverflowOut] {
+        for k in [0, 1, FAILED_PROBE_LIMIT] {
+            let d = swap("spare", reason);
+            let (out, note) = damp(
+                d.clone(),
+                &Reading::Failed,
+                k,
+                Some(NOW - 10),
+                NOW,
+                &settings(),
+            );
+            assert_eq!(out, d, "{reason:?} k={k}");
+            assert_eq!(note, None);
+        }
+    }
+}
+
+#[test]
+fn overflow_moves_pass_through_damping_on_a_measured_live_probe() {
+    for reason in [Reason::OverflowIn, Reason::OverflowOut] {
+        let d = swap("spare", reason);
+        let (out, note) = damp(d.clone(), &r(90.0, 40.0), 0, Some(NOW), NOW, &settings());
+        assert_eq!(out, d);
+        assert_eq!(note, None);
+    }
 }
