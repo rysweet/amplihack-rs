@@ -2,8 +2,8 @@
 //!
 //! These tests define what the change must deliver:
 //! - the skill file exists with valid frontmatter, keeps the author's
-//!   description and body sections, contains none of the project terms removed
-//!   from the source, and has no hidden content;
+//!   description and body sections, has no credentials, email addresses or
+//!   hidden content, and links only to the source's public hosts;
 //! - its trigger and `documentation-writing`'s trigger each point to the other,
 //!   and the two `documentation-writing` copies keep an identical description;
 //! - `bundle.md` registers it in sorted order, and the group count matches the
@@ -162,59 +162,18 @@ fn skill_has_no_hidden_characters_or_comments() {
     );
 }
 
-/// The source organisation's and repository's names, its funder, and the
-/// project wording in the source's examples (the PR body for #1697 lists every
-/// replacement with its line). `agency contract` guards the interim wording of
-/// round 1, which kept the project's funding arrangement with only the name
-/// removed.
-/// Matched case-insensitively as substrings, so a returning phrase in any
-/// sentence fails this test.
-const REMOVED_PROJECT_PHRASES: &[&str] = &[
-    "mistt",
-    "researchdrafts",
-    "european space agency",
-    "digital twin",
-    "consortium",
-    "wrong datum",
-    "buyer for reconciliation",
-    "afford to be wrong",
-    "latitude-longitude",
-    "equal-area",
-    "provenance tooling",
-    "bespoke to one programme",
-    "model state",
-    "agent interface",
-    "grid heterogeneity",
-    "provenance portability",
-    "data assimilation",
-    "dggs",
-    "geoid",
-    "agency contract",
-    "procurement review",
-    "nvidia",
-    "ten million downloads",
-];
-
-/// Short acronyms that would also match inside ordinary words, so they are
-/// matched case-sensitively as whole words.
-const REMOVED_PROJECT_ACRONYMS: &[&str] = &["ESA", "MISTT"];
-
+/// Checks that hold for any public skill file: no owner's name, no access
+/// tokens, no email addresses.
+///
+/// This file deliberately keeps no list of the private wording that was taken
+/// out of the source. The repository is public, so such a list would publish
+/// the very words it is meant to keep out. The check against that wording is
+/// a byte-for-byte diff against the private source, run by its owner outside
+/// this repository.
 #[test]
-fn skill_omits_removed_project_terms_and_credentials() {
+fn skill_omits_credentials_and_personal_details() {
     let skill = read(SKILL);
     let lower = skill.to_lowercase();
-    for phrase in REMOVED_PROJECT_PHRASES {
-        assert!(
-            !lower.contains(phrase),
-            "{SKILL} must not contain the removed project phrase `{phrase}`"
-        );
-    }
-    for acronym in REMOVED_PROJECT_ACRONYMS {
-        assert!(
-            !has_word(&skill, acronym),
-            "{SKILL} must not contain the removed name `{acronym}`"
-        );
-    }
     for token in ["ryan", "ghp_", "github_pat_"] {
         assert!(!lower.contains(token), "{SKILL} must not contain `{token}`");
     }
@@ -222,36 +181,6 @@ fn skill_omits_removed_project_terms_and_credentials() {
         !skill.contains('@'),
         "{SKILL} must not contain email addresses"
     );
-}
-
-/// Whole-word match used for `REMOVED_PROJECT_ACRONYMS`.
-fn has_word(text: &str, word: &str) -> bool {
-    text.split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|w| w == word)
-}
-
-#[test]
-fn removed_term_matchers_fire_on_source_wording_and_respect_word_boundaries() {
-    // A sentence in the source's original wording must be caught by both
-    // lists, so a re-sync from the source fails the privacy test.
-    let source_wording = "Funding is an ESA contract; the consortium uses physics digital twins.";
-    let lower = source_wording.to_lowercase();
-    assert!(REMOVED_PROJECT_PHRASES.iter().any(|p| lower.contains(p)));
-    assert!(
-        REMOVED_PROJECT_ACRONYMS
-            .iter()
-            .any(|a| has_word(source_wording, a))
-    );
-    // The acronym match is whole-word and case-sensitive: ordinary words that
-    // contain the letters must not trip it.
-    for innocent in ["A mesa, a vanesa and Esau.", "The RESAMPLE step.", "esa"] {
-        assert!(
-            !REMOVED_PROJECT_ACRONYMS
-                .iter()
-                .any(|a| has_word(innocent, a)),
-            "`{innocent}` must not match an acronym"
-        );
-    }
 }
 
 #[test]
