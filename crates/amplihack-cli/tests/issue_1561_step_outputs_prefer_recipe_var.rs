@@ -1260,6 +1260,43 @@ fn step_output_keys(recipes: &[(String, String)]) -> BTreeSet<String> {
     keys
 }
 
+/// Quote state carried from line to line, so a string that spans lines stays
+/// a string.
+#[derive(Default)]
+struct Quotes {
+    sq: bool,
+    dq: bool,
+}
+
+impl Quotes {
+    /// `code` with every quoted byte, quote marks included, replaced by a
+    /// space. What is left is the text bash reads as words, which is the only
+    /// place `NAME=`, `read NAME` or `for NAME in` binds a name.
+    fn mask(&mut self, code: &str) -> String {
+        let mut out = code.as_bytes().to_vec();
+        let mut esc = false;
+        for (i, &c) in code.as_bytes().iter().enumerate() {
+            let quoted_before = self.sq || self.dq;
+            if esc {
+                esc = false;
+            } else {
+                match c {
+                    b'\\' if !self.sq => esc = true,
+                    b'\'' if !self.dq => self.sq = !self.sq,
+                    b'"' if !self.sq => self.dq = !self.dq,
+                    _ => {}
+                }
+            }
+            if quoted_before || self.sq || self.dq {
+                out[i] = b' ';
+            }
+        }
+        // Quote marks are ASCII, so every multi-byte character is either kept
+        // whole or blanked whole: the result is still UTF-8.
+        String::from_utf8(out).expect("masking keeps UTF-8")
+    }
+}
+
 /// `(bare name, source line)` of every read of a step output through its bare
 /// upper-case name in the bash text `body`. A read is `$NAME`, `${NAME…}`,
 /// `${#NAME}` (length) or `${!NAME}` (indirect); a name the text itself
@@ -1277,9 +1314,13 @@ fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, S
     let for_var = Regex::new(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b").unwrap();
     let mut locals = BTreeSet::new();
     let mut found = Vec::new();
+    let mut quotes = Quotes::default();
     for raw in body.lines() {
         let code = strip_comment(raw);
-        for c in for_var.captures_iter(code) {
+        // Reads count inside double quotes; bindings count only outside any
+        // quotes, so `echo "no ISSUE_NUMBER= given"` binds nothing.
+        let bare_code = quotes.mask(code);
+        for c in for_var.captures_iter(&bare_code) {
             locals.insert(c[1].to_string());
         }
         for c in read.captures_iter(code) {
@@ -1288,7 +1329,7 @@ fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, S
                 found.push((name.to_string(), raw.trim().to_string()));
             }
         }
-        for c in assign.captures_iter(code) {
+        for c in assign.captures_iter(&bare_code) {
             if let Some(m) = c.get(1).or_else(|| c.get(2)) {
                 locals.insert(m.as_str().to_string());
             }
@@ -1439,4 +1480,19 @@ steps:
         .map(|(bare, _)| bare)
         .collect();
     assert_eq!(got, vec!["ISSUE_NUMBER", "ISSUE_NUMBER"]);
+
+    // `NAME=`, `read NAME` or `for NAME in` inside quotes is text, not a
+    // binding: every read below is still flagged, in a step and in a tool,
+    // including after a quoted string that spans lines.
+    let quoted = "echo \"WARN: no ISSUE_NUMBER= given, checking claims\" >&2\n\
+                  gh issue view \"$ISSUE_NUMBER\"\n\
+                  echo 'read ISSUE_NUMBER; for ISSUE_NUMBER in x' \"$ISSUE_NUMBER\"\n\
+                  MSG=\"first line\n\
+                  ISSUE_NUMBER=7 is not set here\"\n\
+                  echo \"${ISSUE_NUMBER:-}\"\n";
+    let got: Vec<String> = plain_bare_reads_in(quoted, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER"; 3]);
 }
