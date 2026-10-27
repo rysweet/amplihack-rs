@@ -127,7 +127,8 @@ A process counts as a leak only when all of these hold:
   symlinks first, so a `target/` that links to, say,
   `/d0/cargo-targets/<name>/` still counts. A ` (deleted)` suffix on
   `/proc/<pid>/exe` is ignored; if the link cannot be read, argv[0] is used.
-- Its `HOME` is under `$TMPDIR` or `/tmp`.
+- Its `HOME` is under `$TMPDIR` or `/tmp`. A `TMPDIR` of `/` or a relative
+  one is ignored, so only `/tmp` counts then.
 
 Your own rotator (`~/.local/bin/amplihack`, `HOME=/home/<you>`) never matches,
 and the script never sends a signal to any process.
@@ -202,9 +203,10 @@ covers autostart only. The `issue_1592_daemon` tests need a real daemon: they
 start it with `--interval 1` and stop it themselves. If such a test fails
 before it stops its daemon, the leak check reports it. That is intended.
 
-A test that needs a real autostart must remove the guard on purpose with
-`cmd.env_remove("AMPLIHACK_TEST_HOME_GUARD")` and must stop the daemon it
-starts. No test does this today.
+A test that needs a real autostart must remove both stops on purpose, with
+`cmd.env_remove("AMPLIHACK_TEST_HOME_GUARD")` and
+`cmd.env_remove("AMPLIHACK_ROTATE_AUTOSTART")` (removing only the guard still
+leaves autostart off through stop A), and must stop the daemon it starts. No test does this today.
 
 ## Limits
 

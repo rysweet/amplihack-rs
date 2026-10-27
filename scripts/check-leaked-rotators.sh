@@ -29,6 +29,9 @@ fi
 
 tmp_root="${TMPDIR:-/tmp}"
 tmp_root="${tmp_root%/}"
+# A TMPDIR of `/` (empty once trimmed) or a relative one would make every
+# HOME look like a temp home; fall back to /tmp alone.
+case "$tmp_root" in /?*) ;; *) tmp_root=/tmp ;; esac
 
 if ! stat -c %u "/proc/$$" >/dev/null 2>&1 \
   || ! tr '\0' '\n' <"/proc/$$/cmdline" >/dev/null 2>&1; then

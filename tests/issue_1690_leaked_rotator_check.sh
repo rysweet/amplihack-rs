@@ -18,8 +18,8 @@
 #      line starting `leaked rotator:`;
 #   2. once it is gone the detector is clean again (exit 0, if it was clean
 #      before this script started anything);
-#   3. near misses are not reported: HOME outside the temp dir, a `/tmpevil`
-#      HOME, an exe outside `target*/`, no `--spawned`, `--spawned` only as
+#   3. near misses are not reported: HOME outside the temp dir (also when
+#      TMPDIR is `/` or relative), a `/tmpevil` HOME, an exe outside `target*/`, no `--spawned`, `--spawned` only as
 #      a substring;
 #   4. a decoy whose exe was deleted (a rebuilt test binary) is still found;
 #   5. control characters in HOME are stripped from the report;
@@ -154,6 +154,17 @@ near_miss() {
   stop_decoy "$p"
 }
 near_miss "HOME outside the temp dir" /var/empty/amplihack-1690 "$tmp/target/debug/amplihack" "${ARGV_OK[@]}"
+# TMPDIR=/ or a relative TMPDIR must not widen "temp HOME" to every HOME.
+if start_decoy /var/empty/amplihack-1690 "$tmp/target/debug/amplihack" "${ARGV_OK[@]}"; then
+  wide_pid=$decoy_pid
+  for t in / . relative/dir; do
+    out=$(TMPDIR="$t" bash "$DETECT" 2>&1)
+    if reported "$wide_pid"; then fail "TMPDIR=$t: HOME outside /tmp wrongly reported: $out"; else pass "TMPDIR=$t: HOME outside /tmp not reported"; fi
+  done
+  stop_decoy "$wide_pid"
+else
+  fail "TMPDIR decoy did not start"
+fi
 near_miss "HOME under /tmpevil, not /tmp" /tmpevil/home "$tmp/target/debug/amplihack" "${ARGV_OK[@]}"
 near_miss "exe outside target*/" "$tmp/home" "$tmp/bin/amplihack" "${ARGV_OK[@]}"
 near_miss "no --spawned" "$tmp/home" "$tmp/target/debug/amplihack" profile rotate watch --interval 600
