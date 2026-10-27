@@ -33,9 +33,11 @@ const ALREADY_LOGGED_IN: &str = "already has a login";
 pub(super) const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
 const REFRESHING: &str = "Claude holds its refresh lock; the swap waits for the next cycle";
 const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
+/// `profile switch NAME` (issue #1691) when NAME has no login to move in.
+pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 9] = [
+pub const DOCUMENTED: [&str; 10] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -45,6 +47,7 @@ pub const DOCUMENTED: [&str; 9] = [
     LOGINS_MISPLACED,
     REFRESHING,
     HOME_JSON_UNREADABLE,
+    NO_STORED_LOGIN_HINT,
 ];
 
 /// Where the outgoing login goes.

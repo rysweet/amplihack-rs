@@ -282,11 +282,13 @@ pub enum ProfileCommands {
     List,
     /// Show the default profile name and directory
     Show,
-    /// Make a profile the default for `launch` and `claude`, or clear it with --none
+    /// Move a profile's login into ~/.claude, make it the default and hold
+    /// rotation on it; --none releases rotation and clears the default
     Switch {
         #[arg(required_unless_present = "none")]
         name: Option<String>,
-        /// Clear the default instead: `launch` and `claude` then use no profile
+        /// Clear the default and release rotation: `launch` and `claude` then
+        /// use no profile, and the rotator picks the login again
         #[arg(long, conflicts_with = "name")]
         none: bool,
     },
@@ -377,9 +379,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Switch { name, .. } => {
             let name = ProfileName::parse(name.as_deref().unwrap_or_default())?;
             store.resolve(&name)?;
-            pointer::write(store.root(), &name)?;
-            println!("default profile: {name}");
-            shared_dirs::ensure_for(&store, &name);
+            rotate::switch_live(&store, &name)?;
         }
         ProfileCommands::Remove { name, yes } => {
             let name = ProfileName::parse(&name)?;
@@ -427,12 +427,22 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
 const CLEARED: &str = "Default profile cleared.";
 const NOT_SET: &str = "No default profile was set.";
 
-/// Removes the default pointer, valid or not; the message to print.
-fn clear_default(store: &ProfileStore) -> Result<&'static str, ProfileError> {
+const RELEASED: &str = "Rotation released; the rotator picks the best login on its next cycle.";
+
+/// Releases the rotation pin, then removes the default pointer, valid or
+/// not; the message to print. When the pin cannot be released, nothing
+/// changes.
+fn clear_default(store: &ProfileStore) -> Result<String, ProfileError> {
     store.check_root_not_symlink()?;
+    let released = rotate::release(store)?;
     let existed = pointer::exists(store.root());
     pointer::clear(store.root())?;
-    Ok(if existed { CLEARED } else { NOT_SET })
+    let mut out = String::from(if existed { CLEARED } else { NOT_SET });
+    if released {
+        out.push('\n');
+        out.push_str(RELEASED);
+    }
+    Ok(out)
 }
 
 /// The one line printed when a launch of the rotator's live profile runs

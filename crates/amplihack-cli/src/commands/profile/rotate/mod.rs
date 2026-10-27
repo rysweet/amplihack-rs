@@ -2,8 +2,9 @@
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
 //! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). See the Rotate section of
-//! docs/reference/profile-command.md.
+//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
+//! login with the same swap and pins rotation to it (`switch`, `pin`). See
+//! the Rotate section of docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
@@ -31,11 +32,17 @@ mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod pin;
+#[cfg(unix)]
+mod prelude;
+#[cfg(unix)]
 mod recover;
 #[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod swap;
+#[cfg(unix)]
+mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
@@ -56,6 +63,8 @@ mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
+mod tests_pin;
+#[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
 mod tests_settings;
@@ -67,7 +76,10 @@ mod tests_status_drift;
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
+#[cfg(all(test, unix))]
+mod tests_switch;
 
+use super::name::ProfileName;
 use super::root_config::RootSource;
 use super::store::ProfileStore;
 
@@ -152,12 +164,8 @@ pub struct WatchFlags {
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        use super::ProfileError;
         let env = |k: &str| std::env::var_os(k);
-        let home = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| ProfileError::RotateRefused("HOME is not set".into()));
+        let home = home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -187,5 +195,70 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     {
         let _ = (store, source, args);
         Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// `$HOME`, which holds the live `~/.claude`.
+#[cfg(unix)]
+fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
+}
+
+/// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
+/// with the rotator's swap, pins rotation to it and makes it the default.
+/// Prints three lines. When the login moved but a later write failed, the
+/// error says so; it is not a refusal, since something did change.
+pub(in crate::commands::profile) fn switch_live(
+    store: &ProfileStore,
+    name: &ProfileName,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        match switch::switch_live(store, &home_dir()?, name)? {
+            Ok(done) => {
+                match done {
+                    switch::Switched::Moved { from, to } => {
+                        println!("Live login moved: {from} -> {to}")
+                    }
+                    switch::Switched::AlreadyLive(n) => {
+                        println!("{n} is already the live login; nothing moved.")
+                    }
+                }
+                println!("Default for new launches: {name}");
+                println!("Rotation held on {name} until `amplihack profile switch --none`.");
+                Ok(())
+            }
+            Err(f) => Err(anyhow::anyhow!(
+                "the live login moved to {to}, but writing the {what} failed: {err}; \
+                 run `amplihack profile switch {to}` again",
+                to = f.to,
+                what = f.what,
+                err = f.err
+            )),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (store, name);
+        Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// Removes the rotation pin for `profile switch --none`; `true` when one was
+/// removed. Off Unix there is no rotator and so no pin.
+pub(in crate::commands::profile) fn release(
+    store: &ProfileStore,
+) -> Result<bool, super::ProfileError> {
+    #[cfg(unix)]
+    {
+        switch::release(store)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = store;
+        Ok(false)
     }
 }

@@ -67,7 +67,12 @@ fn default_ledger_is_readable_and_has_no_capacity() {
 fn rotator_says_capacity(o: CycleOutcome) -> bool {
     match o {
         CycleOutcome::Swapped | CycleOutcome::Stayed => true,
-        CycleOutcome::Alerted | CycleOutcome::Skipped | CycleOutcome::Stopped => false,
+        // A held cycle (issue #1691) measured nothing, so it says nothing
+        // about capacity: the limit-resume hook does not wake sessions on it.
+        CycleOutcome::Alerted
+        | CycleOutcome::Skipped
+        | CycleOutcome::Held
+        | CycleOutcome::Stopped => false,
     }
 }
 
@@ -78,6 +83,7 @@ fn every_rotator_outcome_is_classified_the_same_way() {
         CycleOutcome::Stayed,
         CycleOutcome::Alerted,
         CycleOutcome::Skipped,
+        CycleOutcome::Held,
         CycleOutcome::Stopped,
     ] {
         let l = RotateLedger {

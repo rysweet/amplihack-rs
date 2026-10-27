@@ -9,6 +9,7 @@ use super::identify::{self, Account, CandidateInput, LiveId, Skip};
 use super::ledger::Phase;
 use super::log::{Sink, msg};
 use super::measure::{self, Live};
+use super::pin::{self, Gate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -17,8 +18,9 @@ use crate::commands::profile::auto_switch::kit::{
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 
-/// Who is live and who may receive the login: compared again under the
-/// lock before a swap.
+/// Who is live, who may receive the login, and the rotation pin: compared
+/// again under the lock before a swap, so a `profile switch` during the
+/// measurement stops it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snap {
     pub live: LiveId,
@@ -27,6 +29,7 @@ pub struct Snap {
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
+    pub pin: PinState,
 }
 
 pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
@@ -52,6 +55,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         candidates,
         skips,
         sees_sessions,
+        pin: pin::read(&ctx.rs),
     })
 }
 
@@ -156,8 +160,6 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             Err(_) => out.emit(0, "would alert: the rotate journal is damaged"),
         }
     }
-    let binary = resolve_claude_binary()
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let state = State::new(ctx.store.root())?;
     let snap = snapshot(ctx, &state)?;
     if let Some((_, line)) = live_alert(&snap.live) {
@@ -165,6 +167,20 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         out.emit(0, &format!("would alert: {text}"));
         return Ok(CycleOutcome::Alerted);
     }
+    match pin::gate(&snap.pin) {
+        Gate::Open => {}
+        Gate::Ignored(line) => out.emit(0, &line),
+        // `skip: held by switch to NAME; run ...` -> `would stay (held by
+        // switch to NAME)`.
+        Gate::Held(line) => {
+            let text = line.strip_prefix("skip: ").unwrap_or(&line);
+            let why = text.split(';').next().unwrap_or(text);
+            out.emit(0, &format!("would stay ({why})"));
+            return Ok(CycleOutcome::Held);
+        }
+    }
+    let binary = resolve_claude_binary()
+        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let Measurement {
         live,
         others,

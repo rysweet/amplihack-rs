@@ -13,6 +13,7 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::profile_default::set_default;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fs;
@@ -2068,7 +2069,7 @@ fn explicit_profile_flag_is_never_redirected() {
 fn default_pointer_is_never_redirected() {
     let f = Fixture::new();
     f.switch_on();
-    f.ok(&["profile", "switch", "X"]);
+    set_default(&f.root, "X");
     f.seed_usage(&[("X", 96.0)]);
     let out = f.run_args(&["claude", "--subprocess-safe", "--", "-p", "x"]);
     assert!(out.status.success(), "{}", text(&out.stderr));

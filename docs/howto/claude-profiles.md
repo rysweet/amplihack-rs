@@ -154,7 +154,7 @@ nothing to do it prints nothing.
 | Command | What happens |
 |---------|--------------|
 | `profile add <name>` | Links are created in the new profile. Nothing is printed unless something went wrong. |
-| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed: by `switch` after the pointer is written, by `login` before `claude` starts. |
+| `profile switch <name>`, `profile login <name>` | The profile's links are checked and fixed: by `switch` after the login has moved and the pointer is written, for `<name>` and for the profile whose login it replaced; by `login` before `claude` starts. |
 | `amplihack claude` / `launch` with any profile (`--profile`, inherited, default pointer), `profile run` | Checked just before spawn, after the usual directory check. |
 | `profile rotate` | After a swap that actually ran, for both profiles in it. `--dry-run` and refused rotates change nothing. |
 
@@ -405,17 +405,28 @@ amplihack claude --profile work
 amplihack profile run personal -- --model sonnet
 ```
 
-As a persistent default:
+As the login in `~/.claude` and the default:
 
 ```bash
 amplihack profile switch work
-amplihack claude              # uses "work"
+# Live login moved: personal -> work
+# Default for new launches: work
+# Rotation held on work until `amplihack profile switch --none`.
+amplihack claude              # runs as "work", against ~/.claude
+claude                        # plain claude is "work" too
 amplihack profile show        # prints name and directory, or "none"
-amplihack profile switch --none   # no default again
+amplihack profile switch --none   # no default, rotation released
 ```
 
-See [Clearing the default profile](#clearing-the-default-profile). If the
-default is the profile the rotator has moved into `~/.claude`, see
+`switch` moves `work`'s login into `~/.claude` with the same swap
+[`profile rotate`](claude-profile-rotation.md) uses, and holds rotation on
+`work` until you run `switch --none`. Plain `claude` and every amplihack
+launch without `--profile` then use `work`. It needs Linux (or another Unix)
+and a profile that has a login of its own; see
+[Switch to a login by hand](claude-profile-rotation.md#switch-to-a-login-by-hand)
+for the details and the refusals.
+
+See [Clearing the default profile](#clearing-the-default-profile) and
 [Launching the rotator's live profile](#launching-the-rotators-live-profile).
 
 Resolution order: `--profile` flag, then an inherited
@@ -443,13 +454,17 @@ amplihack profile switch personal
 amplihack claude --profile work
 # inside the session, and in every recipe step or workstream it starts:
 echo "$AMPLIHACK_CLAUDE_PROFILE"   # work
-amplihack profile switch personal  # changes the default for new shells only
+amplihack profile switch personal  # moves personal's login into ~/.claude
 amplihack claude                   # still runs as "work"
 ```
 
-A `profile switch` therefore never moves a running session or orchestration
-to another account part way through. It affects only launches started
-afterwards from a shell without `AMPLIHACK_CLAUDE_PROFILE`.
+A `profile switch` therefore never moves a session started with a profile,
+or the orchestration it runs, to another account part way through: those run
+with `CLAUDE_CONFIG_DIR=<root>/<name>`, which `switch` does not touch. It
+changes the login in `~/.claude`, so sessions of plain `claude` (no
+`CLAUDE_CONFIG_DIR`) use the new account when they next read their
+credentials, exactly as after a rotator swap. Launches from a shell without
+`AMPLIHACK_CLAUDE_PROFILE` use the new default.
 
 To pin a profile for a run started from a plain shell, set the variable
 yourself:
@@ -475,13 +490,16 @@ for how the name reaches each kind of nested launch.
 ```bash
 amplihack profile switch --none
 # Default profile cleared.
+# Rotation released; the rotator picks the best login on its next cycle.
 amplihack profile show
 # none
 ```
 
 After this, `amplihack claude` runs with no profile and leaves
-`CLAUDE_CONFIG_DIR` alone. If no default was set, the command prints
-`No default profile was set.` and still exits 0. `--none` cannot be combined
+`CLAUDE_CONFIG_DIR` alone. The login in `~/.claude` does not move; the
+rotator is free to swap it again on its next cycle. The second line appears
+only when a `switch` had held rotation. If no default was set, the command
+prints `No default profile was set.` and still exits 0. `--none` cannot be combined
 with a name, and `switch` with neither is a usage error (exit 2).
 
 There is no `switch default` form: `default` is a valid profile name, so

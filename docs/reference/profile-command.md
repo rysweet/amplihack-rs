@@ -37,8 +37,8 @@ amplihack launch|claude --profile <name> [...]
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Writes the default pointer. The profile must exist. Then checks the profile's [shared session links](#shared-session-directories); messages go to stderr. |
-| `switch --none` | Removes the default pointer. Prints `Default profile cleared.`, or `No default profile was set.` when there was none; exits 0 either way. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
+| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it and writes the default pointer. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. Unix only. See [Rotate switch](#rotate-switch). |
+| `switch --none` | Removes the default pointer and the [rotation pin](#rotate-pin). Prints `Default profile cleared.`, or `No default profile was set.` when there was none, plus `Rotation released; the rotator picks the best login on its next cycle.` when a pin was removed; exits 0 either way. Moves no login. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
@@ -2244,7 +2244,7 @@ amplihack profile rotate autostart [on|off]
 | Command | Behaviour |
 |---------|-----------|
 | `rotate` | Runs one [cycle](#rotate-cycle): recover, measure, decide, and swap if needed. Prints its log lines to stdout and appends them to the log. Runs whether the toggle is on or off. |
-| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
+| `rotate --dry-run` | Measures and decides, then prints `would ...` lines and the `cycle` line to stdout. Takes no lock, writes no file, moves nothing, and skips both the [prototype check](#rotate-prototype-coexistence) and [recovery](#rotate-recovery). Reports a pending journal as `would recover an interrupted swap (phase <phase>)` and decides as if it were not there. Reads the [pin](#rotate-pin): a pin in force prints `would stay (held by switch to <name>)`, or `would stay (pin unreadable)`, and measures nothing. An inconsistent journal is reported as `would alert: rotate recovery is inconsistent`, and a damaged one as `would alert: the rotate journal is damaged`. |
 | `rotate start` | Checks for the prototype, runs recovery under the lock, warns on stderr if auto-switch has been turned off, refuses if a verified rotator is already running, then starts `rotate watch` as a detached process and writes the pid file. The check, the start and the pid file all happen under the state lock, so two `start`s cannot both start one. Fails with `rotate: lock busy` when the lock stays held for 2 seconds, and with the auto-switch error when auto-switch recovery is inconsistent. Pins the child to its root and records that root; see [Rotate root record](#rotate-root-record). Prints `rotate: started (pid <pid>), checking every <interval>s`, `log: <path>` and `root: <path>`, and returns at once. |
 | `rotate watch` | Runs a cycle every `--interval` seconds in the foreground until `SIGTERM` or `SIGINT`. A signal is never acted on during a swap; see [Signals](#rotate-signals). Refuses if another verified rotator is running. Writes only to the log. |
 | `rotate stop` | Finds the rotator as described in [Rotate root record](#rotate-root-record). Sends `SIGTERM` to a [verified](#rotate-daemon) rotator, waits up to 10 seconds for it to exit, then removes the pid file and prints `rotate: stopped (pid <pid>)`. |
@@ -2308,8 +2308,12 @@ Every non-dry-run cycle runs these steps in order:
    2 seconds. If it is busy, log `skip: state lock busy` and end the cycle.
    Under the lock, run auto-switch [recovery](#session-end-and-recovery), then
    [rotate recovery](#rotate-recovery), then [identify](#rotate-live-profile)
-   the live profile and the [candidates](#rotate-candidates). Release the
-   lock.
+   the live profile and the [candidates](#rotate-candidates). An ALERT
+   about the live login (`no-login`, `hand-change`, `ambiguous`) is written
+   here and ends the cycle. Then check the [rotation pin](#rotate-pin): if
+   it holds rotation, log the `skip: held by switch ...` or
+   `skip: pin unreadable ...` line, clear the stored ALERT key, record the
+   cycle as `held` and end the cycle without measuring. Release the lock.
 4. **Measure.** Probe the live login and every candidate in parallel, as
    [`profile usage`](#how-a-profile-is-probed) does. The live login is probed
    with `CLAUDE_CONFIG_DIR` removed from the environment, so `claude` uses
@@ -2320,8 +2324,8 @@ Every non-dry-run cycle runs these steps in order:
 6. **Revalidate and swap.** `watch` first checks for a pending signal and,
    if there is one, ends the cycle and exits without taking the lock (see
    [Signals](#rotate-signals)). Take the lock again. If the live account, the
-   candidate list, the running sessions, the auto-switch ledger or the parked
-   logins changed since step 3, log `skip: state changed during measurement`
+   candidate list, the running sessions, the auto-switch ledger, the parked
+   logins or the [rotation pin](#rotate-pin) changed since step 3, log `skip: state changed during measurement`
    and end the cycle. Otherwise run the [swap](#rotate-swap). After a swap
    that ran, check the [shared session links](#shared-session-directories)
    of `to` and `from`.
@@ -2550,6 +2554,182 @@ If auto-switch recovery reports an inconsistent state, the cycle writes
 The journal's `home` is only compared with `$HOME`, and its inode numbers are
 only compared with `lstat` results; neither is ever used as a path.
 
+### Rotate switch
+
+`amplihack profile switch <name>` moves a profile's login into `~/.claude`
+by hand. It uses the rotator's lock, recovery, [swap](#rotate-swap) and
+ledger entry, so the result is exactly what a rotate swap to `<name>` would
+leave. Then it pins rotation to `<name>` (see [Rotate pin](#rotate-pin)) and
+makes `<name>` the default for new launches. No rotator needs to be running.
+
+The steps run in this order. A step that refuses ends the command with
+status 1. A refusal writes no pin, no `.default`, no ledger ALERT and no new
+swap. Step 5 may already have finished or rolled back an interrupted swap,
+which changes the ledger, the journal and `~/.claude`; each such recovery is
+logged as a `recovery: ...` line and stays done even if a later step
+refuses. When no recovery ran, a refusal changes nothing at all.
+
+1. Check the name with the [name rules](#name-rules) and find the profile.
+   An unknown profile is refused here, before any lock is taken.
+2. On a platform without Unix file semantics, fail with `RotateUnsupported`.
+3. Run the [prototype check](#rotate-prototype-coexistence) and check that
+   the profile root is private.
+4. Take `<root>/.auto-switch.d/lock`, waiting up to 2 seconds. A busy lock is
+   refused with `RotateRefused` (`state lock busy`).
+5. Run auto-switch [recovery](#session-end-and-recovery), then
+   [rotate recovery](#rotate-recovery). Either one finding an inconsistent
+   state is refused.
+6. [Identify](#rotate-live-profile) the live login:
+
+   | Live login | Action |
+   |------------|--------|
+   | `<name>` | Nothing moves. Step 7 is skipped. |
+   | Another profile | Swap from that profile to `<name>`. |
+   | No profile owns it | Adopt it as `default-original` (or the next free name), then swap, as the rotator does. |
+   | `no-login`, `hand-change` or `ambiguous` | Refused with the matching ALERT text, without the `ALERT: ` prefix. No ALERT is written to the ledger. |
+
+7. Unless `<name>` is already the live profile, check that
+   `<root>/<name>/.credentials.json` exists, with `lstat` only. If it does
+   not, refuse with
+   ``profile <name> has no stored login; run `amplihack profile login <name>` first``.
+8. Run the [swap](#rotate-swap) unchanged: the same pre-swap checks, journal,
+   refresh locks and ledger entry. A refusal from the swap is passed through
+   unchanged. The log gets `switch <from>-><name>`.
+9. Still under the lock, write the [pin](#rotate-pin), then the default
+   pointer `<root>/.default`.
+10. Release the lock, then check the
+    [shared session links](#shared-session-directories) of `<name>` and of
+    the profile swapped out. Problems there are warnings on stderr only.
+
+`switch` reads none of the `AMPLIHACK_ROTATE_*` [settings](#rotate-settings)
+and never runs `claude`: it measures nothing, so it makes no usage or OAuth
+calls. It does not look for a `claude` binary either, so it works with no
+`claude` on `PATH`. A login with no capacity left is still moved: `switch`
+does what you asked, and the usage checks that stop a rotate swap do not
+apply to it.
+
+On success it prints three lines and exits 0:
+
+```
+Live login moved: work -> spare
+Default for new launches: spare
+Rotation held on spare until `amplihack profile switch --none`.
+```
+
+When `switch` adopts a `~/.claude` that no profile owned, the first line
+names the adopted profile, for example
+`Live login moved: default-original -> spare`, and the log gets
+`switch default-original->spare`.
+
+When `<name>` is already the live login, the first line is
+`spare is already the live login; nothing moved.` and the log gets
+`skip: spare is already the live login; nothing moved`.
+
+| Result | Output | Exit |
+|--------|--------|------|
+| Swapped, pin and pointer written | The three lines above | 0 |
+| Already live, pin and pointer written | The three lines, first line `<name> is already the live login; nothing moved.` | 0 |
+| Refused at steps 1-8 | `error: ...` and `hint: ...`; no pin, pointer, ALERT or swap written (any step-5 recovery stays done) | 1 |
+| The swap ran, then writing the pin or the pointer failed | ``error: the live login moved to <name>, but writing the <rotation hold\|default pointer> failed: <error>; run `amplihack profile switch <name>` again`` | 1 |
+| A name and `--none` together, or neither | clap usage error | 2 |
+
+After a partial failure, `~/.claude` already holds `<name>`'s login, so
+running the same `switch` again takes the already-live path and writes the
+pin and the pointer. It is safe to repeat.
+
+A refused `switch` writes no ledger ALERT. If step 5 ran no recovery, it
+also changes no byte of the ledger, the journal, the pin, `.default`,
+`~/.claude` or `~/.claude.json`. If a recovery ran, only that recovery's
+changes are made, and its `recovery: ...` line says what it did.
+
+If `switch` is stopped partway through a swap, the journal is left behind as
+for any swap. The next `switch`, `rotate` or rotator cycle runs
+[recovery](#rotate-recovery) first, and no pin or pointer has been written.
+
+A second `switch <other>` while a pin is in force swaps again and moves the
+pin to `<other>`.
+
+#### Warning about an older rotator
+
+After the success lines, `switch` checks whether a running rotator was
+started from another amplihack binary, the same check `amplihack install`
+and one-shot `rotate` make (see
+[Capacity for a resume](#capacity-for-a-resume)). Such a rotator does not
+read the [pin](#rotate-pin) and may swap away on its next cycle. `switch`
+then prints one more line on stderr and still exits 0, because the login
+has moved:
+
+```
+amplihack: the Claude login rotator (pid 48211) runs another amplihack binary and ignores the switch hold; restart it: amplihack profile rotate stop && amplihack profile rotate start
+```
+
+With no rotator running, or one started from this binary, nothing more is
+printed.
+
+### Rotate pin
+
+The pin is `<root>/.auto-switch.d/rotate/pin`. While it names an existing
+profile, no rotate cycle swaps: not the one-shot `rotate`, not `rotate watch`
+and not the background rotator. `profile switch <name>` writes it;
+`profile switch --none` removes it. Nothing else writes or removes it.
+
+The file holds one profile name and a newline. It is written atomically
+(temporary file, then rename) with mode `0600`. It is read like the other
+rotate state files: never through a symlink, at most 256 bytes, and only
+when it is a regular file owned by you that group and others cannot write.
+
+| Pin file | Cycle | Log line |
+|----------|-------|----------|
+| Missing | Runs normally. | |
+| Names an existing profile | Held: after recovery and identify, before measuring. No swap and no probe. Recorded as `held`. | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` |
+| Names a profile that no longer exists | Runs normally; the file is left for `switch --none` to remove. | `skip: pin names missing profile <name>; ignored` |
+| Not a valid name, too long, a symlink, a directory, not owned by you, writable by group or others, or unreadable | Held. Rotation fails closed rather than move a login you did not expect. Recorded as `held`. | ``skip: pin unreadable; run `amplihack profile switch --none` `` |
+
+The pin wins over every decision in the [decision rule](#rotate-decision-rule),
+including a threshold reached or an exhausted live login, and over a live
+login that has changed: an ALERT about the live login is still written, but
+nothing is swapped. `watch` writes the `skip: pin names missing profile`
+line only when it changes.
+
+A held cycle clears the stored ALERT key, as a cycle that stays does, so
+the same ALERT is written again if it is still true after the pin is
+released.
+
+A held cycle measures nothing, so its `last_cycle` has `outcome` `held` and
+no `measured_at`. It never counts as capacity: the
+[limit-resume hook](#capacity-for-a-resume) and the
+[usage-limit wait](#usage-limit-wait) count only `swapped` and `stayed`, so
+neither wakes early on the rotator while a pin is in force. The limit-resume
+hook waits for capacity only, so it does not resume a session during the
+hold. The usage-limit wait still reruns its step when the limit resets. To
+resume sooner, run `amplihack profile switch --none` to let the rotator
+measure again, or type `continue` in the session yourself.
+
+The pin is checked before the cycle measures or picks a target, so it wins
+over every rule that picks one, including any rule that prefers some
+profiles over others, such as the credit overflow proposed in
+[#1694](https://github.com/rysweet/amplihack-rs/issues/1694). The pin is a
+file of its own, not `.default`: `switch --none` removes both, which leaves
+`.default` unset as such rules expect.
+
+The pin's contents are never printed. A pin that cannot be read gives the
+fixed `pin unreadable` text.
+
+`switch --none` takes the state lock (waiting up to 2 seconds) and removes
+the pin under it, before it removes `.default`. It checks the path with
+`lstat` and never follows a symlink: a file or a symlink is removed (a
+symlink's target is left alone), an empty directory is removed, and anything
+else is refused with
+`pin path <path> is not a file; remove it by hand`. If the lock is busy,
+`switch --none` fails with `RotateRefused` and changes neither file.
+
+A rotator started before the pin existed does not read it. `switch` warns
+when one is running (see
+[Warning about an older rotator](#warning-about-an-older-rotator)). Restart
+`rotate watch` (`amplihack profile rotate stop`, then `start`) after
+upgrading. The ledger format did not change, so an older rotator can still
+read the ledger a `switch` writes.
+
 ### Rotate state directory
 
 Everything is under `<root>/.auto-switch.d/rotate/` (directory `0700`, files
@@ -2568,6 +2748,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.log.1` | The previous log, after rotation. |
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
+| `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -2611,7 +2792,12 @@ stdout only, without the time.
 | `skip: prototype ledger ignored (<reason>)` | See [Rotate live profile](#rotate-live-profile). Written only when the reason changes. |
 | `stop: signal received; cycle abandoned` | `watch` stopped during measurement or before the swap; nothing was moved. |
 | `idle: auto-switch is off` | `watch` with auto-switch turned off; written once per change. |
-| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
+| ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
+| ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
+| `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
+| `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
+| `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
+| `would swap ...` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` | `--dry-run` only. |
 
 An ALERT is written only when its key (`no-capacity`, `no-login`,
 `hand-change`, `ambiguous`, `inconsistent`, `auto-switch` or `refused <reason>`
@@ -2736,7 +2922,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `autostart` | `on` or `off`, then the source in brackets: `default`, `setting`, `env` or `corrupt`. See [Rotate autostart](#rotate-autostart). Unix only. |
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
-| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. |
+| `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped`, `idle` or `held`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; `held` when the [pin](#rotate-pin) held rotation; a cycle that could not take the lock records nothing. |
 | `log` | The log path. |
 
 Run from a shell where the root now resolves elsewhere, for example cron with
@@ -2842,7 +3028,7 @@ creates, writes or deletes anything under `<root>/.rotator/`.
 
 | Status | When |
 |--------|------|
-| `0` | No swap, a swap, a dry run, an ALERT, `status`, a `stop` of a stopped or stale rotator. |
+| `0` | No swap, a swap, a held cycle, a dry run, an ALERT, `status`, a `stop` of a stopped or stale rotator, a successful `profile switch`. |
 | `1` | `RotateConfig`, `RotatePrototypeRunning`, `RotateInconsistent`, `RotateRefused`, `RotateUnsupported`, `RotateDaemon`, or any other [error](#errors). |
 | `2` | A usage error from argument parsing, such as a tuning flag before `start`. |
 
@@ -2973,7 +3159,7 @@ spent on a login that is still at its limit; the per-event and per-session
 caps bound the cost.
 
 Any outcome other than `swapped` or `stayed` (`alerted`, `skipped`, `idle`,
-or one the hook does not know), a missing ledger, or a ledger that is not
+`held`, or one the hook does not know), a missing ledger, or a ledger that is not
 trusted means no capacity yet. The hook does not apply the
 rotator's thresholds itself.
 
@@ -3078,7 +3264,8 @@ failures use this format.
 | `AutoSwitchInstall`: a profile's `settings.json` is a symlink, owned by someone else, not a JSON object, or cannot be written | `` fix or remove the reported file, then run `amplihack profile auto-switch repair` `` |
 | `RotateConfig`: a rotate flag or `AMPLIHACK_ROTATE_*` value is not a whole number in range | `` run `amplihack profile rotate --help` for the accepted values `` |
 | `RotatePrototypeRunning`: the external rotator holds `<root>/.rotator/lock` | `stop the external rotator (tmux session claude-rotator) first` |
-| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+| `RotateRefused`: a check before the swap failed, or the atomic exchange failed; nothing was moved. Also every [`profile switch`](#rotate-switch) refusal (no stored login, lock busy, recovery inconsistent, live login unusable) and a `switch --none` that found the lock busy | `nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md` |
+| `profile switch` moved the live login, then could not write the pin or the default pointer. Not a `RotateRefused`: the login did move | The message itself says to run `amplihack profile switch <name>` again; see [Rotate switch](#rotate-switch) |
 | `RotateInconsistent`: the rotate ledger or journal is damaged, or recovery cannot tell which way is safe | `see the Recovery section of docs/howto/claude-profile-rotation.md` |
 | `RotateUnsupported`: `profile rotate` on a platform without Unix file semantics | `rotate needs Linux or another Unix` |
 | `RotateDaemon`: `start` found a rotator running, `stop` timed out, or the process cannot be verified | `` run `amplihack profile rotate status` `` |
@@ -3341,13 +3528,26 @@ yourself and no profile selected is unchanged.
 amplihack profile switch --none
 ```
 
-| `.default` before | Output | Exit |
-|-------------------|--------|------|
-| exists (valid, corrupt or dangling) | `Default profile cleared.` | 0 |
-| missing | `No default profile was set.` | 0 |
+| State before | Output | Exit |
+|--------------|--------|------|
+| `.default` exists (valid, corrupt or dangling) | `Default profile cleared.` | 0 |
+| `.default` missing | `No default profile was set.` | 0 |
 | a name and `--none` together, or neither | clap usage error | 2 |
+| a [rotation pin](#rotate-pin) was removed too | the line above, then `Rotation released; the rotator picks the best login on its next cycle.` | 0 |
+| the rotate state lock stays busy for 2 seconds | `RotateRefused`; neither `.default` nor the pin changes | 1 |
 
-`--none` removes `<root>/.default` and nothing else; it does not need the
-named profile to exist. There is no `switch default` alias: `default` is a
+`--none` removes the [rotation pin](#rotate-pin) under the rotate state
+lock, then `<root>/.default`. It moves no login: the login in `~/.claude`
+stays where it is until the rotator's next cycle decides otherwise. It does
+not need the named profile to exist. On a platform without Unix file
+semantics there is no pin, and `--none` removes only `.default`.
+
+```
+$ amplihack profile switch --none
+Default profile cleared.
+Rotation released; the rotator picks the best login on its next cycle.
+```
+
+There is no `switch default` alias: `default` is a
 valid [profile name](#name-rules), so `switch default` selects the profile
 called `default`.

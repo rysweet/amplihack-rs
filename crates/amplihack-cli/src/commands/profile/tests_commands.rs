@@ -752,9 +752,12 @@ mod live_launch {
 
 // --- `profile switch --none` (D6-D8) ----------------------------------------
 //
-// Contract: `clear_default(&ProfileStore) -> Result<&'static str, ProfileError>`
+// Contract: `clear_default(&ProfileStore) -> Result<String, ProfileError>`
 // removes `<root>/.default` and returns `CLEARED` when something was there
-// (valid, corrupt or dangling), `NOT_SET` when nothing was.
+// (valid, corrupt or dangling), `NOT_SET` when nothing was. Issue #1691: on
+// Unix it first removes the rotation pin under the rotate state lock, and
+// when a pin was removed it adds a second line, `RELEASED`. A busy lock is
+// `RotateRefused` and changes neither file.
 
 mod switch_none {
     use super::super::{CLEARED, NOT_SET, ProfileCommands, clear_default};
@@ -817,6 +820,73 @@ mod switch_none {
         pointer::write(s.root(), &n("work")).unwrap();
         assert!(clear_default(&linked).is_err());
         assert!(s.root().join(".default").exists());
+    }
+
+    #[cfg(unix)]
+    const RELEASED: &str = "Rotation released; the rotator picks the best login on its next cycle.";
+
+    /// Writes `<root>/.auto-switch.d/rotate/pin` as `profile switch` would.
+    #[cfg(unix)]
+    fn pin_at(root: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = root.join(".auto-switch.d").join("rotate");
+        fs::create_dir_all(&dir).unwrap();
+        for d in [root.join(".auto-switch.d"), dir.clone()] {
+            fs::set_permissions(&d, fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let pin = dir.join("pin");
+        fs::write(&pin, body).unwrap();
+        fs::set_permissions(&pin, fs::Permissions::from_mode(0o600)).unwrap();
+        pin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn none_releases_a_pin_and_says_so() {
+        let (_d, s) = store_with(&["work"]);
+        pointer::write(s.root(), &n("work")).unwrap();
+        let pin = pin_at(s.root(), "work\n");
+        let out = clear_default(&s).unwrap();
+        assert_eq!(out, format!("{CLEARED}\n{RELEASED}"));
+        assert!(fs::symlink_metadata(&pin).is_err(), "the pin is removed");
+        assert!(!s.root().join(".default").exists());
+        assert_eq!(
+            clear_default(&s).unwrap(),
+            NOT_SET,
+            "nothing left to release"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn none_releases_a_pin_even_without_a_default() {
+        let (_d, s) = store_with(&["work"]);
+        let pin = pin_at(s.root(), "garbage \x1b[0m");
+        assert_eq!(clear_default(&s).unwrap(), format!("{NOT_SET}\n{RELEASED}"));
+        assert!(fs::symlink_metadata(&pin).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn none_under_a_busy_rotate_lock_changes_nothing() {
+        use super::super::auto_switch::kit::State;
+        let (_d, s) = store_with(&["work"]);
+        pointer::write(s.root(), &n("work")).unwrap();
+        let pin = pin_at(s.root(), "work\n");
+        let default_before = fs::read(s.root().join(".default")).unwrap();
+        let state = State::new(s.root()).unwrap();
+        let _held = state
+            .try_lock(std::time::Duration::ZERO)
+            .unwrap()
+            .expect("the test holds the lock");
+        match clear_default(&s) {
+            Err(super::super::ProfileError::RotateRefused(m)) => {
+                assert!(m.contains("lock busy"), "{m}")
+            }
+            other => panic!("expected RotateRefused, got {other:?}"),
+        }
+        assert_eq!(fs::read(&pin).unwrap(), b"work\n");
+        assert_eq!(fs::read(s.root().join(".default")).unwrap(), default_before);
     }
 
     #[test]
