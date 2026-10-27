@@ -19,7 +19,8 @@
 //! - the bare `NO_MERGE` override can only turn merging off;
 //! - the merge round stops, without running any tool, when its tools dir is
 //!   empty, relative or not a directory, whatever `AUTODRIVE_TOOLS_DIR` says;
-//! - no recipe step reads a step output through a plain bare name (#1684);
+//! - no recipe step or bundle tool reads a step output through a plain bare
+//!   name (#1684), beyond a per-read list that can only shrink;
 //! - behavioural decoy tests for `rv_field`, `worktree_setup_path.sh` and the
 //!   terminal-state probe's inputs.
 //!
@@ -1162,18 +1163,80 @@ fn the_terminal_probe_uses_recipe_values_over_bare_decoys() {
 
 // ── Plain bare reads of step outputs (#1684) ─────────────────────────────────
 
-/// Recipes that still read a step output through a plain bare name
-/// (`"$ISSUE_NUMBER"`, `"${REMOTE_HOST_TYPE:-other}"`). Each is a follow-up to
-/// #1684; the test fails when an entry no longer has such a read, so the list
-/// only shrinks.
-const PLAIN_READS_NOT_YET_CONVERTED: &[&str] = &[
-    "consensus-publish.yaml",
-    "investigation-prep.yaml",
-    "smart-validate-summarize.yaml",
-    "workflow-design.yaml",
-    "workflow-finalize.yaml",
-    "workflow-publish.yaml",
-    "workflow-worktree.yaml",
+/// Every plain bare read of a step output that is not converted yet, as
+/// `(file, step id, bare name, number of reads)`. A tool script has no steps,
+/// so its step id is `""`. Every entry is tracked in #1689. The guard compares
+/// the actual reads with this list exactly: a new read (or one more read of a
+/// listed name) fails, and so does an entry whose count has dropped, so the
+/// list only shrinks. All of these names are scalars, which the runner exports
+/// as bare aliases; the object outputs (`local_testing_gate`,
+/// `precommit_results`) are never exported that way, and none is listed.
+const PLAIN_READS_NOT_YET_CONVERTED: &[(&str, &str, &str, usize)] = &[
+    (
+        "consensus-publish.yaml",
+        "step10-create-pr",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    ("consensus-publish.yaml", "step9-commit", "ISSUE_NUMBER", 1),
+    (
+        "investigation-prep.yaml",
+        "normalize-codebase-path",
+        "CODEBASE_PATH",
+        2,
+    ),
+    (
+        "investigation-prep.yaml",
+        "normalize-question",
+        "INVESTIGATION_QUESTION",
+        2,
+    ),
+    (
+        "smart-validate-summarize.yaml",
+        "complete-session",
+        "SESSION_INFO",
+        1,
+    ),
+    (
+        "workflow-design.yaml",
+        "step-06d-goal-already-met-probe",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    (
+        "workflow-finalize.yaml",
+        "step-21-pr-ready",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-finalize.yaml",
+        "step-22b-final-status",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-publish.yaml",
+        "step-15-commit-push",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    (
+        "workflow-publish.yaml",
+        "step-15-commit-push",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-worktree.yaml",
+        "step-04-setup-worktree",
+        "ISSUE_NUMBER",
+        2,
+    ),
+    ("git-identity.sh", "", "REMOTE_HOST_TYPE", 1),
+    ("workflow_final_status.sh", "", "REMOTE_HOST_TYPE", 2),
+    ("workflow_publish_pr.sh", "", "ISSUE_NUMBER", 1),
+    ("workflow_publish_pr.sh", "", "REMOTE_HOST_TYPE", 1),
 ];
 
 /// The caller's own input. `quality-loop.yaml` re-emits it as a step output,
@@ -1197,20 +1260,46 @@ fn step_output_keys(recipes: &[(String, String)]) -> BTreeSet<String> {
     keys
 }
 
-/// `(step id, bare name, source line)` of every read of a step output through
-/// its bare upper-case name in a bash step of `yaml`. A read is
-/// `$NAME` or `${NAME…}`; a name the step itself assigned on an earlier line
-/// is a local, not an inherited value. The runner exports the bare alias only
-/// for scalars, and a step skipped by its `condition:` leaves a parent run's
-/// value in place, so the only safe read is `${RECIPE_VAR_<key>:-}`.
-fn plain_bare_reads(yaml: &str, outputs: &BTreeSet<String>) -> Vec<(String, String, String)> {
-    let read = Regex::new(r"\$\{?([A-Z][A-Z0-9_]*)\b").unwrap();
+/// `(bare name, source line)` of every read of a step output through its bare
+/// upper-case name in the bash text `body`. A read is `$NAME`, `${NAME…}`,
+/// `${#NAME}` (length) or `${!NAME}` (indirect); a name the text itself
+/// assigned on an earlier line is a local, not an inherited value. The runner
+/// exports the bare alias only for scalars, and a step skipped by its
+/// `condition:` leaves a parent run's value in place, so the only safe read is
+/// `${RECIPE_VAR_<key>:-}`.
+fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, String)> {
+    let read = Regex::new(r"\$(?:\{[#!]?)?([A-Z][A-Z0-9_]*)\b").unwrap();
     // `X=…` binds after the line's own reads; `for X in` before its body.
     let assign = Regex::new(
         r"(?:^|[\s;&|(])(?:(?:local|export|readonly|declare(?:\s+-[a-zA-Z]+)?)\s+)?([A-Z][A-Z0-9_]*)=|\bread\s+(?:-\S+\s+)*([A-Z][A-Z0-9_]*)",
     )
     .unwrap();
     let for_var = Regex::new(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b").unwrap();
+    let mut locals = BTreeSet::new();
+    let mut found = Vec::new();
+    for raw in body.lines() {
+        let code = strip_comment(raw);
+        for c in for_var.captures_iter(code) {
+            locals.insert(c[1].to_string());
+        }
+        for c in read.captures_iter(code) {
+            let name = &c[1];
+            if outputs.contains(&name.to_ascii_lowercase()) && !locals.contains(name) {
+                found.push((name.to_string(), raw.trim().to_string()));
+            }
+        }
+        for c in assign.captures_iter(code) {
+            if let Some(m) = c.get(1).or_else(|| c.get(2)) {
+                locals.insert(m.as_str().to_string());
+            }
+        }
+    }
+    found
+}
+
+/// `(step id, bare name, source line)` of every plain bare read of a step
+/// output in a bash step of the recipe `yaml`. Locals are per step.
+fn plain_bare_reads(yaml: &str, outputs: &BTreeSet<String>) -> Vec<(String, String, String)> {
     let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("recipe parses as YAML");
     let mut found = Vec::new();
     for s in doc["steps"].as_sequence().into_iter().flatten() {
@@ -1218,63 +1307,88 @@ fn plain_bare_reads(yaml: &str, outputs: &BTreeSet<String>) -> Vec<(String, Stri
             continue;
         };
         let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
-        let mut locals = BTreeSet::new();
-        for raw in body.lines() {
-            let code = strip_comment(raw);
-            for c in for_var.captures_iter(code) {
-                locals.insert(c[1].to_string());
-            }
-            for c in read.captures_iter(code) {
-                let name = &c[1];
-                if outputs.contains(&name.to_ascii_lowercase()) && !locals.contains(name) {
-                    found.push((id.to_string(), name.to_string(), raw.trim().to_string()));
-                }
-            }
-            for c in assign.captures_iter(code) {
-                if let Some(m) = c.get(1).or_else(|| c.get(2)) {
-                    locals.insert(m.as_str().to_string());
-                }
-            }
+        for (name, line) in plain_bare_reads_in(body, outputs) {
+            found.push((id.to_string(), name, line));
         }
     }
     found
 }
 
-#[test]
-fn no_recipe_reads_a_step_output_through_a_plain_bare_name() {
+/// Every plain bare read of a step output in the bundle: recipe steps by step
+/// id, and tool scripts as a whole (step id `""`), since a step body moved
+/// into a tool runs with the same environment. Keyed by
+/// `(file name, step id, bare name)`, with the source lines.
+fn bundle_plain_bare_reads() -> BTreeMap<(String, String, String), Vec<String>> {
     let recipes = recipe_files();
     let outputs = step_output_keys(&recipes);
-    let mut report = Vec::new();
-    let mut still_needed = BTreeSet::new();
+    let mut reads: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    let file_name = |path: &str| path.rsplit('/').next().unwrap().to_string();
     for (path, yaml) in &recipes {
-        let name = path.rsplit('/').next().unwrap();
-        let hits = plain_bare_reads(yaml, &outputs);
-        if PLAIN_READS_NOT_YET_CONVERTED.contains(&name) {
-            if !hits.is_empty() {
-                still_needed.insert(name);
-            }
-            continue;
+        for (id, bare, line) in plain_bare_reads(yaml, &outputs) {
+            reads
+                .entry((file_name(path), id, bare))
+                .or_default()
+                .push(line);
         }
-        for (id, bare, line) in hits {
-            report.push(format!("{path}: {id}: {bare}: {line}"));
+    }
+    for (path, text) in tool_files() {
+        for (bare, line) in plain_bare_reads_in(&text, &outputs) {
+            reads
+                .entry((file_name(&path), String::new(), bare))
+                .or_default()
+                .push(line);
+        }
+    }
+    reads
+}
+
+#[test]
+fn no_bundle_file_reads_a_step_output_through_a_plain_bare_name() {
+    let reads = bundle_plain_bare_reads();
+    let allowed: BTreeMap<(String, String, String), usize> = PLAIN_READS_NOT_YET_CONVERTED
+        .iter()
+        .map(|(f, id, bare, n)| ((f.to_string(), id.to_string(), bare.to_string()), *n))
+        .collect();
+    assert_eq!(
+        allowed.len(),
+        PLAIN_READS_NOT_YET_CONVERTED.len(),
+        "PLAIN_READS_NOT_YET_CONVERTED lists a (file, step, name) twice"
+    );
+    let mut new_reads = Vec::new();
+    for (key, lines) in &reads {
+        let budget = allowed.get(key).copied().unwrap_or(0);
+        if lines.len() > budget {
+            let (file, id, bare) = key;
+            new_reads.push(format!(
+                "{file}: step {id:?}: {bare}: {} reads, {budget} allowed:\n    {}",
+                lines.len(),
+                lines.join("\n    ")
+            ));
         }
     }
     assert!(
-        report.is_empty(),
-        "{} reads of a step output through its bare upper-case name (#1561, #1684). \
-         Read it as \"${{RECIPE_VAR_<key>:-}}\" and declare <key> in the recipe's \
-         `context:` unless an earlier unconditional step produces it:\n{}",
-        report.len(),
-        report.join("\n")
+        new_reads.is_empty(),
+        "{} new reads of a step output through its bare upper-case name (#1561, \
+         #1684). Read it as \"${{RECIPE_VAR_<key>:-}}\" and declare <key> in the \
+         recipe's `context:` unless an earlier unconditional step produces it:\n{}",
+        new_reads.len(),
+        new_reads.join("\n")
     );
-    let stale: Vec<&&str> = PLAIN_READS_NOT_YET_CONVERTED
+    let stale: Vec<String> = allowed
         .iter()
-        .filter(|n| !still_needed.contains(**n))
+        .filter(|(key, n)| reads.get(*key).map_or(0, Vec::len) < **n)
+        .map(|((f, id, bare), n)| {
+            let now = reads
+                .get(&(f.clone(), id.clone(), bare.clone()))
+                .map_or(0, Vec::len);
+            format!("({f:?}, {id:?}, {bare:?}, {n}) now has {now}")
+        })
         .collect();
     assert!(
         stale.is_empty(),
-        "remove these from PLAIN_READS_NOT_YET_CONVERTED; they no longer read a step \
-         output through a bare name (or no longer exist): {stale:?}"
+        "lower or remove these PLAIN_READS_NOT_YET_CONVERTED entries; they have fewer \
+         plain bare reads than listed (or the file no longer exists):\n{}",
+        stale.join("\n")
     );
 }
 
@@ -1293,6 +1407,7 @@ steps:
       bash tool --issue "${ISSUE_NUMBER:-}"
       echo "${RECIPE_VAR_issue_number:-}" "$REPO_PATH"
       # was "$ISSUE_NUMBER"
+      echo "${#ISSUE_NUMBER}" "${!ISSUE_NUMBER}" "$#ISSUE_NUMBER"
   - id: "local"
     type: "bash"
     command: |
@@ -1308,9 +1423,20 @@ steps:
         .into_iter()
         .map(|(id, bare, _)| (id, bare))
         .collect();
-    let want = vec![
-        ("reads".to_string(), "ISSUE_NUMBER".to_string()),
-        ("reads".to_string(), "ISSUE_NUMBER".to_string()),
-    ];
+    // `$#ISSUE_NUMBER` is `$#` followed by text, not a read.
+    let want = vec![("reads".to_string(), "ISSUE_NUMBER".to_string()); 4];
     assert_eq!(got, want);
+
+    // A tool script has no steps: the whole file is one body, so an
+    // assignment anywhere earlier makes the name a local.
+    let tool = "ISSUE=\"${ISSUE_NUMBER:-}\"\nLOCAL_TESTING_GATE=x\necho \"$LOCAL_TESTING_GATE\" \"${#ISSUE_NUMBER}\"\n";
+    let outputs: BTreeSet<String> = ["issue_number", "local_testing_gate"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let got: Vec<String> = plain_bare_reads_in(tool, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER", "ISSUE_NUMBER"]);
 }
