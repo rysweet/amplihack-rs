@@ -309,7 +309,19 @@ fn bundle_total_counts_agree_with_each_other() {
     };
     let library = grab("### Skills Library (", " total)");
     let available = grab("## Available Skills (", " total)");
-    let summary = grab("35 agents, ", " skills");
+    // The summary line is found by its label, not by the agent count before
+    // the skills number, so adding an agent does not break this test.
+    let summary_line = bundle
+        .lines()
+        .find(|l| l.contains("**For \"What Can This Do?\"**"))
+        .unwrap_or_else(|| panic!("{BUNDLE} must contain the `What Can This Do?` summary line"));
+    let summary: usize = summary_line
+        .split(", ")
+        .find_map(|part| part.trim().strip_suffix(" skills"))
+        .unwrap_or_else(|| panic!("no `<n> skills` item in `{summary_line}`"))
+        .trim()
+        .parse()
+        .unwrap_or_else(|_| panic!("skills count in `{summary_line}` is not a number"));
     assert_eq!(
         library, available,
         "Skills Library and Available Skills totals differ"
