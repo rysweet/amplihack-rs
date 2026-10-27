@@ -15,9 +15,10 @@
 //! - `alert_key(kind, live: Option<&ProfileName>) -> String`,
 //!   `should_alert(&mut RotateLedger, key) -> bool`, `clear_alert(&mut ..)`.
 
+use super::credits::block_spend_limited;
 use super::ledger::{
-    LastCycle, OverflowBlock, Phase, RotateJournal, RotateLedger, RotateState, active_blocks,
-    alert_key, clear_alert, prune_blocks, should_alert, spend_reset,
+    LastCycle, MAX_BLOCKS, OverflowBlock, Phase, RotateJournal, RotateLedger, RotateState,
+    active_blocks, alert_key, clear_alert, prune_blocks, should_alert, spend_reset,
 };
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
@@ -541,4 +542,67 @@ fn a_saved_ledger_without_overflow_data_writes_no_overflow_keys() {
     r.rs.save_ledger(&ledger()).unwrap();
     let raw = fs::read_to_string(&r.rs.ledger).unwrap();
     assert!(!raw.contains("overflow"), "{raw}");
+}
+
+// --- block_spend_limited ---------------------------------------------------
+
+/// A sink that writes to `r`'s rotate log only.
+fn log_sink(r: &Root) -> super::log::Sink {
+    let log = super::log::RotateLog::open(&r.rs.log, &r.rs.log1).unwrap();
+    super::log::Sink::new(Some(log), false, true)
+}
+
+#[test]
+fn a_spend_limit_is_blocked_once_with_one_alert() {
+    let r = root();
+    let at = utc(2026, 10, 26, 12, 0, 0);
+    let mut l = ledger();
+    let mut out = log_sink(&r);
+    let cred = ProfileName::parse("cred").unwrap();
+    assert!(block_spend_limited(
+        &mut out,
+        &mut l,
+        std::slice::from_ref(&cred),
+        at
+    ));
+    assert!(!block_spend_limited(&mut out, &mut l, &[cred], at + 60));
+    assert_eq!(l.overflow_blocked.get("cred"), Some(&ob(at)));
+    let log = fs::read_to_string(&r.rs.log).unwrap();
+    assert_eq!(log.matches("hit its spend limit").count(), 1, "{log}");
+}
+
+#[test]
+fn a_spend_limit_with_no_end_time_is_not_stored_and_the_ledger_still_loads() {
+    // Past chrono's range `spend_reset` cannot compute the next month, so
+    // the block would end when it starts and the loader would refuse it.
+    let r = root();
+    let at = i64::MAX / 2;
+    let mut l = ledger();
+    let mut out = log_sink(&r);
+    let cred = ProfileName::parse("cred").unwrap();
+    assert!(!block_spend_limited(&mut out, &mut l, &[cred], at));
+    assert!(l.overflow_blocked.is_empty());
+    r.rs.save_ledger(&l).unwrap();
+    assert_eq!(r.rs.load_ledger().unwrap(), Some(l));
+    let log = fs::read_to_string(&r.rs.log).unwrap();
+    assert!(
+        log.contains("ALERT: overflow profile cred hit its spend limit; not blocked (no end time)"),
+        "{log}"
+    );
+}
+
+#[test]
+fn a_spend_limit_past_the_block_cap_is_logged_not_stored() {
+    let r = root();
+    let at = utc(2026, 10, 26, 12, 0, 0);
+    let mut l = ledger();
+    for i in 0..MAX_BLOCKS {
+        l.overflow_blocked.insert(format!("p{i}"), ob(at));
+    }
+    let mut out = log_sink(&r);
+    let cred = ProfileName::parse("cred").unwrap();
+    assert!(!block_spend_limited(&mut out, &mut l, &[cred], at + 60));
+    assert!(!l.overflow_blocked.contains_key("cred"));
+    let log = fs::read_to_string(&r.rs.log).unwrap();
+    assert!(log.contains("not blocked (too many blocks)"), "{log}");
 }

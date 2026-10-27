@@ -296,6 +296,12 @@ pub mod msg {
         )
     }
 
+    /// A spend limit on overflow profile `name` that could not be stored
+    /// as a block, and why. The cycle still leaves the profile alone.
+    pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
+        format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
+    }
+
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")

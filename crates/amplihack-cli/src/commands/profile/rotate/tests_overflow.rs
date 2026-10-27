@@ -861,3 +861,57 @@ fn moving_back_off_credits_ignores_a_recent_swap() {
     assert_eq!(v.decision, swap("spare", Reason::OverflowOut));
     assert_eq!(v.tag, Some(Tag::Out));
 }
+
+// --- `.default` (D7) ---------------------------------------------------------
+//
+// `.default` is not an input to the policy or the cycle: a launch that
+// resolves through it uses that profile directly, and the rotator decides
+// from the live login alone. These record that behaviour as it is today.
+
+#[test]
+fn a_default_plan_profile_with_capacity_is_not_displaced_by_overflow() {
+    // `.default` names `work`, which is live and below both thresholds.
+    let v = Case::new("work", measured(40.0, 40.0, None, None))
+        .cand("spare", exhausted(None, None))
+        .cand("cred", measured(0.0, 0.0, None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Stay);
+    assert_eq!(v.tag, None);
+    assert!(v.new_blocks.is_empty());
+}
+
+#[test]
+fn a_default_plan_profile_at_a_threshold_moves_to_plan_capacity_not_credits() {
+    // `.default` names `work`, which is at a threshold; `spare` has capacity.
+    let v = Case::new("work", measured(90.0, 40.0, None, None))
+        .cand("spare", measured(10.0, 10.0, None, None))
+        .cand("cred", measured(0.0, 0.0, None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("spare", Reason::Threshold));
+    assert_eq!(v.tag, None);
+}
+
+#[test]
+fn a_default_overflow_profile_is_not_moved_onto_while_plan_capacity_remains() {
+    // `.default` names `cred`; the live plan login still has capacity.
+    let v = Case::new("work", measured(40.0, 40.0, None, None))
+        .cand("cred", measured(0.0, 0.0, None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, Decision::Stay);
+    assert_eq!(v.tag, None);
+}
+
+#[test]
+fn the_policy_and_the_cycle_never_read_the_default_pointer() {
+    for (file, src) in [
+        ("overflow.rs", include_str!("overflow.rs")),
+        ("decide.rs", include_str!("decide.rs")),
+        ("cycle.rs", include_str!("cycle.rs")),
+        ("credits.rs", include_str!("credits.rs")),
+    ] {
+        assert!(!src.contains("pointer"), "{file} reads .default");
+    }
+}

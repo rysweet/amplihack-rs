@@ -60,18 +60,16 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         DaemonState::Unverifiable => ("unverifiable", "-".into()),
     };
     let ledger = rs.load_ledger();
-    let overflow = overflow_line(
-        store.root(),
-        ledger.as_ref().ok().and_then(Option::as_ref),
-        now(),
-    );
+    // One read, so the `overflow:`, `on credits:` and `default:` lines agree.
+    let names = overflow_names(store.root());
+    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), now());
     let last_tag = ledger
         .as_ref()
         .ok()
         .and_then(Option::as_ref)
         .and_then(|l| l.last_cycle.as_ref())
         .and_then(|c| c.overflow.clone());
-    let credits = on_credits_line(&store, &rs, home, last_tag.as_deref());
+    let credits = on_credits_line(&store, &rs, home, &names, last_tag.as_deref());
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
@@ -102,7 +100,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     println!("overflow: {overflow}\non credits: {credits}");
     // `.default` bypasses the rotator: say so when it names an overflow profile.
     if let Ok(Some(d)) = pointer::read(store.root())
-        && overflow_names(store.root()).contains(&d)
+        && names.contains(&d)
     {
         println!("default: {d} (overflow; launches use it directly)");
     }
@@ -202,22 +200,34 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     }
 }
 
-/// The `overflow:` value: the marked profiles in list order, each with its
-/// active spend block, or `-`.
-fn overflow_line(root: &Path, ledger: Option<&RotateLedger>, now: i64) -> String {
-    let names = overflow_names(root);
+/// The `overflow:` value: the marked profiles `names` in list order, each
+/// with its active spend block, or `-`. An unreadable ledger (`Err`) adds
+/// `(blocks unknown)` rather than showing no blocks.
+fn overflow_line(
+    names: &[ProfileName],
+    ledger: Result<Option<&RotateLedger>, &ProfileError>,
+    now: i64,
+) -> String {
     if names.is_empty() {
         return "-".into();
     }
-    let blocks = ledger.map(|l| active_blocks(l, now)).unwrap_or_default();
-    names
+    let (blocks, unknown) = match ledger {
+        Ok(l) => (l.map(|l| active_blocks(l, now)).unwrap_or_default(), false),
+        Err(_) => (BTreeMap::new(), true),
+    };
+    let line = names
         .iter()
         .map(|n| match blocks.get(n.as_str()) {
             Some(b) => format!("{n} (blocked until {})", timestamp(b.until)),
             None => n.to_string(),
         })
         .collect::<Vec<_>>()
-        .join(", ")
+        .join(", ");
+    if unknown {
+        format!("{line} (blocks unknown)")
+    } else {
+        line
+    }
 }
 
 /// The `on credits:` value: `yes (<name>)` when the login identified in
@@ -230,11 +240,12 @@ fn on_credits_line(
     store: &ProfileStore,
     rs: &RotateState,
     home: Option<&Path>,
+    overflow: &[ProfileName],
     last_tag: Option<&str>,
 ) -> String {
     let live = home.and_then(|h| identify::live(store, rs, h).ok());
     match live {
-        Some((LiveId::Known(n), _)) if overflow_names(store.root()).contains(&n) => {
+        Some((LiveId::Known(n), _)) if overflow.contains(&n) => {
             if matches!(last_tag, Some("in" | "on")) {
                 format!("yes ({n})")
             } else {

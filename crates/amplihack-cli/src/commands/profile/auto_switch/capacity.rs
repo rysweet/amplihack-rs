@@ -144,8 +144,10 @@ fn classify(e: Option<&Evidence>, threshold: u8, now: i64) -> Option<Over> {
     }
 }
 
-/// The capacity file for `profiles` (minus `cfg.exclude`), keyed by profile
-/// name in `evidence`. Pure.
+/// The capacity file for `profiles` (minus `cfg.selection_exclude()`: the
+/// excluded and the overflow profiles), keyed by profile name in `evidence`.
+/// An overflow profile is plan capacity only through the rotator's credits
+/// rule, which `refresh_from_rotation` applies with `on_credits`. Pure.
 pub fn compute(
     profiles: &[ProfileName],
     evidence: &BTreeMap<String, Evidence>,
@@ -153,10 +155,8 @@ pub fn compute(
     now: i64,
     writer: &str,
 ) -> CapacityFile {
-    let eligible: Vec<&ProfileName> = profiles
-        .iter()
-        .filter(|p| !cfg.exclude.contains(p))
-        .collect();
+    let skip = cfg.selection_exclude();
+    let eligible: Vec<&ProfileName> = profiles.iter().filter(|p| !skip.contains(p)).collect();
     let mut over: Vec<(String, Over)> = eligible
         .iter()
         .filter_map(|p| {

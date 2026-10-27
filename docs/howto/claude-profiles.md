@@ -753,7 +753,7 @@ A profile marked as credit-backed overflow
 (`amplihack profile overflow add <name>`) shows the mark `overflow`, and
 `overflow, blocked until <time>` after the rotator has blocked it on a spend
 limit. When its login is the one in `~/.claude` and its probe shows the
-session or weekly limit reached, the table ends with
+session or all-models weekly limit reached, the table ends with
 `running on credits: <name>`. In `--json`, every row has `overflow` and
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).

@@ -971,8 +971,9 @@ fn overflow_rows_are_marked_with_any_block() {
 }
 
 // "running on credits" needs the live row to be marked and its own probe in
-// this run to show a plan limit reached: an exhausted state, or a session or
-// weekly window at 100%. Either limit is enough; both are not needed.
+// this run to show a plan limit reached: an exhausted state, or the session
+// or all-models weekly window at 100%. Either limit is enough; both are not
+// needed.
 
 fn live_cred(state: UsageState, s: f64, w: f64) -> Row {
     let mut r = row("cred", report(state, Some((s, None)), Some((w, None))));
@@ -1015,6 +1016,21 @@ fn either_plan_limit_on_the_live_marked_login_means_credits() {
             "{state:?} {s}/{w}: {out}"
         );
     }
+}
+
+#[test]
+fn a_full_per_model_weekly_window_alone_is_not_credits() {
+    // The rotator's capacity test reads the session and all-models weekly
+    // windows only, so a full per-model window leaves plan capacity.
+    let mut r = live_cred(UsageState::Ok, 10.0, 20.0);
+    r.report.week_models.push(UsageWindow {
+        label: "Opus".into(),
+        used_percentage: 100.0,
+        resets_text: None,
+        resets_at: None,
+    });
+    let out = render_table(&[r]);
+    assert!(!out.contains("running on credits"), "{out}");
 }
 
 #[test]

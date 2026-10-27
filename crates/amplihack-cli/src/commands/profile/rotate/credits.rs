@@ -13,7 +13,9 @@ use std::path::Path;
 /// Stores a spend block for each of `names` that has no active one, with
 /// one ALERT per block. The block record, not `ledger.alert`, prevents a
 /// repeat, so the hook still sees capacity when the cycle moves elsewhere.
-/// Returns whether the ledger changed.
+/// A block that would not end after it starts (a time outside chrono's
+/// range) is not stored, since the ledger would then fail to load. Returns
+/// whether the ledger changed.
 pub fn block_spend_limited(
     out: &mut Sink,
     l: &mut RotateLedger,
@@ -27,10 +29,14 @@ pub fn block_spend_limited(
         }
         prune_blocks(l, t);
         if l.overflow_blocked.len() >= MAX_BLOCKS {
-            eprintln!("warning: rotate: too many overflow blocks; {n} is not recorded");
+            out.emit(t, &msg::spend_limit_not_blocked(n, "too many blocks"));
             continue;
         }
         let block = OverflowBlock::spend_limit(t);
+        if block.until <= block.at {
+            out.emit(t, &msg::spend_limit_not_blocked(n, "no end time"));
+            continue;
+        }
         out.emit(t, &msg::alert_spend_limit(n, block.until));
         l.overflow_blocked.insert(n.to_string(), block);
         changed = true;

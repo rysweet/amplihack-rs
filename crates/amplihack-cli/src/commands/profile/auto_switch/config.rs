@@ -1,7 +1,6 @@
 //! `<root>/.auto-switch`: the on/off switch, threshold, exclusions and
 //! credit-backed overflow profiles, and the `AMPLIHACK_CLAUDE_AUTO_SWITCH`
-//! override. Read again on every check; never
-//! cached.
+//! override. Read again on every check; never cached.
 
 use super::fsx;
 use crate::commands::profile::ProfileError;
@@ -43,7 +42,7 @@ pub struct Config {
 impl Config {
     /// The profiles auto-switch never picks: `exclude`, then the overflow
     /// profiles not already in it. Auto-switch has no reset or wait inputs,
-    /// so it must never spend credits (D7).
+    /// so it must never spend credits.
     pub fn selection_exclude(&self) -> Vec<ProfileName> {
         let mut out = self.exclude.clone();
         for n in &self.overflow {
@@ -252,6 +251,18 @@ pub fn read(root: &Path) -> FileState {
     }
 }
 
+/// The settings an edit starts from: the file's, or the defaults when it
+/// is missing. A corrupt file is an error and is left alone. Reads only.
+pub fn read_editable(root: &Path) -> Result<Config, ProfileError> {
+    match read(root) {
+        FileState::Valid(c) => Ok(c),
+        FileState::Missing => Ok(Config::default()),
+        FileState::Corrupt => Err(ProfileError::AutoSwitchConfig(format!(
+            "{FILE} is unreadable or invalid"
+        ))),
+    }
+}
+
 /// The only writer of `.auto-switch` outside tests: a read-modify-write
 /// under the auto-switch state lock, so two writers (or a writer and a
 /// rotator cycle) cannot lose each other's change. Waits at most
@@ -282,17 +293,16 @@ pub fn update_within(
     // `before` is what an unchanged result needs no write for. `on` and
     // `off` always write over a missing or corrupt file, so the file then
     // says what they set.
-    let (before, mut c) = match (read(root), mode) {
-        (FileState::Valid(c), _) => (Some(c.clone()), c),
-        (FileState::Missing, ReadMode::Editable) => (Some(Config::default()), Config::default()),
-        (FileState::Missing | FileState::Corrupt, ReadMode::DefaultOnInvalid) => {
-            (None, Config::default())
+    let (before, mut c) = match mode {
+        ReadMode::Editable => {
+            let c = read_editable(root)
+                .map_err(|_| fail(format!("{FILE} is unreadable or invalid; not changed")))?;
+            (Some(c.clone()), c)
         }
-        (FileState::Corrupt, ReadMode::Editable) => {
-            return Err(fail(format!(
-                "{FILE} is unreadable or invalid; not changed"
-            )));
-        }
+        ReadMode::DefaultOnInvalid => match read(root) {
+            FileState::Valid(c) => (Some(c.clone()), c),
+            FileState::Missing | FileState::Corrupt => (None, Config::default()),
+        },
     };
     f(&mut c)?;
     if before.as_ref() == Some(&c) {

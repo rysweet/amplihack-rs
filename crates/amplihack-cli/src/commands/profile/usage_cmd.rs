@@ -849,8 +849,10 @@ pub(super) fn render_table(rows: &[Row]) -> String {
 }
 
 /// The row's own probe in this run shows a plan limit reached: an
-/// exhausted state, or the session or a weekly window at 100%. Either is
-/// enough. A failed or spend-limited probe is not evidence of credits.
+/// exhausted state, or the session or all-models weekly window at 100%.
+/// Either is enough. These are the two windows the rotator's capacity test
+/// (`plan_usable` in rotate/overflow.rs) reads; a per-model weekly window is
+/// not. A failed or spend-limited probe is not evidence of credits.
 fn plan_limit_reached(r: &Row) -> bool {
     let full = |w: &UsageWindow| w.used_percentage >= 100.0;
     match r.report.state {
@@ -858,7 +860,6 @@ fn plan_limit_reached(r: &Row) -> bool {
         UsageState::Ok => {
             r.report.session.as_ref().is_some_and(full)
                 || r.report.week_all.as_ref().is_some_and(full)
-                || r.report.week_models.iter().any(full)
         }
         _ => false,
     }

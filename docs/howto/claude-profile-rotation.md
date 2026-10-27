@@ -854,8 +854,8 @@ default: ryan-mistt-org (overflow; launches use it directly)
 ```
 
 `profile usage` marks the profile `overflow` and, when its login is in
-`~/.claude` and its own probe in that run shows the session or weekly limit
-reached, ends with `running on credits: ryan-mistt-org`. A live overflow
+`~/.claude` and its own probe in that run shows the session or all-models
+weekly limit reached, ends with `running on credits: ryan-mistt-org`. A live overflow
 login that still has plan capacity is not on credits and gets no footer. While the
 rotator is on credits it reports capacity, so the no-capacity warning clears
 and the [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit)

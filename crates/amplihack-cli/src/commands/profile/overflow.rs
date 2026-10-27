@@ -100,7 +100,7 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             }
         }
         OverflowCommand::List => {
-            let c = editable(root)?;
+            let c = config::read_editable(root)?;
             if c.overflow.is_empty() {
                 println!("overflow: none");
                 return Ok(());
@@ -141,21 +141,6 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
 #[cfg(not(unix))]
 pub fn run(_store: &ProfileStore, _cmd: OverflowCommand) -> Result<(), ProfileError> {
     Err(ProfileError::RotateUnsupported)
-}
-
-/// The settings to list: the file's, or the defaults when it is missing.
-/// A corrupt file is an error.
-#[cfg(unix)]
-fn editable(root: &Path) -> Result<super::auto_switch::config::Config, ProfileError> {
-    use super::auto_switch::config::{self, Config, FileState};
-    match config::read(root) {
-        FileState::Valid(c) => Ok(c),
-        FileState::Missing => Ok(Config::default()),
-        FileState::Corrupt => Err(ProfileError::AutoSwitchConfig(format!(
-            "{} is unreadable or invalid",
-            config::FILE
-        ))),
-    }
 }
 
 #[cfg(unix)]

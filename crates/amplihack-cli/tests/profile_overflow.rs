@@ -562,6 +562,18 @@ fn list_with_a_damaged_ledger_warns_and_still_lists() {
 }
 
 #[test]
+fn rotate_status_with_a_damaged_ledger_says_blocks_are_unknown() {
+    let f = Fixture::new();
+    mark(&f, "extra");
+    f.ok(&["profile", "rotate", "--dry-run"]);
+    fs::create_dir_all(f.rotate_dir()).unwrap();
+    private_file(&f.rotate_dir().join("ledger.json"), "{not json");
+    let s = stdout(&f.ok(&["profile", "rotate", "status"]));
+    assert!(s.contains("overflow: extra (blocks unknown)\n"), "{s}");
+    assert!(s.contains("live: - (ledger unreadable)"), "{s}");
+}
+
+#[test]
 fn add_and_remove_of_an_unchanged_mark_do_not_rewrite_the_file() {
     let f = Fixture::new();
     mark(&f, "extra");

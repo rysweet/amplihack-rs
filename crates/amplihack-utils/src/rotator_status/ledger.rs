@@ -1,8 +1,9 @@
 //! The rotate ledger, `<root>/.auto-switch.d/rotate/ledger.json`, read
 //! loosely: only `version`, `live`, `alert` and
-//! `last_cycle.{at,outcome,overflow}` matter, unknown fields are ignored, and a wrongly typed field reads as
-//! absent. The rotator's own reader is strict; the hook must keep working
-//! across ledger additions (#1656, #1657), so it is not reused.
+//! `last_cycle.{at,outcome,overflow}` matter, unknown fields are ignored,
+//! and a wrongly typed field reads as absent. The rotator's own reader is
+//! strict; the hook must keep working across ledger additions (#1656,
+//! #1657), so it is not reused.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};

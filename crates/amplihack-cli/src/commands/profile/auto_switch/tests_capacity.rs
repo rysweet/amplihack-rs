@@ -182,6 +182,28 @@ fn an_excluded_profile_is_ignored() {
 }
 
 #[test]
+fn an_overflow_profile_with_capacity_does_not_make_the_file_ok() {
+    // Every plan login is over; the overflow profile is not, and the
+    // rotator is not on credits. Overflow capacity is not plan capacity.
+    let mut c = cfg(90, &[]);
+    c.overflow = names(&["cred"]);
+    let f = compute(
+        &names(&["a", "b", "cred"]),
+        &ev(vec![
+            ("a", usage(95.0, T + 2 * HOUR)),
+            ("b", usage(91.0, T + HOUR)),
+            ("cred", usage(5.0, T + HOUR)),
+        ]),
+        &c,
+        T,
+        "rotate",
+    );
+    assert_eq!(f.state, Cap::Low);
+    assert_eq!(f.over, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(f.earliest_reset, Some(ts(T + HOUR)));
+}
+
+#[test]
 fn a_profile_with_no_reading_is_not_over() {
     let f = compute(
         &names(&["a", "b"]),

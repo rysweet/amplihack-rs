@@ -293,15 +293,17 @@ work past on credits.
 
 When the row marked `live in ~/.claude` is also marked `overflow`, and that
 row's own probe in this run reached the session or weekly limit (state
-`session_exhausted` or `weekly_exhausted`), the table is followed by one
-line:
+`session_exhausted` or `weekly_exhausted`, or the session or all-models
+weekly window at 100%), the table is followed by one line:
 
 ```
 running on credits: ryan-mistt-org
 ```
 
 A live overflow row whose probe shows plan capacity left prints no footer:
-work on it is still covered by the plan. A live overflow row whose probe
+work on it is still covered by the plan. A full per-model weekly window
+(for example `Fable`) does not count, because the rotator's capacity test
+reads only the session and all-models weekly windows. A live overflow row whose probe
 failed prints no footer either, because nothing in the run shows the limit
 was reached.
 
@@ -541,14 +543,18 @@ resolved. JSON strings are not cleaned; they use JSON escaping.
 
 The output stays a single array; there is no top-level object and no
 `on_credits` key. The live login is running on credits exactly when one row
-has `live_in` equal to `"~/.claude"`, `overflow` equal to `true` and a
-`state` of `"session_exhausted"` or `"weekly_exhausted"`, the same test the
-footer uses:
+has `live_in` equal to `"~/.claude"`, `overflow` equal to `true`, and
+either a `state` of `"session_exhausted"` or `"weekly_exhausted"`, or a
+`state` of `"ok"` with `session` or `week_all` at 100%. This is the same
+test the footer uses:
 
 ```bash
 amplihack profile usage --json | jq -r '.[]
   | select(.live_in == "~/.claude" and .overflow
-           and (.state == "session_exhausted" or .state == "weekly_exhausted"))
+           and (.state == "session_exhausted" or .state == "weekly_exhausted"
+                or (.state == "ok"
+                    and ((.session.used_percentage // 0) >= 100
+                         or (.week_all.used_percentage // 0) >= 100))))
   | .profile'
 ```
 
@@ -2072,7 +2078,7 @@ The state lives in `<root>/.auto-switch.d/capacity.json`:
 | `version` | integer | Always `1`. |
 | `state` | `"ok"`, `"low"` or `"exhausted"` | See [Capacity states](#capacity-states). |
 | `threshold` | integer `1`–`100` | The auto-switch threshold the state was computed with. |
-| `over` | array of profile names | The eligible accounts at or above the threshold, sorted, no duplicates. |
+| `over` | array of profile names | The eligible accounts at or above the threshold, sorted, no duplicates. Excluded and overflow profiles are not eligible. |
 | `earliest_reset` | RFC 3339 UTC string or `null` | When the first of the `over` accounts gets capacity back. `null` when no reset time is known. |
 | `written_at` | RFC 3339 UTC string | When the file was written. |
 | `writer` | `"statusline"`, `"usage"` or `"rotate"` | Which command wrote it. |
@@ -2141,7 +2147,11 @@ of them makes an extra network call or probe for it.
 | `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as 100%; a failed probe counts as no reading. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 
 All three use the auto-switch threshold and exclusion list, not the
-rotator's `--session-at` and `--week-at`, so they agree on the state. The
+rotator's `--session-at` and `--week-at`, so they agree on the state. None
+of them counts an [overflow](#rotate-overflow) profile as eligible: its
+capacity is credit capacity, used only by the rotator's overflow rule. While
+the rotator's last cycle left the live login on credits, its own write sets
+the state to `ok`. The
 rotator's own `ALERT` line still follows its own thresholds. All three
 write while holding the global state lock, so writes never interleave and
 the last one wins. A writer that cannot get the lock records nothing and
@@ -3029,6 +3039,7 @@ stdout only, without the time.
 | `credits: staying on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `credits: on` line is written instead. |
 | `credits: off <name>; back on plan profile <name>` | Written after an `overflow-out` swap. |
 | `ALERT: overflow profile <name> hit its spend limit; blocked until <time>` | A [spend block](#overflow-spend-limit-block) was recorded. Written once per block. |
+| `ALERT: overflow profile <name> hit its spend limit; not blocked (too many blocks\|no end time)` | A spend-limit reading that could not be stored as a block: the ledger already holds 256 active blocks, or the cycle's time is outside the range for which the next month can be computed. The profile is still not used in that cycle; the ledger is left as it was, so it still loads. |
 | `stay: live probe failed (<k>/3)` | The live probe failed for the `k`th cycle in a row; no swap yet. |
 | `stay: live probe failed; held after last swap (<N>s left)` | The live probe has failed three or more times in a row, but the last swap was less than `--hold` seconds ago. |
 | `ALERT: no profile has capacity live=<name> s=<n>% w=<n>%` | A threshold is reached and no candidate meets the margin. |
@@ -3186,7 +3197,7 @@ log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 | `pid` | The pid, or `-`. |
 | `live` | The ledger's `live` profile, or `-`. |
 | `last cycle` | The time and outcome (`swapped`, `stayed`, `alerted`, `skipped` or `idle`) of the last cycle, or `-`. `skipped` is recorded when the state changed during measurement; a cycle that could not take the lock records nothing. An [overflow](#rotate-overflow) cycle adds ` overflow=in`, ` overflow=out` or ` overflow=on`. |
-| `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. |
+| `overflow` | The marked overflow profiles in list order, separated by `, `, each followed by ` (blocked until <time>)` when it has an active [spend block](#overflow-spend-limit-block); `-` when none is marked or `.auto-switch` is corrupt. When the ledger cannot be read, the list ends with ` (blocks unknown)`. |
 | `on credits` | `yes (<name>)` when the profile identified as live in `~/.claude` by account is an overflow profile and the ledger's `last_cycle.overflow` is `in` or `on`, which means the rotator found no plan capacity in its last cycle. `no (<name> is overflow; plan capacity remains)` when the live profile is an overflow profile but the last cycle carries no such tag, for example after the login was put in `~/.claude` by hand. `no` when it is a plan profile, `-` when the live profile cannot be identified. `status` runs no probe; the ledger is its only evidence. |
 | `default` | Printed only when the [default pointer](#clearing-the-default) names an overflow profile: `<name> (overflow; launches use it directly)`. |
 | `log` | The log path. |
