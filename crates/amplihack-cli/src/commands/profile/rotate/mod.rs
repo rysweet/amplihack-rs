@@ -71,13 +71,13 @@ mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
-mod tests_status_drift;
-#[cfg(all(test, unix))]
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
 #[cfg(all(test, unix))]
 mod tests_switch;
+#[cfg(all(test, unix))]
+mod tests_switch_hold;
 
 use super::name::ProfileName;
 use super::root_config::RootSource;
@@ -85,6 +85,54 @@ use super::store::ProfileStore;
 
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
+
+/// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
+/// the rotator for `root` (default: this environment's root) runs another
+/// amplihack binary, which keeps reading the ledger in its own format until
+/// it is restarted.
+#[cfg(unix)]
+pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
+    let root = match root {
+        Some(r) => Some(r.to_path_buf()),
+        None => amplihack_utils::rotator_status::resolve_root(),
+    };
+    if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
+        eprintln!("{}", ledger::foreign_rotator_note(pid));
+    }
+}
+
+/// The tail of the warning printed after `profile switch NAME` (issue
+/// #1691) while a rotator from another amplihack binary runs: one started
+/// before the upgrade does not read the switch hold and may swap away.
+#[cfg(unix)]
+const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
+    hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
+
+/// The switch-hold warning for the rotator of `rs`, judged against
+/// `proc_root` and this process's executable `exe`; `None` when no rotator
+/// runs or it runs this binary.
+#[cfg(unix)]
+fn foreign_note_for(
+    rs: &ledger::RotateState,
+    proc_root: &std::path::Path,
+    exe: Option<&std::path::Path>,
+) -> Option<String> {
+    rs.foreign_rotator_at(proc_root, exe).map(|pid| {
+        format!("amplihack: the Claude login rotator (pid {pid}) {FOREIGN_IGNORES_HOLD}")
+    })
+}
+
+/// After a successful `profile switch NAME`: one line on stderr when the
+/// running rotator would ignore the hold. The switch itself succeeded, so
+/// this never changes the exit code.
+#[cfg(unix)]
+fn warn_switch_hold(root: &std::path::Path) {
+    let exe = std::env::current_exe().ok();
+    let rs = ledger::RotateState::new(root);
+    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+        eprintln!("{note}");
+    }
+}
 
 /// Starts the rotator from a launch when auto-switch is on; see
 /// `autostart`. Nothing to start off Unix.
@@ -174,6 +222,9 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 } else {
                     cycle::Mode::OneShot
                 };
+                if mode == cycle::Mode::OneShot {
+                    warn_foreign_rotator(Some(store.root()));
+                }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
                 cycle::run_cycle(&mut ctx, mode)?;
             }
@@ -229,6 +280,7 @@ pub(in crate::commands::profile) fn switch_live(
                 }
                 println!("Default for new launches: {name}");
                 println!("Rotation held on {name} until `amplihack profile switch --none`.");
+                warn_switch_hold(store.root());
                 Ok(())
             }
             Err(f) => Err(anyhow::anyhow!(

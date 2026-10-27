@@ -132,6 +132,10 @@ pub fn switch_live(
 /// and the rotate state is not touched.
 pub fn release(store: &ProfileStore) -> Result<bool, ProfileError> {
     let rs = RotateState::new(store.root());
+    // Checked before the lock, so `--none` with no pin never waits on a
+    // running cycle. Known race: a `switch B` that takes the lock between
+    // this check and the caller's `.default` removal leaves a pin on B with
+    // no `.default`. Both commands are the same user's; rerun either one.
     if !pin::present(&rs) {
         return Ok(false);
     }

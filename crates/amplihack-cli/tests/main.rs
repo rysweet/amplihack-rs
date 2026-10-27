@@ -110,10 +110,30 @@ mod issue_1592_root_rotator;
 mod issue_1606_config_cli;
 #[path = "issue_1606_detach.rs"]
 mod issue_1606_detach;
+#[path = "issue_1618_fixture.rs"]
+mod issue_1618_fixture;
+#[path = "issue_1618_wait_ends.rs"]
+mod issue_1618_wait_ends;
+#[path = "issue_1618_wait_profiles.rs"]
+mod issue_1618_wait_profiles;
+#[path = "issue_1618_wait_recipe.rs"]
+mod issue_1618_wait_recipe;
+#[path = "issue_1618_wait_settings.rs"]
+mod issue_1618_wait_settings;
+#[path = "issue_1618_wait_signals.rs"]
+mod issue_1618_wait_signals;
+#[path = "issue_1618_wait_stdin.rs"]
+mod issue_1618_wait_stdin;
+#[path = "issue_1618_wait_step.rs"]
+mod issue_1618_wait_step;
+#[path = "issue_1618_wait_threshold.rs"]
+mod issue_1618_wait_threshold;
 #[path = "issue_1634_shared_sessions.rs"]
 mod issue_1634_shared_sessions;
 #[path = "issue_1650_profile_identity.rs"]
 mod issue_1650_profile_identity;
+#[path = "issue_1659_limit_resume_gate.rs"]
+mod issue_1659_limit_resume_gate;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
 #[path = "issue_439_no_per_step_timeout.rs"]

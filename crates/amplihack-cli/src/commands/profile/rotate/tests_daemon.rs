@@ -3,10 +3,11 @@
 //! sends a signal.
 //!
 //! Contract:
-//! - `daemon::parse_pid(bytes: &[u8], own: u32) -> Option<u32>`: at most 32
+//! - `parse_pid(bytes: &[u8], own: u32) -> Option<u32>` (shared with the
+//!   limit-resume hook in `amplihack_utils::rotator_status`): at most 32
 //!   bytes of ASCII digits (one trailing newline allowed), value > 1, not
 //!   `own`.
-//! - `daemon::is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool`:
+//! - `is_rotator(cmdline: &[u8], Some(exe_name)) -> bool` (shared too):
 //!   NUL-separated argv containing `profile`, `rotate` and `watch`, with
 //!   `argv[0]`'s file name equal to `exe_name`.
 //! - `daemon::state_at(&RotateState, proc_root: &Path, exe_name: &OsStr) ->
@@ -14,7 +15,12 @@
 //! - `cycle::prototype_guard(root: &Path) -> Result<(), ProfileError>`.
 
 use super::cycle::prototype_guard;
-use super::daemon::{DaemonState, is_rotator, parse_pid, state_at};
+use super::daemon::{DaemonState, state_at};
+use amplihack_utils::rotator_status::parse_pid;
+
+fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
+    amplihack_utils::rotator_status::is_rotator(cmdline, Some(exe_name))
+}
 use super::ledger::RotateState;
 use crate::commands::profile::ProfileError;
 use std::ffi::OsStr;

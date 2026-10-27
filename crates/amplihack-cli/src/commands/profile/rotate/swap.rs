@@ -37,7 +37,7 @@ const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
 pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 10] = [
+pub const DOCUMENTED: [&str; 11] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -48,6 +48,7 @@ pub const DOCUMENTED: [&str; 10] = [
     REFRESHING,
     HOME_JSON_UNREADABLE,
     NO_STORED_LOGIN_HINT,
+    super::FOREIGN_IGNORES_HOLD,
 ];
 
 /// Where the outgoing login goes.

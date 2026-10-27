@@ -852,12 +852,13 @@ the variable, never its value.
 
 ### Supervised reruns and stdin
 
-When auto-switch supervises a nested `amplihack claude -p` launch (see
-[Usage-limit reruns](./profile-command.md#usage-limit-reruns)), each attempt
-inherits the supervisor's stdin. The first attempt reads the prompt to the
-end, so a rerun of a launch whose prompt was piped on stdin starts with an
-empty stdin. The prompt is lost, not exposed: it is never copied to argv, the
-environment or the rerun buffer.
+When auto-switch or the usage-limit wait supervises a nested
+`amplihack claude -p` launch (see
+[Usage-limit reruns](./profile-command.md#usage-limit-reruns)), the first
+attempt inherits the supervisor's stdin. A rerun reads a regular file again
+from where the step started; a piped prompt went to the first attempt, so a
+rerun gets `/dev/null`. The prompt is lost, not exposed: it is never copied
+to disk, argv, the environment or the rerun buffer.
 
 amplihack's own large-payload sites take other paths, and none of these sites are affected:
 
