@@ -1262,20 +1262,55 @@ fn step_18c_does_not_fall_back_to_repo_path() {
 
 #[test]
 fn workflow_publish_step_16_guards_non_github_remotes() {
+    // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
+    // decision is made there (#1684). Check the tool's code lines, not the
+    // step body: the step only mentions REMOTE_HOST_TYPE in a comment.
     let command = step_command("workflow-publish", "step-16-create-draft-pr");
-
-    // step-16 must detect remote host type before creating a PR
     assert!(
-        command.contains("REMOTE_HOST_TYPE")
-            || command.contains("remote_host_type")
-            || command.contains("github.com"),
-        "step-16 must detect the remote host type before attempting PR creation"
+        command
+            .lines()
+            .any(|line| line.trim_start().starts_with("bash \"$PUBLISH_HELPER\"")),
+        "step-16 must create the PR by running workflow_publish_pr.sh"
+    );
+    assert!(
+        command.contains("amplifier-bundle/tools/workflow_publish_pr.sh"),
+        "step-16 must resolve PUBLISH_HELPER to workflow_publish_pr.sh"
     );
 
-    // step-16 must skip PR creation for ALL non-GitHub remotes (not just AzDO)
+    let tool = std::fs::read_to_string(recipes_dir().join("../tools/workflow_publish_pr.sh"))
+        .expect("read workflow_publish_pr.sh");
+    // Byte offset of the first non-comment line that starts with `needle`.
+    let code_line_pos = |needle: &str| -> Option<usize> {
+        let mut offset = 0;
+        for line in tool.split_inclusive('\n') {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with(needle) {
+                return Some(offset + (line.len() - trimmed.len()));
+            }
+            offset += line.len();
+        }
+        None
+    };
+
+    let read_pos = code_line_pos("HOST_TYPE=\"${REMOTE_HOST_TYPE").expect(
+        "workflow_publish_pr.sh must set HOST_TYPE from REMOTE_HOST_TYPE in code, not a comment",
+    );
+    let guard_pos = code_line_pos("if [ \"$HOST_TYPE\" != \"github\" ]")
+        .expect("workflow_publish_pr.sh must skip GitHub PR creation for every non-GitHub host");
+    let lookup_pos = code_line_pos("PR_JSON=\"$(scoped_pr_lookup)\"")
+        .expect("workflow_publish_pr.sh must look up the branch's PR through scoped_pr_lookup");
     assert!(
-        command.contains("!= \"github\""),
-        "step-16 must skip PR creation for all non-GitHub remotes, not just AzDO"
+        read_pos < guard_pos,
+        "workflow_publish_pr.sh must read REMOTE_HOST_TYPE before the non-GitHub guard"
+    );
+    assert!(
+        guard_pos < lookup_pos,
+        "the non-GitHub guard must run before any gh PR lookup or creation"
+    );
+    let guard_line = tool[guard_pos..].lines().nth(1).unwrap_or_default();
+    assert!(
+        guard_line.contains("finish_publish \"non-github\""),
+        "the non-GitHub guard must finish publishing as non-github, got: {guard_line}"
     );
 }
 

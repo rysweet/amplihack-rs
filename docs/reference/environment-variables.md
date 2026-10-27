@@ -39,6 +39,8 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_CONTEXT_ENV_BUDGET_BYTES](#amplihack_context_env_budget_bytes)
 - [Variables read by amplihack](#variables-read-by-amplihack)
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
+  - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
+  - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -449,6 +451,8 @@ amplihack recipe run recipe.yaml
 **Why it exists:** The default-workflow recipes no longer define `timeout_seconds` on agent steps, so agent steps run to completion without artificial time limits. This variable provides an opt-in escape hatch for CI environments that need wall-clock budgets. The env var approach is forward-compatible — `recipe-runner-rs` can adopt it independently without CLI changes.
 
 **Security note:** The value is always a `u64` rendered as a string. No shell metacharacters are possible. The CLI rejects non-numeric input at parse time via clap's type enforcement.
+
+**Usage-limit wait:** a Claude agent step that waits for a usage-limit reset ends its wait at least 60 seconds before this timeout runs out, measured from the start of the step. It does not run the step again after that, because a fresh attempt would be killed by this timeout; the usage-limit failure is passed to the runner. See [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait).
 
 ---
 
@@ -958,6 +962,38 @@ or out of either backend without modifying on-disk state.
 
 See [Memory Backend Reference](./memory-backend.md) for the complete
 backend configuration reference.
+
+---
+
+### AMPLIHACK_USAGE_LIMIT_WAIT
+
+**Type:** string (boolean)
+**Values:** `true` or `1` (on) | `false` or `0` (off)
+**Default:** on; off in CI (a `CI` other than empty, `0` or `false` in any case) when nothing sets it
+**Config key:** [`recipe.usage_limit_wait`](./user-config.md#recipeusage_limit_wait) in `config.toml`
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+
+Turns the usage-limit wait on or off: a recipe agent step that fails on a
+Claude usage limit waits for the reset, or for a login with capacity, and
+runs once more instead of ending the run. A spend limit with no reset, a
+reset more than five hours away or an unreadable reset is not waited for. Overrides the
+config files; empty means unset; an invalid value prints one warning and is
+ignored. See the
+[usage-limit wait reference](./profile-command.md#usage-limit-wait).
+
+---
+
+### AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS
+
+**Type:** string (non-negative integer, seconds)
+**Default:** unset (the reported reset plus 120 seconds)
+**Config key:** `recipe.usage_limit_max_wait_secs` in `config.toml`
+**Read by:** `amplihack claude -p` when it runs as a recipe agent step
+
+Upper bound on one usage-limit wait. It only shortens the wait; `0` means
+no wait but one more attempt. No wait lasts longer than five hours and 120
+seconds. Overrides the config file; empty means unset; an invalid value
+prints one warning and is ignored.
 
 ---
 

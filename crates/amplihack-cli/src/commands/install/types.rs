@@ -332,6 +332,10 @@ pub(super) const CANONICAL_AMPLIHACK_HOOK_CONTRACT: &[CanonicalHookContractEntry
     },
 ];
 
+/// The event of the limit-resume hook, registered only for a Claude Code
+/// that supports it (see `settings::LIMIT_RESUME_MIN_CLAUDE`).
+pub(super) const LIMIT_RESUME_EVENT: &str = "StopFailure";
+
 pub(super) const AMPLIHACK_HOOK_SPECS: &[HookSpec] = &[
     HookSpec {
         event: "SessionStart",

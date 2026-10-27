@@ -1,17 +1,16 @@
 //! Issue #1658 (A): `amplihack_utils::rotator_status`, the read-only view of
 //! the rotator that the limit-resume hook uses. It resolves the profile root,
-//! reads the auto-switch toggle and reads the rotate ledger's last cycle.
-//!
-//! The CLI owns the same rules (`root_config`, `auto_switch::config`,
-//! `rotate::ledger`); the drift tests in amplihack-cli check the two agree.
-//! These tests pin the hook-side contract.
+//! reads the auto-switch toggle, reads the rotate ledger's last cycle and
+//! checks that the rotator runs. Since #1659 the CLI calls the same root and
+//! toggle code, so no drift test is needed.
 
 #![cfg(unix)]
 
 use amplihack_utils::rotator_status::{
-    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL,
-    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, ledger_path, parse_cycle, read_cycle,
-    resolve_root_from, valid_live_name,
+    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, Ledger, MAX_WAIT, POLL_INTERVAL,
+    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, foreign_rotator, is_rotator,
+    ledger_path, parse_cycle, pid_path, read_cycle, read_ledger, resolve_root_from,
+    rotator_down_at, valid_live_name,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -275,12 +274,13 @@ fn ledger(json: &str) -> Vec<u8> {
 }
 
 #[test]
-fn parse_cycle_reads_the_four_fields() {
+fn parse_cycle_reads_the_five_fields() {
     let s = parse_cycle(
         &ledger(&format!(
             r#"{{"version":1,"live":"work","account":"acct-1","since":1,
                 "swapped_at":{t},"previous":"spare","alert":"all-over:-",
-                "last_cycle":{{"at":{t},"outcome":"stayed"}}}}"#,
+                "last_cycle":{{"at":{t},"measured_at":{m},"outcome":"stayed"}}}}"#,
+            m = NOW - 40,
             t = NOW - 10
         )),
         NOW,
@@ -290,6 +290,7 @@ fn parse_cycle_reads_the_four_fields() {
         s,
         CycleStatus {
             at: Some(NOW - 10),
+            measured_at: Some(NOW - 40),
             outcome: Some("stayed".into()),
             alert: true,
             live: Some("work".into()),
@@ -317,6 +318,7 @@ fn parse_cycle_ignores_unknown_fields() {
 fn parse_cycle_without_last_cycle_has_no_at_or_outcome() {
     let s = parse_cycle(b"{\"version\":1}", NOW).unwrap();
     assert_eq!(s.at, None);
+    assert_eq!(s.measured_at, None);
     assert_eq!(s.outcome, None);
     assert!(!s.has_capacity());
 }
@@ -401,7 +403,7 @@ fn parse_cycle_drops_live_that_fails_the_name_rule() {
 #[test]
 fn parse_cycle_wrong_typed_fields_are_treated_as_absent() {
     let s = parse_cycle(
-        br#"{"version":1,"live":5,"alert":7,"last_cycle":{"at":"soon","outcome":3}}"#,
+        br#"{"version":1,"live":5,"alert":7,"last_cycle":{"at":"soon","measured_at":[],"outcome":3}}"#,
         NOW,
     )
     .expect("loose parse keeps the ledger");
@@ -416,6 +418,7 @@ fn parse_cycle_wrong_typed_fields_are_treated_as_absent() {
 fn status(outcome: &str, alert: bool) -> CycleStatus {
     CycleStatus {
         at: Some(NOW),
+        measured_at: Some(NOW),
         outcome: Some(outcome.into()),
         alert,
         live: Some("work".into()),
@@ -511,4 +514,130 @@ fn read_cycle_refuses_a_directory_in_place_of_the_ledger() {
     fs::remove_file(&p).unwrap();
     private_dir(&p);
     assert_eq!(read_cycle(root.path(), NOW), None);
+}
+
+#[test]
+fn read_ledger_tells_missing_from_unreadable() {
+    let root = tempfile::tempdir().unwrap();
+    assert_eq!(read_ledger(root.path(), NOW), Ledger::Missing);
+    let root = root_with_ledger(br#"{"version":2}"#);
+    assert_eq!(read_ledger(root.path(), NOW), Ledger::Unreadable);
+    let root = root_with_ledger(&good_ledger());
+    assert!(matches!(read_ledger(root.path(), NOW), Ledger::Read(_)));
+}
+
+// ── rotator_down ────────────────────────────────────────────────────────────
+
+const PID: u32 = 4242;
+
+/// A `/proc` with one process of this user running `cmdline`.
+fn fake_proc(cmdline: &[u8]) -> tempfile::TempDir {
+    let proc_root = tempfile::tempdir().unwrap();
+    let dir = proc_root.path().join(PID.to_string());
+    private_dir(&dir);
+    fs::write(dir.join("cmdline"), cmdline).unwrap();
+    proc_root
+}
+
+const WATCH: &[u8] = b"/home/u/.cargo/bin/amplihack\0profile\0rotate\0watch\0";
+
+fn with_pid_file(root: &Path) {
+    let p = pid_path(root);
+    private_dir(p.parent().unwrap());
+    private_file(&p, format!("{PID}\n").as_bytes());
+}
+
+#[test]
+fn a_running_rotator_with_a_readable_or_missing_ledger_is_up() {
+    let proc_root = fake_proc(WATCH);
+    let root = tempfile::tempdir().unwrap();
+    private_dir(&root.path().join(".auto-switch.d"));
+    with_pid_file(root.path());
+    assert!(
+        !rotator_down_at(root.path(), proc_root.path(), NOW),
+        "no cycle yet"
+    );
+    let root = root_with_ledger(&good_ledger());
+    with_pid_file(root.path());
+    assert!(!rotator_down_at(root.path(), proc_root.path(), NOW));
+}
+
+#[test]
+fn no_pid_file_or_a_pid_that_is_no_rotator_is_down() {
+    let root = root_with_ledger(&good_ledger());
+    assert!(rotator_down_at(root.path(), fake_proc(WATCH).path(), NOW));
+    with_pid_file(root.path());
+    let other = fake_proc(b"/usr/bin/sleep\x00600\x00");
+    assert!(rotator_down_at(root.path(), other.path(), NOW));
+    let empty = tempfile::tempdir().unwrap();
+    assert!(rotator_down_at(root.path(), empty.path(), NOW), "pid gone");
+}
+
+#[test]
+fn a_running_rotator_with_an_unreadable_ledger_is_down() {
+    let root = root_with_ledger(br#"{"version":2,"last_cycle":{"at":1,"outcome":"swapped"}}"#);
+    with_pid_file(root.path());
+    assert!(rotator_down_at(root.path(), fake_proc(WATCH).path(), NOW));
+}
+
+#[test]
+fn without_proc_only_the_ledger_counts() {
+    let root = root_with_ledger(&good_ledger());
+    let no_proc = Path::new("/nonexistent-proc-for-test");
+    with_pid_file(root.path());
+    assert!(!rotator_down_at(root.path(), no_proc, NOW));
+    let root = root_with_ledger(b"not json");
+    with_pid_file(root.path());
+    assert!(rotator_down_at(root.path(), no_proc, NOW));
+}
+
+#[test]
+fn is_rotator_checks_the_exe_name_only_when_given() {
+    assert!(is_rotator(WATCH, None));
+    assert!(is_rotator(WATCH, Some(OsStr::new("amplihack"))));
+    assert!(!is_rotator(WATCH, Some(OsStr::new("amplihack-hooks"))));
+    assert!(!is_rotator(b"amplihack\0profile\0rotate\0status\0", None));
+}
+
+/// A `/proc` whose rotator runs the executable `exe`. A hard link, like
+/// the real `exe` link, keeps the inode that ran even if `exe` is replaced.
+fn fake_proc_running(exe: &Path) -> tempfile::TempDir {
+    let proc_root = fake_proc(WATCH);
+    fs::hard_link(exe, proc_root.path().join(PID.to_string()).join("exe")).unwrap();
+    proc_root
+}
+
+#[test]
+fn a_rotator_running_another_binary_is_foreign() {
+    let bins = tempfile::tempdir().unwrap();
+    let (old, new) = (bins.path().join("old"), bins.path().join("new"));
+    fs::write(&old, b"old").unwrap();
+    fs::write(&new, b"new").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    private_dir(&root.path().join(".auto-switch.d"));
+    with_pid_file(root.path());
+    let pid_file = pid_path(root.path());
+
+    let same = fake_proc_running(&new);
+    assert_eq!(foreign_rotator(&pid_file, same.path(), Some(&new)), None);
+    let other = fake_proc_running(&old);
+    assert_eq!(
+        foreign_rotator(&pid_file, other.path(), Some(&new)),
+        Some(PID)
+    );
+    // Replaced at the same path by an upgrade: another inode.
+    fs::remove_file(&new).unwrap();
+    fs::write(&new, b"upgraded").unwrap();
+    assert_eq!(
+        foreign_rotator(&pid_file, same.path(), Some(&new)),
+        Some(PID)
+    );
+    // Unknown is treated as foreign.
+    assert_eq!(
+        foreign_rotator(&pid_file, fake_proc(WATCH).path(), Some(&new)),
+        Some(PID)
+    );
+    // No rotator running: nothing to protect.
+    let none = tempfile::tempdir().unwrap();
+    assert_eq!(foreign_rotator(&pid_file, none.path(), Some(&new)), None);
 }

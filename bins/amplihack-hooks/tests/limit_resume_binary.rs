@@ -4,6 +4,12 @@
 //! session, otherwise exit 0 with nothing on stdout or stderr. Stdout is
 //! always empty. The subcommand is dispatched outside `run_hook`, which
 //! always prints JSON.
+//!
+//! The hook reports `rotator-down` before it waits when no rotator runs
+//! (#1659), so every test that is meant to get past that check starts a
+//! [`StandInRotator`]. Tests for a branch decided earlier start one as well,
+//! so that their exit 0 comes from the branch they are named for and not from
+//! a missing rotator; where that branch logs, the logged outcome is asserted.
 
 #![cfg(unix)]
 
@@ -70,6 +76,54 @@ fn write_ledger(root: &Path, outcome: &str, offset: i64, alert: bool) {
         l["alert"] = json!("all-over:-");
     }
     private_file(&dir.join("ledger.json"), l.to_string().as_bytes());
+}
+
+/// A stand-in for `amplihack profile rotate watch`: a process whose command
+/// line names `profile rotate watch`, recorded in `rotate.pid`, so the hook's
+/// `/proc` check sees a running rotator. Killed on drop. Same shape as
+/// `OldRotator` in `crates/amplihack-cli/tests/issue_1592_oneshot.rs`.
+struct StandInRotator(std::process::Child);
+
+impl StandInRotator {
+    fn start(root: &Path) -> Self {
+        // A loop keeps `sh` itself running (it never exec's into `sleep`,
+        // which would replace the command line the hook checks), and the
+        // short sleep means no orphan outlives the kill by more than a
+        // second. No inherited pipes, so nextest sees no leak.
+        let child = Command::new("sh")
+            .args([
+                "-c",
+                "while :; do sleep 1; done",
+                "amplihack",
+                "profile",
+                "rotate",
+                "watch",
+            ])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let dir = root.join(".auto-switch.d/rotate");
+        private_dir(&root.join(".auto-switch.d"));
+        private_dir(&dir);
+        private_file(
+            &dir.join("rotate.pid"),
+            format!("{}\n", child.id()).as_bytes(),
+        );
+        Self(child)
+    }
+}
+
+impl Drop for StandInRotator {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn resume_log(e: &Env) -> String {
+    fs::read_to_string(e.root.join(".auto-switch.d/resume/resume.log")).unwrap_or_default()
 }
 
 fn limit_payload(session: &str) -> String {
@@ -140,6 +194,7 @@ fn assert_silent_zero(out: &Output) {
 #[test]
 fn resumes_when_a_fresh_cycle_has_capacity() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let (out, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(out.status.code(), Some(2));
@@ -155,6 +210,7 @@ fn resumes_when_a_fresh_cycle_has_capacity() {
 #[test]
 fn second_run_on_the_same_event_is_a_silent_duplicate() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let (first, _) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
     assert_eq!(first.status.code(), Some(2));
@@ -164,7 +220,8 @@ fn second_run_on_the_same_event_is_a_silent_duplicate() {
         took < Duration::from_secs(10),
         "duplicate must not wait: {took:?}"
     );
-    let log = fs::read_to_string(e.root.join(".auto-switch.d/resume/resume.log")).unwrap();
+    let log = resume_log(&e);
+    assert!(log.contains("outcome=resumed"), "{log}");
     assert!(log.contains("outcome=duplicate"), "{log}");
 }
 
@@ -172,6 +229,7 @@ fn second_run_on_the_same_event_is_a_silent_duplicate() {
 fn toggle_file_turns_it_on_too() {
     let e = env();
     private_file(&e.root.join(".auto-switch"), b"enabled=on\n");
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "stayed", 120, false);
     let (out, _) = run(&e, None, limit_payload("sess-1").as_bytes());
     assert_eq!(out.status.code(), Some(2));
@@ -181,6 +239,7 @@ fn toggle_file_turns_it_on_too() {
 fn auto_switch_off_is_silent_and_creates_nothing() {
     for toggle in [Some("0"), None] {
         let e = env();
+        let _rotator = StandInRotator::start(&e.root);
         write_ledger(&e.root, "swapped", 120, false);
         if toggle.is_none() {
             private_file(&e.root.join(".auto-switch"), b"enabled=off\n");
@@ -213,6 +272,7 @@ fn unresolvable_root_is_silent() {
 #[test]
 fn garbage_and_malformed_stdin_are_silent() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     for stdin in [
         b"".to_vec(),
@@ -231,6 +291,7 @@ fn garbage_and_malformed_stdin_are_silent() {
 #[test]
 fn more_than_one_mib_of_stdin_is_silent() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let pad = "x".repeat(1024 * 1024 + 1);
     let payload = json!({
@@ -242,11 +303,13 @@ fn more_than_one_mib_of_stdin_is_silent() {
     .to_string();
     let (out, _) = run(&e, Some("1"), payload.as_bytes());
     assert_silent_zero(&out);
+    assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
 #[test]
 fn non_limit_errors_are_silent() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     for error in ["overloaded", "authentication_failed"] {
         let payload: Value = json!({
@@ -258,11 +321,15 @@ fn non_limit_errors_are_silent() {
         let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
         assert_silent_zero(&out);
     }
+    // A stop that is not a usage limit is decided before anything is
+    // written or logged.
+    assert!(!e.root.join(".auto-switch.d/resume").exists());
 }
 
 #[test]
 fn stop_hook_active_is_silent() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let payload = json!({
         "hook_event_name": "StopFailure",
@@ -273,11 +340,51 @@ fn stop_hook_active_is_silent() {
     let (out, took) = run(&e, Some("1"), payload.to_string().as_bytes());
     assert_silent_zero(&out);
     assert!(took < Duration::from_secs(10));
+    let log = resume_log(&e);
+    assert!(log.contains("outcome=stop-hook-active"), "{log}");
+}
+
+/// Crusty #1687 round 2: the loop guard fails closed at the process
+/// boundary. With a rotator running and a fresh cycle with capacity, a
+/// `stop_hook_active` that is present but not a boolean must stop the hook;
+/// read as absent, the hook would resume (exit 2).
+#[test]
+fn a_wrongly_typed_stop_hook_active_stops_the_hook() {
+    for value in [json!("true"), json!(1), json!({})] {
+        let e = env();
+        let _rotator = StandInRotator::start(&e.root);
+        write_ledger(&e.root, "swapped", 120, false);
+        let payload = json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "stop_hook_active": value.clone()
+        });
+        let (out, _) = run(&e, Some("1"), payload.to_string().as_bytes());
+        assert_silent_zero(&out);
+        let log = resume_log(&e);
+        assert!(log.contains("outcome=stop-hook-active"), "{value}: {log}");
+    }
+}
+
+/// #1659: with no rotator running, the hook does not wait for a cycle that
+/// cannot come. It exits 0 at once and logs `rotator-down`, even beside a
+/// ledger that shows capacity.
+#[test]
+fn no_rotator_running_is_a_silent_rotator_down() {
+    let e = env();
+    write_ledger(&e.root, "swapped", 120, false);
+    let (out, took) = run(&e, Some("1"), limit_payload("sess-1").as_bytes());
+    assert_silent_zero(&out);
+    assert!(took < Duration::from_secs(10), "took {took:?}");
+    let log = resume_log(&e);
+    assert!(log.contains("outcome=rotator-down"), "{log}");
 }
 
 #[test]
 fn unsafe_resume_dir_is_silent_and_untouched() {
     let e = env();
+    let _rotator = StandInRotator::start(&e.root);
     write_ledger(&e.root, "swapped", 120, false);
     let resume = e.root.join(".auto-switch.d/resume");
     fs::create_dir(&resume).unwrap();

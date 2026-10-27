@@ -97,9 +97,13 @@ assert "step-03b still handles GitHub pull/ URLs (regression)" \
     "awk '/id: .step-03b-extract-issue-number/,/output:/' '$PREP_FILE' | grep -q 'pull/'"
 
 # --- Test 7: step-16 handles non-GitHub remotes -----------------------------
-assert "step-16 contains remote host type detection or github.com check" \
-    "grep -Eq 'REMOTE_HOST_TYPE|remote_host_type' '$PUBLISH_FILE' || \
-     awk '/id: \"step-16-create-draft-pr\"/{f=1} f' '$PUBLISH_FILE' | head -30 | grep -q 'github.com'"
+# step-16 runs workflow_publish_pr.sh, which reads REMOTE_HOST_TYPE and skips
+# GitHub PR creation for other hosts (#1684). Match code lines, not comments.
+assert "step-16 runs workflow_publish_pr.sh" \
+    "awk '/id: \"step-16-create-draft-pr\"/{f=1} f && /output:/{exit} f' '$PUBLISH_FILE' | grep -Eq '^[[:space:]]*bash \"\\\$PUBLISH_HELPER\"'"
+assert "workflow_publish_pr.sh reads REMOTE_HOST_TYPE and guards non-GitHub hosts" \
+    "grep -Eq '^HOST_TYPE=\"\\\$\\{REMOTE_HOST_TYPE' '$REPO_ROOT/amplifier-bundle/tools/workflow_publish_pr.sh' && \
+     grep -Eq '^if \\[ \"\\\$HOST_TYPE\" != \"github\" \\]' '$REPO_ROOT/amplifier-bundle/tools/workflow_publish_pr.sh'"
 
 # --- Test 8: step-21 guards PR_URL before gh commands -----------------------
 assert "step-21 references PR_URL variable" \

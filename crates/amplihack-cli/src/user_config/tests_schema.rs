@@ -22,6 +22,8 @@ fn keys_are_in_documented_order() {
             "recipe.detach",
             "recipe.tmux_session_pattern",
             "recipe.log_dir",
+            "recipe.usage_limit_wait",
+            "recipe.usage_limit_max_wait_secs",
             "orchestrator.max_depth",
         ]
     );

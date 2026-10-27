@@ -1,11 +1,10 @@
-//! Bounded, fail-closed small-file reads for the capacity reader and the
+//! Bounded, fail-closed small-file reads for the capacity file and the
 //! dedupe records. Off Unix every read is refused, so nothing is ever shown.
 
 pub(super) use imp::*;
 
 #[cfg(unix)]
 mod imp {
-    use crate::claude_capacity::{MAX_SMALL_FILE, Read};
     use std::fs;
     use std::io::{self, Read as _};
     use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
@@ -46,37 +45,13 @@ mod imp {
         file.take(limit + 1).read_to_end(&mut buf).ok()?;
         (buf.len() as u64 <= limit).then_some(buf)
     }
-
-    /// The saved-root or toggle file. `toggle` files are refused unless they
-    /// are the current user's; saved-root files are refused when group or
-    /// others can write them (the rule `root_config::read_limited` applies).
-    pub(in crate::claude_capacity) fn read_small(path: &Path, toggle: bool) -> Read {
-        let (file, meta) = match open_regular(path, toggle) {
-            Ok(Some(v)) => v,
-            Ok(None) => return Read::Missing,
-            Err(()) => return Read::Refused,
-        };
-        if !toggle && meta.mode() & 0o022 != 0 {
-            return Read::Refused;
-        }
-        let mut buf = Vec::new();
-        match file.take(MAX_SMALL_FILE + 1).read_to_end(&mut buf) {
-            Ok(_) => Read::Bytes(buf),
-            Err(_) => Read::Refused,
-        }
-    }
 }
 
 #[cfg(not(unix))]
 mod imp {
-    use crate::claude_capacity::Read;
     use std::path::Path;
 
     pub(in crate::claude_capacity) fn read_owned(_: &Path, _: u64) -> Option<Vec<u8>> {
         None
-    }
-
-    pub(in crate::claude_capacity) fn read_small(_: &Path, _: bool) -> Read {
-        Read::Refused
     }
 }
