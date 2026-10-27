@@ -74,7 +74,7 @@ fn log(e: &Env) -> String {
     fs::read_to_string(&e.rs.log).unwrap_or_default()
 }
 
-fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
+pub(super) fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
     match switch_live(&e.store, &e.home, &n(name)) {
         Ok(Ok(s)) => Ok(s),
         Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),
@@ -83,7 +83,7 @@ fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
 }
 
 #[track_caller]
-fn assert_refused(e: &Env, name: &str, want: &str) {
+pub(super) fn assert_refused(e: &Env, name: &str, want: &str) {
     let before = snap(e);
     match switch_live(&e.store, &e.home, &n(name)) {
         Err(ProfileError::RotateRefused(m)) => {

@@ -77,6 +77,8 @@ mod tests_swap_refused;
 #[cfg(all(test, unix))]
 mod tests_switch;
 #[cfg(all(test, unix))]
+mod tests_switch_candidates;
+#[cfg(all(test, unix))]
 mod tests_switch_hold;
 
 use super::name::ProfileName;

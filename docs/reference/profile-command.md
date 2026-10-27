@@ -2572,9 +2572,10 @@ only compared with `lstat` results; neither is ever used as a path.
 ### Rotate switch
 
 `amplihack profile switch <name>` moves a profile's login into `~/.claude`
-by hand. It uses the rotator's lock, recovery, [swap](#rotate-swap) and
-ledger entry, so the result is exactly what a rotate swap to `<name>` would
-leave. Then it pins rotation to `<name>` (see [Rotate pin](#rotate-pin)) and
+by hand. It uses the rotator's lock, recovery,
+[candidate check](#rotate-candidates), [swap](#rotate-swap) and ledger entry,
+so it refuses every profile the rotator would refuse, and the result is
+exactly what a rotate swap to `<name>` would leave. Then it pins rotation to `<name>` (see [Rotate pin](#rotate-pin)) and
 makes `<name>` the default for new launches. No rotator needs to be running.
 
 The steps run in this order. A step that refuses ends the command with
@@ -2603,10 +2604,32 @@ refuses. When no recovery ran, a refusal changes nothing at all.
    | No profile owns it | Adopt it as `default-original` (or the next free name), then swap, as the rotator does. |
    | `no-login`, `hand-change` or `ambiguous` | Refused with the matching ALERT text, without the `ALERT: ` prefix. No ALERT is written to the ledger. |
 
-7. Unless `<name>` is already the live profile, check that
-   `<root>/<name>/.credentials.json` exists, with `lstat` only. If it does
-   not, refuse with
-   ``profile <name> has no stored login; run `amplihack profile login <name>` first``.
+7. Unless `<name>` is already the live profile, check `<name>` against
+   [Rotate candidates](#rotate-candidates), using the list built under the
+   lock in step 6. A profile with any skip reason is refused, the same
+   profiles the rotator never swaps to, so a switch never moves a login out
+   from under a running session, an auto-switch lease or a hosted login.
+   The refusal is
+   `profile <name> is not a rotate candidate (<reason>): <detail>`, where
+   `<reason>` is the skip reason the rotator logs:
+
+   | Reason | Detail |
+   |--------|--------|
+   | `no login`, file missing | The whole message is ``profile <name> has no stored login; run `amplihack profile login <name>` first``. |
+   | `no login`, file present | `a login file is not a private regular file with one link` |
+   | `excluded` | ``it is in the auto-switch exclude list; set the list without it with `amplihack profile auto-switch exclude` first`` |
+   | `session running` | `a running process has CLAUDE_CONFIG_DIR set to it; end that session first` |
+   | `session running`, `/proc` cannot be scanned | `running sessions cannot be seen here, so its login may be in use`. Every profile is refused, as every profile is skipped by the rotator. |
+   | `leased` | `auto-switch has lent its login to another profile's session` |
+   | `hosting` | `its directory holds another account's login for auto-switch` |
+   | `parked` | `auto-switch has parked its own login` |
+   | `no account` | `its .claude.json has no usable oauthAccount` |
+
+   `excluded` and `parked` refuse too. The exclude list keeps a profile out
+   of rotation, and a switch is a rotation done by hand; to switch to an
+   excluded profile, take it off the list first. A parked profile's own
+   login sits in `<root>/.auto-switch.d/parked/` while its directory holds
+   another account, so there is nothing of its own to move.
 8. Run the [swap](#rotate-swap) unchanged: the same pre-swap checks, journal,
    refresh locks and ledger entry. A refusal from the swap is passed through
    unchanged. The log gets `switch <from>-><name>`.

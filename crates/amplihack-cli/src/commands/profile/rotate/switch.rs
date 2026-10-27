@@ -1,5 +1,6 @@
 //! `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
-//! with the rotator's own prelude (lock, recovery, identify) and swap, then,
+//! with the rotator's own prelude (lock, recovery, identify), candidate
+//! check and swap, then,
 //! still under the lock, pins rotation to NAME, makes it the default and
 //! records the switch as the ledger's last cycle, so the limit-resume hook
 //! wakes sessions stopped before it. `release` removes the pin and the
@@ -8,14 +9,14 @@
 //! switch" in docs/reference/profile-command.md.
 
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
-use super::identify::LiveId;
+use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateState, SWITCHED, clear_alert};
 use super::log::msg;
-use super::observe::live_alert;
+use super::observe::{Snap, live_alert};
 use super::pin;
 use super::prelude::{Prelude, locked_prelude};
 use super::settings;
-use super::swap::{self, NO_STORED_LOGIN_HINT, Source};
+use super::swap::{self, LOGIN_NOT_MOVABLE, NO_STORED_LOGIN_HINT, Source};
 use super::{Released, TuneFlags};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, State, exists, now};
@@ -84,11 +85,8 @@ pub fn switch_live(
             Switched::AlreadyLive(name.clone())
         }
         Some(source) => {
-            // `lstat` only: the swap makes the real checks on the login.
-            if !exists(&store.root().join(name.as_str()).join(CREDS)) {
-                return Err(ProfileError::RotateRefused(format!(
-                    "profile {name} {NO_STORED_LOGIN_HINT} {name}` first"
-                )));
+            if let Some(reason) = not_a_candidate(store, &first, name) {
+                return Err(ProfileError::RotateRefused(reason));
             }
             let from = swap::swap(store, &ctx.rs, home, source, name, now())?;
             out.emit(now(), &msg::switched(&from, name));
@@ -130,6 +128,53 @@ pub fn switch_live(
         shared_dirs::ensure_for(store, from);
     }
     Ok(Ok(switched))
+}
+
+/// Why the rotator would not swap to `name`, if it would not: the reason
+/// `identify::candidates` recorded for it in the prelude's snapshot, taken
+/// under the lock just before the swap. "Whatever the rotator refuses, the
+/// switch refuses as well" (issue #1691): every skip reason refuses, the
+/// `excluded` and `parked` ones included, so a switch never moves a login
+/// that a running session, an auto-switch lease or a hosted login depends
+/// on. When `/proc` cannot be scanned every profile counts as having a
+/// running session, as it does for the rotator. The swap repeats the file
+/// checks behind `no login` and `no account`.
+pub(super) fn not_a_candidate(
+    store: &ProfileStore,
+    snap: &Snap,
+    name: &ProfileName,
+) -> Option<String> {
+    let skip = snap
+        .skips
+        .iter()
+        .find_map(|(n, s)| (n == name).then_some(*s))?;
+    let why = skip.as_str();
+    let detail = match skip {
+        // Checked by the caller; a live target moves nothing.
+        Skip::Live => return None,
+        Skip::NoLogin if !exists(&store.root().join(name.as_str()).join(CREDS)) => {
+            return Some(format!(
+                "profile {name} {NO_STORED_LOGIN_HINT} {name}` first"
+            ));
+        }
+        Skip::NoLogin => LOGIN_NOT_MOVABLE.to_string(),
+        Skip::SessionRunning if !snap.sees_sessions => {
+            "running sessions cannot be seen here, so its login may be in use".to_string()
+        }
+        Skip::SessionRunning => {
+            "a running process has CLAUDE_CONFIG_DIR set to it; end that session first".to_string()
+        }
+        Skip::Excluded => "it is in the auto-switch exclude list; set the list \
+                           without it with `amplihack profile auto-switch exclude` first"
+            .to_string(),
+        Skip::Leased => "auto-switch has lent its login to another profile's session".to_string(),
+        Skip::Hosting => "its directory holds another account's login for auto-switch".to_string(),
+        Skip::Parked => "auto-switch has parked its own login".to_string(),
+        Skip::NoAccount => "its .claude.json has no usable oauthAccount".to_string(),
+    };
+    Some(format!(
+        "profile {name} is not a rotate candidate ({why}): {detail}"
+    ))
 }
 
 /// Records the switch as the ledger's last cycle: outcome

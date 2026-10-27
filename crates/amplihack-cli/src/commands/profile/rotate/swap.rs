@@ -22,11 +22,11 @@ pub use super::recover::{RecoverOutcome, recover};
 
 const ADOPT_NAME: &str = "default-original";
 
-// The reasons the how-to quotes word for word; `tests_docs_sync` holds the
-// docs to them.
+// The reasons the how-to quotes word for word, held there by `tests_docs_sync`.
 const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
 const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
-const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with one link";
+pub(super) const LOGIN_NOT_MOVABLE: &str =
+    "a login file is not a private regular file with one link";
 const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
 const NO_EXCHANGE: &str = "atomic exchange is not supported here";
 const ALREADY_LOGGED_IN: &str = "already has a login";

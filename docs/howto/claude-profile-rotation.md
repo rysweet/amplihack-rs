@@ -210,8 +210,11 @@ swap, by the usual [rules](#when-a-swap-happens). Run
 
 ### When switch refuses
 
-`switch` checks everything before it moves anything. When it refuses, it
-exits with status 1 and writes no hold, no default, no ALERT and no swap.
+`switch` checks everything before it moves anything, and it refuses every
+profile the rotator would not swap to: the reasons in
+[Rotate candidates](../reference/profile-command.md#rotate-candidates). When
+it refuses, it exits with status 1 and writes no hold, no default, no ALERT
+and no swap.
 
 Before those checks it runs [recovery](#recovery), as every rotate cycle
 does. If an earlier swap was interrupted, recovery finishes or rolls it back
@@ -225,6 +228,11 @@ then refuses. Without a pending recovery, a refusal changes nothing.
 | `no login in ~/.claude; no swap` | Log in with plain `claude` first. `switch` never fills an empty `~/.claude`. |
 | `the account in ~/.claude is not the one the ledger names (live=work); no swap` | Someone ran `/login` in `~/.claude`; follow the steps in [Swap refused](#swap-refused). |
 | ``profile spare has no stored login; run `amplihack profile login spare` first`` | The profile has no `.credentials.json` of its own. Log it in, then switch. Not checked when `spare` is already live. |
+| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch. If the message says running sessions cannot be seen, `/proc` cannot be scanned here and no profile can be switched to; the rotator cannot swap there either. |
+| `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
+| `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
+| `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
+| `profile spare is not a rotate candidate (no login): ...` | `spare`'s `.credentials.json` is a symlink, not yours, readable by others or hard-linked. See [Swap refused](#swap-refused). |
 | Any reason in the [Swap refused](#swap-refused) table | As described there. |
 
 If the swap ran but the hold or the default could not be written, `switch`
