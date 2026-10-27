@@ -901,13 +901,37 @@ fn run_with_io_resumes_despite_an_unexpected_field_type() {
         "hook_event_name": "StopFailure",
         "session_id": "s",
         "error": "rate_limit",
-        "error_details": {"type": "rate_limit_error", "code": 429},
-        "stop_hook_active": "no"
+        "error_details": {"type": "rate_limit_error", "code": 429}
     })
     .to_string();
     let mut stderr = Vec::new();
     assert_eq!(run_with_io(payload.as_bytes(), &mut stderr, &mut d), 2);
     assert_eq!(stderr, format!("{RESUME_MSG}\n").as_bytes());
+}
+
+/// Crusty #1687 round 2: the loop guard is the one field that fails closed.
+/// The same payload with capacity waiting, plus a `stop_hook_active` that is
+/// present but not a boolean, stops the hook instead of resuming it.
+#[test]
+fn run_with_io_stops_on_a_wrongly_typed_stop_hook_active() {
+    for value in [json!("no"), json!("true"), json!(0), json!([])] {
+        let mut d = Fake::new(true, appears_at("swapped", 61, false));
+        let payload = json!({
+            "hook_event_name": "StopFailure",
+            "session_id": "s",
+            "error": "rate_limit",
+            "error_details": {"type": "rate_limit_error", "code": 429},
+            "stop_hook_active": value.clone()
+        })
+        .to_string();
+        let mut stderr = Vec::new();
+        assert_eq!(
+            run_with_io(payload.as_bytes(), &mut stderr, &mut d),
+            0,
+            "{value}"
+        );
+        assert!(stderr.is_empty(), "{value}");
+    }
 }
 
 #[test]
