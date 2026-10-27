@@ -10,12 +10,15 @@
 //!   Result<Result<Switched, AfterSwapFailure>, ProfileError>`.
 //!   `Switched::{Moved { from, to }, AlreadyLive(ProfileName)}`.
 //!   `AfterSwapFailure { what: &'static str, .. }` with `what` one of
-//!   `"rotation hold"` or `"default pointer"`: the swap ran, a later write
-//!   failed. Every refusal is `Err(ProfileError::RotateRefused(_))` and
-//!   writes no pin, no `.default`, no ledger ALERT and no swap.
-//! - `release(&ProfileStore) -> Result<bool, ProfileError>`: removes the pin
-//!   under the rotate lock; `true` when one was removed.
+//!   `"rotation hold"`, `"default pointer"` or `"rotate ledger"`: the swap
+//!   ran, a later write failed. Every refusal is
+//!   `Err(ProfileError::RotateRefused(_))` and writes no pin, no `.default`,
+//!   no ledger ALERT and no swap.
+//! - `release(&ProfileStore) -> Result<Released, ProfileError>`: removes the
+//!   pin and the default pointer together under the rotate lock;
+//!   `Released { pin, default }` says which were there.
 
+use super::Released;
 use super::cycle::Ctx;
 use super::ledger::{Phase, RotateLedger};
 use super::observe::snapshot;
@@ -485,26 +488,37 @@ fn a_failed_pointer_write_after_the_swap_is_a_partial_failure() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn release_removes_the_pin_and_reopens_the_gate() {
+fn release_removes_the_pin_and_the_default_together() {
     let e = env();
-    assert!(!release(&e.store).unwrap(), "nothing pinned yet");
+    let none = Released {
+        pin: false,
+        default: false,
+    };
+    assert_eq!(release(&e.store).unwrap(), none, "nothing pinned yet");
     switch(&e, "spare").unwrap();
-    assert!(release(&e.store).unwrap());
+    assert_eq!(
+        release(&e.store).unwrap(),
+        Released {
+            pin: true,
+            default: true
+        }
+    );
     assert_eq!(pin::read(&e.rs), PinState::None);
     assert_eq!(pin::gate(&pin::read(&e.rs)), Gate::Open);
-    assert!(!release(&e.store).unwrap(), "idempotent");
-    e.assert_finished();
     assert_eq!(
         pointer::read(&e.root).unwrap(),
-        Some(n("spare")),
-        "release touches only the pin; the caller clears .default"
+        None,
+        "the pointer is removed under the same lock as the pin"
     );
+    assert_eq!(release(&e.store).unwrap(), none, "idempotent");
+    e.assert_finished();
 }
 
 #[test]
 fn release_under_a_held_lock_is_refused_and_removes_nothing() {
     let e = env();
     pin::write(&e.rs, &n("spare")).unwrap();
+    pointer::write(&e.root, &n("spare")).unwrap();
     let before = fs::read(&e.rs.pin).unwrap();
     let state = State::new(&e.root).unwrap();
     let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
@@ -513,6 +527,22 @@ fn release_under_a_held_lock_is_refused_and_removes_nothing() {
         Err(ProfileError::RotateRefused(_))
     ));
     assert_eq!(fs::read(&e.rs.pin).unwrap(), before);
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
+}
+
+#[test]
+fn release_without_a_pin_still_waits_for_the_lock() {
+    // The presence check is under the lock: a `switch` that holds it may be
+    // between writing its pin and its pointer.
+    let e = env();
+    pointer::write(&e.root, &n("spare")).unwrap();
+    let state = State::new(&e.root).unwrap();
+    let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
+    assert!(matches!(
+        release(&e.store),
+        Err(ProfileError::RotateRefused(_))
+    ));
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
 }
 
 #[test]
@@ -520,11 +550,17 @@ fn release_refuses_a_non_empty_directory_at_the_pin_path() {
     let e = env();
     fs::create_dir(&e.rs.pin).unwrap();
     fs::write(e.rs.pin.join("inside"), "x").unwrap();
+    pointer::write(&e.root, &n("spare")).unwrap();
     assert!(matches!(
         release(&e.store),
         Err(ProfileError::RotateRefused(_))
     ));
     assert!(e.rs.pin.join("inside").exists());
+    assert_eq!(
+        pointer::read(&e.root).unwrap(),
+        Some(n("spare")),
+        "a pin that cannot be removed keeps the default too"
+    );
 }
 
 // --- The cycle sees the pin -------------------------------------------------

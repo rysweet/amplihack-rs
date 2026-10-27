@@ -138,7 +138,7 @@ and it measures nothing, so it starts no `claude` process and works with no
 left: you asked for `spare`, so the usage checks that stop a rotate swap do
 not apply.
 
-It also does two more things:
+It also does three more things:
 
 - **Sets the default.** `amplihack claude` with no `--profile` resolves to
   `spare`, which is the
@@ -153,7 +153,14 @@ It also does two more things:
   ```
 
   `amplihack profile rotate` prints the same line and exits 0, and
-  `rotate status` shows `last cycle: ... held`.
+  `rotate status` shows `hold: spare`.
+- **Wakes sessions stopped by a usage limit.** `switch` records the swap in
+  the rotator's ledger as a cycle with capacity, measured at the moment of
+  the switch. The
+  [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) resumes
+  sessions that stopped on a limit before the switch, within 15 seconds, as
+  it does after a rotator swap. The held cycles that follow keep that
+  record, so the hold does not undo it.
 
 If no profile owned the login in `~/.claude`, `switch` first keeps it as
 `default-original` (or the next free name), as the rotator does, and the
@@ -181,13 +188,12 @@ swap, by the usual [rules](#when-a-swap-happens). Run
 
 ### What the hold changes
 
-- **Sessions stopped by a usage limit are not resumed early.** A held cycle
-  measures nothing, so it never counts as capacity. The
-  [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) waits for
-  capacity only, so it does not resume them during the hold. A recipe step
-  under the usage-limit wait still reruns when its limit resets. To resume
-  sooner, run `amplihack profile switch --none`, or type `continue` in the
-  session yourself.
+- **A limit hit after the switch waits.** A session that stops on a limit
+  on the login you switched to is not resumed by that switch, because the
+  switch is older than the limit, and the held cycles measure nothing. It is
+  resumed by your next `switch`, by a `switch --none` followed by a rotator
+  cycle that finds capacity, or when its limit resets. To resume it yourself,
+  type `continue` in the session.
 - **The hold beats every rule that picks a target.** The cycle checks the
   hold before it measures or chooses a profile. The hold is its own file, so
   `.default` can stay unset for features that ask for that; `switch --none`
@@ -675,7 +681,8 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 2. If no rotator is running, the hook exits at once (`rotator-down`).
    Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
    cycle that started measuring after the limit hit and ended `swapped` or
-   `stayed` with no ALERT. After the first hour it reads the ledger
+   `stayed` with no ALERT, or for a
+   [`profile switch`](#switch-to-a-login-by-hand) made after the limit hit. After the first hour it reads the ledger
    every 5 minutes instead. It stops waiting if you turn auto-switch off
    (`disabled`), if you send a prompt in that session during the wait, for
    example `continue` (`moved-on`), or if the session exits

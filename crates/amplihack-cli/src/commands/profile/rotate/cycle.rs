@@ -4,7 +4,9 @@
 
 use super::decide::{Decision, Reading};
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
+use super::ledger::{
+    LastCycle, RotateLedger, RotateState, SWITCHED, alert_key, clear_alert, should_alert,
+};
 use super::log::{Sink, msg};
 use super::observe::{
     Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, snapshot,
@@ -246,9 +248,16 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
         note_live(&mut l, &first, t);
         clear_alert(&mut l);
-        // Nothing was measured, so no `measured_at` (#1659): the
-        // limit-resume hook never wakes sessions on a held cycle.
-        record(ctx, &mut l, CycleOutcome::Held, t, None)?;
+        if l.last_cycle.as_ref().is_some_and(|c| c.outcome == SWITCHED) {
+            // The switch's record stands for the whole hold: it is what lets
+            // the limit-resume hook wake sessions stopped before the switch.
+            ctx.rs.save_ledger(&l)?;
+        } else {
+            // Nothing was measured, so no `measured_at` (#1659), and `held`
+            // is not capacity: a hold with no switch record (a pin written
+            // by hand or by an older build) wakes no session.
+            record(ctx, &mut l, CycleOutcome::Held, t, None)?;
+        }
         return Ok(CycleOutcome::Held);
     }
     drop(lock);

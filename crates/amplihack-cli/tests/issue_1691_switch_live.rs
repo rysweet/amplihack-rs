@@ -167,14 +167,16 @@ fn rotate_while_pinned_holds_and_measures_nothing() {
     );
     assert_eq!(f.logins(), before, "nothing moved");
     assert!(f.probe_envs().is_empty(), "no usage probe while pinned");
-    assert_eq!(f.ledger().unwrap()["last_cycle"]["outcome"], "held");
+    assert_eq!(
+        f.ledger().unwrap()["last_cycle"]["outcome"],
+        "switched",
+        "a held cycle keeps the switch as the last cycle"
+    );
 
     let status = f.ok(&["profile", "rotate", "status"]);
-    assert!(
-        text(&status.stdout).contains("held"),
-        "{}",
-        text(&status.stdout)
-    );
+    let s = text(&status.stdout);
+    assert!(s.lines().any(|l| l == "hold: spare"), "{s}");
+    assert!(s.contains(" switched"), "{s}");
     assert_log_clean(&f);
 }
 
@@ -502,23 +504,33 @@ fn switch_under_a_held_lock_after_an_earlier_switch_keeps_the_old_hold() {
     drop(lock);
 }
 
-// --- D-Release: `--none` with no pin needs no lock ---------------------------
+// --- D-Release: `--none` is one locked operation ----------------------------
 
 #[test]
-fn none_without_a_pin_succeeds_under_a_busy_lock() {
+fn none_without_a_pin_still_refuses_under_a_busy_lock() {
+    // The pin check, the pin removal and the `.default` removal share the
+    // lock a switch holds while it writes both, so they cannot interleave.
     let f = Fixture::new();
+    fs::write(f.root.join(".default"), "work\n").unwrap();
+    fs::set_permissions(f.root.join(".default"), fs::Permissions::from_mode(0o600)).unwrap();
     let lock = hold_state_lock(&f);
-    let out = f.ok(&["profile", "switch", "--none"]);
-    assert_eq!(text(&out.stdout), "No default profile was set.\n");
+    let out = f.run(&["profile", "switch", "--none"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
     assert!(!pin_path(&f).exists());
+    assert_eq!(
+        fs::read_to_string(f.root.join(".default")).unwrap(),
+        "work\n",
+        "a refused --none leaves the default"
+    );
+    drop(lock);
+    let out = f.ok(&["profile", "switch", "--none"]);
+    assert_eq!(text(&out.stdout), "Default profile cleared.\n");
     assert_eq!(
         ino(&f.home_login()),
         Some(f.live_ino),
         "--none moves nothing"
     );
-    drop(lock);
 }
-
 #[test]
 fn rotate_after_none_is_free_to_swap_again() {
     let f = Fixture::new();
@@ -573,12 +585,14 @@ fn switch_works_with_no_claude_on_path() {
         .output()
         .unwrap();
     assert!(rot.status.success(), "{}", text(&rot.stderr));
-    assert_eq!(f.ledger().unwrap()["last_cycle"]["outcome"], "held");
-    assert!(
-        f.ledger().unwrap()["last_cycle"]
-            .get("measured_at")
-            .is_none_or(serde_json::Value::is_null),
-        "a held cycle measured nothing"
+    let last = &f.ledger().unwrap()["last_cycle"];
+    assert_eq!(
+        last["outcome"], "switched",
+        "the held cycle kept it: {last}"
+    );
+    assert_eq!(
+        last["measured_at"], last["at"],
+        "the only measurement on record is the switch itself: {last}"
     );
 }
 

@@ -440,16 +440,14 @@ const NOT_SET: &str = "No default profile was set.";
 
 const RELEASED: &str = "Rotation released; the rotator picks the best login on its next cycle.";
 
-/// Releases the rotation pin, then removes the default pointer, valid or
-/// not; the message to print. When the pin cannot be released, nothing
-/// changes.
+/// Releases the rotation pin and removes the default pointer, valid or not,
+/// as one locked operation; the message to print. When the pin cannot be
+/// released, nothing changes.
 fn clear_default(store: &ProfileStore) -> Result<String, ProfileError> {
     store.check_root_not_symlink()?;
     let released = rotate::release(store)?;
-    let existed = pointer::exists(store.root());
-    pointer::clear(store.root())?;
-    let mut out = String::from(if existed { CLEARED } else { NOT_SET });
-    if released {
+    let mut out = String::from(if released.default { CLEARED } else { NOT_SET });
+    if released.pin {
         out.push('\n');
         out.push_str(RELEASED);
     }

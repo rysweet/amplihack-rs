@@ -1,20 +1,22 @@
 //! `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
 //! with the rotator's own prelude (lock, recovery, identify) and swap, then,
-//! still under the lock, pins rotation to NAME and makes it the default.
-//! `release` removes the pin for `profile switch --none`. Prints nothing,
+//! still under the lock, pins rotation to NAME, makes it the default and
+//! records the switch as the ledger's last cycle, so the limit-resume hook
+//! wakes sessions stopped before it. `release` removes the pin and the
+//! default together, under the same lock, for `profile switch --none`. Prints nothing,
 //! never looks for `claude` and never starts the rotator; see "Rotate
 //! switch" in docs/reference/profile-command.md.
 
-use super::TuneFlags;
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
 use super::identify::LiveId;
-use super::ledger::RotateState;
+use super::ledger::{LastCycle, RotateState, SWITCHED, clear_alert};
 use super::log::msg;
 use super::observe::live_alert;
 use super::pin;
 use super::prelude::{Prelude, locked_prelude};
 use super::settings;
 use super::swap::{self, NO_STORED_LOGIN_HINT, Source};
+use super::{Released, TuneFlags};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{CREDS, State, exists, now};
 use crate::commands::profile::name::ProfileName;
@@ -117,6 +119,9 @@ pub fn switch_live(
     if let Err(err) = pointer::write(store.root(), name) {
         return after("default pointer", err);
     }
+    if let Err(err) = record_switch(&ctx.rs) {
+        return after("rotate ledger", err);
+    }
     drop(lock);
     // Issue #1634: link the session dirs of both profiles, as a rotate swap
     // does, after the lock is released.
@@ -127,23 +132,37 @@ pub fn switch_live(
     Ok(Ok(switched))
 }
 
-/// Removes the pin under the rotate lock, for `profile switch --none`;
-/// `true` when one was removed. Without a pin there is nothing to release
-/// and the rotate state is not touched.
-pub fn release(store: &ProfileStore) -> Result<bool, ProfileError> {
+/// Records the switch as the ledger's last cycle: outcome
+/// [`SWITCHED`], measured now, and no alert. The person chose this login, so
+/// the limit-resume hook treats it as capacity measured at the switch: a
+/// session stopped on a limit before now is woken, one stopped later is not.
+/// Held cycles leave this record in place (`cycle.rs`).
+fn record_switch(rs: &RotateState) -> Result<(), ProfileError> {
+    let mut l = rs.load_ledger()?.unwrap_or_default();
+    let t = now();
+    clear_alert(&mut l);
+    l.last_cycle = Some(LastCycle {
+        at: t,
+        measured_at: Some(t),
+        outcome: SWITCHED.into(),
+    });
+    rs.save_ledger(&l)
+}
+
+/// `profile switch --none`: under the rotate lock that `switch_live` holds
+/// while it writes the pin and the default pointer, checks for and removes
+/// both, so a concurrent switch either finishes first (and is undone) or
+/// starts after (and stands); pin and default never disagree. When the lock is busy nothing is removed.
+pub fn release(store: &ProfileStore) -> Result<Released, ProfileError> {
     let rs = RotateState::new(store.root());
-    // Checked before the lock, so `--none` with no pin never waits on a
-    // running cycle. Known race: a `switch B` that takes the lock between
-    // this check and the caller's `.default` removal leaves a pin on B with
-    // no `.default`. Both commands are the same user's; rerun either one.
-    if !pin::present(&rs) {
-        return Ok(false);
-    }
     prototype_guard(store.root())?;
-    rs.ensure()?;
     let state = State::new(store.root())?;
     let Some(_lock) = state.try_lock(LOCK_WAIT)? else {
         return Err(lock_busy());
     };
-    pin::clear(&rs)
+    // The pin first: when it cannot be removed, `.default` stays too.
+    let pin = pin::clear(&rs)?;
+    let default = pointer::exists(store.root());
+    pointer::clear(store.root())?;
+    Ok(Released { pin, default })
 }

@@ -299,18 +299,32 @@ pub(in crate::commands::profile) fn switch_live(
     }
 }
 
-/// Removes the rotation pin for `profile switch --none`; `true` when one was
-/// removed. Off Unix there is no rotator and so no pin.
+/// What `profile switch --none` removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Released {
+    /// Something was at the rotation pin path.
+    pub pin: bool,
+    /// Something was at the default pointer path.
+    pub default: bool,
+}
+
+/// `profile switch --none`: removes the rotation pin and the default
+/// pointer as one operation under the rotate lock; what was there. Off Unix
+/// there is no rotator and so no pin, and only the pointer is removed.
 pub(in crate::commands::profile) fn release(
     store: &ProfileStore,
-) -> Result<bool, super::ProfileError> {
+) -> Result<Released, super::ProfileError> {
     #[cfg(unix)]
     {
         switch::release(store)
     }
     #[cfg(not(unix))]
     {
-        let _ = store;
-        Ok(false)
+        let default = super::pointer::exists(store.root());
+        super::pointer::clear(store.root())?;
+        Ok(Released {
+            pin: false,
+            default,
+        })
     }
 }

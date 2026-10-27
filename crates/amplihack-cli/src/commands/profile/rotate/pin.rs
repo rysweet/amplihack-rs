@@ -71,11 +71,6 @@ pub fn write(rs: &RotateState, name: &ProfileName) -> Result<(), ProfileError> {
     write_private_atomic(&rs.dir, "pin", format!("{name}\n").as_bytes()).map_err(ProfileError::Io)
 }
 
-/// Whether anything, valid or not, is at the pin path.
-pub fn present(rs: &RotateState) -> bool {
-    fs::symlink_metadata(&rs.pin).is_ok()
-}
-
 /// Removes the pin: a file, a symlink (not its target) or an empty
 /// directory. Anything else is refused and left alone. `true` when
 /// something was removed.

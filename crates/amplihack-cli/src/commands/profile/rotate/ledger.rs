@@ -20,6 +20,11 @@ const MAX_STATE: u64 = 64 * 1024;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
 
+/// The `last_cycle.outcome` written by `profile switch NAME` (issue #1691):
+/// the person vouches for NAME's login, so the limit-resume hook counts it as
+/// capacity measured at the switch. A held cycle never replaces it.
+pub const SWITCHED: &str = "switched";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
