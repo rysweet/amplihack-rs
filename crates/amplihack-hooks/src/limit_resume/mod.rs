@@ -9,7 +9,8 @@
 //!
 //! Order of checks (see [`decide::gate`]): auto-switch on, a limit stop
 //! with a usable session id, no `stop_hook_active`, an event not resumed
-//! before, a session under its cap. Then the hook reads the rotate ledger
+//! before, a session under its cap, a rotator that can record a cycle
+//! (see [`rotator_status::rotator_down`]). Then the hook reads the rotate ledger
 //! every `POLL_INTERVAL` for the first hour and every `SLOW_POLL_INTERVAL`
 //! after that, for up to `MAX_WAIT` (a week), plus once at the deadline,
 //! and resumes only after [`guard::GuardStore::commit`] recorded the
@@ -19,8 +20,8 @@
 //! [`record_prompt`], called by the `UserPromptSubmit` hook).
 //!
 //! The hook reads only the toggle, the profile-root pointer, the rotate
-//! ledger and its own resume state; it never opens a login file or the
-//! transcript.
+//! ledger and pid file, the rotator's `/proc/<pid>/cmdline` and its own
+//! resume state; it never opens a login file or the transcript.
 
 pub mod decide;
 pub mod guard;
@@ -68,6 +69,9 @@ pub enum Outcome {
     StopHookActive,
     /// The Claude Code session that started the hook has exited.
     SessionGone,
+    /// No rotator runs, or its ledger cannot be read, when the hook starts:
+    /// no fresh cycle can come, so the hook does not wait.
+    RotatorDown,
     /// The resume state could not be read or written safely.
     GuardFailed,
     /// Auto-switch is off. Logged only when it was turned off while
@@ -87,6 +91,7 @@ impl Outcome {
             Self::Cap => "cap",
             Self::StopHookActive => "stop-hook-active",
             Self::SessionGone => "session-gone",
+            Self::RotatorDown => "rotator-down",
             Self::GuardFailed => "guard-failed",
             Self::Disabled => "disabled",
             Self::NotLimit => "not-limit",
@@ -113,6 +118,9 @@ pub trait Deps {
     fn log(&mut self, now: i64, entry: &LogEntry);
     /// Whether the Claude Code session that started the hook still runs.
     fn session_alive(&mut self) -> bool;
+    /// Whether no rotator can record a cycle (see
+    /// [`rotator_status::rotator_down`]).
+    fn rotator_down(&mut self, now: i64) -> bool;
 }
 
 /// Decides one hook invocation.
@@ -189,6 +197,9 @@ pub fn run_with<D: Deps + ?Sized>(input: &HookInput, deps: &mut D) -> Outcome {
         Gate::Duplicate => return finish(deps, start, Outcome::Duplicate, None),
         Gate::Cap => return finish(deps, start, Outcome::Cap, None),
         _ => {}
+    }
+    if deps.rotator_down(start) {
+        return finish(deps, start, Outcome::RotatorDown, first.as_ref());
     }
 
     // Lets the prompt hook record a prompt even during the first-ever wait.
@@ -312,6 +323,10 @@ impl Deps for SystemDeps {
         // When Claude Code exits, the hook is re-parented (to init or a
         // subreaper), so a changed parent means the session is gone.
         self.parent != 1 && std::os::unix::process::parent_id() == self.parent
+    }
+
+    fn rotator_down(&mut self, now: i64) -> bool {
+        rotator_status::rotator_down(&self.root, now)
     }
 }
 

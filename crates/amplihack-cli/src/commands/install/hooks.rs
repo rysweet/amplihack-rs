@@ -118,18 +118,37 @@ pub(super) fn legacy_hook_script_name(subcmd: &str) -> Option<&'static str> {
 }
 
 /// Type-directed idempotency check: the wrapper is one of ours for `spec`
-/// (see [`is_own_wrapper`]) and its `asyncRewake` flag, absent meaning
-/// false, is the spec's. A wrapper that is ours but differs in the flag is
-/// stale: it does not count as registered and install replaces it.
+/// (see [`is_own_wrapper`]) and its `timeout` and `asyncRewake` flag
+/// (absent meaning false) are the spec's. A wrapper that is ours but
+/// differs in either is stale: it does not count as registered and install
+/// replaces it.
 pub(super) fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool {
-    let async_rewake = wrapper
+    let hook = wrapper
         .get("hooks")
         .and_then(Value::as_array)
-        .and_then(|entries| entries.first())
-        .and_then(|hook| hook.get("asyncRewake"))
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    is_own_wrapper(wrapper, spec, hook_system) && async_rewake == spec.async_rewake
+        .and_then(|entries| entries.first());
+    let field = |key| hook.and_then(|h| h.get(key));
+    is_own_wrapper(wrapper, spec, hook_system)
+        && field("timeout").and_then(Value::as_u64) == spec.timeout
+        && field("asyncRewake")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            == spec.async_rewake
+}
+
+/// Removes amplihack's wrappers for `spec` from `settings`, and the event
+/// itself when no wrapper is left. Every other wrapper stays.
+pub(super) fn remove_hook_wrappers(settings: &mut Value, spec: &HookSpec, hook_system: &str) {
+    let Some(hooks) = settings.get_mut("hooks").and_then(Value::as_object_mut) else {
+        return;
+    };
+    let Some(wrappers) = hooks.get_mut(spec.event).and_then(Value::as_array_mut) else {
+        return;
+    };
+    wrappers.retain(|wrapper| !is_own_wrapper(wrapper, spec, hook_system));
+    if wrappers.is_empty() {
+        hooks.remove(spec.event);
+    }
 }
 
 /// Whether `wrapper` is amplihack's registration for `spec`.
@@ -138,7 +157,7 @@ pub(super) fn wrapper_matches(wrapper: &Value, spec: &HookSpec, hook_system: &st
 /// a legacy Python hook path for the corresponding hook. This lets a fresh
 /// Rust install replace older registrations in place instead of appending
 /// duplicate wrappers. No Python hooks are shipped — this is migration-only.
-fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool {
+pub(super) fn is_own_wrapper(wrapper: &Value, spec: &HookSpec, hook_system: &str) -> bool {
     let Some(wrapper_obj) = wrapper.as_object() else {
         return false;
     };

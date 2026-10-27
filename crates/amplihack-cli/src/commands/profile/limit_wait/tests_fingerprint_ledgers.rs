@@ -110,3 +110,26 @@ fn a_stale_or_alerted_rotator_cycle_is_no_capacity() {
     e.rotator_cycle("a", now - 10, "alerted", false);
     assert!(!home.rotator_capacity(start), "alerted outcome");
 }
+
+/// #1659 on #1625's wait: `measured_at` decides, not the time the cycle was
+/// recorded. A cycle recorded well after the limit whose probe began before
+/// it is no capacity; one whose probe began a second after the limit is.
+#[test]
+fn the_wait_reads_freshness_from_measured_at() {
+    let e = env();
+    let now = crate::commands::profile::fsx::now();
+    let start = now - 600;
+    let home = e.home_watch();
+    e.rotator_cycle_measured("a", now - 10, start - 1);
+    assert!(
+        !home.rotator_capacity(start),
+        "probe began before the limit"
+    );
+    e.rotator_cycle_measured("a", now - 10, start);
+    assert!(!home.rotator_capacity(start), "probe began at the limit");
+    e.rotator_cycle_measured("a", start + 5, start + 1);
+    assert!(
+        home.rotator_capacity(start),
+        "probe began after the limit, recorded inside the old 60-second margin"
+    );
+}

@@ -2574,7 +2574,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at` and `outcome`). |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; and `outcome`). |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `rotate.log` | The log. |
@@ -2595,7 +2595,7 @@ Example ledger, with the account value replaced:
   "since": 1760791205,
   "swapped_at": 1760791205,
   "previous": "work",
-  "last_cycle": { "at": 1760791805, "outcome": "stayed" }
+  "last_cycle": { "at": 1760791805, "measured_at": 1760791774, "outcome": "stayed" }
 }
 ```
 
@@ -2917,16 +2917,17 @@ The checks run in this order. The first one that fails decides the outcome.
 |------|-------|---------------|
 | 1 | The [profile root](#profile-root) resolves (`AMPLIHACK_CLAUDE_PROFILE_ROOT`, then `~/.amplihack/profile-root`, then `~/.amplihack/claude-profiles`) to an absolute path with no `..` component. The pointer file must not be writable by group or others, and auto-switch is on by the same rule as `auto-switch status`. The pointer file is read with no-follow and at most 4 KiB. | Exit `0`. Nothing under the root is created or written, and nothing but the toggle and the pointer file is read. Nothing is logged. |
 | 2 | The stop was a usage limit (see [Limit detection](#limit-detection)), and `session_id` is present and at most 256 bytes. | Exit `0`. Nothing is logged. |
-| 3 | `stop_hook_active` is absent or `false`. The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
+| 3 | `stop_hook_active` is absent, `null` or `false` (any other non-boolean value counts as `true`). The ledger is read once here, for the `live` profile that goes into the [event key](#resume-state-directory). | Exit `0`, outcome `stop-hook-active`. |
 | 4 | No marker exists for this limit event. | Exit `0`, outcome `duplicate`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe (see [Resume state directory](#resume-state-directory)). |
 | 5 | This session has resumed fewer than 3 times in the last 24 hours. | Exit `0`, outcome `cap`, or `guard-failed` if `resume/` or one of its subdirectories is unsafe. |
-| 6 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. Then a [fresh cycle with capacity](#capacity-for-a-resume) appears within 7 days. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if you sent a prompt in that session; `guard-failed` if `resume/` cannot be prepared or the prompt marker cannot be read safely. |
-| 7 | No prompt was sent in the session since the hook started (checked once more). Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
-| 8 | — | Exit `2` with the resume message, outcome `resumed`. |
+| 6 | The rotator can record a cycle: `<root>/.auto-switch.d/rotate/rotate.pid` names a running `amplihack profile rotate watch` process of yours (checked in `/proc`; skipped where there is none), and the ledger, if present, can be read as described in [Capacity for a resume](#capacity-for-a-resume). | Exit `0` without waiting, outcome `rotator-down`. |
+| 7 | `resume/` and `resume/prompted/` exist or can be created safely, so a prompt during the wait can be recorded; prompt markers older than 7 days and 1 hour are removed. Then a [fresh cycle with capacity](#capacity-for-a-resume) appears within 7 days. The ledger is read every 15 seconds, and once more at the deadline. Each read also checks that auto-switch is still on and that the session has not [moved on](#moved-on). | Exit `0`, outcome `no-capacity-timeout`; `disabled` if auto-switch was turned off while waiting; `moved-on` if you sent a prompt in that session; `guard-failed` if `resume/` cannot be prepared or the prompt marker cannot be read safely. |
+| 8 | No prompt was sent in the session since the hook started (checked once more). Then, under the resume lock, steps 4 and 5 still pass, the session has no resume after this hook's start, the event marker is created and the session record is updated and synced to disk. | Exit `0`, outcome `moved-on` if a prompt was sent; `duplicate` if another hook resumed this event or this session first; `cap` if the session reached its cap; `guard-failed` if the lock is not taken within 5 seconds or any write fails. |
+| 9 | — | Exit `2` with the resume message, outcome `resumed`. |
 
 Steps 4 and 5 run once without the lock, so a duplicate or capped session
 exits at once instead of waiting up to 7 days, and again under the lock in
-step 7. The lock is not held while waiting in step 6. The marker and session record
+step 8. The lock is not held while waiting in step 7. The marker and session record
 are on disk before the hook exits `2`, so a resume that is cut short never
 repeats.
 
@@ -2941,7 +2942,7 @@ resume.
 The session moved on when you sent a prompt in that session during the wait.
 amplihack's `UserPromptSubmit` hook (`amplihack-hooks user-prompt-submit`)
 records the time of each prompt in `resume/prompted/<sha256 hex>`; the waiting
-hook reads it at every ledger read and right before the commit in step 7, and
+hook reads it at every ledger read and right before the commit in step 8, and
 exits `0` with outcome `moved-on` when the time is after its own start. The
 hook's own wake is not a prompt, so the woken turn does not count. Background
 task reports and local commands such as `/usage` are not prompts either, so
@@ -2962,8 +2963,11 @@ error. Any other value, an empty or missing `error`, or `unknown` is not a
 limit, whatever `last_assistant_message` or `error_details` say; message text
 is never matched.
 
-Standard input is read up to 1 MiB; a larger or malformed payload, or an
-`error` that is not a string, exits `0` with nothing logged.
+Standard input is read up to 1 MiB; a larger payload or one that is not a
+JSON object exits `0` with nothing logged. A known field of an unexpected
+type (for example `error_details` sent as an object) is read as absent, so it
+neither stops the hook nor reaches the event key; an `error` that is not a
+string is therefore not a limit.
 
 #### Capacity for a resume
 
@@ -2971,19 +2975,41 @@ The hook reads `<root>/.auto-switch.d/rotate/ledger.json` (see
 [Rotate state directory](#rotate-state-directory)) and uses only `live`,
 `alert` and `last_cycle`. There is capacity when all of these hold:
 
-- `last_cycle.at` is more than 60 seconds after the time the hook started;
+- `last_cycle.measured_at` is after the time the hook started, so the cycle's
+  usage probes began after the limit hit;
 - `last_cycle.outcome` is `swapped` or `stayed`;
 - `alert` is not set.
 
-The rotator sets `last_cycle.at` when it records the result, at the end of a
-cycle, not when the cycle starts. A cycle that was already measuring when the
-limit hit can therefore be recorded a few seconds after the hook starts, with
-readings taken before the limit. The 60-second margin is longer than the
-default probe timeout of 30 seconds, so any cycle recorded after the margin
-started its probes after the hook did. If `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` is set
-above about 50 seconds, an older cycle can still count, and one resume may be
-spent on a login that is still at its limit; the per-event and per-session
-caps bound the cost.
+`last_cycle.at` is set when the cycle ends, so a cycle that was already
+measuring when the limit hit can be recorded after the hook starts with
+readings taken before the limit; `measured_at` rules it out whatever the
+probe timeout. A ledger written by a rotator older than
+[#1659](https://github.com/rysweet/amplihack-rs/issues/1659), which has no
+`measured_at`, needs `last_cycle.at` more than 60 seconds after the hook
+started instead.
+
+A rotator started before an upgrade keeps running the old binary. While it
+runs, `amplihack install` and a one-shot `amplihack profile rotate` print one
+line naming its pid and how to restart it, and every ledger write leaves out
+`measured_at`, which that binary would reject. The rotator is matched by its
+`/proc/<pid>/exe` file, so a binary replaced at the same path counts as
+another. From this version on the rotator ignores ledger fields it does not
+know.
+
+Going back to an amplihack older than #1659 is not covered by that
+protection. The older rotator rejects a ledger that has
+`last_cycle.measured_at`, never rewrites a ledger it cannot read, and logs a
+failed cycle every interval without rotating again. Nothing else reports it:
+a limit-resume hook still finds a running rotator and waits its full 7 days.
+Before the older binary runs, including a launch that would
+[start the rotator automatically](#rotate-autostart), stop the rotator with
+this version (`amplihack profile rotate stop`), then delete
+`<root>/.auto-switch.d/rotate/ledger.json`, then start the older rotator.
+The ledger holds only bookkeeping; the next cycle works out the live profile
+again from the accounts. Deleting it also clears the swap hold and the alert
+de-duplication key, so the first cycle may swap or alert once more. If an
+older rotator is already running and logging failures, the same three steps,
+with `rotate stop` run by either binary, recover it.
 
 Any outcome other than `swapped` or `stayed` (`alerted`, `skipped`, `idle`,
 or one the hook does not know), a missing ledger, or a ledger that is not
@@ -2993,7 +3019,8 @@ rotator's thresholds itself.
 The hook reads the ledger more loosely than the rotator does: it ignores
 unknown fields, but still requires `"version": 1`, at most 64 KiB, a regular
 file owned by you, not a symlink and not writable by group or others. A
-`last_cycle.at` of 0 or more than 300 seconds in the future is ignored. A
+`last_cycle.at` or `measured_at` of 0 or more than 300 seconds in the future
+is ignored. A
 `live` value that fails the [name rules](#name-rules) is logged as `-`.
 
 #### Resume state directory
@@ -3038,6 +3065,7 @@ account IDs or tokens. Failing to write it does not change the outcome.
 | `cap` | The session already resumed 3 times in 24 hours. |
 | `stop-hook-active` | Claude Code reported a stop hook already running. |
 | `session-gone` | The Claude Code session that started the hook exited during the wait (the hook's parent process changed). |
+| `rotator-down` | When the hook started, no rotator was running, or its ledger could not be read (for example a newer version). The hook did not wait. |
 | `guard-failed` | `resume/`, the lock, a marker or the session record could not be used safely. |
 
 #### Resume limits
@@ -3046,7 +3074,7 @@ account IDs or tokens. Failing to write it does not change the outcome.
 |----------|-------|
 | Wait for capacity | 604800 s (7 days) |
 | Ledger read interval | 15 s for the first hour, then 300 s |
-| Freshness margin after hook start | 60 s |
+| Freshness margin without `measured_at` | 60 s |
 | Registered hook timeout | 608400 s |
 | Resumes per session | 3 per 24 hours |
 | Resumes per limit event | 1 |
@@ -3232,7 +3260,7 @@ The wait sleeps in slices of at most one second and stops at the first of:
 | `max reached` | the `max_wait` deadline passed | yes |
 | `step timeout` | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no |
 | `login changed` | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
-| `rotator capacity` | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped` or `stayed`, no alert) more than 60 s after the wait began | yes |
+| `rotator capacity` | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped` or `stayed`, no alert) whose `measured_at` is after the wait began, or, from a rotator that writes no `measured_at`, recorded more than 60 s after it | yes |
 
 `rotator capacity` uses the rule the [limit-resume hook](#capacity-for-a-resume)
 uses (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`), so

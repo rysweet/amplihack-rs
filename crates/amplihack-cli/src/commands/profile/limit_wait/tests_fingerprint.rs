@@ -90,13 +90,25 @@ impl Env {
         self.rotator_cycle(live, 1, "stayed", false);
     }
 
-    /// The rotate ledger (`profile rotate`) with its last cycle.
+    /// The rotate ledger (`profile rotate`) with its last cycle, as a
+    /// rotator older than #1659 writes it: no `measured_at`.
     pub(super) fn rotator_cycle(&self, live: &str, at: i64, outcome: &str, alert: bool) {
         let alert = if alert { r#""no capacity""# } else { "null" };
         private(
             &rotate_ledger(self.store.root()),
             &format!(
                 r#"{{"version":1,"live":"{live}","alert":{alert},"last_cycle":{{"at":{at},"outcome":"{outcome}"}}}}"#
+            ),
+        );
+    }
+
+    /// The rotate ledger with a last cycle that began measuring at
+    /// `measured_at` and was recorded at `at`, as a #1659 rotator writes it.
+    pub(super) fn rotator_cycle_measured(&self, live: &str, at: i64, measured_at: i64) {
+        private(
+            &rotate_ledger(self.store.root()),
+            &format!(
+                r#"{{"version":1,"live":"{live}","alert":null,"last_cycle":{{"at":{at},"measured_at":{measured_at},"outcome":"swapped"}}}}"#
             ),
         );
     }

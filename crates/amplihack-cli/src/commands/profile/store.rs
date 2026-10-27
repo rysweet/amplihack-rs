@@ -8,7 +8,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+pub use amplihack_utils::rotator_status::ROOT_ENV;
 const SHARED_ASSET_DIRS: &[&str] = &["agents", "commands", "output-styles", "rules", "skills"];
 const MAX_COPY_DEPTH: usize = 16;
 const MAX_COPY_ENTRIES: usize = 5_000;

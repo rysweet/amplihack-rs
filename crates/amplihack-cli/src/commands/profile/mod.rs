@@ -75,6 +75,8 @@ use clap::Subcommand;
 use name::ProfileName;
 use root_cmd::{render_list, render_show};
 pub(crate) use rotate::autostart_on_launch;
+#[cfg(unix)]
+pub(crate) use rotate::warn_foreign_rotator;
 pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;

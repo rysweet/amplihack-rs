@@ -137,6 +137,15 @@ fn a_cycle_that_stays_moves_nothing_and_records_the_cycle() {
     f.assert_each_login_once();
     let ledger = f.ledger().expect("last_cycle recorded");
     assert_eq!(ledger["last_cycle"]["outcome"], "stayed");
+    // Issue #1659: when measuring began, for the limit-resume hook.
+    let (measured, at) = (
+        ledger["last_cycle"]["measured_at"].as_i64(),
+        ledger["last_cycle"]["at"].as_i64(),
+    );
+    assert!(
+        measured.is_some_and(|m| at.is_some_and(|at| 0 < m && m <= at)),
+        "{ledger}"
+    );
 }
 
 #[test]
@@ -396,4 +405,69 @@ fn probes_get_no_rotate_settings_and_the_live_probe_has_no_config_dir() {
     for e in &envs {
         assert!(!e.contains("AMPLIHACK_ROTATE"), "{e}");
     }
+}
+
+/// A stand-in for a rotator started from an older amplihack binary: a
+/// process whose command line names `profile rotate watch` but whose
+/// executable is not this build's. Killed on drop.
+struct OldRotator(std::process::Child);
+
+impl OldRotator {
+    fn start(f: &Fixture) -> Self {
+        // A loop keeps `sh` itself running (it never exec's into `sleep`,
+        // which would replace the command line the rotator check reads), and
+        // the short sleep means no orphan outlives the kill by more than a
+        // second. No inherited pipes, so nextest sees no leak.
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "while :; do sleep 1; done",
+                "amplihack",
+                "profile",
+                "rotate",
+                "watch",
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let dir = f.rotate_dir();
+        fs::create_dir_all(&dir).unwrap();
+        for d in [dir.parent().unwrap(), dir.as_path()] {
+            fs::set_permissions(d, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        }
+        fs::write(dir.join("rotate.pid"), format!("{}\n", child.id())).unwrap();
+        Self(child)
+    }
+}
+
+impl Drop for OldRotator {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Issue #1659: beside a rotator from another binary, a one-shot cycle says
+/// how to restart it and writes the ledger without fields that binary would
+/// reject, so it never reads the ledger as inconsistent.
+#[test]
+fn a_one_shot_beside_an_older_rotator_keeps_the_ledger_readable_to_it() {
+    let f = Fixture::new();
+    f.usage("work", 20, 20);
+    let _old = OldRotator::start(&f);
+    let out = f.ok(&["profile", "rotate"]);
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("runs another amplihack binary")
+            && stderr.contains("amplihack profile rotate stop && amplihack profile rotate start"),
+        "{stderr}"
+    );
+    let ledger = f.ledger().expect("last_cycle recorded");
+    assert_eq!(ledger["last_cycle"]["outcome"], "stayed");
+    assert!(
+        ledger["last_cycle"].get("measured_at").is_none(),
+        "{ledger}"
+    );
 }

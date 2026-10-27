@@ -53,8 +53,6 @@ mod tests_mv;
 #[cfg(all(test, unix))]
 mod tests_record;
 #[cfg(all(test, unix))]
-mod tests_status_drift;
-#[cfg(all(test, unix))]
 mod tests_usage;
 
 use super::ProfileError;

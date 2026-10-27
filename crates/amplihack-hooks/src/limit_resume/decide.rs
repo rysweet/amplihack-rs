@@ -113,8 +113,8 @@ pub fn gate(f: &Facts) -> Gate {
     }
 }
 
-/// The rotator recorded a cycle with capacity more than
-/// `FRESH_MARGIN_SECS` after the hook started at `start`.
+/// The rotator recorded a cycle with capacity, measured after the hook
+/// started at `start` (see [`CycleStatus::fresh_capacity`]).
 pub fn fresh_capacity(status: Option<&CycleStatus>, start: i64) -> bool {
     status.is_some_and(|s| s.fresh_capacity(start))
 }
