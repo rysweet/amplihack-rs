@@ -259,6 +259,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn spawn_keeps_child_in_foreground_process_group() {
+        // Tests that rewrite PATH hold this lock; without it `sleep` can
+        // fail to resolve while one of them runs.
+        let _guard = home_env_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let mut cmd = Command::new("sleep");
         cmd.arg("60");
         let child = ManagedChild::spawn(cmd).unwrap();

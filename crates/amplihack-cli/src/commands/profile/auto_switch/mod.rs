@@ -18,7 +18,7 @@ mod cli;
 #[cfg(unix)]
 mod config;
 #[cfg(unix)]
-mod fsx;
+pub(super) mod fsx;
 #[cfg(unix)]
 pub(super) mod kit;
 #[cfg(unix)]
@@ -26,7 +26,7 @@ mod liveness;
 #[cfg(unix)]
 mod mv;
 #[cfg(unix)]
-mod rerun;
+pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
 #[cfg(unix)]
@@ -44,6 +44,8 @@ mod tests_capacity;
 mod tests_config;
 #[cfg(test)]
 mod tests_contract;
+#[cfg(all(test, unix))]
+mod tests_exhausted_reset;
 #[cfg(all(test, unix))]
 mod tests_liveness;
 #[cfg(all(test, unix))]
@@ -74,6 +76,12 @@ pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, wr
 pub(super) use liveness::scan;
 #[cfg(unix)]
 pub(super) use state::CREDS;
+#[cfg(unix)]
+pub(super) use swap::read_claude_json;
+#[cfg(all(test, unix))]
+pub(crate) use swap::rerun_owner;
+#[cfg(unix)]
+pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 
 #[cfg(not(unix))]
 #[derive(Debug, clap::Subcommand)]
@@ -217,9 +225,12 @@ pub fn substitute_nested(store: &ProfileStore, inherited: &ProfileName) -> Optio
                 return None;
             }
         };
-        let (c, reason) = rerun::substitute(store, &state, &eff.config, inherited)?;
-        eprintln!("{}", rerun::substitution_note(inherited, &reason, &c));
-        Some(c)
+        let sub = rerun::substitute(store, &state, &eff.config, inherited)?;
+        eprintln!(
+            "{}",
+            rerun::substitution_note(inherited, &sub.reason, &sub.profile)
+        );
+        Some(sub.profile)
     }
     #[cfg(not(unix))]
     {
@@ -264,32 +275,6 @@ pub fn return_after_session(dir: &Path) {
     }
     #[cfg(not(unix))]
     let _ = dir;
-}
-
-/// Runs a nested `-p` launch under the usage-limit supervisor when the switch
-/// is on. `None` when the launch should run normally (switch off, or already
-/// supervised). The caller has checked the flags and arguments.
-pub fn supervise(store: &ProfileStore, inherited: &str) -> anyhow::Result<Option<i32>> {
-    #[cfg(unix)]
-    {
-        if supervised() {
-            return Ok(None);
-        }
-        let Ok(name) = ProfileName::parse(inherited) else {
-            return Ok(None); // the normal launch reports the bad value
-        };
-        let eff = config::effective(store.root());
-        if !eff.on {
-            return Ok(None);
-        }
-        let state = state::State::new(store.root())?;
-        rerun::supervise(store, &state, &eff.config, name)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (store, inherited);
-        Ok(None)
-    }
 }
 
 /// `amplihack claude` / launch: the one-line no-capacity warning on stderr

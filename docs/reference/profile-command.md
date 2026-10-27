@@ -621,6 +621,8 @@ environment (`AMPLIHACK_USE_DOCKER`), before anything is read or spawned.
 | `<root>/.auto-switch` | Auto-switch settings. See [Settings file](#settings-file). |
 | `<root>/.auto-switch.d/` | Auto-switch state. See [State directory](#state-directory). |
 | `AMPLIHACK_ROTATE_AUTOSTART` | `0`/`off` stops launches from starting the rotator, and `1`/`on` lets them, overriding `<root>/.auto-switch.d/rotate/autostart`. Empty means unset. See [Rotate autostart](#rotate-autostart). |
+| `AMPLIHACK_USAGE_LIMIT_WAIT` | `true` or `1` turns the [usage-limit wait](#usage-limit-wait) on, `false` or `0` off. Outranks `recipe.usage_limit_wait` in `config.toml`. See [Usage-limit wait settings](#usage-limit-wait-settings). |
+| `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | Upper bound on one usage-limit wait, in seconds. Only shortens the wait. Outranks `recipe.usage_limit_max_wait_secs`. |
 
 ### Seeding
 
@@ -1881,6 +1883,12 @@ The launch runs Claude under a supervising amplihack process:
 - stderr streams live; its last 64 KiB is kept;
 - stdout is written to a private temp file under
   `<root>/.auto-switch.d/rerun/` and printed once, after the final attempt;
+- the first attempt inherits stdin unchanged. A rerun gets a regular file
+  again from where the step started reading it, a terminal unchanged, and
+  anything else (a pipe, a socket) `/dev/null`, because what the first
+  attempt read from it is gone. stdin is never read or copied by the
+  supervisor, so a pipe nobody closes cannot hold it up (see
+  [Gate](#gate));
 - `SIGTERM` and `SIGHUP` are forwarded to the attempt; `SIGINT` reaches it
   through the terminal.
 
@@ -1918,8 +1926,9 @@ account's five-hour window is recorded as 100% used until that time, and
 never later than five hours from now. A note naming both profiles goes to
 stderr, and the step runs again under the next eligible profile. Each
 remaining profile is tried at most once per step. When none is left, the
+[usage-limit wait](#usage-limit-wait) runs if it is enabled. Otherwise the
 last attempt's output and exit code are passed back unchanged, and the
-recipe runner reports the usage limit and ends the run as it does today.
+recipe runner reports the usage limit and ends the run.
 
 Reruns happen at the step-launch layer: inside the nested
 `amplihack claude -p` that each agent step runs. The recipe runner's retry
@@ -1931,12 +1940,16 @@ stops it supervising itself; amplihack removes that variable before it starts
 Claude. If the supervisor cannot start, the launch runs unsupervised, with a
 warning.
 
-The buffer is `rerun/<pid>-<n>.out`, where `<pid>` is the supervisor and `<n>`
-the attempt. It is deleted when the attempt is rerun or its output has been
-printed. If the supervisor is killed first, the next recovery run deletes the
-buffer once no process with that `<pid>` is running, and any buffer older
-than 24 hours regardless. Until then it holds whatever the step printed,
-at mode `0600` in a `0700` directory.
+The stdout buffer is `rerun/<pid>-<n>.out`, where `<pid>` is the supervisor
+and `<n>` the attempt. It is deleted when the attempt is rerun or its output
+has been printed. If the supervisor is killed first, recovery deletes it
+once no process with that `<pid>` is running, and any buffer older than 24
+hours regardless. Files whose names do not match `<pid>-<n>.out` are never
+deleted, whatever their age. Recovery runs at every supervisor start as
+well as at the points listed in
+[Session end and recovery](#session-end-and-recovery). Until then each
+buffer holds whatever the step printed, at mode `0600` in a `0700`
+directory.
 
 A rerun starts the step again from the beginning, so anything the attempt
 that hit the limit had already done (a commit, a push, a comment) may be done
@@ -3042,6 +3055,270 @@ account IDs or tokens. Failing to write it does not change the outcome.
 
 The wait plus one read interval is less than the hook timeout, so the hook
 always decides before Claude Code stops it.
+
+## Usage-limit wait
+
+When a recipe agent step fails on a usage limit and no auto-switch rerun is
+left, the step's supervisor waits for the limit to reset, or for a login
+with capacity to become live, and then runs the step once more. It is on by
+default and does not need auto-switch or profiles. Task-oriented guidance is
+in the [how-to](../howto/claude-profiles.md#waiting-for-a-usage-limit-reset).
+
+### Gate
+
+A launch is supervised for the wait when all of these hold:
+
+1. no `--profile` flag;
+2. Claude's arguments set `-p` or `--print` (read as Claude reads them, so
+   an option's value such as `--model -p` does not count);
+3. `AMPLIHACK_AUTO_SWITCH_SUPERVISED` is unset (the launch is not itself a
+   supervised attempt);
+4. `AMPLIHACK_NONINTERACTIVE` is exactly `1` (`amplihack recipe run` sets
+   it for every step). The [settings](#usage-limit-wait-settings) are read
+   only after this check;
+5. the wait is enabled; and
+6. the mode is not `--docker` or `--auto`. With an inherited profile those
+   modes are refused earlier, so this matters only without one.
+
+When checks 1 to 5 pass but the step cannot be supervised (check 6, or a
+scratch directory failure), the launch writes `skipped reason=not_supervised`
+once and runs unsupervised, as before.
+
+With an inherited profile and auto-switch on, the
+[auto-switch reruns](#usage-limit-reruns) come first and the wait follows.
+The retry after the wait always runs under the inherited profile, not under
+the last profile auto-switch tried, so the wait is for the **inherited
+profile's** reset (see [Order of attempts](#order-of-attempts)).
+Otherwise the same supervisor runs with no profile substitution: the retry
+runs under the inherited profile, or with no override when none was
+inherited. With no inherited profile the launch may still apply the
+`.default` pointer's profile; the wait then watches that profile's login,
+unless it is the rotator's live profile, whose login is in `~/.claude`.
+
+The supervisor keeps the held-back stdout in `<root>/.auto-switch.d/rerun/`
+when auto-switch is on, otherwise in `$HOME/.amplihack/rerun/`.
+`$HOME/.amplihack` must be a real directory owned by the current user that
+group and others cannot write (created at `0700` when missing, never
+`chmod`ed), and `rerun/` must be mode `0700`.
+
+**Stdin.** The supervisor never reads stdin. The first attempt inherits it
+unchanged. A rerun gets a regular file again from the offset the step
+started at (on Linux through its own open of `/proc/self/fd/0`, so no read
+offset is shared with other processes), a terminal unchanged, and anything
+else (a pipe, a socket, a closed descriptor) `/dev/null`: a pipe's contents
+went to the first attempt. Recipe agent steps get their prompt as `-p`
+argv, so this changes nothing for them, and a step that inherited a pipe
+the recipe run never closes no longer hangs. When stdin is a pipe and
+Claude's arguments carry no prompt, the prompt is on the pipe, so the step
+is neither rerun by auto-switch (`auto-switch: no rerun under profile …`)
+nor waited for (`skipped reason=piped_prompt`). The prompt is any
+positional argument, wherever it is, read with Claude's option table so
+that the values of options such as `--model`, `--output-format`,
+`--max-turns`, `--allowedTools` and `--append-system-prompt` are not taken
+for it; a prompt that starts with `-` counts only after `--`. The table
+includes Claude's hidden value-taking options (such as
+`--max-thinking-tokens`), which `claude --help` does not list. An option
+in no table, such as one a newer Claude added, is read as taking the next
+non-option word as its value. That errs toward "no prompt in the
+arguments", which with a piped stdin only means the step runs once as it
+did before the wait existed. The other way round would be worse: a wait of
+hours, then a rerun with no prompt.
+
+### Order of attempts
+
+After an attempt hits a usage limit, in this order:
+
+1. a stop signal already received ends the step with `128` plus the signal;
+2. auto-switch on, the wait unused, and an eligible profile left: rerun
+   under that profile at once;
+3. auto-switch moved the step off the inherited profile before the first
+   attempt only because that profile is over the threshold (no window at
+   100%), and no eligible profile is left: rerun under the inherited
+   profile at once. This is an auto-switch rerun, made at most once per
+   step: no `start` or `end` is written and the wait stays unused, so a
+   limit on that rerun still goes through steps 4 to 7. With a piped
+   prompt this rerun is refused (`auto-switch: no rerun under profile …`)
+   and the step goes on to step 4: the log gets `skipped reason=disabled`
+   (or `ci`) from step 4 when the wait is off, else
+   `skipped reason=piped_prompt` from step 6;
+4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
+   is passed up;
+5. the wait already used: `skipped reason=already_waited`, and the result
+   is passed up;
+6. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
+   `skipped reason=<why>`, and the result is passed up;
+7. otherwise `start`, the wait, and `end`. After `end reason=signal` the
+   step exits with `128` plus the signal; after `step timeout` or
+   `session ended` the failed attempt's result is passed up; after any
+   other reason `resume` is written and the step runs once more.
+
+Steps 6 and 7 read the inherited profile's limit, not the last attempt's.
+The retry runs under the inherited profile, so only that profile's reset
+says when it can work again. When auto-switch ran the step under other
+profiles before running out, their limits only steer auto-switch's choice
+of the next profile: a candidate that resets later does not stretch the
+wait, and a candidate's weekly limit or spend limit does not cancel it.
+When auto-switch moved the step off the inherited profile before the first
+attempt, the inherited profile's limit comes from the usage readings: the
+latest reset among its windows at 100%. A window over the auto-switch
+threshold but under 100% is a reason to prefer another profile, not a
+limit, so it neither times nor cancels the wait. If no window is at 100%,
+the inherited profile still has capacity and no wait is built: when the
+candidates are limited, the step goes back to the inherited profile through
+step 3, with no `start` or `end` event, and the wait is kept for a limit on
+that profile itself. A candidate's limit never times it. If that move is
+refused (a piped prompt), step 4 or 6 still writes the `skipped` event.
+
+There is at most one wait per step. The retry runs the step **from the
+start** with the same prompt, so anything the failed attempt already did (a
+commit, a push, a comment) may happen again. Write agent steps so that
+running one twice is harmless.
+
+### Reset time
+
+The wait reads only the harness's own limit message: the last stderr line
+in its shape, else the last non-empty line of the stdout tail when that
+whole line has it. In `-p` mode stdout is the model's answer, so prose that
+mentions a usage limit never starts a wait (the recipe runner's classifier
+still sees the limit and ends the run). For Claude the shape is a line that
+starts with `Claude AI usage limit reached|` and Unix seconds, or with
+`You've hit your ` and also contains `limit` and `·`. The patterns live in
+`crates/amplihack-cli/src/commands/recipe/run/limit_patterns.rs`.
+
+| Message | Example | Result |
+|---------|---------|--------|
+| Session limit | `You've hit your session limit · resets 1pm (America/Los_Angeles)` | wait, when the reset is at most five hours away |
+| Weekly limit | `You've hit your weekly limit · resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far` |
+| Spend limit with a session reset | `You've hit your org's monthly spend limit · run /usage-credits … · your session limit resets 1pm (America/Los_Angeles)` | wait for that reset: the session limit is what stops work |
+| Spend limit with a weekly reset | `… monthly spend limit · … · your weekly limit resets Oct 8, 12am (America/Los_Angeles)` | `skipped reason=reset_too_far` |
+| Spend limit, no reset | `You've hit your org's monthly spend limit · run /usage-credits …` | `skipped reason=spend_limit`: no reset lifts it |
+| Epoch | `Claude AI usage limit reached\|1792335000` | wait, when at most five hours away |
+| Shape, no readable reset | `You've hit your session limit · try again later` | `skipped reason=no_reset` |
+| No message in the shape | model prose, `credit balance is too low` | `skipped reason=no_limit_message`, or not a usage limit at all |
+
+The text after `resets ` is an optional date (`Mon D, `, three-letter
+English month), a clock time (`H[:MM]am`/`pm` or 24-hour `HH:MM`), one space
+and an IANA zone in parentheses, looked up in the compiled-in `chrono-tz`
+table. No year, day or zone is guessed. Without a date the time is placed
+today in that zone, with one in this year; more than 10 minutes in the past
+means tomorrow, or next year. A spring-forward gap moves to the first valid
+instant, a fall-back overlap takes the earlier one. A reset more than five
+hours away, or none that parses, is not waited for: waiting would hold the
+run for hours with nothing known to change.
+
+### Deadline
+
+The wait ends at the earliest candidate that applies (a tie is named by the
+earlier row):
+
+| Candidate | Applies when | `bound=` |
+|-----------|--------------|----------|
+| reset + 120 s, or now when the reset has passed | always | `reset+margin` |
+| now + `max_wait_secs` | a maximum is set | `max_wait` |
+| step start + `AMPLIHACK_STEP_TIMEOUT` − 60 s, never before now | the step timeout is set and above 0 | `step_timeout` |
+
+No input can make a wait longer than five hours and 120 seconds.
+`max_wait_secs = 0` does not wait but still retries once.
+
+### Ending the wait early
+
+The wait sleeps in slices of at most one second and stops at the first of:
+
+| `end reason=` | Cause | Retry |
+|---------------|-------|-------|
+| `signal` | `SIGINT`, `SIGTERM` or `SIGHUP` was received | no; exits `128` + signal |
+| `session ended` | the process that started the step exited (the supervisor's parent changed) | no |
+| `reset reached` | the `reset+margin` deadline passed | yes |
+| `max reached` | the `max_wait` deadline passed | yes |
+| `step timeout` | the `step_timeout` deadline passed; a fresh attempt would be killed part way | no |
+| `login changed` | two probes in a row, 30 s apart, agree on a fingerprint that differs from the baseline | yes |
+| `rotator capacity` | the step uses `$HOME/.claude` and the [rotate ledger](#rotate-state-directory) records a cycle with capacity (`swapped` or `stayed`, no alert) more than 60 s after the wait began | yes |
+
+`rotator capacity` uses the rule the [limit-resume hook](#capacity-for-a-resume)
+uses (`CycleStatus::fresh_capacity` in `amplihack_utils::rotator_status`), so
+the two never disagree. It is checked with the fingerprint every 30 s.
+
+The **login fingerprint** watches the directory the retry will use:
+`<root>/<inherited profile>`, else `$CLAUDE_CONFIG_DIR`, else
+`$HOME/.claude`. It has three parts:
+
+- the ledger account: for a profile, the account the auto-switch ledger
+  records for it; for `$HOME/.claude`, the rotate ledger's `live` profile;
+- the account in the `.claude.json` Claude reads for that directory, as
+  [Account identity](#account-identity) defines it;
+- whether `.credentials.json` exists (`lstat` only; it is never opened, so
+  an OAuth token refresh is not a change).
+
+A file that is missing, a symlink, not owned by the current user, writable
+by others, too large or unparseable counts as absent, with no warning. One
+differing probe followed by a matching one is ignored, so a torn read while
+another session rewrites `.claude.json` does not end the wait. The
+fingerprint is never printed, logged or written.
+
+### Log lines
+
+Each line goes to stderr and starts with `amplihack.recipe.usage_limit_wait`,
+then the event and `key=value` fields. Times are local,
+`%Y-%m-%d %H:%M:%S %:z`. New fields are only ever added at the end.
+
+| Event | Fields |
+|-------|--------|
+| `start` | `reason=usage_limit harness=claude reset=<time> until=<time> bound=<bound>` |
+| `progress` | `remaining=<secs>s`, every 60 s |
+| `end` | `reason=<end reason>` from the table above |
+| `resume` | `attempt=<n>`, counting every attempt in the step |
+| `skipped` | `reason=disabled\|ci\|already_waited\|not_supervised\|spend_limit\|reset_too_far\|no_reset\|no_limit_message\|piped_prompt` |
+
+```
+amplihack.recipe.usage_limit_wait start reason=usage_limit harness=claude reset=2026-10-18 08:30:00 -07:00 until=2026-10-18 08:32:00 -07:00 bound=reset+margin
+amplihack.recipe.usage_limit_wait progress remaining=1740s
+amplihack.recipe.usage_limit_wait end reason=login changed
+amplihack.recipe.usage_limit_wait resume attempt=2
+```
+
+No line contains credentials, account names, config content or text copied
+from Claude's output.
+
+### Usage-limit wait settings
+
+| Setting | `config.toml` key | Environment variable | Default |
+|---------|-------------------|----------------------|---------|
+| Enabled | `recipe.usage_limit_wait` | `AMPLIHACK_USAGE_LIMIT_WAIT` | `true`; `false` in CI |
+| Maximum wait, seconds | `recipe.usage_limit_max_wait_secs` | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | none |
+
+Both are ordinary [user-config](./user-config.md#recipeusage_limit_wait)
+keys: set them with `amplihack config set recipe.usage_limit_wait false`, in
+the user or project `config.toml`, or with the variable, which outranks the
+files. The variable takes `true`, `false`, `1` or `0`; an invalid value is
+reported by the config loader and ignored. A project file may only lower
+the maximum. With no setting in the environment or a file, the wait is off
+in CI, meaning any `CI` that is not, after trimming, empty, `0` or `false`
+in any case: a CI job has no
+second login to wait for, and its own timeout bounds it better. A limit
+then writes `skipped reason=ci` where a supervisor runs. Setting
+`recipe.usage_limit_wait = true` in the user or project `config.toml`, or
+the variable, turns it back on in CI. Settings are read only when
+`AMPLIHACK_NONINTERACTIVE` is exactly `1`.
+
+### Limit-resume hook
+
+The [limit-resume hook](#rotate-session-resume) wakes an interactive Claude
+session stopped by a limit (`StopFailure`, with `asyncRewake`). A recipe
+step's `claude -p` instead exits on the limit, and this wait reruns it. The
+hook's session checks mean it never reruns a `-p` session that has already
+exited, so the two never both act on one limit.
+
+### Test seams
+
+In debug builds only, `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_NOW` (Unix seconds)
+sets the wait's start time and `AMPLIHACK_USAGE_LIMIT_WAIT_TEST_SCALE` (1 to
+1000000) divides every sleep. Signals and the session check still run at
+least once per real second. Release builds ignore both.
+
+### Platform
+
+The wait is Unix-only. Elsewhere the settings are never read and a usage
+limit ends the run as before.
 
 ## Errors
 

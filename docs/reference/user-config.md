@@ -17,6 +17,7 @@ files.
   - [recipe.verbose](#recipeverbose)
   - [recipe.step_timeout](#recipestep_timeout)
   - [recipe.detach, recipe.tmux_session_pattern and recipe.log_dir](#recipedetach)
+  - [recipe.usage_limit_wait and recipe.usage_limit_max_wait_secs](#recipeusage_limit_wait)
   - [orchestrator.max_depth](#orchestratormax_depth)
 - [The config command](#the-config-command)
   - [config get](#config-get)
@@ -55,6 +56,8 @@ recipe.step_timeout = (unset)  # default
 recipe.detach = "none"  # default
 recipe.tmux_session_pattern = "amp-{recipe}-{repo}-{ts}"  # default
 recipe.log_dir = (unset)  # default
+recipe.usage_limit_wait = true  # default
+recipe.usage_limit_max_wait_secs = (unset)  # default
 orchestrator.max_depth = 3  # default
 ```
 
@@ -141,6 +144,8 @@ command, so it never prints `flag`.
 | `recipe.detach` | `tmux` or `none` | `none` | — | `--detach`, `--no-detach` | user, project |
 | `recipe.tmux_session_pattern` | session-name pattern | `amp-{recipe}-{repo}-{ts}` | — | — | user, project |
 | `recipe.log_dir` | absolute path | (unset: `~/.amplihack/recipe-logs`) | — | — | user only |
+| `recipe.usage_limit_wait` | bool | `true` (`false` in CI) | `AMPLIHACK_USAGE_LIMIT_WAIT` | — | user, project |
+| `recipe.usage_limit_max_wait_secs` | integer seconds, at least 0 | (unset) | `AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS` | — | user, project (lower only) |
 | `orchestrator.max_depth` | integer, 0 to 32 | `3` | `AMPLIHACK_MAX_DEPTH` | — | user, project (lower only) |
 
 Any other key is an error for `config set` and a diagnostic when found in a
@@ -310,6 +315,23 @@ Where detached runs write their logs, as `<session>.log`. Unset, it is
 `~/.amplihack/recipe-logs`. The directory is created with mode 0700, and an
 existing one must be yours; each log is created with mode 0600. User-only,
 like every path.
+
+### recipe.usage_limit_wait
+
+Whether a recipe agent step that fails on a Claude usage limit waits for the
+reset and runs once more, instead of ending the run. See the
+[usage-limit wait](./profile-command.md#usage-limit-wait). With no setting
+in the environment or a file, it is on, except in CI: any `CI` that is
+not, after trimming, empty, `0` or `false` in any case. Setting it in a file or the variable turns it on
+in CI too. The environment variable also accepts `1` and `0`.
+
+`recipe.usage_limit_max_wait_secs` caps one wait; it only shortens it, and
+`0` means one more attempt with no wait.
+
+```sh
+amplihack config set recipe.usage_limit_wait false
+amplihack config set recipe.usage_limit_max_wait_secs 3600
+```
 
 ### orchestrator.max_depth
 

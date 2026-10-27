@@ -33,6 +33,16 @@ impl CycleStatus {
     pub fn has_capacity(&self) -> bool {
         !self.alert && matches!(self.outcome.as_deref(), Some("swapped" | "stayed"))
     }
+
+    /// [`has_capacity`](Self::has_capacity), from a cycle recorded more than
+    /// [`FRESH_MARGIN_SECS`](super::FRESH_MARGIN_SECS) after `start`, so its
+    /// usage probe began after a limit hit at `start`.
+    pub fn fresh_capacity(&self, start: i64) -> bool {
+        self.has_capacity()
+            && self
+                .at
+                .is_some_and(|at| at > start.saturating_add(super::FRESH_MARGIN_SECS))
+    }
 }
 
 /// `<root>/.auto-switch.d/rotate/ledger.json`.

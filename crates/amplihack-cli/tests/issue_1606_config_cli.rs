@@ -26,6 +26,8 @@ const SCHEMA_ORDER: &[&str] = &[
     "recipe.detach",
     "recipe.tmux_session_pattern",
     "recipe.log_dir",
+    "recipe.usage_limit_wait",
+    "recipe.usage_limit_max_wait_secs",
     "orchestrator.max_depth",
 ];
 
@@ -333,6 +335,8 @@ fn list_prints_every_key_in_schema_order_with_defaults() {
             "recipe.detach = \"none\"",
             "recipe.tmux_session_pattern = \"amp-{recipe}-{repo}-{ts}\"",
             "recipe.log_dir = (unset)",
+            "recipe.usage_limit_wait = true",
+            "recipe.usage_limit_max_wait_secs = (unset)",
             "orchestrator.max_depth = 3",
         ]
     );
