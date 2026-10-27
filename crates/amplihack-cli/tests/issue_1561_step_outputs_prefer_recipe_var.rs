@@ -1304,6 +1304,16 @@ impl Quotes {
 /// exports the bare alias only for scalars, and a step skipped by its
 /// `condition:` leaves a parent run's value in place, so the only safe read is
 /// `${RECIPE_VAR_<key>:-}`.
+///
+/// Heredoc bodies are text, not shell lines: `#` there is not a comment and
+/// `NAME=` there binds nothing, so neither is applied to them, and the quote
+/// state is left alone (an apostrophe in prose opens nothing). With an
+/// unquoted delimiter (`<<WORD`, `<<-WORD`) bash expands `$NAME` in the body,
+/// so `Closes #$ISSUE_NUMBER` is a read. With a quoted one (`<<'WORD'`,
+/// `<<"WORD"`, `<<\WORD`) bash leaves `$NAME` as text, but that text is
+/// often a script fed to `bash`, `sh` or `ssh`, which reads the inherited
+/// value; the scan counts those reads too, since counting more can only make
+/// the guard stricter.
 fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, String)> {
     let read = Regex::new(r"\$(?:\{[#!]?)?([A-Z][A-Z0-9_]*)\b").unwrap();
     // `X=…` binds after the line's own reads; `for X in` before its body.
@@ -1312,14 +1322,49 @@ fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, S
     )
     .unwrap();
     let for_var = Regex::new(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b").unwrap();
+    // `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`; not `<<<`.
+    let heredoc =
+        Regex::new(r#"<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))"#).unwrap();
     let mut locals = BTreeSet::new();
     let mut found = Vec::new();
     let mut quotes = Quotes::default();
+    // Heredocs opened on earlier lines, oldest first: (delimiter, `<<-`).
+    let mut pending: std::collections::VecDeque<(String, bool)> = Default::default();
     for raw in body.lines() {
+        if let Some((word, strip_tabs)) = pending.front() {
+            let line = if *strip_tabs {
+                raw.trim_start_matches('\t')
+            } else {
+                raw
+            };
+            if line == word {
+                pending.pop_front();
+                continue;
+            }
+            for c in read.captures_iter(raw) {
+                let name = &c[1];
+                if outputs.contains(&name.to_ascii_lowercase()) && !locals.contains(name) {
+                    found.push((name.to_string(), raw.trim().to_string()));
+                }
+            }
+            continue;
+        }
         let code = strip_comment(raw);
         // Reads count inside double quotes; bindings count only outside any
         // quotes, so `echo "no ISSUE_NUMBER= given"` binds nothing.
         let bare_code = quotes.mask(code);
+        // An opener counts only where bash reads words: `<<` outside quotes
+        // and not part of `<<<`. The mask blanks a quoted delimiter, so the
+        // position is checked in the mask and the word taken from `code`.
+        for c in heredoc.captures_iter(code) {
+            let at = c.get(0).unwrap().start();
+            let outside = bare_code.as_bytes()[at..at + 2] == *b"<<";
+            let herestring = at > 0 && code.as_bytes()[at - 1] == b'<';
+            if outside && !herestring {
+                let word = c.get(2).or(c.get(3)).or(c.get(4)).unwrap().as_str();
+                pending.push_back((word.to_string(), !c[1].is_empty()));
+            }
+        }
         for c in for_var.captures_iter(&bare_code) {
             locals.insert(c[1].to_string());
         }
@@ -1495,4 +1540,32 @@ steps:
         .map(|(bare, _)| bare)
         .collect();
     assert_eq!(got, vec!["ISSUE_NUMBER"; 3]);
+
+    // A heredoc body is text: `#` there is not a comment, `NAME=` there binds
+    // nothing, and an apostrophe there opens no quote. Reads count in every
+    // body, quoted delimiter or not, and the scan resumes as shell after the
+    // delimiter line (with `<<-`, after leading tabs). `<<<` is a here-string,
+    // not a heredoc, so the line after it is shell again.
+    let heredocs = "cat > body.md <<EOFBODY\n\
+                    - issue: #$ISSUE_NUMBER\n\
+                    ISSUE_NUMBER=7 is prose here, and so is don't\n\
+                    Closes #${ISSUE_NUMBER}\n\
+                    EOFBODY\n\
+                    gh issue view \"$ISSUE_NUMBER\" # was #$ISSUE_NUMBER\n\
+                    bash <<'SCRIPT' # child shell reads the inherited value\n\
+                    gh pr list --search \"#$ISSUE_NUMBER\"\n\
+                    SCRIPT\n\
+                    cat <<-\"END\"\n\
+                    \t\tissue #$ISSUE_NUMBER\n\
+                    \tEND\n\
+                    grep -q x <<< \"$LOCAL_TESTING_GATE\"\n\
+                    ISSUE_NUMBER=8\n\
+                    echo \"$ISSUE_NUMBER\"\n";
+    let got: Vec<String> = plain_bare_reads_in(heredocs, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    let mut want = vec!["ISSUE_NUMBER"; 5];
+    want.push("LOCAL_TESTING_GATE");
+    assert_eq!(got, want);
 }
