@@ -157,6 +157,13 @@ impl Waiter {
         self.blocked = Some(why);
     }
 
+    /// `WaitFor::Skip` for the reason set by `block`, if any. Passed to
+    /// `after_limit` when no limit of the inherited profile is known, so the
+    /// refusal is still logged.
+    pub(crate) fn blocked_skip(&self) -> Option<WaitFor> {
+        self.blocked.map(WaitFor::Skip)
+    }
+
     /// Whether Claude's arguments carry the prompt.
     pub(crate) fn prompt_in_args(&self) -> bool {
         self.prompt_in_args

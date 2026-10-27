@@ -3131,18 +3131,28 @@ After an attempt hits a usage limit, in this order:
 1. a stop signal already received ends the step with `128` plus the signal;
 2. auto-switch on, the wait unused, and an eligible profile left: rerun
    under that profile at once;
-3. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
+3. auto-switch moved the step off the inherited profile before the first
+   attempt only because that profile is over the threshold (no window at
+   100%), and no eligible profile is left: rerun under the inherited
+   profile at once. This is an auto-switch rerun, made at most once per
+   step: no `start` or `end` is written and the wait stays unused, so a
+   limit on that rerun still goes through steps 4 to 7. With a piped
+   prompt this rerun is refused (`auto-switch: no rerun under profile …`)
+   and the step goes on to step 4: the log gets `skipped reason=disabled`
+   (or `ci`) from step 4 when the wait is off, else
+   `skipped reason=piped_prompt` from step 6;
+4. the wait disabled: `skipped reason=disabled` (or `ci`), and the result
    is passed up;
-4. the wait already used: `skipped reason=already_waited`, and the result
+5. the wait already used: `skipped reason=already_waited`, and the result
    is passed up;
-5. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
+6. the limit is not one a wait can outlast (see [Reset time](#reset-time)):
    `skipped reason=<why>`, and the result is passed up;
-6. otherwise `start`, the wait, and `end`. After `end reason=signal` the
+7. otherwise `start`, the wait, and `end`. After `end reason=signal` the
    step exits with `128` plus the signal; after `step timeout` or
    `session ended` the failed attempt's result is passed up; after any
    other reason `resume` is written and the step runs once more.
 
-Steps 5 and 6 read the inherited profile's limit, not the last attempt's.
+Steps 6 and 7 read the inherited profile's limit, not the last attempt's.
 The retry runs under the inherited profile, so only that profile's reset
 says when it can work again. When auto-switch ran the step under other
 profiles before running out, their limits only steer auto-switch's choice
@@ -3153,9 +3163,11 @@ attempt, the inherited profile's limit comes from the usage readings: the
 latest reset among its windows at 100%. A window over the auto-switch
 threshold but under 100% is a reason to prefer another profile, not a
 limit, so it neither times nor cancels the wait. If no window is at 100%,
-the inherited profile still has capacity, so the wait ends at once
-(`reset` and `until` are the time it starts) and the retry runs under the
-inherited profile straight away; a candidate's limit never times it.
+the inherited profile still has capacity and no wait is built: when the
+candidates are limited, the step goes back to the inherited profile through
+step 3, with no `start` or `end` event, and the wait is kept for a limit on
+that profile itself. A candidate's limit never times it. If that move is
+refused (a piped prompt), step 4 or 6 still writes the `skipped` event.
 
 There is at most one wait per step. The retry runs the step **from the
 start** with the same prompt, so anything the failed attempt already did (a
