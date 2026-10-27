@@ -400,3 +400,132 @@ fn commit_push_marks_already_pushed_branch_as_publishable() {
         "step-15 must mark already-pushed work as publishable, stdout:\n{stdout}"
     );
 }
+
+/// Run `workflow_publish_pr.sh` on a feature branch with a `gh` stub that
+/// finds no PR, saves the `--body-file` of `pr create` and prints a PR URL.
+/// Returns the saved body. The environment is cleared apart from `extra`, so
+/// nothing from the calling shell (or a parent recipe run) reaches the tool.
+fn created_pr_body(extra: &[(&str, &str)]) -> String {
+    let tmp = TempDir::new().expect("tempdir");
+    let repo = tmp.path().join("repo");
+    fs::create_dir(&repo).expect("create repo");
+    run_cmd(&repo, "git", &["init", "-b", "main"]);
+    run_cmd(&repo, "git", &["config", "user.email", "test@example.com"]);
+    run_cmd(&repo, "git", &["config", "user.name", "Workflow Test"]);
+    write_file(&repo.join("README.md"), "base\n");
+    run_cmd(&repo, "git", &["add", "README.md"]);
+    run_cmd(&repo, "git", &["commit", "-m", "base"]);
+    run_cmd(
+        &repo,
+        "git",
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ],
+    );
+    run_cmd(
+        &repo,
+        "git",
+        &["update-ref", "refs/remotes/origin/main", "main"],
+    );
+    run_cmd(&repo, "git", &["switch", "-c", "feat/issue-7-body"]);
+    write_file(&repo.join("feature.txt"), "feature\n");
+    run_cmd(&repo, "git", &["add", "feature.txt"]);
+    run_cmd(&repo, "git", &["commit", "-m", "feature work"]);
+
+    let bin_dir = tmp.path().join("bin");
+    let saved = tmp.path().join("pr-body.md");
+    let gh = bin_dir.join("gh");
+    write_file(
+        &gh,
+        &format!(
+            r#"#!/usr/bin/env bash
+set -uo pipefail
+case "${{1:-}} ${{2:-}}" in
+  "pr list") printf '[]\n' ;;
+  "pr create")
+    while [ "$#" -gt 0 ]; do
+      [ "$1" = "--body-file" ] && cp "$2" {saved:?}
+      shift
+    done
+    echo "https://github.com/owner/repo/pull/99"
+    ;;
+  *) exit 0 ;;
+esac
+"#,
+            saved = saved.display().to_string()
+        ),
+    );
+    make_executable(&gh);
+
+    let old_path = std::env::var("PATH").unwrap_or_default();
+    let mut cmd = Command::new("bash");
+    cmd.arg(workspace_helper_path("workflow_publish_pr.sh"))
+        .current_dir(&repo)
+        .env_clear()
+        .env("PATH", format!("{}:{old_path}", bin_dir.display()))
+        .env("HOME", tmp.path())
+        .env("REMOTE_HOST_TYPE", "github")
+        .env("ISSUE_NUMBER", "7")
+        .env(
+            "WORKFLOW_RUNTIME_ARTIFACT_HELPER",
+            workspace_helper_path("workflow_runtime_artifacts.sh"),
+        );
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("run workflow_publish_pr.sh");
+    fs::read_to_string(&saved).unwrap_or_else(|_| {
+        panic!(
+            "gh pr create was not called with --body-file\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+/// #1684: `local_testing_gate` and `precommit_results` are parse_json outputs,
+/// which the runner exports only as `RECIPE_VAR_<key>`. A bare
+/// `LOCAL_TESTING_GATE` / `PRECOMMIT_RESULTS` is never this run's value, only
+/// whatever a parent run or shell left behind, so step-16 must not put it in
+/// the PR body.
+#[test]
+fn publish_pr_body_validation_reads_recipe_var_not_bare_names() {
+    let stale = [
+        ("LOCAL_TESTING_GATE", "STALE-BARE-GATE"),
+        ("local_testing_gate", "STALE-LOWER-GATE"),
+        ("PRECOMMIT_RESULTS", "STALE-BARE-PRECOMMIT"),
+        ("precommit_results", "STALE-LOWER-PRECOMMIT"),
+    ];
+
+    let mut with_gate = stale.to_vec();
+    with_gate.push(("RECIPE_VAR_local_testing_gate", "THIS-RUN-GATE"));
+    with_gate.push(("RECIPE_VAR_precommit_results", "THIS-RUN-PRECOMMIT"));
+    let body = created_pr_body(&with_gate);
+    assert!(body.contains("THIS-RUN-GATE"), "body:\n{body}");
+    assert!(
+        !body.contains("STALE-"),
+        "a stale bare value reached the PR body:\n{body}"
+    );
+
+    let mut precommit_only = stale.to_vec();
+    precommit_only.push(("RECIPE_VAR_precommit_results", "THIS-RUN-PRECOMMIT"));
+    let body = created_pr_body(&precommit_only);
+    assert!(body.contains("THIS-RUN-PRECOMMIT"), "body:\n{body}");
+    assert!(
+        !body.contains("STALE-"),
+        "a stale bare value reached the PR body:\n{body}"
+    );
+
+    let body = created_pr_body(&stale);
+    assert!(
+        body.contains("no structured step-13 output was available"),
+        "body:\n{body}"
+    );
+    assert!(
+        !body.contains("STALE-"),
+        "a stale bare value reached the PR body:\n{body}"
+    );
+}
