@@ -50,17 +50,6 @@ enum Evidence {
     Holder,
 }
 
-/// Whether `live` is still the live profile, by the same evidence. A
-/// profile that became live after `live` was detected, or a swap away and
-/// back under a ledger without `since`, is not seen.
-pub(super) fn still_live(store: &ProfileStore, home: Option<&Path>, live: &Live) -> bool {
-    match detect_for_usage(store, home) {
-        UsageLive::Profile(name) => *live == Live::holder(name),
-        UsageLive::Home => false,
-        UsageLive::Detected(now, _) => now.as_ref() == Some(live),
-    }
-}
-
 impl Live {
     /// The profile [`detect_for_usage`] found holding the account.
     pub(super) fn holder(name: super::name::ProfileName) -> Self {
@@ -71,39 +60,9 @@ impl Live {
     }
 }
 
-/// What `profile usage` marks live in `~/.claude` (issue #1693).
-#[derive(Debug, Clone, PartialEq)]
-pub(super) enum UsageLive {
-    /// The rotate ledger names a profile whose account is not in
-    /// `~/.claude`, and exactly this profile holds that account, with or
-    /// without its own login.
-    Profile(super::name::ProfileName),
-    /// As above, and no profile holds the account: `~/.claude` gets its own
-    /// row.
-    Home,
-    /// Anything else: [`detect`]'s result and warning.
-    Detected(Option<Live>, Option<&'static str>),
-}
-
-/// [`detect`], except while the rotate ledger disagrees with `~/.claude`
-/// after a manual `/login`: then the profile holding the account, or
-/// `~/.claude` itself. `detect` and [`live_name`] (the `profile login`
-/// refusal and duplicate warnings) keep going by the ledger. Read-only.
-pub(super) fn detect_for_usage(store: &ProfileStore, home: Option<&Path>) -> UsageLive {
-    #[cfg(unix)]
-    if let Some(h) = home
-        && unix::rotate_hand_changed(store, h)
-    {
-        use super::rotate::identify::{Holders, home_holders};
-        match home_holders(store, h) {
-            Ok(Holders::One { name, .. }) => return UsageLive::Profile(name),
-            Ok(Holders::None) => return UsageLive::Home,
-            _ => {}
-        }
-    }
-    let (live, warning) = detect(store, home);
-    UsageLive::Detected(live, warning)
-}
+#[path = "usage_live.rs"]
+mod usage_live;
+pub(super) use usage_live::{UsageLive, detect_for_usage, still_live};
 
 /// Whether `name` could be the live profile: only a profile directory
 /// without its own login can be. Used to skip warnings that cannot concern

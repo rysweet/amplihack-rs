@@ -578,6 +578,45 @@ mod usage_live {
         ));
     }
 
+    fn holder(e: &Env) -> super::super::default_live::Live {
+        match usage(e) {
+            UsageLive::Profile(name) => super::super::default_live::Live::holder(name),
+            other => panic!("not a holder: {other:?}"),
+        }
+    }
+
+    /// `usage` starts with `b` as the holder; a rotate cycle then recovers
+    /// and records `b` as live. Same profile, new evidence: not a swap.
+    #[test]
+    fn the_holder_recorded_as_live_meanwhile_is_still_live() {
+        let e = hand_changed();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        let live = holder(&e);
+        assert!(still_live(&e.store, Some(&e.home), &live));
+        e.rotate_ledger(r#"{"version":1,"live":"b","account":"u1","since":20}"#);
+        assert!(!matches!(usage(&e), UsageLive::Profile(_)));
+        assert!(still_live(&e.store, Some(&e.home), &live));
+    }
+
+    #[test]
+    fn the_holder_against_another_recorded_profile_is_a_swap() {
+        let e = hand_changed();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        let live = holder(&e);
+        e.rotate_ledger(r#"{"version":1,"live":"a","account":"u1","since":20}"#);
+        assert!(!still_live(&e.store, Some(&e.home), &live));
+    }
+
+    #[test]
+    fn the_holder_gone_is_a_swap() {
+        let e = hand_changed();
+        e.claude_json("b", &account("u1", "me@example.com"));
+        let live = holder(&e);
+        e.claude_json("b", &account("u-b", "b@example.com"));
+        assert!(matches!(usage(&e), UsageLive::Home));
+        assert!(!still_live(&e.store, Some(&e.home), &live));
+    }
+
     #[test]
     fn detecting_for_usage_writes_nothing() {
         let e = hand_changed();
