@@ -301,6 +301,14 @@ pub mod msg {
         )
     }
 
+    /// Written once, when `name` is not added to the full `lost_login`
+    /// list and so gets no [`lost_login`] line.
+    pub fn lost_login_cap(name: &ProfileName) -> String {
+        format!(
+            "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
+        )
+    }
+
     /// Hand-change recovery, case A: `m` had no login of its own.
     pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
         format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")

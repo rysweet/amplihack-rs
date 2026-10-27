@@ -33,9 +33,13 @@ mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
+mod lost;
+#[cfg(unix)]
 mod measure;
 #[cfg(unix)]
 mod observe;
+#[cfg(unix)]
+mod precheck;
 #[cfg(unix)]
 mod recover;
 #[cfg(unix)]

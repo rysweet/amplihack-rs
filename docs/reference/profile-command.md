@@ -2647,15 +2647,20 @@ its `<reason>`:
 | `M`'s login is not leased and `M` does not host another login in the auto-switch ledger; an unreadable auto-switch ledger fails this check. | `<M>'s login is lent out or it hosts another login` |
 | `<root>/<M>/.credentials.json` is a private regular file with one link, owned by you. | `a login file is not a private regular file with one link` |
 | `~/.claude`, `<root>/<M>` and the root are on one device. | `~/.claude and the profile root are on different devices` |
+| `.rejected-logins/` and the backup directory can be created. | `cannot create the backup directory: <error>` |
+| `.rejected-logins/` and the backup directory are real directories owned by you with no group or other bits. | `backup directory is not private: <path>` |
 | A free backup name exists. | `no free backup name` |
 | `~/.claude.json` still has `M`'s account after the backup directory is created. | `~/.claude changed during recovery` |
 
 The backup is `<root>/.rejected-logins/rotate-<M>-<YYYYMMDDTHHMMSSZ>/`, where
 the time is the cycle's start in UTC. If that name exists, `-2` to `-99` is
-added. `.rejected-logins/` is created `0700` if it is missing. The backup
-directory is created fresh, `0700`, never through a symlink, and must then
-be a directory owned by you with no group or other bits; its parent is
-synced. The login is moved into it with `renameat2(RENAME_NOREPLACE)`.
+added. `.rejected-logins/` is created `0700` if it is missing; one that
+exists must be a real directory owned by you with no group or other bits, as
+`profile login` requires. The backup directory is created fresh, `0700`,
+never through a symlink, and must then be a directory owned by you with no
+group or other bits; one that is not is removed again (it is new and empty)
+and the move is refused. Its parent is synced. The login is moved into it
+with `renameat2(RENAME_NOREPLACE)`.
 Nothing else is moved, and `<root>/<M>/.claude.json` is not changed.
 
 The steps run in this order: checks, create the backup directory, re-check
@@ -2723,7 +2728,7 @@ The refusal `fix` line for each `<reason>`:
 | `cannot see running sessions` | `close the claude sessions that use <M>, then run: mkdir -m 700 <dir> && mv -n <root>/<M>/.credentials.json <dir>/` |
 | `Claude holds its refresh lock` | `wait; the next cycle retries` |
 | `<M>'s login is lent out or it hosts another login` | `wait for the auto-switch session to end; the next cycle retries` |
-| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `no free backup name` | `move <M>'s copy by hand: mkdir -m 700 <dir> && mv -n <root>/<M>/.credentials.json <dir>/` |
+| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move <M>'s copy by hand: mkdir -m 700 <dir> && mv -n <root>/<M>/.credentials.json <dir>/` |
 | `~/.claude changed during recovery` | `none needed; the next cycle retries` |
 
 The first four reasons come from the checks before recording, so they can
@@ -2736,8 +2741,11 @@ real `HOME` path (never `~`), `<root>` is the profile root, and `<dir>` is
 as `YYYYMMDDTHHMMSSZ`. A path made only of `A-Z a-z 0-9 / . _ + -` is
 printed bare; any other path is single-quoted, with each `'` written as
 `'\''`. If any path a line needs has a control or bidirectional-override
-character, the line is `move <what> by hand; its path cannot be printed
-safely` instead, where `<what>` is `the login in ~/.claude` or `<M>'s copy`.
+character, or the whole line would be longer than 1024 bytes, the line is
+`move <what> by hand; its path cannot be printed safely` instead, where
+`<what>` is `the login in ~/.claude` or `<M>'s copy`. A line that names a
+path is never cut, since a cut path names another file; only lines without
+a path are cut to 1024 bytes.
 
 Separately, every cycle writes, for each profile in the ledger's
 `lost_login`:
@@ -2747,7 +2755,17 @@ ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced 
 ```
 
 A profile leaves `lost_login` when `<root>/<L>/.credentials.json` exists again
-or the profile no longer exists.
+or `<root>/<L>` is no longer a real directory (it was removed, or replaced by
+a symlink). In a cycle whose guidance already has
+`fix 1: amplihack profile login <L>`, the lost-login line for `L` is left out.
+
+`lost_login` holds at most 64 profiles, which keeps the ledger a bounded size.
+A profile that would be added to a full list is not added; instead, once, at
+that recovery:
+
+```
+ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>
+```
 
 Guidance and lost-login lines are written on every cycle while their
 condition holds, at most once each per cycle, without the
@@ -2827,6 +2845,7 @@ stdout only, without the time.
 | `recovered: ~/.claude holds <M>'s login (ledger named <L>); recorded <M> as live` | Hand-change recovery recorded the profile whose login is in `~/.claude`. |
 | `recovered: ~/.claude and <M> held the same account; kept ~/.claude, moved <M>'s copy to <path>; recorded <M> as live` | Hand-change recovery moved `M`'s duplicate login to a backup. |
 | `ALERT: profile <L> has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login <L>` | `L` is in the ledger's `lost_login`. Written every cycle. |
+| `ALERT: profile <L> has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login <L>` | `L` lost its login but `lost_login` already holds 64 profiles. Written once. |
 | `ALERT: more than one profile matches the account in ~/.claude; no swap` | Two or more login-less profiles have the account in `~/.claude.json`. |
 | `ALERT: swap refused: <reason>` | A [pre-swap check](#rotate-swap) failed; written once per reason. The one-shot command also prints it and exits with `RotateRefused`. |
 | `ALERT: rotate recovery is inconsistent: <reason>; no swap until it is resolved` | See [Rotate recovery](#rotate-recovery). |

@@ -12,22 +12,24 @@
 //!   (None: unreadable, which refuses a move), dev: &'a dyn Fn(&Path) ->
 //!   Option<u64>, after_create: &'a dyn Fn() }`: the test seam.
 //! - `handfix::step_with(&ProfileStore, &RotateState, home: &Path, &mut Sink,
-//!   &Env, t: i64) -> Result<Step, ProfileError>`, with `Step::{Clear,
+//!   env_for: impl FnOnce() -> Env, t: i64) -> Result<Step, ProfileError>`;
+//!   `env_for` is called only after a hand change, with `Step::{Clear,
 //!   Recovered, Guided}` (`Debug`, `PartialEq`). `Clear`: the ledger's account
 //!   is the one in `~/.claude` (or there is no login there); lost-login lines
 //!   are still written. `Guided`: guidance written; the cycle ends `alerted`.
-//! - `handfix::preview(&ProfileStore, &RotateState, home, &Env, t) ->
+//! - `handfix::preview(&ProfileStore, &RotateState, home, env_for, t) ->
 //!   Result<Vec<String>, ProfileError>`: the `--dry-run` lines, empty when
 //!   there is no hand change; writes nothing.
 //! - `control::status_alerts(&RotateLedger) -> Vec<String>`: the `alert:`
 //!   and `warning:` lines of `rotate status`.
 
+use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
 use super::decide::{Decision, Measured, Reading, decide};
 use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::identify::{CandidateInput, LiveId, Skip, candidates, live};
-use super::ledger::{Phase, RotateJournal, RotateLedger, RotateState};
-use super::log::{Sink, open_or_warn};
+use super::ledger::{MAX_LOST_LOGIN, Phase, RotateJournal, RotateLedger, RotateState};
+use super::log::{Sink, open_or_warn, sh_quote};
 use super::settings::Settings;
 use super::swap::{Source, swap};
 use super::tests_swap::{ino_at, login, n, private};
@@ -170,7 +172,7 @@ fn fx_at(home_rel: &str, m_own: bool, capacity: bool) -> Fx {
 impl Fx {
     fn step(&self, s: &Seam<'_>, t: i64) -> Step {
         let mut out = Sink::new(open_or_warn(&self.rs.log, &self.rs.log1), false, true);
-        step_with(&self.store, &self.rs, &self.home, &mut out, s, t).unwrap()
+        step_with(&self.store, &self.rs, &self.home, &mut out, || s.clone(), t).unwrap()
     }
 
     /// Every log line, without its time.
@@ -873,6 +875,8 @@ fn an_account_change_after_the_backup_is_created_moves_nothing() {
 #[test]
 fn an_empty_backup_left_by_an_abort_makes_the_next_cycle_use_the_next_name() {
     let f = fx(true, false);
+    // As an aborted cycle leaves them: both created 0700.
+    dir700(&f.rejected());
     dir700(&f.backup(""));
     assert_eq!(f.step(&seam(), T), Step::Recovered);
     let to = f.backup("-2").join(CREDS);
@@ -1030,7 +1034,7 @@ fn snapshot(f: &Fx) -> Vec<(PathBuf, u64, u64, u32, i64)> {
 fn preview_of_a_recovery_writes_nothing() {
     let f = fx(true, true);
     let before = snapshot(&f);
-    let lines = preview(&f.store, &f.rs, &f.home, &seam(), T).unwrap();
+    let lines = preview(&f.store, &f.rs, &f.home, seam, T).unwrap();
     assert_eq!(snapshot(&f), before);
     assert!(!lines.is_empty());
     assert!(
@@ -1055,7 +1059,7 @@ fn preview_of_guidance_prints_the_alert_and_fix_lines() {
         &acct("u-nobody", "nobody@example.com"),
     );
     let before = snapshot(&f);
-    let lines = preview(&f.store, &f.rs, &f.home, &seam(), T).unwrap();
+    let lines = preview(&f.store, &f.rs, &f.home, seam, T).unwrap();
     assert_eq!(snapshot(&f), before);
     assert_eq!(lines.len(), 4, "{lines:?}");
     assert_eq!(
@@ -1081,7 +1085,7 @@ fn preview_without_a_hand_change_prints_nothing() {
     l.account = Some("u-mistt".into());
     f.rs.save_ledger(&l).unwrap();
     assert!(
-        preview(&f.store, &f.rs, &f.home, &seam(), T)
+        preview(&f.store, &f.rs, &f.home, seam, T)
             .unwrap()
             .is_empty()
     );
@@ -1110,7 +1114,7 @@ fn accounts_never_appear_in_the_log_status_or_preview() {
         let mut l = f.ledger();
         l.account = Some("rs@example.com".into());
         f.rs.save_ledger(&l).unwrap();
-        let shown = preview(&f.store, &f.rs, &f.home, &seam(), T).unwrap();
+        let shown = preview(&f.store, &f.rs, &f.home, seam, T).unwrap();
         f.step(&seam(), T);
         let mut text = f.logged();
         text.extend(shown);
@@ -1162,22 +1166,227 @@ fn paths_in_fix_lines_are_quoted_and_unsafe_ones_are_not_printed() {
     }
 }
 
+/// A home path so long that the set-aside command does not fit in one
+/// line: the command is replaced, never cut (a cut path is another path).
+/// `parts` of 240 bytes: 4 keeps the home under 1024 bytes, 5 goes over.
 #[cfg(target_os = "linux")]
 #[test]
 fn guidance_for_a_very_long_home_stays_within_the_ledger_limits() {
-    let deep = ["a"; 5].map(|_| "d".repeat(240)).join("/");
-    let f = fx_at(&deep, false, false);
-    private(
-        &f.home.join(".claude.json"),
-        &acct("u-nobody", "nobody@example.com"),
+    for parts in [4, 5] {
+        let deep = vec!["d".repeat(240); parts].join("/");
+        let f = fx_at(&deep, false, false);
+        private(
+            &f.home.join(".claude.json"),
+            &acct("u-nobody", "nobody@example.com"),
+        );
+        assert_eq!(f.step(&seam(), T), Step::Guided);
+        let l =
+            f.rs.load_ledger()
+                .expect("the ledger it wrote loads")
+                .unwrap();
+        let g = l.guidance.unwrap();
+        assert!(!g.is_empty() && g.len() <= 16);
+        assert!(g.iter().all(|line| line.len() <= 1024), "{g:?}");
+        assert!(f.logged().iter().all(|line| line.len() <= 1024));
+        let ledger = sh_quote(&f.rs.ledger).unwrap();
+        assert_eq!(
+            g[2],
+            format!(
+                "fix 2: rm {ledger} (the next swap keeps the login in ~/.claude as profile default-original)"
+            ),
+            "a line that fits is printed whole"
+        );
+        assert_eq!(
+            g[3], "fix 3: move the login in ~/.claude by hand; its path cannot be printed safely",
+            "{parts} parts"
+        );
+        for line in g.iter().chain(&f.logged()) {
+            assert!(!line.contains("mv -n"), "no cut command: {line}");
+        }
+    }
+}
+
+// --- Review follow-ups ---------------------------------------------------------
+
+/// The `/proc` scan and the auto-switch ledger (the `Env`) are read only
+/// after a hand change, in the cycle and in `--dry-run`.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_env_is_built_only_after_a_hand_change() {
+    let f = fx(true, true);
+    let built = std::cell::Cell::new(0);
+    let counted = || {
+        built.set(built.get() + 1);
+        seam()
+    };
+    assert!(
+        !preview(&f.store, &f.rs, &f.home, counted, T)
+            .unwrap()
+            .is_empty()
     );
+    assert_eq!(built.get(), 1);
+    let mut out = Sink::new(open_or_warn(&f.rs.log, &f.rs.log1), false, true);
+    let step = step_with(&f.store, &f.rs, &f.home, &mut out, counted, T).unwrap();
+    assert_eq!((step, built.get()), (Step::Recovered, 2));
+
+    let never = || -> Seam<'static> { panic!("the Env was built without a hand change") };
+    assert!(
+        preview(&f.store, &f.rs, &f.home, never, T)
+            .unwrap()
+            .is_empty()
+    );
+    let step = step_with(&f.store, &f.rs, &f.home, &mut out, never, T + 600).unwrap();
+    assert_eq!(step, Step::Clear);
+}
+
+/// L already in `lost_login` and guided again with its own `fix 1`: one
+/// "log in" line for L in that cycle, not two.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_lost_profile_guided_again_gets_one_login_line() {
+    let f = fx(false, false);
+    assert_eq!(f.step(&seam(), T), Step::Recovered);
+    assert_eq!(f.ledger().lost_login, vec![L.to_string()]);
+    let mut l = f.ledger();
+    l.live = Some(L.into());
+    l.account = Some("u-rs".into());
+    f.rs.save_ledger(&l).unwrap();
+    f.store.add(&n("mistt-spare")).unwrap();
+    private(
+        &f.root.join("mistt-spare/.claude.json"),
+        &acct("u-mistt", "mistt@example.com"),
+    );
+    let before = f.logged().len();
+    assert_eq!(f.step(&seam(), T + 600), Step::Guided);
+    let cycle = f.logged().split_off(before);
+    let login = format!("amplihack profile login {L}");
+    assert_eq!(
+        cycle.iter().filter(|l| l.contains(&login)).count(),
+        1,
+        "{cycle:?}"
+    );
+    assert_eq!(cycle[1], login_l());
+    assert_eq!(f.ledger().lost_login, vec![L.to_string()], "L stays listed");
+
+    // Without guidance for L, its lost-login line is back.
+    let mut l = f.ledger();
+    l.live = Some(M.into());
+    l.account = Some("u-mistt".into());
+    f.rs.save_ledger(&l).unwrap();
+    let before = f.logged().len();
+    assert_eq!(f.step(&seam(), T + 1200), Step::Clear);
+    assert_eq!(f.logged().split_off(before), vec![lost_l()]);
+}
+
+/// A full `lost_login` list: L is not added, and one line says so, once.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_full_lost_login_list_says_so_once() {
+    let f = fx(false, false);
+    let others: Vec<String> = (0..MAX_LOST_LOGIN)
+        .map(|i| format!("gone-{i:02}"))
+        .collect();
+    for o in &others {
+        f.store.add(&n(o)).unwrap();
+    }
+    let mut l = f.ledger();
+    l.lost_login = others.clone();
+    f.rs.save_ledger(&l).unwrap();
+    assert_eq!(f.step(&seam(), T), Step::Recovered);
+    let cap = format!(
+        "ALERT: profile {L} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {L}"
+    );
+    let lines = f.logged();
+    assert_eq!(lines[..2], [recorded_line(), cap.clone()]);
+    assert_eq!(f.ledger().lost_login, others, "L is not added");
+    assert_eq!(f.step(&seam(), T + 600), Step::Clear);
+    assert_eq!(count(&f.logged(), &cap), 1, "not repeated");
+}
+
+/// A profile directory replaced by a symlink leaves `lost_login`: nothing
+/// is looked up through the link.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_symlinked_profile_dir_leaves_lost_login() {
+    let f = fx(false, false);
+    f.step(&seam(), T);
+    assert_eq!(f.ledger().lost_login, vec![L.to_string()]);
+    let elsewhere = f.base.join("elsewhere");
+    dir700(&elsewhere);
+    fs::remove_dir_all(f.root.join(L)).unwrap();
+    std::os::unix::fs::symlink(&elsewhere, f.root.join(L)).unwrap();
+    assert_eq!(f.step(&seam(), T + 600), Step::Clear);
+    assert!(f.ledger().lost_login.is_empty());
+}
+
+/// An existing `.rejected-logins` others can read refuses the move with
+/// its own reason, as `profile login` requires `0700`.
+#[cfg(target_os = "linux")]
+#[test]
+fn a_rejected_logins_dir_others_can_read_refuses_with_its_own_reason() {
+    let f = fx(true, false);
+    fs::create_dir(f.rejected()).unwrap();
+    fs::set_permissions(f.rejected(), fs::Permissions::from_mode(0o750)).unwrap();
     assert_eq!(f.step(&seam(), T), Step::Guided);
-    let l =
-        f.rs.load_ledger()
-            .expect("the ledger it wrote loads")
-            .unwrap();
-    let g = l.guidance.unwrap();
-    assert!(!g.is_empty() && g.len() <= 16);
-    assert!(g.iter().all(|line| line.len() <= 1024), "{g:?}");
-    assert!(f.logged().iter().all(|line| line.len() <= 1024));
+    let head = &f.logged()[0];
+    let want = format!(
+        "recovery refused: backup directory is not private: {}; no swap",
+        f.rejected().display()
+    );
+    assert!(head.ends_with(&want), "{head}");
+    assert_eq!(ino_at(&f.slot(M)), f.m, "nothing moved");
+    assert_eq!(fs::read_dir(f.rejected()).unwrap().count(), 0);
+    assert_eq!(f.ledger().live.as_deref(), Some(L));
+}
+
+#[test]
+fn backup_refusals_each_have_their_own_reason() {
+    let tmp = tempfile::tempdir().unwrap();
+    let base = tmp.path().canonicalize().unwrap();
+
+    // Io: the parent is missing.
+    let missing = base.join("no-such-root").join(".rejected-logins");
+    let r = rejected_dir(&missing).unwrap_err();
+    assert!(matches!(r, BackupRefusal::Io(_)), "{r:?}");
+    assert!(
+        r.reason()
+            .starts_with("cannot create the backup directory: ")
+    );
+    let r = fresh_backup(&missing, &n(M), T).unwrap_err();
+    assert!(matches!(r, BackupRefusal::Io(_)), "{r:?}");
+
+    // NotPrivate: an existing directory others can read, or a symlink.
+    let open = base.join("open");
+    fs::create_dir(&open).unwrap();
+    fs::set_permissions(&open, fs::Permissions::from_mode(0o755)).unwrap();
+    let r = rejected_dir(&open).unwrap_err();
+    assert_eq!(
+        r.reason(),
+        format!("backup directory is not private: {}", open.display())
+    );
+    let link = base.join("link");
+    std::os::unix::fs::symlink(base.join("private"), &link).unwrap();
+    dir700(&base.join("private"));
+    assert!(matches!(
+        rejected_dir(&link).unwrap_err(),
+        BackupRefusal::NotPrivate(_)
+    ));
+
+    // A fresh one is created 0700, and a private existing one is accepted.
+    let rejected = base.join(".rejected-logins");
+    assert_eq!(rejected_dir(&rejected).unwrap(), rejected);
+    assert_eq!(rejected_dir(&rejected).unwrap(), rejected);
+
+    // NoFreeName: all 99 names for this second are taken.
+    for k in 1..=99 {
+        let suffix = if k == 1 {
+            String::new()
+        } else {
+            format!("-{k}")
+        };
+        dir700(&rejected.join(format!("rotate-{M}-{STAMP}{suffix}")));
+    }
+    let r = fresh_backup(&rejected, &n(M), T).unwrap_err();
+    assert!(matches!(r, BackupRefusal::NoFreeName), "{r:?}");
+    assert_eq!(r.reason(), "no free backup name");
 }

@@ -962,7 +962,7 @@ Refusals, with the fix line written for each (`<dir>` is
 | `cannot see running sessions` | `close the claude sessions that use ryan-mistt-org, then run: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
 | `Claude holds its refresh lock` | `wait; the next cycle retries` |
 | `ryan-mistt-org's login is lent out or it hosts another login` | `wait for the auto-switch session to end; the next cycle retries` |
-| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `no free backup name` | `move ryan-mistt-org's copy by hand: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
+| `a login file is not a private regular file with one link`, `~/.claude and the profile root are on different devices`, `cannot create the backup directory: <error>`, `backup directory is not private: <path>`, `no free backup name` | `move ryan-mistt-org's copy by hand: mkdir -m 700 <dir> && mv -n /home/you/.claude-profiles/ryan-mistt-org/.credentials.json <dir>/` |
 | `~/.claude changed during recovery` | `none needed; the next cycle retries` |
 
 The first four can appear whether or not the profile has its own login; the
