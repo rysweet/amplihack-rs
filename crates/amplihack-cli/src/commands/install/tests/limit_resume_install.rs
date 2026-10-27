@@ -447,6 +447,26 @@ fn the_bootstrap_does_not_probe_claude_without_a_stop_failure_entry() {
     );
 }
 
+/// A copilot or codex launch never asks for the `claude` version; a Claude
+/// launch does.
+#[test]
+fn only_a_claude_launch_probes_the_claude_version() {
+    for tool in ["copilot", "codex"] {
+        assert_eq!(
+            crate::freshness::with_provider(tool, || {
+                claude_too_old_for_launch(|| panic!("{tool} launch probed claude"))
+            }),
+            None
+        );
+    }
+    assert_eq!(
+        crate::freshness::with_provider("claude", || {
+            claude_too_old_for_launch(|| Some("2.1.76".to_string()))
+        }),
+        Some("2.1.76".to_string())
+    );
+}
+
 /// The repair the bootstrap runs on a flagged file removes the entry.
 #[test]
 fn the_bootstrap_repair_removes_a_1660_entry_for_an_old_claude() {

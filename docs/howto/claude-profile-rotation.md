@@ -517,8 +517,9 @@ You need:
   `amplihack install` leaves the hook out and says so: Claude Code before
   2.1.78 does not know `StopFailure` and ignores a settings file that names
   it. If an earlier amplihack already registered it, the next `amplihack`
-  launch removes it, and an automatic re-stage after an upgrade warns and
-  names `amplihack install`.
+  launch of Claude Code removes it, and an automatic re-stage after an
+  upgrade warns and names `amplihack install`. Launches of copilot or codex
+  do not check the `claude` version and leave the file as it is.
 - `amplihack install` run with this version of amplihack, which registers the
   hook in `~/.claude/settings.json`.
 - Auto-switch on and the rotator running:

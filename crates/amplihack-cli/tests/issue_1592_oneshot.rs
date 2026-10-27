@@ -414,15 +414,22 @@ struct OldRotator(std::process::Child);
 
 impl OldRotator {
     fn start(f: &Fixture) -> Self {
+        // A loop keeps `sh` itself running (it never exec's into `sleep`,
+        // which would replace the command line the rotator check reads), and
+        // the short sleep means no orphan outlives the kill by more than a
+        // second. No inherited pipes, so nextest sees no leak.
         let child = std::process::Command::new("sh")
             .args([
                 "-c",
-                "sleep 600; :",
+                "while :; do sleep 1; done",
                 "amplihack",
                 "profile",
                 "rotate",
                 "watch",
             ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
         let dir = f.rotate_dir();

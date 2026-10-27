@@ -382,8 +382,10 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             // #1659: a settings.json from #1660 registers `StopFailure` for
             // every user. A Claude Code too old for it ignores the whole
             // file, so the entry is drift even though every hook is present.
+            // Only a Claude launch asks `claude --version`: copilot and codex
+            // never read this file, and the next Claude launch repairs it.
             let Some(version) =
-                harmful_limit_resume_registration(&settings_path, claude_too_old_for_limit_resume)
+                harmful_limit_resume_registration(&settings_path, launched_claude_too_old)
             else {
                 return Ok(());
             };
@@ -421,8 +423,7 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
     }
     // Verify the repair actually worked
     if hooks_registered_in_settings(&settings_path)? != HookRegistration::Registered
-        || harmful_limit_resume_registration(&settings_path, claude_too_old_for_limit_resume)
-            .is_some()
+        || harmful_limit_resume_registration(&settings_path, launched_claude_too_old).is_some()
     {
         bail!(
             "hooks still not registered after auto-repair.\n\
@@ -501,6 +502,25 @@ pub(super) fn harmful_limit_resume_registration(
     let raw = fs::read_to_string(settings_path).ok()?;
     let settings = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
     if !has_limit_resume_registration(&settings) {
+        return None;
+    }
+    old_claude()
+}
+
+/// #1659: [`claude_too_old_for_limit_resume`] for the launch bootstrap, which
+/// runs before every launch. A launch of another tool gives `None` without
+/// running `claude --version` (about 150 ms, up to the 10-second probe
+/// budget): that tool never reads `~/.claude/settings.json`, and the next
+/// Claude launch removes an entry its Claude Code cannot read.
+fn launched_claude_too_old() -> Option<String> {
+    claude_too_old_for_launch(claude_too_old_for_limit_resume)
+}
+
+/// [`launched_claude_too_old`] with the version check passed in.
+pub(super) fn claude_too_old_for_launch(
+    old_claude: impl FnOnce() -> Option<String>,
+) -> Option<String> {
+    if !crate::freshness::claude_selected() {
         return None;
     }
     old_claude()

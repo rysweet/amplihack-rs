@@ -202,11 +202,18 @@ pub(crate) fn with_provider<T>(provider: &str, action: impl FnOnce() -> T) -> T 
     let _restore = Restore(SELECTED_PROVIDER.with(|p| p.replace(Some(provider.to_string()))));
     action()
 }
-pub(crate) fn codex_selected() -> bool {
+fn selected_provider() -> String {
     SELECTED_PROVIDER
         .with(|p| p.borrow().clone())
         .unwrap_or_else(crate::env_builder::active_agent_binary)
-        == "codex"
+}
+pub(crate) fn codex_selected() -> bool {
+    selected_provider() == "codex"
+}
+/// Whether the launch in progress runs Claude Code (#1659): only then does
+/// the bootstrap ask `claude --version`.
+pub(crate) fn claude_selected() -> bool {
+    selected_provider() == "claude"
 }
 
 /// Reconcile managed `recipe-runner-rs` delivery with the shared immutable
