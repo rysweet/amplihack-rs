@@ -36,6 +36,8 @@ pub struct AttackPattern {
 enum PatternMatcher {
     Regex(regex::Regex),
     LengthThreshold(usize),
+    ToolContent(regex::Regex),
+    InstructionChain(regex::Regex),
 }
 
 impl AttackPattern {
@@ -43,19 +45,25 @@ impl AttackPattern {
     pub fn matches(&self, text: &str) -> bool {
         match &self.matcher {
             PatternMatcher::Regex(re) => re.is_match(text),
+            PatternMatcher::ToolContent(re) => matches_tool_content(re, text),
+            PatternMatcher::InstructionChain(re) => matches_instruction_chain(re, text),
             PatternMatcher::LengthThreshold(n) => text.len() >= *n,
         }
     }
 }
 
 fn re(pattern: &str) -> PatternMatcher {
+    PatternMatcher::Regex(compile_regex(pattern))
+}
+
+fn compile_regex(pattern: &str) -> Regex {
     match RegexBuilder::new(pattern).case_insensitive(true).build() {
-        Ok(r) => PatternMatcher::Regex(r),
+        Ok(r) => r,
         Err(e) => {
             // Log the bad pattern and fall back to a never-matching regex
             // so the system degrades gracefully instead of panicking.
             tracing::error!(pattern, error = %e, "invalid XPIA regex — pattern disabled");
-            PatternMatcher::Regex(Regex::new("(?:$^)").expect("never-matching fallback regex"))
+            Regex::new("(?:$^)").expect("never-matching fallback regex")
         }
     }
 }
@@ -99,6 +107,115 @@ impl Default for XpiaPatterns {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn tool_content_re(pattern: &str) -> PatternMatcher {
+    PatternMatcher::ToolContent(compile_regex(pattern))
+}
+
+fn matches_tool_content(regex: &Regex, text: &str) -> bool {
+    // Generic adapters serialize parameters, while Bash and WebFetch pass raw
+    // strings. Decode actual JSON rather than guessing whether \\n is escaped.
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => matches_json_strings(regex, &value),
+        Err(_) => matches_command(regex, text), // Non-JSON content is ordinary raw input.
+    }
+}
+
+fn matches_json_strings(regex: &Regex, value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => matches_command(regex, text),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| matches_json_strings(regex, value)),
+        serde_json::Value::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| matches_command(regex, key) || matches_json_strings(regex, value)),
+        _ => false,
+    }
+}
+
+fn matches_command(regex: &Regex, text: &str) -> bool {
+    if text.contains("\\\n") || text.contains("\\\r\n") {
+        regex.is_match(&text.replace("\\\r\n", "").replace("\\\n", ""))
+    } else {
+        regex.is_match(text)
+    }
+}
+
+fn matches_instruction_chain(regex: &Regex, text: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => {
+            let mut instructions = String::new();
+            append_json_instructions(&value, &mut instructions);
+            regex.is_match(&instructions)
+        }
+        Err(_) => regex.is_match(text),
+    }
+}
+
+fn separate_instruction(instructions: &mut String) {
+    instructions.truncate(instructions.trim_end().len());
+    if let Some(last) = instructions.chars().next_back() {
+        if !matches!(last, '.' | '!' | '?' | ';' | ',' | ':') {
+            instructions.push(';');
+        }
+        instructions.push(' ');
+    }
+}
+
+fn append_json_instructions(value: &serde_json::Value, instructions: &mut String) {
+    match value {
+        serde_json::Value::String(text) => {
+            separate_instruction(instructions);
+            instructions.push_str(text);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                append_json_instructions(value, instructions);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                separate_instruction(instructions);
+                instructions.push_str(key);
+                instructions.push(':');
+                append_json_instructions(value, instructions);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn command_injection_pattern() -> PatternMatcher {
+    // Enumerate executable aliases rather than accepting arbitrary prefixes.
+    let command = r"(?:rm|rmdir|del|format|kill|killall|killall5|shutdown|reboot|wget|wget2|curl|nc|nc6|ncat|netcat)(?:\.exe)?|(?:nc|netcat)\.(?:openbsd|traditional)|format\.com";
+    // Quotes concatenated with a suffix are part of the executable token.
+    tool_content_re(&format!(
+        r#"(?:\||&&|\$\(|`|;|\n)\s*(?:{command})(?:""|'')*(?:$|[\s;|&()`<>])"#
+    ))
+}
+
+fn chain_attack_pattern() -> PatternMatcher {
+    let first = r"\b(?:step\s+1|first|then|after\s+that|next|finally)\b";
+    let second = r"\b(?:step\s+2|second|then|after(?:\s+that)?|next|finally)\b";
+    let start = r#"\s*[,:-]?\s*[`"']?\s*(?:(?:please|\w+ly|now)\s+)*(?:use\s+(?:(?:a|an|the)\s+)?(?:browser|shell|terminal|script|tool|agent|command|program|access|session)\s+to\s+)?"#;
+    // Link adjacent instruction clauses without crossing unrelated sentences.
+    // A harmful action must be directed by a linked clause.
+    let link = r#"[^.!?;\n"]*[.!?;,]?\s*"#;
+    let secret = r"(?:credentials?|passwords?|secrets?|(?:api|private)[\s_-]+keys?|(?:access[\s_-]+)?tokens?)";
+    let article = r"(?:all\s+)?(?:the\s+)?";
+    // Require target words rather than compound names such as credential-test.
+    let end = r#"(?:$|[\s,;:!?`"']|\.(?:\s|$))"#;
+    let action = format!(
+        r"(?:(?:steal|collect|harvest|dump|exfiltrate|leak|send|upload|transmit)\s+{article}{secret}|(?:exfiltrate|leak)\s+{article}(?:data|files)|(?:delete|destroy|wipe|erase)\s+{article}(?:files|backups|logs|database)|(?:disable|bypass|remove)\s+{article}(?:security|safety)\s+(?:protections?|checks?|guards?|filters?|validation|logging))"
+    );
+    let harmful = format!(r"{action}{end}");
+    // Access followed by extraction is the established acquisition/exfiltration
+    // pair. Ordinary CSV extraction without that acquisition remains harmless.
+    PatternMatcher::InstructionChain(compile_regex(&format!(
+        r"(?:{first}{start}{harmful}{link}{second}{start}\w+|{first}{start}{action}\.{second}{start}\w+|{first}{start}{link}{second}{start}{harmful}|{first}{start}(?:get|gain|obtain)\s+access\b{link}{second}{start}extract\s+(?:the\s+)?data\b)"
+    )))
 }
 
 fn build_patterns() -> Vec<AttackPattern> {
@@ -219,9 +336,7 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Shell command injection via operators",
             mitigation: "Sanitize shell metacharacters",
-            matcher: re(
-                r"(\||&&|\$\(|`|;|\n)[\s]*(rm|del|format|kill|shutdown|reboot|wget|curl|nc|netcat)",
-            ),
+            matcher: command_injection_pattern(),
         },
         AttackPattern {
             id: "SE002",
@@ -282,9 +397,7 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Multi-step attack using sequential instructions",
             mitigation: "Validate each step independently",
-            matcher: re(
-                r"(step\s+1|first,?|then|after that|next|finally).*?(step\s+2|second|then|after|next|finally)",
-            ),
+            matcher: chain_attack_pattern(),
         },
         AttackPattern {
             id: "WF001",
