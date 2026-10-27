@@ -821,6 +821,27 @@ A `ledger.json` that cannot be read gives the same error. Delete
 `~/.claude-profiles/.auto-switch.d/rotate/ledger.json`; the next cycle works
 out the live profile again from the accounts.
 
+### Go back to an older amplihack
+
+An amplihack older than
+[#1659](https://github.com/rysweet/amplihack-rs/issues/1659) cannot read the
+`last_cycle.measured_at` field this version writes to `ledger.json`. Its
+rotator does not rewrite a ledger it cannot read, so it logs a failed cycle
+every interval and never swaps again, and the limit-resume hook waits its
+full 7 days for a cycle that does not come. Before you run the older binary,
+or launch anything with it while [autostart](#start-the-rotator-automatically)
+is on:
+
+1. Stop the rotator: `amplihack profile rotate stop`.
+2. Delete `~/.claude-profiles/.auto-switch.d/rotate/ledger.json` (under your
+   root, if it is not `~/.claude-profiles`).
+3. Start the older rotator: `amplihack profile rotate start`.
+
+The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
+it also clears the swap hold, so the first cycle may make an upgrade swap
+sooner than it otherwise would. The same steps recover an older rotator that
+is already running and logging failures.
+
 If you cannot tell which login belongs where, log each affected profile in
 again with `amplihack profile login <name>`.
 

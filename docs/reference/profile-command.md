@@ -2996,6 +2996,21 @@ line naming its pid and how to restart it, and every ledger write leaves out
 another. From this version on the rotator ignores ledger fields it does not
 know.
 
+Going back to an amplihack older than #1659 is not covered by that
+protection. The older rotator rejects a ledger that has
+`last_cycle.measured_at`, never rewrites a ledger it cannot read, and logs a
+failed cycle every interval without rotating again. Nothing else reports it:
+a limit-resume hook still finds a running rotator and waits its full 7 days.
+Before the older binary runs, including a launch that would
+[start the rotator automatically](#rotate-autostart), stop the rotator with
+this version (`amplihack profile rotate stop`), then delete
+`<root>/.auto-switch.d/rotate/ledger.json`, then start the older rotator.
+The ledger holds only bookkeeping; the next cycle works out the live profile
+again from the accounts. Deleting it also clears the swap hold and the alert
+de-duplication key, so the first cycle may swap or alert once more. If an
+older rotator is already running and logging failures, the same three steps,
+with `rotate stop` run by either binary, recover it.
+
 Any outcome other than `swapped` or `stayed` (`alerted`, `skipped`, `idle`,
 or one the hook does not know), a missing ledger, or a ledger that is not
 trusted means no capacity yet. The hook does not apply the

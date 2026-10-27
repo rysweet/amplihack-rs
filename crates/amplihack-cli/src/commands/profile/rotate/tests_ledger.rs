@@ -324,10 +324,19 @@ struct OldLastCycle {
 /// Issue #1659: while a rotator from an older binary runs, what this binary
 /// writes is a ledger that rotator parses, so a one-shot `rotate` beside it
 /// cannot start an "inconsistent" ALERT loop. Without the downgrade it would.
+///
+/// The first assertion pins the other direction too: a ledger written with
+/// no older rotator running is one an older binary cannot read, which is why
+/// going back to it needs `rotate stop` and the ledger deleted first (the
+/// "Go back to an older amplihack" section of
+/// docs/howto/claude-profile-rotation.md).
 #[test]
 fn a_ledger_written_beside_an_older_rotator_is_one_it_can_read() {
     let full = serde_json::to_vec(&for_older_readers(&ledger(), false)).unwrap();
-    assert!(serde_json::from_slice::<OldLedger>(&full).is_err());
+    assert!(
+        serde_json::from_slice::<OldLedger>(&full).is_err(),
+        "an older reader must reject measured_at, or the rollback steps in the docs are wrong"
+    );
     let older = serde_json::to_vec(&for_older_readers(&ledger(), true)).unwrap();
     serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
 }
