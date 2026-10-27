@@ -225,7 +225,7 @@ fi
 step() { # step <repo> [env...]
   local repo="$1"; shift
   OUT="$(cd "$WORK" && env PATH="$BIN:$PATH" AMPLIHACK_HOME="$ROOT" \
-        REPO_PATH="$repo" ISSUE_NUMBER="$ISSUE" "$@" bash "$STEP" 2>&1)"
+        REPO_PATH="$repo" RECIPE_VAR_issue_number="$ISSUE" "$@" bash "$STEP" 2>&1)"
   RC=$?
 }
 if [ -s "$STEP" ]; then

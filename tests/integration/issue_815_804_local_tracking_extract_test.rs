@@ -66,7 +66,7 @@ fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
         .arg(step_03b_body())
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("ISSUE_CREATION", issue_creation)
+        .env("RECIPE_VAR_issue_creation", issue_creation)
         .env("TASK_DESCRIPTION", task_description)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

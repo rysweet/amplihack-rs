@@ -27,9 +27,11 @@ context:
   should_finalize: "true"
   should_run_ci_wait: "true"
   should_merge: "true"
-  # Issue #1561: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
+  # #1561/#1684: declared so a nested run never reads an inherited RECIPE_VAR_<key>.
   repo_path: ""
   version_bump: ""
+  local_testing_gate: ""
+  precommit_results: ""
 
 steps:
   - id: "publish-terminal-state"
@@ -335,8 +337,6 @@ steps:
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || { echo "ERROR: step-16-create-draft-pr requires a git repo at $(pwd); either \`git init\` or rerun from a checkout" >&2; exit 1; }
       _CURRENT_BRANCH=$(git branch --show-current 2>/dev/null || echo "")
       if [ "$_CURRENT_BRANCH" = "main" ] || [ "$_CURRENT_BRANCH" = "master" ]; then echo "ERROR: step-16 landed on protected branch '$_CURRENT_BRANCH' — refusing to create PR. Worktree setup likely failed." >&2; exit 1; fi
-      HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
-      if [ "$HOST_TYPE" != "github" ]; then :; fi
       RUNTIME_ARTIFACT_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
       [ -f "$RUNTIME_ARTIFACT_HELPER" ] || RUNTIME_ARTIFACT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_runtime_artifacts.sh"
