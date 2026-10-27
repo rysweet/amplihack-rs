@@ -312,7 +312,8 @@ steps:
     command: |
       # The report lives in amplifier-bundle/tools/smart_routing_gap_report.sh, extracted to keep this brick within its line budget (#1684).
       T=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/smart_routing_gap_report.sh" ] && { T="$c/amplifier-bundle/tools/smart_routing_gap_report.sh"; break; }; done
-      [ -n "$T" ] || { echo "WARNING: routing gap report helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/smart_routing_gap_report.sh" >&2; exit 0; }
+      # A missing helper still leaves a trace in infra_error_details: the sentinel goes to stdout (#1688).
+      [ -n "$T" ] || { echo "WARNING: routing gap report helper not found (searched AMPLIHACK_HOME, REPO_PATH, cwd, ~/.copilot, ~/.amplihack): amplifier-bundle/tools/smart_routing_gap_report.sh" >&2; echo "diag:helper-not-found"; exit 0; }
       bash "$T"
     output: "infra_error_details"
 
