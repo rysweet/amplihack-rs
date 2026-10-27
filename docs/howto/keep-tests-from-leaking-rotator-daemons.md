@@ -122,7 +122,10 @@ A process counts as a leak only when all of these hold:
 - It belongs to the current user.
 - Its argv contains `profile`, `rotate`, `watch` and `--spawned` as separate
   entries.
-- Its executable is under a `target*/` directory. A ` (deleted)` suffix on
+- Its executable is under a `target*/` directory, under `$CARGO_TARGET_DIR`,
+  or under this repo's `target/`. Those last two are resolved through
+  symlinks first, so a `target/` that links to, say,
+  `/d0/cargo-targets/<name>/` still counts. A ` (deleted)` suffix on
   `/proc/<pid>/exe` is ignored; if the link cannot be read, argv[0] is used.
 - Its `HOME` is under `$TMPDIR` or `/tmp`.
 
@@ -177,12 +180,12 @@ To find the test that started it:
 
 To stop a leaked daemon on your machine, check the pid again first. PIDs are
 reused, so make sure it is still a `rotate watch --spawned` process running a
-`target*/` binary with a temp `HOME`, then kill that pid alone:
+test-build binary with a temp `HOME`, then kill that pid alone:
 
 ```bash
 pid=48213
 tr '\0' ' ' < "/proc/$pid/cmdline"; echo   # must contain: profile rotate watch --spawned
-readlink "/proc/$pid/exe"                   # must be under target*/
+readlink "/proc/$pid/exe"                   # must be a test build (see above)
 tr '\0' '\n' < "/proc/$pid/environ" | grep -E '^HOME='   # must be under $TMPDIR or /tmp
 kill "$pid"
 ```

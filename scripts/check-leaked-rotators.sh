@@ -8,7 +8,8 @@
 #     entries;
 #   - its executable (/proc/<pid>/exe, a trailing " (deleted)" removed, or
 #     argv[0] when the link is unreadable) is under a `target*/` directory,
-#     so a test build and never an installed amplihack;
+#     $CARGO_TARGET_DIR or this repo's target/ (symlinks resolved), so a
+#     test build and never an installed amplihack;
 #   - its HOME is under $TMPDIR or /tmp, so a test's temp home.
 #
 # Each match prints one `leaked rotator:` line with its pid, exe, HOME and
@@ -47,6 +48,29 @@ env_value() {
     | cut -d= -f2-
 }
 
+# Build directories besides `*/target*/*`: $CARGO_TARGET_DIR and this repo's
+# target/, symlinks resolved, since /proc/<pid>/exe holds the resolved path. A
+# target/ that is a symlink to, say, /d0/cargo-targets/<name>/ is otherwise
+# missed.
+build_dirs=()
+script_root=$(cd "$(dirname "$0")/.." 2>/dev/null && pwd -P) || script_root=""
+for d in "${CARGO_TARGET_DIR:-}" "${script_root:+$script_root/target}"; do
+  [ -n "$d" ] && [ -d "$d" ] || continue
+  r=$(cd "$d" 2>/dev/null && pwd -P) || continue
+  [ "$r" = / ] && continue
+  build_dirs+=("$r")
+done
+
+# is_test_build EXE: under a `target*/` directory or one of $build_dirs.
+is_test_build() {
+  case "$1" in */target*/*) return 0 ;; esac
+  local r
+  for r in ${build_dirs[@]+"${build_dirs[@]}"}; do
+    case "$1" in "$r"/*) return 0 ;; esac
+  done
+  return 1
+}
+
 # Pure bash builtins until a process's argv matches: a host can run
 # thousands of processes, and a fork per process makes the scan crawl.
 seen=0
@@ -75,10 +99,7 @@ for dir in /proc/[0-9]*; do
   exe=$(readlink "$dir/exe" 2>/dev/null) || exe=""
   exe="${exe% (deleted)}"
   [ -n "$exe" ] || exe=$argv0
-  case "$exe" in
-    */target*/*) ;;
-    *) continue ;;
-  esac
+  is_test_build "$exe" || continue
 
   home=$(env_value "$p" HOME)
   [ -n "$home" ] || continue

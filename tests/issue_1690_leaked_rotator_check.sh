@@ -23,7 +23,9 @@
 #      a substring;
 #   4. a decoy whose exe was deleted (a rebuilt test binary) is still found;
 #   5. control characters in HOME are stripped from the report;
-#   6. the detector itself never signals and never traces or evals.
+#   6. the detector itself never signals and never traces or evals;
+#   7. an exe under $CARGO_TARGET_DIR is found even when that directory is
+#      reached through a symlink and its name holds no `target`.
 set +e -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -64,11 +66,13 @@ cleanup() {
 trap cleanup EXIT
 
 tmp=$(mktemp -d)
-mkdir -p "$tmp/target/debug" "$tmp/bin" "$tmp/home"
+mkdir -p "$tmp/target/debug" "$tmp/bin" "$tmp/home" "$tmp/cargo-out/debug"
+ln -s "$tmp/cargo-out" "$tmp/out-link"
 BASH_BIN=$(command -v bash)
 cp "$BASH_BIN" "$tmp/target/debug/amplihack"
 cp "$BASH_BIN" "$tmp/target/debug/amplihack-deleted"
 cp "$BASH_BIN" "$tmp/bin/amplihack"
+cp "$BASH_BIN" "$tmp/cargo-out/debug/amplihack"
 
 LOOP='trap "exit 0" TERM; while :; do sleep 1 & wait $!; done'
 ARGV_OK=(profile rotate watch --interval 600 --spawned)
@@ -170,6 +174,19 @@ if start_decoy "$tmp/home" "$tmp/target/debug/amplihack-deleted" "${ARGV_OK[@]}"
   stop_decoy "$del_pid"
 else
   fail "deleted-exe decoy did not start"
+fi
+
+# --- 7. a custom CARGO_TARGET_DIR, reached through a symlink ---------------
+# /proc/<pid>/exe holds the resolved path, which need not contain `target`.
+if start_decoy "$tmp/home" "$tmp/out-link/debug/amplihack" "${ARGV_OK[@]}"; then
+  ctd_pid=$decoy_pid
+  run_detect
+  if reported "$ctd_pid"; then fail "exe outside any build dir wrongly reported: $out"; else pass "exe in an unknown build dir: not reported"; fi
+  out=$(CARGO_TARGET_DIR="$tmp/out-link" bash "$DETECT" 2>&1)
+  if reported "$ctd_pid"; then pass "exe under a symlinked CARGO_TARGET_DIR is found"; else fail "CARGO_TARGET_DIR decoy $ctd_pid missed: $out"; fi
+  stop_decoy "$ctd_pid"
+else
+  fail "CARGO_TARGET_DIR decoy did not start"
 fi
 
 # --- 5. control characters are stripped -------------------------------------
