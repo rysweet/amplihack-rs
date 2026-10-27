@@ -1008,6 +1008,8 @@ fn the_refusing_spawner_reveals_no_path() {
     let f = on_launch_reaching_the_spawner();
     let log = f.rotate_err();
     let tmp = f.tmp.path().to_str().unwrap();
+    // Without this the absence check below would pass on an empty log.
+    assert!(log.contains("autostart: failed"), "{log:?}");
     assert!(
         !log.contains(tmp),
         "fixed error text, no root or home path: {log:?}"
