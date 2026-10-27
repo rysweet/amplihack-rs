@@ -47,8 +47,10 @@ You need:
 - At least two profiles, each logged in, created with
   `amplihack profile add <name>` and `amplihack profile login <name>`.
 - A login in `~/.claude`, made with plain `claude` and `/login`.
-- `~/.claude` and the profile root (`$AMPLIHACK_CLAUDE_PROFILE_ROOT`, by
-  default `~/.claude-profiles`) on the same filesystem.
+- `~/.claude` and the profile root (`$AMPLIHACK_CLAUDE_PROFILE_ROOT`, then
+  the root saved by `amplihack profile root`, by default
+  `~/.amplihack/claude-profiles`) on the same filesystem. The examples on this
+  page use a root saved as `~/.claude-profiles`.
 
 Check that every profile reports usage:
 
@@ -818,8 +820,9 @@ To resolve it by hand, without opening any credentials file:
 7. Start the background process again: `amplihack profile rotate start`.
 
 A `ledger.json` that cannot be read gives the same error. Delete
-`~/.claude-profiles/.auto-switch.d/rotate/ledger.json`; the next cycle works
-out the live profile again from the accounts.
+`<root>/.auto-switch.d/rotate/ledger.json` (`<root>` is the `root:` line of
+`amplihack profile rotate status`); the next cycle works out the live profile
+again from the accounts.
 
 ### Go back to an older amplihack
 
@@ -833,8 +836,10 @@ or launch anything with it while [autostart](#start-the-rotator-automatically)
 is on:
 
 1. Stop the rotator: `amplihack profile rotate stop`.
-2. Delete `~/.claude-profiles/.auto-switch.d/rotate/ledger.json` (under your
-   root, if it is not `~/.claude-profiles`).
+2. Delete `<root>/.auto-switch.d/rotate/ledger.json`, where `<root>` is the
+   path on the `root:` line of `amplihack profile rotate status`. With no
+   root set, it is `~/.amplihack/claude-profiles`, so the file is
+   `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
 3. Start the older rotator: `amplihack profile rotate start`.
 
 The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
