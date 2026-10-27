@@ -155,6 +155,20 @@ fn record_root(rs: &RotateState, home: &Path, root: &Path) -> Vec<ProfileError> 
 /// What starts the background process: [`spawn`], or a fake in tests.
 pub(super) type Spawner = dyn Fn(&RotateState, &Settings, &Path) -> Result<u32, ProfileError>;
 
+/// The argv after the executable that [`spawn`] gives the daemon:
+/// `profile rotate watch <flags> --spawned`.
+///
+/// `scripts/check-leaked-rotators.sh` finds leaked daemons by the exact
+/// entries `profile`, `rotate`, `watch` and `--spawned`;
+/// `tests_daemon::the_leak_scan_matches_the_argv_spawn_builds` fails if
+/// this argv and the script's patterns drift apart (issue #1690).
+pub(super) fn spawned_args(s: &Settings) -> Vec<String> {
+    let mut args: Vec<String> = ["profile", "rotate", "watch"].map(String::from).into();
+    args.extend(s.to_args(true));
+    args.push("--spawned".into());
+    args
+}
+
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
@@ -167,9 +181,7 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
     let (out, err) = (errors.file()?, errors.file()?);
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
-    cmd.args(["profile", "rotate", "watch"])
-        .args(s.to_args(true))
-        .arg("--spawned")
+    cmd.args(spawned_args(s))
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);

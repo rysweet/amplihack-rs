@@ -5,7 +5,9 @@
 # A process is reported when all of these hold:
 #   - it is owned by this effective uid (checked before anything is read);
 #   - its argv holds `profile`, `rotate`, `watch` and `--spawned` as exact
-#     entries;
+#     entries. These are the entries `daemon::spawned_args` builds; the unit
+#     test `the_leak_scan_matches_the_argv_spawn_builds` (rotate/tests_daemon.rs)
+#     fails if either side changes without the other;
 #   - its executable (/proc/<pid>/exe, a trailing " (deleted)" removed, or
 #     argv[0] when the link is unreadable) is under a `target*/` directory,
 #     $CARGO_TARGET_DIR or this repo's target/ (symlinks resolved), so a
