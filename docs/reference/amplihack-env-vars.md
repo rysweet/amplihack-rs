@@ -167,6 +167,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_RESULT_V1` | internal |  | Not an env var: result line prefix in the LiteLLM preflight. |
 | `AMPLIHACK_ROOT` | internal |  | Legacy root printed by `uvx-help`. |
 | `AMPLIHACK_ROTATE` | internal |  | Not an env var: the prefix the profile rotator strips from its probe child's environment. |
+| `AMPLIHACK_ROTATE_AUTOSTART` | user preference |  | `0`/`off` stops launches from starting the profile rotator and `1`/`on` lets them, overriding the saved autostart setting; see [Rotate autostart](profile-command.md#rotate-autostart). The test helper `isolated(..)` sets it to `0`. |
 | `AMPLIHACK_ROTATE_HOLD` | user preference |  | Default for `amplihack profile rotate --hold`. |
 | `AMPLIHACK_ROTATE_INTERVAL` | user preference |  | Default for `amplihack profile rotate --interval`. |
 | `AMPLIHACK_ROTATE_MARGIN` | user preference |  | Default for `amplihack profile rotate --margin`. |
@@ -217,7 +218,7 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_TEST_DENIAL_PANIC` | test-only |  | Fault injection in the hook protocol test. |
 | `AMPLIHACK_TEST_DETACH_START_SECS` | test-only |  | Shortens how long `recipe run --detach` waits for the pane to start the run (default 15 s), so a test of a pane that never starts is quick. |
 | `AMPLIHACK_TEST_FAKE_LATEST_VERSION` | test-only |  | Fakes the latest release for update tests. |
-| `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. |
+| `AMPLIHACK_TEST_HOME_GUARD` | test-only |  | Set only by the test helper `tests/support/isolated_amplihack.rs` on each `amplihack` a test starts; the user-config loader then ignores a HOME outside the temp dir, so no test reads or migrates a real `~/.amplihack`. When it is set and not empty, a launch also skips rotator autostart before any other check, so no test starts a real `profile rotate watch --spawned` daemon; see [Keep Tests from Leaking Rotator Daemons](../howto/keep-tests-from-leaking-rotator-daemons.md). |
 | `AMPLIHACK_TEST_MISSING_NO_DEFAULT` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_123` | test-only |  | `EnvVar` unit test name. |
 | `AMPLIHACK_TEST_NONEXISTENT_456` | test-only |  | `EnvVar` unit test name. |

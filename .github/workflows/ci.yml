@@ -144,6 +144,9 @@ jobs:
       - name: Auto-drive build — a fresh run's state is keyed by its PR (issue #1680)
         shell: bash
         run: bash tests/issue_1680_fresh_run_state_key.sh
+      - name: Leaked-rotator detector — finds a left-behind rotate watch daemon (issue #1690)
+        shell: bash
+        run: bash tests/issue_1690_leaked_rotator_check.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -514,6 +517,12 @@ jobs:
             || { echo "ERROR: tests wrote into the ambient GIT_DIR"; exit 1; }
       # nextest does not execute doctests; keep them so coverage is not lost.
       - run: cargo test --workspace --doc --locked
+      # Issue #1690: no test may leave a detached `profile rotate watch
+      # --spawned` daemon running. Reports only; never signals anything.
+      - name: No leaked rotator daemons (issue #1690)
+        if: always()
+        shell: bash
+        run: bash scripts/check-leaked-rotators.sh
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats
