@@ -69,7 +69,8 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         .and_then(Option::as_ref)
         .and_then(|l| l.last_cycle.as_ref())
         .and_then(|c| c.overflow.clone());
-    let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref());
+    let pin = super::pin::read(&rs);
+    let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref(), &pin);
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
@@ -103,6 +104,13 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         && names.contains(&d)
     {
         println!("default: {d} (overflow; launches use it directly)");
+    }
+    // Issue #1691: a hold leaves the switch as the last cycle, so say it.
+    match pin {
+        super::pin::PinState::None => {}
+        super::pin::PinState::Pinned(n) => println!("hold: {n}"),
+        super::pin::PinState::Missing(n) => println!("hold: {n} (profile missing; ignored)"),
+        super::pin::PinState::Unreadable => println!("hold: unreadable"),
     }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
@@ -230,23 +238,30 @@ fn overflow_line(
     }
 }
 
-/// The `on credits:` value: `yes (<name>)` when the login identified in
+/// The `on overflow:` value: `yes (<name>, held by switch)` when the pin
+/// names the live overflow profile; `yes (<name>)` when the login identified in
 /// `~/.claude` is an overflow profile and the rotator's last cycle recorded
 /// `overflow=in` or `on` (it found no plan capacity), `no (<name> is
 /// overflow; plan capacity remains)` when it is an overflow profile without
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
-fn on_overflow_line(
+pub(super) fn on_overflow_line(
     store: &ProfileStore,
     rs: &RotateState,
     home: Option<&Path>,
     overflow: &[ProfileName],
     last_tag: Option<&str>,
+    pin: &super::pin::PinState,
 ) -> String {
     let live = home.and_then(|h| identify::live(store, rs, h).ok());
     match live {
         Some((LiveId::Known(n), _)) if overflow.contains(&n) => {
-            if matches!(last_tag, Some("in" | "on")) {
+            // A pin holds every cycle before the overflow policy runs, so a
+            // `profile switch` onto an overflow profile spends credits until
+            // `profile switch --none`, plan capacity or not.
+            if *pin == super::pin::PinState::Pinned(n.clone()) {
+                format!("yes ({n}, held by switch)")
+            } else if matches!(last_tag, Some("in" | "on")) {
                 format!("yes ({n})")
             } else {
                 format!("no ({n} is overflow; plan capacity remains)")

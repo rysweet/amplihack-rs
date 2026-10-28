@@ -20,9 +20,10 @@
 //!   the existing upgrade hold, moved out of `decide` unchanged.
 //! - `Reason::FailedProbe.as_str()` is `failed-probe`.
 
+use super::alert::{alert_key, should_alert};
 use super::damp::{FAILED_PROBE_LIMIT, damp, next_failed};
 use super::decide::{Decision, Measured, Reading, Reason, Windows, decide, held};
-use super::ledger::{RotateLedger, alert_key, should_alert};
+use super::ledger::RotateLedger;
 use super::log::msg;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;

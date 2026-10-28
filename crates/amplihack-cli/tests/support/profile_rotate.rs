@@ -334,7 +334,8 @@ pub fn assert_text_has_no_secrets(s: &str) {
 }
 
 /// The documented log grammar: one-shot and `watch` lines start with a UTC
-/// time; `--dry-run` lines do not.
+/// time; `--dry-run` lines do not. `switch <from>-><to>` is the line a
+/// `profile switch` swap writes (issue #1691).
 pub fn assert_log_grammar(line: &str, timed: bool) {
     let msg = if timed {
         let re = regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z (.+)$").unwrap();
@@ -346,7 +347,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

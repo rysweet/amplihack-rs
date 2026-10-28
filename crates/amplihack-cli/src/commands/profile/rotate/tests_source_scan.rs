@@ -59,6 +59,9 @@ fn rotate_has_the_planned_files() {
         "daemon.rs",
         "damp.rs",
         "autostart.rs",
+        "pin.rs",
+        "prelude.rs",
+        "switch.rs",
     ] {
         assert!(names.iter().any(|n| n == want), "missing rotate/{want}");
     }
@@ -111,4 +114,243 @@ fn unsafe_blocks_carry_a_safety_comment() {
             );
         }
     }
+}
+
+// --- Issue #1691: the rotation pin and `profile switch NAME` ----------------
+
+fn source(name: &str) -> String {
+    fs::read_to_string(rotate_dir().join(name)).unwrap_or_else(|e| panic!("rotate/{name}: {e}"))
+}
+
+/// The code lines (comments removed) of `fn <name>` in `text`, up to the
+/// next top-level `fn` or the end of the file.
+fn body_of(text: &str, name: &str) -> String {
+    let start = text
+        .find(&format!("fn {name}("))
+        .unwrap_or_else(|| panic!("fn {name} not found"));
+    let rest = &text[start..];
+    let end = rest[1..]
+        .find("\nfn ")
+        .into_iter()
+        .chain(rest[1..].find("\npub fn "))
+        .chain(rest[1..].find("\npub(super) fn "))
+        .chain(rest[1..].find("\npub(crate) fn "))
+        .chain(rest[1..].find("\npub(in "))
+        .chain(rest[1..].find("\n/// "))
+        .min()
+        .map_or(rest.len(), |i| i + 1);
+    rest[..end]
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[track_caller]
+fn assert_before(body: &str, first: &str, then: &str, what: &str) {
+    let a = body
+        .find(first)
+        .unwrap_or_else(|| panic!("{what}: `{first}` not found"));
+    let b = body
+        .find(then)
+        .unwrap_or_else(|| panic!("{what}: `{then}` not found"));
+    assert!(a < b, "{what}: `{first}` must come before `{then}`");
+}
+
+#[test]
+fn the_pin_gate_runs_before_claude_is_looked_for() {
+    // No measuring, and so no usage or OAuth call, while pinned.
+    let cycle = body_of(&source("cycle.rs"), "run_cycle");
+    assert_before(&cycle, "pin::gate", "resolve_claude_binary", "run_cycle");
+    assert_before(&cycle, "pin::gate", "measure_and_decide", "run_cycle");
+    let dry = body_of(&source("observe.rs"), "dry_run");
+    assert_before(&dry, "pin::gate", "resolve_claude_binary", "dry_run");
+    assert_before(&dry, "pin::gate", "measure_and_decide", "dry_run");
+}
+
+#[test]
+fn run_cycle_shares_the_locked_prelude_with_switch() {
+    let cycle = body_of(&source("cycle.rs"), "run_cycle");
+    assert!(
+        cycle.contains("locked_prelude"),
+        "run_cycle uses the prelude"
+    );
+    assert!(
+        !cycle.contains("recover_auto_switch"),
+        "recovery lives in prelude.rs only, not a second copy in run_cycle"
+    );
+    let switch = source("switch.rs");
+    assert!(switch.contains("locked_prelude"), "switch uses the prelude");
+    assert!(
+        switch.contains("swap::swap"),
+        "switch reuses the rotator's swap"
+    );
+    for (file, text) in [("switch.rs", &switch), ("pin.rs", &source("pin.rs"))] {
+        for f in [
+            "exchange_logins",
+            "renameat2",
+            "RENAME_EXCHANGE",
+            "move_login",
+        ] {
+            assert!(
+                !text.contains(f),
+                "{file}: a second swap implementation (`{f}`)"
+            );
+        }
+    }
+}
+
+#[test]
+fn switch_never_runs_claude_or_the_daemon() {
+    let text = source("switch.rs");
+    for f in [
+        "resolve_claude_binary",
+        "measure_and_decide",
+        "measure::",
+        "daemon::",
+        "Command::new",
+    ] {
+        assert!(!text.contains(f), "switch.rs must not use `{f}`");
+    }
+}
+
+#[test]
+fn switch_writes_the_pin_and_pointer_before_dropping_the_lock() {
+    let text: String = source("switch.rs")
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or_default())
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert_before(&text, "swap::swap", "pin::write", "switch.rs");
+    assert_before(&text, "pin::write", "pointer::write", "switch.rs");
+    assert_before(&text, "pointer::write", "drop(lock)", "switch.rs");
+    assert_before(&text, "drop(lock)", "ensure_for", "switch.rs");
+}
+
+#[test]
+fn only_pin_rs_touches_the_pin_file() {
+    for path in sources() {
+        let file = path.file_name().unwrap().to_string_lossy().into_owned();
+        let text = fs::read_to_string(&path).unwrap();
+        for (i, line) in text.lines().enumerate() {
+            let code = line.split("//").next().unwrap_or_default();
+            if file != "ledger.rs" {
+                assert!(
+                    !code.contains("join(\"pin\")"),
+                    "{file}:{}: the pin path is built only in ledger.rs",
+                    i + 1
+                );
+            }
+            if file != "pin.rs" {
+                assert!(
+                    !code.contains("rs.pin"),
+                    "{file}:{}: the pin file is read and written only in pin.rs",
+                    i + 1
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn pin_and_switch_never_remove_a_tree() {
+    for file in ["pin.rs", "switch.rs", "prelude.rs"] {
+        assert!(
+            !source(file).contains("remove_dir_all"),
+            "{file} must never call remove_dir_all"
+        );
+    }
+}
+
+#[test]
+fn pin_rs_has_its_own_trusted_read() {
+    let text = source("pin.rs");
+    assert!(
+        !text.contains("pointer::read"),
+        "pin.rs reads with its own checks"
+    );
+    assert!(
+        text.contains("read_bounded_nofollow"),
+        "never through a symlink"
+    );
+    assert!(
+        text.contains("parse_name"),
+        "the name parser is shared with pointer.rs"
+    );
+}
+
+#[test]
+fn the_word_hold_is_not_an_identifier_in_pin_rs() {
+    // `--hold` and `settings.hold` already mean upgrade damping (D2).
+    let text = source("pin.rs");
+    for (i, line) in text.lines().enumerate() {
+        let code = line.split("//").next().unwrap_or_default();
+        // String literals are prose; only identifiers count.
+        let mut in_str = false;
+        let mut ident = String::new();
+        for c in code.chars().chain(std::iter::once(' ')) {
+            if c == '"' {
+                in_str = !in_str;
+            }
+            if !in_str && (c.is_ascii_alphanumeric() || c == '_') {
+                ident.push(c);
+                continue;
+            }
+            assert!(
+                !ident.split('_').any(|w| w.eq_ignore_ascii_case("hold")),
+                "pin.rs:{}: identifier `{ident}` uses `hold`",
+                i + 1
+            );
+            ident.clear();
+        }
+    }
+}
+
+fn squeezed(body: &str) -> String {
+    body.chars().filter(|c| !c.is_whitespace()).collect()
+}
+
+#[test]
+fn a_held_cycle_records_no_measurement() {
+    // D3/#1659: `measured_at` is `None` on the held path, so the limit-resume
+    // hook never wakes sessions on a login nobody measured. The prefix also
+    // matches the five-argument `record` of #1695 (`.., t, None, None)`).
+    let cycle = squeezed(&body_of(&source("cycle.rs"), "run_cycle"));
+    assert!(
+        cycle.contains("CycleOutcome::Held,t,None"),
+        "run_cycle must record a held cycle with measured_at None"
+    );
+}
+
+#[test]
+fn the_hold_warning_follows_the_success_lines_only() {
+    // D4: warn after the switch is known to have succeeded, never on the
+    // after-swap failure path or the default-only refusal.
+    let held = body_of(&source("mod.rs"), "print_held");
+    assert_before(&held, "Rotation held on", "warn_switch_hold", "print_held");
+    assert_eq!(held.matches("warn_switch_hold").count(), 1);
+    let facade = body_of(&source("mod.rs"), "switch_live");
+    assert!(
+        !facade.contains("warn_switch_hold"),
+        "only through print_held"
+    );
+    assert_eq!(
+        facade.matches("print_held").count(),
+        2,
+        "the moved and already-live paths"
+    );
+    assert_before(&facade, "DefaultOnly", "print_held", "rotate::switch_live");
+    assert_before(&facade, "print_held", "Err(f)", "rotate::switch_live");
+}
+
+#[test]
+fn the_hold_warning_takes_proc_as_a_seam() {
+    // D4: tests pass a fake `/proc`; only the thin wrapper names the real one.
+    let seam = body_of(&source("mod.rs"), "foreign_note_for");
+    assert!(seam.contains("foreign_rotator"), "{seam}");
+    assert!(seam.contains("FOREIGN_IGNORES_HOLD"), "{seam}");
+    assert!(
+        !seam.contains("\"/proc\""),
+        "the seam must not hard-code /proc"
+    );
 }

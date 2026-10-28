@@ -2,12 +2,15 @@
 //! on the account with the most capacity left, by moving logins between
 //! `~/.claude` and the profiles. One-shot, `--dry-run`, and a background
 //! `watch` with `start`, `stop` and `status`, which launches start on their
-//! own while auto-switch is on (`autostart`). See the Rotate section of
-//! docs/reference/profile-command.md.
+//! own while auto-switch is on (`autostart`). `profile switch NAME` moves a
+//! login with the same swap and pins rotation to it (`switch`, `pin`). See
+//! the Rotate section of docs/reference/profile-command.md.
 //!
 //! Login files are never opened, read, copied or hashed: they are checked
 //! with `lstat` and moved with rename and exchange calls only.
 
+#[cfg(unix)]
+mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
@@ -37,6 +40,10 @@ mod overflow;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
+mod pin;
+#[cfg(unix)]
+mod prelude;
+#[cfg(unix)]
 mod recover;
 #[cfg(unix)]
 mod settings;
@@ -44,6 +51,8 @@ mod settings;
 mod spend_blocks;
 #[cfg(unix)]
 mod swap;
+#[cfg(unix)]
+mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
@@ -68,6 +77,10 @@ mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_overflow;
 #[cfg(all(test, unix))]
+mod tests_pin;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_pin_overflow;
+#[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
 mod tests_settings;
@@ -77,7 +90,16 @@ mod tests_source_scan;
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
+#[cfg(all(test, unix))]
+mod tests_switch;
+#[cfg(all(test, unix))]
+mod tests_switch_candidates;
+#[cfg(all(test, unix))]
+mod tests_switch_hold;
+#[cfg(all(test, unix))]
+mod tests_switch_race;
 
+use super::name::ProfileName;
 use super::root_config::RootSource;
 use super::store::ProfileStore;
 
@@ -88,36 +110,12 @@ pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 
-#[cfg(unix)]
-pub(super) use gate_record::GateSource;
-
-/// The overflow [`Gate`](super::overflow::Gate) auto-switch uses under
-/// `root`, and where it came from: the running rotator's own settings, or,
-/// when no rotator runs, the `AMPLIHACK_ROTATE_*` variables. `None` means
-/// no overflow, so an unreadable record or a typo never spends money. See
-/// `gate_record`.
-#[cfg(unix)]
-pub(super) fn overflow_gate(root: &std::path::Path) -> (Option<super::overflow::Gate>, GateSource) {
-    gate_record::effective(root)
-}
-
-/// [`overflow_gate`] against another `/proc` and environment, for tests.
+// Auto-switch's overflow gate (`gate_record`): the running rotator's own
+// settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
 #[cfg(all(test, unix))]
-pub(super) fn overflow_gate_at(
-    root: &std::path::Path,
-    proc_root: &std::path::Path,
-    exe_name: &std::ffi::OsStr,
-    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
-) -> (Option<super::overflow::Gate>, GateSource) {
-    gate_record::effective_at(root, proc_root, exe_name, env)
-}
-
-/// The `overflow gate:` line of `auto-switch status`.
+pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
-pub(super) fn overflow_gate_line(root: &std::path::Path) -> String {
-    let (gate, source) = gate_record::effective(root);
-    gate_record::status_line(gate, &source)
-}
+pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
 /// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
 /// the rotator for `root` (default: this environment's root) runs another
@@ -131,6 +129,39 @@ pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
     };
     if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
         eprintln!("{}", ledger::foreign_rotator_note(pid));
+    }
+}
+
+/// The tail of the warning printed after `profile switch NAME` (issue
+/// #1691) while a rotator from another amplihack binary runs: one started
+/// before the upgrade does not read the switch hold and may swap away.
+#[cfg(unix)]
+const FOREIGN_IGNORES_HOLD: &str = "runs another amplihack binary and ignores the switch \
+    hold; restart it: amplihack profile rotate stop && amplihack profile rotate start";
+
+/// The switch-hold warning for the rotator of `rs`, judged against
+/// `proc_root` and this process's executable `exe`; `None` when no rotator
+/// runs or it runs this binary.
+#[cfg(unix)]
+fn foreign_note_for(
+    rs: &ledger::RotateState,
+    proc_root: &std::path::Path,
+    exe: Option<&std::path::Path>,
+) -> Option<String> {
+    rs.foreign_rotator_at(proc_root, exe).map(|pid| {
+        format!("amplihack: the Claude login rotator (pid {pid}) {FOREIGN_IGNORES_HOLD}")
+    })
+}
+
+/// After a successful `profile switch NAME`: one line on stderr when the
+/// running rotator would ignore the hold. The switch itself succeeded, so
+/// this never changes the exit code.
+#[cfg(unix)]
+fn warn_switch_hold(root: &std::path::Path) {
+    let exe = std::env::current_exe().ok();
+    let rs = ledger::RotateState::new(root);
+    if let Some(note) = foreign_note_for(&rs, std::path::Path::new("/proc"), exe.as_deref()) {
+        eprintln!("{note}");
     }
 }
 
@@ -218,12 +249,8 @@ pub struct WatchFlags {
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        use super::ProfileError;
         let env = |k: &str| std::env::var_os(k);
-        let home = std::env::var_os("HOME")
-            .filter(|h| !h.is_empty())
-            .map(std::path::PathBuf::from)
-            .ok_or_else(|| ProfileError::RotateRefused("HOME is not set".into()));
+        let home = home_dir();
         match args.action {
             None => {
                 let s = settings::resolve(&args.tune, None, &env)?;
@@ -256,5 +283,106 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
     {
         let _ = (store, source, args);
         Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// `$HOME`, which holds the live `~/.claude`.
+#[cfg(unix)]
+fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
+    std::env::var_os("HOME")
+        .filter(|h| !h.is_empty())
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| super::ProfileError::RotateRefused("HOME is not set".into()))
+}
+
+/// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
+/// with the rotator's swap, pins rotation to it and makes it the default.
+/// Prints three lines. When the login moved but a later write failed, the
+/// error says so; it is not a refusal, since something did change. When the
+/// live login cannot be moved, NAME is still made the default for new
+/// launches, that is printed, and the refusal exits non-zero.
+pub(in crate::commands::profile) fn switch_live(
+    store: &ProfileStore,
+    name: &ProfileName,
+) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        match switch::switch_live(store, &home_dir()?, name)? {
+            Ok(switch::Switched::DefaultOnly { reason, held }) => {
+                println!("Default for new launches: {name}");
+                match held {
+                    Some(h) => println!(
+                        "Live login not moved; rotation still held on {h} until \
+                         `amplihack profile switch --none`."
+                    ),
+                    None => println!("Live login not moved; rotation not held."),
+                }
+                Err(super::ProfileError::RotateRefused(reason).into())
+            }
+            Ok(switch::Switched::Moved { from, to }) => {
+                println!("Live login moved: {from} -> {to}");
+                print_held(store, name);
+                Ok(())
+            }
+            Ok(switch::Switched::AlreadyLive(n)) => {
+                println!("{n} is already the live login; nothing moved.");
+                print_held(store, name);
+                Ok(())
+            }
+            Err(f) => Err(anyhow::anyhow!(
+                "the live login moved to {to}, but writing the {what} failed: {err}; \
+                 run `amplihack profile switch {to}` again",
+                to = f.to,
+                what = f.what,
+                err = f.err
+            )),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        // No live login can be moved here, but the default for new launches
+        // is still set, as `switch` always did.
+        crate::commands::profile::pointer::write(store.root(), name)?;
+        println!("Default for new launches: {name}");
+        println!("Live login not moved; rotation not held.");
+        Err(super::ProfileError::RotateUnsupported.into())
+    }
+}
+
+/// The last two lines of a switch that moved the login or found it live.
+#[cfg(unix)]
+fn print_held(store: &ProfileStore, name: &ProfileName) {
+    println!("Default for new launches: {name}");
+    println!("Rotation held on {name} until `amplihack profile switch --none`.");
+    warn_switch_hold(store.root());
+}
+
+/// What `profile switch --none` removed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Released {
+    /// Something was at the rotation pin path.
+    pub pin: bool,
+    /// Something was at the default pointer path.
+    pub default: bool,
+}
+
+/// `profile switch --none`: removes the rotation pin and the default
+/// pointer as one operation under the rotate lock; what was there. Off Unix
+/// there is no rotator and so no pin, and only the pointer is removed.
+pub(in crate::commands::profile) fn release(
+    store: &ProfileStore,
+) -> Result<Released, super::ProfileError> {
+    #[cfg(unix)]
+    {
+        switch::release(store)
+    }
+    #[cfg(not(unix))]
+    {
+        let default = super::pointer::exists(store.root());
+        super::pointer::clear(store.root())?;
+        Ok(Released {
+            pin: false,
+            default,
+        })
     }
 }

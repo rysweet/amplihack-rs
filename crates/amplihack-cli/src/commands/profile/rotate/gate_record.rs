@@ -101,7 +101,10 @@ pub enum GateSource {
     Closed(String),
 }
 
-/// The gate auto-switch uses under `root`, and where it came from.
+/// The overflow [`Gate`] auto-switch uses under `root`, and where it came
+/// from: the running rotator's own settings, or, when no rotator runs, the
+/// `AMPLIHACK_ROTATE_*` variables. `None` means no overflow, so an
+/// unreadable record or a typo never spends money.
 pub fn effective(root: &Path) -> (Option<Gate>, GateSource) {
     let rs = RotateState::new(root);
     effective_with(&rs, current_state(&rs), &|k| std::env::var_os(k))
@@ -164,4 +167,10 @@ pub fn status_line(gate: Option<Gate>, source: &GateSource) -> String {
         (None, GateSource::Closed(why)) => format!("overflow gate: closed ({why})"),
         (None, _) => "overflow gate: closed".to_string(),
     }
+}
+
+/// The `overflow gate:` line of `auto-switch status` for `root`.
+pub fn line(root: &Path) -> String {
+    let (gate, source) = effective(root);
+    status_line(gate, &source)
 }

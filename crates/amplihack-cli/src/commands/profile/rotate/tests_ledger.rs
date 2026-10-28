@@ -13,13 +13,14 @@
 //!   live_ino, target_ino, home_lock_ino, to_lock_ino, started_at, pid }`.
 //! - `load_ledger() -> Result<Option<RotateLedger>, ProfileError>`,
 //!   `save_ledger`, `load_journal`, `save_journal`, `delete_journal`.
-//! - `alert_key(kind, live: Option<&ProfileName>) -> String`,
-//!   `should_alert(&mut RotateLedger, key) -> bool`, `clear_alert(&mut ..)`.
+//! - In `rotate::alert`: `alert_key(kind, live: Option<&ProfileName>) ->
+//!   String`, `should_alert(&mut RotateLedger, key) -> bool`,
+//!   `clear_alert(&mut ..)`.
 
+use super::alert::{alert_key, clear_alert, should_alert};
 use super::ledger::{
     LastCycle, MAX_BLOCKS, OverflowBlock, Phase, RotateJournal, RotateLedger, RotateState,
-    active_blocks, alert_key, clear_alert, for_older_readers, prune_blocks, should_alert,
-    spend_reset,
+    active_blocks, for_older_readers, prune_blocks, spend_reset,
 };
 use super::overflow_record::block_spend_limited;
 use crate::commands::profile::ProfileError;

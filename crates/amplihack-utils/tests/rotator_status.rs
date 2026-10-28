@@ -428,16 +428,19 @@ fn status(outcome: &str, alert: bool) -> CycleStatus {
 }
 
 #[test]
-fn has_capacity_only_for_swapped_or_stayed_without_alert() {
+fn has_capacity_only_for_swapped_stayed_or_switched_without_alert() {
     assert!(status("swapped", false).has_capacity());
     assert!(status("stayed", false).has_capacity());
+    // Issue #1691: `profile switch` records the login the person chose.
+    assert!(status("switched", false).has_capacity());
     for o in [
-        "alerted", "skipped", "stopped", "idle", "", "SWAPPED", "unknown",
+        "alerted", "skipped", "stopped", "idle", "held", "", "SWAPPED", "SWITCHED", "unknown",
     ] {
         assert!(!status(o, false).has_capacity(), "outcome {o:?}");
     }
     assert!(!status("swapped", true).has_capacity());
     assert!(!status("stayed", true).has_capacity());
+    assert!(!status("switched", true).has_capacity());
 }
 
 // ── read_cycle: file checks ─────────────────────────────────────────────────

@@ -102,13 +102,13 @@ fn usage_file(r: &Root) -> PathBuf {
 
 #[test]
 fn nothing_is_created_when_auto_switch_is_not_set_up() {
-    // Other tests set the toggle under this lock; read it under it too.
-    let _env = crate::test_support::env_lock()
+    // The gate reads AMPLIHACK_CLAUDE_AUTO_SWITCH, which other tests set
+    // while holding the shared env lock; hold it too and clear the variable
+    // so this process's environment cannot open the gate mid-test.
+    let _lock = crate::test_support::env_lock()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    if std::env::var_os("AMPLIHACK_CLAUDE_AUTO_SWITCH").is_some_and(|v| !v.is_empty()) {
-        return; // the environment decides the gate in this process
-    }
+    let _env = crate::test_support::EnvGuard::unset(["AMPLIHACK_CLAUDE_AUTO_SWITCH"]);
     let r = root(false);
     let out = record_usage(&r.root, &[obs("a", "a", ow(5.0, Some(now() + HOUR)), None)]).unwrap();
     assert_eq!(out, RecordOutcome::NotSetUp);

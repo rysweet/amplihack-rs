@@ -39,6 +39,11 @@
 //! - Off credits as soon as a plan login has capacity, ignoring hold, margin
 //!   and upgrade margin.
 //! - A spend-limit reading on an overflow profile blocks it once.
+//!
+//! "Hold" here is `--hold`, the minimum time after a rotator swap. A
+//! `profile switch` pin wins over every rule above, because the cycle stops
+//! on it before this policy runs; that needs a cycle, not this pure
+//! function, so its tests are in `tests_pin_overflow.rs`.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, decide};
 use super::ledger::OverflowBlock;

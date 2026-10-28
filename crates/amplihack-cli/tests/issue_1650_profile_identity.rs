@@ -13,6 +13,7 @@
 #![cfg(unix)]
 
 use crate::support::exec_stub::write_executable;
+use crate::support::profile_default::set_default;
 use crate::support::profile_rotate::*;
 use std::fs;
 use std::path::PathBuf;
@@ -357,7 +358,8 @@ fn launching_the_live_profile_by_flag_is_redirected_too() {
 #[test]
 fn launching_a_default_that_is_not_live_sets_its_dir() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "spare"]);
+    // Only the pointer: `switch spare` would make spare live (issue #1691).
+    set_default(&f.root, "spare");
     let (out, rec) = launch(&f);
     assert!(out.status.success(), "{}", text(&out.stderr));
     assert!(
@@ -374,7 +376,7 @@ fn launching_a_default_that_is_not_live_sets_its_dir() {
 #[test]
 fn after_switch_none_claude_uses_no_profile() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "spare"]);
+    set_default(&f.root, "spare");
     let cleared = f.ok(&["profile", "switch", "--none"]);
     assert_eq!(text(&cleared.stdout), "Default profile cleared.\n");
     assert!(!f.root.join(".default").exists());

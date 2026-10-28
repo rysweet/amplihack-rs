@@ -26,6 +26,7 @@ use amplihack_hooks::limit_resume::{
 use amplihack_types::HookInput;
 use amplihack_utils::rotator_status::{
     CycleStatus, FRESH_MARGIN_SECS, MAX_WAIT, POLL_INTERVAL, SLOW_POLL_AFTER, SLOW_POLL_INTERVAL,
+    parse_cycle,
 };
 use serde_json::json;
 use std::collections::{HashMap, HashSet};
@@ -868,6 +869,68 @@ fn loop_resume_then_same_limit_again_is_not_resumed() {
     }
     assert_eq!(outcomes[0], Outcome::Resumed);
     assert!(outcomes[1..].iter().all(|o| *o == Outcome::Duplicate));
+}
+
+// ── issue #1691: a `profile switch` during the wait ────────────────────────
+
+/// The ledger bytes the rotator and `profile switch` write, read through
+/// the hook's own parser. Before `switch_after` seconds: the rotator found
+/// no capacity. From then on: the switch's record, which held cycles leave
+/// in place, or (`held_overwrites`) the bare `held` record an older build
+/// wrote over it.
+fn switch_during_wait(switch_after: i64, held_overwrites: bool) -> CycleFn {
+    Box::new(move |elapsed| {
+        let now = START + elapsed;
+        let raw = if elapsed < switch_after {
+            format!(
+                r#"{{"version":1,"live":"work","alert":"no-capacity:work",
+                    "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"alerted"}}}}"#,
+                t = START - 30
+            )
+        } else if held_overwrites {
+            format!(
+                r#"{{"version":1,"live":"spare",
+                    "last_cycle":{{"at":{now},"outcome":"held"}}}}"#
+            )
+        } else {
+            format!(
+                r#"{{"version":1,"live":"spare","previous":"work",
+                    "last_cycle":{{"at":{t},"measured_at":{t},"outcome":"switched"}}}}"#,
+                t = START + switch_after
+            )
+        };
+        parse_cycle(raw.as_bytes(), now)
+    })
+}
+
+#[test]
+fn a_switch_after_the_limit_resumes_through_held_cycles() {
+    // Limit at START; switch at START + 120; the rotator keeps cycling
+    // under the hold, which leaves the switch's record in place.
+    let mut d = Fake::new(true, switch_during_wait(120, false));
+    let out = run_with(&limit_input("s", "You've hit your weekly limit"), &mut d);
+    assert_eq!(out, Outcome::Resumed);
+    assert!(d.clock - START >= 120, "not before the switch");
+    assert!(d.clock - START < 120 + POLL_INTERVAL.as_secs() as i64 + 1);
+    assert_eq!(d.logs[0].cycle.as_deref(), Some("switched"));
+    assert_eq!(d.logs[0].live.as_deref(), Some("spare"));
+}
+
+#[test]
+fn a_bare_held_record_after_a_switch_never_resumes() {
+    // What the hook saw before the fix: held cycles overwrote the switch.
+    let mut d = Fake::new(true, switch_during_wait(120, true));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
+}
+
+#[test]
+fn a_switch_before_the_limit_does_not_resume() {
+    // The session stopped on the login the person switched to: the switch
+    // is older than the limit, so it is no evidence of capacity.
+    let mut d = Fake::new(true, Box::new(|_| Some(cycle("switched", -60, false))));
+    let out = run_with(&limit_input("s", "hit your limit"), &mut d);
+    assert_timeout(&d, out);
 }
 
 // ── rotator down ────────────────────────────────────────────────────────────

@@ -23,6 +23,7 @@
 use crate::issue_1618_fixture::{
     Fixture, SPEND_TEXT, WEEKLY_TEXT, describe, events, private_file, text, wait_lines,
 };
+use crate::support::profile_default::set_default;
 use std::process::Command;
 
 const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
@@ -212,8 +213,9 @@ fn d7_disabled_with_a_profile_writes_one_skipped_line_and_passes_the_failure_up(
 #[test]
 fn with_a_default_pointer_the_wait_watches_that_profiles_login() {
     let f = with_profiles();
-    let out = f.run(&mut f.cmd(&["profile", "switch", "X"]));
-    assert!(out.status.success(), "profile switch X: {}", describe(&out));
+    // Only the pointer: `profile switch X` would also move X's login into
+    // `~/.claude` (#1691), and this test needs it in X's directory.
+    set_default(&f.profiles, "X");
     // X's login arrives during the wait (the stub creates the file in the
     // directory it runs with); nothing changes in CLAUDE_CONFIG_DIR.
     std::fs::remove_file(f.profiles.join("X").join(".credentials.json")).unwrap();

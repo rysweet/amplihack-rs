@@ -22,7 +22,8 @@ pub struct CycleStatus {
     /// When that cycle started measuring usage, epoch seconds. Absent for
     /// a cycle that measured nothing, and from rotators older than #1659.
     pub measured_at: Option<i64>,
-    /// The last cycle's outcome: `swapped`, `stayed`, `alerted`, …
+    /// The last cycle's outcome: `swapped`, `stayed`, `switched`, `held`,
+    /// `alerted`, …
     pub outcome: Option<String>,
     /// The rotator's no-capacity alert is set.
     pub alert: bool,
@@ -35,11 +36,17 @@ pub struct CycleStatus {
 }
 
 impl CycleStatus {
-    /// The rotator left a login with capacity in place: no alert, and the
-    /// last cycle swapped to a login or stayed on one under the threshold.
-    /// Any other outcome, known or not, is no capacity.
+    /// A login with capacity is in place: no alert, and the last cycle
+    /// swapped to a login, stayed on one under the threshold, or recorded a
+    /// `profile switch` to one the person chose (`switched`, issue #1691;
+    /// held cycles leave that record in place). Any other outcome, known or
+    /// not, `held` included, is no capacity.
     pub fn has_capacity(&self) -> bool {
-        !self.alert && matches!(self.outcome.as_deref(), Some("swapped" | "stayed"))
+        !self.alert
+            && matches!(
+                self.outcome.as_deref(),
+                Some("swapped" | "stayed" | "switched")
+            )
     }
 
     /// The live login runs on an overflow profile after the last cycle: it

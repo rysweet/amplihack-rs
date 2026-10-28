@@ -594,8 +594,46 @@ fn plan_capacity_left(f: &Fixture) {
     mark(f, "extra");
 }
 
+/// A `profile switch` pin wins over the overflow policy in both directions
+/// ("Pin and overflow"): switched onto overflow `extra` with plan capacity
+/// left, the cycle holds and status says credits are being spent; switched
+/// onto plan login `spare` with every plan login out, the cycle holds and
+/// never moves onto credits. `switch --none` hands the choice back.
+#[test]
+fn a_switch_pin_wins_over_the_overflow_policy() {
+    let f = Fixture::new();
+    plan_capacity_left(&f);
+    f.ok(&["profile", "switch", "extra"]);
+    let s = stdout(&f.ok(&["profile", "rotate"]));
+    assert!(s.contains("skip: held by switch to extra"), "{s}");
+    assert!(!s.contains("reason=overflow-out"), "{s}");
+    let l = f.ledger().unwrap();
+    assert_eq!(l["live"], "extra", "{l}");
+    let st = stdout(&f.ok(&["profile", "rotate", "status"]));
+    assert!(
+        st.contains("on overflow: yes (extra, held by switch)"),
+        "{st}"
+    );
+    f.ok(&["profile", "switch", "--none"]);
+    let s = stdout(&f.ok(&["profile", "rotate"]));
+    assert!(s.contains("reason=overflow-out"), "released: {s}");
+
+    let f = Fixture::new();
+    all_plan_logins_out(&f);
+    f.ok(&["profile", "switch", "spare"]);
+    let s = stdout(&f.ok(&["profile", "rotate"]));
+    assert!(s.contains("skip: held by switch to spare"), "{s}");
+    assert!(!s.contains("reason=overflow-in"), "{s}");
+    let l = f.ledger().unwrap();
+    assert_eq!(l["live"], "spare", "{l}");
+    assert!(l["last_cycle"].get("overflow").is_none(), "{l}");
+    let st = stdout(&f.ok(&["profile", "rotate", "status"]));
+    assert!(st.contains("on overflow: no"), "{st}");
+}
+
 /// D7: `.default` bypasses the rotator for launches, and the rotator's
-/// verdict does not depend on it. The same cycle, with `.default` unset or
+/// verdict does not depend on it. A `profile switch` pin does change it; that
+/// is `rotate::tests_pin_overflow`. The same cycle, with `.default` unset or
 /// naming the overflow profile or a plan profile, moves the same login with
 /// the same reason and records the same overflow tag.
 #[test]
@@ -610,7 +648,11 @@ fn the_default_pointer_does_not_change_the_rotators_verdict() {
             let f = Fixture::new();
             setup(&f);
             if let Some(d) = default {
-                f.ok(&["profile", "switch", d]);
+                // The pointer alone, as an older `profile switch` or a hand
+                // edit leaves it. Since #1701 `profile switch` also moves the
+                // login and pins rotation, and the pin holds every cycle
+                // (see "Pin and overflow"), so it cannot set up this case.
+                private_file(&f.root.join(".default"), &format!("{d}\n"));
             }
             let s = stdout(&f.ok(&["profile", "rotate"]));
             let reason = s

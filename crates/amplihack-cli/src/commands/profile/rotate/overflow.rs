@@ -21,8 +21,14 @@
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
 //! - Off overflow as soon as a plan login has capacity, ignoring the hold
-//!   and both margins. Both rules use the same capacity test, so the
-//!   rotator does not flap (P2).
+//!   (`--hold`, the minimum time after a rotator swap) and both margins.
+//!   Both rules use the same capacity test, so the rotator does not flap
+//!   (P2).
+//! - A `profile switch` pin (`rotate::pin`, #1691) is a different thing from
+//!   the hold, and it wins over every rule here: the cycle stops on the pin
+//!   before measuring, so this function never runs while one is in force.
+//!   See `tests_pin_overflow` and "Pin and overflow" in
+//!   docs/reference/profile-command.md.
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};

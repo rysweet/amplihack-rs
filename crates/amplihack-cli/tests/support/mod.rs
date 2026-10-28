@@ -2,6 +2,7 @@
 
 pub mod amplihack_bin;
 pub mod exec_stub;
+pub mod profile_default;
 pub mod profile_rotate;
 pub mod quiet_process;
 /// The crate-private bounded capability probe, compiled into this binary once
