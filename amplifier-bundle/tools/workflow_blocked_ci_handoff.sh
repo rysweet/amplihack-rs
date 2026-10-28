@@ -79,8 +79,13 @@ autodrive_build_handoff() {
   local pr="${1-}" state success handoff result_pr shown pr_state label="autodrive-build/step-03"
   HANDOFF_TERMINAL_STATE=""; HANDOFF_HANDED_OFF="false"
   state="$(rv_field workflow_result terminal_state)"
-  # R1: no typed result (a resumed run that skipped step-02): as before.
-  [ -n "$state" ] || return 0
+  # R1: step-03 calls this only when workflow_result is set (a resumed run
+  # that skipped step-02 leaves it empty and never gets here). A set value
+  # with no readable terminal_state is a broken transport: fail closed.
+  if [ -z "$state" ]; then
+    echo "ERROR: #1714: workflow_result is set but has no readable terminal_state; cannot decide the BLOCKED_CI hand-off [$label]" >&2
+    return 1
+  fi
   _handoff_known_state "$state" && HANDOFF_TERMINAL_STATE="$state"
   success="$(rv_field workflow_result terminal_success)"
   # R2: a successful build needs no hand-off.

@@ -1,6 +1,7 @@
 //! autodrive-build step-03 half of #1714, run from the recipe's own command.
 //!
-//! Rules: R1 no typed result -> as before; R2 success -> as before; R3 an
+//! Rules: R1 no typed result -> as before, a set one without a
+//! terminal_state -> exit 1; R2 success -> as before; R3 an
 //! allowed state with `handoff:"merge_ready_loop"` and an OPEN PR that step-03
 //! resolved itself -> continue with `handed_off:"true"`; R4 a failed PR check
 //! -> exit 1; R5 anything else -> exit 1 naming the state. Every error names
@@ -80,17 +81,39 @@ fn one_unreadable_pr_state_is_retried() {
     assert_eq!(build_result(&outcome)["handed_off"], "true");
 }
 
-// T5: a resumed run with no typed result keeps today's behaviour.
+// T5: a resumed run with no typed result (unset, or the declared empty
+// default) keeps today's behaviour.
 #[test]
 fn no_workflow_result_keeps_todays_behaviour() {
-    for result in [None, Some(json!(""))] {
+    for extra in [&[][..], &[("RECIPE_VAR_workflow_result", "")][..]] {
         let fx = Step03::new();
-        let outcome = fx.run("134", result.as_ref(), &[]);
-        assert!(outcome.success(), "{result:?}\n{}", outcome.describe());
+        let outcome = fx.run("134", None, extra);
+        assert!(outcome.success(), "{extra:?}\n{}", outcome.describe());
         let built = build_result(&outcome);
         assert_eq!(built["pr"], "134");
-        assert_eq!(built["handed_off"], "false", "{result:?}");
-        assert_eq!(built["terminal_state"], "", "{result:?}");
+        assert_eq!(built["handed_off"], "false", "{extra:?}");
+        assert_eq!(built["terminal_state"], "", "{extra:?}");
+    }
+}
+
+// R1 (D6 rule 1): a workflow_result that is set but has no readable
+// terminal_state is a broken transport and stops the run.
+#[test]
+fn a_set_workflow_result_without_terminal_state_stops_the_run() {
+    let cases = [
+        json!({}),
+        json!(""),
+        json!("not json"),
+        json!({"terminal_success": "true", "pr_number": "134"}),
+    ];
+    for result in cases {
+        let fx = Step03::new();
+        let outcome = fx.run("134", Some(&result), &[]);
+        assert_stopped(
+            &outcome,
+            "workflow_result is set but has no readable terminal_state",
+            &result.to_string(),
+        );
     }
 }
 

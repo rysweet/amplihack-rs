@@ -454,12 +454,12 @@ After its usual PR resolution (see
 and before the `phase 1 finished without a pull request` error, step-03 calls
 `autodrive_build_handoff "$PR"`. A resumed run that skipped step-02 has no
 `workflow_result`, so step-03 neither loads the brick nor calls it, and
-behaves as R1 below. The function reads `workflow_result` through
+continues as before with `handed_off` `"false"`. The function reads `workflow_result` through
 `rv_field` only, and applies these rules in order:
 
 | # | `workflow_result` | Outcome |
 | --- | --- | --- |
-| R1 | Empty, or has no `terminal_state` (a resumed run whose build was skipped) | Continue as before; `handed_off` is `"false"`. |
+| R1 | Set, but no readable `terminal_state` (not one JSON object, or the field is missing) | Exit `1`: `ERROR: #1714: workflow_result is set but has no readable terminal_state; cannot decide the BLOCKED_CI hand-off [autodrive-build/step-03]`. An empty `workflow_result` never reaches this table (see above). |
 | R2 | `terminal_success` is `"true"` | Continue as before; `handed_off` is `"false"`. |
 | R3 | State passes `blocked_ci_handoff_allowed` and `handoff` is `merge_ready_loop` | Check the PR (below). If every check passes, continue with `handed_off` `"true"`. |
 | R4 | R3's state and field, but a PR check fails | Exit `1` with the matching error below. |
@@ -502,7 +502,7 @@ resume, or a `BLOCKED_CI` result produced while the flag was off.
 
 | Field | Values |
 | --- | --- |
-| `terminal_state` | The `workflow_result.terminal_state` when it is one of the 20 `terminal_vocabulary` strings, otherwise `""`. Empty after R1. |
+| `terminal_state` | The `workflow_result.terminal_state` when it is one of the 20 `terminal_vocabulary` strings, otherwise `""`. Empty when `workflow_result` is empty (a resumed run). |
 | `handed_off` | `"true"` after R3, otherwise `"false"`. |
 
 The loops already take `pr_number: "{{build_result.pr}}"`, so the composer's
@@ -1514,8 +1514,9 @@ made inside a bundled tool, such as the merge round's evidence reads in
 `autodrive_round_evidence.sh`, are not counted here; that file uses the same
 form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
 through `rv_field` inside `workflow_blocked_ci_handoff.sh`, and
-`workflow_result` is declared by `workflow-finalize.yaml`, not by an autodrive
-recipe, so it adds no row. There are 34 in all:
+`workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
+autodrive step, so it is outside the checked output set and adds no row;
+`autodrive-build.yaml` only declares it `""` in `context:`. There are 34 in all:
 
 | Recipe | Step-output reads |
 | --- | --- |
