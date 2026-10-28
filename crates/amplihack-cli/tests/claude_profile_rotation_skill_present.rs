@@ -115,8 +115,9 @@ fn every_flag_the_skill_cites_exists() {
     cited.dedup();
     assert!(!cited.is_empty());
     for f in cited {
-        // Flags of other amplihack commands the skill mentions.
-        if matches!(f, "--json" | "--yes") {
+        // Flags of other amplihack commands the skill mentions (`--tier` is
+        // `profile overflow add`).
+        if matches!(f, "--json" | "--yes" | "--none" | "--tier") {
             continue;
         }
         assert!(

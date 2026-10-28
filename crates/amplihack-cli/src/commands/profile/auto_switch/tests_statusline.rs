@@ -6,7 +6,8 @@ use std::path::Path;
 
 /// The arguments `sh` sees when it runs `cmd`, one per line.
 fn sh_args(cmd: &str) -> Vec<String> {
-    let out = std::process::Command::new("sh")
+    let out = std::process::Command::new("/bin/sh")
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
         .arg("-c")
         .arg(format!("printf '%s\\n' {}", cmd))
         .output()

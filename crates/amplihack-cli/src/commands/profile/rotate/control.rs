@@ -1,19 +1,27 @@
 //! `rotate status` and `rotate stop`: read the pid file and the ledger, and
-//! signal only a verified rotator.
+//! signal only a verified rotator. Also the ledger side of `profile
+//! overflow list` and `clear` (issue #1606).
 
 use super::daemon::{DaemonState, current_state, daemon_err};
-use super::ledger::{LastCycle, Phase, RotateLedger, RotateState};
+use super::identify::{self, LiveId};
+use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
 use super::log::{msg, timestamp};
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::overflow_names;
+use crate::commands::profile::pointer;
 use crate::commands::profile::root_cmd::{pinned_line, root_line};
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, RootSource, config_dir, read_saved};
 use crate::commands::profile::store::ProfileStore;
 use crate::commands::profile::usage_cmd::sanitize_display;
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 const STOP_WAIT: Duration = Duration::from_secs(10);
+/// How long `profile overflow clear` waits for the rotate state lock.
+const CLEAR_LOCK_WAIT: Duration = Duration::from_secs(10);
 
 /// The store whose rotator `status` and `stop` act on, and whether it was
 /// found through `~/.amplihack/rotate-root`. The record is followed only when
@@ -52,6 +60,17 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         DaemonState::Unverifiable => ("unverifiable", "-".into()),
     };
     let ledger = rs.load_ledger();
+    // One read, so the `overflow:`, `on credits:` and `default:` lines agree.
+    let names = overflow_names(store.root());
+    let overflow = overflow_line(&names, ledger.as_ref().map(Option::as_ref), now());
+    let last_tag = ledger
+        .as_ref()
+        .ok()
+        .and_then(Option::as_ref)
+        .and_then(|l| l.last_cycle.as_ref())
+        .and_then(|c| c.overflow.clone());
+    let pin = super::pin::read(&rs);
+    let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref(), &pin);
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
@@ -61,15 +80,34 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let ledger = ledger.ok().flatten();
     let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {
-        Some(LastCycle { at, outcome, .. }) => {
-            format!("{} {}", timestamp(*at), sanitize_display(outcome, false))
+        Some(LastCycle {
+            at,
+            outcome,
+            overflow,
+            ..
+        }) => {
+            let tag = overflow.as_ref().map_or_else(String::new, |t| {
+                format!(" overflow={}", sanitize_display(t, false))
+            });
+            format!(
+                "{} {}{tag}",
+                timestamp(*at),
+                sanitize_display(outcome, false)
+            )
         }
         None => "-".into(),
     };
     let auto = super::autostart_line(store.root());
     println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    println!("overflow: {overflow}\non overflow: {on_overflow}");
+    // `.default` bypasses the rotator: say so when it names an overflow profile.
+    if let Ok(Some(d)) = pointer::read(store.root())
+        && names.contains(&d)
+    {
+        println!("default: {d} (overflow; launches use it directly)");
+    }
     // Issue #1691: a hold leaves the switch as the last cycle, so say it.
-    match super::pin::read(&rs) {
+    match pin {
         super::pin::PinState::None => {}
         super::pin::PinState::Pinned(n) => println!("hold: {n}"),
         super::pin::PinState::Missing(n) => println!("hold: {n} (profile missing; ignored)"),
@@ -192,4 +230,103 @@ fn terminate(rs: &RotateState, pid: u32) -> Result<(), ProfileError> {
     } else {
         Err(std::io::Error::last_os_error().into())
     }
+}
+
+/// The `overflow:` value: the marked profiles `names` in list order, each
+/// with its active spend block, or `-`. An unreadable ledger (`Err`) adds
+/// `(blocks unknown)` rather than showing no blocks.
+fn overflow_line(
+    names: &[ProfileName],
+    ledger: Result<Option<&RotateLedger>, &ProfileError>,
+    now: i64,
+) -> String {
+    if names.is_empty() {
+        return "-".into();
+    }
+    let (blocks, unknown) = match ledger {
+        Ok(l) => (l.map(|l| active_blocks(l, now)).unwrap_or_default(), false),
+        Err(_) => (BTreeMap::new(), true),
+    };
+    let line = names
+        .iter()
+        .map(|n| match blocks.get(n.as_str()) {
+            Some(b) => format!("{n} (blocked until {})", timestamp(b.until)),
+            None => n.to_string(),
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    if unknown {
+        format!("{line} (blocks unknown)")
+    } else {
+        line
+    }
+}
+
+/// The `on overflow:` value: `yes (<name>, held by switch)` when the pin
+/// names the live overflow profile; `yes (<name>)` when the login identified in
+/// `~/.claude` is an overflow profile and the rotator's last cycle recorded
+/// `overflow=in` or `on` (it found no plan capacity), `no (<name> is
+/// overflow; plan capacity remains)` when it is an overflow profile without
+/// that tag, `no` for a plan profile, `-` when the live profile cannot be
+/// identified. Runs no probe.
+pub(super) fn on_overflow_line(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: Option<&Path>,
+    overflow: &[ProfileName],
+    last_tag: Option<&str>,
+    pin: &super::pin::PinState,
+) -> String {
+    let live = home.and_then(|h| identify::live(store, rs, h).ok());
+    match live {
+        Some((LiveId::Known(n), _)) if overflow.contains(&n) => {
+            // A pin holds every cycle before the overflow policy runs, so a
+            // `profile switch` onto an overflow profile spends credits until
+            // `profile switch --none`, plan capacity or not.
+            if *pin == super::pin::PinState::Pinned(n.clone()) {
+                format!("yes ({n}, held by switch)")
+            } else if matches!(last_tag, Some("in" | "on")) {
+                format!("yes ({n})")
+            } else {
+                format!("no ({n} is overflow; plan capacity remains)")
+            }
+        }
+        Some((LiveId::Known(_), _)) => "no".into(),
+        _ => "-".into(),
+    }
+}
+
+/// The active spend blocks under `root`, by profile name, with their end
+/// time. Empty when there is no ledger. Takes no lock.
+pub fn overflow_blocks(root: &Path, now: i64) -> Result<BTreeMap<String, i64>, ProfileError> {
+    let l = RotateState::new(root).load_ledger()?;
+    Ok(l.map(|l| {
+        active_blocks(&l, now)
+            .into_iter()
+            .map(|(n, b)| (n, b.until))
+            .collect()
+    })
+    .unwrap_or_default())
+}
+
+/// Removes the spend block for `name` under the rotate state lock, waiting
+/// up to [`CLEAR_LOCK_WAIT`]. `Ok(false)` when there was none. Never creates
+/// the ledger, and never writes it without the lock.
+pub fn clear_overflow_block(root: &Path, name: &ProfileName) -> Result<bool, ProfileError> {
+    let rs = RotateState::new(root);
+    if !crate::commands::profile::auto_switch::kit::exists(&rs.ledger) {
+        return Ok(false);
+    }
+    let state = State::new(root)?;
+    let Some(_lock) = state.try_lock(CLEAR_LOCK_WAIT)? else {
+        return Err(daemon_err("rotator busy, retry"));
+    };
+    let Some(mut l) = rs.load_ledger()? else {
+        return Ok(false);
+    };
+    if l.overflow_blocked.remove(name.as_str()).is_none() {
+        return Ok(false);
+    }
+    rs.save_ledger(&l)?;
+    Ok(true)
 }

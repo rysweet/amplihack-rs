@@ -61,7 +61,27 @@ impl Default for XpiaConfig {
 impl XpiaConfig {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let security_level = match env_str("XPIA_SECURITY_LEVEL", "MODERATE")
+        Self::from_lookup(|key| env::var(key).ok())
+    }
+
+    /// Built-in defaults, ignoring every `XPIA_*` environment variable.
+    ///
+    /// Tests use this so that a session which exports, for example,
+    /// `XPIA_ENABLED=false` cannot change their outcome.
+    pub fn defaults() -> Self {
+        Self::from_lookup(|_| None)
+    }
+
+    /// Build a configuration from a variable lookup (`None` means unset).
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
+        let env_bool = |key: &str, default: bool| match lookup(key) {
+            Some(v) => matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"),
+            None => default,
+        };
+        let env_usize =
+            |key: &str, default: usize| lookup(key).and_then(|v| v.parse().ok()).unwrap_or(default);
+        let security_level = match lookup("XPIA_SECURITY_LEVEL")
+            .unwrap_or_else(|| "MODERATE".to_string())
             .to_uppercase()
             .as_str()
         {
@@ -81,14 +101,14 @@ impl XpiaConfig {
             validate_bash: env_bool("XPIA_VALIDATE_BASH", true),
             validate_agents: env_bool("XPIA_VALIDATE_AGENTS", true),
             log_security_events: env_bool("XPIA_LOG_EVENTS", true),
-            log_file: env::var("XPIA_LOG_FILE").ok(),
+            log_file: lookup("XPIA_LOG_FILE"),
             whitelist_domains: HashSet::new(),
             blacklist_domains: HashSet::new(),
             max_prompt_length: env_usize("XPIA_MAX_PROMPT_LENGTH", 10_000),
             max_url_length: env_usize("XPIA_MAX_URL_LENGTH", 2048),
         };
 
-        config.load_domain_lists();
+        config.load_domain_lists(&lookup);
         config
     }
 
@@ -101,14 +121,14 @@ impl XpiaConfig {
         }
     }
 
-    fn load_domain_lists(&mut self) {
+    fn load_domain_lists(&mut self, lookup: &impl Fn(&str) -> Option<String>) {
         // Whitelist from env
-        if let Ok(domains) = env::var("XPIA_WHITELIST_DOMAINS") {
+        if let Some(domains) = lookup("XPIA_WHITELIST_DOMAINS") {
             self.whitelist_domains
                 .extend(domains.split(',').map(|s| s.trim().to_lowercase()));
         }
         // Whitelist from file
-        if let Ok(file) = env::var("XPIA_WHITELIST_FILE") {
+        if let Some(file) = lookup("XPIA_WHITELIST_FILE") {
             load_domains_from_file(&file, &mut self.whitelist_domains);
         }
         // Default safe domains
@@ -117,12 +137,12 @@ impl XpiaConfig {
         }
 
         // Blacklist from env
-        if let Ok(domains) = env::var("XPIA_BLACKLIST_DOMAINS") {
+        if let Some(domains) = lookup("XPIA_BLACKLIST_DOMAINS") {
             self.blacklist_domains
                 .extend(domains.split(',').map(|s| s.trim().to_lowercase()));
         }
         // Blacklist from file
-        if let Ok(file) = env::var("XPIA_BLACKLIST_FILE") {
+        if let Some(file) = lookup("XPIA_BLACKLIST_FILE") {
             load_domains_from_file(&file, &mut self.blacklist_domains);
         }
     }
@@ -160,38 +180,20 @@ fn load_domains_from_file(path: &str, set: &mut HashSet<String>) {
     }
 }
 
-fn env_bool(key: &str, default: bool) -> bool {
-    match env::var(key) {
-        Ok(v) => matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"),
-        Err(_) => default,
-    }
-}
-
-fn env_str(key: &str, default: &str) -> String {
-    env::var(key).unwrap_or_else(|_| default.to_string())
-}
-
-fn env_usize(key: &str, default: usize) -> usize {
-    env::var(key)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(default)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn default_config_is_enabled() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(cfg.enabled);
         assert!(cfg.block_on_critical);
     }
 
     #[test]
     fn default_safe_domains_whitelisted() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(cfg.is_whitelisted("github.com"));
         assert!(cfg.is_whitelisted("docs.python.org"));
         assert!(!cfg.is_whitelisted("evil.com"));
@@ -199,14 +201,14 @@ mod tests {
 
     #[test]
     fn subdomain_whitelisting() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(cfg.is_whitelisted("api.github.com"));
         assert!(cfg.is_whitelisted("dev.azure.com"));
     }
 
     #[test]
     fn should_block_critical() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(cfg.should_block(RiskLevel::Critical));
         assert!(cfg.should_block(RiskLevel::High));
         assert!(!cfg.should_block(RiskLevel::Medium));
@@ -216,7 +218,7 @@ mod tests {
     #[test]
     fn blacklist_from_env() {
         // Test blacklist via config API instead of env vars (thread-safe)
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.blacklist_domains.insert("evil.com".to_string());
         cfg.blacklist_domains.insert("malware.org".to_string());
         assert!(cfg.is_blacklisted("evil.com"));
@@ -229,7 +231,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("whitelist.txt");
         fs::write(&file, "custom-domain.com\n# comment\ntrusted.org\n").unwrap();
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         // Simulate loading from file
         let mut domains = std::collections::HashSet::new();
         super::load_domains_from_file(file.to_str().unwrap(), &mut domains);
@@ -240,7 +242,7 @@ mod tests {
 
     #[test]
     fn should_block_with_critical_disabled() {
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.block_on_critical = false;
         assert!(!cfg.should_block(RiskLevel::Critical));
         assert!(cfg.should_block(RiskLevel::High));
@@ -248,7 +250,7 @@ mod tests {
 
     #[test]
     fn should_block_with_high_disabled() {
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.block_on_high_risk = false;
         assert!(cfg.should_block(RiskLevel::Critical));
         assert!(!cfg.should_block(RiskLevel::High));
@@ -256,7 +258,7 @@ mod tests {
 
     #[test]
     fn should_block_none_and_low_never_blocked() {
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.block_on_critical = true;
         cfg.block_on_high_risk = true;
         assert!(!cfg.should_block(RiskLevel::None));
@@ -266,7 +268,7 @@ mod tests {
 
     #[test]
     fn is_whitelisted_case_insensitive() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(cfg.is_whitelisted("GitHub.COM"));
         assert!(cfg.is_whitelisted("GITHUB.COM"));
         assert!(cfg.is_whitelisted("Api.GitHub.Com"));
@@ -274,7 +276,7 @@ mod tests {
 
     #[test]
     fn is_blacklisted_case_insensitive() {
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.blacklist_domains.insert("evil.com".to_string());
         assert!(cfg.is_blacklisted("Evil.Com"));
         assert!(cfg.is_blacklisted("EVIL.COM"));
@@ -283,26 +285,26 @@ mod tests {
 
     #[test]
     fn is_whitelisted_empty_string() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(!cfg.is_whitelisted(""));
     }
 
     #[test]
     fn is_blacklisted_empty_string() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert!(!cfg.is_blacklisted(""));
     }
 
     #[test]
     fn default_limits_are_sane() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         assert_eq!(cfg.max_prompt_length, 10_000);
         assert_eq!(cfg.max_url_length, 2048);
     }
 
     #[test]
     fn default_safe_domains_all_present() {
-        let cfg = XpiaConfig::from_env();
+        let cfg = XpiaConfig::defaults();
         for domain in super::DEFAULT_SAFE_DOMAINS {
             assert!(
                 cfg.is_whitelisted(domain),
@@ -333,11 +335,40 @@ mod tests {
 
     #[test]
     fn blacklist_overrides_whitelist_check() {
-        let mut cfg = XpiaConfig::from_env();
+        let mut cfg = XpiaConfig::defaults();
         cfg.whitelist_domains.insert("dual.com".to_string());
         cfg.blacklist_domains.insert("dual.com".to_string());
         // Both match — callers should check blacklist first
         assert!(cfg.is_whitelisted("dual.com"));
         assert!(cfg.is_blacklisted("dual.com"));
+    }
+}
+
+#[cfg(test)]
+mod lookup_tests {
+    use super::*;
+
+    #[test]
+    fn lookup_overrides_defaults() {
+        let cfg = XpiaConfig::from_lookup(|k| match k {
+            "XPIA_ENABLED" => Some("false".into()),
+            "XPIA_SECURITY_LEVEL" => Some("strict".into()),
+            "XPIA_MAX_URL_LENGTH" => Some("99".into()),
+            "XPIA_BLACKLIST_DOMAINS" => Some("Evil.com, bad.org".into()),
+            _ => None,
+        });
+        assert!(!cfg.enabled);
+        assert_eq!(cfg.security_level, SecurityLevel::Strict);
+        assert_eq!(cfg.max_url_length, 99);
+        assert!(cfg.is_blacklisted("sub.evil.com"));
+        assert!(cfg.is_blacklisted("bad.org"));
+    }
+
+    #[test]
+    fn defaults_ignore_lookup_free_environment() {
+        let cfg = XpiaConfig::defaults();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.max_prompt_length, 10_000);
+        assert!(cfg.blacklist_domains.is_empty());
     }
 }

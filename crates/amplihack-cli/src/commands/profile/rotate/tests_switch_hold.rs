@@ -243,6 +243,7 @@ fn a_limit_before_the_switch_is_fresh_capacity_through_any_number_of_held_cycles
         at: NOW,
         measured_at: Some(NOW),
         outcome: "alerted".into(),
+        overflow: None,
     });
     e.rs.save_ledger(&l).unwrap();
     let (stopped, _) = hook_view(&e);

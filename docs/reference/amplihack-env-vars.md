@@ -171,9 +171,11 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_ROTATE_HOLD` | user preference |  | Default for `amplihack profile rotate --hold`. |
 | `AMPLIHACK_ROTATE_INTERVAL` | user preference |  | Default for `amplihack profile rotate --interval`. |
 | `AMPLIHACK_ROTATE_MARGIN` | user preference |  | Default for `amplihack profile rotate --margin`. |
-| `AMPLIHACK_ROTATE_SESSION_AT` | user preference |  | Default for `amplihack profile rotate --session-at`. |
+| `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET` | user preference |  | Default for `amplihack profile rotate --overflow-unknown-reset` (`0` or `1`, default `0`); auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
+| `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | user preference |  | Default for `amplihack profile rotate --overflow-wait`; auto-switch reads it only while no rotator runs, and otherwise uses the running rotator's value. |
+| `AMPLIHACK_ROTATE_SESSION_AT` | user preference |  | Default for `amplihack profile rotate --session-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
 | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | user preference |  | Default for `amplihack profile rotate --upgrade-margin`. |
-| `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`. |
+| `AMPLIHACK_ROTATE_WEEK_AT` | user preference |  | Default for `amplihack profile rotate --week-at`; also auto-switch's plan-capacity test for overflow while no rotator runs. |
 | `AMPLIHACK_RUNTIME_DIR` | user preference |  | Worktree runtime directory override. |
 | `AMPLIHACK_RUNTIME_ROOT` | internal |  | Runtime root handed to recipe steps. |
 | `AMPLIHACK_RUST_BINARY` | user preference |  | Binary for the Rust trial. |
