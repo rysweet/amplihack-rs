@@ -25,6 +25,34 @@ pub fn block_spend_limited(
     names: &[ProfileName],
     t: i64,
 ) -> bool {
+    block_with(out, l, names, t, msg::alert_spend_limit)
+}
+
+/// [`block_spend_limited`] for the overflow profile a `profile switch` pin
+/// holds the live login on: the one ALERT also says that the rotator will
+/// not move off it, and names `profile switch --none`.
+pub fn block_pinned_spend_limited(
+    out: &mut Sink,
+    l: &mut RotateLedger,
+    name: &ProfileName,
+    t: i64,
+) -> bool {
+    block_with(
+        out,
+        l,
+        std::slice::from_ref(name),
+        t,
+        msg::alert_spend_limit_pinned,
+    )
+}
+
+fn block_with(
+    out: &mut Sink,
+    l: &mut RotateLedger,
+    names: &[ProfileName],
+    t: i64,
+    alert: fn(&ProfileName, i64) -> String,
+) -> bool {
     let mut changed = false;
     for n in names {
         if active_blocks(l, t).contains_key(n.as_str()) {
@@ -40,7 +68,7 @@ pub fn block_spend_limited(
             out.emit(t, &msg::spend_limit_not_blocked(n, "no end time"));
             continue;
         }
-        out.emit(t, &msg::alert_spend_limit(n, block.until));
+        out.emit(t, &alert(n, block.until));
         l.overflow_blocked.insert(n.to_string(), block);
         changed = true;
     }

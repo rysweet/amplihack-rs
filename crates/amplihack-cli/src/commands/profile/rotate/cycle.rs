@@ -4,6 +4,7 @@
 
 use super::alert::{alert_key, alert_once, clear_alert, refusal_kind};
 use super::decide::Decision;
+use super::held::held_cycle;
 use super::identify::{LiveId, Skip};
 use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
 use super::log::{Sink, msg};
@@ -88,6 +89,8 @@ pub struct Ctx {
     /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
     /// tests set it, to act while the cycle is measuring without the lock.
     pub(super) measure: Option<MeasureFn>,
+    /// Replaces a held cycle's spend-limit probe when set; only tests do.
+    pub(super) probe_held: Option<super::held::HeldProbeFn>,
 }
 
 impl Ctx {
@@ -105,10 +108,11 @@ impl Ctx {
             failed_live: 0,
             scan: scan_system,
             measure: None,
+            probe_held: None,
         }
     }
 
-    fn stopping(&self) -> bool {
+    pub(super) fn stopping(&self) -> bool {
         self.stop
             .as_ref()
             .is_some_and(|s| s.load(Ordering::Relaxed))
@@ -160,7 +164,7 @@ fn alert(
 
 /// Records the cycle as ended at `t`, after measuring from `measured_at`,
 /// with its overflow tag; see [`overflow_record::record`].
-fn save(
+pub(super) fn save(
     ctx: &Ctx,
     l: &mut RotateLedger,
     o: CycleOutcome,
@@ -180,7 +184,7 @@ pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
 
 /// Records a known live profile and its account, so `profile usage` and the
 /// next cycle read it from the ledger.
-fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
+pub(super) fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
     if let (LiveId::Known(n), Some(key)) = (&snap.live, &snap.account) {
         if l.live.as_deref() != Some(n.as_str()) {
             l.live = Some(n.to_string());
@@ -229,7 +233,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // `claude` is looked for, so nothing is measured while pinned. The pin
     // wins over every overflow rule (#1606): the overflow policy runs inside
     // the measurement, so a held cycle neither moves off a pinned overflow
-    // profile nor moves a pinned plan login onto credits. See "Pin and
+    // profile nor moves a pinned plan login onto credits; `held_cycle` only
+    // checks a pinned overflow profile for the spend limit. See "Pin and
     // overflow" in docs/reference/profile-command.md.
     let (line, held) = match pin::gate(&first.pin) {
         PinGate::Open => (None, false),
@@ -243,20 +248,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     ctx.last_gate = line;
     if held {
-        let t = now();
-        let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        note_live(&mut l, &first, t);
-        clear_alert(&mut l);
-        if l.last_cycle.as_ref().is_some_and(|c| c.outcome == SWITCHED) {
-            // The switch's record stands for the whole hold: it is what lets
-            // the limit-resume hook wake sessions stopped before the switch.
-            ctx.rs.save_ledger(&l)?;
-        } else {
-            // Nothing was measured, so no `measured_at` (#1659), and `held`
-            // is not capacity: a hold with no switch record (a pin written
-            // by hand or by an older build) wakes no session.
-            save(ctx, &mut l, CycleOutcome::Held, t, None, None)?;
-        }
+        held_cycle(ctx, &mut out, lock, &state, &first)?;
         return Ok(CycleOutcome::Held);
     }
     drop(lock);

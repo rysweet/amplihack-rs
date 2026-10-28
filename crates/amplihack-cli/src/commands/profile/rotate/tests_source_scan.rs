@@ -315,11 +315,19 @@ fn a_held_cycle_records_no_measurement() {
     // D3/#1659: `measured_at` is `None` on the held path, so the limit-resume
     // hook never wakes sessions on a login nobody measured. The prefix also
     // matches the five-argument `record` of #1695 (`.., t, None, None)`).
-    let cycle = squeezed(&body_of(&source("cycle.rs"), "run_cycle"));
+    // The held path is `held::held_cycle`, called by `run_cycle`.
+    assert!(squeezed(&body_of(&source("cycle.rs"), "run_cycle")).contains("held_cycle("));
+    let held = squeezed(&body_of(&source("held.rs"), "held_cycle"));
     assert!(
-        cycle.contains("CycleOutcome::Held,t,None"),
-        "run_cycle must record a held cycle with measured_at None"
+        held.contains("CycleOutcome::Held,t,None"),
+        "held_cycle must record a held cycle with measured_at None"
     );
+    // Its spend-limit check records a block and nothing else: no cycle
+    // record, so no `measured_at`, and no swap.
+    let watch = body_of(&source("held.rs"), "watch_pinned_spend");
+    for f in ["save(", "swap::", "last_cycle"] {
+        assert!(!watch.contains(f), "watch_pinned_spend must not call `{f}`");
+    }
 }
 
 #[test]

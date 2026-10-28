@@ -296,6 +296,29 @@ pub mod msg {
         )
     }
 
+    /// The spend-limit ALERT for an overflow profile that a `profile switch`
+    /// pin holds the live login on. The rotator will not move off it while
+    /// pinned, so the line says how to release it.
+    pub fn alert_spend_limit_pinned(name: &ProfileName, until: i64) -> String {
+        format!(
+            "ALERT: overflow profile {name} hit its spend limit; blocked until {}; \
+             rotation is held on it by `profile switch`, so run \
+             `amplihack profile switch --none` to move off it",
+            super::timestamp(until)
+        )
+    }
+
+    /// `profile switch` refuses an overflow profile with an active spend
+    /// block.
+    pub fn switch_spend_blocked(name: &ProfileName, until: i64) -> String {
+        format!(
+            "overflow profile {name} is blocked for its spend limit until {}; \
+             clear the block with `amplihack profile overflow clear {name}` once \
+             credits are added",
+            super::timestamp(until)
+        )
+    }
+
     /// A spend limit on overflow profile `name` that could not be stored
     /// as a block, and why. The cycle still leaves the profile alone.
     pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {

@@ -2904,12 +2904,30 @@ measures, so the overflow decision never runs while a pin is in force:
 | Pinned login | Readings | Outcome |
 |--------------|----------|---------|
 | An overflow profile | A plan login has capacity | `held`. The login stays on the overflow profile and keeps spending credits. Switching onto an overflow profile is a choice to spend. `status` shows `on overflow: yes (<name>, held by switch)`. |
+| An overflow profile | Its credits run out | `held`, and still watched for the spend limit (see below). The login does not move, but the profile is blocked with one ALERT that names `profile switch --none`. |
 | A plan profile | Every plan login is out of capacity and an overflow profile is eligible | `held`. The cycle never moves onto credits, so nothing is spent. |
 
 `amplihack profile switch --none` removes the pin; the next cycle applies
 the overflow rules above, so it moves off a pinned overflow profile at once
 if a plan login has capacity. The rotator's own moves onto or off overflow
 never write a pin.
+
+The pin stops moves, not the spend-limit check. While the pin holds the live
+login on an overflow profile that has no active block, each held cycle probes
+the live login only, without the lock, and measures no candidate. If the probe
+reads [`spend_limit`](#states), the cycle takes the lock again, checks that
+nothing changed while it probed (as [step 6](#rotate-cycle) does), and blocks
+the profile as in [Overflow spend-limit block](#overflow-spend-limit-block),
+with this ALERT in place of the usual one:
+
+```
+ALERT: overflow profile <name> hit its spend limit; blocked until <time>; rotation is held on it by `profile switch`, so run `amplihack profile switch --none` to move off it
+```
+
+The login stays where it is, since the pin still holds. Once the block is
+recorded the held cycles stop probing until it ends or is cleared. A pinned
+plan login is never probed. `profile switch` refuses an overflow profile that
+already has an active block (see [Rotate switch](#rotate-switch)).
 
 The `--hold` that `overflow-in` and `overflow-out` ignore is the minimum time
 after a rotator swap. It is not the pin.
@@ -2921,8 +2939,10 @@ older `Your organization has reached its monthly spend limit` wording, mean
 the account's credits are used up or not turned on. The
 [usage probe](#what-is-read) matches both, without regard to case, and
 classifies the profile as `spend_limit`. The probe is the only detector:
-the rotator probes the live overflow profile on every cycle, so a block is
-recorded within one cycle. The [usage-limit wait](#usage-limit-wait) and the
+the rotator probes the live overflow profile on every cycle, including a cycle
+held by a [pin](#pin-and-overflow) on it, so a block is recorded within one
+cycle. (A held cycle probes only the live login, and only while it has no
+active block.) The [usage-limit wait](#usage-limit-wait) and the
 recipe-run classifier see the same message in an agent's output but never
 write a block. A probe that reads
 [`spend_limit`](#states) for an overflow profile, live or candidate, *blocks*
@@ -3175,6 +3195,15 @@ changes nothing but `.default`.
    | No profile owns it | Adopt it as `default-original` (or the next free name), then swap, as the rotator does. |
    | `no-login`, `hand-change` or `ambiguous` | Refused with the matching ALERT text, without the `ALERT: ` prefix: [default only](#default-only). No ALERT is written to the ledger. |
 
+   Then, whether or not `<name>` is already live: when `<name>` is an
+   [overflow profile](#rotate-overflow) with an active
+   [spend-limit block](#overflow-spend-limit-block), the switch is refused,
+   [default only](#default-only), with
+   ``overflow profile <name> is blocked for its spend limit until <time>; clear the block with `amplihack profile overflow clear <name>` once credits are added``.
+   A pin stops every rotator move, so pinning a profile whose credits are
+   known to be spent would hold the login where it cannot work. A ledger
+   that cannot be read fails the switch, since its blocks are then unknown.
+
 7. Unless `<name>` is already the live profile, check `<name>` against
    [Rotate candidates](#rotate-candidates), using the list built under the
    lock in step 6. A profile with any skip reason is refused, the same
@@ -3350,7 +3379,7 @@ when it is a regular file owned by you that group and others cannot write.
 | Pin file | Cycle | Log line |
 |----------|-------|----------|
 | Missing | Runs normally. | |
-| Names an existing profile | Held: after recovery and identify, before measuring. No swap and no probe. Recorded as `held`, unless the last cycle is a `switched` record, which is kept. | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` |
+| Names an existing profile | Held: after recovery and identify, before measuring. No swap and no measurement. The one probe a held cycle makes is the spend-limit check of a pinned live overflow profile with no active block (see [Pin and overflow](#pin-and-overflow)). Recorded as `held`, unless the last cycle is a `switched` record, which is kept. | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` |
 | Names a profile that no longer exists | Runs normally; the file is left for `switch --none` to remove. | `skip: pin names missing profile <name>; ignored` |
 | Not a valid name, too long, a symlink, a directory, not owned by you, writable by group or others, or unreadable | Held. Rotation fails closed rather than move a login you did not expect. Recorded as `held`, unless the last cycle is a `switched` record, which is kept. | ``skip: pin unreadable; run `amplihack profile switch --none` `` |
 
