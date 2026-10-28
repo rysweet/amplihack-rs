@@ -132,9 +132,10 @@ Rotation held on spare until `amplihack profile switch --none`.
 
 `switch` makes the same swap the rotator makes, under the same lock, and
 writes the same ledger entry, so `profile usage` and `rotate status` show
-`spare` as live afterwards. It works whether or not a rotator is running,
-and it measures nothing, so it starts no `claude` process and works with no
-`claude` on `PATH`. It moves the login even when `spare` has no capacity
+`spare` as live afterwards. The move works whether or not a rotator is
+running (waking stopped sessions does not; see below), and it measures
+nothing, so it starts no `claude` process and works with no `claude` on
+`PATH`. It moves the login even when `spare` has no capacity
 left: you asked for `spare`, so the usage checks that stop a rotate swap do
 not apply.
 
@@ -158,9 +159,17 @@ It also does three more things:
   the rotator's ledger as a cycle with capacity, measured at the moment of
   the switch. The
   [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit) resumes
-  sessions that stopped on a limit before the switch, within 15 seconds, as
-  it does after a rotator swap. The held cycles that follow keep that
-  record, so the hold does not undo it.
+  sessions that stopped on a limit before the switch on its next ledger
+  read (every 15 seconds in the first hour of a session's wait, every 5
+  minutes after), as it does after a rotator swap. The held cycles that
+  follow keep that record, so the hold does not undo it.
+
+  The hook needs a running rotator. With none running, it exits
+  `rotator-down` when the limit hits and never reads the ledger, so a later
+  `switch` wakes nothing; resume those sessions by hand. To have switches
+  wake them, keep a rotator running with
+  [`amplihack profile rotate start`](#run-rotation-in-the-background)
+  before the limit hits.
 
 If no profile owned the login in `~/.claude`, `switch` first keeps it as
 `default-original` (or the next free name), as the rotator does, and the
