@@ -581,6 +581,93 @@ returns 1 rather than writing into the working directory.
   containing `/`, `?`, `#` or `\` is rejected so a foreign host cannot hide
   behind `@github.com/`.
 
+## Auto-Drive Hand-Off of BLOCKED_CI (#1714)
+
+`BLOCKED_CI` normally exits non-zero, which ends any recipe that called
+`default-workflow`. Under [auto-drive](auto-drive-to-merge.md#blocked_ci-hand-off-from-phase-1-1714)
+the failing checks are exactly what the later merge-ready loop fixes, so
+`autodrive-build` asks finalization to hand the PR on instead of ending the
+run. The classification does not change: the state is still `BLOCKED_CI` and
+`terminal_success` is still `"false"`. Only the exit code and one field differ.
+
+### Conditions
+
+The validator hands off only when all three hold. Otherwise it fails closed
+exactly as before.
+
+| # | Condition | Source |
+| --- | --- | --- |
+| 1 | The state is `BLOCKED_CI`, matched exactly by `blocked_ci_handoff_allowed`. | `workflow_blocked_ci_handoff.sh` |
+| 2 | `RECIPE_VAR_blocked_ci_handoff` is exactly `true`. Only `autodrive-build` step-02 sets it; `default-workflow.yaml` declares it `""`. | `blocked_ci_handoff_flag` |
+| 3 | `pr_number` passes `_finalization_pr_number_valid`. On the open-PR path this is the number `gh` confirmed; on the prior-state path it is the run's own PR evidence. | Validator state |
+
+Both `BLOCKED_CI` exits use it: the prior-state probe and the open-PR check
+with a failing check. The five other prior-state blockers
+(`FAILED_MEANINGFUL_DIFF`, `FAILED_CLOSED_UNMERGED`,
+`FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`,
+`FAILED_WRONG_BRANCH`) and every other failure keep `exit 1` with the flag on.
+
+### Result
+
+The result is the normal `BLOCKED_CI` result with `handoff` added, and the
+validator exits `0`:
+
+```text
+terminal_success=false
+terminal_failure=true
+terminal_state=BLOCKED_CI
+required_next_action=Fix the failing CI checks on PR #134 before merge.
+pr_number=134
+finalizer_output_valid=false
+handoff=merge_ready_loop
+```
+
+stderr gets `INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)`.
+That line is for people; no step decides anything from it.
+`workflow_finalization_complete.sh` nests the whole object, so
+`.workflow_result.handoff` reaches the caller without further changes.
+
+The validator writes the result through `emit_result | jq -c '. + {handoff:"merge_ready_loop"}'`
+under `pipefail`. If that pipeline fails, it exits `1`, so exit `0` always
+means a complete JSON object was written.
+
+### Helper: `finalization_fail_or_handoff`
+
+```text
+finalization_fail_or_handoff <state> <reason> <next_action> <evidence>
+```
+
+A drop-in for `fail_result` with the same four arguments. It is defined in
+`amplifier-bundle/tools/workflow_blocked_ci_handoff.sh`, which
+`workflow_agentic_finalization.sh` sources after
+`workflow_finalization_pr_signal.sh`. It calls `fail_result` and
+`emit_result`, which are nested functions of `validate_finalization`, so it
+may be called only from inside `validate_finalization`. When the conditions
+above do not hold it calls `fail_result "$@"` and never returns.
+
+### Standalone runs
+
+A standalone `default-workflow`, and every other caller of it, never hands
+off. `default-workflow.yaml` declares `blocked_ci_handoff: ""`. An exported
+`RECIPE_VAR_blocked_ci_handoff=true` does not switch the hand-off on, provided
+the recipe runner keeps giving a recipe's declared context priority over an
+inherited `RECIPE_VAR_` value; see
+[`blocked_ci_handoff`](./workflow-terminal-state.md#blocked_ci_handoff).
+
+The hand-off also depends on the opposite case: the value `"true"` that
+`autodrive-build` step-02 passes to its `default-workflow` sub-recipe must
+override `default-workflow.yaml`'s declared `""`. If the runner does not
+apply it, the flag is never on, the hand-off never happens, and an auto-drive
+build that ends `BLOCKED_CI` fails closed exactly as it did before #1714.
+
+A standalone run with red CI still ends:
+
+```text
+terminal_success=false
+terminal_state=BLOCKED_CI
+=> exit 1, no handoff field
+```
+
 ## Canonical Result Schema
 
 Successful and failing finalization results use the same normalized result
@@ -606,6 +693,7 @@ key/value outputs, but the field names and meanings are identical.
 | `change_request_id` | Provider change-request identifier when available. |
 | `pr_url` | GitHub compatibility URL when a validated GitHub PR or follow-up exists. Preserved on `FAILED_REPORTING`. |
 | `pr_number` | GitHub compatibility number when a validated GitHub PR exists. Preserved on `FAILED_REPORTING`. |
+| `handoff` | Present only on an [auto-drive hand-off](#auto-drive-hand-off-of-blocked_ci-1714), with the value `merge_ready_loop`. Absent, never `""`, on every other result. It never changes `terminal_success`. |
 
 ### Retained Legacy Compatibility Fields
 
@@ -628,7 +716,8 @@ for human reading and is not part of the machine-control result.
 ## Configuration
 
 No feature flag is required. Agentic finalization is part of the
-`default-workflow` terminal path.
+`default-workflow` terminal path. The one flag below changes only the exit
+code of a `BLOCKED_CI` result, and only `autodrive-build` sets it.
 
 | Setting or tool | Required when | Notes |
 | --- | --- | --- |
@@ -638,6 +727,7 @@ No feature flag is required. Agentic finalization is part of the
 | `jq` | Always | Required for building and reading the deterministic evidence document and typed markers. Not used to parse agent narrative. |
 | `gh` | GitHub PR metadata path | Required only when a GitHub PR URL or GitHub remote makes PR metadata necessary. |
 | `GH_TOKEN` or GitHub auth | GitHub PR metadata path | Missing or invalid auth fails closed when GitHub metadata is required. |
+| `blocked_ci_handoff=true` | `autodrive-build` step-02 only | Exact value `true`; anything else is off. Hands a `BLOCKED_CI` PR to auto-drive's merge-ready loop with exit `0` and `handoff=merge_ready_loop`. `terminal_success` stays `false`. `default-workflow.yaml` declares it `""`. See [Auto-Drive Hand-Off of BLOCKED_CI](#auto-drive-hand-off-of-blocked_ci-1714). |
 | `allow_no_op=true` | Explicit no-op tasks | Allows only valid no-op success states with evidence and reason text. It cannot bypass dirty work, failed CI, or missing terminal evidence. |
 
 There is no configuration that converts finalization failures into advisory
@@ -737,7 +827,10 @@ terminal_reason=required CI checks are failing for PR #123
 required_next_action=Fix failing CI checks before merge.
 ```
 
-The recipe exits nonzero and persists `terminal_state=BLOCKED_CI`.
+The recipe exits nonzero and persists `terminal_state=BLOCKED_CI`. Under
+auto-drive, with a numeric `pr_number`, it instead exits `0` with
+`handoff=merge_ready_loop`; see
+[Auto-Drive Hand-Off of BLOCKED_CI](#auto-drive-hand-off-of-blocked_ci-1714).
 
 ### Resumed run with an already-published PR
 
@@ -835,6 +928,17 @@ without this run's verification evidence, a second open PR for the branch (even
 from a fork), a PR head that is not the local HEAD (unpushed commits), a
 `pr_url` for another repo, or a missing publish signal all keep
 the run failed by design.
+
+If an auto-drive build stopped on `BLOCKED_CI` instead of handing off, check
+the `handoff` field and the step-03 `#1714` error line:
+
+```bash
+jq '.. | objects | select(has("terminal_state")) | {terminal_state, pr_number, handoff}' recipe-result.json
+```
+
+No `handoff` field means the flag did not reach finalization or `pr_number`
+was not numeric. A `handoff` with a step-03 error means the PR was missing,
+not open, or differed from the one phase 1 resolved.
 
 Do not override `BLOCKED_CI`, `FAILED_MEANINGFUL_DIFF`, `HOLLOW_SUCCESS`,
 `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, or `FAILED_INVALID_EVIDENCE` in CI

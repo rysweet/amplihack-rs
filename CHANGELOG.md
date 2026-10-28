@@ -18,6 +18,8 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Auto-drive ended on red CI from its own build (#1714)**: when `default-workflow` ran inside `auto-drive-to-merge` and finalization classified the run `BLOCKED_CI`, the whole auto-drive run ended at phase 1, although its crusty and merge-ready loops exist to fix failing checks. `autodrive-build` step-02 now sets `blocked_ci_handoff: "true"`; with it, finalization emits its usual `BLOCKED_CI` result (still `terminal_success=false`) plus `handoff=merge_ready_loop` and exits `0` when it has a numeric `pr_number`. Step-03 then checks that the PR is the one it resolved and is open, and records `terminal_state` and `handed_off` in `build_result`. Only `BLOCKED_CI` is handed on; every other failure still ends the run. A standalone `default-workflow` declares the flag `""` and still fails closed on `BLOCKED_CI`. The allow-list lives in `amplifier-bundle/tools/workflow_blocked_ci_handoff.sh`. See `docs/reference/auto-drive-to-merge.md#blocked_ci-hand-off-from-phase-1-1714`.
+
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime
   artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent

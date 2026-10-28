@@ -40,6 +40,9 @@ context:
   # Set by step-02's default-workflow sub-recipe; step-03 reads the worktree
   # path and branch from its JSON (#1676, #1561).
   worktree_setup: ""
+  # Set by step-02's default-workflow sub-recipe (workflow-finalize's typed
+  # result); step-03 decides the BLOCKED_CI hand-off from it (#1714).
+  workflow_result: ""
   # Phase 1 never merges. auto-drive-to-merge owns that decision.
   no_merge: "true"
 
@@ -150,6 +153,9 @@ steps:
       # Phase 1 publishes a PR and stops. The merge belongs to phase 3's gate.
       no_merge: "true"
       should_merge: "false"
+      # Issue #1714: BLOCKED_CI with a published PR goes on to the loops,
+      # which fix failing checks. Only this step switches it on.
+      blocked_ci_handoff: "true"
 
   - id: "step-03-resolve-pr"
     type: "bash"
@@ -203,6 +209,21 @@ steps:
         fi
       fi
       case "$PR" in ''|*[!0-9]*) PR="" ;; esac
+      # Issue #1714: step-02's typed workflow_result decides whether a failed
+      # build goes on to the loops. The decision lives in the installed
+      # bundle's brick only (#1551); with no result there is nothing to judge.
+      TS=""; HO="false"
+      if [ -n "${RECIPE_VAR_workflow_result:-}" ]; then
+        HO_TOOLS="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
+        case "${AMPLIHACK_HOME:-}" in /*) ;; *) HO_TOOLS="" ;; esac
+        { [ -n "$HO_TOOLS" ] && [ -f "$HO_TOOLS/workflow_blocked_ci_handoff.sh" ] && [ -f "$HO_TOOLS/recipe_var.sh" ] \
+            && . "$HO_TOOLS/recipe_var.sh" && . "$HO_TOOLS/workflow_blocked_ci_handoff.sh"; } \
+          || { echo "ERROR: #1714: workflow_blocked_ci_handoff.sh not found under AMPLIHACK_HOME; cannot decide the BLOCKED_CI hand-off [autodrive-build/step-03]" >&2; exit 1; }
+        # autodrive_pr_state comes from here; without it the PR reads UNKNOWN and the hand-off is refused.
+        [ ! -f "$HO_TOOLS/autodrive_state.sh" ] || . "$HO_TOOLS/autodrive_state.sh"
+        autodrive_build_handoff "$PR" || exit 1
+        TS="$HANDOFF_TERMINAL_STATE"; HO="$HANDOFF_HANDED_OFF"
+      fi
       if [ -z "$PR" ]; then
         echo "ERROR: phase 1 finished without a pull request. Phases 2 and 3 have nothing to review or merge, so the workflow stops here rather than reporting progress it did not make." >&2
         exit 1
@@ -248,7 +269,9 @@ steps:
       # resumed run), so the phase-2 check in auto-drive-to-merge skips it.
       MBR="false"; [ "$PRE_STATE" = "MERGED" ] && MBR="true"
       echo "INFO: phase 1 complete: PR #${PR} ${URL}" >&2
-      printf '{"pr":"%s","pr_url":"%s","state_dir":"%s","merged_before_run":"%s"}\n' "$PR" "$URL" "$DIR" "$MBR"
+      jq -nc --arg pr "$PR" --arg url "$URL" --arg dir "$DIR" --arg mbr "$MBR" --arg ts "$TS" --arg ho "$HO" \
+        '{pr: $pr, pr_url: $url, state_dir: $dir, merged_before_run: $mbr, terminal_state: $ts, handed_off: $ho}' \
+        || { echo "ERROR: jq could not encode build_result [autodrive-build/step-03]" >&2; exit 1; }
     output: "build_result"
 
 output:

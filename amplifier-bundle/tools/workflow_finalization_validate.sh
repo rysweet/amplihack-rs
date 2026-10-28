@@ -191,7 +191,7 @@ FIELDS
   fi
   case "$prior_terminal_state" in
     BLOCKED_CI|FAILED_MEANINGFUL_DIFF|FAILED_CLOSED_UNMERGED|FAILED_PR_METADATA_UNAVAILABLE|FAILED_INVALID_INPUT|FAILED_WRONG_BRANCH)
-      fail_result "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
+      finalization_fail_or_handoff "$prior_terminal_state" "deterministic terminal probe reported $prior_terminal_state" "Resolve the deterministic blocker before finalization." "prior_terminal_state=$prior_terminal_state"
       ;;
   esac
   if [ "$evidence_hollow_success" = "true" ]; then
@@ -278,7 +278,7 @@ FIELDS
       publish_state_override="true"
       open_pr_facts="publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number"
       # A red check is a negative signal; pre-commit evidence never overrides it.
-      [ "$open_pr_checks" != "failing" ] || fail_result "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
+      [ "$open_pr_checks" != "failing" ] || finalization_fail_or_handoff "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
       [ "$open_pr_checks" != "green" ] || classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR whose checks are all green" "No action required." "$open_pr_facts,all_checks=green"
       case "$verification_completed:$open_pr_checks" in
         true:pending|true:none)
