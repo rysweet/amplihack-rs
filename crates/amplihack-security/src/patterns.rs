@@ -205,6 +205,8 @@ struct ChainPatterns {
     coordination: Regex,
     rejection: Regex,
     rejected_attempt: Regex,
+    negated_action: Regex,
+    correlative: Regex,
     error_avoidance: Regex,
     harmful: Regex,
     access: Regex,
@@ -241,15 +243,17 @@ impl ChainPatterns {
             ),
             list_label: compile_regex(r"^\s*(?:[0-9]{1,3}[.)]\s*)?$"),
             prefix: compile_regex(
-                r"^\s*[,:-]?\s*(?:(?:please|\w+ly|now)\s+)*(?:use\s+(?:(?:a|an|the)\s+)?(?:browser|shell|terminal|script|tool|agent|command|program|access|session)\s+to\s+)?",
+                r"^\s*[,:-]?\s*(?:(?:please|\w+ly|now|also|not\s+only|you\s+(?:should|must|will|can|need\s+to)|make\s+sure\s+to)\s+)*(?:use\s+(?:(?:a|an|the)\s+)?(?:browser|shell|terminal|script|tool|agent|command|program|access|session)\s+to\s+)?",
             ),
-            coordination: compile_regex(r"(?:,\s*(?:(?:and|or)\s+)?|\b(?:and|or)\s+)"),
+            coordination: compile_regex(r"(?:,\s*(?:(?:and|or|but)\s+)?|\b(?:and|or|but)\s+)"),
             rejection: compile_regex(
                 r"^\s*(?:(?:should|must|will)\s+be|is|was)\s+(?:rejected|blocked|denied)\b",
             ),
             rejected_attempt: compile_regex(
-                r"^(?:[^,.!?;]*\b(?:that|which)\s+|(?:ensure|verify|check)\s+(?:that\s+)?(?:the\s+)?tests?\s+)?((?:reject|block|prevent)(?:s|ed|ing)?\s+(?:failed\s+)?attempts?\s+to)\b",
+                r"^(?:[^,.!?;]*\b(?:that|which)\s+|(?:ensure|verify|check)\s+(?:that\s+)?(?:the\s+)?tests?\s+|(?:add|create|write)\s+(?:the\s+)?tests?\s+to\s+)?((?:reject|block|prevent)(?:s|ed|ing)?\s+(?:failed\s+)?attempts?\s+to)\b",
             ),
+            negated_action: compile_regex(r"^(?:do\s+not|don't|never|not)\s+"),
+            correlative: compile_regex(r"^\s*not\s+only\b"),
             // Avoiding permission errors describes successful operation, not
             // operating without authority. Normalize only that complete phrase.
             error_avoidance: compile_regex(
@@ -268,45 +272,60 @@ impl ChainPatterns {
         }
     }
 
-    /// Associate adjacent ordered bodies, allowing a numeric label between
-    /// them. An unrelated intervening sentence prevents association.
+    /// Classify disjoint marker bodies once and retain action flags across
+    /// incidental markers. This bounds work even for long, unpunctuated input.
+    /// An unrelated intervening sentence prevents association.
     fn matches(&self, text: &str) -> bool {
         let text = self.mask_rejected_quotes(text);
-        let mut anchor: Option<regex::Match<'_>> = None;
-        for captures in self.markers.captures_iter(&text) {
-            let marker = captures.get(1).expect("sequence marker capture");
+        let mut markers = self
+            .markers
+            .captures_iter(&text)
+            .map(|captures| captures.get(1).expect("sequence marker capture"))
+            .peekable();
+        // (has instruction, harmful action, access action) since the anchor.
+        let mut anchor: Option<(bool, bool, bool)> = None;
+        let mut associated = true;
+        let mut completed = false;
+        while let Some(marker) = markers.next() {
             let name = marker.as_str().to_ascii_lowercase();
             let can_start = name != "second"
                 && name != "after"
                 && !(name.starts_with("step") && name.ends_with('2'));
             let can_follow = name != "first" && !(name.starts_with("step") && name.ends_with('1'));
-            if let Some(first) = anchor {
-                let between = &text[first.end()..marker.start()];
-                let end = instruction_end(between);
-                let associated = self.list_label.is_match(&between[end..]);
-                let first_body = &between[..end];
-                let remainder = &text[marker.end()..];
-                let second_body = &remainder[..instruction_end(remainder)];
-                if associated
-                    && can_follow
-                    && self.has_instruction(first_body)
-                    && self.has_instruction(second_body)
-                    && (self.has_action(first_body, &self.harmful)
-                        || self.has_action(second_body, &self.harmful)
-                        || self.has_action(first_body, &self.access)
-                            && self.has_action(second_body, &self.extraction))
+            let next = markers.peek().map_or(text.len(), |next| next.start());
+            let span = &text[marker.end()..next];
+            let end = instruction_end(span);
+            let body = &span[..end];
+            let instruction = self.has_instruction(body);
+            let harmful = self.has_action(body, &self.harmful);
+            let access = self.has_action(body, &self.access);
+            if !associated {
+                anchor = None;
+            }
+            if let Some((prior_instruction, prior_harmful, prior_access)) = anchor {
+                if can_follow
+                    && prior_instruction
+                    && instruction
+                    && (prior_harmful
+                        || harmful
+                        || prior_access && self.has_action(body, &self.extraction))
                 {
                     return true;
                 }
-                // Keep the anchor across incidental words such as "second
-                // function" or "after lunch" inside its body. Only a completed
-                // sentence or an unrelated sentence advances the anchor.
-                if !associated || first_body.trim_end().ends_with(['.', '!', '?', ';']) {
-                    anchor = can_start.then_some(marker);
-                }
-            } else if can_start {
-                anchor = Some(marker);
+                anchor = if completed {
+                    can_start.then_some((instruction, harmful, access))
+                } else {
+                    Some((
+                        prior_instruction || instruction,
+                        prior_harmful || harmful,
+                        prior_access || access,
+                    ))
+                };
+            } else {
+                anchor = can_start.then_some((instruction, harmful, access));
             }
+            associated = self.list_label.is_match(&span[end..]);
+            completed = body.trim_end().ends_with(['.', '!', '?', ';']);
         }
         false
     }
@@ -350,25 +369,69 @@ impl ChainPatterns {
     /// coordinated infinitive objects remain descriptions. An explicit new
     /// directive prefix or another independent action ends that local scope.
     fn has_action(&self, clause: &str, action: &Regex) -> bool {
-        let quotes = quoted_ranges(clause);
+        let mut quotes = quoted_ranges(clause).into_iter().peekable();
         let mut descriptive = false;
+        let mut rejected_correlative = false;
         let mut start = 0;
         for separator in self.coordination.find_iter(clause) {
+            // Separators and disjoint quote ranges are both ordered. Advance
+            // monotonically instead of rescanning every quote for each one.
+            while quotes
+                .peek()
+                .is_some_and(|range| range.end <= separator.start())
+            {
+                quotes.next();
+            }
             if quotes
-                .iter()
-                .any(|range| range.contains(&separator.start()))
+                .peek()
+                .is_some_and(|range| range.contains(&separator.start()))
             {
                 continue;
             }
-            if self.classify_action(&clause[start..separator.start()], action, &mut descriptive) {
+            if self.classify_action(
+                &clause[start..separator.start()],
+                action,
+                &mut descriptive,
+                &mut rejected_correlative,
+            ) {
                 return true;
+            }
+            // An adversative starts an independent directive even after a
+            // negation or a description of rejected behavior.
+            if separator
+                .as_str()
+                .split(|c: char| !c.is_alphabetic())
+                .any(|word| word.eq_ignore_ascii_case("but"))
+            {
+                // In an actual rejected attempt, "not only ... but also"
+                // coordinates its objects. A bare "but" still starts a new
+                // directive; the paired scope is consumed exactly once.
+                let additive = clause[separator.end()..]
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("also"));
+                if !(descriptive && rejected_correlative && additive) {
+                    descriptive = false;
+                }
+                rejected_correlative = false;
             }
             start = separator.end();
         }
-        self.classify_action(&clause[start..], action, &mut descriptive)
+        self.classify_action(
+            &clause[start..],
+            action,
+            &mut descriptive,
+            &mut rejected_correlative,
+        )
     }
 
-    fn classify_action(&self, candidate: &str, action: &Regex, descriptive: &mut bool) -> bool {
+    fn classify_action(
+        &self,
+        candidate: &str,
+        action: &Regex,
+        descriptive: &mut bool,
+        rejected_correlative: &mut bool,
+    ) -> bool {
         let candidate = candidate
             .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '-'));
         let candidate = self
@@ -377,33 +440,44 @@ impl ChainPatterns {
         let directed = self.directive(&candidate);
         let unquoted = directed.trim_start_matches(['`', '"', '\'']);
         let body = self.directive(unquoted);
+        if self.negated_action.is_match(body) {
+            *descriptive = true;
+            *rejected_correlative = false;
+            return false;
+        }
         // Adverbs and tool use can also modify a rejected infinitive. A local
-        // "now"/"please" cue starts a new directive, including inside code quotes.
+        // cue or modal starts a new directive, including inside code quotes.
         let explicit_prefix = candidate[..candidate.len() - directed.len()]
             .split_whitespace()
             .chain(unquoted[..unquoted.len() - body.len()].split_whitespace())
-            .any(|word| word.eq_ignore_ascii_case("now") || word.eq_ignore_ascii_case("please"));
+            .any(|word| {
+                ["now", "please", "you", "make"]
+                    .iter()
+                    .any(|prefix| word.eq_ignore_ascii_case(prefix))
+            });
         let classified_action = self.harmful.is_match(body)
             || self.access.is_match(body)
             || self.extraction.is_match(body);
         if *descriptive && (explicit_prefix || !classified_action) {
             *descriptive = false;
+            *rejected_correlative = false;
         }
         if !*descriptive && action.is_match(body) {
             return true;
         }
         // Require an actual rejection predicate (possibly in a relative
         // clause), not rejection vocabulary mentioned in a literal or noun phrase.
-        if self.is_rejection_predicate(directed) {
+        if let Some(predicate) = self.rejection_predicate(directed) {
             *descriptive = true;
+            *rejected_correlative = self.correlative.is_match(&directed[predicate.end()..]);
         }
         false
     }
-    fn is_rejection_predicate(&self, text: &str) -> bool {
+    fn rejection_predicate<'a>(&self, text: &'a str) -> Option<regex::Match<'a>> {
         self.rejected_attempt
             .captures(text)
             .and_then(|captures| captures.get(1))
-            .is_some_and(|predicate| {
+            .filter(|predicate| {
                 !quoted_ranges(text)
                     .iter()
                     .any(|range| range.contains(&predicate.start()))
