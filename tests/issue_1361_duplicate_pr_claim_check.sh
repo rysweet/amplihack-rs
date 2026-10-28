@@ -50,6 +50,10 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 unset GH_TOKEN GITHUB_TOKEN GH_HOST AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK
+# step-03c skips the claim check when the run targets an existing branch or
+# PR. An auto-drive or recipe shell exports PR_NUMBER, and inheriting it made
+# every step-03c check below take the skip path instead of the one under test.
+unset EXISTING_BRANCH PR_NUMBER
 
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 OLD="$(date -u -d '-40 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-40d +%Y-%m-%dT%H:%M:%SZ)"
@@ -279,7 +283,10 @@ run "$WORK/gh" FAKE_GH=none
 
 # --help prints the whole header and stops at the exit-code table, however
 # long the header grows (#1707 lengthened it past a fixed line number).
-HELP_LAST="$(bash "$CLAIM" --help 2>&1 | tail -n 1)"
+# The output is captured whole and its last line taken by substring, not
+# piped into `tail`: the #1434 guard forbids early-exit pipeline stages.
+HELP_OUT="$(bash "$CLAIM" --help 2>&1)"
+HELP_LAST="${HELP_OUT##*$'\n'}"
 [ "$HELP_LAST" = "#   1  an existing pull request already claims this issue" ] \
   && pass "--help ends at the last exit-code line" \
   || fail "--help stops in the wrong place; last line: ${HELP_LAST:0:200}"

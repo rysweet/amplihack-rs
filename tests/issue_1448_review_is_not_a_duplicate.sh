@@ -60,6 +60,10 @@ export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 unset GH_TOKEN GITHUB_TOKEN GH_HOST
 unset AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK ALLOW_EXISTING_PR AMPLIHACK_ALLOW_EXISTING_PR
+# step-03c skips the claim check when the run targets an existing branch or
+# PR. An auto-drive or recipe shell exports PR_NUMBER, and inheriting it made
+# every step-03c check below take the skip path instead of the one under test.
+unset EXISTING_BRANCH PR_NUMBER
 
 # The reported incident: issue #142, claimed by PR #173 whose head is
 # `fix/142-band-edge-previous-slice`, reviewed from a worktree already on that
