@@ -24,8 +24,8 @@
 
 use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass};
 use super::run_record::{
-    Outcome, RunRecord, build, classify_tail, origin_repo, read, read_tail, record_path, repo_slug,
-    write_new, write_outcome,
+    Outcome, RunRecord, build, classify_tail, origin_repo, read, read_owned_by, read_tail,
+    record_path, repo_slug, write_new, write_outcome,
 };
 use chrono::{TimeZone, Utc};
 use serde_json::{Map, Value, json};
@@ -318,6 +318,51 @@ fn read_of_garbage_or_a_missing_file_is_none() {
     let path = dir.path().join("g.run.json");
     fs::write(&path, "not json").unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(read(&path), None);
+}
+
+#[test]
+fn a_record_owned_by_another_user_is_not_read() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = record_path(dir.path(), SESSION);
+    write_new(&path, &sample(dir.path())).unwrap();
+    let me = fs::metadata(&path).unwrap().uid();
+    assert!(read_owned_by(&path, me, 0o077, 64 * 1024).is_some());
+    // The same file, checked as if this process ran as another user.
+    assert_eq!(
+        read_owned_by(&path, me.wrapping_add(1), 0o077, 64 * 1024),
+        None
+    );
+}
+
+#[test]
+fn a_fifo_record_is_refused_without_blocking() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = record_path(dir.path(), SESSION);
+    let c_path = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+    // SAFETY: `c_path` is a valid NUL-terminated path for the call.
+    assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+    let started = Instant::now();
+    // No writer ever opens the FIFO: a blocking open or read would hang.
+    assert_eq!(read(&path), None);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[test]
+fn a_record_over_64_kib_is_refused() {
+    let dir = tempfile::tempdir().unwrap();
+    let good = serde_json::to_vec(&sample(dir.path())).unwrap();
+    let path = record_path(dir.path(), SESSION);
+    let write = |padding: usize| {
+        let mut bytes = good.clone();
+        // Trailing whitespace keeps the JSON valid at any size.
+        bytes.resize(padding, b' ');
+        fs::write(&path, &bytes).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    };
+    write(64 * 1024);
+    assert!(read(&path).is_some(), "exactly 64 KiB is read");
+    write(64 * 1024 + 1);
     assert_eq!(read(&path), None);
 }
 

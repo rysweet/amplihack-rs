@@ -282,6 +282,7 @@ fn run_row(
         merge_ready_rounds: merge_ready,
         crusty_rounds: crusty,
         has_run: true,
+        has_pr: pr_number.is_some(),
     });
     let reviewing = merge_ready == 0
         && crusty > 0
@@ -381,6 +382,7 @@ fn queued_row(row: &ManifestRow, list: Option<&[PrInfo]>) -> WorkRow {
         merge_ready_rounds: 0,
         crusty_rounds: 0,
         has_run: false,
+        has_pr: row.pr.or(info.map(|p| p.number)).is_some(),
     });
     let label = row
         .label

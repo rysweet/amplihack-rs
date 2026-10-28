@@ -22,9 +22,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use super::bounded_cmd::run_bounded;
 use super::detach::create_private;
 use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass, classify_failure_text};
+use amplihack_utils::bounded_process::run_helper;
 
 /// The only schema version written and read.
 const VERSION: u32 = 1;
@@ -167,6 +167,10 @@ pub(crate) fn write_outcome(path: &Path, outcome: Outcome) -> Result<()> {
 
 /// The record at `path`, when it is a regular file owned by this user with
 /// no group or other access, parses, and every field is valid.
+///
+/// Every failure gives the same `None`, so the reason is lost. That is
+/// enough for a status display, which shows such a run without its record;
+/// code that decides what to do from a record must not rely on it.
 pub(crate) fn read(path: &Path) -> Option<RunRecord> {
     let bytes = read_owned(path, LOOSE_RECORD_BITS, MAX_RECORD_BYTES)?;
     let record: RunRecord = serde_json::from_slice(&bytes).ok()?;
@@ -178,13 +182,18 @@ pub(crate) fn read(path: &Path) -> Option<RunRecord> {
 /// checks are made on the opened file, so nothing can be swapped in between
 /// a check and the read.
 pub(crate) fn read_owned(path: &Path, loose_bits: u32, max: u64) -> Option<Vec<u8>> {
+    read_owned_by(path, euid(), loose_bits, max)
+}
+
+/// [`read_owned`] for the user `uid`.
+pub(super) fn read_owned_by(path: &Path, uid: u32, loose_bits: u32, max: u64) -> Option<Vec<u8>> {
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
         .open(path)
         .ok()?;
     let meta = file.metadata().ok()?;
-    if !meta.is_file() || !owned(&meta, loose_bits) || meta.len() > max {
+    if !meta.is_file() || !owned_by(&meta, uid, loose_bits) || meta.len() > max {
         return None;
     }
     let mut bytes = Vec::new();
@@ -252,8 +261,16 @@ pub(crate) fn is_owned_dir(path: &Path, loose_bits: u32) -> bool {
 }
 
 fn owned(meta: &fs::Metadata, loose_bits: u32) -> bool {
+    owned_by(meta, euid(), loose_bits)
+}
+
+fn owned_by(meta: &fs::Metadata, uid: u32, loose_bits: u32) -> bool {
+    meta.uid() == uid && meta.mode() & loose_bits == 0
+}
+
+fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions and cannot fail.
-    meta.uid() == unsafe { libc::geteuid() } && meta.mode() & loose_bits == 0
+    unsafe { libc::geteuid() }
 }
 
 /// The outcome class of a log tail.
@@ -356,8 +373,8 @@ pub(crate) fn origin_url(dir: &Path, timeout: Duration) -> Option<String> {
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
-    let out = run_bounded(cmd, timeout)?;
-    if !out.success {
+    let out = run_helper(cmd, timeout)?;
+    if !out.success() {
         return None;
     }
     let url = String::from_utf8(out.stdout).ok()?;

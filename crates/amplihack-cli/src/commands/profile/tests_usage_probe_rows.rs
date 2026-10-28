@@ -12,7 +12,9 @@
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
-use super::usage_cmd::{REFUSED_NO_STORE, REFUSED_UNREADABLE, listed_profiles, probe_rows};
+use super::usage_cmd::{
+    REFUSED_NO_STORE, REFUSED_UNREADABLE, listed_profiles, probe_profiles_and_home, probe_rows,
+};
 use super::usage_parse::UsageState;
 use crate::binary_finder::BinaryInfo;
 use crate::test_support::{EnvGuard, HomeGuard, env_lock};
@@ -173,6 +175,22 @@ fn setting_the_cancel_flag_stops_a_stalled_probe_promptly() {
 /// Review of #1710: the refusal `workstreams status` shows comes from a
 /// fixed set, even when the store's own error names a path.
 #[test]
+fn a_directory_with_an_invalid_name_does_not_hide_the_other_profiles() {
+    let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
+    let root = d.path().join("profiles");
+    store_with(&root, &["alpha", "beta"]);
+    fs::create_dir(root.join("not a profile!")).unwrap();
+    let _root = EnvGuard::set([("AMPLIHACK_CLAUDE_PROFILE_ROOT", root.to_str().unwrap())]);
+    let names: Vec<String> = listed_profiles()
+        .unwrap()
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert_eq!(names, ["alpha", "beta"]);
+}
+
+#[test]
 fn a_store_error_naming_a_path_is_refused_with_fixed_text() {
     let d = tempfile::tempdir().unwrap();
     let _env = isolated(d.path());
@@ -248,4 +266,42 @@ fn the_home_row_is_kept_when_names_narrow_the_profiles() {
         1,
         "{rows:?}"
     );
+}
+
+#[test]
+fn the_home_row_alone_is_probed_when_no_profile_is() {
+    // `workstreams status` with every profile on an API key probes no plan
+    // profile, and the `~/.claude` login must still get its row.
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let _env = isolated(&home);
+    let root = d.path().join("root");
+    let store = store_with(&root, &["k"]);
+    private(&home.join(".claude/.credentials.json"), "{}");
+    private(
+        &home.join(".claude.json"),
+        r#"{"oauthAccount": {"accountUuid": "u1", "emailAddress": "x@example.com"}}"#,
+    );
+    private(
+        &root.join("k/.claude.json"),
+        r#"{"oauthAccount": {"accountUuid": "u-k", "emailAddress": "x@example.com"}}"#,
+    );
+    // The rotator last put `k` in `~/.claude`; a manual login replaced it.
+    let ledger_dir = root.join(".auto-switch.d/rotate");
+    fs::create_dir_all(&ledger_dir).unwrap();
+    for dir in [ledger_dir.parent().unwrap(), ledger_dir.as_path()] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    private(
+        &ledger_dir.join("ledger.json"),
+        r#"{"version":1,"live":"k","account":"u-k","since":10}"#,
+    );
+    let bin = fake_claude(d.path(), "exit 0");
+    let cancel = AtomicBool::new(false);
+
+    let rows =
+        probe_profiles_and_home(&store, &bin, &[], Duration::from_secs(10), &cancel).unwrap();
+
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].live_in_home, "{rows:?}");
 }

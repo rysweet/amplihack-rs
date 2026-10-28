@@ -32,6 +32,10 @@ pub(crate) struct StageInput {
     pub crusty_rounds: u32,
     /// A run exists, rather than a manifest row alone.
     pub has_run: bool,
+    /// A PR number is known, whether or not GitHub gave its state. The
+    /// state is missing when GitHub could not be asked or the PR is older
+    /// than the PRs listed.
+    pub has_pr: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,7 +55,8 @@ fn stage(label: impl Into<String>, percent: u8, closed: bool) -> Stage {
 }
 
 /// The first rule that matches: merged, closed, merge-ready rounds, review
-/// rounds, PR open, a run, a manifest row alone.
+/// rounds, PR open, a PR whose state is unknown, a run, a manifest row
+/// alone.
 pub(crate) fn classify(input: &StageInput) -> Stage {
     match input.pr {
         Some(PrState::Merged) => return stage("merged", 100, false),
@@ -72,6 +77,10 @@ pub(crate) fn classify(input: &StageInput) -> Stage {
     }
     if input.pr == Some(PrState::Open) {
         return stage("PR open", 30, false);
+    }
+    // The PR exists but may have merged since: never report it as building.
+    if input.has_pr {
+        return stage("PR state unknown", 30, false);
     }
     if input.has_run {
         stage("building", 15, false)

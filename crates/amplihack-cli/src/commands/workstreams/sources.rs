@@ -3,8 +3,8 @@
 //! origin and the login usage probe.
 //!
 //! Every subprocess runs through
-//! [`run_bounded`](crate::commands::recipe::bounded_cmd::run_bounded), which
-//! bounds its time, its output and its process group.
+//! [`bounded_process`](amplihack_utils::bounded_process), which bounds its
+//! time, its output and its process group.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -18,8 +18,8 @@ use serde::Deserialize;
 
 use super::logins::is_api_key_profile;
 use crate::commands::profile::usage_cmd::{self, Row};
-use crate::commands::recipe::bounded_cmd::run_bounded;
 use crate::commands::recipe::run_record::{origin_url, repo_slug};
+use amplihack_utils::bounded_process::run_helper;
 
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -89,10 +89,10 @@ impl PrSource for GhPrs {
         ])
         .env("GH_PROMPT_DISABLED", "1")
         .env("NO_COLOR", "1");
-        let Some(out) = run_bounded(cmd, GH_TIMEOUT) else {
+        let Some(out) = run_helper(cmd, GH_TIMEOUT) else {
             bail!("gh pr list did not finish within {GH_TIMEOUT:?}");
         };
-        if !out.success {
+        if !out.success() {
             bail!("gh pr list failed");
         }
         serde_json::from_slice(&out.stdout)
@@ -107,8 +107,8 @@ impl LiveSessions for TmuxSessions {
     fn list(&self) -> Vec<(String, i64)> {
         let mut cmd = Command::new("tmux");
         cmd.args(["ls", "-F", "#{session_name} #{session_created}"]);
-        match run_bounded(cmd, TMUX_TIMEOUT) {
-            Some(out) if out.success => parse_tmux(&String::from_utf8_lossy(&out.stdout)),
+        match run_helper(cmd, TMUX_TIMEOUT) {
+            Some(out) if out.success() => parse_tmux(&String::from_utf8_lossy(&out.stdout)),
             // No tmux, no server or no answer: nothing is live.
             _ => Vec::new(),
         }
@@ -166,18 +166,23 @@ impl UsageSource for ProfileUsage {
             .filter(|(_, api_key)| !api_key)
             .map(|(name, _)| name.clone())
             .collect();
-        if plans.is_empty() {
+        // The errors may name a path or the claude binary; they are not shown.
+        if profiles.is_empty() {
+            // No profiles: `profile usage` shows nothing either.
             return Ok(Vec::new());
         }
+        if plans.is_empty() {
+            // Every profile uses an API key: only the `~/.claude` login.
+            return usage_cmd::probe_home_listed(self.timeout, cancel)
+                .map_err(|_| usage_cmd::REFUSED_PROBE.to_string());
+        }
         // Every profile when none is an API-key profile. The `~/.claude` row
-        // is probed either way. When every profile uses an API key the early
-        // return above skips it too; that login is then not shown.
+        // is probed either way.
         let names = if plans.len() == profiles.len() {
             Vec::new()
         } else {
             plans
         };
-        // The error may name a path or the claude binary; it is not shown.
         usage_cmd::probe_listed(&names, self.timeout, cancel)
             .map_err(|_| usage_cmd::REFUSED_PROBE.to_string())
     }

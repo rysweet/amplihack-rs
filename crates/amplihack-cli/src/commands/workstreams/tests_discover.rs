@@ -17,7 +17,9 @@
 //!   once; at most 2,000 runs and 32 levels. No identity and not `all`
 //!   gives nothing. Runs without a record appear only under `all`.
 
-use super::discover::{Discovered, NOT_PRIVATE, TRUNCATED, UNREADABLE, scan, scan_capped, select};
+use super::discover::{
+    Discovered, NOT_PRIVATE, TRUNCATED, UNREADABLE, owned_by, scan, scan_capped, select,
+};
 use crate::commands::recipe::run_record::{RunRecord, build, record_path, write_new};
 use chrono::{TimeZone, Utc};
 use serde_json::Map;
@@ -253,6 +255,66 @@ fn the_cap_warns_only_when_entries_are_left_unread() {
     let (found, warning) = scan_capped(d.path(), 5);
     assert_eq!(found.len(), 5);
     assert_eq!(warning, None);
+}
+
+/// Sets the modification time of `path` to `secs` after the epoch.
+fn set_mtime(path: &Path, secs: u64) {
+    let t = std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs);
+    fs::File::options()
+        .write(true)
+        .open(path)
+        .unwrap()
+        .set_modified(t)
+        .unwrap();
+}
+
+#[test]
+fn past_the_cap_the_newest_runs_are_kept() {
+    let d = private_log_dir();
+    for n in 0..6u64 {
+        let log = d.path().join(format!("s{n}.log"));
+        fs::write(&log, "").unwrap();
+        // s5 is the newest, s0 the oldest; names sort the other way from
+        // age, so name order cannot pass this test by chance.
+        set_mtime(&log, 1_000_000 + n * 60);
+    }
+    let (found, warning) = scan_capped(d.path(), 3);
+    assert_eq!(sessions(&found), set(&["s3", "s4", "s5"]));
+    assert_eq!(warning, Some(TRUNCATED));
+}
+
+#[test]
+fn a_run_counts_from_its_newest_file() {
+    let d = private_log_dir();
+    // `live` was launched long ago, so its record is old, but its log is
+    // still being written. Both of its files are kept, as one run.
+    write_record(d.path(), "live", Some(ME));
+    set_mtime(&d.path().join("live.run.json"), 1_000);
+    let log = d.path().join("live.log");
+    fs::write(&log, "").unwrap();
+    set_mtime(&log, 9_000_000);
+    for n in 0..3u64 {
+        let p = d.path().join(format!("old{n}.log"));
+        fs::write(&p, "").unwrap();
+        set_mtime(&p, 5_000 + n);
+    }
+    let (found, warning) = scan_capped(d.path(), 3);
+    assert_eq!(sessions(&found), set(&["live", "old2"]));
+    let live = found.iter().find(|r| r.session == "live").unwrap();
+    assert!(live.record.is_some() && live.log.is_some());
+    assert_eq!(warning, Some(TRUNCATED));
+}
+
+#[test]
+fn a_log_owned_by_another_user_is_not_a_run() {
+    let d = private_log_dir();
+    let log = d.path().join("s.log");
+    fs::write(&log, "").unwrap();
+    let meta = fs::symlink_metadata(&log).unwrap();
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let me = unsafe { libc::geteuid() };
+    assert!(owned_by(&meta, me));
+    assert!(!owned_by(&meta, me.wrapping_add(1)));
 }
 
 #[test]

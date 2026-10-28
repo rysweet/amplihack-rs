@@ -10,17 +10,22 @@ use std::path::{Path, PathBuf};
 
 use crate::commands::recipe::run_record::{self, RunRecord, valid_session};
 
-/// Directory entries read from the log directory.
+/// Run files (records and logs) read from the log directory, newest run
+/// first.
 const MAX_ENTRIES: usize = 2_000;
+/// Directory entries listed, by name and metadata only, to find the newest
+/// runs. Nothing past this is looked at.
+const MAX_NAMES: usize = 20_000;
 /// Mode bits that make the log directory shared.
 const SHARED_DIR_BITS: u32 = 0o022;
 /// The log directory exists but cannot be listed.
 pub(crate) const UNREADABLE: &str = "warning: recipe log directory unreadable";
 /// The log directory is not owned by this user, or others may write to it.
 pub(crate) const NOT_PRIVATE: &str = "warning: recipe log directory is not private; ignoring it";
-/// The log directory has more entries than [`MAX_ENTRIES`].
+/// The log directory has more run files than [`MAX_ENTRIES`], or more
+/// entries than [`MAX_NAMES`].
 pub(crate) const TRUNCATED: &str =
-    "warning: more than 2000 entries in the recipe log directory; some runs are not shown";
+    "warning: more than 2000 run files in the recipe log directory; older runs are not shown";
 
 /// Runs a walk selects at most.
 const MAX_SELECTED: usize = 2_000;
@@ -38,19 +43,38 @@ pub(crate) struct Discovered {
 }
 
 /// One entry per session that has a `<session>.run.json` or a
-/// `<session>.log` owned by this user, reading at most [`MAX_ENTRIES`]
-/// entries, and the warning to print, if any. Temporary files and the secret
-/// spec and context files are skipped.
+/// `<session>.log` owned by this user, and the warning to print, if any.
+/// Temporary files and the secret spec and context files are skipped.
+///
+/// At most [`MAX_NAMES`] entries are listed, by name and metadata only.
+/// Runs are then taken newest first, by the latest modification time of
+/// their files, until [`MAX_ENTRIES`] files are taken; only those records
+/// are read. A live run writes to its log, so it is among the newest and is
+/// not the one left out. Runs come back ordered by session name.
 ///
 /// A missing directory has no runs and no warning. One that cannot be read,
 /// or that is not owned by this user or is writable by others, has no runs
 /// and a fixed warning that names neither the path nor the OS error. One
-/// with more entries than the cap gives the runs it read and [`TRUNCATED`].
+/// with more than the cap gives the newest runs and [`TRUNCATED`].
 pub(crate) fn scan(log_dir: &Path) -> (Vec<Discovered>, Option<&'static str>) {
     scan_capped(log_dir, MAX_ENTRIES)
 }
 
-/// [`scan`] with a cap of `cap` entries.
+/// The files of one session, found by name.
+#[derive(Default)]
+struct Files {
+    record: Option<PathBuf>,
+    log: Option<PathBuf>,
+    newest: (i64, i64),
+}
+
+impl Files {
+    fn count(&self) -> usize {
+        usize::from(self.record.is_some()) + usize::from(self.log.is_some())
+    }
+}
+
+/// [`scan`] taking at most `cap` run files.
 pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Option<&'static str>) {
     let meta = match fs::metadata(log_dir) {
         Ok(meta) => meta,
@@ -66,8 +90,8 @@ pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Optio
     let Ok(mut entries) = fs::read_dir(log_dir) else {
         return (Vec::new(), Some(UNREADABLE));
     };
-    let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
-    for entry in entries.by_ref().take(cap).filter_map(Result::ok) {
+    let mut by_session: HashMap<String, Files> = HashMap::new();
+    for entry in entries.by_ref().take(MAX_NAMES).filter_map(Result::ok) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -85,25 +109,57 @@ pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Optio
         if !valid_session(session) {
             continue;
         }
-        // Another user's log is not one of this user's runs.
-        if !is_record && !entry.metadata().is_ok_and(|m| m.uid() == euid()) {
+        // Not followed: this is the entry itself, as `read_dir` found it.
+        let Ok(meta) = entry.metadata() else {
+            continue;
+        };
+        // Another user's log is not one of this user's runs. A record gets
+        // the same check, on the opened file, when it is read.
+        if !is_record && !owned_by(&meta, euid()) {
             continue;
         }
-        let slot = found
-            .entry(session.to_string())
-            .or_insert_with(|| Discovered {
-                session: session.to_string(),
-                record: None,
-                log: None,
-            });
+        let files = by_session.entry(session.to_string()).or_default();
+        files.newest = files.newest.max((meta.mtime(), meta.mtime_nsec()));
         if is_record {
-            slot.record = run_record::read(&entry.path()).filter(|r| r.session == session);
+            files.record = Some(entry.path());
         } else {
-            slot.log = Some(entry.path());
+            files.log = Some(entry.path());
         }
     }
-    let truncated = entries.next().is_some().then_some(TRUNCATED);
-    (found.into_values().collect(), truncated)
+    let mut truncated = entries.next().is_some();
+    let mut sessions: Vec<(String, Files)> = by_session.into_iter().collect();
+    sessions.sort_by(|(a, fa), (b, fb)| fb.newest.cmp(&fa.newest).then_with(|| a.cmp(b)));
+    let mut taken = 0;
+    let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
+    for (session, files) in sessions {
+        if taken + files.count() > cap {
+            truncated = true;
+            break;
+        }
+        taken += files.count();
+        let record = files
+            .record
+            .as_deref()
+            .and_then(run_record::read)
+            .filter(|r| r.session == session);
+        found.insert(
+            session.clone(),
+            Discovered {
+                session,
+                record,
+                log: files.log,
+            },
+        );
+    }
+    (
+        found.into_values().collect(),
+        truncated.then_some(TRUNCATED),
+    )
+}
+
+/// Whether `meta` belongs to the user `uid`.
+pub(super) fn owned_by(meta: &fs::Metadata, uid: u32) -> bool {
+    meta.uid() == uid
 }
 
 fn euid() -> u32 {

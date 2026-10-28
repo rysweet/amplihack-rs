@@ -205,9 +205,11 @@ that drives the PR.
 ### Log directory warnings
 
 The log directory is read only when it is a directory owned by you and not
-writable by group or others (mode `& 0o022` is `0`). At most 2,000 of its
-entries are read, in the order the file system returns them, so past the cap
-the runs left out are not predictable. In each case below the command prints
+writable by group or others (mode `& 0o022` is `0`). Up to 20,000 entries
+are listed by name and modification time. Runs are then taken newest first,
+by the latest change to either of their files, until 2,000 run files are
+taken, and only those records are read. A live run writes to its log, so it
+is among the newest. In each case below the command prints
 one line on stderr, with no path or system error, and still prints the
 table:
 
@@ -216,7 +218,7 @@ table:
 | `recipe.log_dir` and HOME are both unset | `warning: recipe log directory unavailable (HOME not set)` | None. |
 | The directory cannot be listed, or is not a directory | `warning: recipe log directory unreadable` | None. |
 | The directory is not owned by you, or group or others may write to it | `warning: recipe log directory is not private; ignoring it` | None. |
-| The directory has more than 2,000 entries | `warning: more than 2000 entries in the recipe log directory; some runs are not shown` | Those found in the first 2,000 entries. |
+| The directory has more than 2,000 run files, or more than 20,000 entries | `warning: more than 2000 run files in the recipe log directory; older runs are not shown` | The newest runs, up to 2,000 files. |
 
 A directory that does not exist yet gives no warning and no runs.
 `recipe run --detach` creates it with mode `0700`.
@@ -232,8 +234,9 @@ The first rule that matches sets the stage:
 | 3 | M merge-ready rounds, M ≥ 1 | `merge-ready round M` | 70 + 5·(M−1), at most 95 |
 | 4 | C review rounds, C ≥ 1 | `review round C`, then `N concerns` | 40 + 5·(C−1), at most 60 |
 | 5 | The PR is open | `PR open` | 30% |
-| 6 | A run exists, with no PR | `building` | 15% |
-| 7 | Manifest row only | `queued` | 0% |
+| 6 | A PR number is known, but GitHub gave no state for it | `PR state unknown` | 30% |
+| 7 | A run exists, with no PR | `building` | 15% |
+| 8 | Manifest row only | `queued` | 0% |
 
 - Rounds are counted from the auto-drive state directory of the PR,
   `<state root>/auto-drive/<key>`, where the state root is

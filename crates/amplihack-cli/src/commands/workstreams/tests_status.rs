@@ -466,6 +466,22 @@ fn the_pr_is_found_by_title_and_its_state_sets_the_stage() {
 }
 
 #[test]
+fn a_recorded_pr_missing_from_the_list_has_an_unknown_state() {
+    let fx = Fx::new();
+    // PR #1400 is older than the 100 PRs `gh pr list` returned.
+    fx.run("old", Some(ME), Some(1399), Some(1400));
+    let prs = FakePrs {
+        prs: vec![pr(1715, "feat(#1710): other", "OPEN", "MERGEABLE")],
+        ..FakePrs::default()
+    };
+    let snap = snapshot(&fx.input(Some(ME), false), &sources(prs, &[], 0)).unwrap();
+    let old = row(&snap, "default-workflow #1399");
+    assert_eq!(old.pr, PrCell::Known(1400));
+    assert_eq!(old.stage, "PR state unknown");
+    assert_eq!(old.percent, 30);
+}
+
+#[test]
 fn github_is_asked_once_per_repository() {
     let fx = Fx::new();
     for (s, i) in [("a", 1), ("b", 2), ("c", 3)] {

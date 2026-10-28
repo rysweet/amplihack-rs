@@ -3,9 +3,9 @@
 //!
 //! Contract (`stage`):
 //! - `classify(&StageInput) -> Stage`, first match wins: merged > closed >
-//!   merge-ready rounds > review rounds > PR open > run > manifest only.
-//!   `StageInput { pr: Option<PrState>, merge_ready_rounds, crusty_rounds,
-//!   has_run }`; `pr` is `None` when there is no PR or GitHub could not be
+//!   merge-ready rounds > review rounds > PR open > PR state unknown > run >
+//!   manifest only. `StageInput { pr: Option<PrState>, merge_ready_rounds,
+//!   crusty_rounds, has_run, has_pr }`; `pr` is `None` when there is no PR or GitHub could not be
 //!   asked. `Stage { label, percent, closed }`.
 //! - `review_percent(c) = min(60, 40 + 5(c-1))`,
 //!   `merge_ready_percent(m) = min(95, 70 + 5(m-1))`, both saturating.
@@ -25,7 +25,18 @@ fn input(pr: Option<PrState>, m: u32, c: u32, has_run: bool) -> StageInput {
         merge_ready_rounds: m,
         crusty_rounds: c,
         has_run,
+        has_pr: pr.is_some(),
     }
+}
+
+#[test]
+fn a_known_pr_without_a_state_is_never_building() {
+    let mut i = input(None, 0, 0, true);
+    i.has_pr = true;
+    assert_eq!(classify(&i), st("PR state unknown", 30, false));
+    // Rounds still decide the stage when they are known.
+    i.crusty_rounds = 2;
+    assert_eq!(classify(&i).label, "review round 2");
 }
 
 fn st(label: &str, percent: u8, closed: bool) -> Stage {

@@ -128,6 +128,7 @@ everything on the host.
 | `queued` | 0% | In the manifest, not started. |
 | `building` | 15% | Running, no PR yet. |
 | `PR open` | 30% | PR exists, no review round yet. |
+| `PR state unknown` | 30% | PR exists, but GitHub did not answer or the PR is older than the 100 listed. Check it with `gh pr view`. |
 | `review round N` | 40-60% | Review loop, with open concerns. |
 | `merge-ready round N` | 70-95% | Merge-ready checks loop. |
 | `merged` | 100% | Done. |
