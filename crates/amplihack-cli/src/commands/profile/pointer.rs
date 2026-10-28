@@ -32,15 +32,22 @@ pub fn read(root: &Path) -> Result<Option<ProfileName>, ProfileError> {
     if buf.len() as u64 > MAX_BYTES {
         return Err(ProfileError::PointerCorrupt("file too large".into()));
     }
-    let text = String::from_utf8(buf)
-        .map_err(|_| ProfileError::PointerCorrupt("not valid UTF-8".into()))?;
-    let trimmed = text.strip_suffix('\n').unwrap_or(&text);
-    let name = ProfileName::parse(trimmed)
-        .map_err(|_| ProfileError::PointerCorrupt("not a valid profile name".into()))?;
+    if std::str::from_utf8(&buf).is_err() {
+        return Err(ProfileError::PointerCorrupt("not valid UTF-8".into()));
+    }
+    let name = parse_name(&buf)
+        .ok_or_else(|| ProfileError::PointerCorrupt("not a valid profile name".into()))?;
     match fs::symlink_metadata(root.join(name.as_str())) {
         Ok(m) if m.file_type().is_dir() => Ok(Some(name)),
         _ => Err(ProfileError::PointerDangling(name.to_string())),
     }
+}
+
+/// The name in a one-name file: UTF-8, at most one trailing newline, and a
+/// valid profile name. Shared with the rotation pin (issue #1691).
+pub(crate) fn parse_name(bytes: &[u8]) -> Option<ProfileName> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    ProfileName::parse(text.strip_suffix('\n').unwrap_or(text)).ok()
 }
 
 pub fn write(root: &Path, name: &ProfileName) -> Result<(), ProfileError> {

@@ -13,6 +13,7 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::profile_default::set_default;
 use chrono::{Datelike, Timelike};
 use std::collections::BTreeSet;
 use std::fs;
@@ -120,7 +121,7 @@ impl Fixture {
             f.ok(&["profile", "add", p]);
         }
         f.root = f.root.canonicalize().unwrap();
-        f.ok(&["profile", "switch", "c"]);
+        set_default(&f.root, "c");
         let (h, w) = (f.base + 2 * 3600, f.base + 3 * 86_400);
         f.canned(
             "a",

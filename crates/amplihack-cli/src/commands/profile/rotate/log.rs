@@ -261,6 +261,28 @@ pub mod msg {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
     }
 
+    /// A cycle stopped by the rotation pin (issue #1691).
+    pub fn held(name: &ProfileName) -> String {
+        format!("skip: held by switch to {name}; run `amplihack profile switch --none` to release")
+    }
+
+    /// The pin file cannot be trusted; never names its content.
+    pub const PIN_UNREADABLE: &str = "skip: pin unreadable; run `amplihack profile switch --none`";
+
+    pub fn pin_missing(name: &ProfileName) -> String {
+        format!("skip: pin names missing profile {name}; ignored")
+    }
+
+    /// `profile switch` moved a login. Not `swap ...`, so a search for the
+    /// rotator's swaps does not match it.
+    pub fn switched(from: &ProfileName, to: &ProfileName) -> String {
+        format!("switch {from}->{to}")
+    }
+
+    pub fn switched_already_live(name: &ProfileName) -> String {
+        format!("skip: {name} is already the live login; nothing moved")
+    }
+
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")

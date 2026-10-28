@@ -22,20 +22,22 @@ pub use super::recover::{RecoverOutcome, recover};
 
 const ADOPT_NAME: &str = "default-original";
 
-// The reasons the how-to quotes word for word; `tests_docs_sync` holds the
-// docs to them.
+// The reasons the how-to quotes word for word, held there by `tests_docs_sync`.
 const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
 const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
-const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with one link";
+pub(super) const LOGIN_NOT_MOVABLE: &str =
+    "a login file is not a private regular file with one link";
 const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
 const NO_EXCHANGE: &str = "atomic exchange is not supported here";
 const ALREADY_LOGGED_IN: &str = "already has a login";
 pub(super) const LOGINS_MISPLACED: &str = "the login files are not where the journal expects";
 const REFRESHING: &str = "Claude holds its refresh lock; the swap waits for the next cycle";
 const HOME_JSON_UNREADABLE: &str = "~/.claude.json is not a JSON object";
+/// `profile switch NAME` (issue #1691) when NAME has no login to move in.
+pub const NO_STORED_LOGIN_HINT: &str = "has no stored login; run `amplihack profile login";
 
 #[cfg(test)]
-pub const DOCUMENTED: [&str; 9] = [
+pub const DOCUMENTED: [&str; 11] = [
     HOME_NOT_OWNED,
     DOT_CLAUDE_NOT_PRIVATE,
     LOGIN_NOT_MOVABLE,
@@ -45,6 +47,8 @@ pub const DOCUMENTED: [&str; 9] = [
     LOGINS_MISPLACED,
     REFRESHING,
     HOME_JSON_UNREADABLE,
+    NO_STORED_LOGIN_HINT,
+    super::FOREIGN_IGNORES_HOLD,
 ];
 
 /// Where the outgoing login goes.
