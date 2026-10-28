@@ -111,7 +111,7 @@ case "\${FAKE_GH:-none}" in
   branch_slash)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1715,"url":"https://github.com/o/r/pull/1715","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084/sub","closingIssuesReferences":[],"body":"BODYTEXT-1715"}]' || printf '[]\n' ;;
   branch_bare)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1716,"url":"https://github.com/o/r/pull/1716","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084","closingIssuesReferences":[],"body":"BODYTEXT-1716"}]' || printf '[]\n' ;;
   body_newline)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1717,"url":"https://github.com/o/r/pull/1717","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-h","closingIssuesReferences":[],"body":"BODYTEXT-1717 Fixes\\n#1084"}]' || printf '[]\n' ;;
-  big_bodies)     [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
+  big_bodies)      [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
   ratelimit)   echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001. (HTTP 403)' >&2; exit 1 ;;
   denied)      echo 'gh: Resource not accessible by integration (HTTP 403) token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001' >&2; exit 1 ;;
   network)     echo 'error connecting to api.github.com: dial tcp: lookup api.github.com: no such host' >&2; exit 1 ;;

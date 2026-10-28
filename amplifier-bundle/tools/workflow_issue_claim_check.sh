@@ -38,10 +38,11 @@
 #      with an optional colon and any whitespace before the `#`. The keyword
 #      must start the body or follow a non-word character, so `prefixes #N`
 #      does not match. `Fixes #N`, `closes #N` and `Resolves: #N` are claims;
-#      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own keyword, as on GitHub, so
-#      `Closes #119, #N` does not claim N. This repeats signal 1 in most cases;
-#      it matters when GitHub leaves closingIssuesReferences empty, as it does
-#      for a PR whose base is not the default branch.
+#      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own
+#      keyword, as on GitHub, so `Closes #119, #N` does not claim N. This
+#      repeats signal 1 in most cases; it matters when GitHub leaves
+#      closingIssuesReferences empty, as it does for a PR whose base is not the
+#      default branch.
 #   3. The title contains "(#N)". This is the exact shape the workflow gives its
 #      own PRs (`Update <scope> (#N)`, `fix(#N): ...`).
 #   4. The head branch is `<prefix>/issue-<N>`, optionally followed by `-` or
@@ -355,14 +356,9 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # 3. Which of them claim this issue?
 # ---------------------------------------------------------------------------
 #
-# The four signals are described in the header. The branch pattern accepts only
-# the workflow's own `<prefix>/issue-<N>` shape (#1707): a bare number such as
-# the `1084` in `codex/p5-1084-...` is another tool's identifier, not a claim on
-# issue #1084. The body pattern requires a closing keyword directly before #N,
-# preceded by the start of the body or a non-word character, and a non-digit
-# after #N, so `Refs #1084`, `prefixes #1084` and `Fixes #10840` do not match.
-# Both patterns build a regex from $n, which is safe only because --issue has
-# already been checked to be digits.
+# The four signals, and why a bare number in a branch is not a claim (#1707),
+# are described in the header. The body and branch patterns build a regex from
+# $n, which is safe only because --issue has already been checked to be digits.
 #
 # The PR lists reach jq on stdin, not as --argjson arguments. With bodies
 # included, 100 open PRs easily exceed the kernel's 128 KiB limit on a single
@@ -386,8 +382,8 @@ CLAIMS="$(
       | .[1] as $merged
       | def claims_issue($n):
         ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
-        or (((.title // "") | contains("(#" + $n + ")")))
         or ((.body // "") | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#" + $n + "([^0-9]|$)"; "i"))
+        or (((.title // "") | contains("(#" + $n + ")")))
         or ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)"));
       def is_ours:
         ($cwd_head != "")
