@@ -84,6 +84,9 @@ printf '%s\n' "\$*" >> "\${GH_CALL_LOG:-/dev/null}"
 state=""
 prev=""
 for a in "\$@"; do [ "\$prev" = "--state" ] && state="\$a"; prev="\$a"; done
+# The default-branch lookup. FAKE_DEFAULT_BRANCH may be set empty, or to a
+# reply that is not a branch name, to exercise the fallback.
+if [ "\${1:-}" = "repo" ]; then printf '%s\n' "\${FAKE_DEFAULT_BRANCH-main}"; exit 0; fi
 # A token-shaped string is present in every error path so redaction is exercised.
 case "\${FAKE_GH:-none}" in
   none)        printf '[]\n' ;;
@@ -113,6 +116,15 @@ case "\${FAKE_GH:-none}" in
   branch_deep)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1714,"url":"https://github.com/o/r/pull/1714","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"user/feat/issue-1084-x","closingIssuesReferences":[],"body":"BODYTEXT-1714"}]' || printf '[]\n' ;;
   branch_slash)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1715,"url":"https://github.com/o/r/pull/1715","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084/sub","closingIssuesReferences":[],"body":"BODYTEXT-1715"}]' || printf '[]\n' ;;
   branch_bare)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1716,"url":"https://github.com/o/r/pull/1716","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084","closingIssuesReferences":[],"body":"BODYTEXT-1716"}]' || printf '[]\n' ;;
+  # Round 1 of the #1718 review: the body is a fallback, read only when GitHub
+  # could not have linked the keyword, and never inside code.
+  body_default_base) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1720,"url":"https://github.com/o/r/pull/1720","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-i","baseRefName":"main","closingIssuesReferences":[],"body":"BODYTEXT-1720 Fixes #1084"}]' || printf '[]\n' ;;
+  body_release_base) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1721,"url":"https://github.com/o/r/pull/1721","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-j","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1721 Fixes #1084"}]' || printf '[]\n' ;;
+  body_table_code)   [ "\$state" = "open" ] && printf '%s\n' '[{"number":1722,"url":"https://github.com/o/r/pull/1722","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-k","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1722\\n\\n| case | body |\\n|---|---|\\n| through | \`Closes #1084\` |"}]' || printf '[]\n' ;;
+  body_fenced)       [ "\$state" = "open" ] && printf '%s\n' '[{"number":1723,"url":"https://github.com/o/r/pull/1723","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-l","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1723\\n\\n\`\`\`bash\\ngh pr create --body \\"Fixes #1084\\"\\n\`\`\`\\n"}]' || printf '[]\n' ;;
+  body_unclosed)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1724,"url":"https://github.com/o/r/pull/1724","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-m","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1724\\n\\n~~~\\nFixes #1084\\n"}]' || printf '[]\n' ;;
+  body_prose_linked) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1725,"url":"https://github.com/o/r/pull/1725","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-n","baseRefName":"release/1.x","closingIssuesReferences":[{"number":1684}],"body":"BODYTEXT-1725 Closes #1684. Builds on the runner fix #1084 from last week."}]' || printf '[]\n' ;;
+  body_code_and_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1726,"url":"https://github.com/o/r/pull/1726","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-o","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1726 \`Refs #1\` and then Fixes #1084"}]' || printf '[]\n' ;;
   body_newline)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1717,"url":"https://github.com/o/r/pull/1717","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-h","closingIssuesReferences":[],"body":"BODYTEXT-1717 Fixes\\n#1084"}]' || printf '[]\n' ;;
   big_bodies)      [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
   ratelimit)   echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001. (HTTP 403)' >&2; exit 1 ;;
@@ -173,6 +185,27 @@ run "$WORK/gh" FAKE_GH=body_fixes;     claimed "an open PR whose body says Fixes
 run "$WORK/gh" FAKE_GH=body_resolves;  claimed "an open PR whose body says Resolves: #N" 1707
 run "$WORK/gh" FAKE_GH=body_closes_lc; claimed "an open PR whose body says closes #N (lower case)" 1708
 run "$WORK/gh" FAKE_GH=body_newline;   claimed "an open PR whose body breaks a line between Fixes and #N" 1717
+run "$WORK/gh" FAKE_GH=body_release_base;  claimed "a PR to a non-default base whose body says Fixes #N" 1721
+run "$WORK/gh" FAKE_GH=body_code_and_real; claimed "a body with an inline code span before a real Fixes #N" 1726
+run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=
+claimed "a body keyword when the default branch cannot be established" 1720
+run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH='[]'
+claimed "a body keyword when the default-branch reply is not a branch name" 1720
+
+# Each claim line names the signal that matched, so a refusal can be traced
+# without showing the body.
+via() { # via <FAKE_GH> <pr> <expected via=...>
+  run "$WORK/gh" FAKE_GH="$1"
+  grep -Eq "#$2 .* via=$3 " <<<"$OUT" \
+    && pass "the claim line for #$2 says via=$3" \
+    || fail "the claim line for #$2 does not say via=$3: ${OUT:0:400}"
+}
+via closing_ref       1128 closing-ref
+via body_release_base 1721 body-keyword
+via title_paren       900  title
+via branch_name       901  branch
+via own_branch        902  closing-ref,title
+
 run "$WORK/gh" FAKE_GH=body_fixes
 grep -q 'BODYTEXT' <<<"$OUT" \
   && fail "PR body text reached the refusal output: ${OUT:0:400}" \
@@ -226,6 +259,11 @@ unclaimed body_refs   "a body that says Refs #N"
 unclaimed body_digit  "a body that says Fixes #N0"
 unclaimed body_multi  "a body that says Closes #119, #N"
 unclaimed body_prefix "a body that says prefixes #N"
+unclaimed body_default_base "a body keyword on a PR to the default branch that GitHub did not link"
+unclaimed body_table_code   "a body keyword inside inline code in a table cell"
+unclaimed body_fenced       "a body keyword inside a fenced code block"
+unclaimed body_unclosed     "a body keyword inside an unclosed fence"
+unclaimed body_prose_linked "a prose fix #N next to non-empty closingIssuesReferences"
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
 [ "$RC" -eq 0 ] \
   && pass "the run's own branch is excluded via --head" \

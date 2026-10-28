@@ -39,10 +39,24 @@
 #      must start the body or follow a non-word character, so `prefixes #N`
 #      does not match. `Fixes #N`, `closes #N` and `Resolves: #N` are claims;
 #      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own
-#      keyword, as on GitHub, so `Closes #119, #N` does not claim N. This
-#      repeats signal 1 in most cases; it matters when GitHub leaves
-#      closingIssuesReferences empty, as it does for a PR whose base is not the
-#      default branch.
+#      keyword, as on GitHub, so `Closes #119, #N` does not claim N.
+#
+#      This signal is a FALLBACK for signal 1, not a parallel claim. It is
+#      consulted only when GitHub could not have resolved the keywords itself:
+#      closingIssuesReferences is empty AND the PR's base is not the default
+#      branch (GitHub links keywords only on PRs that target the default
+#      branch). When the default branch cannot be established, the first
+#      condition alone applies. Fenced code blocks and inline code spans are
+#      removed before matching, as GitHub ignores keywords inside them.
+#
+#      Why so narrow: workflow-written PR bodies routinely quote keyword
+#      examples, earlier PRs and test scenarios. Matched against the raw body
+#      of every PR, the regex claimed issues GitHub had not linked on 4 of 100
+#      recent rysweet/amplihack-rs PRs: #1718 (`Closes #1437` in a table cell),
+#      #1688 ("runner fix #31" in prose), #1601 ("runner fixes #161" as a test
+#      label) and #1428 (`(fix #3132)` in a quoted heredoc). In each, GitHub
+#      had already resolved the real closing references. Where it has, its
+#      answer stands and the body is not read.
 #   3. The title contains "(#N)". This is the exact shape the workflow gives its
 #      own PRs (`Update <scope> (#N)`, `fix(#N): ...`).
 #   4. The head branch is `<prefix>/issue-<N>`, optionally followed by `-` or
@@ -61,7 +75,10 @@
 #
 # The body is fetched for matching only. It is dropped from every PR before the
 # result is reported, so body text never appears on stdout, in the ERROR block
-# or in logs.
+# or in logs. What IS reported is which signals made each PR a claim:
+# `via=closing-ref`, `via=body-keyword`, `via=title` or `via=branch`, comma
+# separated when several match. Without it a body-only claim would show an
+# unrelated-looking PR on an unrelated branch with no reason given.
 #
 # WHICH PULL REQUESTS ARE SEARCHED
 #
@@ -175,6 +192,7 @@ REPO_ARG="${REPO_PATH:-.}"
 OWN_HEAD=""
 REPO_SLUG=""
 ALLOW_EXISTING=""
+SLUG_FROM_ORIGIN=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -290,6 +308,7 @@ if [ -z "$REPO_SLUG" ]; then
     *) [ "$HOST" = "${GH_HOST:-}" ] || skip "non-github-remote:${HOST}" ;;
   esac
   REPO_SLUG="${OWNER}/${NAME}"
+  SLUG_FROM_ORIGIN="true"
 fi
 
 command -v gh >/dev/null 2>&1 || unknown "gh-not-installed"
@@ -299,7 +318,7 @@ command -v jq >/dev/null 2>&1 || unknown "jq-not-installed"
 # 2. Ask GitHub which pull requests exist. Two reads, no search index.
 # ---------------------------------------------------------------------------
 
-FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences,body"
+FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences,baseRefName,body"
 ERRFILE="$(mktemp "${TMPDIR:-/tmp}/issue-claim-check.XXXXXX")" || unknown "cannot-create-tempfile"
 # shellcheck disable=SC2329  # invoked by the EXIT trap below.
 cleanup() { rm -f "$ERRFILE"; }
@@ -352,6 +371,26 @@ MERGED_JSON="$(gh_list merged "$MERGED_LIMIT")" || RC=$?
 [[ "$OPEN_JSON" =~ [^[:space:]] ]] || OPEN_JSON="[]"
 [[ "$MERGED_JSON" =~ [^[:space:]] ]] || MERGED_JSON="[]"
 
+# The default branch decides whether the body signal applies (see header).
+# A local read of origin/HEAD first, when the slug came from origin; otherwise
+# one API call. Any failure leaves it empty, which only narrows the body signal
+# to "closingIssuesReferences is empty". A reply that is not a plausible branch
+# name is discarded rather than trusted.
+DEFAULT_BRANCH=""
+if [ "$SLUG_FROM_ORIGIN" = "true" ]; then
+  DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT_BRANCH=""
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    DEFAULT_BRANCH="$(timeout "$TIMEOUT_S" gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
+  else
+    DEFAULT_BRANCH="$(gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
+  fi
+fi
+DEFAULT_BRANCH="$(printf '%s' "$DEFAULT_BRANCH" | head -n 1 | tr -d '[:space:]')"
+[[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || DEFAULT_BRANCH=""
+
 CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -v-"${WINDOW_H}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
 [ -n "$CUTOFF" ] || CUTOFF="0000-01-01T00:00:00Z"
@@ -381,14 +420,28 @@ CLAIMS="$(
     --arg issue "$ISSUE" \
     --arg own_head "$OWN_HEAD" \
     --arg cwd_head "$CWD_HEAD" \
-    --arg cutoff "$CUTOFF" '
+    --arg cutoff "$CUTOFF" \
+    --arg default "$DEFAULT_BRANCH" '
       .[0] as $open
       | .[1] as $merged
-      | def claims_issue($n):
-        ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
-        or ((.body // "") | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#" + $n + "([^0-9]|$)"; "i"))
-        or (((.title // "") | contains("(#" + $n + ")")))
-        or ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)"));
+      | def strip_code:
+        gsub("```[\\s\\S]*?```"; " ")
+        | gsub("~~~[\\s\\S]*?~~~"; " ")
+        | gsub("(```|~~~)[\\s\\S]*$"; " ")
+        | gsub("`[^`]*`"; " ");
+      def body_applies:
+        ((.closingIssuesReferences // []) | length == 0)
+        and (($default == "") or ((.baseRefName // "") != $default));
+      def claim_via($n):
+        [ (if ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
+             then "closing-ref" else empty end),
+          (if body_applies
+              and ((.body // "") | strip_code
+                   | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#" + $n + "([^0-9]|$)"; "i"))
+             then "body-keyword" else empty end),
+          (if ((.title // "") | contains("(#" + $n + ")")) then "title" else empty end),
+          (if ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)")) then "branch" else empty end)
+        ];
       def is_ours:
         ($cwd_head != "")
         and ((.headRefName // "") == $cwd_head)
@@ -396,7 +449,8 @@ CLAIMS="$(
       [ ($open | map(. + {claim_source: "open"}))
         + ($merged | map(select((.mergedAt // "") >= $cutoff)) | map(. + {claim_source: "recently-merged"}))
         | .[]
-        | select(claims_issue($issue))
+        | . + {claim_via: claim_via($issue)}
+        | select(.claim_via | length > 0)
         | select(($own_head == "") or ((.headRefName // "") != $own_head))
         | del(.body)
       ]
@@ -443,7 +497,7 @@ FIRST_NUM="$(printf '%s' "$CLAIMS" | jq -r '(.others[0].number // "") | tostring
   echo "  issue      : #${ISSUE}"
   echo "  branch here: ${CWD_HEAD:-(detached HEAD)}"
   echo "  claimed by :"
-  printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  head=\(.headRefName // "?")  \(.url)"'
+  printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  via=\(.claim_via | join(","))  head=\(.headRefName // "?")  \(.url)"'
   echo ""
   echo "  Opening a second pull request here is the failure recorded in issue #1361."
   echo "  The second one merges, the first is never closed, and a month later it"
