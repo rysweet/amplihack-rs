@@ -330,7 +330,7 @@ impl Fixture {
                 "assertions":[if id=="basic" {"public decoder doubles [2] to [4]"} else {"empty input and invalid input retain their contract"}],
                 "inspected":[self.reference("README.md")],
                 "entry_points":[match toolchain { "rust" => "tests/consumer.rs", "python" => "consumer.py", "go" => "cmd/consumer/consumer_test.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" }],
-                "cases":[if id=="basic" {"basic"} else {"edge"}],
+                "cases":[if toolchain=="go" {if id=="basic" {"TestBasic"} else {"TestEdge"}} else if id=="basic" {"basic"} else {"edge"}],
                 "assertion_refs":[self.reference(match toolchain { "rust" => "tests/consumer.rs", "python" => "consumer.py", "go" => "cmd/consumer/consumer_test.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" })]});
         }
         v
@@ -622,13 +622,13 @@ impl Fixture {
                 f.file("go.mod", "module example.invalid/evidence\n\ngo 1.22\n");
                 f.file("decoder.go","package evidence\nfunc Decode(v []int) []int { r:=make([]int,len(v)); for i,n:=range v { r[i]=n*2 }; return r }\n");
                 f.file("decoder_test.go","package evidence\nimport \"testing\"\nfunc TestContract(t *testing.T) { if Decode([]int{2})[0]!=4 || len(Decode(nil))!=0 { t.Fatal(\"decoder contract\") } }\n");
-                f.file("cmd/consumer/consumer_test.go", "package consumer\nimport (\"testing\"; e \"example.invalid/evidence\")\nfunc Testbasic(t *testing.T) { if e.Decode([]int{2})[0]!=4 { t.Fatal(\"basic\") } }\nfunc Testedge(t *testing.T) { if len(e.Decode(nil))!=0 { t.Fatal(\"edge\") } }\n");
+                f.file("cmd/consumer/consumer_test.go", "package consumer\nimport (\"testing\"; e \"example.invalid/evidence\")\nfunc TestBasic(t *testing.T) { if e.Decode([]int{2})[0]!=4 { t.Fatal(\"basic\") } }\nfunc TestEdge(t *testing.T) { if len(e.Decode(nil))!=0 { t.Fatal(\"edge\") } }\n");
                 (
                     "go.mod",
                     vec!["go", "test", "./..."],
                     "go",
-                    vec!["go", "test", "-v", "-run", "^Testbasic$", "./cmd/consumer"],
-                    vec!["go", "test", "-v", "-run", "^Testedge$", "./cmd/consumer"],
+                    vec!["go", "test", "-v", "-run", "^TestBasic$", "./cmd/consumer"],
+                    vec!["go", "test", "-v", "-run", "^TestEdge$", "./cmd/consumer"],
                 )
             }
             "dotnet" => {
