@@ -145,7 +145,7 @@ fn recover_sweeps_dead_pid_rerun_files() {
     let r = root();
     let rerun = r.state.dir.join("rerun");
     r.state.ensure_sub(&rerun).unwrap();
-    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
     let dead = child.id();
     child.wait().unwrap();
     let mine = std::process::id();
@@ -174,7 +174,7 @@ fn recover_without_hosts_skips_scan_but_still_sweeps_rerun() {
     let r = root();
     let rerun = r.state.dir.join("rerun");
     r.state.ensure_sub(&rerun).unwrap();
-    let mut child = std::process::Command::new("true").spawn().unwrap();
+    let mut child = std::process::Command::new("/bin/true").spawn().unwrap();
     let dead = child.id();
     child.wait().unwrap();
     let buf = rerun.join(format!("{dead}-1.out"));

@@ -38,7 +38,7 @@ struct Session(std::process::Child);
 impl Session {
     fn in_dir(dir: &Path) -> Self {
         Self(
-            std::process::Command::new("sleep")
+            std::process::Command::new("/bin/sleep")
                 .arg("600")
                 .env("CLAUDE_CONFIG_DIR", dir)
                 .spawn()

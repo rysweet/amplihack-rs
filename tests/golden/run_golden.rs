@@ -66,6 +66,26 @@ impl Drop for TempCwd {
     }
 }
 
+/// Every variable `XpiaConfig::from_env` reads.
+const XPIA_ENV_KEYS: &[&str] = &[
+    "XPIA_ENABLED",
+    "XPIA_SECURITY_LEVEL",
+    "XPIA_VERBOSE_FEEDBACK",
+    "XPIA_BLOCK_HIGH_RISK",
+    "XPIA_BLOCK_CRITICAL",
+    "XPIA_VALIDATE_WEBFETCH",
+    "XPIA_VALIDATE_BASH",
+    "XPIA_VALIDATE_AGENTS",
+    "XPIA_LOG_EVENTS",
+    "XPIA_LOG_FILE",
+    "XPIA_MAX_PROMPT_LENGTH",
+    "XPIA_MAX_URL_LENGTH",
+    "XPIA_WHITELIST_DOMAINS",
+    "XPIA_WHITELIST_FILE",
+    "XPIA_BLACKLIST_DOMAINS",
+    "XPIA_BLACKLIST_FILE",
+];
+
 fn golden_env_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
@@ -207,6 +227,13 @@ fn run_golden_tests_for_hook(hook_type: &str) {
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let _session_depth = EnvVarGuard::unset("AMPLIHACK_SESSION_DEPTH");
+    // The expected outputs assume the XPIA defaults. A session that exports,
+    // for example, XPIA_ENABLED=false would otherwise change which guard
+    // answers a dangerous command.
+    let _xpia: Vec<EnvVarGuard> = XPIA_ENV_KEYS
+        .iter()
+        .map(|key| EnvVarGuard::unset(key))
+        .collect();
     let _cwd = TempCwd::new(hook_type);
 
     let golden_dir = Path::new(env!("CARGO_MANIFEST_DIR"))

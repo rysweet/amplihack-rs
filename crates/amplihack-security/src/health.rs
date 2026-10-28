@@ -42,7 +42,11 @@ pub struct HealthReport {
 
 /// Run all XPIA health checks and return a report.
 pub fn check_health() -> HealthReport {
-    let config = XpiaConfig::from_env();
+    check_health_with(&XpiaConfig::from_env())
+}
+
+/// Run all XPIA health checks against the given configuration.
+pub fn check_health_with(config: &XpiaConfig) -> HealthReport {
     let patterns = XpiaPatterns::new();
 
     let mut checks = Vec::new();
@@ -147,32 +151,34 @@ mod tests {
 
     #[test]
     fn health_check_returns_report() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         assert!(!report.checks.is_empty());
         assert!(report.pattern_count >= 15);
     }
 
     #[test]
     fn default_config_is_healthy() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         assert_eq!(report.status, HealthStatus::Healthy);
     }
 
     #[test]
     fn disabled_xpia_is_degraded() {
-        // Test with config directly (thread-safe)
-        let mut config = XpiaConfig::from_env();
+        let mut config = XpiaConfig::defaults();
         config.enabled = false;
-        // Manually build a report to verify logic
-        let report = check_health();
-        // The default env should be healthy; verify structure
-        assert!(!report.checks.is_empty());
-        assert!(report.pattern_count >= 15);
+        let report = check_health_with(&config);
+        assert_eq!(report.status, HealthStatus::Degraded);
+        let enabled = report
+            .checks
+            .iter()
+            .find(|c| c.name == "xpia_enabled")
+            .unwrap();
+        assert!(!enabled.passed);
     }
 
     #[test]
     fn report_contains_all_checks() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         let names: Vec<&str> = report.checks.iter().map(|c| c.name.as_str()).collect();
         assert!(names.contains(&"xpia_enabled"));
         assert!(names.contains(&"patterns_loaded"));
@@ -191,7 +197,7 @@ mod tests {
 
     #[test]
     fn health_report_serialization() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: HealthReport = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.status, report.status);
@@ -201,13 +207,13 @@ mod tests {
 
     #[test]
     fn health_check_has_six_checks() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         assert_eq!(report.checks.len(), 6);
     }
 
     #[test]
     fn health_config_summary_has_expected_fields() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         assert!(report.config_summary.get("enabled").is_some());
         assert!(report.config_summary.get("security_level").is_some());
         assert!(report.config_summary.get("block_on_critical").is_some());
@@ -229,7 +235,7 @@ mod tests {
 
     #[test]
     fn all_default_checks_pass() {
-        let report = check_health();
+        let report = check_health_with(&XpiaConfig::defaults());
         for check in &report.checks {
             assert!(
                 check.passed,

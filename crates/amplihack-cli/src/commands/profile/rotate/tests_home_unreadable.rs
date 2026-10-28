@@ -65,6 +65,18 @@ fn stuck_lines(f: &Fx, problem: &str) -> Vec<String> {
 }
 
 /// The shell command in `fix 2`, between `then run: ` and `; then run`.
+/// Run `cmd` under `/bin/sh` with a fixed PATH. Other tests in this binary
+/// briefly point the process-wide PATH at a temporary directory (under
+/// `home_env_lock`), and a bare `sh` lookup during that window fails.
+fn run_sh(cmd: &str) -> std::process::ExitStatus {
+    std::process::Command::new("/bin/sh")
+        .arg("-c")
+        .arg(cmd)
+        .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+        .status()
+        .unwrap()
+}
+
 fn fix2_command(line: &str) -> String {
     let start = line.find("then run: ").unwrap() + "then run: ".len();
     let end = line.rfind("; then run claude").unwrap();
@@ -190,22 +202,14 @@ fn fix_two_gives_l_its_login_back_and_never_replaces_one() {
     let blocker = f.slot(L);
     private(&blocker, "{}");
     let before = ino_at(&blocker);
-    let st = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .status()
-        .unwrap();
+    let st = run_sh(&cmd);
     assert!(!st.success(), "refused while L has a login file");
     assert_eq!(ino_at(&f.live()), Some(f.h));
     assert_eq!(ino_at(&blocker), before);
     assert!(f.rs.ledger.exists());
     fs::remove_file(&blocker).unwrap();
 
-    let st = std::process::Command::new("sh")
-        .arg("-c")
-        .arg(&cmd)
-        .status()
-        .unwrap();
+    let st = run_sh(&cmd);
     assert!(st.success(), "{cmd}");
     assert_eq!(ino_at(&f.slot(L)), Some(f.h), "L's login, by rename");
     assert_eq!(ino_at(&f.live()), None);

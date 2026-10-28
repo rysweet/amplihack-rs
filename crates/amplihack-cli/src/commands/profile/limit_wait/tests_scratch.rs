@@ -35,7 +35,7 @@ fn rerun() -> (tempfile::TempDir, PathBuf) {
 
 /// What `cat` reads from `input`.
 fn cat(input: Stdio) -> Vec<u8> {
-    let out = Command::new("cat")
+    let out = Command::new("/bin/cat")
         .stdin(input)
         .stdout(Stdio::piped())
         .output()
@@ -169,7 +169,7 @@ fn rerun_owner_parses_out_names_only() {
 
 /// A pid that has exited (and been reaped), so it names no live process.
 fn dead_pid() -> u32 {
-    let mut c = Command::new("true").spawn().unwrap();
+    let mut c = Command::new("/bin/true").spawn().unwrap();
     let pid = c.id();
     c.wait().unwrap();
     pid

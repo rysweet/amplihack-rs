@@ -696,8 +696,12 @@ mod probe {
     use std::time::{Duration, Instant};
 
     fn sh(script: &str) -> Command {
-        let mut c = Command::new("sh");
-        c.arg("-c").arg(script);
+        // Absolute path and fixed PATH: other tests briefly point the
+        // process-wide PATH at a temporary directory.
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg(script)
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin");
         c
     }
 
