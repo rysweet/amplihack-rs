@@ -160,6 +160,34 @@ pub fn open_or_warn(log: &Path, rotated: &Path) -> Option<RotateLog> {
         .ok()
 }
 
+/// `p` for a shell command (issue #1693): bare when every byte is in
+/// `A-Za-z0-9/._+-`, else single-quoted with each `'` written as `'\''`.
+/// `None` for a path that is not UTF-8 or has a control or
+/// bidirectional-override character, which no command may show.
+pub fn sh_quote(p: &Path) -> Option<String> {
+    let s = p.to_str()?;
+    if s.chars().any(super::ledger::unprintable) {
+        return None;
+    }
+    let bare = |b: u8| b.is_ascii_alphanumeric() || b"/._+-".contains(&b);
+    if !s.is_empty() && s.bytes().all(bare) {
+        return Some(s.to_string());
+    }
+    Some(format!("'{}'", s.replace('\'', r"'\''")))
+}
+
+/// `s` cut to at most `max` bytes on a character boundary.
+pub fn cut(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
     use super::{Reading, Reason};
@@ -257,6 +285,14 @@ pub mod msg {
         )
     }
 
+    /// `~/.claude.json` could not be read: no recovery and no swap, and no
+    /// `/login` advice, which would replace `live`'s login (#1702).
+    pub fn home_unreadable(live: &ProfileName) -> String {
+        format!(
+            "ALERT: the account in ~/.claude.json cannot be read (live={live}); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace {live}'s login"
+        )
+    }
+
     pub fn inconsistent(reason: &str) -> String {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
     }
@@ -286,5 +322,33 @@ pub mod msg {
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")
+    }
+
+    /// Written every cycle while `name` is in the ledger's `lost_login`.
+    pub fn lost_login(name: &ProfileName) -> String {
+        format!(
+            "ALERT: profile {name} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {name}"
+        )
+    }
+
+    /// Written once, when `name` is not added to the full `lost_login`
+    /// list and so gets no [`lost_login`] line.
+    pub fn lost_login_cap(name: &ProfileName) -> String {
+        format!(
+            "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
+        )
+    }
+
+    /// Hand-change recovery, case A: `m` had no login of its own.
+    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
+        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
+    }
+
+    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
+    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
+        format!(
+            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
+            to.display()
+        )
     }
 }

@@ -186,3 +186,62 @@ fn a_fifo_log_is_refused_without_blocking() {
     assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o600) }, 0);
     assert!(RotateLog::open(&p.log, &p.log1).is_err());
 }
+
+// --- Issue #1693: shell quoting and the lost-login line ---------------------
+//
+// Contract: `log::sh_quote(&Path) -> Option<String>`: bare when every byte
+// is in `A-Za-z0-9/._+-`, else single-quoted with each `'` as `'\''`;
+// `None` for a path with a control or bidirectional-override character, or
+// one that is not UTF-8. `msg::lost_login(&ProfileName) -> String`.
+
+mod handfix_text {
+    use super::super::log::{msg, sh_quote};
+    use super::name;
+    use std::path::Path;
+
+    fn q(p: &str) -> Option<String> {
+        sh_quote(Path::new(p))
+    }
+
+    #[test]
+    fn safe_paths_are_bare() {
+        assert_eq!(
+            q("/home/you/.claude-profiles/a_b+c.d-1"),
+            Some("/home/you/.claude-profiles/a_b+c.d-1".into())
+        );
+    }
+
+    #[test]
+    fn other_paths_are_single_quoted() {
+        assert_eq!(q("/home/a b"), Some("'/home/a b'".into()));
+        assert_eq!(q("/home/it's"), Some(r"'/home/it'\''s'".into()));
+        assert_eq!(q("/home/$HOME`x`;y"), Some("'/home/$HOME`x`;y'".into()));
+        assert_eq!(q("~/x"), Some("'~/x'".into()), "never a bare ~");
+        assert_eq!(q("/home/é"), Some("'/home/é'".into()));
+    }
+
+    #[test]
+    fn unprintable_paths_have_no_command() {
+        for p in [
+            "/a\nb",
+            "/a\tb",
+            "/a\u{1b}b",
+            "/a\u{202e}b",
+            "/a\u{2069}b",
+            "/a\u{7f}b",
+        ] {
+            assert_eq!(q(p), None, "{p:?}");
+        }
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::OsStr::from_bytes(b"/a\xffb");
+        assert_eq!(sh_quote(Path::new(raw)), None);
+    }
+
+    #[test]
+    fn the_lost_login_line_names_the_profile_and_the_command() {
+        assert_eq!(
+            msg::lost_login(&name("ryan-ryansweet")),
+            "ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet"
+        );
+    }
+}

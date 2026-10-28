@@ -495,3 +495,79 @@ fn docs_state_the_identity_rule() {
     }
     assert!(REFERENCE.contains("| uuid on one side only | (any) | no |"));
 }
+
+/// The docs wrap lines; compare with runs of whitespace collapsed.
+fn flat(doc: &str) -> String {
+    doc.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Issue #1693: both docs say what a manual `/login` does, and quote the
+/// hand-change recovery lines and guidance as the rotator writes them.
+#[test]
+fn docs_describe_hand_change_recovery() {
+    let sentence = "A manual `/login` in `~/.claude` replaces whatever login was there; \
+                    the profile that login belonged to is left with no login.";
+    for (name, doc) in [("reference", REFERENCE), ("rotation how-to", ROTATE_HOWTO)] {
+        let doc = flat(doc);
+        assert!(
+            doc.contains(sentence),
+            "{name} is missing the /login sentence"
+        );
+        for stem in [
+            "recovered: ~/.claude holds",
+            "recovered: ~/.claude and",
+            "has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login",
+            "ALERT: the account in ~/.claude is not the one the ledger names (live=",
+            "fix 1: amplihack profile login",
+            "no profile has that account; no swap",
+            "the next cycle then recovers",
+            "none needed; the next cycle reads ~/.claude.json again",
+            "~/.claude.json has had no account that can be read for 5 minutes or more (live=",
+            "no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace",
+            "fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if",
+            "then holds an account, the next cycle goes on",
+            "its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e",
+            "it has no oauthAccount block",
+            "ALERT: the account in ~/.claude.json cannot be read (live=",
+            "no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace",
+            "close the claude sessions that use",
+            "wait; the next cycle retries",
+            "wait for the auto-switch session to end; the next cycle retries",
+            "'s copy by hand: mkdir -m 700",
+            "none needed; the next cycle retries",
+            "see the Recovery section of docs/howto/claude-profile-rotation.md",
+            "Claude holds its refresh lock",
+            "an earlier swap stopped half way",
+            "~/.claude changed during recovery",
+            ".rejected-logins/rotate-",
+        ] {
+            assert!(doc.contains(stem), "{name} is missing `{stem}`");
+        }
+        // #1702: one failed read of ~/.claude.json never advises a /login.
+        assert!(
+            !doc.contains("/login again"),
+            "{name} still advises `/login again` for an unreadable ~/.claude.json"
+        );
+    }
+    let reference = flat(REFERENCE);
+    for line in [
+        "would recover: <recovered line>",
+        "move <what> by hand; its path cannot be printed safely",
+        "alert: <line>",
+        "warning: <line>",
+        "lost_login",
+        "it matches more than one profile (<M1>, <M2>);",
+        "the account of profile <P1>, <P2> cannot be read, so the match is uncertain;",
+        "the account in ~/.claude.json cannot be read;",
+        "~/.claude has no login;",
+        "recovery refused: <reason>;",
+        "home_unreadable_since",
+        "it does not exist",
+        "it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)",
+        "it is not valid JSON (empty or cut short)",
+        "it is not a JSON object",
+        "its oauthAccount block has no usable accountUuid or emailAddress",
+    ] {
+        assert!(reference.contains(line), "reference is missing `{line}`");
+    }
+}

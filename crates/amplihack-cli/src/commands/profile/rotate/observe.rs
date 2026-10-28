@@ -5,6 +5,7 @@
 use super::cycle::{Ctx, CycleOutcome};
 use super::damp::{damp, next_failed};
 use super::decide::{Decision, Measured, Reading, decide};
+use super::handfix;
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
 use super::ledger::Phase;
 use super::log::{Sink, msg};
@@ -61,7 +62,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {
-        LiveId::Known(n) | LiveId::HandChanged(n) => Some(n),
+        LiveId::Known(n) | LiveId::HandChanged(n) | LiveId::HomeUnreadable(n) => Some(n),
         _ => None,
     }
 }
@@ -71,6 +72,7 @@ pub fn live_alert(id: &LiveId) -> Option<(&'static str, String)> {
     match id {
         LiveId::NoLogin => Some(("no-login", msg::NO_LOGIN.to_string())),
         LiveId::HandChanged(n) => Some(("hand-change", msg::hand_change(n))),
+        LiveId::HomeUnreadable(n) => Some(("home-unreadable", msg::home_unreadable(n))),
         LiveId::Ambiguous => Some(("ambiguous", msg::AMBIGUOUS.to_string())),
         LiveId::Known(_) | LiveId::Adopt => None,
     }
@@ -165,6 +167,15 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     let state = State::new(ctx.store.root())?;
+    // Issue #1693: what hand-change recovery would do; it stops here.
+    let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
+    let lines = handfix::preview(&ctx.store, &ctx.rs, &ctx.home, env_for, now())?;
+    if !lines.is_empty() {
+        for l in &lines {
+            out.emit(0, l);
+        }
+        return Ok(CycleOutcome::Alerted);
+    }
     let snap = snapshot(ctx, &state)?;
     if let Some((_, line)) = live_alert(&snap.live) {
         let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
@@ -230,6 +241,21 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     Ok(outcome)
+}
+
+/// The ALERT key kind for a refused swap: its reason, without control
+/// characters and short enough that the key passes the ledger's 320-byte
+/// check with any profile name.
+pub(super) fn refusal_kind(e: &ProfileError) -> String {
+    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
+    let mut kind = String::from("refused ");
+    for c in reason.chars() {
+        if kind.len() + c.len_utf8() > 200 {
+            break;
+        }
+        kind.push(c);
+    }
+    kind
 }
 
 /// This cycle's readings for the no-capacity file: the live profile's and

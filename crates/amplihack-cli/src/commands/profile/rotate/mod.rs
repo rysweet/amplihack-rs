@@ -12,6 +12,8 @@
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
+mod backup;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -22,17 +24,25 @@ mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
+mod guide;
+#[cfg(unix)]
+mod handfix;
+#[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
 mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
+mod lost;
+#[cfg(unix)]
 mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+mod precheck;
 #[cfg(unix)]
 mod prelude;
 #[cfg(unix)]
@@ -54,6 +64,12 @@ mod tests_daemon;
 mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
+#[cfg(all(test, unix))]
+mod tests_handfix;
+#[cfg(all(test, unix))]
+mod tests_handfix_cycle;
+#[cfg(all(test, unix))]
+mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]

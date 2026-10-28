@@ -9,7 +9,8 @@ use super::ledger::{
 };
 use super::log::{Sink, msg};
 use super::observe::{
-    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, rotated, snapshot,
+    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, refusal_kind, rotated,
+    snapshot,
 };
 use super::pin::{self, Gate};
 use super::prelude::{Prelude, locked_prelude};
@@ -189,21 +190,6 @@ pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
     last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
-/// The ALERT key kind for a refused swap: its reason, without control
-/// characters and short enough that the key passes the ledger's 320-byte
-/// check with any profile name.
-fn refusal_kind(e: &ProfileError) -> String {
-    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
-    let mut kind = String::from("refused ");
-    for c in reason.chars() {
-        if kind.len() + c.len_utf8() > 200 {
-            break;
-        }
-        kind.push(c);
-    }
-    kind
-}
-
 /// Records a known live profile and its account, so `profile usage` and the
 /// next cycle read it from the ledger.
 fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
@@ -221,7 +207,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return dry_run(ctx);
     }
     // Step 3: recover and identify under the lock.
-    let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot)?;
+    let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
     let (lock, state, first) = match prelude {
         Prelude::Ready { lock, state, first } => (lock, state, first),
         Prelude::LockBusy => {
@@ -248,6 +234,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         Prelude::LiveUnusable { kind, live, line } => {
             alert(ctx, &mut out, kind, live.as_ref(), &line)?;
+            return Ok(CycleOutcome::Alerted);
+        }
+        // Issue #1693: the prelude already wrote the guidance.
+        Prelude::Guided => {
+            let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+            record(ctx, &mut l, CycleOutcome::Alerted, now(), None)?;
             return Ok(CycleOutcome::Alerted);
         }
     };
