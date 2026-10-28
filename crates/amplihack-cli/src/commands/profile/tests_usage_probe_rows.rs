@@ -192,3 +192,60 @@ fn a_store_error_naming_a_path_is_refused_with_fixed_text() {
     assert_eq!(refused, REFUSED_NO_STORE);
     assert!(!refused.contains('/'), "{refused}");
 }
+
+/// A file only this user can read, its directory created.
+fn private(path: &Path, body: &str) {
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(path, body).unwrap();
+    fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+#[test]
+fn the_home_row_is_kept_when_names_narrow_the_profiles() {
+    // `workstreams status` names the plan profiles when another profile uses
+    // an API key; the login in `~/.claude` that no profile holds must still
+    // get its row.
+    let d = tempfile::tempdir().unwrap();
+    let home = d.path().join("home");
+    let _env = isolated(&home);
+    let root = d.path().join("root");
+    let store = store_with(&root, &["a", "b"]);
+    let account = |uuid: &str| {
+        serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": "x@example.com"}})
+            .to_string()
+    };
+    private(&home.join(".claude/.credentials.json"), "{}");
+    private(&home.join(".claude.json"), &account("u1"));
+    private(&root.join("a/.claude.json"), &account("u-a"));
+    let ledger_dir = root.join(".auto-switch.d/rotate");
+    fs::create_dir_all(&ledger_dir).unwrap();
+    for dir in [ledger_dir.parent().unwrap(), ledger_dir.as_path()] {
+        fs::set_permissions(dir, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    private(
+        &ledger_dir.join("ledger.json"),
+        r#"{"version":1,"live":"a","account":"u-a","since":10}"#,
+    );
+    let bin = fake_claude(d.path(), "exit 0");
+    let cancel = AtomicBool::new(false);
+
+    let rows = probe_rows(
+        &store,
+        &bin,
+        &["b".to_string()],
+        Duration::from_secs(10),
+        &cancel,
+    )
+    .unwrap();
+
+    assert_eq!(
+        rows.iter().filter(|r| r.live_in_home).count(),
+        1,
+        "{rows:?}"
+    );
+    assert_eq!(
+        rows.iter().filter(|r| !r.live_in_home).count(),
+        1,
+        "{rows:?}"
+    );
+}

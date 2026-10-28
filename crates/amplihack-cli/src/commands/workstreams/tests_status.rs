@@ -709,6 +709,8 @@ fn ok_row(name: &str) -> Row {
         default: false,
         leased_to: None,
         live_in: false,
+        overflow: false,
+        overflow_blocked_until: None,
         live_in_home: false,
         report: UsageReport {
             state: UsageState::Ok,

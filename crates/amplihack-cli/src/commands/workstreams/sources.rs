@@ -169,8 +169,9 @@ impl UsageSource for ProfileUsage {
         if plans.is_empty() {
             return Ok(Vec::new());
         }
-        // Every profile when none is an API-key profile, so the `~/.claude`
-        // row is probed as `profile usage` would.
+        // Every profile when none is an API-key profile. The `~/.claude` row
+        // is probed either way. When every profile uses an API key the early
+        // return above skips it too; that login is then not shown.
         let names = if plans.len() == profiles.len() {
             Vec::new()
         } else {

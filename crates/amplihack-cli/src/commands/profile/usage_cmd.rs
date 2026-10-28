@@ -203,9 +203,12 @@ pub(crate) fn probe_rows(
         default_live::UsageLive::Detected(live, _) => (live.map(|l| l.name), false),
     };
     let live = live.filter(|n| profiles.contains(n));
+    let overflow = super::overflow::overflow_names(store.root());
     let marks = Marks {
         default: pointer::read(store.root()).ok().flatten(),
         lease: auto_switch::lease_view(store.root()).ok().flatten(),
+        blocked: overflow_blocks(store, &overflow),
+        overflow,
     };
     let now = now_secs();
     let probes = probe_all(
@@ -219,7 +222,10 @@ pub(crate) fn probe_rows(
         cancel,
     );
     let mut rows = build_rows(&marks, &profiles, probes, live.as_ref());
-    if home_row && names.is_empty() && !cancel.load(Ordering::Relaxed) {
+    // `names` narrows the profile rows only: `workstreams status` passes the
+    // plan profiles when some profile uses an API key, and the `~/.claude`
+    // login is still a login it must show.
+    if home_row && !cancel.load(Ordering::Relaxed) {
         let cmd = run::build_home_command(binary, &["-p".into(), "/usage".into()]);
         rows.push(home_row_of(probe_cancellable(
             cmd, timeout, now, false, cancel,

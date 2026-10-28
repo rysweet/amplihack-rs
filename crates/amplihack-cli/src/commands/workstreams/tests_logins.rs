@@ -35,6 +35,8 @@ fn usage_row(name: &str, state: UsageState) -> Row {
         default: false,
         leased_to: None,
         live_in: false,
+        overflow: false,
+        overflow_blocked_until: None,
         live_in_home: false,
         report: UsageReport {
             state,

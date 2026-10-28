@@ -7,11 +7,14 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use crate::user_config::safe::{display_path, read_bounded};
+use crate::commands::recipe::run_record::read_owned;
+use crate::user_config::safe::display_path;
 
 /// Mode bits a manifest may not have: write access for group or others.
 /// It holds only labels and numbers, so others may read it.
 const LOOSE_BITS: u32 = 0o022;
+/// The largest manifest read.
+const MAX_MANIFEST_BYTES: u64 = 64 * 1024;
 
 /// One manifest line.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,10 +117,16 @@ pub(crate) fn load(path: &Path, explicit: bool) -> Result<Vec<ManifestRow>> {
     if meta.mode() & LOOSE_BITS != 0 {
         return refused("is writable by group or others");
     }
-    let text = match read_bounded(path) {
-        Ok(Some(text)) => text,
-        Ok(None) => return refused("does not exist"),
-        Err(reason) => return refused(&reason),
+    if meta.len() > MAX_MANIFEST_BYTES {
+        return refused("is larger than 64 KiB");
+    }
+    // The checks above give the reason; the read repeats them on the opened
+    // file without following a symlink, so nothing swapped in between is read.
+    let Some(bytes) = read_owned(path, LOOSE_BITS, MAX_MANIFEST_BYTES) else {
+        return refused("changed while being read, or cannot be read");
+    };
+    let Ok(text) = String::from_utf8(bytes) else {
+        return refused("is not valid UTF-8");
     };
     parse(&text).or_else(|e| bail!("manifest {shown}:{}: {}", e.line, e.reason))
 }

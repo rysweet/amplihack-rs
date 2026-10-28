@@ -20,6 +20,8 @@ const HOME_LABEL: &str = "~/.claude";
 /// than a plan login: `settings.json` has `apiKeyHelper` or sets
 /// `env.ANTHROPIC_API_KEY`, or `.claude.json` has `primaryApiKey`. Only the
 /// answer leaves this function: never a key, a path or a parse error.
+/// A missing, unsafe or malformed file counts as no API key, by design: the
+/// profile is then probed as a plan login and its row shows what it finds.
 pub(crate) fn is_api_key_profile(dir: &Path) -> bool {
     let has = |value: Option<&Value>| value.is_some_and(|v| !v.is_null());
     let settings = read_json(&dir.join("settings.json"));

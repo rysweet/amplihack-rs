@@ -209,11 +209,6 @@ const SUBPROCESS_SPAWN_RETRY_TIMEOUT: Duration = Duration::from_secs(2);
 /// Delay between `ExecutableFileBusy` spawn retries.
 const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 
-/// Spawn a command, retrying briefly on `ExecutableFileBusy` (ETXTBSY).
-///
-/// A freshly written executable can still be held open for writing, so the
-/// first `spawn` may fail with ETXTBSY; retry within a bounded window instead
-/// of surfacing a spurious failure.
 /// Kill a probe child when amplihack exits before it does (issue #1710).
 ///
 /// [`run_capped_output_with_timeout`] waits for or kills its child, so the
@@ -225,6 +220,12 @@ const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// the whole process exiting. That thread blocks on the child until it exits
 /// or is killed, so no probe in normal use is cut short. Elsewhere this does
 /// nothing.
+///
+/// This applies to every caller of [`run_capped_output_with_timeout`], not
+/// only `workstreams status`. The signal follows the spawning *thread*, not
+/// the process, so a caller must make the call on a thread that lives until
+/// the child is done: calling it from a short-lived helper thread and handing
+/// the child off would see the child killed when that thread ends.
 #[cfg(target_os = "linux")]
 fn die_with_parent(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
@@ -250,6 +251,11 @@ fn die_with_parent(cmd: &mut Command) {
 #[cfg(not(target_os = "linux"))]
 fn die_with_parent(_cmd: &mut Command) {}
 
+/// Spawn a command, retrying briefly on `ExecutableFileBusy` (ETXTBSY).
+///
+/// A freshly written executable can still be held open for writing, so the
+/// first `spawn` may fail with ETXTBSY; retry within a bounded window instead
+/// of surfacing a spurious failure.
 fn spawn_subprocess(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     let started = Instant::now();
     loop {
