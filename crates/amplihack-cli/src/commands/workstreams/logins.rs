@@ -53,6 +53,8 @@ pub(crate) fn login_rows(profiles: &[(String, bool)], rows: Option<&[Row]>) -> V
                 live: found.is_some_and(|r| r.live_in),
                 reading: if *api_key {
                     Reading::ApiKey
+                } else if found.is_some_and(|r| r.overflow) {
+                    Reading::Overflow
                 } else {
                     found.map_or(
                         Reading::NoReading {

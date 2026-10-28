@@ -27,6 +27,7 @@ pub(crate) const NO_IDENTITY_HINT: &str =
     "no session id found; run with --all to see every run on this host";
 const LIVE_LEGEND: &str = "* live in ~/.claude";
 const API_KEY_TEXT: &str = "API key: billed per token, no plan limits";
+const OVERFLOW_TEXT: &str = "overflow: paid credits, no plan limits";
 const NO_READING: &str = "no reading";
 
 /// What the `PR` column shows.
@@ -69,6 +70,9 @@ pub(crate) enum Reading {
         state: String,
     },
     ApiKey,
+    /// A credit-backed overflow profile (#1695): its plan numbers do not
+    /// limit it, so no bars.
+    Overflow,
 }
 
 /// One login row.
@@ -280,6 +284,7 @@ fn logins_lines(section: &LoginsSection, lines: &mut Vec<String>) {
         let head = format!("  {} ", pad(&name, PROFILE_WIDTH));
         let rest = match &row.reading {
             Reading::ApiKey => API_KEY_TEXT.to_string(),
+            Reading::Overflow => OVERFLOW_TEXT.to_string(),
             Reading::NoReading { state } => format!(
                 "{}{}",
                 pad(NO_READING, 36),

@@ -119,6 +119,14 @@ fn a_good_reading_has_both_percentages_the_state_and_the_reset() {
 }
 
 #[test]
+fn an_overflow_profile_is_never_shown_with_bars() {
+    let mut row = usage_row("spare", UsageState::Ok);
+    row.overflow = true;
+    let rows = login_rows(&profiles(&[("spare", false)]), Some(&[row]));
+    assert!(matches!(rows[0].reading, Reading::Overflow), "{rows:?}");
+}
+
+#[test]
 fn an_api_key_profile_is_never_shown_with_bars() {
     let rows = login_rows(
         &profiles(&[("platform", true)]),

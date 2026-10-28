@@ -121,6 +121,8 @@ One row per profile under the [profile root](./profile-command.md#profile-root):
   `timeout` or `unparsed`, shows `no reading` instead of bars.
 - An [API-key profile](#logins) shows `API key: billed per token, no plan
   limits` and is not probed.
+- A credit-backed overflow profile (see `amplihack profile overflow`) shows
+  `overflow: paid credits, no plan limits` instead of bars.
 - When `~/.claude` holds a login that no profile holds, a `~/.claude*` row is
   added last.
 - The legend line `* live in ~/.claude` follows the rows when any row is

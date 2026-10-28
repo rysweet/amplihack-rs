@@ -137,4 +137,5 @@ everything on the host.
 `▶` means the run is live. `⏸` means it is waiting or stopped; the reason
 follows when known, such as `stopped on a usage limit`. A `*` after a login
 name marks the login live in `~/.claude`. An API-key profile shows `API key:
-billed per token, no plan limits`.
+billed per token, no plan limits`, and an overflow profile shows `overflow:
+paid credits, no plan limits`.
