@@ -80,6 +80,8 @@ mod tests_switch;
 mod tests_switch_candidates;
 #[cfg(all(test, unix))]
 mod tests_switch_hold;
+#[cfg(all(test, unix))]
+mod tests_switch_race;
 
 use super::name::ProfileName;
 use super::root_config::RootSource;

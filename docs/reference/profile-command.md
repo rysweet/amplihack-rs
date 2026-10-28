@@ -2341,7 +2341,11 @@ Every non-dry-run cycle runs these steps in order:
    [Signals](#rotate-signals)). Take the lock again. If the live account, the
    candidate list, the running sessions, the auto-switch ledger, the parked
    logins or the [rotation pin](#rotate-pin) changed since step 3, log `skip: state changed during measurement`
-   and end the cycle. Otherwise run the [swap](#rotate-swap). After a swap
+   and end the cycle. It records `last_cycle` as `skipped` only when the
+   ledger's `last_cycle` is older than this cycle's measurement. A record
+   written while the cycle measured, such as the `switched` record of a
+   [`profile switch`](#rotate-switch), is newer and stays. A `switched`
+   record always stays. Otherwise run the [swap](#rotate-swap). After a swap
    that ran, check the [shared session links](#shared-session-directories)
    of `to` and `from`.
 7. **Record.** Write the log lines and the ledger's `last_cycle`. When the

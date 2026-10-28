@@ -12,7 +12,9 @@ use super::measure::{self, Live};
 use super::pin::{self, Gate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, State, effective, exists, now};
+use crate::commands::profile::auto_switch::kit::{
+    Liveness, Rotated, State, effective, exists, now,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 
@@ -228,4 +230,22 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     Ok(outcome)
+}
+
+/// This cycle's readings for the no-capacity file: the live profile's and
+/// every other candidate's, as measured.
+pub(super) fn rotated(
+    live: Option<&ProfileName>,
+    reading: &Reading,
+    others: &[(ProfileName, Reading)],
+) -> Vec<(ProfileName, Rotated)> {
+    let of = |r: &Reading| match *r {
+        Reading::Measured { session, week } => Rotated::Measured { session, week },
+        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Failed => Rotated::Failed,
+    };
+    live.map(|n| (n.clone(), of(reading)))
+        .into_iter()
+        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .collect()
 }

@@ -2,14 +2,14 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::decide::{Decision, Reading};
+use super::decide::Decision;
 use super::identify::{LiveId, Skip};
 use super::ledger::{
     LastCycle, RotateLedger, RotateState, SWITCHED, alert_key, clear_alert, should_alert,
 };
 use super::log::{Sink, msg};
 use super::observe::{
-    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, snapshot,
+    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, rotated, snapshot,
 };
 use super::pin::{self, Gate};
 use super::prelude::{Prelude, locked_prelude};
@@ -17,7 +17,7 @@ use super::settings::Settings;
 use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    Liveness, Rotated, capacity_from_rotation, exists, now, scan_system,
+    Liveness, capacity_from_rotation, exists, now, scan_system,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
@@ -63,6 +63,9 @@ impl CycleOutcome {
     }
 }
 
+/// Steps 4 and 5 of a cycle: measure, then decide.
+pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
+
 /// What a cycle needs, and what `watch` remembers between cycles: the last
 /// skips and pin line, so a `skip:` line is written only when it changes,
 /// and the count of consecutive failed live probes for failed-probe damping.
@@ -80,6 +83,9 @@ pub struct Ctx {
     /// it to return `Liveness::Unsupported`, which is what every non-Linux
     /// system gets.
     pub(super) scan: fn(&Path) -> Liveness,
+    /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
+    /// tests set it, to act while the cycle is measuring without the lock.
+    pub(super) measure: Option<MeasureFn>,
 }
 
 impl Ctx {
@@ -96,6 +102,7 @@ impl Ctx {
             last_gate: None,
             failed_live: 0,
             scan: scan_system,
+            measure: None,
         }
     }
 
@@ -173,6 +180,13 @@ fn record(
         outcome: o.as_str().into(),
     });
     ctx.rs.save_ledger(l)
+}
+
+/// Whether `last` was written after a cycle began measuring at
+/// `measured_at`, so another writer used the ledger while that cycle held no
+/// lock. A switch record always counts, whatever the clock says.
+pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
+    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 /// The ALERT key kind for a refused swap: its reason, without control
@@ -271,8 +285,6 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
 
     // Steps 4 and 5: measure without the lock, then decide. Recovery does
     // not need `claude`, so it is looked for only now.
-    let binary = resolve_claude_binary()
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let Measurement {
         live,
         others,
@@ -280,7 +292,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         note,
         failed,
         measured_at,
-    } = measure_and_decide(ctx, &binary, &first)?;
+    } = match ctx.measure {
+        Some(stub) => stub(ctx, &first)?,
+        None => {
+            let binary = resolve_claude_binary()
+                .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
+            measure_and_decide(ctx, &binary, &first)?
+        }
+    };
     ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
     if ctx.stopping() {
@@ -299,7 +318,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Skipped, t, Some(measured_at))?;
+        // A record written while this cycle measured unlocked (a `profile
+        // switch`, or another cycle) is newer than anything this cycle knows.
+        // Overwriting it with `skipped` would lose a switch's record, and the
+        // held cycles after it would then write a bare `held`, so the
+        // limit-resume hook would never wake sessions stopped before the
+        // switch (#1691).
+        if !newer_than(l.last_cycle.as_ref(), measured_at) {
+            record(ctx, &mut l, CycleOutcome::Skipped, t, Some(measured_at))?;
+        }
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -367,22 +394,4 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         shared_dirs::ensure_for(&ctx.store, p);
     }
     Ok(outcome)
-}
-
-/// This cycle's readings for the no-capacity file: the live profile's and
-/// every other candidate's, as measured.
-fn rotated(
-    live: Option<&ProfileName>,
-    reading: &Reading,
-    others: &[(ProfileName, Reading)],
-) -> Vec<(ProfileName, Rotated)> {
-    let of = |r: &Reading| match *r {
-        Reading::Measured { session, week } => Rotated::Measured { session, week },
-        Reading::Exhausted => Rotated::Exhausted,
-        Reading::Failed => Rotated::Failed,
-    };
-    live.map(|n| (n.clone(), of(reading)))
-        .into_iter()
-        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
-        .collect()
 }
