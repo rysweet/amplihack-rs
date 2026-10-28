@@ -377,7 +377,6 @@ pub(super) fn probe_all(
 ) -> Vec<Probe> {
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
-    let args = ["-p".to_string(), "/usage".to_string()];
     std::thread::scope(|s| {
         for _ in 0..profiles.len().min(MAX_PARALLEL) {
             s.spawn(|| {
@@ -386,19 +385,15 @@ pub(super) fn probe_all(
                     let Some(name) = profiles.get(i) else {
                         break;
                     };
-                    // Built here, right before the spawn, so the directory
-                    // check is as late as possible.
-                    let build = if live == Some(name) {
-                        run::build_default_dir_command
-                    } else {
-                        run::build_profile_command
-                    };
-                    let p = match build(binary, store, name, &args) {
-                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
-                        // Reported as its fixed reason (and a stderr
-                        // warning); the detail can name paths.
-                        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
-                    };
+                    let p = probe_one(
+                        store,
+                        binary,
+                        name,
+                        live == Some(name),
+                        timeout,
+                        now,
+                        keep_raw,
+                    );
                     results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(p);
                 }
             });
@@ -412,6 +407,125 @@ pub(super) fn probe_all(
         // propagates out of the scope, so every slot is filled.
         .map(|p| p.expect("every profile is probed"))
         .collect()
+}
+
+/// Probes one profile: against `~/.claude` when its login is `live` there,
+/// otherwise against its own directory. Shared by [`probe_all`] and
+/// [`collect_readonly`].
+fn probe_one(
+    store: &ProfileStore,
+    binary: &BinaryInfo,
+    name: &ProfileName,
+    live: bool,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Probe {
+    let args = ["-p".to_string(), "/usage".to_string()];
+    // Built here, right before the spawn, so the directory check is as late
+    // as possible.
+    let build = if live {
+        run::build_default_dir_command
+    } else {
+        run::build_profile_command
+    };
+    match build(binary, store, name, &args) {
+        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
+        // Reported as its fixed reason (and a stderr warning); the detail can
+        // name paths.
+        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
+    }
+}
+
+/// One profile as [`collect_readonly`] lists it.
+pub(crate) struct ReadonlyProfile {
+    pub(crate) name: String,
+    /// Its login is live in `~/.claude`.
+    pub(crate) live: bool,
+    /// It holds an API-key credential, so it is not probed.
+    pub(crate) api_key: bool,
+}
+
+/// Every profile, in store order, and a channel that receives one
+/// `(profile, report)` per probed profile as each probe ends.
+pub(crate) struct Collection {
+    pub(crate) profiles: Vec<ReadonlyProfile>,
+    pub(crate) results: std::sync::mpsc::Receiver<(String, UsageReport)>,
+}
+
+/// Issue #1710: the usage of every profile for `workstreams status`, read
+/// only. Unlike [`run`] it records nothing, prints nothing, and never waits
+/// for a probe: the probes run on detached threads (at most
+/// [`MAX_PARALLEL`] at once), so the caller can stop waiting at its own
+/// deadline and end them with [`cancel_probes`]. Profiles that
+/// `is_api_key` reports are listed but never probed.
+pub(crate) fn collect_readonly(
+    timeout: Duration,
+    is_api_key: fn(&std::path::Path) -> bool,
+) -> Result<Collection> {
+    super::reject_docker_env()?;
+    let store = ProfileStore::from_env()?;
+    let names = selected_profiles(&store, &[])?;
+    let home = home_dir();
+    let (live, _warning) = default_live::detect(&store, home.as_deref());
+    let live = live.map(|l| l.name).filter(|n| names.contains(n));
+    let mut profiles = Vec::with_capacity(names.len());
+    let mut to_probe: Vec<(ProfileName, bool)> = Vec::new();
+    for name in names {
+        let api_key = store.resolve(&name).is_ok_and(|dir| is_api_key(&dir));
+        let is_live = live.as_ref() == Some(&name);
+        if !api_key {
+            to_probe.push((name.clone(), is_live));
+        }
+        profiles.push(ReadonlyProfile {
+            name: name.as_str().to_string(),
+            live: is_live,
+            api_key,
+        });
+    }
+    let (tx, results) = std::sync::mpsc::channel();
+    if to_probe.is_empty() {
+        return Ok(Collection { profiles, results });
+    }
+    let binary = run::resolve_claude_binary()?;
+    let now = now_secs();
+    let shared = Arc::new((store, binary, to_probe, AtomicUsize::new(0)));
+    for _ in 0..shared.2.len().min(MAX_PARALLEL) {
+        let shared = Arc::clone(&shared);
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let (store, binary, to_probe, next) = &*shared;
+            loop {
+                let i = next.fetch_add(1, Ordering::Relaxed);
+                let Some((name, live)) = to_probe.get(i) else {
+                    break;
+                };
+                READONLY_ACTIVE.fetch_add(1, Ordering::AcqRel);
+                let p = probe_one(store, binary, name, *live, timeout, now, false);
+                READONLY_ACTIVE.fetch_sub(1, Ordering::AcqRel);
+                if tx.send((name.as_str().to_string(), p.report)).is_err() {
+                    break;
+                }
+            }
+        });
+    }
+    Ok(Collection { profiles, results })
+}
+
+/// [`collect_readonly`] probes running now.
+static READONLY_ACTIVE: AtomicUsize = AtomicUsize::new(0);
+/// How long [`cancel_probes`] waits for running probes to end.
+const CANCEL_GRACE: Duration = Duration::from_secs(1);
+
+/// Ends every running probe: each kills its process group at its next poll.
+/// Waits up to a second for the [`collect_readonly`] probes to do so, so a
+/// caller that exits next leaves no `claude` behind.
+pub(crate) fn cancel_probes() {
+    PROBE_CANCEL.store(true, Ordering::Relaxed);
+    let start = Instant::now();
+    while READONLY_ACTIVE.load(Ordering::Acquire) > 0 && start.elapsed() < CANCEL_GRACE {
+        std::thread::sleep(POLL);
+    }
 }
 
 /// One stream, read on a detached thread so a process holding the pipe open
@@ -694,7 +808,7 @@ pub(super) fn format_pct(p: f64) -> String {
 /// Replaces control characters (C0, DEL, C1) and bidirectional overrides so
 /// untrusted text cannot drive the terminal. `\n` survives only when
 /// `keep_newlines`.
-pub(super) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
+pub(crate) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
     s.chars()
         .map(|c| match c {
             '\n' if keep_newlines => '\n',

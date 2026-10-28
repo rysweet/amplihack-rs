@@ -65,6 +65,7 @@ nav:
       - Uninstall: howto/uninstall.md
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
+      - Workstream Status: skills/workstream-status.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
       - Profile Command Reference: reference/profile-command.md
       - ccswitch Review: reviews/ccswitch-review.md

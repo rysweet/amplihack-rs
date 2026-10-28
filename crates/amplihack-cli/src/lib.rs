@@ -98,6 +98,7 @@ pub use cli_subcommands::{
     PluginCommands, QueryCodeCommands, RecipeCommands, ReflectCommands, RemoteCommands,
     SignalChatArgs, SignalCommands, SignalDistributeArgs, SignalSetupArgs, VerifyLiveArgs,
 };
+pub use commands::workstreams::{WorkstreamsCommands, WorkstreamsStatusArgs};
 
 fn graph_db_backend_value_parser() -> PossibleValuesParser {
     PossibleValuesParser::new([

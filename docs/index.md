@@ -515,6 +515,7 @@ Specialized AI agents and tools for every development task.
 Modular, on-demand capabilities that extend amplihack:
 
 - [Skills Catalog](skills/SKILL_CATALOG.md) - Complete skills catalog
+- [Workstream Status](skills/workstream-status.md) - Plain-text table of the runs this session started and of login capacity, with `amplihack workstreams status`
 <!-- - [Documentation Writing](claude/skills/documentation-writing/SKILL.md) - Eight Rules compliance (Coming soon) -->
 - [Mermaid Diagrams](claude/skills/mermaid-diagram-generator/SKILL.md) - Visual documentation
 - [Test Gap Analyzer](claude/skills/test-gap-analyzer/SKILL.md) - Find untested code

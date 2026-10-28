@@ -85,6 +85,11 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 # shellcheck source=/dev/null
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
+# The state file names come from autodrive_layout.sh (issue #1710), which
+# autodrive_state.sh has sourced; sourced again here so this file names it.
+# shellcheck source=autodrive_layout.sh
+. "$(dirname -- "${BASH_SOURCE[0]}")/autodrive_layout.sh" 2>/dev/null \
+  || { echo "ERROR: autodrive_layout.sh not found beside autodrive_loop.sh; the auto-drive state layout is unknown" >&2; exit 2; }
 autodrive_private_dir "$STATE_DIR" || exit 2
 CALLER_UMASK="$(umask)"
 umask 077
@@ -202,8 +207,8 @@ while :; do
   # ROUND is a LABEL for reports. Nothing below compares it to a limit.
   ROUND=$((ROUND + 1))
   ROUND_LABEL="round-${ROUND}"
-  RECORD="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.json"
-  LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}.log"
+  RECORD="${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_ROUND_INFIX}${ROUND}.json"
+  LOG="${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_ROUND_INFIX}${ROUND}.log"
   BASELINE="$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf '')"
   stamp_review_dir
 
@@ -212,7 +217,7 @@ while :; do
   # step made (crusty's fixes) as this round's work.
   BEFORE_RESULT=""
   if [ -n "$BEFORE_ROUND" ]; then
-    BEFORE_LOG="${STATE_DIR}/${LOOP_NAME}-${ROUND_LABEL}-before.log"
+    BEFORE_LOG="${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_ROUND_INFIX}${ROUND}-before.log"
     echo "=== auto-drive loop '${LOOP_NAME}': before ${ROUND_LABEL} ===" >&2
     ( umask "$CALLER_UMASK" && exec bash "$BEFORE_ROUND" --repo "$REPO" --review-dir "$REVIEW_REAL" --state-dir "$STATE_DIR" \
         ${ROUND_CTX[@]+"${ROUND_CTX[@]}"} ) >"${BEFORE_LOG}.out" 2>"$BEFORE_LOG"
@@ -267,8 +272,8 @@ while :; do
   [ -f "${RECORD}.findings" ] && FINDINGS="$(cat "${RECORD}.findings")"
   # Stable path to the most recent round record, so a later gate can bind its
   # evidence to the round that actually produced it without guessing a name.
-  copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"
-  copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}-latest.json.findings"
+  copy_private "$RECORD" "${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_LATEST_SUFFIX}"
+  copy_private "${RECORD}.findings" "${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_LATEST_SUFFIX}.findings"
   # Manifest of the round records THIS loop wrote (#1517): one row per round in
   # <loop>-records.tsv (label, record name, git blob hash), written before any later
   # agent runs, so no agent gets a row for a record it wrote. autodrive_crusty_final
@@ -281,8 +286,8 @@ while :; do
       .*|*[!A-Za-z0-9._-]*|'')
         echo "WARNING: round record name '${MANIFEST_FILE}' is not a plain file name; no manifest row for ${ROUND_LABEL}." >&2 ;;
       *)
-        if ! cmp -s "$RECORD" "${STATE_DIR}/${LOOP_NAME}-latest.json"; then
-          echo "WARNING: ${RECORD} and its ${LOOP_NAME}-latest.json copy differ; no manifest row for ${ROUND_LABEL}." >&2
+        if ! cmp -s "$RECORD" "${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_LATEST_SUFFIX}"; then
+          echo "WARNING: ${RECORD} and its ${LOOP_NAME}${AUTODRIVE_LATEST_SUFFIX} copy differ; no manifest row for ${ROUND_LABEL}." >&2
         else
           MANIFEST_HASH="$( (cd -- "$STATE_DIR" && env -u GIT_DIR -u GIT_WORK_TREE git hash-object --no-filters --stdin) < "$RECORD" 2>/dev/null)"
           case "$MANIFEST_HASH" in *[!0-9a-f]*) MANIFEST_HASH="" ;; esac
@@ -293,8 +298,8 @@ while :; do
     if [ -n "$MANIFEST_HASH" ]; then
       ( umask 077
         printf '%s\t%s\t%s\n' "$(printf '%s' "$ROUND_LABEL" | tr -c 'A-Za-z0-9._-' '_')" "$MANIFEST_FILE" "$MANIFEST_HASH" \
-          >> "${STATE_DIR}/${LOOP_NAME}-records.tsv" ) \
-        || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}-records.tsv." >&2
+          >> "${STATE_DIR}/${LOOP_NAME}${AUTODRIVE_RECORDS_SUFFIX}" ) \
+        || echo "WARNING: could not append the manifest row for ${ROUND_LABEL} to ${LOOP_NAME}${AUTODRIVE_RECORDS_SUFFIX}." >&2
     fi
   fi
   TEST_SIGNAL="$(field "$RAW" test_signal "")"

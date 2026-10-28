@@ -42,6 +42,7 @@ use amplihack_utils::agent_binary::{
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
+use crate::commands::workstreams::meta::{self, RunMeta};
 use crate::user_config::safe::read_bounded;
 
 /// Variables the pane gets from tmux itself, kept from the pane's own
@@ -126,8 +127,32 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let mut secrets = SecretFiles {
         spec: log_dir.join(format!("{session}.spec.json")),
         context: log_dir.join(format!("{session}.context.json")),
+        meta: log_dir.join(format!("{session}.meta.json")),
         keep_context: false,
     };
+    // Issue #1710: who started this run, for `amplihack workstreams status`.
+    // Display only: nothing ever decides access from it. A run without one
+    // still runs; it is just not listed under its parent.
+    let run_dir = if request.working_dir.is_absolute() {
+        request.working_dir.to_path_buf()
+    } else {
+        cwd.join(request.working_dir)
+    };
+    let branch = context_branch(request.context).or_else(|| current_branch(&run_dir));
+    let meta = run_meta(
+        &session,
+        request.recipe_path,
+        request.context,
+        &run_dir,
+        branch.as_deref(),
+        &|k| std::env::var(k).ok(),
+    );
+    if let Err(error) = write_meta(&log_dir, &session, &meta) {
+        eprintln!(
+            "amplihack: warning: could not record the run's parent ({error:#}); \
+             `amplihack workstreams status` will not list it under this session"
+        );
+    }
     create_private(&secrets.context)?.write_all(&serde_json::to_vec(&context)?)?;
     let exe = std::env::current_exe().context("cannot find the amplihack executable")?;
     let mut args = request.args;
@@ -136,7 +161,7 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     let spec = Spec {
         args,
         cwd,
-        env: child_env(request.agent_binary),
+        env: child_env(request.agent_binary, &session),
         log: log.clone(),
         context_file: secrets.context.clone(),
     };
@@ -195,10 +220,13 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
 /// The spec and context files of a launch. Both hold secrets (the caller's
 /// environment, the task text), so dropping this removes them on every way
 /// out of [`launch`]: an error, a signal, a timeout. Only a run that started
-/// keeps the context file, which it removes itself.
+/// keeps the context file, which it removes itself. The meta file holds no
+/// secret; a run that started keeps it for good, and a failed launch removes
+/// it so no run that never existed is listed.
 struct SecretFiles {
     spec: PathBuf,
     context: PathBuf,
+    meta: PathBuf,
     keep_context: bool,
 }
 
@@ -207,8 +235,90 @@ impl Drop for SecretFiles {
         let _ = fs::remove_file(&self.spec);
         if !self.keep_context {
             let _ = fs::remove_file(&self.context);
+            let _ = fs::remove_file(&self.meta);
         }
     }
+}
+
+/// The environment variable a detached run gets with its own session name,
+/// so a run it starts records it as its parent (issue #1710).
+pub(crate) const DETACHED_SESSION_ENV: &str = "AMPLIHACK_DETACHED_SESSION";
+/// The calling agent session's id, recorded as the run's parent session.
+pub(crate) const SESSION_ID_ENV: &str = "AMPLIHACK_SESSION_ID";
+/// Context keys that name the run's branch.
+const BRANCH_KEYS: &[&str] = &["branch_name", "branch"];
+
+/// What `<session>.meta.json` records about a run (issue #1710): its parent
+/// session and parent run, its recipe, start time and directory, and the
+/// issue, PR and branch named by its context. No task text, URL or other
+/// environment value.
+pub(crate) fn run_meta(
+    session: &str,
+    recipe_path: &str,
+    context: &[String],
+    cwd: &Path,
+    branch: Option<&str>,
+    env: &dyn Fn(&str) -> Option<String>,
+) -> RunMeta {
+    use crate::commands::recipe::run::correlation::{ISSUE_KEYS, PR_KEYS, first_context_value};
+    let pairs = context_pairs(context);
+    let number = |keys: &[&str]| {
+        first_context_value(&pairs, keys)
+            .and_then(|v| v.trim().trim_start_matches('#').parse::<u64>().ok())
+    };
+    RunMeta {
+        schema: meta::SCHEMA,
+        session: session.to_string(),
+        parent_session_id: env(SESSION_ID_ENV).and_then(|v| meta::sanitize_id(&v)),
+        parent_run: env(DETACHED_SESSION_ENV).and_then(|v| meta::sanitize_id(&v)),
+        recipe: Some(recipe_label(recipe_path)),
+        started_at: Some(chrono::Utc::now()),
+        cwd: Some(cwd.to_path_buf()),
+        branch: branch.and_then(meta::sanitize_branch),
+        issue_number: number(ISSUE_KEYS),
+        pr_number: number(PR_KEYS),
+    }
+}
+
+/// Write `<session>.meta.json` in `dir`, private and atomically.
+pub(crate) fn write_meta(dir: &Path, session: &str, meta: &RunMeta) -> Result<PathBuf> {
+    let path = dir.join(format!("{session}.meta.json"));
+    meta::write_atomic(&path, meta)?;
+    Ok(path)
+}
+
+/// `KEY=VALUE` context entries as a map; entries without `=` are skipped
+/// ([`context_object`] has already refused them).
+fn context_pairs(context: &[String]) -> BTreeMap<String, String> {
+    context
+        .iter()
+        .filter_map(|pair| pair.split_once('='))
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .collect()
+}
+
+fn context_branch(context: &[String]) -> Option<String> {
+    crate::commands::recipe::run::correlation::first_context_value(
+        &context_pairs(context),
+        BRANCH_KEYS,
+    )
+}
+
+/// The branch checked out in `dir`, if git can tell within three seconds.
+fn current_branch(dir: &Path) -> Option<String> {
+    let mut command = amplihack_git::command();
+    command
+        .arg("-C")
+        .arg(dir)
+        .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+        .stdin(Stdio::null());
+    let output =
+        crate::util::run_output_with_timeout_limited(command, Duration::from_secs(3), 4096).ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8(output.stdout).ok()?.trim().to_string();
+    (!branch.is_empty()).then_some(branch)
 }
 
 /// How a pane's start went, as its log tells it.
@@ -315,10 +425,25 @@ fn session_exists(session: &str) -> bool {
 }
 
 /// The caller's environment for the run: every agent session marker removed,
-/// and the resolved agent binary set with the tag `recipe run` would export.
-fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = std::env::vars_os()
+/// the resolved agent binary set with the tag `recipe run` would export, and
+/// [`DETACHED_SESSION_ENV`] set to the run's own session.
+fn child_env(agent_binary: &Resolution, session: &str) -> BTreeMap<String, String> {
+    let vars = std::env::vars_os()
         .filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)))
+        .collect();
+    child_env_from(vars, agent_binary, Some(session))
+}
+
+/// [`child_env`] over the given variables. With `session`, the run's
+/// [`DETACHED_SESSION_ENV`] replaces any inherited one: that is the only key
+/// it adds.
+pub(crate) fn child_env_from(
+    vars: Vec<(String, String)>,
+    agent_binary: &Resolution,
+    session: Option<&str>,
+) -> BTreeMap<String, String> {
+    let mut env: BTreeMap<String, String> = vars
+        .into_iter()
         .filter(|(k, _)| {
             !SESSION_MARKERS.iter().any(|(marker, _)| marker == k)
                 && !TMUX_VARS.contains(&k.as_str())
@@ -329,11 +454,15 @@ fn child_env(agent_binary: &Resolution) -> BTreeMap<String, String> {
         Some(tag) => env.insert(SOURCE_ENV.to_string(), tag),
         None => env.remove(SOURCE_ENV),
     };
+    if let Some(session) = session {
+        env.insert(DETACHED_SESSION_ENV.to_string(), session.to_string());
+    }
     env
 }
 
-/// `recipe.log_dir`, or `~/.amplihack/recipe-logs`.
-fn log_dir() -> Result<PathBuf> {
+/// `recipe.log_dir`, or `~/.amplihack/recipe-logs`. Only names the
+/// directory; [`ensure_private_dir`] creates it.
+pub(crate) fn log_dir() -> Result<PathBuf> {
     if let Some(dir) = crate::user_config::recipe_log_dir() {
         return Ok(dir);
     }
@@ -362,7 +491,7 @@ fn ensure_private_dir(dir: &Path) -> Result<()> {
 
 /// Create a new file with mode 0600. Never opens an existing file or follows
 /// a symlink planted at `path`.
-fn create_private(path: &Path) -> Result<File> {
+pub(crate) fn create_private(path: &Path) -> Result<File> {
     OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -670,5 +799,153 @@ mod tests {
         assert!(read_spec(&path).is_err());
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(read_spec(&path).unwrap(), spec);
+    }
+
+    // ---- issue #1710: the run meta file and the parent marker ----
+
+    fn claude() -> Resolution {
+        Resolution {
+            binary: "claude".to_string(),
+            source: amplihack_utils::agent_binary::ResolutionSource::Env,
+            context_file: None,
+            unusable_contexts: Vec::new(),
+            session_marker: None,
+        }
+    }
+
+    fn vars(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn the_child_env_gains_exactly_the_detached_session() {
+        let input = vars(&[
+            ("PATH", "/usr/bin"),
+            ("AMPLIHACK_SESSION_ID", "sess-1"),
+            ("CLAUDECODE", "1"),
+            ("TMUX", "/tmp/tmux"),
+        ]);
+        let before = child_env_from(input.clone(), &claude(), None);
+        let after = child_env_from(input, &claude(), Some("amp-r-1"));
+        let mut added: Vec<&String> = after.keys().filter(|k| !before.contains_key(*k)).collect();
+        added.sort();
+        assert_eq!(added, ["AMPLIHACK_DETACHED_SESSION"]);
+        assert_eq!(after["AMPLIHACK_DETACHED_SESSION"], "amp-r-1");
+        assert!(before.keys().all(|k| after.get(k) == before.get(k)));
+        // The starter's session id stays, so the run records it as its parent.
+        assert_eq!(after["AMPLIHACK_SESSION_ID"], "sess-1");
+        assert!(!after.contains_key("CLAUDECODE") && !after.contains_key("TMUX"));
+    }
+
+    #[test]
+    fn a_nested_launch_replaces_the_inherited_detached_session() {
+        let input = vars(&[("AMPLIHACK_DETACHED_SESSION", "amp-parent")]);
+        let env = child_env_from(input, &claude(), Some("amp-child"));
+        assert_eq!(env["AMPLIHACK_DETACHED_SESSION"], "amp-child");
+    }
+
+    fn env_get(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
+        move |k| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == k)
+                .map(|(_, v)| v.to_string())
+        }
+    }
+
+    #[test]
+    fn run_meta_records_the_parents_and_context_ids_only() {
+        let context = [
+            "issue_number=#1710".to_string(),
+            "pr_number=1715".to_string(),
+            "task_description=SENTINEL-TASK-TEXT".to_string(),
+            "issue_url=https://user:tok@github.com/o/r/issues/1710".to_string(),
+        ];
+        let meta = run_meta(
+            "amp-r-1",
+            "amplifier-bundle/recipes/auto-drive-to-merge.yaml",
+            &context,
+            Path::new("/w/repo"),
+            Some("feat/issue-1710-x"),
+            &env_get(&[
+                ("AMPLIHACK_SESSION_ID", "sess-1"),
+                ("AMPLIHACK_DETACHED_SESSION", "amp-parent"),
+            ]),
+        );
+        assert_eq!(meta.schema, 1);
+        assert_eq!(meta.session, "amp-r-1");
+        assert_eq!(meta.parent_session_id.as_deref(), Some("sess-1"));
+        assert_eq!(meta.parent_run.as_deref(), Some("amp-parent"));
+        assert_eq!(meta.recipe.as_deref(), Some("auto-drive-to-merge"));
+        assert_eq!(meta.issue_number, Some(1710));
+        assert_eq!(meta.pr_number, Some(1715));
+        assert_eq!(meta.branch.as_deref(), Some("feat/issue-1710-x"));
+        assert_eq!(meta.cwd.as_deref(), Some(Path::new("/w/repo")));
+        assert!(meta.started_at.is_some());
+        let json = serde_json::to_string(&meta).unwrap();
+        assert!(!json.contains("SENTINEL-TASK-TEXT"), "no task text: {json}");
+        assert!(!json.contains("tok@"), "no URLs or secrets: {json}");
+    }
+
+    #[test]
+    fn unsafe_parent_ids_are_stored_as_null() {
+        for bad in ["a/b", "a\nb", "a\x1bb"] {
+            let pairs: &'static [(&'static str, &'static str)] = Box::leak(Box::new([
+                ("AMPLIHACK_SESSION_ID", bad),
+                ("AMPLIHACK_DETACHED_SESSION", bad),
+            ]));
+            let meta = run_meta("s", "r.yaml", &[], Path::new("/w"), None, &env_get(pairs));
+            assert_eq!(meta.parent_session_id, None, "{bad:?}");
+            assert_eq!(meta.parent_run, None, "{bad:?}");
+        }
+        let long: &'static str = Box::leak("x".repeat(129).into_boxed_str());
+        let pairs: &'static [(&'static str, &'static str)] =
+            Box::leak(Box::new([("AMPLIHACK_SESSION_ID", long)]));
+        let meta = run_meta("s", "r.yaml", &[], Path::new("/w"), None, &env_get(pairs));
+        assert_eq!(meta.parent_session_id, None);
+    }
+
+    #[test]
+    fn a_failed_launch_removes_the_meta_file_and_a_started_one_keeps_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let files = |keep: bool| {
+            for name in ["s.spec.json", "s.context.json", "s.meta.json"] {
+                fs::write(dir.path().join(name), "{}").unwrap();
+            }
+            SecretFiles {
+                spec: dir.path().join("s.spec.json"),
+                context: dir.path().join("s.context.json"),
+                meta: dir.path().join("s.meta.json"),
+                keep_context: keep,
+            }
+        };
+        drop(files(false));
+        assert!(
+            !dir.path().join("s.meta.json").exists(),
+            "failed launch keeps no meta"
+        );
+        drop(files(true));
+        assert!(
+            dir.path().join("s.meta.json").exists(),
+            "a started run keeps its meta"
+        );
+        assert!(!dir.path().join("s.spec.json").exists());
+    }
+
+    #[test]
+    fn the_meta_file_is_written_private_beside_the_log() {
+        let dir = tempfile::tempdir().unwrap();
+        ensure_private_dir(dir.path()).unwrap();
+        let meta = run_meta("s", "r.yaml", &[], Path::new("/w"), None, &env_get(&[]));
+        let path = write_meta(dir.path(), "s", &meta).unwrap();
+        assert_eq!(path, dir.path().join("s.meta.json"));
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        assert_eq!(crate::commands::workstreams::meta::read(&path), Some(meta));
     }
 }

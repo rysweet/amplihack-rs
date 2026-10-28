@@ -9,7 +9,14 @@ use std::path::Path;
 use std::time::Duration;
 use uuid::Uuid;
 
-pub(super) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
+pub(crate) const LOG_POINTER_PREFIX: &str = "amplihack.recipe.log_pointer ";
+
+/// Context keys that name the run's issue, first match wins. The log pointer
+/// and the detached run's meta file (issue #1710) read the same list.
+pub(crate) const ISSUE_KEYS: &[&str] =
+    &["issue_number", "issue", "issue_id", "github_issue_number"];
+/// Context keys that name the run's pull request, first match wins.
+pub(crate) const PR_KEYS: &[&str] = &["pr_number", "pull_request_number", "github_pr_number"];
 
 const SCHEMA_VERSION: u8 = 1;
 const MAX_POINTER_VALUE_BYTES: usize = 1024;
@@ -86,15 +93,9 @@ impl RecipeRunCorrelation {
             worktree,
             branch,
             task_description: first_context_value(context, &["task_description"]),
-            issue_number: first_context_value(
-                context,
-                &["issue_number", "issue", "issue_id", "github_issue_number"],
-            ),
+            issue_number: first_context_value(context, ISSUE_KEYS),
             issue_url: first_context_value(context, &["issue_url", "github_issue_url"]),
-            pr_number: first_context_value(
-                context,
-                &["pr_number", "pull_request_number", "github_pr_number"],
-            ),
+            pr_number: first_context_value(context, PR_KEYS),
             pr_url: first_context_value(context, &["pr_url", "pull_request_url", "github_pr_url"]),
             work_item_id: first_context_value(
                 context,
@@ -309,7 +310,10 @@ struct LogPointerEvent<'a> {
     timestamp: String,
 }
 
-fn first_context_value(context: &BTreeMap<String, String>, keys: &[&str]) -> Option<String> {
+pub(crate) fn first_context_value(
+    context: &BTreeMap<String, String>,
+    keys: &[&str],
+) -> Option<String> {
     keys.iter()
         .find_map(|key| context.get(*key))
         .and_then(|value| bounded_value(value))

@@ -716,4 +716,85 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
     }
+
+    // Issue #1710: `amplihack workstreams status`.
+    #[test]
+    fn workstreams_status_parses_every_flag() {
+        let cli = Cli::try_parse_from([
+            "amplihack",
+            "workstreams",
+            "status",
+            "--all",
+            "--manifest",
+            "/w/ws.tsv",
+            "--no-logins",
+            "--logins-deadline",
+            "5",
+        ])
+        .expect("workstreams status should parse");
+        match cli.command {
+            Commands::Workstreams {
+                command: WorkstreamsCommands::Status(args),
+            } => {
+                assert!(args.all);
+                assert_eq!(args.manifest, Some(PathBuf::from("/w/ws.tsv")));
+                assert!(args.no_logins);
+                assert_eq!(args.logins_deadline, Some(5));
+            }
+            other => panic!("expected workstreams status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workstreams_status_defaults_are_off() {
+        let cli = Cli::try_parse_from(["amplihack", "workstreams", "status"]).unwrap();
+        match cli.command {
+            Commands::Workstreams {
+                command: WorkstreamsCommands::Status(args),
+            } => {
+                assert!(!args.all && !args.no_logins);
+                assert_eq!(args.manifest, None);
+                assert_eq!(
+                    args.logins_deadline, None,
+                    "the default is applied at run time"
+                );
+            }
+            other => panic!("expected workstreams status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workstreams_logins_deadline_must_be_1_to_600() {
+        for ok in ["1", "600"] {
+            assert!(
+                Cli::try_parse_from([
+                    "amplihack",
+                    "workstreams",
+                    "status",
+                    "--logins-deadline",
+                    ok
+                ])
+                .is_ok(),
+                "{ok}"
+            );
+        }
+        for bad in ["0", "601", "-1", "abc"] {
+            assert!(
+                Cli::try_parse_from([
+                    "amplihack",
+                    "workstreams",
+                    "status",
+                    "--logins-deadline",
+                    bad
+                ])
+                .is_err(),
+                "{bad} accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn workstreams_needs_a_verb() {
+        assert!(Cli::try_parse_from(["amplihack", "workstreams"]).is_err());
+    }
 }

@@ -26,8 +26,8 @@ mod settings_refresh;
 mod shared_dirs;
 mod store;
 mod supervise_gate;
-mod usage_cmd;
-mod usage_parse;
+pub(crate) mod usage_cmd;
+pub(crate) mod usage_parse;
 
 #[cfg(test)]
 mod tests_commands;

@@ -206,3 +206,5 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+#[path = "workstream_status_skill_present.rs"]
+mod workstream_status_skill_present;

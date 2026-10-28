@@ -210,6 +210,7 @@ export AMPLIHACK_CONTEXT_FILE="$WORK/context.json"
 install_fake_tools() {
   mkdir -p "$1" "$1/../recipes"
   cp "$FAKE_HOME/amplifier-bundle/tools/autodrive_loop.sh" \
+     "$FAKE_HOME/amplifier-bundle/tools/autodrive_layout.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_crusty_rereview.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/recipe_context_value.sh" \
      "$FAKE_HOME/amplifier-bundle/tools/autodrive_worktree_guard.sh" \

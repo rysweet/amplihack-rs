@@ -41,11 +41,26 @@
 # to git or gh. Those two are NEVER used; see
 # docs/reference/auto-drive-to-merge.md#two-absolute-prohibitions.
 
+# --- layout ----------------------------------------------------------------
+
+# The state layout (subdir, phases file, phase and loop names, file affixes) is
+# defined once, in autodrive_layout.sh beside this file. `amplihack workstreams
+# status` compiles the same file in to read this state (issue #1710). Missing,
+# this file fails loudly rather than guess the names.
+# shellcheck source=autodrive_layout.sh
+if _ad_l="$(dirname -- "${BASH_SOURCE[0]}")/autodrive_layout.sh" && [ -f "$_ad_l" ] && [ ! -L "$_ad_l" ]; then
+  . "$_ad_l"; unset _ad_l
+else
+  unset _ad_l
+  echo "ERROR: autodrive_layout.sh not found beside ${BASH_SOURCE[0]}; the auto-drive state layout is unknown" >&2
+  return 1 2>/dev/null || exit 1
+fi
+
 # --- paths -----------------------------------------------------------------
 
 # autodrive_state_root -> the auto-drive state root directory.
 autodrive_state_root() {
-  printf '%s/auto-drive\n' "${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}"
+  printf '%s/%s\n' "${AMPLIHACK_STATE_DIR:-${HOME:-/tmp}/.amplihack/state}" "$AUTODRIVE_STATE_SUBDIR"
 }
 
 # autodrive_state_key <repo_path> <branch_or_pr> -> a filesystem-safe key.
@@ -163,13 +178,13 @@ autodrive_untrusted_entries() {
 
 autodrive_mark_phase_done() {
   local dir="${1:?state dir}" phase="${2:?phase}"
-  ( umask 077 && printf '%s\t%s\n' "$phase" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$dir/phases.tsv" )
+  ( umask 077 && printf '%s\t%s\n' "$phase" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$dir/${AUTODRIVE_PHASES_FILE}" )
 }
 
 autodrive_phase_done() {
   local dir="${1:?state dir}" phase="${2:?phase}"
-  [ -f "$dir/phases.tsv" ] || return 1
-  grep -qF "$(printf '%s\t' "$phase")" "$dir/phases.tsv"
+  [ -f "$dir/${AUTODRIVE_PHASES_FILE}" ] || return 1
+  grep -qF "$(printf '%s\t' "$phase")" "$dir/${AUTODRIVE_PHASES_FILE}"
 }
 
 # autodrive_record_crusty_loop_done <dir> -> records a crusty loop that ended
@@ -180,13 +195,13 @@ autodrive_phase_done() {
 # for DONE first; this function does not.
 autodrive_record_crusty_loop_done() {
   local dir="${1:?state dir}" f id
-  for f in "$dir"/crusty-round-*.json.findings; do
+  for f in "$dir/${AUTODRIVE_LOOP_CRUSTY}${AUTODRIVE_ROUND_INFIX}"*.json.findings; do
     [ -f "$f" ] || continue
     while IFS= read -r id; do
       [ -n "$id" ] && autodrive_record_resolved "$dir" "$id"
     done < "$f"
   done
-  autodrive_mark_phase_done "$dir" "crusty-loop"
+  autodrive_mark_phase_done "$dir" "$AUTODRIVE_PHASE_CRUSTY_LOOP"
 }
 
 # autodrive_clear_phase <dir> <phase> -> removes every phases.tsv row whose
@@ -202,11 +217,11 @@ autodrive_clear_phase() {
   local -x LC_ALL=C
   local dir="${1:-}" phase="${2:-}" re='^[a-z][a-z-]*$' f="" tmp=""
   [ -n "$dir" ] && [[ "$phase" =~ $re ]] || return 1
-  f="${dir}/phases.tsv"
+  f="${dir}/${AUTODRIVE_PHASES_FILE}"
   [ ! -L "$f" ] || return 1
   [ -e "$f" ] || return 0
   [ -f "$f" ] || return 1
-  tmp="$(umask 077 && mktemp "${dir}/.phases.tsv.XXXXXX" 2>/dev/null)" || return 1
+  tmp="$(umask 077 && mktemp "${dir}/.${AUTODRIVE_PHASES_FILE}.XXXXXX" 2>/dev/null)" || return 1
   if awk -F '\t' -v p="$phase" '$1 != p' "$f" > "$tmp" 2>/dev/null && mv -f -- "$tmp" "$f"; then
     return 0
   fi
@@ -233,7 +248,7 @@ autodrive_blob_hash() {
 autodrive_manifest_row() {
   local -x LC_ALL=C
   local loop="${2:-}" re='^[a-z][a-z-]*$'
-  local m="${1:-}/${loop}-records.tsv"
+  local m="${1:-}/${loop}${AUTODRIVE_RECORDS_SUFFIX}"
   [[ "$loop" =~ $re ]] || return 1
   { [ -n "${1:-}" ] && [ -f "$m" ] && [ ! -L "$m" ]; } || return 1
   LC_ALL=C tr -d '\r' < "$m" | LC_ALL=C awk -F '\t' -v loop="$loop" '
@@ -248,7 +263,7 @@ autodrive_manifest_row() {
 }
 
 # autodrive_crusty_manifest_row <dir> -> autodrive_manifest_row <dir> crusty.
-autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
+autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" "$AUTODRIVE_LOOP_CRUSTY"; }
 
 # autodrive_crusty_final <state dir> -> criterion 3 under auto-drive (#1517).
 #
@@ -272,7 +287,7 @@ autodrive_crusty_manifest_row() { autodrive_manifest_row "${1:-}" crusty; }
 autodrive_crusty_final() {
   local -x LC_ALL=C
   local dir="${1:-}" row="" file="" want="" copy="" tok="" sha="" latest=""
-  if [ -z "$dir" ] || ! autodrive_phase_done "$dir" "crusty-loop"; then
+  if [ -z "$dir" ] || ! autodrive_phase_done "$dir" "$AUTODRIVE_PHASE_CRUSTY_LOOP"; then
     printf 'crusty-loop-not-done\n'; return 1
   fi
   row="$(autodrive_crusty_manifest_row "$dir")" || { printf 'crusty-manifest-missing\n'; return 1; }
@@ -282,7 +297,7 @@ autodrive_crusty_final() {
   fi
   copy="$(mktemp "${TMPDIR:-/tmp}/autodrive-crusty.XXXXXX" 2>/dev/null)" \
     || { echo "ERROR: cannot create temporary copy" >&2; printf 'crusty-record-modified\n'; return 1; }
-  latest="$dir/crusty-latest.json"
+  latest="$dir/${AUTODRIVE_LOOP_CRUSTY}${AUTODRIVE_LATEST_SUFFIX}"
   if ! cat -- "$dir/$file" > "$copy" 2>/dev/null \
      || [ "$(autodrive_blob_hash "$dir" < "$copy")" != "$want" ] \
      || [ ! -f "$latest" ] || [ -L "$latest" ] \

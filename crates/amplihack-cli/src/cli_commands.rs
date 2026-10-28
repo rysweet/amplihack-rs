@@ -316,6 +316,11 @@ MODEL SELECTION (issues #1421, #1527)
         #[command(subcommand)]
         command: RecipeCommands,
     },
+    /// Workstream status: this session's detached runs and login capacity
+    Workstreams {
+        #[command(subcommand)]
+        command: crate::commands::workstreams::WorkstreamsCommands,
+    },
     /// Provider-neutral workflow helper utilities.
     Workflow {
         #[command(subcommand)]

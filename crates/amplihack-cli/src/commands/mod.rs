@@ -34,6 +34,7 @@ pub mod session_tree;
 pub mod signal;
 pub mod uvx_help;
 pub mod workflow;
+pub mod workstreams;
 
 use crate::{
     BuilderCommands, Commands, HygieneCommands, LiteLlmCommands, MemoryCommands, ModeCommands,
@@ -432,6 +433,7 @@ pub fn dispatch(command: Commands) -> Result<()> {
         ),
         Commands::Recipe { command } => dispatch_recipe(command),
         Commands::Workflow { command } => workflow::dispatch(command),
+        Commands::Workstreams { command } => workstreams::dispatch(command),
         Commands::Mode { command } => dispatch_mode(command),
         Commands::Lock { message } => lock::run_lock(message.as_deref()),
         Commands::Unlock => lock::run_unlock(),

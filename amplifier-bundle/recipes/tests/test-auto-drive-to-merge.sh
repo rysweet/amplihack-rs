@@ -722,7 +722,7 @@ done
 # would resolve "launch-side" recipes from that tree. It must refuse before a
 # single round runs.
 mkdir -p "${TAMPERED}/amplifier-bundle/tools"
-for t in autodrive_loop.sh autodrive_state.sh autodrive_worktree_guard.sh; do
+for t in autodrive_loop.sh autodrive_layout.sh autodrive_state.sh autodrive_worktree_guard.sh; do
   cp "$(dirname "${LOOP}")/${t}" "${TAMPERED}/amplifier-bundle/tools/${t}"
 done
 LOOP_DIR="${WORK}/loop-inside"; mkdir -p "${LOOP_DIR}"
@@ -1486,7 +1486,7 @@ fi
 # The gate copied alone, with no platform facts tool beside it, cannot count
 # the threads, and an uncounted criterion blocks.
 LONELY_PF="${WORK_PHYS}/lonely-pf"; mkdir -p "${LONELY_PF}"
-cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${LONELY_PF}/"
+cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_layout.sh" "${TOOLS}/autodrive_trust.sh" "${LONELY_PF}/"
 GATE_SCRIPT="${LONELY_PF}/autodrive_merge_gate.sh" gate_run green --round-record "$REC" --qa-evidence "$QA"; rc=$?
 if [ "$rc" -ne 0 ] && grep -qF 'review-thread state is unreadable' "${GATE_DIR}/err"; then
   pass "GATE-threads-no-reader" "without autodrive_platform_facts.sh beside the gate, the review threads block the merge"
@@ -1536,7 +1536,7 @@ if [ -x "${GUARD_1551}/gh" ]; then
   # A copy of the gate with every helper beside it passes every check and then
   # has its merge refused: only the bundle's own gate may merge.
   COPY_1551="${WORK_PHYS}/gate-copy-1551"; mkdir -p "${COPY_1551}"
-  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
+  cp "${GATE}" "${TOOLS}/autodrive_state.sh" "${TOOLS}/autodrive_layout.sh" "${TOOLS}/autodrive_trust.sh" "${TOOLS}/autodrive_platform_facts.sh" "${COPY_1551}/"
   GATE_PRIV=1 GATE_SCRIPT="${COPY_1551}/autodrive_merge_gate.sh" GATE_PATH_PREFIX="${GUARD_1551}" \
     gate_run merges --round-record "$REC" --qa-evidence "$QA"; rc=$?
   if [ "$rc" -eq 1 ] && printf '%s' "${GATE_OUT}" | grep -qF '"merge_result":"NOT_MERGED"' \
@@ -1837,7 +1837,7 @@ GATE_CRUSTY=concerns GATE_CRUSTY_MUT=loop-clean-round-2 gate_passes "GATE-range-
 
 # The trust helper is sourced from beside the gate and nowhere else.
 LONELY2="${WORK}/lonely-gate-2"; mkdir -p "${LONELY2}"
-cp "${GATE}" "${LONELY2}/autodrive_merge_gate.sh"; cp "${STATE_HELPER}" "${LONELY2}/autodrive_state.sh"
+cp "${GATE}" "${LONELY2}/autodrive_merge_gate.sh"; cp "${STATE_HELPER}" "${LONELY2}/autodrive_state.sh"; cp "${TOOLS}/autodrive_layout.sh" "${LONELY2}/"
 GATE_SCRIPT="${LONELY2}/autodrive_merge_gate.sh" gate_blocks "GATE-no-trust-helper" "autodrive_trust\.sh" \
   "a gate with no autodrive_trust.sh beside it blocks rather than searching elsewhere" --round-record "$G_REC" --qa-evidence "$G_QA"
 

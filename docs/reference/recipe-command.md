@@ -343,6 +343,13 @@ log: /home/alice/.amplihack/recipe-logs/amp-smart-orchestrator-myapp-20261020-10
   when you launch, not later, and reach the run in a 0600
   `<session>.context.json` in the log directory, removed when the run ends.
   No context value is on the pane's command line.
+- **Parentage** — a 0600 `<session>.meta.json` in the log directory records
+  who started the run: `$AMPLIHACK_SESSION_ID` and, when the launcher is
+  itself a detached run, its session name. The run gets
+  `AMPLIHACK_DETACHED_SESSION=<session>`, so runs it starts record it as
+  their parent. The file holds no task text and no secrets, stays after the
+  run ends, and is removed only when the launch fails.
+  [`amplihack workstreams status`](../skills/workstream-status.md) reads it.
 - **Start-up check** — the launch returns only after the pane has written
   `amplihack: detached run started (pid N)` to the log. If the pane cannot
   start the run, it writes the reason there instead, and the launch prints it

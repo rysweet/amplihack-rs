@@ -47,7 +47,7 @@ async-trait = { workspace = true }
 clap = { workspace = true }
 clap_complete = "4"
 dialoguer = "0.11"
-chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 # Issue #1578: `profile usage` resolves reset times printed with an IANA zone.
 chrono-tz = { version = "0.10", default-features = false, features = ["std"] }
 flate2 = "1"
