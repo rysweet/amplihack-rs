@@ -258,19 +258,29 @@ pub fn platform_profiles(store: &ProfileStore, home: &Path) -> Vec<ProfileName> 
 /// The launch guard for `name` (`profile run`, `launch`, `claude` and
 /// `switch`): refuses a subscription profile without its own OAuth login
 /// unless `held`, and, while `.auto-switch` is corrupt, any profile without
-/// its own OAuth login, since no override can then be trusted.
+/// its own OAuth login, since no override can then be trusted. `held` is
+/// called only when a refusal would otherwise follow.
 pub fn launch_guard(
     store: &ProfileStore,
     name: &ProfileName,
     home: Option<&Path>,
-    held: bool,
+    held: impl FnOnce() -> bool,
 ) -> Result<Resolved, ProfileError> {
     let ctx = Ctx::load(store, home);
     let r = ctx.resolve(store, name);
-    if ctx.corrupt() && !r.own_oauth && !held {
-        return Err(ProfileError::SubscriptionNoLogin(name.to_string()));
+    // With no override to trust, every profile is checked as a
+    // subscription profile.
+    let checked = if ctx.corrupt() {
+        Resolved {
+            kind: Kind::Subscription,
+            ..r
+        }
+    } else {
+        r
+    };
+    if guard(&checked, name, false).is_err() {
+        guard(&checked, name, held())?;
     }
-    guard(&r, name, held)?;
     Ok(r)
 }
 

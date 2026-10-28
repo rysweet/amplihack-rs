@@ -295,6 +295,7 @@ fn overflow_blocks(
 
 /// The selected API-key profiles (issue #1700), which of them is live in
 /// `~/.claude`, and the API-key block.
+#[derive(Default)]
 struct ApiKeys {
     names: Vec<ProfileName>,
     live: Option<ProfileName>,
@@ -314,11 +315,7 @@ impl ApiKeys {
             .filter(|p| selected.contains(p))
             .collect();
         if names.is_empty() {
-            return Self {
-                names,
-                live: None,
-                block: None,
-            };
+            return Self::default();
         }
         let live = names
             .iter()
@@ -341,11 +338,7 @@ impl ApiKeys {
 
     #[cfg(not(unix))]
     fn load(_: &ProfileStore, _: Option<&std::path::Path>, _: &[ProfileName]) -> Self {
-        Self {
-            names: Vec::new(),
-            live: None,
-            block: None,
-        }
+        Self::default()
     }
 
     /// One row per API-key profile, with no reading.

@@ -518,16 +518,10 @@ fn kind_guard(
     home: Option<&std::path::Path>,
     rotator_live: bool,
 ) -> Result<kind::Resolved, ProfileError> {
-    let held = || {
+    kind::launch_guard(store, name, home, || {
         auto_switch::login_held_elsewhere(store, name)
             || (rotator_live && rotate::is_live(store, home, name))
-    };
-    // The cheap check first: most launches have their own OAuth login.
-    match kind::launch_guard(store, name, home, false) {
-        Ok(r) => Ok(r),
-        Err(e) if held() => kind::launch_guard(store, name, home, true).map_err(|_| e),
-        Err(e) => Err(e),
-    }
+    })
 }
 
 /// Printed by `profile switch --none`.
