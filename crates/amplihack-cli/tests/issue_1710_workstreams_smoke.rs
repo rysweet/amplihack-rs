@@ -199,6 +199,45 @@ fn a_stalled_probe_shows_no_reading_within_the_deadline() {
     assert!(row.contains("no reading"), "{row}");
 }
 
+/// Found by outside-in testing: at the deadline the command exited while the
+/// `claude --version` check (before any usage probe) was still running, and
+/// that process was left behind under PID 1 for as long as it hung.
+#[test]
+fn a_stalled_claude_is_not_left_running_after_the_deadline() {
+    let fx = Fx::new();
+    fx.add_profile("spare");
+    let pids = fx.marks.join("claude-pids");
+    fx.stub(
+        "claude",
+        &format!("echo $$ >> '{}'\nexec sleep 30", pids.display()),
+    );
+    let (out, _) = fx.run(
+        &["workstreams", "status", "--logins-deadline", "1"],
+        &[("AMPLIHACK_SESSION_ID", "me")],
+    );
+    assert!(out.status.success(), "{}", stderr(&out));
+    let started = fs::read_to_string(&pids).expect("the stub claude ran");
+    let alive = |pid: &str| {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|s| {
+            s.rsplit(')')
+                .next()
+                .is_some_and(|r| !r.trim_start().starts_with('Z'))
+        })
+    };
+    let until = Instant::now() + Duration::from_secs(3);
+    let mut left: Vec<&str> = started.split_whitespace().collect();
+    while !left.is_empty() && Instant::now() < until {
+        left.retain(|p| alive(p));
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    for pid in &left {
+        let _ = std::process::Command::new("kill")
+            .args(["-9", pid])
+            .status();
+    }
+    assert!(left.is_empty(), "claude still running after exit: {left:?}");
+}
+
 #[test]
 fn without_an_identity_the_hint_is_printed_and_other_runs_are_hidden() {
     let fx = Fx::new();

@@ -214,6 +214,42 @@ const SUBPROCESS_SPAWN_RETRY_INTERVAL: Duration = Duration::from_millis(20);
 /// A freshly written executable can still be held open for writing, so the
 /// first `spawn` may fail with ETXTBSY; retry within a bounded window instead
 /// of surfacing a spurious failure.
+/// Kill a probe child when amplihack exits before it does (issue #1710).
+///
+/// [`run_capped_output_with_timeout`] waits for or kills its child, so the
+/// child is never meant to outlive the call. But a caller can abandon the
+/// thread making the call: `workstreams status` gives up on its logins
+/// section at a deadline and exits, and a `claude --version` that has not
+/// answered by then used to be left running under PID 1. On Linux the kernel
+/// now sends it SIGKILL when the thread that spawned it dies, which includes
+/// the whole process exiting. That thread blocks on the child until it exits
+/// or is killed, so no probe in normal use is cut short. Elsewhere this does
+/// nothing.
+#[cfg(target_os = "linux")]
+fn die_with_parent(cmd: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: the closure runs in the forked child before exec and calls only
+    // async-signal-safe functions (prctl, getppid). It allocates nothing and
+    // touches no shared parent state.
+    unsafe {
+        cmd.pre_exec(move || {
+            if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // The parent exited between fork and prctl: the signal will
+            // never come, so do not start.
+            if libc::getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn die_with_parent(_cmd: &mut Command) {}
+
 fn spawn_subprocess(cmd: &mut Command) -> std::io::Result<std::process::Child> {
     let started = Instant::now();
     loop {
@@ -349,6 +385,7 @@ pub(crate) fn run_capped_output_with_timeout(
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
+    die_with_parent(&mut cmd);
     let started = Instant::now();
     let mut child = spawn_subprocess(&mut cmd)?;
     let stdout = child
