@@ -16,6 +16,11 @@ use tempfile::TempDir;
 #[path = "default_workflow_terminal_state/startup.rs"]
 mod startup;
 
+// Register through this authorised module; the shared integration entrypoint
+// belongs to another source lease.
+#[path = "workflow_language_verification.rs"]
+mod workflow_language_verification;
+
 fn workspace_root() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.pop();
