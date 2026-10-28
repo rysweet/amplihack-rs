@@ -3,7 +3,10 @@
 //! check and swap, then,
 //! still under the lock, pins rotation to NAME, makes it the default and
 //! records the switch as the ledger's last cycle, so the limit-resume hook
-//! wakes sessions stopped before it. `release` removes the pin and the
+//! wakes sessions stopped before it. When the live login cannot be moved
+//! for a reason about the live login or the target, it still makes NAME the
+//! default for new launches, under the lock, and holds nothing
+//! ([`Switched::DefaultOnly`]). `release` removes the pin and the
 //! default together, under the same lock, for `profile switch --none`. Prints nothing,
 //! never looks for `claude` and never starts the rotator; see "Rotate
 //! switch" in docs/reference/profile-command.md.
@@ -28,8 +31,20 @@ use std::path::Path;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Switched {
-    Moved { from: ProfileName, to: ProfileName },
+    Moved {
+        from: ProfileName,
+        to: ProfileName,
+    },
     AlreadyLive(ProfileName),
+    /// The live login was not moved, for `reason` (a refusal about the live
+    /// login or the target, taken under the lock after recovery). Only
+    /// `.default` was written: no pin, no ledger record, no swap. `held` is
+    /// the profile an earlier switch still holds rotation on, if any. The
+    /// caller still exits non-zero.
+    DefaultOnly {
+        reason: String,
+        held: Option<ProfileName>,
+    },
 }
 
 /// The login moved, but a write after the swap failed; `what` names it.
@@ -41,18 +56,30 @@ pub struct AfterSwapFailure {
     pub err: ProfileError,
 }
 
-fn refused(line: &str) -> ProfileError {
+/// A log or ALERT line as a refusal reason, without its prefix.
+fn reason_of(line: &str) -> String {
     let text = line.strip_prefix("ALERT: ").unwrap_or(line);
-    ProfileError::RotateRefused(text.strip_prefix("skip: ").unwrap_or(text).to_string())
+    text.strip_prefix("skip: ").unwrap_or(text).to_string()
+}
+
+fn refused(line: &str) -> ProfileError {
+    ProfileError::RotateRefused(reason_of(line))
 }
 
 fn lock_busy() -> ProfileError {
     refused(msg::LOCK_BUSY)
 }
 
-/// Moves `name`'s login into `~/.claude` and pins rotation to it. Every
-/// refusal is `RotateRefused` and writes no pin, no `.default` and no ALERT;
-/// recovery of an interrupted swap may already have run and stays done.
+/// Moves `name`'s login into `~/.claude` and pins rotation to it. A refusal
+/// before the lock is held and recovery has settled (lock busy, prototype,
+/// inconsistent recovery) is `RotateRefused` and writes nothing. A refusal
+/// after that, about the live login or `name` itself (`LiveUnusable`, a
+/// candidate skip reason, a swap refusal, which moves nothing), still writes
+/// `.default` under the lock and returns [`Switched::DefaultOnly`]: setting
+/// the default for new launches does not depend on moving the live login
+/// (issue #1691, "keeps the `.default` pointer behaviour"). No refusal writes
+/// a pin or an ALERT; recovery of an interrupted swap may already have run
+/// and stays done.
 pub fn switch_live(
     store: &ProfileStore,
     home: &Path,
@@ -60,14 +87,25 @@ pub fn switch_live(
 ) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
     // Defaults only: a switch decides nothing, so no tuning applies.
     let s = settings::resolve(&TuneFlags::default(), None, &|_| None)?;
-    let mut ctx = Ctx::new(store.clone(), home.to_path_buf(), s);
+    switch_in(Ctx::new(store.clone(), home.to_path_buf(), s), name)
+}
+
+/// [`switch_live`] on a context the caller built; tests set `ctx.scan`.
+pub(super) fn switch_in(
+    mut ctx: Ctx,
+    name: &ProfileName,
+) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
+    let store = &ctx.store.clone();
+    let home = &ctx.home.clone();
     let (mut out, prelude) = locked_prelude(&mut ctx, false)?;
     let (lock, first) = match prelude {
         Prelude::Ready { lock, first, .. } => (lock, first),
         Prelude::LockBusy => return Err(lock_busy()),
         Prelude::AutoSwitchInconsistent => return Err(refused(msg::AUTO_SWITCH_INCONSISTENT)),
         Prelude::Inconsistent(reason) => return Err(refused(&msg::inconsistent(&reason))),
-        Prelude::LiveUnusable { line, .. } => return Err(refused(&line)),
+        Prelude::LiveUnusable { line, .. } => {
+            return default_only(&ctx.rs, store, name, reason_of(&line));
+        }
     };
     let source = match &first.live {
         LiveId::Known(live) if live == name => None,
@@ -76,7 +114,7 @@ pub fn switch_live(
         // The prelude already refuses these as `LiveUnusable`.
         other => {
             let line = live_alert(other).map_or_else(|| msg::NO_LOGIN.to_string(), |a| a.1);
-            return Err(refused(&line));
+            return default_only(&ctx.rs, store, name, reason_of(&line));
         }
     };
     let switched = match source {
@@ -86,9 +124,16 @@ pub fn switch_live(
         }
         Some(source) => {
             if let Some(reason) = not_a_candidate(store, &first, name) {
-                return Err(ProfileError::RotateRefused(reason));
+                return default_only(&ctx.rs, store, name, reason);
             }
-            let from = swap::swap(store, &ctx.rs, home, source, name, now())?;
+            let from = match swap::swap(store, &ctx.rs, home, source, name, now()) {
+                Ok(from) => from,
+                // A swap refusal changes nothing (see `swap::swap`).
+                Err(ProfileError::RotateRefused(reason)) => {
+                    return default_only(&ctx.rs, store, name, reason);
+                }
+                Err(e) => return Err(e),
+            };
             out.emit(now(), &msg::switched(&from, name));
             Switched::Moved {
                 from,
@@ -128,6 +173,27 @@ pub fn switch_live(
         shared_dirs::ensure_for(store, from);
     }
     Ok(Ok(switched))
+}
+
+/// The live login stays where it is; make `name` the default for new
+/// launches anyway, still under the caller's lock, and write nothing else.
+/// When the pointer cannot be written either, the refusal says both.
+fn default_only(
+    rs: &RotateState,
+    store: &ProfileStore,
+    name: &ProfileName,
+    reason: String,
+) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
+    if let Err(e) = pointer::write(store.root(), name) {
+        return Err(ProfileError::RotateRefused(format!(
+            "{reason}; writing the default pointer also failed: {e}"
+        )));
+    }
+    let held = match pin::read(rs) {
+        pin::PinState::Pinned(p) | pin::PinState::Missing(p) => Some(p),
+        pin::PinState::None | pin::PinState::Unreadable => None,
+    };
+    Ok(Ok(Switched::DefaultOnly { reason, held }))
 }
 
 /// Why the rotator would not swap to `name`, if it would not: the reason
@@ -197,7 +263,10 @@ fn record_switch(rs: &RotateState) -> Result<(), ProfileError> {
 /// `profile switch --none`: under the rotate lock that `switch_live` holds
 /// while it writes the pin and the default pointer, checks for and removes
 /// both, so a concurrent switch either finishes first (and is undone) or
-/// starts after (and stands); pin and default never disagree. When the lock is busy nothing is removed.
+/// starts after (and stands), and neither is left behind. (A default-only
+/// refusal writes `.default` and leaves an earlier pin, so the two can name
+/// different profiles until the next switch; this removes both.) When the
+/// lock is busy nothing is removed.
 pub fn release(store: &ProfileStore) -> Result<Released, ProfileError> {
     let rs = RotateState::new(store.root());
     prototype_guard(store.root())?;

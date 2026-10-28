@@ -210,16 +210,36 @@ swap, by the usual [rules](#when-a-swap-happens). Run
 
 ### When switch refuses
 
-`switch` checks everything before it moves anything, and it refuses every
-profile the rotator would not swap to: the reasons in
-[Rotate candidates](../reference/profile-command.md#rotate-candidates). When
-it refuses, it exits with status 1 and writes no hold, no default, no ALERT
-and no swap.
+`switch` checks everything before it moves anything, and it refuses to move
+the login of every profile the rotator would not swap to: the reasons in
+[Rotate candidates](../reference/profile-command.md#rotate-candidates). Not
+moving the login does not stop the profile from becoming the default for
+new launches, which `switch` has always set. For a refusal about the live
+login or the profile itself (every row below except the first two),
+`switch` still writes `.default`, then exits with status 1:
+
+```
+Default for new launches: spare
+Live login not moved; rotation not held.
+error: swap refused: profile spare is not a rotate candidate (session running): a running process has CLAUDE_CONFIG_DIR set to it; end that session first
+hint: nothing was moved; see "Swap refused" in docs/howto/claude-profile-rotation.md
+```
+
+It writes no hold, no ALERT and no swap. A hold from an earlier `switch`
+stays where it was, and the second line names it:
+``Live login not moved; rotation still held on work until `amplihack profile switch --none`.``
+Plain `claude` keeps using the login in `~/.claude`; amplihack launches
+without `--profile` use `spare` in its own directory.
+
+A busy lock or an inconsistent recovery writes nothing at all, `.default`
+included: they say nothing about the profile, so try again once they are
+resolved.
 
 Before those checks it runs [recovery](#recovery), as every rotate cycle
 does. If an earlier swap was interrupted, recovery finishes or rolls it back
 and logs a `recovery: ...` line, and that stays done even when `switch`
-then refuses. Without a pending recovery, a refusal changes nothing.
+then refuses. Without a pending recovery, a refusal changes nothing but
+`.default`.
 
 | Message | What to do |
 |---------|------------|
@@ -228,7 +248,7 @@ then refuses. Without a pending recovery, a refusal changes nothing.
 | `no login in ~/.claude; no swap` | Log in with plain `claude` first. `switch` never fills an empty `~/.claude`. |
 | `the account in ~/.claude is not the one the ledger names (live=work); no swap` | Someone ran `/login` in `~/.claude`; follow the steps in [Swap refused](#swap-refused). |
 | ``profile spare has no stored login; run `amplihack profile login spare` first`` | The profile has no `.credentials.json` of its own. Log it in, then switch. Not checked when `spare` is already live. |
-| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch. If the message says running sessions cannot be seen, `/proc` cannot be scanned here and no profile can be switched to; the rotator cannot swap there either. |
+| `profile spare is not a rotate candidate (session running): ...` | A running session uses `spare` (`CLAUDE_CONFIG_DIR` set to its directory). Moving its login would log that session out. End it, then switch; `spare` is already the default for new launches. If the message says running sessions cannot be seen, `/proc` cannot be scanned here (every system but Linux, including macOS), so no login can be moved; the rotator cannot swap there either. `switch` there only sets the default for new launches and exits 1. |
 | `profile spare is not a rotate candidate (leased): ...`, `(hosting)`, `(parked)` | Auto-switch has lent `spare`'s login to another session, or `spare`'s directory holds another account's login. Wait for that session to end; auto-switch then returns the logins. |
 | `profile spare is not a rotate candidate (excluded): ...` | `spare` is in the auto-switch exclude list, which keeps it out of rotation; a switch is a rotation done by hand. Set the list without it with `amplihack profile auto-switch exclude`, then switch. |
 | `profile spare is not a rotate candidate (no account): ...` | `spare/.claude.json` has no `oauthAccount`, so `~/.claude.json` could not be updated. Run `amplihack profile login spare`. |
@@ -1022,7 +1042,9 @@ full rule is in
   `atomic exchange is not supported here`. Hosts without `/proc` cannot tell which profiles have running
   sessions, so every profile counts as in use and none is a candidate;
   `status` reports `unverifiable`. On Windows every `rotate` command is
-  refused.
+  refused. On all of these, `profile switch <name>` still makes `<name>` the
+  default for new launches, prints `Live login not moved; ...`, holds
+  nothing and exits 1.
 - **Token refresh race.** A `claude` process that refreshes its token during
   the two renames of a swap can write the old account's token into
   `~/.claude`. The rotator swaps only after taking Claude's refresh lock in

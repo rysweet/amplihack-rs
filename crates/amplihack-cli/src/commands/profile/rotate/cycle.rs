@@ -16,7 +16,9 @@ use super::prelude::{Prelude, locked_prelude};
 use super::settings::Settings;
 use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation, exists, now};
+use crate::commands::profile::auto_switch::kit::{
+    Liveness, Rotated, capacity_from_rotation, exists, now, scan_system,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -74,6 +76,10 @@ pub struct Ctx {
     pub(super) last_proto: Option<&'static str>,
     last_gate: Option<String>,
     pub(super) failed_live: u32,
+    /// Finds the running sessions; `scan_system` outside tests. A test sets
+    /// it to return `Liveness::Unsupported`, which is what every non-Linux
+    /// system gets.
+    pub(super) scan: fn(&Path) -> Liveness,
 }
 
 impl Ctx {
@@ -89,6 +95,7 @@ impl Ctx {
             last_proto: None,
             last_gate: None,
             failed_live: 0,
+            scan: scan_system,
         }
     }
 

@@ -10,13 +10,23 @@
 //! checked for every reason directly, including the ones the fixture cannot
 //! reach end to end (`/proc` unreadable, a `hosting` directory without a
 //! running session).
+//!
+//! A refusal moves nothing but still makes the target the default for new
+//! launches (issue #1691, "keeps the `.default` pointer behaviour"); the last
+//! section runs the whole switch with `/proc` unscannable, as on macOS.
 
+use super::TuneFlags;
+use super::cycle::Ctx;
 use super::identify::{LiveId, Skip};
 use super::observe::Snap;
-use super::pin::PinState;
+use super::pin::{self, PinState};
+use super::settings;
 use super::switch::not_a_candidate;
-use super::tests_swap::{CREDS, Env, env, n, private};
+use super::switch::{Switched, switch_in};
+use super::tests_swap::{CREDS, Env, env, ino_at, n, private};
 use super::tests_switch::assert_refused;
+use crate::commands::profile::auto_switch::kit::Liveness;
+use crate::commands::profile::pointer;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
@@ -270,4 +280,79 @@ fn a_profile_with_no_recorded_skip_is_a_candidate() {
     let mut s = snap_with(Skip::Parked, true);
     s.skips.retain(|(name, _)| name != &n("spare"));
     assert_eq!(not_a_candidate(&e.store, &s, &n("spare")), None);
+}
+
+// --- the default for new launches survives a refused live move ---------------
+
+/// The whole switch with `/proc` unscannable: `Liveness::Unsupported`, what
+/// `scan_system` returns on macOS and every other non-Linux system.
+fn switch_without_liveness(e: &Env, name: &str) -> Switched {
+    let s = settings::resolve(&TuneFlags::default(), None, &|_| None).unwrap();
+    let mut ctx = Ctx::new(e.store.clone(), e.home.clone(), s);
+    ctx.scan = |_| Liveness::Unsupported;
+    match switch_in(ctx, &n(name)) {
+        Ok(Ok(s)) => s,
+        Ok(Err(f)) => panic!("unexpected partial failure: {}", f.what),
+        Err(err) => panic!("expected a default-only refusal, got {err:?}"),
+    }
+}
+
+#[test]
+fn without_liveness_the_live_login_stays_and_the_default_is_still_set() {
+    // macOS: every profile counts as having a running session, so no live
+    // login can be moved; `profile switch spare` must still make spare the
+    // default for new launches, as it did before #1691, and hold nothing.
+    let e = env();
+    let live = ino_at(&e.live());
+    match switch_without_liveness(&e, "spare") {
+        Switched::DefaultOnly { reason, held } => {
+            assert!(
+                reason.contains("running sessions cannot be seen here"),
+                "{reason}"
+            );
+            assert_eq!(held, None);
+        }
+        other => panic!("expected DefaultOnly, got {other:?}"),
+    }
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
+    assert_eq!(pin::read(&e.rs), PinState::None, "nothing is held");
+    assert_eq!(ino_at(&e.live()), live, "the live login stays");
+    assert!(!e.rs.journal.exists(), "no swap was started");
+}
+
+#[test]
+fn without_liveness_the_already_live_profile_is_still_switched_to() {
+    // The live profile needs no move, so `/proc` does not matter: pin,
+    // default and ledger record are written as on Linux.
+    let e = env();
+    let live = match super::tests_switch::switch(&e, "spare") {
+        Ok(Switched::Moved { to, .. }) => to,
+        other => panic!("{other:?}"),
+    };
+    pin::clear(&e.rs).unwrap();
+    pointer::clear(&e.root).unwrap();
+    assert_eq!(
+        switch_without_liveness(&e, live.as_str()),
+        Switched::AlreadyLive(live.clone())
+    );
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(live.clone()));
+    assert_eq!(pin::read(&e.rs), PinState::Pinned(live));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn a_refused_switch_keeps_an_earlier_hold_and_says_so() {
+    // work is live and held by an earlier switch; spare is open in a session.
+    // The default moves to spare, the hold stays on work, and the result
+    // names work so the command can print it.
+    let e = env();
+    assert_eq!(
+        super::tests_switch::switch(&e, "work").unwrap(),
+        Switched::AlreadyLive(n("work"))
+    );
+    let _s = Session::in_dir(&e.root.join("spare"));
+    let held = assert_refused(&e, "spare", "(session running)");
+    assert_eq!(held, Some(n("work")));
+    assert_eq!(pin::read(&e.rs), PinState::Pinned(n("work")));
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
 }

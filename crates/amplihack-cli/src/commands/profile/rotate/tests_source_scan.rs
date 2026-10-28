@@ -325,20 +325,22 @@ fn a_held_cycle_records_no_measurement() {
 #[test]
 fn the_hold_warning_follows_the_success_lines_only() {
     // D4: warn after the switch is known to have succeeded, never on the
-    // after-swap failure path.
+    // after-swap failure path or the default-only refusal.
+    let held = body_of(&source("mod.rs"), "print_held");
+    assert_before(&held, "Rotation held on", "warn_switch_hold", "print_held");
+    assert_eq!(held.matches("warn_switch_hold").count(), 1);
     let facade = body_of(&source("mod.rs"), "switch_live");
-    assert_before(
-        &facade,
-        "Rotation held on",
-        "warn_switch_hold",
-        "rotate::switch_live",
+    assert!(
+        !facade.contains("warn_switch_hold"),
+        "only through print_held"
     );
-    assert_before(&facade, "warn_switch_hold", "Err(f)", "rotate::switch_live");
     assert_eq!(
-        facade.matches("warn_switch_hold").count(),
-        1,
-        "one warning call, shared by the moved and already-live paths"
+        facade.matches("print_held").count(),
+        2,
+        "the moved and already-live paths"
     );
+    assert_before(&facade, "DefaultOnly", "print_held", "rotate::switch_live");
+    assert_before(&facade, "print_held", "Err(f)", "rotate::switch_live");
 }
 
 #[test]

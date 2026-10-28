@@ -423,8 +423,11 @@ amplihack profile switch --none   # no default, rotation released
 `switch` moves `work`'s login into `~/.claude` with the same swap
 [`profile rotate`](claude-profile-rotation.md) uses, and holds rotation on
 `work` until you run `switch --none`. Plain `claude` and every amplihack
-launch without `--profile` then use `work`. It needs Linux (or another Unix)
-and a profile that has a login of its own; see
+launch without `--profile` then use `work`. Moving the login needs Linux
+and a profile that has a login of its own. When the login cannot be moved
+(on macOS or Windows, or when `work` is open in a session of its own),
+`switch` still makes `work` the default for new launches, prints
+`Live login not moved; ...`, holds nothing, and exits 1; see
 [Switch to a login by hand](claude-profile-rotation.md#switch-to-a-login-by-hand)
 for the details and the refusals.
 

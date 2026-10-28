@@ -72,6 +72,47 @@ fn assert_refused_cleanly(f: &Fixture, args: &[&str], want: &str) {
     assert_log_clean(f);
 }
 
+/// The live login cannot be moved: exit 1 with `want` on stderr, but
+/// `target` is still made the default for new launches (issue #1691, "keeps
+/// the `.default` pointer behaviour"). Nothing else changes, `held` names
+/// the profile an earlier switch still holds rotation on.
+#[track_caller]
+fn assert_refused_default_only(f: &Fixture, target: &str, held: Option<&str>, want: &str) {
+    let mut before = (state(f), f.logins());
+    let out = f.run(&["profile", "switch", target]);
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "`switch {target}` must refuse\nstdout: {}\nstderr: {}",
+        text(&out.stdout),
+        text(&out.stderr)
+    );
+    let err = text(&out.stderr);
+    assert!(err.contains(want), "stderr lacks {want:?}: {err}");
+    let second = match held {
+        Some(h) => {
+            format!("Live login not moved; rotation still held on {h} until {RELEASE_HINT}.")
+        }
+        None => "Live login not moved; rotation not held.".to_string(),
+    };
+    assert_eq!(
+        text(&out.stdout),
+        format!("Default for new launches: {target}\n{second}\n")
+    );
+    for (label, v) in &mut before.0 {
+        if *label == ".default" {
+            *v = Some(format!("{target}\n").into_bytes());
+        }
+    }
+    assert_eq!(
+        (state(f), f.logins()),
+        before,
+        "a refused live move changed something other than .default"
+    );
+    assert!(f.probe_envs().is_empty(), "switch never runs claude");
+    assert_log_clean(f);
+}
+
 // --- AC1/AC2: the live login moves -----------------------------------------
 
 #[test]
@@ -336,9 +377,10 @@ fn switch_to_an_unknown_profile_changes_nothing() {
 fn switch_to_a_profile_without_a_stored_login_is_refused() {
     let f = Fixture::new();
     f.ok(&["profile", "add", "fresh"]);
-    assert_refused_cleanly(
+    assert_refused_default_only(
         &f,
-        &["profile", "switch", "fresh"],
+        "fresh",
+        None,
         "profile fresh has no stored login; run `amplihack profile login fresh` first",
     );
 }
@@ -347,7 +389,7 @@ fn switch_to_a_profile_without_a_stored_login_is_refused() {
 fn switch_with_no_login_in_home_is_refused() {
     let f = Fixture::new();
     fs::remove_file(f.home_login()).unwrap();
-    assert_refused_cleanly(&f, &["profile", "switch", "spare"], "no login in ~/.claude");
+    assert_refused_default_only(&f, "spare", None, "no login in ~/.claude");
 }
 
 #[test]
@@ -355,7 +397,25 @@ fn a_refused_swap_is_passed_through() {
     let f = Fixture::new();
     // Claude holds its refresh lock in ~/.claude: the swap refuses.
     fs::create_dir(f.home.join(".claude").join(".oauth_refresh.lock")).unwrap();
-    assert_refused_cleanly(&f, &["profile", "switch", "spare"], "refresh lock");
+    assert_refused_default_only(&f, "spare", None, "refresh lock");
+}
+
+#[test]
+fn a_profile_open_in_a_session_still_becomes_the_default() {
+    // The usual way a profile is used: a session runs with CLAUDE_CONFIG_DIR
+    // set to it. Its login cannot be moved, but new launches can default to
+    // it, as before #1691. An earlier hold on work stays and is named.
+    let f = Fixture::new();
+    f.ok(&["profile", "switch", "work"]);
+    let mut session = std::process::Command::new("sleep")
+        .arg("600")
+        .env("CLAUDE_CONFIG_DIR", f.root.join("spare"))
+        .spawn()
+        .expect("spawn sleep");
+    assert_refused_default_only(&f, "spare", Some("work"), "(session running)");
+    let _ = session.kill();
+    let _ = session.wait();
+    assert_eq!(fs::read_to_string(pin_path(&f)).unwrap(), "work\n");
 }
 
 // --- D5: a failure after the swap is reported truthfully --------------------

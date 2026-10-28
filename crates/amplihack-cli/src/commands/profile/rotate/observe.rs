@@ -12,9 +12,7 @@ use super::measure::{self, Live};
 use super::pin::{self, Gate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{
-    Liveness, State, effective, exists, now, scan_system,
-};
+use crate::commands::profile::auto_switch::kit::{Liveness, State, effective, exists, now};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 
@@ -35,7 +33,7 @@ pub struct Snap {
 pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
     let root = ctx.store.root();
     let (live, proto) = identify::live(&ctx.store, &ctx.rs, &ctx.home)?;
-    let liveness = scan_system(root);
+    let liveness = (ctx.scan)(root);
     let sees_sessions = matches!(liveness, Liveness::Known(_));
     let live_name = match &live {
         LiveId::Known(n) => Some(n.clone()),

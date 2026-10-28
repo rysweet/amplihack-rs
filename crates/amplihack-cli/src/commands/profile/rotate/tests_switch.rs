@@ -8,12 +8,16 @@
 //! Contract:
 //! - `switch_live(&ProfileStore, home: &Path, &ProfileName) ->
 //!   Result<Result<Switched, AfterSwapFailure>, ProfileError>`.
-//!   `Switched::{Moved { from, to }, AlreadyLive(ProfileName)}`.
+//!   `Switched::{Moved { from, to }, AlreadyLive(ProfileName),
+//!   DefaultOnly { reason, held }}`.
 //!   `AfterSwapFailure { what: &'static str, .. }` with `what` one of
 //!   `"rotation hold"`, `"default pointer"` or `"rotate ledger"`: the swap
-//!   ran, a later write failed. Every refusal is
-//!   `Err(ProfileError::RotateRefused(_))` and writes no pin, no `.default`,
-//!   no ledger ALERT and no swap.
+//!   ran, a later write failed. A refusal before the lock is held and
+//!   recovery has settled (lock busy, inconsistent recovery) is
+//!   `Err(ProfileError::RotateRefused(_))` and writes nothing
+//!   (`assert_refused_untouched`). A refusal after that, about the live login
+//!   or the target, is `DefaultOnly`: `.default` names the target and nothing
+//!   else changes — no pin, no ledger ALERT, no swap (`assert_refused`).
 //! - `release(&ProfileStore) -> Result<Released, ProfileError>`: removes the
 //!   pin and the default pointer together under the rotate lock;
 //!   `Released { pin, default }` says which were there.
@@ -29,6 +33,7 @@ use super::switch::{Switched, release, switch_live};
 use super::tests_swap::{CREDS, Env, LOCK, NOW, env, ino_at, json, login, n, private};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::State;
+use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::pointer;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -82,16 +87,60 @@ pub(super) fn switch(e: &Env, name: &str) -> Result<Switched, ProfileError> {
     }
 }
 
+/// Every file but `.default`, which a default-only refusal writes.
+fn snap_but_default(e: &Env) -> Vec<(String, FileState)> {
+    snap(e)
+        .into_iter()
+        .filter(|(l, _)| l != ".default")
+        .collect()
+}
+
+/// The live login cannot be moved for a reason containing `want`: `name` is
+/// still made the default for new launches (issue #1691, "keeps the
+/// `.default` pointer behaviour"), and nothing else changes. Returns the
+/// profile an earlier switch still holds rotation on.
 #[track_caller]
-pub(super) fn assert_refused(e: &Env, name: &str, want: &str) {
+pub(super) fn assert_refused(e: &Env, name: &str, want: &str) -> Option<ProfileName> {
+    let before = snap_but_default(e);
+    let pin_before = pin::read(&e.rs);
+    let held = match switch_live(&e.store, &e.home, &n(name)) {
+        Ok(Ok(Switched::DefaultOnly { reason, held })) => {
+            assert!(reason.contains(want), "refusal {reason:?} lacks {want:?}");
+            assert!(
+                !reason.starts_with("ALERT: "),
+                "the ALERT prefix is stripped: {reason}"
+            );
+            held
+        }
+        Ok(Ok(s)) => panic!("expected a refusal containing {want:?}, got {s:?}"),
+        Ok(Err(f)) => panic!("expected a refusal, got a partial failure: {}", f.what),
+        Err(other) => panic!("expected a default-only refusal ({want:?}), got {other:?}"),
+    };
+    assert_eq!(
+        snap_but_default(e),
+        before,
+        "a refused switch changed something other than .default"
+    );
+    assert_eq!(
+        pointer::read(&e.root).unwrap(),
+        Some(n(name)),
+        "a refused live move still sets the default for new launches"
+    );
+    assert_eq!(pin::read(&e.rs), pin_before, "a refusal writes no pin");
+    if let Some(l) = e.rs.load_ledger().unwrap() {
+        assert_eq!(l.alert, None, "a refusal writes no ledger ALERT");
+    }
+    held
+}
+
+/// Refused before the lock is held or while recovery is inconsistent:
+/// nothing at all is written, `.default` included.
+#[track_caller]
+pub(super) fn assert_refused_untouched(e: &Env, name: &str, want: &str) {
     let before = snap(e);
     match switch_live(&e.store, &e.home, &n(name)) {
         Err(ProfileError::RotateRefused(m)) => {
             assert!(m.contains(want), "refusal {m:?} lacks {want:?}");
-            assert!(
-                !m.starts_with("ALERT: "),
-                "the ALERT prefix is stripped: {m}"
-            );
         }
         Ok(Ok(s)) => panic!("expected a refusal containing {want:?}, got {s:?}"),
         Ok(Err(f)) => panic!("expected a refusal, got a partial failure: {}", f.what),
@@ -100,9 +149,6 @@ pub(super) fn assert_refused(e: &Env, name: &str, want: &str) {
     assert_eq!(snap(e), before, "a refused switch changed something");
     assert_eq!(pin::read(&e.rs), PinState::None);
     assert_eq!(pointer::read(&e.root).unwrap(), None);
-    if let Some(l) = e.rs.load_ledger().unwrap() {
-        assert_eq!(l.alert, None, "a refusal writes no ledger ALERT");
-    }
 }
 
 // --- AC1: the switch is the rotator's swap ----------------------------------
@@ -263,7 +309,7 @@ fn switching_again_to_the_pinned_live_profile_is_the_already_live_path() {
     e.assert_finished();
 }
 
-// --- AC6: refusals change nothing -------------------------------------------
+// --- AC6: refusals move nothing; past the lock they still set the default --
 
 #[test]
 fn a_profile_without_a_stored_login_is_refused() {
@@ -282,7 +328,9 @@ fn the_no_stored_login_reason_is_documented() {
     assert_eq!(DOCUMENTED.len(), 11);
     let e = env();
     fs::remove_file(e.slot("spare")).unwrap();
-    let Err(ProfileError::RotateRefused(m)) = switch_live(&e.store, &e.home, &n("spare")) else {
+    let Ok(Ok(Switched::DefaultOnly { reason: m, .. })) =
+        switch_live(&e.store, &e.home, &n("spare"))
+    else {
         panic!("refused");
     };
     assert!(
@@ -299,7 +347,7 @@ fn a_held_state_lock_is_refused_within_the_bounded_wait() {
     let state = State::new(&e.root).unwrap();
     let _held = state.try_lock(Duration::ZERO).unwrap().unwrap();
     let start = std::time::Instant::now();
-    assert_refused(&e, "spare", "lock busy");
+    assert_refused_untouched(&e, "spare", "lock busy");
     assert!(start.elapsed() < Duration::from_secs(10), "bounded wait");
 }
 
@@ -307,7 +355,7 @@ fn a_held_state_lock_is_refused_within_the_bounded_wait() {
 fn an_inconsistent_journal_is_refused() {
     let e = env();
     e.rs.save_journal(&e.journal(Phase::Inconsistent)).unwrap();
-    assert_refused(&e, "spare", "inconsistent");
+    assert_refused_untouched(&e, "spare", "inconsistent");
     assert!(e.rs.journal.exists(), "left for a person to resolve");
 }
 
@@ -389,12 +437,16 @@ fn a_refusal_from_the_swap_is_passed_through_unchanged() {
     .unwrap_err()
     .to_string();
     let via_switch = match switch_live(&e.store, &e.home, &n("spare")) {
-        Err(err) => err.to_string(),
+        Ok(Ok(Switched::DefaultOnly { reason, .. })) => {
+            ProfileError::RotateRefused(reason).to_string()
+        }
+        Err(err) => panic!("expected a default-only refusal, got {err:?}"),
         Ok(other) => panic!("expected a refusal, got {:?}", other.is_ok()),
     };
     assert_eq!(via_switch, direct);
     assert_eq!(ino_at(&e.slot("work")), Some(s));
     assert_eq!(pin::read(&e.rs), PinState::None);
+    assert_eq!(pointer::read(&e.root).unwrap(), Some(n("spare")));
 }
 
 // --- AC7: an interrupted swap is recovered first ----------------------------

@@ -263,7 +263,9 @@ fn home_dir() -> Result<std::path::PathBuf, super::ProfileError> {
 /// `profile switch NAME` (issue #1691): moves NAME's login into `~/.claude`
 /// with the rotator's swap, pins rotation to it and makes it the default.
 /// Prints three lines. When the login moved but a later write failed, the
-/// error says so; it is not a refusal, since something did change.
+/// error says so; it is not a refusal, since something did change. When the
+/// live login cannot be moved, NAME is still made the default for new
+/// launches, that is printed, and the refusal exits non-zero.
 pub(in crate::commands::profile) fn switch_live(
     store: &ProfileStore,
     name: &ProfileName,
@@ -271,18 +273,25 @@ pub(in crate::commands::profile) fn switch_live(
     #[cfg(unix)]
     {
         match switch::switch_live(store, &home_dir()?, name)? {
-            Ok(done) => {
-                match done {
-                    switch::Switched::Moved { from, to } => {
-                        println!("Live login moved: {from} -> {to}")
-                    }
-                    switch::Switched::AlreadyLive(n) => {
-                        println!("{n} is already the live login; nothing moved.")
-                    }
-                }
+            Ok(switch::Switched::DefaultOnly { reason, held }) => {
                 println!("Default for new launches: {name}");
-                println!("Rotation held on {name} until `amplihack profile switch --none`.");
-                warn_switch_hold(store.root());
+                match held {
+                    Some(h) => println!(
+                        "Live login not moved; rotation still held on {h} until \
+                         `amplihack profile switch --none`."
+                    ),
+                    None => println!("Live login not moved; rotation not held."),
+                }
+                Err(super::ProfileError::RotateRefused(reason).into())
+            }
+            Ok(switch::Switched::Moved { from, to }) => {
+                println!("Live login moved: {from} -> {to}");
+                print_held(store, name);
+                Ok(())
+            }
+            Ok(switch::Switched::AlreadyLive(n)) => {
+                println!("{n} is already the live login; nothing moved.");
+                print_held(store, name);
                 Ok(())
             }
             Err(f) => Err(anyhow::anyhow!(
@@ -296,9 +305,21 @@ pub(in crate::commands::profile) fn switch_live(
     }
     #[cfg(not(unix))]
     {
-        let _ = (store, name);
+        // No live login can be moved here, but the default for new launches
+        // is still set, as `switch` always did.
+        crate::commands::profile::pointer::write(store.root(), name)?;
+        println!("Default for new launches: {name}");
+        println!("Live login not moved; rotation not held.");
         Err(super::ProfileError::RotateUnsupported.into())
     }
+}
+
+/// The last two lines of a switch that moved the login or found it live.
+#[cfg(unix)]
+fn print_held(store: &ProfileStore, name: &ProfileName) {
+    println!("Default for new launches: {name}");
+    println!("Rotation held on {name} until `amplihack profile switch --none`.");
+    warn_switch_hold(store.root());
 }
 
 /// What `profile switch --none` removed.

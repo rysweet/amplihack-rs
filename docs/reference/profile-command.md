@@ -37,7 +37,7 @@ amplihack launch|claude --profile <name> [...]
 | `root [<dir>]` | Print the profile root in use and where it came from, or save `<dir>` as the root. See [Profile root](#profile-root). |
 | `list` | First line `root: <path> (source: env\|config\|default)`; see [Profile root](#profile-root). Then one profile per line, sorted; the default is marked `*`. Skips dot-entries, symlinks and non-directories. Reports a corrupt or dangling default pointer instead of silently omitting the marker. |
 | `show` | Prints `name: <name>` and `dir: <path>`, or `none`. Paths only; never directory contents. |
-| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. Unix only. See [Rotate switch](#rotate-switch). |
+| `switch <name>` | Moves the profile's login into `~/.claude` with the rotator's [swap](#rotate-swap), under the rotator's lock, then pins rotation to it, writes the default pointer and records the switch in the rotate ledger, so sessions stopped on a usage limit before it are resumed. The profile must exist. Then checks the [shared session links](#shared-session-directories) of both profiles in the swap; messages go to stderr. When the live login cannot be moved (any system but Linux, a profile open in a session, no login in `~/.claude`, ...), it still writes the default pointer, holds nothing and exits 1. See [Rotate switch](#rotate-switch). |
 | `switch --none` | Removes the default pointer and the [rotation pin](#rotate-pin). Prints `Default profile cleared.`, or `No default profile was set.` when there was none, plus `Rotation released; the rotator picks the best login on its next cycle.` when a pin was removed; exits 0 either way. Moves no login. Conflicts with a name; `switch` with neither is a usage error. See [Clearing the default](#clearing-the-default). |
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
@@ -2579,15 +2579,21 @@ exactly what a rotate swap to `<name>` would leave. Then it pins rotation to `<n
 makes `<name>` the default for new launches. No rotator needs to be running.
 
 The steps run in this order. A step that refuses ends the command with
-status 1. A refusal writes no pin, no `.default`, no ledger ALERT and no new
-swap. Step 5 may already have finished or rolled back an interrupted swap,
-which changes the ledger, the journal and `~/.claude`; each such recovery is
-logged as a `recovery: ...` line and stays done even if a later step
-refuses. When no recovery ran, a refusal changes nothing at all.
+status 1 and writes no pin, no ledger ALERT and no new swap. Moving the live
+login and setting the default for new launches are separate: a refusal at
+steps 6-8, which is about the live login or `<name>` itself, still writes
+`<root>/.default` (see [Default only](#default-only)); a refusal at steps
+1-5 writes nothing, `.default` included. Step 5 may already have finished or
+rolled back an interrupted swap, which changes the ledger, the journal and
+`~/.claude`; each such recovery is logged as a `recovery: ...` line and
+stays done even if a later step refuses. When no recovery ran, a refusal
+changes nothing but `.default`.
 
 1. Check the name with the [name rules](#name-rules) and find the profile.
    An unknown profile is refused here, before any lock is taken.
-2. On a platform without Unix file semantics, fail with `RotateUnsupported`.
+2. On a platform without Unix file semantics, write `<root>/.default`,
+   print the two [default-only](#default-only) lines (`rotation not held`),
+   and fail with `RotateUnsupported`.
 3. Run the [prototype check](#rotate-prototype-coexistence) and check that
    the profile root is private.
 4. Take `<root>/.auto-switch.d/lock`, waiting up to 2 seconds. A busy lock is
@@ -2602,13 +2608,15 @@ refuses. When no recovery ran, a refusal changes nothing at all.
    | `<name>` | Nothing moves. Step 7 is skipped. |
    | Another profile | Swap from that profile to `<name>`. |
    | No profile owns it | Adopt it as `default-original` (or the next free name), then swap, as the rotator does. |
-   | `no-login`, `hand-change` or `ambiguous` | Refused with the matching ALERT text, without the `ALERT: ` prefix. No ALERT is written to the ledger. |
+   | `no-login`, `hand-change` or `ambiguous` | Refused with the matching ALERT text, without the `ALERT: ` prefix: [default only](#default-only). No ALERT is written to the ledger. |
 
 7. Unless `<name>` is already the live profile, check `<name>` against
    [Rotate candidates](#rotate-candidates), using the list built under the
    lock in step 6. A profile with any skip reason is refused, the same
    profiles the rotator never swaps to, so a switch never moves a login out
    from under a running session, an auto-switch lease or a hosted login.
+   The refusal is [default only](#default-only): `<name>` still becomes the
+   default for new launches.
    The refusal is
    `profile <name> is not a rotate candidate (<reason>): <detail>`, where
    `<reason>` is the skip reason the rotator logs:
@@ -2619,7 +2627,7 @@ refuses. When no recovery ran, a refusal changes nothing at all.
    | `no login`, file present | `a login file is not a private regular file with one link` |
    | `excluded` | ``it is in the auto-switch exclude list; set the list without it with `amplihack profile auto-switch exclude` first`` |
    | `session running` | `a running process has CLAUDE_CONFIG_DIR set to it; end that session first` |
-   | `session running`, `/proc` cannot be scanned | `running sessions cannot be seen here, so its login may be in use`. Every profile is refused, as every profile is skipped by the rotator. |
+   | `session running`, `/proc` cannot be scanned | `running sessions cannot be seen here, so its login may be in use`. Every profile but the live one is refused, as every profile is skipped by the rotator. This is every system but Linux, macOS included: there `switch` only sets the default for new launches. |
    | `leased` | `auto-switch has lent its login to another profile's session` |
    | `hosting` | `its directory holds another account's login for auto-switch` |
    | `parked` | `auto-switch has parked its own login` |
@@ -2631,8 +2639,9 @@ refuses. When no recovery ran, a refusal changes nothing at all.
    login sits in `<root>/.auto-switch.d/parked/` while its directory holds
    another account, so there is nothing of its own to move.
 8. Run the [swap](#rotate-swap) unchanged: the same pre-swap checks, journal,
-   refresh locks and ledger entry. A refusal from the swap is passed through
-   unchanged. The log gets `switch <from>-><name>`.
+   refresh locks and ledger entry. A refusal from the swap moves nothing and
+   is passed through unchanged, [default only](#default-only). The log gets
+   `switch <from>-><name>`.
 9. Still under the lock, write the [pin](#rotate-pin), then the default
    pointer `<root>/.default`, then the ledger's `last_cycle`:
    `outcome` `switched`, with `at` and `measured_at` both the current time,
@@ -2672,7 +2681,8 @@ When `<name>` is already the live login, the first line is
 |--------|--------|------|
 | Swapped, pin and pointer written | The three lines above | 0 |
 | Already live, pin and pointer written | The three lines, first line `<name> is already the live login; nothing moved.` | 0 |
-| Refused at steps 1-8 | `error: ...` and `hint: ...`; no pin, pointer, ALERT or swap written (any step-5 recovery stays done) | 1 |
+| Refused at steps 1-5 (lock busy, prototype, private root, inconsistent recovery) | `error: ...` and `hint: ...`; no pin, pointer, ALERT or swap written (any step-5 recovery stays done) | 1 |
+| Refused at steps 6-8, or step 2 off Unix | The two [default-only](#default-only) lines, then `error: ...` and `hint: ...`; `.default` written, no pin, ALERT or swap | 1 |
 | The swap ran, then writing the pin, the pointer or the ledger failed | ``error: the live login moved to <name>, but writing the <rotation hold\|default pointer\|rotate ledger> failed: <error>; run `amplihack profile switch <name>` again`` | 1 |
 | A name and `--none` together, or neither | clap usage error | 2 |
 
@@ -2681,9 +2691,39 @@ running the same `switch` again takes the already-live path and writes the
 pin, the pointer and the ledger record. It is safe to repeat.
 
 A refused `switch` writes no ledger ALERT. If step 5 ran no recovery, it
-also changes no byte of the ledger, the journal, the pin, `.default`,
-`~/.claude` or `~/.claude.json`. If a recovery ran, only that recovery's
-changes are made, and its `recovery: ...` line says what it did.
+also changes no byte of the ledger, the journal, the pin, `~/.claude` or
+`~/.claude.json`, and of `.default` only what a default-only refusal
+writes. If a recovery ran, only that recovery's changes are made, and its
+`recovery: ...` line says what it did.
+
+#### Default only
+
+Making `<name>` the default for new launches never depended on moving the
+live login, and it still does not. When the live login cannot be moved for
+a reason about the live login or `<name>` (step 6, 7 or 8, or a platform
+without Unix file semantics), `switch` writes `<root>/.default` under the
+rotate lock, prints two lines on stdout, and exits 1 with the refusal on
+stderr:
+
+```
+Default for new launches: spare
+Live login not moved; rotation not held.
+```
+
+It writes no pin and no ledger record, so the
+[limit-resume hook](#capacity-for-a-resume) does not treat it as capacity,
+and the rotator keeps rotating. A pin left by an earlier `switch` is not
+changed; the second line then names it:
+``Live login not moved; rotation still held on work until `amplihack profile switch --none`.``
+The pin decides what `~/.claude` holds and `.default` decides what
+amplihack launches without `--profile` use, so after a default-only refusal
+they can name different profiles until the next successful `switch` or
+`switch --none`. `switch --none` removes both.
+
+This is how `switch` sets the default on macOS, where `/proc` cannot be
+scanned and every profile counts as having a running session, and for a
+profile that is open in a session of its own (`CLAUDE_CONFIG_DIR` set to its
+directory).
 
 If `switch` is stopped partway through a swap, the journal is left behind as
 for any swap. The next `switch`, `rotate` or rotator cycle runs
