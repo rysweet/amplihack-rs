@@ -28,7 +28,9 @@ steps:
     command: |
       set -euo pipefail
       EVIDENCE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"
-      # Missing original implementation is retained as a negative checkpoint.
+      # Passive checkpoint: preserves output; never invents producer provenance.
+      # workflow-tdd producing points must be observed by the controller; missing
+      # origin-time bindings remain UNPROVEN and require a genuine refresh.
       rc=0; bash "$EVIDENCE_HELPER" checkpoint-implementation || rc=$?
       [ "$rc" -lt 2 ] || exit "$rc"
     output: "implementation_checkpoint"
@@ -64,8 +66,13 @@ steps:
       Component roots and inspected paths are repository-relative; cwd is absolute.
       Include applicable tests, typecheck, quality and precommit obligations, plus
       two planned consumer obligations for Step 13 with scenario{role,assertions,
-      inspected}; roles are basic and edge_or_integration. Assertions must describe
-      actual behavior in inspected executable scenarios. Keep actual runner names,
+      inspected,entry_points:[repository_relative_executable_source],cases:[selected_case],
+      assertion_refs:[{path,sha256,purpose}]}; roles are basic and edge_or_integration. Assertions must describe
+      actual behavior in inspected executable scenarios. Captured argv must select
+      those entry points and cases; results must show cases actually ran, with no
+      zero-case or skipped-only success. Plain scenario programs print the case
+      name and "consumer assertions passed" after executing their assertions.
+      QA independently judges behavioral meaning. Keep actual runner names,
       including Vitest/tsc where configured. Never invent a command from language alone.
 
       For each non-consumer obligation use `capture --request-file FILE` with the
@@ -73,6 +80,11 @@ steps:
       producer_step="step-12-run-precommit". Capture executes argv directly and
       retains genuine raw output, numeric termination, source and input bindings.
       If fixes change source, register a fresh plan and rerun affected evidence.
+      Validate every command against inspected configuration/documentation and
+      its canonical component cwd. Execute the actual Git pre-commit hook resolved
+      through core.hooksPath; use pre-commit run --all-files when configuration
+      exists without an installed Git hook. Preserve the user XPIA exclusion;
+      other hook skips/disables leave evidence unproven. Never substitute a no-op.
       Never submit a fabricated PASS or a self-written execution receipt.
       Return exactly {schema_version:1,plan_id,status:"PASS"|"FAIL",
       checks:[{obligation_id,execution_ids:[captured_execution_id]}],

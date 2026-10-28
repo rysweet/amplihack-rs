@@ -161,12 +161,12 @@ fn native_typescript_vitest_typecheck_and_two_real_consumers() {
         ],
     );
     f.commit("TypeScript consumer project");
-    f.plan = f.node_plan("typescript");
-    let config = f.reference("tsconfig.json");
-    f.plan["components"][0]["inspected"]
-        .as_array_mut()
-        .unwrap()
-        .push(config);
+    f.plan = f.identity();
+    f.plan["components"] = json!([{"id":"root","root":".","toolchain":"typescript","disposition":"required",
+        "inspected":[f.reference("package.json"),f.reference("README.md"),f.reference("tsconfig.json")],
+        "justification":"maintained TypeScript root package"}]);
+    f.plan["exclusions"] = json!([{"id":"no-hooks","component_ids":["root"],"subject":"precommit",
+        "reason":"no prescribed hooks","policy_refs":[f.reference("README.md")]}]);
     f.plan["obligations"] = json!([
         f.obligation("tests", "test", "typescript", "vitest", &["npm", "test"]),
         f.obligation(
@@ -1434,7 +1434,7 @@ fn stale_implementation_cannot_be_repaired_by_rerunning_verification() {
     // Update assertions honestly for the new source, but do not rerun the
     // implementation producer/verifier or relabel its original bindings.
     f.file("contract.test.js","import {test} from 'node:test'; import assert from 'node:assert/strict'; import {decode} from './contract.js'; test('new contract',()=>assert.deepEqual(decode([2]),[6]));\n");
-    f.file("consumer.js","import assert from 'node:assert/strict'; import {decode} from './contract.js'; if(process.argv[2]==='basic') assert.deepEqual(decode([2]),[6]); else assert.deepEqual(decode([]),[]);\n");
+    f.file("consumer.js","import assert from 'node:assert/strict'; import {decode} from './contract.js'; if(process.argv[2]==='basic') assert.deepEqual(decode([2]),[6]); else if(process.argv[2]==='edge') assert.deepEqual(decode([]),[]); else process.exit(7); console.log(process.argv[2]+' consumer assertions passed');\n");
     f.commit("new implementation without original verifier refresh");
     f.plan = f.node_plan("javascript");
     f.plan["obligations"][2]["scenario"]["assertions"] =
@@ -1766,4 +1766,631 @@ fn a_failed_classifier_process_cannot_return_a_successful_record() {
     r.exit(1);
     assert_eq!(r.json()["terminal_state"], "FAILED_INVALID_EVIDENCE");
     assert_eq!(r.json()["terminal_success"], "false");
+}
+
+// Step 11b review counterexamples. Each passes through the production CLI;
+// positive counterparts execute native assertions and the stock producer.
+fn omit_local_transport(f: &mut Fixture) {
+    for key in [
+        "implementation_terminal_evidence",
+        "implementation",
+        "verdict_json",
+        "verification_terminal_evidence",
+        "precommit_results",
+        "local_testing_gate",
+    ] {
+        f.context.as_object_mut().unwrap().remove(key);
+    }
+}
+
+#[test]
+fn review_stock_verifier_output_requires_observed_execution() {
+    let mut f = Fixture::javascript();
+    f.context["implementation"] =
+        json!("Files modified: contract.js\nDiff summary: inspected decoder");
+    f.context["verdict_json"] = json!(
+        "Investigation prose.\n{\"verdict\":\"WORK_VERIFIED\",\"evidence\":[\"contract.js\"],\"rationale\":\"inspected source\"}\n"
+    );
+    f.save_context();
+    let producer = Run(f
+        .command("bash")
+        .env_remove("AMPLIHACK_CONTEXT_FILE")
+        .env(
+            "IMPLEMENTATION",
+            f.context["implementation"].as_str().unwrap(),
+        )
+        .env("VERDICT_JSON", f.context["verdict_json"].as_str().unwrap())
+        .arg(tool("workflow_implementation_evidence.sh"))
+        .output()
+        .unwrap());
+    producer.exit(0);
+    assert_eq!(producer.json()["implementation_completed"], "true");
+    f.context["implementation_terminal_evidence"] = producer.json();
+    let checkpoint = f.call("checkpoint-implementation", &f.request());
+    checkpoint.exit(1);
+    assert_eq!(checkpoint.json()["implementation_state"], "INVALID");
+    f.install_original_implementation();
+    assert_eq!(f.checkpoint()["implementation_state"], "VALID");
+    assert!(
+        f.context["verdict_json"]
+            .as_str()
+            .unwrap()
+            .contains("Inspected and executed concrete decoder assertions.")
+    );
+    assert!(
+        !f.context["verdict_json"]
+            .as_str()
+            .unwrap()
+            .contains("\"artifacts\"")
+    );
+    assert!(
+        !f.context["verdict_json"]
+            .as_str()
+            .unwrap()
+            .contains("\"head\"")
+    );
+}
+
+#[test]
+fn review_prose_edits_cannot_refresh_old_verifier_or_revive_invalid_generation() {
+    let mut f = Fixture::javascript();
+    f.verified_cohort();
+    f.file("added.js", "throw new Error('unverified source');\n");
+    f.context["implementation"] = json!(format!(
+        "{}\n",
+        f.context["implementation"].as_str().unwrap()
+    ));
+    let checkpoint = f.call("checkpoint-implementation", &f.request());
+    checkpoint.exit(1);
+    omit_local_transport(&mut f);
+    let restore = f.restore();
+    restore.exit(1);
+    assert_eq!(restore.json()["implementation_valid"], false);
+    let finalization = f.finalize("final-status");
+    finalization.exit(1);
+    assert!(String::from_utf8_lossy(&finalization.0.stdout).contains("terminal_success=false"));
+}
+
+#[test]
+fn review_latest_failed_verification_remains_authoritative_after_omission() {
+    let mut f = Fixture::javascript();
+    let plan = f.verified_cohort();
+    f.context["precommit_results"]["status"] = json!("FAIL");
+    f.context["verification_terminal_evidence"] = verification(&f.verify(&plan), false);
+    omit_local_transport(&mut f);
+    let restored = f.restore();
+    restored.exit(1);
+    assert_eq!(restored.json()["implementation_valid"], true);
+    assert_eq!(restored.json()["verification_valid"], false);
+    assert_eq!(
+        f.derived(&restored.json())["precommit_results"]["status"],
+        "FAIL"
+    );
+    f.finalize("final-status").exit(1);
+    let collected = f.finalize("collect");
+    collected.exit(0);
+    assert_eq!(
+        collected.json()["completion"]["verification_completed"],
+        "false"
+    );
+    f.context["finalization_evidence"] = collected.json();
+    f.finalize("validate").exit(1);
+    f.finalize("complete").exit(1);
+}
+
+#[test]
+fn review_no_request_recipe_preserves_original_run_id() {
+    let mut f = Fixture::javascript();
+    let plan = f.verified_cohort();
+    let result = f.run_raw(&["verify"], b"");
+    verification(&result, true);
+    let restored = f.run_raw(&["restore"], b"");
+    restored.exit(0);
+    let cohort: Value = serde_json::from_slice(&f.artifact(&f.checkpoint()["cohort"])).unwrap();
+    assert_eq!(
+        cohort["identity"]["workflow"]["original_run_id"],
+        "fixture-original-run"
+    );
+    assert_eq!(plan["status"], "READY");
+    f.context["original_run_id"] = json!("another-run");
+    f.restore().error("IDENTITY_MISMATCH");
+}
+
+#[test]
+fn review_canonical_empty_defaults_reach_the_authorised_adapter() {
+    let mut f = Fixture::javascript();
+    f.verified_cohort();
+    let mut command = f.command("bash");
+    command
+        .env_remove("AMPLIHACK_CONTEXT_FILE")
+        .env("RECIPE_VAR_repo_path", &f.repo)
+        .env(
+            "RECIPE_VAR_worktree_setup",
+            f.context["worktree_setup"].to_string(),
+        );
+    for key in [
+        "implementation_terminal_evidence",
+        "verdict_json",
+        "precommit_results",
+        "local_testing_gate",
+    ] {
+        command.env(format!("RECIPE_VAR_{key}"), f.context[key].to_string());
+    }
+    command.env(
+        "RECIPE_VAR_implementation",
+        f.context["implementation"].as_str().unwrap(),
+    );
+    for key in [
+        "verification_terminal_evidence",
+        "finalization_evidence",
+        "workflow_result",
+    ] {
+        command.env(format!("RECIPE_VAR_{key}"), "");
+    }
+    let r = Run(command
+        .arg(tool("workflow_terminal_evidence.sh"))
+        .arg("checkpoint-implementation")
+        .output()
+        .unwrap());
+    r.exit(0);
+    assert_eq!(r.json()["implementation_state"], "VALID");
+    // Selected file authority does not inherit a conflicting canonical alias.
+    f.env.insert(
+        "RECIPE_VAR_verification_terminal_evidence".into(),
+        "malformed".into(),
+    );
+    f.restore().exit(0);
+    f.context["verification_terminal_evidence"] = json!("malformed");
+    f.restore().exit(1);
+}
+
+#[test]
+fn review_unrelated_noops_cannot_satisfy_two_consumer_scenarios() {
+    let mut f = Fixture::javascript();
+    for index in [2, 3] {
+        f.plan["obligations"][index]["argv"] = json!(["node", "-e", "void(0)"]);
+    }
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), false);
+}
+
+#[test]
+fn review_zero_case_and_skipped_scenarios_do_not_establish_execution() {
+    for skipped in [false, true] {
+        let mut f = Fixture::javascript();
+        let source = if skipped {
+            "import {test} from 'node:test'; import assert from 'node:assert'; test.skip('basic',()=>assert.equal(2,2)); test.skip('edge',()=>assert.equal(0,0));\n"
+        } else {
+            "// basic edge assert references cannot replace execution\n"
+        };
+        f.file("consumer.js", source);
+        f.commit("unexecuted assertions");
+        f.plan = f.node_plan("javascript");
+        for index in [2, 3] {
+            let case = if index == 2 { "basic" } else { "edge" };
+            f.plan["obligations"][index]["argv"] = json!([
+                "node",
+                "--test",
+                format!("--test-name-pattern={case}"),
+                "consumer.js"
+            ]);
+        }
+        let plan = f.register();
+        f.execute_all(&plan);
+        verification(&f.verify(&plan), false);
+    }
+}
+
+#[test]
+fn review_configured_failing_git_hook_cannot_be_replaced_by_noop() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::javascript();
+    f.file(
+        ".git/hooks/pre-commit",
+        "#!/bin/sh\necho required-hook-failed >&2\nexit 71\n",
+    );
+    fs::set_permissions(
+        f.repo.join(".git/hooks/pre-commit"),
+        fs::Permissions::from_mode(0o700),
+    )
+    .unwrap();
+    f.plan["exclusions"] = json!([]);
+    let hook = f.obligation(
+        "hooks",
+        "precommit",
+        "javascript",
+        "node",
+        &["node", "-e", "void(0)"],
+    );
+    f.plan["obligations"].as_array_mut().unwrap().push(hook);
+    let plan = f.register();
+    f.execute_all(&plan);
+    f.context["precommit_results"]["exclusions"] = json!([]);
+    verification(&f.verify(&plan), false);
+    let actual = Run(f
+        .command("git")
+        .args(["hook", "run", "pre-commit"])
+        .output()
+        .unwrap());
+    actual.exit(71);
+}
+
+#[test]
+fn review_repository_substitution_is_rejected_even_at_equal_head() {
+    for distinct_head in [false, true] {
+        let mut f = Fixture::javascript();
+        f.verified_cohort();
+        let clone = f.tmp.path().join("other");
+        f.native(
+            "git",
+            &[
+                "clone",
+                "--no-hardlinks",
+                f.repo.to_str().unwrap(),
+                clone.to_str().unwrap(),
+            ],
+        );
+        if distinct_head {
+            let r = Run(f
+                .command("git")
+                .arg("-C")
+                .arg(&clone)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "--allow-empty",
+                    "-m",
+                    "different head",
+                ])
+                .output()
+                .unwrap());
+            r.exit(0);
+        }
+        f.context.as_object_mut().unwrap().remove("worktree_setup");
+        f.context["repo_path"] = json!(clone);
+        f.finalize("collect").error("IDENTITY_MISMATCH");
+    }
+}
+
+#[test]
+fn review_collected_repository_head_is_checked_before_completion() {
+    let mut f = Fixture::javascript();
+    f.verified_cohort();
+    let collected = f.finalize("collect");
+    collected.exit(0);
+    f.context["finalization_evidence"] = collected.json();
+    f.context["finalization_evidence"]["git"]["head_sha"] = json!("0".repeat(40));
+    f.finalize("validate").error("IDENTITY_MISMATCH");
+    f.finalize("complete").error("IDENTITY_MISMATCH");
+    f.finalize("final-status").error("IDENTITY_MISMATCH");
+}
+
+#[test]
+fn review_negative_ci_cannot_be_hidden_by_positive_terminal_metadata() {
+    for state in ["FAILURE", "FAILED", "CANCELLED", "ERROR"] {
+        let mut f = Fixture::javascript();
+        f.verified_cohort();
+        let collected = f.finalize("collect");
+        collected.exit(0);
+        f.context["finalization_evidence"] = collected.json();
+        f.context["finalization_evidence"]["ci"]["state"] = json!(state);
+        f.context["terminal_state"] =
+            json!({"terminal_state":"EXISTING_OPEN_PR","terminal_success":"true"});
+        let result = f.finalize("validate");
+        result.exit(1);
+        assert_eq!(result.json()["terminal_success"], "false");
+        assert_eq!(result.json()["terminal_state"], "BLOCKED_CI");
+        f.finalize("final-status").exit(1);
+        f.finalize("complete").exit(1);
+    }
+}
+
+#[test]
+fn review_internal_symlink_target_mutation_invalidates_execution() {
+    use std::os::unix::fs::symlink;
+    let mut f = Fixture::javascript();
+    fs::rename(
+        f.repo.join("consumer.js"),
+        f.repo.join("consumer-target.js"),
+    )
+    .unwrap();
+    symlink("consumer-target.js", f.repo.join("consumer.js")).unwrap();
+    f.commit("internal executable symlink");
+    f.plan = f.node_plan("javascript");
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+    f.file(
+        "consumer-target.js",
+        "// basic edge assert but no execution\n",
+    );
+    verification(&f.verify(&plan), false);
+}
+
+#[test]
+fn review_unauthorised_external_symlink_target_is_unproven() {
+    use std::os::unix::fs::symlink;
+    let f = Fixture::javascript();
+    fs::rename(f.repo.join("consumer.js"), f.tmp.path().join("external.js")).unwrap();
+    symlink(f.tmp.path().join("external.js"), f.repo.join("consumer.js")).unwrap();
+    f.call("plan", &f.plan).error("SOURCE_UNPROVEN");
+}
+
+#[test]
+fn review_artifact_inspection_streams_under_a_fixed_memory_limit() {
+    if !cfg!(target_os = "linux") {
+        return;
+    }
+    let mut f = Fixture::javascript();
+    f.file(
+        "large-log.py",
+        "import sys\nfor _ in range(64): sys.stdout.buffer.write(b'x'*(1024*1024))\n",
+    );
+    let mut package: Value =
+        serde_json::from_slice(&fs::read(f.repo.join("package.json")).unwrap()).unwrap();
+    package["scripts"]["quality"] = json!("python3 large-log.py");
+    f.file("package.json", serde_json::to_vec(&package).unwrap());
+    f.commit("bounded large raw output");
+    f.plan = f.node_plan("javascript");
+    f.plan["obligations"][1]["argv"] = json!(["python3", "large-log.py"]);
+    let plan = f.register();
+    f.execute_all(&plan);
+    f.save_context();
+    let mut request = f.request();
+    request["plan_id"] = plan["plan_id"].clone();
+    let request_path = f.tmp.path().join("bounded-request.json");
+    write(&request_path, serde_json::to_vec(&request).unwrap());
+    let r = Run(f
+        .command("bash")
+        .args([
+            "-c",
+            "ulimit -v 98304; exec bash \"$1\" verify --request-file \"$2\"",
+            "memory-bound",
+        ])
+        .arg(tool("workflow_terminal_evidence.sh"))
+        .arg(request_path)
+        .output()
+        .unwrap());
+    verification(&r, true);
+}
+
+#[test]
+fn review_log_patterns_cross_chunk_boundaries_without_truncation() {
+    let mut f = Fixture::javascript();
+    let source = fs::read_to_string(f.repo.join("consumer.js")).unwrap();
+    f.file(
+        "consumer.js",
+        source.replace(
+            "console.log(role",
+            "process.stdout.write('x'.repeat(65526)); console.log(role",
+        ),
+    );
+    f.commit("boundary-spanning consumer completion");
+    f.plan = f.node_plan("javascript");
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+}
+
+#[test]
+fn review_documented_python_suite_cannot_be_replaced_with_pass() {
+    let mut f = Fixture::javascript();
+    fs::remove_file(f.repo.join("package.json")).unwrap();
+    f.file(
+        "pyproject.toml",
+        "[project]\nname='contract'\nversion='0.1.0'\n",
+    );
+    f.file("test_contract.py", "import unittest\nclass Contract(unittest.TestCase):\n def test_fail(self): self.fail('configured suite failed')\n");
+    f.file("README.md", "Test: python3 -m unittest test_contract. Consumers use the inspected consumer.js basic and edge cases. No hooks configured.\n");
+    f.commit("documented failing Python suite");
+    f.plan["components"][0]["toolchain"] = json!("python");
+    f.plan["components"][0]["inspected"] =
+        json!([f.reference("pyproject.toml"), f.reference("README.md")]);
+    f.plan["obligations"].as_array_mut().unwrap().remove(1);
+    f.plan["obligations"][0] = f.obligation(
+        "tests",
+        "test",
+        "python",
+        "python",
+        &["python3", "-c", "pass"],
+    );
+    for index in [1, 2] {
+        f.plan["obligations"][index]["selected_from"] = json!([f.reference("README.md")]);
+        f.plan["obligations"][index]["scenario"]["inspected"] = json!([f.reference("README.md")]);
+    }
+    f.plan["exclusions"][0]["policy_refs"] = json!([f.reference("README.md")]);
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), false);
+    let failed = Run(f
+        .command("python3")
+        .args(["-m", "unittest", "test_contract"])
+        .output()
+        .unwrap());
+    failed.exit(1);
+}
+
+#[test]
+fn review_git_hooks_path_and_xpia_exclusion_preserve_other_hooks() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::javascript();
+    let hooks = f.repo.join(".git/custom-hooks");
+    f.file(
+        ".git/custom-hooks/pre-commit",
+        "#!/bin/sh\nnode --check contract.js\n",
+    );
+    fs::set_permissions(hooks.join("pre-commit"), fs::Permissions::from_mode(0o700)).unwrap();
+    f.native(
+        "git",
+        &["config", "core.hooksPath", hooks.to_str().unwrap()],
+    );
+    f.env.insert("SKIP".into(), "xpia".into());
+    f.plan["exclusions"] = json!([]);
+    let hook = f.obligation(
+        "hooks",
+        "precommit",
+        "javascript",
+        "git",
+        &["git", "hook", "run", "pre-commit"],
+    );
+    f.plan["obligations"].as_array_mut().unwrap().push(hook);
+    let plan = f.register();
+    f.execute_all(&plan);
+    f.context["precommit_results"]["exclusions"] = json!([]);
+    verification(&f.verify(&plan), true);
+    f.env.insert("SKIP".into(), "xpia,required-check".into());
+    verification(&f.verify(&plan), false);
+}
+
+#[test]
+fn review_stock_terminal_output_can_remain_a_recipe_string() {
+    let mut f = Fixture::javascript();
+    f.install_original_implementation();
+    let original = f.context["implementation_terminal_evidence"].to_string() + "\n";
+    f.context["implementation_terminal_evidence"] = json!(original);
+    let checkpoint = f.checkpoint();
+    let cohort: Value = serde_json::from_slice(&f.artifact(&checkpoint["cohort"])).unwrap();
+    assert_eq!(
+        cohort["implementation"]["records"]["implementation_terminal_evidence"],
+        original
+    );
+}
+
+#[test]
+fn review_all_declared_empty_object_defaults_are_absent_before_validation() {
+    let f = Fixture::javascript();
+    let mut command = f.command("bash");
+    command
+        .env_remove("AMPLIHACK_CONTEXT_FILE")
+        .env("RECIPE_VAR_repo_path", &f.repo);
+    for key in [
+        "worktree_setup",
+        "implementation",
+        "implementation_terminal_evidence",
+        "verification_terminal_evidence",
+        "finalization_evidence",
+        "workflow_result",
+        "finalizer_step_status",
+        "terminal_state",
+        "pr_publish_result",
+        "publish_terminal_evidence",
+    ] {
+        command.env(format!("RECIPE_VAR_{key}"), "");
+    }
+    let result = Run(command
+        .arg(tool("workflow_terminal_evidence.sh"))
+        .arg("checkpoint-implementation")
+        .output()
+        .unwrap());
+    result.exit(1);
+    assert_eq!(result.json()["implementation_state"], "MISSING");
+}
+
+#[test]
+fn review_workflow_name_conflict_cannot_select_a_new_cohort() {
+    let mut f = Fixture::javascript();
+    f.install_original_implementation();
+    let mut request = f.request();
+    request["workflow"]["name"] = json!("renamed-default-workflow");
+    f.call("checkpoint-implementation", &request)
+        .error("IDENTITY_MISMATCH");
+    f.env
+        .insert("AMPLIHACK_ORIGINAL_RUN_ID".into(), "other-original".into());
+    f.restore().error("IDENTITY_MISMATCH");
+}
+
+#[test]
+fn review_large_spilled_context_preserves_selected_file_authority() {
+    let mut f = Fixture::javascript();
+    f.verified_cohort();
+    f.context["unrelated"]["large_retained_payload"] = json!("retained bytes ".repeat(32768));
+    f.env.insert(
+        "RECIPE_VAR_implementation_terminal_evidence".into(),
+        "malformed unselected alias".into(),
+    );
+    f.env.insert(
+        "RECIPE_VAR_precommit_results".into(),
+        "malformed unselected alias".into(),
+    );
+    f.save_context();
+    let before = fs::read(f.context_path()).unwrap();
+    assert!(before.len() > 256 * 1024);
+    let restored = f.restore();
+    restored.exit(0);
+    let derived = f.derived(&restored.json());
+    assert_eq!(derived["unrelated"], f.context["unrelated"]);
+    assert_eq!(fs::read(f.context_path()).unwrap(), before);
+    f.finalize("final-status").exit(0);
+}
+
+#[test]
+fn review_failed_verification_requires_new_execution_not_positive_replay() {
+    let mut f = Fixture::javascript();
+    let plan = f.verified_cohort();
+    let positive = f.context.clone();
+    f.context["precommit_results"]["status"] = json!("FAIL");
+    verification(&f.verify(&plan), false);
+    f.context = positive;
+    verification(&f.verify(&plan), false);
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+}
+
+#[test]
+fn review_invalid_implementation_requires_new_producer_not_positive_replay() {
+    let mut f = Fixture::javascript();
+    f.install_original_implementation();
+    let positive = f.context.clone();
+    f.context["implementation_terminal_evidence"] = json!(null);
+    f.call("checkpoint-implementation", &f.request()).exit(1);
+    f.context = positive;
+    f.call("checkpoint-implementation", &f.request()).exit(1);
+    f.install_original_implementation();
+    f.checkpoint();
+}
+
+#[test]
+fn review_latest_failed_capture_cannot_be_omitted_from_a_positive_report() {
+    let mut f = Fixture::javascript();
+    let flag = f.tmp.path().join("failure-flag");
+    let source = fs::read_to_string(f.repo.join("contract.test.js")).unwrap();
+    f.file("contract.test.js", format!("{source}\nimport fs from 'node:fs'; test('current execution state',()=>assert.equal(fs.existsSync({}),false));\n", serde_json::to_string(&flag).unwrap()));
+    f.commit("observable later failed execution");
+    f.plan = f.node_plan("javascript");
+    let plan = f.verified_cohort();
+    write(&flag, b"fail the next real test execution");
+    let failed = f.call("capture", &f.capture_request(&plan, "tests"));
+    failed.exit(1);
+    assert_eq!(failed.json()["process_exit_code"], 1);
+    verification(&f.verify(&plan), false);
+    fs::remove_file(flag).unwrap();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+}
+
+#[test]
+fn review_no_request_retains_the_original_custom_workflow_name() {
+    let f = Fixture::javascript();
+    let mut request = f.request();
+    request["workflow"]["name"] = json!("custom-workflow");
+    let initial = f.call("checkpoint-implementation", &request);
+    initial.exit(1);
+    let cohort: Value = serde_json::from_slice(&f.artifact(&initial.json()["cohort"])).unwrap();
+    assert_eq!(cohort["identity"]["workflow"]["name"], "custom-workflow");
+    let restored = f.run_raw(&["restore"], b"");
+    restored.exit(1);
+    assert!(
+        restored.json().get("error").is_none(),
+        "{}",
+        restored.describe()
+    );
+    assert_eq!(
+        restored.json()["generation_id"],
+        initial.json()["generation_id"]
+    );
+    verification(&f.run_raw(&["verify"], b""), false);
 }

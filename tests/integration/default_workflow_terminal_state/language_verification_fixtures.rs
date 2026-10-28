@@ -328,7 +328,10 @@ impl Fixture {
         if kind == "consumer" {
             v["scenario"] = json!({"role":if id=="basic" {"basic"} else {"edge_or_integration"},
                 "assertions":[if id=="basic" {"public decoder doubles [2] to [4]"} else {"empty input and invalid input retain their contract"}],
-                "inspected":[self.reference("README.md")]});
+                "inspected":[self.reference("README.md")],
+                "entry_points":[match toolchain { "rust" => "src/main.rs", "python" => "consumer.py", "go" => "cmd/consumer/main.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" }],
+                "cases":[if id=="basic" {"basic"} else {"edge"}],
+                "assertion_refs":[self.reference(match toolchain { "rust" => "src/main.rs", "python" => "consumer.py", "go" => "cmd/consumer/main.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" })]});
         }
         v
     }
@@ -468,30 +471,20 @@ impl Fixture {
     }
 
     pub fn install_original_implementation(&mut self) {
-        // Exercise the real typed producer. This is controlled verifier input
-        // for a tiny inspected fixture, never a substitute production receipt.
-        let artifact = self.reference("contract.js");
-        assert!(
-            fs::read_to_string(self.repo.join("contract.js"))
-                .unwrap()
-                .contains("decode")
-        );
-        self.context["implementation"] = json!(
-            "Files modified: contract.js\nDiff summary: implement the public decoder with invalid-input rejection."
-        );
-        self.context["verdict_json"] = json!({"verdict":"WORK_VERIFIED","head":self.head(),
-            "artifacts":[artifact],"reason":"inspected concrete public decoder and assertions"})
-        .to_string()
-        .into();
-        self.save_context();
-        let result = Run(self
-            .command("bash")
-            .arg(tool("workflow_implementation_evidence.sh"))
-            .output()
-            .unwrap());
-        result.exit(0);
-        assert_eq!(result.json()["implementation_completed"], "true");
-        self.context["implementation_terminal_evidence"] = result.json();
+        // Execute real source inspection and verification surrounded by the
+        // observer. The fixture uses the documented stock verifier output.
+        self.file(".git/fixture-builder.py", "from pathlib import Path\ns=Path('contract.js').read_text()\nassert 'decode' in s\nprint('Files modified: contract.js\\nDiff summary: public decoder with invalid-input rejection.')\n");
+        self.file(".git/fixture-verifier.py", "import json,subprocess\nfrom pathlib import Path\nassert 'decode' in Path('contract.js').read_text()\nsubprocess.run(['node','--test','contract.test.js'],check=True)\nprint('Inspected and executed concrete decoder assertions.')\nprint(json.dumps(dict(verdict='WORK_VERIFIED',evidence=['contract.js','contract.test.js'],rationale='Inspected and executed public decoder assertions')))\n");
+        let mut request = self.request();
+        request["producer_argv"] = json!(["python3", ".git/fixture-builder.py"]);
+        request["verifier_argv"] = json!(["python3", ".git/fixture-verifier.py"]);
+        request["cwd"] = json!(self.repo);
+        let run = self.call("observe-implementation", &request);
+        run.exit(0);
+        let cohort: Value = serde_json::from_slice(&self.artifact(&run.json()["cohort"])).unwrap();
+        for (key, value) in cohort["implementation"]["records"].as_object().unwrap() {
+            self.context[key] = value.clone();
+        }
     }
 
     pub fn checkpoint(&self) -> Value {
@@ -544,7 +537,7 @@ impl Fixture {
                 );
                 f.file("Cargo.toml","[package]\nname='evidence-native'\nversion='0.1.0'\nedition='2021'\n[workspace]\nmembers=['.']\n");
                 f.file("src/lib.rs","pub fn decode(v: &[i32]) -> Vec<i32> { v.iter().map(|x|x*2).collect() }\n#[test] fn native_contract() { assert_eq!(decode(&[2]),vec![4]); assert_eq!(decode(&[]),vec![]); }\n");
-                f.file("src/main.rs","fn main() { match std::env::args().nth(1).as_deref() { Some(\"basic\")=>assert_eq!(evidence_native::decode(&[2]),vec![4]), Some(\"edge\")=>assert_eq!(evidence_native::decode(&[]),vec![]), _=>std::process::exit(7) }; println!(\"consumer assertions passed\"); }\n");
+                f.file("src/main.rs","fn main() { match std::env::args().nth(1).as_deref() { Some(\"basic\")=>assert_eq!(evidence_native::decode(&[2]),vec![4]), Some(\"edge\")=>assert_eq!(evidence_native::decode(&[]),vec![]), _=>std::process::exit(7) }; println!(\"{} consumer assertions passed\",std::env::args().nth(1).unwrap()); }\n");
                 f.native("cargo", &["generate-lockfile", "--offline"]);
                 (
                     "Cargo.toml",
@@ -558,7 +551,7 @@ impl Fixture {
                 f.file("pyproject.toml","[project]\nname='evidence-native'\nversion='0.1.0'\nrequires-python='>=3.10'\n");
                 f.file("decoder.py","def decode(values):\n    if not isinstance(values, list): raise TypeError('array required')\n    return [x * 2 for x in values]\n");
                 f.file("test_contract.py","import unittest\nfrom decoder import decode\nclass Contract(unittest.TestCase):\n    def test_basic(self): self.assertEqual(decode([2]), [4])\n    def test_edge(self):\n        self.assertEqual(decode([]), [])\n        with self.assertRaises(TypeError): decode(None)\n");
-                f.file("consumer.py","import sys\nfrom decoder import decode\nif sys.argv[1]=='basic': assert decode([2])==[4]\nelif sys.argv[1]=='edge': assert decode([])==[]\nelse: raise SystemExit(7)\nprint('consumer assertions passed')\n");
+                f.file("consumer.py","import sys\nfrom decoder import decode\nif sys.argv[1]=='basic': assert decode([2])==[4]\nelif sys.argv[1]=='edge': assert decode([])==[]\nelse: raise SystemExit(7)\nprint(sys.argv[1]+' consumer assertions passed')\n");
                 (
                     "pyproject.toml",
                     vec![
@@ -596,7 +589,7 @@ impl Fixture {
                 f.file("go.mod", "module example.invalid/evidence\n\ngo 1.22\n");
                 f.file("decoder.go","package evidence\nfunc Decode(v []int) []int { r:=make([]int,len(v)); for i,n:=range v { r[i]=n*2 }; return r }\n");
                 f.file("decoder_test.go","package evidence\nimport \"testing\"\nfunc TestContract(t *testing.T) { if Decode([]int{2})[0]!=4 || len(Decode(nil))!=0 { t.Fatal(\"decoder contract\") } }\n");
-                f.file("cmd/consumer/main.go","package main\nimport (\"os\"; \"fmt\"; e \"example.invalid/evidence\")\nfunc main() { switch os.Args[1] { case \"basic\": if e.Decode([]int{2})[0]!=4 { panic(\"basic\") }; case \"edge\": if len(e.Decode(nil))!=0 { panic(\"edge\") }; default: os.Exit(7) }; fmt.Println(\"consumer assertions passed\") }\n");
+                f.file("cmd/consumer/main.go","package main\nimport (\"os\"; \"fmt\"; e \"example.invalid/evidence\")\nfunc main() { switch os.Args[1] { case \"basic\": if e.Decode([]int{2})[0]!=4 { panic(\"basic\") }; case \"edge\": if len(e.Decode(nil))!=0 { panic(\"edge\") }; default: os.Exit(7) }; fmt.Println(os.Args[1]+\" consumer assertions passed\") }\n");
                 (
                     "go.mod",
                     vec!["go", "test", "./..."],
@@ -611,7 +604,7 @@ impl Fixture {
                     "NuGet.Config",
                     "<configuration><packageSources><clear /></packageSources></configuration>\n",
                 );
-                f.file("Program.cs","static int[] Decode(int[] v) => v.Select(x => x*2).ToArray();\nvoid Basic() { if (!Decode(new[]{2}).SequenceEqual(new[]{4})) throw new Exception(\"basic\"); }\nvoid Edge() { if (Decode(Array.Empty<int>()).Length!=0) throw new Exception(\"edge\"); }\nswitch(args[0]) { case \"check\": Basic(); Edge(); break; case \"basic\": Basic(); break; case \"edge\": Edge(); break; default: return 7; }\nConsole.WriteLine(\"consumer assertions passed\"); return 0;\n");
+                f.file("Program.cs","static int[] Decode(int[] v) => v.Select(x => x*2).ToArray();\nvoid Basic() { if (!Decode(new[]{2}).SequenceEqual(new[]{4})) throw new Exception(\"basic\"); }\nvoid Edge() { if (Decode(Array.Empty<int>()).Length!=0) throw new Exception(\"edge\"); }\nswitch(args[0]) { case \"check\": Basic(); Edge(); break; case \"basic\": Basic(); break; case \"edge\": Edge(); break; default: return 7; }\nConsole.WriteLine(args[0]+\" consumer assertions passed\"); return 0;\n");
                 (
                     "Contract.csproj",
                     vec![

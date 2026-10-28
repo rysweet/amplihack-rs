@@ -28,7 +28,7 @@
 # base). Judgement can always DOWNGRADE — that direction is never dangerous.
 #
 # Usage:
-#   workflow_terminal_evidence.sh {checkpoint-implementation|plan|capture|verify|restore}
+#   workflow_terminal_evidence.sh {observe-implementation|checkpoint-implementation|plan|capture|verify|restore}
 #       [--request-file FILE|-]
 #   workflow_terminal_evidence.sh finalize --action {final-status|collect|validate|complete}
 #       [--request-file FILE|-]
@@ -63,7 +63,7 @@ usage() {
 # Python 3.11's standard library supplies strict JSON, direct argv execution, file
 # descriptor checks, locking and atomic publication; no receipt is shell code.
 case "${1:-}" in
-  checkpoint-implementation|plan|capture|verify|restore|finalize)
+  observe-implementation|checkpoint-implementation|plan|capture|verify|restore|finalize)
     command -v python3 >/dev/null 2>&1 || { echo '{"ok":false,"error":{"code":"MISSING_TOOLING","message":"python3 is required","required_next_action":"Provide Python 3."}}'; exit 2; }
     python3 -c 'import tomllib' >/dev/null 2>&1 || { echo '{"ok":false,"error":{"code":"MISSING_TOOLING","message":"Python 3.11 or newer is required","required_next_action":"Provide Python 3.11+."}}'; exit 2; }
     exec python3 /dev/fd/3 "$SCRIPT_DIR" "$@" 3<<'PY_LOCAL_EVIDENCE'
@@ -74,6 +74,8 @@ bindings. Verification maps every obligation to a sealed capture. Generations
 preserve original typed outputs and support, never reconstructed completion.
 """
 import copy
+import ast
+from contextlib import contextmanager
 import datetime
 import fcntl
 import hashlib
@@ -89,6 +91,7 @@ import sys
 import uuid
 from urllib.parse import urlsplit, urlunsplit
 import tomllib
+import xml.etree.ElementTree as ET
 
 os.umask(0o077)
 HERE = Path(sys.argv[1])
@@ -105,7 +108,10 @@ ENV_KEYS = ('PATH', 'NODE_OPTIONS', 'NODE_ENV', 'npm_config_ignore_scripts',
             'CARGO_HOME', 'RUSTUP_HOME', 'RUSTUP_TOOLCHAIN', 'CARGO_BUILD_TARGET',
             'PYTEST_ADDOPTS', 'PYTEST_PLUGINS', 'GOENV', 'GOROOT',
             'MSBUILD_EXE_PATH', 'MSBuildSDKsPath', 'DOTNET_STARTUP_HOOKS',
-            'npm_config_userconfig', 'NPM_CONFIG_USERCONFIG')
+            'npm_config_userconfig', 'NPM_CONFIG_USERCONFIG', 'SKIP', 'PRE_COMMIT_ALLOW_NO_CONFIG',
+            'PRE_COMMIT_HOME', 'HUSKY', 'HUSKY_SKIP_HOOKS', 'GIT_CONFIG_COUNT',
+            'GIT_CONFIG_PARAMETERS', 'UV_PYTHON', 'UV_PYTHON_PREFERENCE', 'UV_CONFIG_FILE',
+            'UV_WORKING_DIRECTORY', 'PYTHONEXECUTABLE', 'DOTNET_CLI_HOME')
 
 class EvidenceError(Exception):
     def __init__(self, code, message):
@@ -157,8 +163,9 @@ def fields(obj, required, optional=()):
     require(isinstance(obj, dict) and set(required) <= obj.keys() and
             obj.keys() <= set(required) | set(optional), 'INVALID_REQUEST', 'Invalid object fields')
 
-def read_regular(path, limit=None):
-    # Open each component without following links, then read/hash the same fd.
+@contextmanager
+def regular_fd(path):
+    # Inspect and consume the same descriptor, denying symlinked artifact paths.
     path = Path(os.path.abspath(path))
     fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
     try:
@@ -170,18 +177,46 @@ def read_regular(path, limit=None):
             info = os.fstat(file_fd)
             require(stat.S_ISREG(info.st_mode), 'ARTIFACT_NOT_REGULAR', str(path))
             require(info.st_mode & 0o444 != 0, 'ARTIFACT_UNREADABLE', str(path))
-            if limit is not None:
-                require(info.st_size <= limit, 'INVALID_REQUEST', 'Oversized file: ' + str(path))
-            chunks = []
-            while True:
-                chunk = os.read(file_fd, 1024 * 1024)
-                if not chunk: break
-                chunks.append(chunk)
-            return b''.join(chunks)
-        finally:
-            os.close(file_fd)
-    finally:
-        os.close(fd)
+            yield file_fd, info
+            after = os.fstat(file_fd)
+            require((info.st_size, info.st_mtime_ns, info.st_ctime_ns) ==
+                    (after.st_size, after.st_mtime_ns, after.st_ctime_ns),
+                    'ARTIFACT_TAMPERED', 'File changed during inspection: ' + str(path))
+        finally: os.close(file_fd)
+    finally: os.close(fd)
+
+def read_regular(path, limit=LIMIT):
+    with regular_fd(path) as (fd, info):
+        require(info.st_size <= limit, 'INVALID_REQUEST', 'Oversized structured file: ' + str(path))
+        data = bytearray()
+        while True:
+            chunk = os.read(fd, min(65536, limit + 1 - len(data)))
+            if not chunk: break
+            data.extend(chunk)
+            require(len(data) <= limit, 'INVALID_REQUEST', 'Structured file grew beyond limit')
+        return bytes(data)
+
+def inspect_regular(path, patterns=(), prefix_bytes=0):
+    # Regexes are internal bounded patterns. Carry exceeds every pattern's
+    # maximum match length, including matches split at a read boundary.
+    sha = hashlib.sha256(); size = 0; carry = b''; prefix = b''
+    hits = [False] * len(patterns)
+    with regular_fd(path) as (fd, info):
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk: break
+            sha.update(chunk); size += len(chunk)
+            if len(prefix) < prefix_bytes: prefix += chunk[:prefix_bytes-len(prefix)]
+            window = carry + chunk
+            for i, pattern in enumerate(patterns):
+                if not hits[i] and re.search(pattern, window): hits[i] = True
+            carry = window[-4096:]
+        require(size == info.st_size, 'ARTIFACT_TAMPERED', 'Incomplete file inspection')
+    return {'sha256': sha.hexdigest(), 'bytes': size}, hits, prefix
+
+def file_hash(path):
+    return inspect_regular(path)[0]['sha256']
+
 
 def run(argv, cwd=None, env=None):
     result = subprocess.run(argv, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -230,12 +265,16 @@ class Store:
     def get(self, relative):
         return parse(read_regular(self.path(relative), LIMIT))
 
-    def artifact(self, ref):
+    def inspect(self, ref, patterns=()):
         fields(ref, ('path', 'sha256', 'bytes'))
-        data = read_regular(self.path(ref['path']))
-        require(type(ref['bytes']) is int and ref['bytes'] == len(data) and
-                ref['sha256'] == digest(data), 'ARTIFACT_TAMPERED', str(ref['path']))
-        return data
+        info, hits, _ = inspect_regular(self.path(ref['path']), patterns)
+        require(type(ref['bytes']) is int and ref['bytes'] == info['bytes'] and
+                ref['sha256'] == info['sha256'], 'ARTIFACT_TAMPERED', str(ref['path']))
+        return hits
+
+    def artifact(self, ref, limit=LIMIT):
+        self.inspect(ref)
+        return read_regular(self.path(ref['path']), limit)
 
 class Workflow:
     def __init__(self, request):
@@ -244,6 +283,7 @@ class Workflow:
         require('AMPLIHACK_CONTEXT_FILE' not in os.environ or text(selected),
                 'INVALID_CONTEXT', 'An explicit empty context selector is invalid')
         requested = request.get('context_file')
+        require('context_file' not in request or text(requested), 'INVALID_CONTEXT', 'Explicit context selector must be a nonempty file path')
         require(not (selected and requested and os.path.abspath(selected) != os.path.abspath(requested)),
                 'INVALID_CONTEXT', 'Context selector conflicts with AMPLIHACK_CONTEXT_FILE')
         self.context_path = selected or requested
@@ -253,12 +293,25 @@ class Workflow:
         require(isinstance(root, str) and Path(root).is_absolute() and Path(root) == actual_root,
                 'IDENTITY_MISMATCH', 'Repository root must be the invoking canonical worktree root')
         self.root = actual_root
+        selectors = [self.context[k] for k in ('repo_path', 'repository_root') if k in self.context]
+        selectors += [os.environ[k] for k in ('REPO_PATH', 'RECIPE_VAR_repo_path') if k in os.environ]
+        for selector in selectors:
+            if selector != '':
+                require(text(selector) and Path(selector).is_absolute() and
+                        Path(selector).resolve() == self.root, 'IDENTITY_MISMATCH', 'Task repository selector mismatch')
         wt = self.context.get('worktree_setup', {})
         if isinstance(wt, str) and wt.strip(): wt = parse(wt.encode())
-        if isinstance(wt, dict) and wt.get('worktree_path'):
+        require(isinstance(wt, dict), 'INVALID_CONTEXT', 'Selected worktree setup must be an object')
+        if wt.get('worktree_path'):
             require(Path(wt['worktree_path']).resolve() == self.root, 'IDENTITY_MISMATCH', 'Selected worktree mismatch')
+        for key in ('workflow_name', 'workflow_started_at'):
+            require(key not in self.context or text(self.context[key]), 'INVALID_CONTEXT', 'Invalid original workflow identity: ' + key)
         started = self.context.get('workflow_started_at') or os.environ.get('WORKFLOW_STARTED_AT')
-        self.workflow = request.get('workflow', {'name': 'default-workflow', 'started_at': started})
+        default_identity = {'name': self.context.get('workflow_name', 'default-workflow'), 'started_at': started}
+        run_id = self.context['original_run_id'] if 'original_run_id' in self.context else os.environ.get('AMPLIHACK_ORIGINAL_RUN_ID')
+        require('original_run_id' not in self.context or text(run_id), 'INVALID_CONTEXT', 'Invalid original run identity')
+        if run_id is not None: default_identity['original_run_id'] = run_id
+        self.workflow = request.get('workflow', default_identity)
         fields(self.workflow, ('name', 'started_at'), ('original_run_id',))
         require(all(text(v) for v in self.workflow.values()), 'INVALID_REQUEST', 'Missing workflow identity')
         try:
@@ -268,12 +321,42 @@ class Workflow:
         for observed in (started, os.environ.get('WORKFLOW_STARTED_AT')):
             require(not observed or self.workflow['started_at'] == observed,
                     'IDENTITY_MISMATCH', 'Original workflow start changed')
+        for field, observed in (('name', self.context.get('workflow_name')), ('original_run_id', run_id)):
+            require(observed is None or self.workflow.get(field) == observed,
+                    'IDENTITY_MISMATCH', 'Original workflow identity conflicts: ' + field)
+        require(not os.environ.get('AMPLIHACK_ORIGINAL_RUN_ID') or
+                run_id is None or run_id == os.environ['AMPLIHACK_ORIGINAL_RUN_ID'],
+                'IDENTITY_MISMATCH', 'Original run identity selectors conflict')
         self.repository = self.repo_identity()
+        self.identity_store = Store(Path(self.repository['git_dir']) / 'amplihack/workflow-identities/v1')
+        identity_key = digest(encode({'root': str(self.root), 'started_at': self.workflow['started_at']})) + '.json'
+        if (self.identity_store.root / identity_key).exists():
+            original_workflow = self.identity_store.get(identity_key)
+            if 'workflow' not in request and 'workflow_name' not in self.context:
+                self.workflow['name'] = original_workflow['name']
+            if 'workflow' not in request and run_id is None and 'original_run_id' in original_workflow:
+                self.workflow['original_run_id'] = original_workflow['original_run_id']
+            require(self.workflow == original_workflow, 'IDENTITY_MISMATCH', 'Original workflow identity changed')
+        # Migration inspects identities only, never earlier success artifacts.
+        evidence_root = Path(self.repository['git_dir']) / 'amplihack/workflow-evidence/v1'
+        for path in evidence_root.glob('*/identity.json'):
+            identity = parse(read_regular(path))
+            if identity['workflow']['started_at'] != self.workflow['started_at']: continue
+            original_workflow = identity['workflow']
+            if 'workflow' not in request and 'workflow_name' not in self.context:
+                self.workflow['name'] = original_workflow['name']
+            if 'workflow' not in request and run_id is None and 'original_run_id' in original_workflow:
+                self.workflow['original_run_id'] = original_workflow['original_run_id']
+            require(self.workflow == original_workflow and identity['repository']['root'] == str(self.root),
+                    'IDENTITY_MISMATCH', 'Workflow name or original identity conflicts with established cohort')
+        self.identity_store.put(identity_key, self.workflow)
         key = digest(encode({'workflow': {k: self.workflow[k] for k in ('name', 'started_at')},
                              'root': str(self.root)}))
         self.store = Store(Path(self.repository['git_dir']) / 'amplihack/workflow-evidence/v1' / key)
         if (self.store.root / 'identity.json').exists():
             original = self.store.get('identity.json')
+            if 'workflow' not in request and run_id is None and 'original_run_id' in original['workflow']:
+                self.workflow['original_run_id'] = original['workflow']['original_run_id']
             require(original['workflow'] == self.workflow and all(original['repository'][k] == self.repository[k] for k in ('root', 'git_dir')),
                     'IDENTITY_MISMATCH', 'Cohort workflow/worktree identity changed')
         else:
@@ -283,7 +366,8 @@ class Workflow:
         if self.context_path:
             obj = parse(read_regular(self.context_path, LIMIT))
             require(isinstance(obj, dict), 'INVALID_CONTEXT', 'Selected context must be an object')
-            return obj
+            defaults = ('worktree_setup', 'implementation', 'implementation_terminal_evidence', 'verification_terminal_evidence', 'terminal_state', 'finalization_evidence', 'workflow_result', 'finalizer_step_status', 'pr_publish_result', 'publish_terminal_evidence')
+            return {k:v for k,v in obj.items() if not (k in defaults and v == '')}
         # Use the established transport reader for canonical spilled values and
         # legacy inputs. Once selected, its cohort authority remains unchanged.
         keys = SUPPORT + ('repo_path', 'worktree_setup', 'allow_no_op',
@@ -291,7 +375,7 @@ class Workflow:
                          'pr_url', 'pr_number', 'pr_publish_result', 'remote_host_type',
                          'task_description', 'branch_name', 'base_ref', 'terminal_state',
                          'publish_terminal_evidence', 'issue_number')
-        script = '. "$1/workflow_context.sh"; for key in "${@:2}"; do value=$(workflow_context_read "$key"); rc=$?; [ "$rc" != 3 ] || exit 3; printf "%s\\0%s\\0" "$key" "$value"; done'
+        script = '. "$1/workflow_context.sh"; for key in "${@:2}"; do name="RECIPE_VAR_$key"; case "$key" in worktree_setup|implementation|implementation_terminal_evidence|verification_terminal_evidence|terminal_state|finalization_evidence|workflow_result|finalizer_step_status|pr_publish_result|publish_terminal_evidence) if [[ ${!name+x} && -z ${!name} ]]; then continue; fi;; esac; if [[ $key == verdict_json && ${!name+x} ]]; then value=${!name}; else value=$(workflow_context_read "$key"; rc=$?; printf "."; exit "$rc"); rc=$?; value=${value%.}; [ "$rc" != 3 ] || exit 3; fi; printf "%s\\0%s\\0" "$key" "$value"; done'
         process = subprocess.run(['bash', '-c', script, 'context-reader', str(HERE), *keys],
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         require(process.returncode == 0, 'INVALID_CONTEXT', 'Invalid authoritative workflow transport: ' + process.stderr.decode(errors='replace')[:1000])
@@ -301,6 +385,9 @@ class Workflow:
             if not v: continue
             try: obj[k.decode()] = parse(v)
             except EvidenceError: obj[k.decode()] = v.decode()
+        for key in ('workflow_name', 'original_run_id', 'workflow_started_at'):
+            name = 'RECIPE_VAR_' + key
+            if name in os.environ: obj[key] = os.environ[name]
         return obj
 
     def repo_identity(self):
@@ -318,6 +405,12 @@ class Workflow:
         return {'root': str(self.root), 'git_dir': str(Path(run(['git', 'rev-parse', '--absolute-git-dir'], self.root).decode().strip()).resolve()),
                 'identity': identity, 'origin_sha256': digest(origin.encode())}
 
+    def sequence(self):
+        value = self.store.get('sequence.json') if (self.store.root / 'sequence.json').exists() else 0
+        require(type(value) is int and value >= 0, 'COHORT_MISMATCH', 'Invalid observation sequence')
+        self.store.put('sequence.json', value + 1)
+        return value + 1
+
     def identity(self):
         return {'schema_version': 1, 'workflow': self.workflow, 'repository': self.repository}
 
@@ -332,27 +425,48 @@ class Workflow:
                 continue
             path = self.root / relative
             if not path.exists() and not path.is_symlink(): value = 'DELETED'
-            elif path.is_symlink(): value = 'symlink:' + os.readlink(path)
+            elif path.is_symlink(): value = self.source_file(path)
             elif path.is_dir():
                 value = run(['git', 'rev-parse', 'HEAD'], path).decode().strip()
-            else: value = digest(read_regular(path))
+            else: value = file_hash(path)
             values.append((relative, value, stat.S_IMODE(path.lstat().st_mode) if path.exists() else 0))
         return {'head': run(['git', 'rev-parse', '--verify', 'HEAD'], self.root).decode().strip(),
                 'fingerprint': digest(encode(values))}
 
+    def source_file(self, path):
+        try: target = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise EvidenceError('SOURCE_UNPROVEN', 'Unresolved/cyclic source input: ' + str(path)) from exc
+        require(target.is_relative_to(self.root) and target.is_file(), 'SOURCE_UNPROVEN',
+                'External or non-file source target needs separate authority: ' + str(path))
+        return {'link': os.readlink(path) if path.is_symlink() else None,
+                'target': str(target), 'sha256': file_hash(target)}
+
+    def safe_source(self):
+        try: return self.source()
+        except (EvidenceError, OSError): return None
+
     def environment(self):
-        keys = set(ENV_KEYS) | {k for k in os.environ if k.startswith('CARGO_TARGET_') or k.startswith('CARGO_ALIAS_')}
+        keys = set(ENV_KEYS) | {k for k in os.environ if k.startswith(('CARGO_TARGET_', 'CARGO_ALIAS_', 'GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_', 'HUSKY_'))}
         return {k: os.environ[k] for k in sorted(keys) if k in os.environ}
 
     def configurations(self, cwd):
         paths = set()
         for parent in (Path(cwd), *Path(cwd).parents):
-            for name in ('.cargo/config', '.cargo/config.toml', 'rust-toolchain', 'rust-toolchain.toml'):
+            for name in ('.cargo/config', '.cargo/config.toml', 'rust-toolchain', 'rust-toolchain.toml',
+                         '.npmrc', '.yarnrc', '.yarnrc.yml', 'uv.toml', '.python-version',
+                         'pytest.ini', 'tox.ini', 'setup.cfg', 'go.work',
+                         'Directory.Build.props', 'Directory.Build.targets', 'Directory.Packages.props',
+                         'global.json', 'NuGet.Config', 'nuget.config',
+                         '.pre-commit-config.yaml', '.pre-commit-config.yml'):
                 paths.add(parent / name)
         cargo_home = Path(os.environ.get('CARGO_HOME', str(Path.home() / '.cargo')))
         paths.update(cargo_home / n for n in ('config', 'config.toml'))
         paths.update(Path.home() / n for n in ('.npmrc', '.yarnrc', '.yarnrc.yml', '.config/uv/uv.toml', '.config/go/env', '.config/pip/pip.conf'))
-        for key in ('GOENV', 'npm_config_userconfig', 'NPM_CONFIG_USERCONFIG'):
+        for key in ('GOENV', 'npm_config_userconfig', 'NPM_CONFIG_USERCONFIG', 'SKIP', 'PRE_COMMIT_ALLOW_NO_CONFIG',
+            'PRE_COMMIT_HOME', 'HUSKY', 'HUSKY_SKIP_HOOKS', 'GIT_CONFIG_COUNT',
+            'GIT_CONFIG_PARAMETERS', 'UV_PYTHON', 'UV_PYTHON_PREFERENCE', 'UV_CONFIG_FILE',
+            'UV_WORKING_DIRECTORY', 'PYTHONEXECUTABLE', 'DOTNET_CLI_HOME'):
             if os.environ.get(key) and os.environ[key] != 'off': paths.add(Path(os.environ[key]).absolute())
         git_dir = Path(self.repository['git_dir'])
         common = Path(run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], self.root).decode().strip())
@@ -362,17 +476,37 @@ class Workflow:
         if excludes.returncode == 0: paths.add(Path(excludes.stdout.decode().strip()).absolute())
         hooks = Path(run(['git', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks'], self.root).decode().strip())
         if hooks.is_dir(): paths.update(p for p in hooks.iterdir() if not p.name.endswith('.sample'))
-        return {str(p): digest(read_regular(p)) for p in sorted(paths) if p.exists()}
+        return {str(p): {'link': os.readlink(p) if p.is_symlink() else None, 'target': str(p.resolve(strict=True)), 'sha256': file_hash(p.resolve(strict=True))} for p in sorted(paths) if p.exists() or p.is_symlink()}
 
-    def executable(self, name, cwd):
+    def executable(self, name, cwd, depth=0):
+        require(depth < 4, 'TOOL_OVERRIDE_UNPROVEN', 'Cyclic executable interpreter chain')
         resolved = (str(Path(cwd) / name) if '/' in name and not Path(name).is_absolute()
                     else name if Path(name).is_absolute() else shutil.which(name))
         require(resolved and Path(resolved).exists(), 'MISSING_TOOLING', 'Executable unavailable: ' + name)
         path = Path(resolved).resolve()
-        return {'path': str(path), 'sha256': digest(read_regular(path))}
+        info, _, prefix = inspect_regular(path, prefix_bytes=512)
+        result = {'path': str(path), 'sha256': info['sha256']}
+        if prefix.startswith(b'#!'):
+            require(b'\n' in prefix, 'TOOL_OVERRIDE_UNPROVEN', 'Unbounded executable shebang')
+            words = shlex.split(prefix.split(b'\n', 1)[0][2:].decode())
+            require(words, 'TOOL_OVERRIDE_UNPROVEN', 'Missing executable interpreter')
+            result['interpreter'] = self.executable(words[0], cwd, depth + 1)
+            result['interpreter_argv'] = words
+            if Path(words[0]).name == 'env':
+                delegates = words[1:]
+                if delegates[:1] == ['-S']: delegates = delegates[1:]
+                require(delegates and not delegates[0].startswith('-') and '=' not in delegates[0],
+                        'TOOL_OVERRIDE_UNPROVEN', 'Unresolved env interpreter dispatch')
+                result['delegate'] = self.executable(delegates[0], cwd, depth + 1)
+        return result
 
     def tools(self, obligation):
         result = {'entry': self.executable(obligation['argv'][0], obligation['cwd'])}
+        result['inputs'] = {}
+        for arg in obligation['argv'][1:]:
+            path = Path(obligation['cwd']) / arg
+            if path.is_file():
+                result['inputs'][arg] = self.source_file(path)
         runner = obligation['runner']
         # Bind package-manager delegates as well as the top-level executable.
         delegates = []
@@ -381,7 +515,32 @@ class Workflow:
             candidate = Path(obligation['cwd']) / 'node_modules/.bin' / runner
             require(candidate.exists(), 'MISSING_TOOLING', 'Configured runner unavailable: ' + runner)
             result['runner'] = self.executable(str(candidate), obligation['cwd'])
-        for name in delegates: result[name] = self.executable(name, obligation['cwd'])
+        if obligation['toolchain'] == 'rust' and Path(result['entry']['path']).name == 'rustup':
+            for name in ('cargo', 'rustc', 'rustdoc'):
+                delegate = run([result['entry']['path'], 'which', name], obligation['cwd']).decode().strip()
+                result[name] = self.executable(delegate, obligation['cwd'])
+        if obligation['toolchain'] == 'dotnet':
+            version = run([obligation['argv'][0], '--version'], obligation['cwd']).decode().strip().splitlines()[-1]
+            installed = run([obligation['argv'][0], '--list-sdks'], obligation['cwd']).decode().splitlines()
+            matches = [line[len(version)+2:-1] for line in installed if line.startswith(version+' [') and line.endswith(']')]
+            require(len(matches) == 1, 'TOOL_OVERRIDE_UNPROVEN', 'Selected .NET SDK cannot be resolved')
+            sdk = Path(matches[0]) / version
+            result['sdk'] = {'version': version, 'driver': self.executable(str(sdk / 'dotnet.dll'), obligation['cwd'])}
+        if obligation['toolchain'] == 'python':
+            argv = obligation['argv']
+            if Path(argv[0]).name == 'uv':
+                interpreter = run([argv[0], 'python', 'find', '--project', obligation['cwd']], obligation['cwd'],
+                                  dict(os.environ, UV_OFFLINE='1')).decode().strip()
+                result['python'] = self.executable(interpreter, obligation['cwd'])
+            elif Path(argv[0]).name.startswith('python'):
+                result['python'] = result['entry']
+        for name in delegates:
+            # A direct Node command is also its own delegate. Reuse this
+            # observation only within this call; later validations rehash it.
+            if name == obligation['argv'][0]: result[name] = result['entry']
+            elif name == 'node' and result['entry'].get('delegate', {}).get('path') == str(Path(shutil.which('node') or '/missing-node').resolve()):
+                result[name] = result['entry']['delegate']
+            else: result[name] = self.executable(name, obligation['cwd'])
         return result
 
     def refs(self, refs):
@@ -390,7 +549,7 @@ class Workflow:
             fields(ref, ('path', 'sha256', 'purpose'))
             require(text(ref['purpose']) and text(ref['path']) and not Path(ref['path']).is_absolute() and
                     '..' not in Path(ref['path']).parts, 'INVALID_REQUEST', 'Invalid source reference')
-            require(digest(read_regular(self.root / ref['path'])) == ref['sha256'],
+            require(self.source_file(self.root / ref['path'])['sha256'] == ref['sha256'],
                     'SOURCE_STALE', 'Inspected source changed: ' + ref['path'])
 
     def inventory(self):
@@ -442,10 +601,10 @@ class Workflow:
                     Path(o['cwd']).is_relative_to(self.root) and Path(o['cwd']).is_dir(), 'INVALID_REQUEST', 'Invalid execution cwd')
             self.refs(o['selected_from'])
             if o['kind'] == 'consumer':
-                scenario = o.get('scenario'); fields(scenario, ('role', 'assertions', 'inspected'))
+                scenario = o.get('scenario'); fields(scenario, ('role', 'assertions', 'inspected', 'entry_points', 'cases', 'assertion_refs'))
                 require(scenario['role'] in ('basic', 'edge_or_integration') and isinstance(scenario['assertions'], list) and
                         scenario['assertions'] and all(text(a) for a in scenario['assertions']), 'INVALID_REQUEST', 'Consumer assertions required')
-                self.refs(scenario['inspected'])
+                self.refs(scenario['inspected']); self.refs(scenario['assertion_refs'])
             if o['toolchain'] == 'rust' and o['kind'] == 'test' and not self.rust_command(o):
                 unresolved.append('Rust full-workspace/default-thread command required: ' + o['id'])
         exclusion_ids = set()
@@ -494,7 +653,7 @@ class Workflow:
                 for kind, names in (('quality', ('quality', 'lint', 'format:check', 'check')), ('typecheck', ('typecheck', 'type-check'))):
                     for name in names:
                         if name in scripts and not any(o['kind'] == kind and
-                           (o['argv'][:3] == ['npm', 'run', name] or o['argv'][0] in ('pnpm', 'yarn', 'bun') and name in o['argv']) for o in selected):
+                           self.matches_script(o['argv'], name, scripts[name]) for o in selected):
                             unresolved.append('Configured ' + name + ' omitted: ' + c['id'])
                 if c['toolchain'] == 'typescript' and not any(o['kind'] == 'typecheck' for o in selected):
                     unresolved.append('TypeScript typecheck unresolved: ' + c['id'])
@@ -550,7 +709,7 @@ class Workflow:
         require(before == p['source'], 'SOURCE_STALE', 'Source changed after plan registration; register a fresh plan')
         tools = self.tools(o); environment = self.environment(); configs = self.configurations(o['cwd'])
         execution_id = uuid.uuid4().hex; prefix = 'attempts/' + execution_id + '/'
-        reserved = dict(self.identity(), execution_id=execution_id, plan_id=p['plan_id'], obligation_id=o['id'],
+        reserved = dict(self.identity(), sequence=self.sequence(), execution_id=execution_id, plan_id=p['plan_id'], obligation_id=o['id'],
                         producer_step=producer, invocation={'recipe_run_id': os.environ.get('AMPLIHACK_RECIPE_RUN_ID'),
                         'step_id': invoking, 'capture_pid': os.getpid(), 'parent_pid': os.getppid()},
                         source_before=before, command={
@@ -558,6 +717,7 @@ class Workflow:
                             'toolchain': o['toolchain'], 'runner': o['runner'], 'executable': tools['entry'], 'tools': tools},
                         environment=environment, configurations=configs, state='incomplete')
         self.store.put(prefix + 'attempt.json', reserved)
+        self.store.put('latest-executions/' + p['plan_id'] + '/' + digest(o['id'].encode()) + '.json', {'execution_id': execution_id})
         # Reserve before spawn. stdout/stderr stream directly into a private raw
         # log; no buffer limit can turn partial output into a successful receipt.
         logpath = self.store.path(prefix + 'raw.log')
@@ -572,7 +732,7 @@ class Workflow:
         normal = status >= 0
         exit_code = status if normal else None
         receipt = self.store.put(prefix + 'exit.txt', (str(status if normal else 128 - status) + '\n').encode(), raw=True)
-        log = {'path': prefix + 'raw.log', 'sha256': digest(read_regular(logpath)), 'bytes': logpath.stat().st_size}
+        log = dict(inspect_regular(logpath)[0], path=prefix + 'raw.log')
         metadata = dict(reserved, state='sealed', source_after=after,
                         process={'termination': 'exited' if normal else 'signaled', 'exit_code': exit_code,
                                  'signal': -status if not normal else None, 'pid': child.pid, 'environment': environment},
@@ -599,11 +759,11 @@ class Workflow:
             contents = read_regular(path).decode()
             require(not re.search(r'(?mi)(^\s*(runner|rustc|rustdoc|rustc-wrapper|rustc-workspace-wrapper|rustflags|test)\s*=|RUST_TEST_THREADS|RUSTC_WRAPPER|RUSTC_WORKSPACE_WRAPPER|CARGO_TARGET_.*_RUNNER|--test-threads|--skip)', contents),
                     'TOOL_OVERRIDE_UNPROVEN', 'Cargo configuration can override execution: ' + path)
-        executable = read_regular(e['command']['executable']['path'])
+        _, _, executable = inspect_regular(e['command']['executable']['path'], prefix_bytes=4)
         require(executable.startswith(b'\x7fELF') or executable[:4] in (b'\xcf\xfa\xed\xfe', b'\xfe\xed\xfa\xcf'),
                 'TOOL_OVERRIDE_UNPROVEN', 'Cargo must resolve to a native Cargo/rustup executable')
-        raw = self.store.artifact(e['artifacts']['raw_log'])
-        require(b'test result: ok.' in raw and b'test result: FAILED' not in raw,
+        hits = self.store.inspect(e['artifacts']['raw_log'], (rb'test result: ok\.', rb'test result: FAILED'))
+        require(hits[0] and not hits[1],
                 'RUST_SCOPE_INVALID', 'No completed native Rust test harness found')
 
     def validate_execution(self, execution_id, p, o):
@@ -614,6 +774,8 @@ class Workflow:
         require(e['capture_binding']['metadata'] == index['metadata'] and
                 {k:v for k,v in e.items() if k != 'capture_binding'} == metadata,
                 'CAPTURE_BINDING_MISSING', 'Independent capture binding mismatch')
+        require(type(e.get('sequence')) is int and e['sequence'] > self.current().get('verification_floor', 0),
+                'EXECUTION_SUPERSEDED', 'A failed verification requires genuinely refreshed executions')
         require(e['execution_id'] == execution_id and e['plan_id'] == p['plan_id'] and e['obligation_id'] == o['id'] and
                 e['repository'] == self.repo_identity() and e['workflow'] == self.workflow,
                 'IDENTITY_MISMATCH', 'Execution identity mismatch')
@@ -624,41 +786,164 @@ class Workflow:
         require(e['process']['environment'] == self.environment() and e['configurations'] == self.configurations(o['cwd']),
                 'CONFIGURATION_CHANGED', 'Execution environment or configuration changed')
         require(e['source_before'] == p['source'] == e['source_after'] == self.source(), 'SOURCE_STALE', 'Tested source is stale')
-        receipt = self.store.artifact(e['artifacts']['exit_receipt'])
-        self.store.artifact(e['artifacts']['raw_log'])
+        receipt = self.store.artifact(e['artifacts']['exit_receipt'], 4)
+        self.store.inspect(e['artifacts']['raw_log'])
         require(re.fullmatch(rb'(0|[1-9][0-9]{0,2})\n?', receipt) and int(receipt) <= 255,
                 'INVALID_EXIT_RECEIPT', 'Expected one ASCII numeric process exit')
         require(e['process']['termination'] == 'exited' and type(e['process']['exit_code']) is int and
                 e['process']['exit_code'] == int(receipt) == 0, 'CHECK_FAILED', 'Execution did not normally exit zero')
         if o['toolchain'] == 'rust' and o['kind'] == 'test': self.rust_execution(o, e)
+        if o['kind'] == 'consumer': self.scenario_execution(o, e)
+        elif o['kind'] == 'test' and o['toolchain'] != 'rust': self.suite_execution(o, e)
+        elif o['kind'] == 'precommit': self.hook_execution(o, e)
         return index['record']
 
+    def documented_command(self, o):
+        # Inspect complete command lines or explicitly labelled commands. A
+        # prefix of a documented suite must not authorize a filtered substitute.
+        for ref in o['selected_from']:
+            contents = read_regular((self.root / ref['path']).resolve()).decode(errors='strict')
+            candidates = contents.splitlines() + re.findall(r'`([^`\n]+)`', contents)
+            candidates += re.findall(r'(?im)(?:tests?|quality|typecheck|consumer(?: basic| edge)?):[ \t]*([^\n;]+?)(?=\.[ \t]+[A-Za-z]|;|$)', contents)
+            for candidate in candidates:
+                for line in (candidate.strip(), candidate.strip().removesuffix('.')):
+                    try: argv = shlex.split(line.removeprefix('$ '))
+                    except ValueError: continue
+                    if argv == o['argv']: return True
+        return False
+
+    def hook_command(self, o):
+        skip = os.environ.get('SKIP', '')
+        require(not any(os.environ.get(k) in ('0', '1', 'true') for k in ('HUSKY_SKIP_HOOKS',)) and
+                os.environ.get('HUSKY') != '0' and not os.environ.get('PRE_COMMIT_ALLOW_NO_CONFIG') and
+                all(v in ('xpia', 'xpia-defense') for v in skip.split(',') if v),
+                'HOOK_UNPROVEN', 'Hooks disabled or skipped beyond the user XPIA exclusion')
+        hook = Path(run(['git', 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-commit'], self.root).decode().strip())
+        if hook.exists() and os.access(hook, os.X_OK):
+            argv = o['argv']
+            direct = len(argv) == 1 and '/' in argv[0] and (Path(o['cwd']) / argv[0]).resolve() == hook.resolve()
+            require(direct or argv == ['git', 'hook', 'run', 'pre-commit'],
+                    'COMMAND_MISMATCH', 'Must execute the actual configured Git pre-commit hook')
+            return
+        config = any((Path(o['cwd']) / n).is_file() for n in ('.pre-commit-config.yaml', '.pre-commit-config.yml'))
+        require(config and o['argv'] == ['pre-commit', 'run', '--all-files'],
+                'COMMAND_MISMATCH', 'Must execute configured pre-commit against all files')
+
+    def matches_script(self, argv, name, script):
+        try: direct = shlex.split(script)
+        except (ValueError, TypeError): return False
+        return (argv == direct or argv in (['npm', 'run', name], ['npm', name]) or
+                argv in ([tool, name] for tool in ('pnpm', 'yarn', 'bun')))
+
     def configured_command(self, p, o):
-        if o['kind'] == 'consumer' or o['toolchain'] not in ('javascript', 'typescript'):
-            return
+        components = [c for c in p['components'] if c['id'] in o['component_ids']]
+        require(all(Path(o['cwd']) == (self.root / c['root']).resolve() for c in components),
+                'CWD_MISMATCH', 'Configured check must execute at its inspected component root')
         if o['kind'] == 'precommit':
-            return
-        for c in p['components']:
-            if c['id'] not in o['component_ids']:
-                continue
+            self.hook_command(o); return
+        if o['kind'] == 'consumer':
+            self.scenario_inputs(o); return
+        if o['toolchain'] == 'rust' and o['kind'] == 'test':
+            require(self.rust_command(o), 'COMMAND_MISMATCH', 'Full workspace Rust command required'); return
+        for c in components:
             package = self.root / c['root'] / 'package.json'
-            if not package.exists():
-                continue
-            scripts = parse(read_regular(package)).get('scripts', {})
-            names = {'test': ('test',), 'typecheck': ('typecheck', 'type-check'),
-                     'quality': ('quality', 'lint', 'format:check', 'check')}[o['kind']]
-            available = [name for name in names if name in scripts]
-            if available:
-                def matches(name):
-                    argv = o['argv']
-                    try:
-                        direct = shlex.split(scripts[name])
-                    except ValueError:
-                        return False
-                    return (argv == direct or argv in (['npm', 'run', name], ['npm', name]) or
-                            argv in ([tool, name] for tool in ('pnpm', 'yarn', 'bun')))
-                require(any(matches(name) for name in available), 'COMMAND_MISMATCH',
-                        'Captured command does not execute the configured ' + o['kind'])
+            if package.exists() and o['toolchain'] in ('javascript', 'typescript'):
+                scripts = parse(read_regular(package)).get('scripts', {})
+                names = {'test': ('test',), 'typecheck': ('typecheck', 'type-check'),
+                         'quality': ('quality', 'lint', 'format:check', 'check')}[o['kind']]
+                require(any(name in scripts and self.matches_script(o['argv'], name, scripts[name]) for name in names), 'COMMAND_MISMATCH',
+                        'Command does not execute the configured ' + o['kind'])
+            else:
+                require(self.documented_command(o), 'COMMAND_MISMATCH',
+                        'Command not found in inspected project policy for ' + o['toolchain'])
+        argv = o['argv']
+        require(not any(a in ('-c', '-e', '--eval', '--listTests', '--list-tests', '--collect-only', '--no-tests',
+                             '--passWithNoTests') for a in argv), 'COMMAND_MISMATCH', 'Check does not execute a configured suite')
+
+    def scenario_inputs(self, o):
+        scenario = o['scenario']
+        entries = scenario.get('entry_points'); cases = scenario.get('cases'); assertions = scenario.get('assertion_refs')
+        require(isinstance(entries, list) and entries and all(text(x) for x in entries) and
+                isinstance(cases, list) and cases and all(text(x) for x in cases),
+                'SCENARIO_UNPROVEN', 'Executable entry points and selected cases required')
+        self.refs(assertions)
+        require(all(entry in {r['path'] for r in assertions} for entry in entries),
+                'SCENARIO_UNPROVEN', 'Every entry point needs inspected assertion references')
+        argv = o['argv']
+        require(not any(a in ('-e', '-c', '--eval', '--collect-only', '--list-tests', '--listTests', '--passWithNoTests') for a in argv),
+                'SCENARIO_UNPROVEN', 'Consumer command does not select executable scenarios')
+        for entry in entries:
+            target = self.root / entry
+            self.source_file(target)
+            # Module/program dispatchers are mapped to their native entrypoint.
+            selected = str(target.relative_to(Path(o['cwd']))) in argv
+            if o['toolchain'] == 'go':
+                selected = './' + str(Path(entry).parent) in argv and Path(entry).name == 'main.go'
+                require(not re.search(rb'(?m)^//(?:go:build|[ ]+\+build)', read_regular(target.resolve())),
+                        'SCENARIO_UNPROVEN', 'Go build-tag applicability requires separate proof')
+            if o['toolchain'] == 'rust':
+                manifest = tomllib.loads(read_regular(Path(o['cwd']) / 'Cargo.toml').decode())
+                package = manifest.get('package', {})
+                bins = manifest.get('bin', [])
+                # Custom/multiple targets require an explicit inspected adapter.
+                expected = bins[0].get('path') if len(bins) == 1 else 'src/main.rs' if not bins else None
+                selected = ('run' in argv and bool(package) and expected is not None and
+                            target == Path(o['cwd']) / expected and not any(a in ('--bin', '--example', '-p', '--package', '--manifest-path') for a in argv))
+            if o['toolchain'] == 'dotnet':
+                project = Path(o['cwd']) / argv[argv.index('--project')+1] if '--project' in argv and argv.index('--project')+1 < len(argv) else None
+                selected = ('run' in argv and project is not None and target.parent == project.parent and Path(entry).name == 'Program.cs')
+                if selected:
+                    try: config = ET.fromstring(read_regular(project))
+                    except ET.ParseError as exc: raise EvidenceError('SCENARIO_UNPROVEN', 'Invalid .NET project configuration') from exc
+                    require(not any(element.tag.rsplit('}',1)[-1] in ('Compile', 'EnableDefaultCompileItems', 'EnableDefaultItems', 'DefaultItemExcludes',
+                                  'DefaultExcludesInProjectFolder', 'Import', 'Target') for element in config.iter()),
+                            'SCENARIO_UNPROVEN', 'Custom .NET compile inputs require an explicit inspected adapter')
+            if o['toolchain'] == 'python':
+                require(not os.environ.get('PYTHONOPTIMIZE') and not any(a in ('-O', '-OO') for a in argv),
+                        'SCENARIO_UNPROVEN', 'Python assertion optimization disables consumer assertions')
+            require(selected, 'SCENARIO_UNPROVEN', 'Captured argv does not select the inspected entry point')
+            contents = read_regular(target.resolve()).decode()
+            if o['toolchain'] == 'python':
+                try: tree = ast.parse(contents)
+                except SyntaxError as exc: raise EvidenceError('SCENARIO_UNPROVEN', 'Consumer source is not executable Python') from exc
+                executable_assertions = any(isinstance(node, ast.Assert) or isinstance(node, ast.Call) and
+                    isinstance(node.func, ast.Attribute) and node.func.attr.startswith('assert') for node in ast.walk(tree))
+                case_source = '\n'.join(str(node.value) for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
+            else:
+                tokens = re.compile(r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(/\*.*?\*/|//[^\n]*)""", re.DOTALL)
+                case_source = tokens.sub(lambda m: m.group(1) or '', contents)
+                code = tokens.sub('', contents)
+                executable_assertions = re.search(r'\bassert(?:_eq|_ne)?\s*!|\bassert(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\(|\bexpect\s*\(|\bpanic\s*\(|\bthrow\s+new|\bt\.(?:Fatal|Error)\s*\(', code)
+            require(executable_assertions, 'SCENARIO_UNPROVEN', 'Entry point has no inspectable executable assertions')
+            require(all(case in case_source and any(case in arg for arg in argv) for case in cases),
+                    'SCENARIO_UNPROVEN', 'Selected cases do not bind source and command')
+        return cases
+
+    def suite_execution(self, o, e):
+        patterns = (rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?|(?m:^ok[ \t]+[^\n]{1,512})|Passed:[ \t]+[1-9][0-9]{0,8}|check consumer assertions passed)',
+                    rb'(?:(?:# |\xe2\x84\xb9 )fail [1-9]|FAILED|no tests (?:ran|found)|No test files found|\[no tests to run\])')
+        hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
+        require(hits[0] and not hits[1], 'CHECK_UNPROVEN', 'Configured suite has no completed passing test execution')
+
+    def hook_execution(self, o, e):
+        patterns = (rb'(?mi)^(?![^\n]{0,512}xpia)[^\n]{0,512}(?:Skipped|SKIPPED)',
+                    rb'(?mi)(?:hooks disabled|skipping hooks|SKIP_HOOKS|HUSKY=0)')
+        hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
+        require(not any(hits), 'HOOK_UNPROVEN', 'Configured hooks were skipped or disabled')
+
+    def scenario_execution(self, o, e):
+        cases = self.scenario_inputs(o)
+        # Native harness counters prove a selected test ran; plain scenario
+        # programs emit a case-specific assertion completion after assertions.
+        patterns = [rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?)',
+                    rb'(?:(?:# |\xe2\x84\xb9 )fail [1-9]|test result: FAILED|FAILED|no tests (?:ran|found)|No test files found)',
+                    rb'consumer assertions passed']
+        patterns.extend(re.escape(case.encode()) for case in cases)
+        hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
+        filtered = len(cases) == 1 and any(arg in ('-t', '--testNamePattern', '--test-name-pattern') or
+                   arg.startswith(('--test-name-pattern=', '--testNamePattern=')) for arg in o['argv'])
+        require(not hits[1] and (all(hits[3:]) or hits[0] and filtered) and (hits[0] or hits[2]),
+                'SCENARIO_UNPROVEN', 'Selected assertions did not run, were skipped, or no completed case was observed')
 
     def coverage(self, context, plan_id=None):
         pre, local = context.get('precommit_results'), context.get('local_testing_gate')
@@ -688,6 +973,8 @@ class Workflow:
         require(set(pre.get('exclusions', [])) == {e['id'] for e in p['exclusions']}, 'OBLIGATION_UNCOVERED', 'Missing applicability decisions')
         for o in p['obligations']:
             executions, scenario = mapped[o['id']]
+            latest = self.store.get('latest-executions/' + p['plan_id'] + '/' + digest(o['id'].encode()) + '.json')
+            require(latest['execution_id'] in executions, 'EXECUTION_SUPERSEDED', 'Latest execution attempt must be represented')
             self.configured_command(p, o)
             if o['kind'] == 'consumer':
                 require(scenario is not None and scenario['role'] == o['scenario']['role'] and
@@ -706,8 +993,20 @@ class Workflow:
                 'terminal_state': 'VERIFICATION_COMPLETED' if completed else 'ALLOW_NO_OP' if noop else 'VERIFICATION_UNPROVEN',
                 'terminal_reason': reason}
 
+    def terminal_record(self, record):
+        if isinstance(record, str):
+            try: return parse(record.encode())
+            except EvidenceError: pass
+        return record
+
+    def implementation_records(self, context):
+        records = {k:context.get(k) for k in SUPPORT[:3]}
+        records['implementation_terminal_evidence'] = self.terminal_record(records['implementation_terminal_evidence'])
+        return records
+
     def typed(self, record, kind):
         key = kind + '_completed'
+        record = self.terminal_record(record)
         return (isinstance(record, dict) and set(record) == {key, 'terminal_no_op', 'terminal_state', 'terminal_reason'} and
                 all(isinstance(v, str) for v in record.values()) and record[key] in ('true', 'false') and
                 record['terminal_no_op'] in ('true', 'false') and text(record['terminal_reason']) and
@@ -730,22 +1029,125 @@ class Workflow:
         self.store.put('current.json', {'generation_id': generation_id, 'cohort': ref})
         return generation_id, ref
 
+    def observe_implementation(self):
+        """Controller adapter: surround actual producer/verifier subprocesses.
+
+        The controller must place this around step-08-implement and
+        step-08c-work-verifier. Passive text import cannot create this record.
+        """
+        cwd = self.r['cwd']
+        require(cwd == str(self.root), 'CWD_MISMATCH', 'Implementation must run in the canonical task worktree')
+        self.publish({'implementation': {'records': {}, 'state': 'UNPROVEN'}, 'implementation_floor': self.sequence()})
+        contract_path = HERE.parent / 'recipes/workflow-tdd.yaml'
+        contract = {'path': str(contract_path), 'sha256': file_hash(contract_path)}
+        terminal_inputs = {str(HERE / name): file_hash(HERE / name) for name in ('workflow_implementation_evidence.sh', 'workflow_context.sh')}
+        origin_id = uuid.uuid4().hex; prefix = 'origins/' + origin_id + '/'
+        captures = []
+        for step, key in (('step-08-implement', 'producer_argv'), ('step-08c-work-verifier', 'verifier_argv')):
+            argv = self.r[key]
+            require(isinstance(argv, list) and argv and all(text(a) for a in argv), 'INVALID_REQUEST', 'Direct producer/verifier argv required')
+            before = self.source(); tool = self.executable(argv[0], cwd)
+            inputs = {arg:self.source_file(Path(cwd)/arg) for arg in argv[1:] if (Path(cwd)/arg).is_file()}
+            environment = self.environment(); configs = self.configurations(cwd)
+            observation = dict(self.identity(), step=step, argv=argv, cwd=cwd, source_before=before,
+                               executable=tool, inputs=inputs, environment=environment, configurations=configs,
+                               observer_pid=os.getpid(), observer_parent=os.getppid(), state='incomplete')
+            base = prefix + step + '/'
+            self.store.put(base + 'attempt.json', observation)
+            outputs = []
+            for name in ('stdout', 'stderr'):
+                self.store.put(base + name + '.log', b'', raw=True)
+                outputs.append(os.fdopen(os.open(self.store.path(base + name + '.log'), os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW), 'wb'))
+            try:
+                child = subprocess.Popen(argv, cwd=cwd, stdout=outputs[0], stderr=outputs[1])
+                status = child.wait()
+                for output in outputs: output.flush(); os.fsync(output.fileno())
+            finally:
+                for output in outputs: output.close()
+            after = self.source()
+            refs = {name: dict(inspect_regular(self.store.path(base + name + '.log'))[0], path=base+name+'.log')
+                    for name in ('stdout', 'stderr')}
+            observation.update(state='sealed', source_after=after, process_exit_code=status, child_pid=child.pid,
+                               outputs=refs, exit_receipt=self.store.put(base+'exit.txt', (str(status)+'\n').encode(), raw=True))
+            capture = self.store.put(base + 'record.json', observation); captures.append(capture)
+            require(status == 0, 'IMPLEMENTATION_UNPROVEN', 'Actual producer/verifier execution failed; raw evidence retained')
+            require(inputs == {arg:self.source_file(Path(cwd)/arg) for arg in argv[1:] if (Path(cwd)/arg).is_file()} and
+                    tool == self.executable(argv[0], cwd) and environment == self.environment() and configs == self.configurations(cwd),
+                    'CONFIGURATION_CHANGED', 'Producer inputs changed during execution')
+            if key == 'verifier_argv':
+                require(before == after, 'SOURCE_STALE', 'Verifier changed the source it inspected')
+        producer, verifier = [parse(self.store.artifact(ref)) for ref in captures]
+        require(producer['source_after'] == verifier['source_before'], 'SOURCE_STALE', 'Producer/verifier sources differ')
+        implementation = self.store.artifact(producer['outputs']['stdout']).decode()
+        verdict = self.store.artifact(verifier['outputs']['stdout']).decode()
+        require(text(implementation) and text(verdict), 'IMPLEMENTATION_UNPROVEN', 'Producer and verifier must retain nonempty original output')
+        original = dict(self.context, implementation=implementation, verdict_json=verdict)
+        producer_context = dict(original, verdict_json=parse(verdict.strip().splitlines()[-1].encode()))
+        context_ref = self.store.put(prefix + 'producer-context.json', producer_context)
+        env = dict(os.environ, AMPLIHACK_CONTEXT_FILE=str(self.store.path(context_ref['path'])))
+        result = subprocess.run(['bash', str(HERE / 'workflow_implementation_evidence.sh')], cwd=cwd, env=env,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        require(result.returncode == 0, 'IMPLEMENTATION_UNPROVEN', 'Stock terminal producer failed')
+        self.store.put(prefix + 'terminal-producer-stdout.json', result.stdout, raw=True)
+        self.store.put(prefix + 'terminal-producer-stderr.log', result.stderr, raw=True)
+        original['implementation_terminal_evidence'] = parse(result.stdout)
+        require(contract['sha256'] == file_hash(contract_path), 'CONFIGURATION_CHANGED', 'Producer recipe contract changed during execution')
+        origin = dict(self.identity(), sequence=self.sequence(), captures=captures, source=verifier['source_after'], recipe_contract=contract, terminal_inputs=terminal_inputs,
+                      records={k:original[k] for k in SUPPORT[:3]})
+        origin_ref = self.store.put(prefix + 'origin.json', origin)
+        self.store.put('implementation-origin.json', {'origin': origin_ref})
+        self.context = original
+        return self.checkpoint()
+
+    def implementation_origin(self, context):
+        require((self.store.root / 'implementation-origin.json').exists(), 'IMPLEMENTATION_UNPROVEN',
+                'Origin-time execution/source bindings missing. Controller must wrap workflow-tdd step-08-implement and '
+                'step-08c-work-verifier with observe-implementation; those producing points are outside the seven-entry scope.')
+        origin = parse(self.store.artifact(self.store.get('implementation-origin.json')['origin']))
+        require(type(origin.get('sequence')) is int and origin['sequence'] > self.current().get('implementation_floor', 0),
+                'IMPLEMENTATION_SUPERSEDED', 'An unsuccessful implementation requires genuinely refreshed producer/verifier execution')
+        require(origin['workflow'] == self.workflow and origin['repository'] == self.repo_identity() and
+                origin['source'] == self.source() and self.implementation_records(origin['records']) == self.implementation_records(context),
+                'SOURCE_STALE', 'Original producer/verifier bindings do not match this source and output')
+        require(origin['recipe_contract']['sha256'] == file_hash(origin['recipe_contract']['path']) and
+                all(file_hash(path) == sha for path, sha in origin['terminal_inputs'].items()),
+                'CONFIGURATION_CHANGED', 'Producer recipe contract or terminal producer inputs changed')
+        observations = []
+        for ref in origin['captures']:
+            e = parse(self.store.artifact(ref)); observations.append(e)
+            require(e['workflow'] == self.workflow and e['repository'] == self.repository and e['state'] == 'sealed' and
+                    e['process_exit_code'] == 0 and e['cwd'] == str(self.root), 'IMPLEMENTATION_UNPROVEN', 'Producer execution mismatch')
+            require(e['inputs'] == {arg:self.source_file(Path(e['cwd'])/arg) for arg in e['argv'][1:] if (Path(e['cwd'])/arg).is_file()} and
+                    e['executable'] == self.executable(e['argv'][0], e['cwd']) and
+                    e['configurations'] == self.configurations(e['cwd']) and e['environment'] == self.environment(),
+                    'CONFIGURATION_CHANGED', 'Original producer/verifier inputs changed')
+            require(self.store.artifact(e['exit_receipt'], 4) == b'0\n', 'IMPLEMENTATION_UNPROVEN', 'Producer failed')
+            for output in e['outputs'].values(): self.store.inspect(output)
+        require(len(observations) == 2 and observations[0]['step'] == 'step-08-implement' and
+                observations[1]['step'] == 'step-08c-work-verifier' and
+                observations[0]['source_after'] == observations[1]['source_before'] == observations[1]['source_after'] == origin['source'],
+                'IMPLEMENTATION_UNPROVEN', 'Independent producing-point observations missing')
+
     def implementation(self, context):
-        record = context.get('implementation_terminal_evidence')
+        record = self.terminal_record(context.get('implementation_terminal_evidence'))
         if record is None and 'implementation_terminal_evidence' not in context: return 'MISSING'
         if not self.typed(record, 'implementation'): return 'INVALID'
         if record['terminal_no_op'] == 'true' and record['implementation_completed'] == 'false':
             explicit = context.get('allow_no_op') is True
             sentinel = 'No files modified — orchestration task' in str(context.get('implementation', ''))
+            if self.current().get('implementation_floor'):
+                try: self.implementation_origin(context)
+                except (EvidenceError, OSError): return 'INVALID'
             return 'NO_OP' if record['terminal_state'] == 'ALLOW_NO_OP' and (explicit or sentinel) else 'INVALID'
         if record['implementation_completed'] != 'true': return 'INVALID'
         impl, verifier = context.get('implementation'), context.get('verdict_json')
         if not text(impl) or not (isinstance(verifier, dict) or text(verifier)): return 'INVALID'
         try:
-            verdict = verifier if isinstance(verifier, dict) else parse(verifier.encode())
-            require(isinstance(verdict, dict) and verdict.get('verdict') == 'WORK_VERIFIED' and verdict.get('head') == self.source()['head'],
-                    'IMPLEMENTATION_INVALID', 'Original verifier head and WORK_VERIFIED required')
-            self.refs(verdict.get('artifacts'))
+            verdict = verifier if isinstance(verifier, dict) else parse(verifier.strip().splitlines()[-1].encode())
+            require(isinstance(verdict, dict) and verdict.get('verdict') == 'WORK_VERIFIED' and
+                    isinstance(verdict.get('evidence'), list) and verdict['evidence'] and all(text(v) for v in verdict['evidence']) and text(verdict.get('rationale')),
+                    'IMPLEMENTATION_INVALID', 'Stock verifier verdict/evidence/rationale required on last nonempty line')
+            self.implementation_origin(context)
             return 'VALID'
         except (EvidenceError, OSError) as exc:
             self.implementation_error = str(exc)
@@ -756,23 +1158,27 @@ class Workflow:
         candidate = copy.deepcopy(self.context)
         restored_keys = []
         for key, value in original.get('records', {}).items():
-            if key not in candidate or candidate[key] == '':
+            if key not in candidate:
                 candidate[key] = copy.deepcopy(value); restored_keys.append(key)
-        state = self.implementation(candidate)
         snapshot = {k: candidate[k] for k in SUPPORT[:3] if k in candidate}
-        source = self.source()
+        generation, cohort = self.publish({'implementation': {'records': snapshot, 'state': 'UNPROVEN'}})
+        try:
+            source = self.source()
+            state = self.implementation(candidate)
+        except (EvidenceError, OSError) as exc:
+            self.publish({'implementation': {'records': snapshot, 'state': 'UNPROVEN', 'error': str(exc)},
+                          'implementation_floor': self.sequence()})
+            raise
         if original and original.get('source') != source and (restored_keys or snapshot == original.get('records')):
             state = 'STALE'
         observed = {'records': snapshot, 'source': source, 'state': state,
-                    'producer': 'workflow-tdd/implementation-terminal-evidence', 'verifier': 'step-08c-work-verifier'}
+                    'origin': self.store.get('implementation-origin.json') if (self.store.root / 'implementation-origin.json').exists() else None}
         # Retain every checkpoint, including negatives, but never destroy the
         # original cohort merely because a continuation omitted its transport.
         checkpoint_ref = self.store.put('checkpoints/' + uuid.uuid4().hex + '.json', observed)
-        if state in ('VALID', 'NO_OP') or not original:
-            generation, cohort = self.publish({'implementation': observed})
-        else:
-            current = self.current(); generation = current.get('generation_id')
-            cohort = self.store.get('current.json').get('cohort') if current else None
+        updates = {'implementation': observed}
+        if state not in ('VALID', 'NO_OP'): updates['implementation_floor'] = self.sequence()
+        generation, cohort = self.publish(updates)
         validation = self.store.put('validations/' + uuid.uuid4().hex + '.json',
                                     {'implementation_state': state, 'checkpoint': checkpoint_ref})
         return {'schema_version': 1, 'ok': state in ('VALID', 'NO_OP'), 'implementation_state': state,
@@ -780,6 +1186,7 @@ class Workflow:
                 'errors': [] if state in ('VALID', 'NO_OP') else ['Original typed implementation or verifier support missing/invalid/stale']}, int(state not in ('VALID', 'NO_OP'))
 
     def verify(self):
+        self.publish({'verification': {'records': {k:self.context[k] for k in SUPPORT[3:] if k in self.context}, 'state': 'UNPROVEN'}})
         try:
             details = self.coverage(self.context, self.r.get('plan_id'))
             ref = self.store.put('validations/verification-' + digest(encode(details)) + '.json', details)
@@ -791,27 +1198,28 @@ class Workflow:
             details = {'verification_completed': False, 'error': str(exc)}
             ref = self.store.put('validations/' + uuid.uuid4().hex + '.json', details)
             # No-op cannot hide any explicit failed report or changed source.
-            noop = self.context.get('allow_no_op') is True and not any(self.context.get(k) not in (None, '') for k in SUPPORT[4:]) and not run(['git', 'status', '--porcelain'], self.root).strip()
+            noop = self.context.get('allow_no_op') is True and not self.current().get('verification_floor') and not any(self.context.get(k) not in (None, '') for k in SUPPORT[4:]) and not run(['git', 'status', '--porcelain'], self.root).strip()
             terminal = self.terminal(False, 'Verification unproven: ' + str(exc) + '; ' + ref['path'], noop)
-            if noop:
-                self.publish({'verification': {'records': {'verification_terminal_evidence': terminal},
-                             'source': self.source(), 'state': 'NO_OP', 'validation': ref}})
+            self.publish({'verification': {'records': {**{k:self.context[k] for k in SUPPORT[4:] if k in self.context},
+                         'verification_terminal_evidence': terminal}, 'source': self.safe_source(),
+                         'state': 'NO_OP' if noop else 'UNPROVEN', 'validation': ref},
+                         **({} if noop else {'verification_floor': self.sequence()})})
             return terminal, 0
 
     def restored(self):
-        context = copy.deepcopy(self.context); cohort = self.current(); errors = []
+        context = copy.deepcopy(self.context); context.setdefault('repo_path', str(self.root)); cohort = self.current(); errors = []
         impl = cohort.get('implementation', {}); verify = cohort.get('verification', {})
         for group in (impl, verify):
             for key, value in group.get('records', {}).items():
                 # Only declared empty recipe defaults count as absent. Null,
                 # objects, negatives and malformed strings retain authority.
-                if key not in context or context[key] == '': context[key] = copy.deepcopy(value)
+                if key not in context: context[key] = copy.deepcopy(value)
         implementation_valid = (cohort.get('identity') == self.identity() and impl.get('state') == 'VALID' and impl.get('source') == self.source() and
                                 all(context.get(k) == v for k,v in impl.get('records', {}).items()) and
                                 self.implementation(context) == 'VALID')
         verification_valid = False
         try:
-            record = context.get('verification_terminal_evidence')
+            record = self.terminal_record(context.get('verification_terminal_evidence'))
             require(self.typed(record, 'verification') and record['verification_completed'] == 'true' and verify,
                     'AUTHORITATIVE_RECORD_INVALID', 'Original typed verification missing/invalid')
             require(all(context.get(k) == v for k,v in verify['records'].items()),
@@ -859,49 +1267,71 @@ class Workflow:
         sys.stderr.buffer.write(process.stderr)
         return process
 
-    def guarded_validation(self, context, local):
-        # CI is independent. The stock classifier's local-success shortcut must
-        # not bypass an explicitly negative CI observation.
+    def collected_identity(self, evidence):
+        require(isinstance(evidence, dict) and isinstance(evidence.get('git'), dict),
+                'IDENTITY_MISMATCH', 'Collected repository identity missing')
+        observed = evidence['git']
+        for key in ('repo_path', 'worktree_path'):
+            require(text(observed.get(key)) and Path(observed[key]).is_absolute() and
+                    Path(observed[key]).resolve() == self.root,
+                    'IDENTITY_MISMATCH', 'Collected repository does not match invoking worktree')
+        head = observed.get('head_sha')
+        require(text(head) and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', head) and head == self.source()['head'],
+                'IDENTITY_MISMATCH', 'Collected full HEAD does not match verified source')
+
+    def ci_failed(self, context):
         evidence = context.get('finalization_evidence')
-        if isinstance(evidence, dict) and evidence.get('ci', {}).get('state') in ('FAILURE', 'FAILED', 'CANCELLED', 'ERROR'):
-            evidence.setdefault('prior_terminal_state', {})['terminal_state'] = 'BLOCKED_CI'
-        before = self.source()
+        if not isinstance(evidence, dict): return False
+        ci = evidence.get('ci')
+        if not isinstance(ci, dict): return False
+        return any(str(ci.get(key, '')).upper() in ('FAILURE', 'FAILED', 'CANCELLED', 'CANCELED', 'ERROR')
+                   for key in ('state', 'status', 'conclusion'))
+
+    def postconditions(self, value, context, local):
+        require(isinstance(value, dict), 'INVALID_CONTEXT', 'Classifier returned no result')
+        if value.get('terminal_success') == 'true':
+            if 'finalization_evidence' in context: self.collected_identity(context['finalization_evidence'])
+            if not (local['implementation_valid'] and local['verification_valid'] or
+                    local.get('no_op_valid') and value.get('terminal_state') == 'ALLOW_NO_OP'):
+                value.update(terminal_state='FAILED_IMPLEMENTATION', terminal_success='false', terminal_failure='true',
+                             finalizer_output_valid='false', terminal_reason='Original implementation and applicable captured verification required',
+                             required_next_action='Refresh genuine producer/verifier execution and workflow-precommit-test evidence.')
+            elif self.ci_failed(context):
+                value.update(terminal_state='BLOCKED_CI', terminal_success='false', terminal_failure='true',
+                             finalizer_output_valid='false', terminal_reason='Explicit unsuccessful CI independently prevents success',
+                             required_next_action='Resolve failed/cancelled/error CI and collect fresh evidence.')
+        # Existing harder unsuccessful classifications are never softened.
+        value['local_evidence'] = {k:v for k,v in local.items() if k != 'derived_context'}
+        return value, 0 if value.get('terminal_success') == 'true' else 1
+
+    def guarded_validation(self, context, local):
+        if 'finalization_evidence' in context: self.collected_identity(context['finalization_evidence'])
         process = self.consumer('validate', context)
-        if self.source() != before:
-            _, local = self.restored()
+        _, local = self.restored()
         value = parse(process.stdout)
         require(isinstance(value, dict), 'INVALID_CONTEXT', 'Classifier returned no result')
         if process.returncode != 0 and value.get('terminal_success') == 'true':
             value.update(terminal_state='FAILED_INVALID_EVIDENCE', terminal_success='false', terminal_failure='true',
                          finalizer_output_valid='false', terminal_reason='Classifier process failed despite a supplied success record',
                          required_next_action='Inspect the original classifier process exit and output.')
-        if value.get('terminal_success') == 'true' and not (local['implementation_valid'] and local['verification_valid'] or
-                local.get('no_op_valid') and value.get('terminal_state') == 'ALLOW_NO_OP'):
-            value.update(terminal_state='FAILED_IMPLEMENTATION', terminal_success='false', terminal_failure='true',
-                         finalizer_output_valid='false', terminal_reason='Original implementation and applicable captured verification required',
-                         required_next_action='Refresh the genuine implementation producer or workflow-precommit-test evidence.')
-        value['local_evidence'] = {k:v for k,v in local.items() if k != 'derived_context'}
-        return value, 0 if value.get('terminal_success') == 'true' else 1
+        return self.postconditions(value, context, local)
 
     def finalize(self, action):
         context, local = self.restored()
         if action == 'final-status':
             process = self.consumer(action, context)
             _, fresh = self.restored()
-            output = process.stdout.decode(errors='replace')
-            if process.returncode == 0 and not (fresh['implementation_valid'] and fresh['verification_valid'] or fresh.get('no_op_valid')):
-                guarded = {'terminal_state': 'FAILED_IMPLEMENTATION', 'terminal_success': 'false',
-                           'terminal_failure': 'true', 'terminal_reason': 'Original typed local evidence missing, invalid or stale'}
-                lines = []
-                for line in output.splitlines():
-                    key = line.split('=', 1)[0]
-                    if key in guarded: line = key + '=' + guarded[key]
-                    if line == 'All 23 workflow steps completed successfully.': continue
-                    lines.append(line)
-                print('\n'.join(lines))
-                return None, 1
-            sys.stdout.buffer.write(process.stdout)
-            return None, process.returncode
+            output = process.stdout.decode(errors='strict')
+            original = dict(line.split('=', 1) for line in output.splitlines() if '=' in line)
+            guarded, status = self.postconditions(dict(original), context, fresh)
+            lines = []
+            for line in output.splitlines():
+                key = line.split('=', 1)[0]
+                if key in original and key in guarded: line = key + '=' + str(guarded[key])
+                if status and line == 'All 23 workflow steps completed successfully.': continue
+                lines.append(line)
+            print('\n'.join(lines))
+            return None, process.returncode or status
         if action == 'collect':
             for attempt in range(2):
                 before = self.source(); process = self.consumer('collect', context)
@@ -909,23 +1339,26 @@ class Workflow:
                 value = parse(process.stdout)
                 context, local = self.restored()
                 if before == self.source(): break
+            self.collected_identity(value)
             value['completion']['implementation_completed'] = 'true' if local['implementation_valid'] else 'false'
             value['completion']['verification_completed'] = 'true' if local['verification_valid'] else 'false'
             value['local_evidence'] = {k:v for k,v in local.items() if k != 'derived_context'}
+            if 'terminal_success' in value:
+                return self.postconditions(value, dict(context, finalization_evidence=value), local)
             return value, 0
         if action == 'validate': return self.guarded_validation(context, local)
         if action == 'complete':
-            # Re-run the guarded classifier at the completion boundary. A
-            # caller-supplied success object is never a completion capability.
             result, status = self.guarded_validation(context, local)
             prior = context.get('workflow_result')
-            if isinstance(prior, dict) and prior.get('terminal_success') != 'true':
-                result, status = prior, 1
+            if isinstance(prior, dict) and prior.get('terminal_success') != 'true': result, status = prior, 1
             context['workflow_result'] = result
             process = self.consumer('complete', context)
             require(process.returncode == 0, 'INVALID_CONTEXT', 'Completion reporting failed')
-            return parse(process.stdout), status
+            _, fresh = self.restored()
+            value, final_status = self.postconditions(parse(process.stdout), context, fresh)
+            return value, status or final_status
         raise EvidenceError('INVALID_REQUEST', 'Unknown finalization action')
+
 
 def main():
     args = sys.argv[3:]; request_file = None; action = None
@@ -942,12 +1375,13 @@ def main():
     require(request['schema_version'] == 1, 'UNSUPPORTED_SCHEMA', 'Only schema version 1 is supported')
     if 'extensions' in request: require(isinstance(request['extensions'], dict), 'INVALID_REQUEST', 'extensions must be an object')
     base = ('schema_version', 'workflow', 'repository_root')
-    extra = {'plan': ('components', 'obligations', 'exclusions'), 'capture': ('plan_id', 'obligation_id', 'producer_step', 'argv', 'cwd')}
+    extra = {'observe-implementation': ('producer_argv', 'verifier_argv', 'cwd'), 'plan': ('components', 'obligations', 'exclusions'), 'capture': ('plan_id', 'obligation_id', 'producer_step', 'argv', 'cwd')}
     optional = ('context_file', 'extensions') + (('plan_id',) if MODE == 'verify' else ())
     if request_file: fields(request, base + extra.get(MODE, ()), optional)
-    else: require(MODE not in ('plan', 'capture'), 'INVALID_REQUEST', 'This operation needs a request file')
+    else: require(MODE not in ('plan', 'capture', 'observe-implementation'), 'INVALID_REQUEST', 'This operation needs a request file')
     workflow = Workflow(request)
-    if MODE == 'plan': result, status = workflow.plan()
+    if MODE == 'observe-implementation': result, status = workflow.observe_implementation()
+    elif MODE == 'plan': result, status = workflow.plan()
     elif MODE == 'capture': result, status = workflow.capture()
     elif MODE == 'checkpoint-implementation': result, status = workflow.checkpoint()
     elif MODE == 'verify': result, status = workflow.verify()
