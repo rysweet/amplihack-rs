@@ -294,6 +294,42 @@ mod issue_1699 {
         assert_eq!(hook_path_refusal(&link, &root, Some(&home), &[]), None);
     }
 
+    /// The stored path is the one written, so a symlink placed in a temp
+    /// directory is refused even when its target lies outside every base.
+    #[test]
+    fn a_symlink_in_a_temp_directory_is_judged_by_where_it_sits() {
+        let (_d, tmp) = fixture();
+        let (_r, real) = fixture();
+        let home = dir(real.join("home"));
+        let target = hooks_file(&real.join("opt/amplihack-hooks"));
+        let link = tmp.join("build/amplihack-hooks");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&target, &link).unwrap();
+        let root = dir(real.join("disk2/profiles"));
+        let reason = hook_path_refusal(&link, &root, Some(&home), std::slice::from_ref(&tmp))
+            .expect("a hooks path written under a temp base must be refused");
+        assert!(reason.contains("is under temporary directory"), "{reason}");
+        assert!(reason.contains(&link.display().to_string()), "{reason}");
+    }
+
+    /// A symlink outside every temp base whose target is also outside them is
+    /// accepted with the temp bases in force.
+    #[test]
+    fn a_symlink_outside_temp_to_a_file_outside_temp_is_accepted() {
+        let (_d, tmp) = fixture();
+        let (_r, real) = fixture();
+        let home = dir(real.join("home"));
+        let target = hooks_file(&real.join("opt/amplihack-hooks"));
+        let link = home.join(".local/bin/amplihack-hooks");
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&target, &link).unwrap();
+        let root = dir(real.join("disk2/profiles"));
+        assert_eq!(
+            hook_path_refusal(&link, &root, Some(&home), std::slice::from_ref(&tmp)),
+            None
+        );
+    }
+
     /// A normal user: real HOME, hooks binary inside it, root on another disk.
     /// #1661 behaviour is kept.
     #[test]

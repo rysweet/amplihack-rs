@@ -96,11 +96,14 @@ uses this layout.
 
 ## When the real-root guard fails
 
-The guard prints the changed paths and exits the test process with status 1:
+The guard prints the changed paths and a hint to re-run, then exits the test
+process with status 1. This happens after libtest prints `test result: ok`, and
+no test is named as the failure:
 
 ```text
-real profile root changed during this test run:
+issue_1699 real-root guard: real profile root changed during this test run:
   /home/user/.claude-profiles/work/settings.json
+issue_1699 real-root guard: another process can cause this (`amplihack install`, `profile add`, rotator status-line setup or a rotator restart during the run); re-run the tests before investigating
 ```
 
 1. Check whether you changed the file yourself during the run, for example

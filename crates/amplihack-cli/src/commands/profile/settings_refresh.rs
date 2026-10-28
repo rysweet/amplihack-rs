@@ -61,10 +61,13 @@ pub(crate) fn refresh_profile_settings(
 
 /// Issue #1699: `None` when `hooks_bin` may be written into the profiles
 /// under `root`, otherwise the reason it may not. Refused when `hooks_bin`
-/// is not a regular file (after following symlinks), or when its canonical
-/// path lies under one of `temp_bases` (expected canonical) and `root` does
-/// not lie under `home`, or `home` is unknown. Comparisons are component-wise
-/// on canonical paths, or on the absolute form of a path that does not exist.
+/// is not a regular file (after following symlinks), or when it lies under
+/// one of `temp_bases` (expected canonical) and `root` does not lie under
+/// `home`, or `home` is unknown. "Lies under" is checked twice: on the fully
+/// resolved path, and on the path as written with only its directory
+/// resolved, because the path as written is what the profiles store.
+/// Comparisons are component-wise on canonical paths, or on the absolute form
+/// of a path that does not exist.
 pub(crate) fn hook_path_refusal(
     hooks_bin: &Path,
     root: &Path,
@@ -81,7 +84,10 @@ pub(crate) fn hook_path_refusal(
         Ok(path) => path,
         Err(error) => return Some(format!("hooks binary {shown} cannot be resolved: {error}")),
     };
-    let base = temp_bases.iter().find(|base| bin.starts_with(base))?;
+    let written = written_form(hooks_bin);
+    let base = temp_bases.iter().find(|base| {
+        bin.starts_with(base) || written.as_ref().is_some_and(|path| path.starts_with(base))
+    })?;
     let under_temp = format!(
         "hooks binary {shown} is under temporary directory {}",
         base.display()
@@ -98,6 +104,14 @@ pub(crate) fn hook_path_refusal(
     }
 }
 
+/// `path` with its directory resolved and its last component kept as written,
+/// so a symlink placed in a temporary directory is judged by where it sits.
+fn written_form(path: &Path) -> Option<PathBuf> {
+    let absolute = std::path::absolute(path).ok()?;
+    let name = absolute.file_name()?;
+    Some(absolute.parent()?.canonicalize().ok()?.join(name))
+}
+
 /// The canonical form of `path`, or its absolute form when it does not exist.
 fn resolved(path: &Path) -> Option<PathBuf> {
     path.canonicalize()
@@ -108,6 +122,8 @@ fn resolved(path: &Path) -> Option<PathBuf> {
 /// The temporary directories a hooks binary must not come from: the canonical
 /// forms of `temp_dir()`, an absolute `$TMPDIR` and `/tmp`, without
 /// duplicates. A base that cannot be canonicalised is left out.
+/// `temp_bases()` in `tests/issue_1699_real_root_guard.rs` builds the same
+/// list for the test guard; change both together.
 fn production_temp_bases() -> Vec<PathBuf> {
     let tmpdir = std::env::var_os("TMPDIR")
         .map(PathBuf::from)
@@ -151,7 +167,7 @@ fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
 
 /// Unchecked: it does not consult [`hook_path_refusal`]. Production code
 /// calls [`refresh_profile_settings`]; tests call this with a fixture store.
-pub(crate) fn refresh_in(
+pub(super) fn refresh_in(
     store: &ProfileStore,
     update: &dyn Fn(&mut Value),
 ) -> Vec<(String, Refresh)> {

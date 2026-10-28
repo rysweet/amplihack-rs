@@ -59,6 +59,9 @@ struct Baseline {
 static BASELINE: OnceLock<Baseline> = OnceLock::new();
 
 /// Canonical temporary-directory bases: `temp_dir()`, `$TMPDIR` and `/tmp`.
+/// `production_temp_bases()` in
+/// `src/commands/profile/settings_refresh.rs` builds the same list for the
+/// production refusal; change both together.
 fn temp_bases() -> Vec<PathBuf> {
     let mut candidates = vec![std::env::temp_dir(), PathBuf::from("/tmp")];
     if let Some(tmpdir) = std::env::var_os("TMPDIR").map(PathBuf::from)
@@ -198,12 +201,22 @@ fn diff_snapshots(before: &Snapshot, after: &Snapshot) -> Vec<PathBuf> {
 }
 
 fn report(changed: &[PathBuf]) -> String {
-    let mut text = String::from("real profile root changed during this test run:\n");
+    let mut text = String::from(
+        "issue_1699 real-root guard: real profile root changed during this test run:\n",
+    );
     for path in changed {
         text.push_str(&format!("  {}\n", path.display()));
     }
+    text.push_str(RERUN_HINT);
     text
 }
+
+/// Printed after the changed paths: the baseline is taken before the tests
+/// start, so a legitimate change made by another process in that window also
+/// fails the run.
+const RERUN_HINT: &str = "issue_1699 real-root guard: another process can cause this \
+    (`amplihack install`, `profile add`, rotator status-line setup or a rotator \
+    restart during the run); re-run the tests before investigating\n";
 
 extern "C" fn check_at_exit() {
     let result = std::panic::catch_unwind(|| {
@@ -402,7 +415,12 @@ mod fixture {
         let text = report(&[PathBuf::from("/r/a/settings.json")]);
         assert_eq!(
             text,
-            "real profile root changed during this test run:\n  /r/a/settings.json\n"
+            format!(
+                "issue_1699 real-root guard: real profile root changed during this \
+                 test run:\n  /r/a/settings.json\n{RERUN_HINT}"
+            )
         );
+        assert!(RERUN_HINT.starts_with("issue_1699 real-root guard: "));
+        assert!(RERUN_HINT.contains("re-run the tests before investigating"));
     }
 }
