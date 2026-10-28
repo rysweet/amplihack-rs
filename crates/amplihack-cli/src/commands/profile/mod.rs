@@ -38,6 +38,8 @@ mod tests_docs_sync;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
 #[cfg(all(test, unix))]
+mod tests_hook_path_refusal;
+#[cfg(all(test, unix))]
 mod tests_login_check;
 #[cfg(test)]
 mod tests_name;
@@ -77,7 +79,7 @@ use root_cmd::{render_list, render_show};
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
-pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
+pub(crate) use settings_refresh::{Refresh, refresh_profile_hooks_checked};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;

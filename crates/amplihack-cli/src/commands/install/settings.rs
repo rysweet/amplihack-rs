@@ -190,7 +190,7 @@ pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REF
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
 /// profile that cannot be refreshed is reported and skipped.
 pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
-    use crate::commands::profile::{Refresh, refresh_profile_settings};
+    use crate::commands::profile::{Refresh, refresh_profile_hooks_checked};
     // This crate's in-process install tests inherit the developer's
     // AMPLIHACK_CLAUDE_PROFILE_ROOT and would rewrite their real profiles;
     // they opt in explicitly. Integration tests start the binary through
@@ -200,7 +200,9 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     }
     let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(&|settings| {
+    // Issue #1699: refused when the binary is missing, or under a temp dir
+    // or HOME while the root is outside HOME; each profile then warns below.
+    let results = refresh_profile_hooks_checked(hooks_bin, &|settings| {
         register_hooks(settings, hooks_bin, with_xpia, limit_resume)
     });
     let updated = results

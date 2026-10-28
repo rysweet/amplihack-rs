@@ -145,6 +145,21 @@ bash scripts/check-leaked-rotators.sh
 
 See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md).
 
+### Changes to the Real Profile Root
+
+A test must not change any file under your real profile root: the default
+`~/.amplihack/claude-profiles`, the root saved by `amplihack profile root`,
+`$AMPLIHACK_CLAUDE_PROFILE_ROOT`, or `~/.claude-profiles`. Snapshot them
+before a test run and compare after:
+
+```bash
+scripts/check-real-profile-root.sh snapshot ~/.amplihack/work/real-root.snap
+cargo nextest run -p amplihack-cli
+scripts/check-real-profile-root.sh compare ~/.amplihack/work/real-root.snap
+```
+
+See [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -160,3 +175,4 @@ pre-commit run --all-files
 - [Create Your Own Tools](../howto/create-your-own-tools.md) — building custom tools
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
+- [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) — the hook-path refusal rule and the real-root guard

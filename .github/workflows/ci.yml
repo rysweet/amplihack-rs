@@ -147,6 +147,9 @@ jobs:
       - name: Leaked-rotator detector — finds a left-behind rotate watch daemon (issue #1690)
         shell: bash
         run: bash tests/issue_1690_leaked_rotator_check.sh
+      - name: Real-profile-root guard — detects a test writing the real profiles (issue #1699)
+        shell: bash
+        run: bash tests/issue_1699_real_profile_root_guard.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -490,6 +493,12 @@ jobs:
         run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
+      # Issue #1699: record the real profile roots before any test runs; the
+      # compare step below fails if a test changed them. The snapshot holds
+      # hashes of credential files and is never uploaded as an artifact.
+      - name: Snapshot the real profile roots (issue #1699)
+        shell: bash
+        run: bash scripts/check-real-profile-root.sh snapshot "$RUNNER_TEMP/real-profile-root.snap"
       # nextest: better parallelism and lower peak disk than `cargo test`.
       - run: cargo nextest run --workspace --locked
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
@@ -523,6 +532,12 @@ jobs:
         if: always()
         shell: bash
         run: bash scripts/check-leaked-rotators.sh
+      # Issue #1699: no test may change the real profile roots. Reports
+      # paths and the kind of change only, never contents or hashes.
+      - name: Real profile roots unchanged (issue #1699)
+        if: always()
+        shell: bash
+        run: bash scripts/check-real-profile-root.sh compare "$RUNNER_TEMP/real-profile-root.snap"
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats

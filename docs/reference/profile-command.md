@@ -670,6 +670,13 @@ Rules:
   (never a symlink), is rewritten atomically with mode `0600` only when it
   changes, and is never created. A file that cannot be read, parsed or
   written is reported and skipped; the install still succeeds.
+- Before that refresh reads any profile, the hook binary path is checked
+  once against the root (issue #1699). The refresh skips every profile, and
+  touches no file under the root, when `HOME` is unset, relative or `/`; when
+  the hook binary path is relative or is not an existing file; or when the
+  root is outside `HOME` and the binary is under a temp dir or under `HOME`.
+  See [Keep Tests out of the Real Profile Root](../howto/keep-tests-out-of-the-real-profile-root.md#the-refusal-rule)
+  for the exact reasons and for roots kept outside `HOME`.
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
