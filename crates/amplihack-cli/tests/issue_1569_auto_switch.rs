@@ -470,17 +470,23 @@ impl Fixture {
     /// Seeds `usage.json` directly, in the documented format, for tests that
     /// need an exhausted account without running a swap.
     fn seed_usage(&self, readings: &[(&str, f64)]) {
+        let weeks: Vec<(&str, f64, f64)> = readings.iter().map(|(n, p)| (*n, *p, 5.0)).collect();
+        self.seed_usage_weeks(&weeks);
+    }
+
+    /// [`Self::seed_usage`] with each account's (five-hour, seven-day) use.
+    fn seed_usage_weeks(&self, readings: &[(&str, f64, f64)]) {
         let state = self.state();
         fs::create_dir_all(&state).unwrap();
         fs::set_permissions(&state, fs::Permissions::from_mode(0o700)).unwrap();
         let accounts: serde_json::Map<String, serde_json::Value> = readings
             .iter()
-            .map(|(n, pct)| {
+            .map(|(n, pct, week)| {
                 (
                     n.to_string(),
                     serde_json::json!({
                         "five_hour": {"used_percentage": pct, "resets_at": now() + 3600},
-                        "seven_day": {"used_percentage": 5.0, "resets_at": now() + 86400},
+                        "seven_day": {"used_percentage": week, "resets_at": now() + 86400},
                         "observed_at": now(),
                         "source": "statusline",
                     }),
@@ -491,6 +497,19 @@ impl Fixture {
             &state.join("usage.json"),
             &serde_json::json!({"version": 1, "accounts": accounts}).to_string(),
         );
+    }
+
+    /// Moves every recorded swap back past the five-minute cooldown, so the
+    /// next status-line reading is attributed to the account now live.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))] // used by the Linux-only swap tests
+    fn age_swaps(&self) {
+        let mut ledger = self.ledger();
+        if let Some(hosts) = ledger["hosts"].as_object_mut() {
+            for h in hosts.values_mut() {
+                h["swapped_at"] = serde_json::json!(now() - 600);
+            }
+        }
+        private_file(&self.state().join("ledger.json"), &ledger.to_string());
     }
 
     fn attempts(&self) -> Vec<String> {
@@ -1147,6 +1166,54 @@ mod swap {
                 "Y at {y}%: {}",
                 text(&out.stderr)
             );
+            f.assert_one_place_each();
+            f.assert_no_leak();
+        }
+    }
+
+    /// The move back off overflow follows the rotator's capacity test, not
+    /// the auto-switch threshold (issue #1606). With `threshold 80` and the
+    /// default gate (85% session, 90% week), a plan profile whose session
+    /// has reset but whose week reads 85% has capacity for the rotator, so
+    /// the session leaves the overflow profile for it although 85% is over
+    /// the auto-switch threshold. At 92% week it has none, and the session
+    /// stays on the overflow profile.
+    #[test]
+    fn the_move_back_off_overflow_uses_the_gate_not_the_auto_switch_threshold() {
+        for (y_week, to) in [(85.0, "Y"), (92.0, "Z")] {
+            let f = Fixture::new();
+            f.ok(&["profile", "auto-switch", "on", "--threshold", "80"]);
+            f.ok(&["profile", "overflow", "add", "Z"]);
+            f.seed_usage(&[("Y", 99.0), ("Z", 0.0)]);
+            let _session = f.hold("X");
+            let out = f.tick("X", 95.0);
+            assert!(out.status.success(), "{}", text(&out.stderr));
+            assert_eq!(
+                f.hosts().get("X").map(String::as_str),
+                Some("Z"),
+                "onto overflow first: {}",
+                text(&out.stderr)
+            );
+            // Y's session resets; its week stays at `y_week`. The swap
+            // was over five minutes ago.
+            f.age_swaps();
+            f.seed_usage_weeks(&[("X", 95.0, 10.0), ("Y", 0.0, y_week), ("Z", 10.0, 10.0)]);
+            let out = f.tick("X", 10.0);
+            assert!(out.status.success(), "{}", text(&out.stderr));
+            assert_eq!(
+                f.hosts().get("X").map(String::as_str),
+                Some(to),
+                "Y at {y_week}% week: {}",
+                text(&out.stderr)
+            );
+            if to == "Y" {
+                assert!(
+                    text(&out.stderr)
+                        .contains("is an overflow profile and a plan profile has capacity again"),
+                    "{}",
+                    text(&out.stderr)
+                );
+            }
             f.assert_one_place_each();
             f.assert_no_leak();
         }

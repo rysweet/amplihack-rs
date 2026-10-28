@@ -1728,15 +1728,28 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
 [usage-limit reruns](#usage-limit-reruns)) works like this:
 
 1. The best plan profile, by the order above, with the overflow profiles
-   left out, among those with plan capacity or no reading. A session on an
-   overflow profile moves back to it as soon as one is eligible, whether or
-   not the overflow profile is near its own limit.
+   left out, among those with plan capacity or no reading. From a plan
+   profile, the target must also be below the auto-switch threshold, as for
+   any move between plan profiles. From an overflow profile, plan capacity
+   alone decides, whatever the auto-switch threshold: a session moves back
+   as soon as a plan profile has plan capacity and is eligible, whether or
+   not the overflow profile is near its own limit. This is the rotator's
+   rule for leaving overflow. For example, with `auto-switch threshold 80`
+   and the default 85%/90%, a plan account whose session has reset and
+   whose week reads 85% brings the session back: 85% is over 80 but under
+   the 90% week threshold. The status-line check that decides whether a
+   session on an overflow profile is worth a full check uses the same rule.
 2. A session on an overflow profile that is not over the threshold and not
    [spend-blocked](#overflow-spend-limit-block) stays where it is.
 3. An overflow profile, only when **both** hold:
-   - no plan profile other than the current one has plan capacity, whether
+   - no plan profile has plan capacity, the current one included, whether
      or not this session could use it (one leased to another session still
-     counts as capacity, so no money is spent while it exists);
+     counts as capacity, so no money is spent while it exists). A current
+     plan profile at the auto-switch threshold but below the gate's
+     thresholds (for example at 82% with `auto-switch threshold 80`) still
+     has plan capacity: the rotator would not leave it for overflow, so the
+     session stays on it rather than spend, and it cannot move onto
+     overflow only to move straight back;
    - the earliest plan reset is more than the overflow wait away. The plan
      reset of an account is the reset of its window at its threshold, or
      the later of the two when both are; the earliest plan reset is the
@@ -1751,8 +1764,11 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
    when overflow is not allowed, it beats waiting, and it costs nothing.
 
 The rotator decides in the same order (plan capacity, then overflow, then a
-free swap onto a plan login without capacity), so on the same readings the
-two agree on when money is spent. In particular, a plan account at 87%
+free swap onto a plan login without capacity), and both use the gate's plan
+capacity test for moving onto and off overflow, so on the same readings the
+two agree on when money is spent, for any auto-switch threshold. The
+auto-switch threshold only decides when a session on a plan profile asks,
+and which plan profiles it may move to from another plan profile. In particular, a plan account at 87%
 session counts as capacity for neither: both move onto an overflow profile
 when the plan reset is beyond the wait, and both use the 87% account when it
 is not.
@@ -2182,6 +2198,25 @@ no probe.
 With a single eligible profile, the state is `low` as soon as that account
 crosses the threshold.
 
+With [overflow](#rotate-overflow) profiles, a state that would be `low` or
+`exhausted` is `ok` when an in-session swap would move onto an overflow
+profile now ([Auto-switch and overflow profiles](#auto-switch-and-overflow-profiles)),
+judged by the same functions the selection uses:
+
+- the gate allows it: no eligible account has plan capacity (below
+  `--session-at` and `--week-at`, not the auto-switch threshold), and the
+  earliest plan reset is more than the overflow wait away. The plan reset
+  here is the gate's, the reset of the window at the gate's threshold, or the
+  later of the two when both are, not the reset of the window over the
+  auto-switch threshold;
+- some overflow profile is listed, not excluded, not spend-blocked and not
+  over the threshold.
+
+For example, an account at 87% session (resetting in two hours) and 95% week
+(resetting in ten minutes) has plan capacity again only in two hours, so with
+the default 30-minute wait the session moves onto credits and the state is
+`ok`, although the week window alone would reset inside the wait.
+
 An account's reset time is the time it gets capacity back: the later of the
 two `resets_at` values when both windows are over, otherwise the `resets_at`
 of the window that is over. Only reset times in the future count.
@@ -2237,8 +2272,10 @@ When the rotator's cycle ends on an [overflow](#rotate-overflow) profile
 (`last_cycle.overflow` is `in` or `on`), the `rotate` writer records `ok`
 whatever the readings say, because work can go on at the cost of credits.
 Like any `ok`, this replaces an existing file but never creates one. The
-`statusline` and `usage` writers do not know about credits and may write an
-exhausted state in between; the rotator's next cycle replaces it.
+`statusline` and `usage` writers apply only the overflow rule in
+[Capacity states](#capacity-states); they do not know whether the rotator's
+live login is on credits, and may write an exhausted state in between. The
+rotator's next cycle replaces it.
 
 Write rules:
 

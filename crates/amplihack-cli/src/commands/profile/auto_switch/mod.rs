@@ -69,7 +69,7 @@ pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 /// For the rotate tests that check the rotator and auto-switch agree on
 /// when overflow is used (issue #1606).
 #[cfg(all(test, unix))]
-pub(super) use candidate::{OverflowPool, Pool, select_with_overflow};
+pub(super) use candidate::{OverflowPool, Pool, may_return_to, select_with_overflow};
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.

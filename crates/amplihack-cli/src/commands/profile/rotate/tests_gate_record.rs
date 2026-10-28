@@ -403,8 +403,19 @@ fn rotator_spends(s: &Settings, live: f64, spare: f64, resets_in: i64) -> bool {
     spends
 }
 
-/// Whether auto-switch, for a session on `work` at `live`%, picks `cred`.
+/// Whether auto-switch, for a session on `work` at `live`%, picks `cred`
+/// with the auto-switch threshold at 90.
 fn auto_switch_spends(g: Gate, live: f64, spare: f64, resets_in: i64) -> bool {
+    auto_switch_spends_at(90, g, live, spare, resets_in)
+}
+
+/// Whether auto-switch, with its threshold at `threshold`, moves a session
+/// on `work` at `live`% onto `cred`. A session under the threshold never
+/// asks.
+fn auto_switch_spends_at(threshold: u8, g: Gate, live: f64, spare: f64, resets_in: i64) -> bool {
+    if live < f64::from(threshold) {
+        return false;
+    }
     let profiles = vec![n("work"), n("spare"), n("cred")];
     let mut readings = BTreeMap::new();
     readings.insert("work".to_string(), sw(live, resets_in));
@@ -414,7 +425,7 @@ fn auto_switch_spends(g: Gate, live: f64, spare: f64, resets_in: i64) -> bool {
     let pool = Pool {
         profiles: &profiles,
         readings: &readings,
-        threshold: 90,
+        threshold,
         exclude: &[],
         now: NOW,
     };
@@ -425,6 +436,168 @@ fn auto_switch_spends(g: Gate, live: f64, spare: f64, resets_in: i64) -> bool {
     };
     select_with_overflow(&pool, &ov, "work", |_| true).map(|p| p.to_string())
         == Some("cred".to_string())
+}
+
+/// A reading with the given session and week use; the session resets in
+/// an hour, the week in 100 hours.
+fn sw2(session: f64, week: f64) -> SwitchReading {
+    SwitchReading {
+        five_hour: Some(Window {
+            used_percentage: session,
+            resets_at: NOW + HOUR,
+        }),
+        seven_day: Some(Window {
+            used_percentage: week,
+            resets_at: NOW + 100 * HOUR,
+        }),
+        observed_at: NOW - 10,
+        source: ReadingSource::Statusline,
+    }
+}
+
+fn probed2(session: f64, week: f64) -> Probed {
+    Probed {
+        reading: Reading::Measured { session, week },
+        windows: Windows {
+            session: Some(Win {
+                used: session,
+                resets_at: Some(NOW + HOUR),
+            }),
+            week: Some(Win {
+                used: week,
+                resets_at: Some(NOW + 100 * HOUR),
+            }),
+        },
+        spend_limit: false,
+    }
+}
+
+/// Whether the rotator, live on `cred`, moves back to `plan` reading
+/// `session`/`week`.
+fn rotator_returns(s: &Settings, session: f64, week: f64) -> bool {
+    let live = probed2(0.0, 10.0);
+    let candidates = vec![measured("plan", &probed2(session, week))];
+    let v = decide_overflow(&OverflowInput {
+        settings: s,
+        live_name: Some(&n("cred")),
+        live: &live,
+        candidates: &candidates,
+        overflow: &[OverflowEntry::new(n("cred"), 1)],
+        blocks: &BTreeMap::new(),
+        swapped_at: None,
+        now: NOW,
+    });
+    v.tag == Some(Tag::Out)
+        && v.decision
+            == super::decide::Decision::Swap {
+                to: n("plan"),
+                reason: Reason::OverflowOut,
+            }
+}
+
+/// Whether auto-switch, with its threshold at `threshold`, moves a session
+/// on `cred` (not exhausted) back to `plan` reading `session`/`week`.
+fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool {
+    let profiles = vec![n("plan"), n("cred")];
+    let mut readings = BTreeMap::new();
+    readings.insert("plan".to_string(), sw2(session, week));
+    readings.insert("cred".to_string(), sw2(0.0, 10.0));
+    let order = vec![n("cred")];
+    let pool = Pool {
+        profiles: &profiles,
+        readings: &readings,
+        threshold,
+        exclude: &[],
+        now: NOW,
+    };
+    let ov = OverflowPool {
+        order: &order,
+        blocked: &[],
+        gate: Some(g),
+    };
+    let picked = select_with_overflow(&pool, &ov, "cred", |_| true).map(|p| p.to_string());
+    let back = picked.as_deref() == Some("plan");
+    // The status line's pre-check uses the same rule; it must never refuse
+    // a move the selection makes, nor pass one the selection refuses.
+    assert_eq!(
+        crate::commands::profile::auto_switch::may_return_to(
+            readings.get("plan"),
+            Some(&g),
+            threshold,
+            NOW
+        ),
+        back,
+        "pre-check and selection disagree: threshold {threshold}, plan {session}/{week}"
+    );
+    back
+}
+
+/// The review's round-3 case: an auto-switch threshold below the gate's
+/// thresholds. The move back off overflow is the rotator's: a plan profile
+/// with capacity by the gate (below 85% session and 90% week) brings both
+/// back, whatever the auto-switch threshold.
+#[test]
+fn the_rotator_and_auto_switch_agree_on_the_move_back_for_any_auto_switch_threshold() {
+    let s = settings(1800, false);
+    let g = gate(&s);
+    for threshold in [70u8, 80, 90] {
+        for (session, week) in [
+            (0.0, 10.0),
+            (0.0, 69.9),
+            (0.0, 75.0),
+            (0.0, 85.0),
+            (0.0, 89.9),
+            (0.0, 90.0),
+            (60.0, 60.0),
+            (79.9, 10.0),
+            (84.9, 10.0),
+            (85.0, 10.0),
+            (87.0, 95.0),
+            (100.0, 100.0),
+        ] {
+            let r = rotator_returns(&s, session, week);
+            let a = auto_switch_returns(threshold, g, session, week);
+            assert_eq!(
+                r, a,
+                "threshold {threshold}, plan {session}% session {week}% week: rotator {r}, auto-switch {a}"
+            );
+            assert_eq!(
+                r,
+                session < 85.0 && week < 90.0,
+                "threshold {threshold}, plan {session}/{week}"
+            );
+        }
+    }
+}
+
+/// Onto overflow, with an auto-switch threshold below the gate's: a session
+/// asks at the auto-switch threshold, but a live plan login that still has
+/// capacity by the gate is one the rotator would not leave, so neither
+/// spends. At or over the gate's thresholds both decide alike.
+#[test]
+fn the_rotator_and_auto_switch_agree_on_the_move_in_for_any_auto_switch_threshold() {
+    let s = settings(1800, false);
+    let g = gate(&s);
+    for threshold in [70u8, 80, 90] {
+        for live in [72.0, 82.0, 84.9, 85.0, 90.0, 95.0, 100.0] {
+            for spare in [10.0, 75.0, 82.0, 87.0, 95.0, 100.0] {
+                for resets_in in [10 * 60, 4 * HOUR] {
+                    let r = rotator_spends(&s, live, spare, resets_in);
+                    // The rotator acts on its own login whatever auto-switch's
+                    // threshold; auto-switch asks only at its threshold.
+                    let a = auto_switch_spends_at(threshold, g, live, spare, resets_in);
+                    if live >= f64::from(threshold) {
+                        assert_eq!(
+                            r, a,
+                            "threshold {threshold}, live {live}%, spare {spare}%, reset in {resets_in}s"
+                        );
+                    } else {
+                        assert!(!a);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The case the review raised: a plan login at 87% session. Neither side

@@ -6,7 +6,7 @@
 //! Every root is a temporary directory (0700); `HOME` is temporary wherever it
 //! matters. Tests that touch the environment hold `env_lock()`.
 
-use super::candidate::OverflowPool;
+use super::candidate::{OverflowPool, Pool, select_with_overflow};
 use super::capacity::{
     Evidence, Rotated, launch_warning, recipe_warning, refresh, refresh_from_rotation,
 };
@@ -266,6 +266,106 @@ fn a_blocked_overflow_profile_or_a_closed_gate_is_no_capacity() {
     assert_eq!(f.state, Cap::Low, "spend-blocked");
     let f = overflow_case(T + 2 * HOUR, &[], None);
     assert_eq!(f.state, Cap::Low, "gate unreadable");
+}
+
+/// The file and the selection on the same readings (issue #1606, review
+/// round 3): `ok` through overflow exactly when a session on `a`, at the
+/// threshold, would be moved onto `cred`. Plan profiles `a` and `b` read
+/// `a` and `b`; `cred` reads 5%.
+fn file_and_selection(threshold: u8, a: Reading, b: Reading) -> (Cap, bool) {
+    let mut c = cfg(threshold, &[]);
+    c.overflow = vec![OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1)];
+    let order = names(&["cred"]);
+    let pool = OverflowPool {
+        order: &order,
+        blocked: &[],
+        gate: Some(GATE),
+    };
+    let profiles = names(&["a", "b", "cred"]);
+    let cred = reading(win(5.0, T + HOUR), None, T);
+    let file = super::capacity::compute(
+        &profiles,
+        &ev(vec![
+            ("a", Evidence::Usage(a.clone())),
+            ("b", Evidence::Usage(b.clone())),
+            ("cred", Evidence::Usage(cred.clone())),
+        ]),
+        &c,
+        &pool,
+        T,
+        "usage",
+    );
+    let readings: BTreeMap<String, Reading> = [("a", a), ("b", b), ("cred", cred)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    let p = Pool {
+        profiles: &profiles,
+        readings: &readings,
+        threshold,
+        exclude: &[],
+        now: T,
+    };
+    let picked = select_with_overflow(&p, &pool, "a", |_| true);
+    (file.state, picked.is_some_and(|p| p.as_str() == "cred"))
+}
+
+#[test]
+fn the_overflow_state_uses_the_gate_s_reset_not_the_threshold_s() {
+    // b: session 87% (at the gate's 85, under the threshold 90) resetting in
+    // two hours, week 95% resetting in ten minutes. b regains capacity by
+    // the gate's test only when both have reset, in two hours: beyond the
+    // 30-minute wait, so auto-switch moves onto cred. The file must say so,
+    // not take the week's reset alone because only the week is over 90.
+    let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+    let b = reading(win(87.0, T + 2 * HOUR), win(95.0, T + 600), T);
+    let (state, spends) = file_and_selection(90, a, b);
+    assert!(spends, "the selection moves onto cred");
+    assert_eq!(state, Cap::Ok, "so the file is ok");
+}
+
+#[test]
+fn a_plan_profile_with_gate_capacity_over_the_threshold_keeps_the_file_low() {
+    // Threshold 80, below the gate's 85/90. b at 0% session and 85% week is
+    // over 80 but has capacity by the gate's test: the rotator would not
+    // spend, auto-switch does not move onto cred, and the file stays low.
+    let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+    let b = reading(win(0.0, T + 2 * HOUR), win(85.0, T + 100 * HOUR), T);
+    let (state, spends) = file_and_selection(80, a, b);
+    assert!(!spends, "the selection keeps the plan");
+    assert_eq!(state, Cap::Low);
+}
+
+#[test]
+fn the_file_and_the_selection_agree_on_overflow() {
+    for threshold in [70u8, 80, 90] {
+        for (bs, bw, bs_reset, bw_reset) in [
+            (87.0, 95.0, 2 * HOUR, 600),
+            (87.0, 95.0, 600, 2 * HOUR),
+            (95.0, 10.0, 600, 100 * HOUR),
+            (95.0, 10.0, 2 * HOUR, 100 * HOUR),
+            (0.0, 85.0, HOUR, 100 * HOUR),
+            (0.0, 92.0, HOUR, 100 * HOUR),
+            (82.0, 10.0, HOUR, 100 * HOUR),
+        ] {
+            let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+            let b = reading(win(bs, T + bs_reset), win(bw, T + bw_reset), T);
+            let (state, spends) = file_and_selection(threshold, a, b);
+            if b_over(threshold, bs, bw) {
+                assert_eq!(
+                    state == Cap::Ok,
+                    spends,
+                    "threshold {threshold}, b {bs}/{bw} resets {bs_reset}/{bw_reset}"
+                );
+            }
+        }
+    }
+}
+
+/// b over the auto-switch threshold: only then does overflow decide the
+/// file's state (otherwise b keeps it `ok`).
+fn b_over(threshold: u8, session: f64, week: f64) -> bool {
+    session.max(week) >= f64::from(threshold)
 }
 
 #[test]

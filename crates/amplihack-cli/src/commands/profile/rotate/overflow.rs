@@ -7,7 +7,10 @@
 //! - A plan login has capacity when its probe read `ok` and its session and
 //!   week use pass [`Gate::plan_capacity`] (below `--session-at` and
 //!   `--week-at`); margins and the hold play no part. Auto-switch applies the
-//!   same test with the same thresholds, read from the running rotator.
+//!   same test with the same thresholds, read from the running rotator, for
+//!   moving onto and off overflow whatever its own threshold
+//!   (`candidate::may_return_to`; `tests_gate_record` checks thresholds 70,
+//!   80 and 90 against 85/90).
 //! - Onto overflow only when the live plan login is at a threshold (and its
 //!   probe did not fail), and the shared [`Gate`] allows it: no plan login
 //!   has capacity and the earliest plan reset is more than `overflow_wait`

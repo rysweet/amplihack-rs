@@ -16,7 +16,7 @@ use super::state::{
 use super::usage::{self, Attribution, RateLimits};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::rotate::identify::Account;
+use crate::commands::profile::rotate::{self, identify::Account};
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -564,8 +564,11 @@ pub fn swap_check(
 
 /// A session under the threshold is still worth the full check when the
 /// account in `owner`'s directory is an overflow profile and some plan
-/// profile reads under the threshold: it should move back (issue #1606).
-/// Reads two small files; no recovery, no `/proc` scan.
+/// profile may be moved back to by [`candidate::may_return_to`], the rule the
+/// selection applies, with the same gate (issue #1606). The two tests are
+/// one function, so the check does not pass on readings the selection then
+/// refuses. Reads the ledger, `usage.json` and the gate (the rotator's pid
+/// file and record); no recovery, no `/proc` scan.
 fn may_leave_overflow(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> bool {
     if cfg.overflow.is_empty() {
         return false;
@@ -575,14 +578,21 @@ fn may_leave_overflow(state: &State, owner: &ProfileName, cfg: &Config, now: i64
     };
     let account = ledger.account_in(owner.as_str());
     let on_overflow = ProfileName::parse(account).is_ok_and(|a| cfg.is_overflow(&a));
-    on_overflow
-        && state.load_usage().accounts.iter().any(|(name, r)| {
-            ProfileName::parse(name).is_ok_and(|n| {
-                !cfg.is_overflow(&n)
-                    && !cfg.exclude.contains(&n)
-                    && !candidate::is_exhausted(Some(r), cfg.threshold, now)
-            })
-        })
+    if !on_overflow {
+        return false;
+    }
+    let readings = state.load_usage().accounts;
+    let plan: Vec<(ProfileName, &usage::Reading)> = readings
+        .iter()
+        .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
+        .filter(|(n, _)| !cfg.is_overflow(n) && !cfg.exclude.contains(n))
+        .collect();
+    if plan.is_empty() {
+        return false;
+    }
+    let (gate, _) = rotate::overflow_gate(&state.root);
+    plan.iter()
+        .any(|(_, r)| candidate::may_return_to(Some(r), gate.as_ref(), cfg.threshold, now))
 }
 
 // ---------------------------------------------------------------------------
