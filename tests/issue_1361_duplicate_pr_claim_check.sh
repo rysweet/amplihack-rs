@@ -146,6 +146,17 @@ mkrepo() { git init -q -b main "$1"; [ "$2" = "-" ] || git -C "$1" remote add or
 mkrepo "$WORK/gh"    "https://github.com/o/r.git"
 mkrepo "$WORK/azdo"  "https://dev.azure.com/org/proj/_git/r"
 mkrepo "$WORK/noremote" "-"
+# A clone-shaped repository: real clones have refs/remotes/origin/HEAD, which
+# `git init` + `git remote add` never create. The script reads it before it
+# asks the API, so these two repositories exercise that preferred path.
+# originhead_main points at origin/main; originhead_trunk at origin/trunk.
+for b in main trunk; do
+  mkrepo "$WORK/originhead_$b" "https://github.com/o/r.git"
+  git -C "$WORK/originhead_$b" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m init
+  git -C "$WORK/originhead_$b" update-ref "refs/remotes/origin/$b" HEAD
+  git -C "$WORK/originhead_$b" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$b"
+done
 mkdir -p "$WORK/notagit"
 
 # run <repo> [env...] -- [extra helper args] ; sets OUT / RC
@@ -268,6 +279,31 @@ unclaimed body_table_code   "a body keyword inside inline code in a table cell"
 unclaimed body_fenced       "a body keyword inside a fenced code block"
 unclaimed body_unclosed     "a body keyword inside an unclosed fence"
 unclaimed body_prose_linked "a prose fix #N next to non-empty closingIssuesReferences"
+
+# The default branch comes from the local origin/HEAD when there is one, with
+# the origin/ prefix stripped, and the API is then not asked. The fake API is
+# made to disagree with the local ref in each case, so the result shows which
+# source was used. A PR to `main` with a body keyword is unclaimed only if the
+# local `origin/main` was read as `main`; were the prefix kept, `origin/main`
+# would not equal `main`, the body would be read and the PR would be a claim.
+run "$WORK/originhead_main" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=trunk
+if [ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
+   && ! grep -q 'BODYTEXT' <<<"$OUT"; then
+  pass "a local origin/HEAD -> origin/main makes main the default branch, prefix stripped"
+else
+  fail "a local origin/HEAD -> origin/main was not read as main: rc=$RC out=${OUT:0:400}"
+fi
+grep -q '^repo view' "$WORK/calls.log" \
+  && fail "the API was asked for the default branch although origin/HEAD exists: $(cat "$WORK/calls.log")" \
+  || pass "with a local origin/HEAD the API is not asked for the default branch"
+# The local ref is preferred even when it disagrees with the API (a stale
+# origin/HEAD after a default-branch rename). That errs towards reading the
+# body, i.e. towards refusing a run rather than allowing a duplicate.
+run "$WORK/originhead_trunk" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=main
+claimed "a body keyword on a PR to main when the local origin/HEAD says trunk" 1720
+grep -q '^repo view' "$WORK/calls.log" \
+  && fail "the API was asked although origin/HEAD -> origin/trunk exists" \
+  || pass "a stale local origin/HEAD is used without asking the API"
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
 [ "$RC" -eq 0 ] \
   && pass "the run's own branch is excluded via --head" \
