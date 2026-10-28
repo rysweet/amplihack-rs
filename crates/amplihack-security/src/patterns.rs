@@ -186,9 +186,12 @@ fn append_json_instructions(value: &serde_json::Value, instructions: &mut String
 fn command_injection_pattern() -> PatternMatcher {
     // Enumerate executable aliases rather than accepting arbitrary prefixes.
     let command = r"(?:rm|rmdir|del|format|kill|killall|killall5|shutdown|reboot|wget|wget2|curl|nc|nc6|ncat|netcat)(?:\.exe)?|(?:nc|netcat)\.(?:openbsd|traditional)|format\.com";
+    // Unquoted IFS expansion separates words without literal whitespace. Match
+    // only the complete variable name; `$IFS_helper` is a different variable.
+    let field_separator = r"(?:\$\{IFS\}|\$IFS\b)";
     // Quotes concatenated with a suffix are part of the executable token.
     tool_content_re(&format!(
-        r#"(?:\||&&|\$\(|`|;|\n)\s*(?:{command})(?:""|'')*(?:$|[\s;|&()`<>])"#
+        r#"(?:\||&&|\$\(|`|;|\n)(?:\s|{field_separator})*(?:{command})(?:""|'')*(?:$|[\s;|&()`<>]|{field_separator})"#
     ))
 }
 
@@ -202,6 +205,7 @@ struct ChainPatterns {
     coordination: Regex,
     rejection: Regex,
     rejected_attempt: Regex,
+    error_avoidance: Regex,
     harmful: Regex,
     access: Regex,
     extraction: Regex,
@@ -213,13 +217,19 @@ impl ChainPatterns {
     fn new() -> Self {
         let modifier =
             r"(?:(?:all|any|some)(?:\s+of)?\s+)?(?:(?:a|an|the|their|your|our|his|her|its|my)\s+)?";
-        let secret = r"(?:credentials?|passwords?|secrets?|(?:api|private)[\s_-]+keys?|access[\s_-]+tokens?)";
+        let secret = r"(?:credentials?|passwords?|secrets?|(?:api|private)[\s_-]+keys?|(?:api|access|session|auth|authentication|bearer|refresh)[\s_-]+tokens?)";
         // A period inside a filename or a hyphenated fixture name does not end
         // a target word. Keep this boundary distinct from sentence association.
         let end = r#"(?:$|[\s,;:!?`"']|\.(?:\s|$))"#;
         // Plain lexer/parser tokens are ambiguous. Collection requires an
         // explicit credential target or a credential-bearing source; theft and
         // exfiltration verbs themselves supply directed harmful context.
+        let sensitive_target = format!(
+            r"(?:unauthori[sz]ed|protected|private|confidential|restricted|production|victim(?:'s)?)\s+(?:accounts?|systems?|servers?|databases?|sessions?|vaults?|networks?|repositor(?:y|ies)){end}"
+        );
+        let hostile_method = format!(
+            r"(?:without\s+(?:permission|authori[sz]ation|consent)|(?:using|with)\s+{modifier}(?:stolen|compromised)\s+(?:{secret}|tokens?))\b"
+        );
         let harmful = format!(
             r"^(?:(?:steal|collect|harvest|dump|exfiltrate|leak|send|upload|transmit)\s+{modifier}{secret}{end}|(?:steal|harvest|dump|exfiltrate|leak|send|upload|transmit)\s+{modifier}tokens?{end}|collect\s+{modifier}tokens?\s+from\s+{modifier}(?:browser|session|account|vault|environment){end}|(?:exfiltrate|leak)\s+{modifier}(?:data|files){end}|(?:delete|destroy|wipe|erase)\s+{modifier}(?:files|backups|logs|database){end}|(?:disable|bypass|remove)\s+{modifier}(?:security|safety)\s+(?:protections?|checks?|guards?|filters?|validation|logging){end})"
         );
@@ -238,11 +248,23 @@ impl ChainPatterns {
                 r"^\s*(?:(?:should|must|will)\s+be|is|was)\s+(?:rejected|blocked|denied)\b",
             ),
             rejected_attempt: compile_regex(
-                r"^(?:[^,.!?;]*\b(?:that|which)\s+)?((?:reject|block|prevent)(?:s|ed|ing)?\s+attempts?\s+to)\b",
+                r"^(?:[^,.!?;]*\b(?:that|which)\s+|(?:ensure|verify|check)\s+(?:that\s+)?(?:the\s+)?tests?\s+)?((?:reject|block|prevent)(?:s|ed|ing)?\s+(?:failed\s+)?attempts?\s+to)\b",
+            ),
+            // Avoiding permission errors describes successful operation, not
+            // operating without authority. Normalize only that complete phrase.
+            error_avoidance: compile_regex(
+                r"\bwithout\s+(?:permission|authori[sz]ation|consent)\s+errors?\b",
             ),
             harmful: compile_regex(&harmful),
-            access: compile_regex(r"^(?:get|gain|obtain)\s+access\b"),
-            extraction: compile_regex(&format!(r"^extract\s+(?:the\s+)?data{end}")),
+            // Unqualified access/extraction retains the original hostile chain.
+            // Qualified actions need a sensitive target, rather than matching
+            // ordinary access to a test harness or extraction from a CSV.
+            access: compile_regex(&format!(
+                r"^(?:get|gain|obtain)\s+access(?:\s*(?:$|[.!?;,])|\s+to\s+{modifier}{sensitive_target}|[^.!?;]*\b{hostile_method})"
+            )),
+            extraction: compile_regex(&format!(
+                r"^extract\s+(?:the\s+)?data(?:\s*(?:$|[.!?;,])|\s+from\s+{modifier}{sensitive_target}|[^.!?;]*\b{hostile_method})"
+            )),
         }
     }
 
@@ -349,7 +371,10 @@ impl ChainPatterns {
     fn classify_action(&self, candidate: &str, action: &Regex, descriptive: &mut bool) -> bool {
         let candidate = candidate
             .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '-'));
-        let directed = self.directive(candidate);
+        let candidate = self
+            .error_avoidance
+            .replace_all(candidate, "without errors");
+        let directed = self.directive(&candidate);
         let unquoted = directed.trim_start_matches(['`', '"', '\'']);
         let body = self.directive(unquoted);
         // Adverbs and tool use can also modify a rejected infinitive. A local
