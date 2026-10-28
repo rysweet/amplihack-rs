@@ -15,9 +15,10 @@
 //!   user with no group or other bits, parses, and every field passes
 //!   validation.
 //! - `classify_tail(tail, exit_code)`: with `Some(code)`, the class of the
-//!   last valid marker line, else `ok` for 0, else the failure-text class for
-//!   a non-zero code, else `error`. With `None` (a run without a record),
-//!   only a valid marker line gives a class.
+//!   last valid terminal marker line, else `ok` for 0, else the failure-text
+//!   class for a non-zero code, else `error`. With `None` (a run without a
+//!   record), only a valid terminal marker line gives a class. A marker is
+//!   terminal when its `action` is `terminal` or `terminal_budget_exhausted`.
 //! - `repo_slug(origin_url)` is the GitHub `owner/name`, never the URL.
 //! - `origin_repo(dir, timeout)` reads `origin` with a bounded git call.
 
@@ -64,10 +65,15 @@ fn sample(cwd: &Path) -> RunRecord {
 }
 
 fn marker(class: &str) -> String {
-    format!(
-        "{FAILURE_CLASS_MARKER_PREFIX}{}",
-        json!({"schema_version": 1, "class": class, "action": "terminal"})
-    )
+    marker_with(class, json!("terminal"))
+}
+
+fn marker_with(class: &str, action: Value) -> String {
+    let mut payload = json!({"schema_version": 1, "class": class});
+    if !action.is_null() {
+        payload["action"] = action;
+    }
+    format!("{FAILURE_CLASS_MARKER_PREFIX}{payload}")
 }
 
 // ---------------------------------------------------------------------------
@@ -334,6 +340,44 @@ fn a_marker_decides_whatever_the_exit_code() {
     let tail = format!("noise\n{}\nmore noise\n", marker("usage_limit"));
     assert_eq!(classify_tail(&tail, Some(0)), Some("usage_limit"));
     assert_eq!(classify_tail(&tail, Some(1)), Some("usage_limit"));
+    let exhausted = marker_with("transient_transport", json!("terminal_budget_exhausted"));
+    assert_eq!(
+        classify_tail(&exhausted, Some(1)),
+        Some("transient_transport")
+    );
+}
+
+/// The runner writes a `retry` marker before each retry; a run that then
+/// succeeds is `ok`, not the class of the fault it recovered from.
+#[test]
+fn a_retry_marker_with_exit_zero_is_ok() {
+    let tail = format!(
+        "{}\nretrying\n{}\ndone\n",
+        marker_with("transient_transport", json!("retry")),
+        marker_with("transient_transport", json!("retry"))
+    );
+    assert_eq!(classify_tail(&tail, Some(0)), Some("ok"));
+    assert_eq!(classify_tail(&tail, None), None);
+}
+
+#[test]
+fn a_retry_marker_then_terminal_marker_uses_terminal() {
+    let tail = format!(
+        "{}\n{}\n{}\n",
+        marker_with("transient_transport", json!("retry")),
+        marker("work"),
+        marker_with("transient_transport", json!("retry"))
+    );
+    assert_eq!(classify_tail(&tail, Some(1)), Some("work"));
+}
+
+#[test]
+fn a_marker_without_action_is_ignored() {
+    for action in [Value::Null, json!("later"), json!(1)] {
+        let tail = marker_with("usage_limit", action.clone());
+        assert_eq!(classify_tail(&tail, Some(0)), Some("ok"), "{action}");
+        assert_eq!(classify_tail(&tail, None), None, "{action}");
+    }
 }
 
 #[test]

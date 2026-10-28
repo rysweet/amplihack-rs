@@ -13,6 +13,8 @@ use std::process::Command;
 
 /// Issue #1710: where auto-drive keeps its state, for readers in Rust.
 pub(crate) mod autodrive_paths;
+/// Issue #1710: helper commands run with a time and output limit.
+pub(crate) mod bounded_cmd;
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
 pub mod list;

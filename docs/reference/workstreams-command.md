@@ -17,6 +17,7 @@ the capacity of every Claude login, for an agent to paste into its reply. The
   - [Descendants](#descendants)
   - [Runs without a record](#runs-without-a-record)
   - [Auto-drive rounds](#auto-drive-rounds)
+  - [Log directory warnings](#log-directory-warnings)
 - [Stages and progress](#stages-and-progress)
   - [Finding the PR](#finding-the-pr)
   - [Running or stopped](#running-or-stopped)
@@ -189,11 +190,10 @@ records is visited once. The walk stops after 2,000 runs or 32 levels.
 A `<session>.log` with no `<session>.run.json` came from an older amplihack
 or a run whose record could not be written. It has no parent, so it appears
 only under `--all`. Its recipe and session come from the file name. Its exit
-code is unknown, so its stop reason comes only from the last failure-class
-marker line in the final 64 KiB of the log; failure text is not used. With no
-marker the reason is unknown.
-
-At most 2,000 entries of the log directory are read.
+code is unknown, so its stop reason comes only from the last terminal
+failure-class marker line in the final 64 KiB of the log; `retry` markers and
+failure text are not used. With no such marker the reason is unknown.
+A `<session>.log` that is not owned by you is skipped.
 
 ### Auto-drive rounds
 
@@ -201,6 +201,25 @@ At most 2,000 entries of the log directory are read.
 runs its review and merge-ready rounds in the foreground of its own run, not
 detached. They do not get rows of their own. They set the stage of the run
 that drives the PR.
+
+### Log directory warnings
+
+The log directory is read only when it is a directory owned by you and not
+writable by group or others (mode `& 0o022` is `0`). At most 2,000 of its
+entries are read, in the order the file system returns them, so past the cap
+the runs left out are not predictable. In each case below the command prints
+one line on stderr, with no path or system error, and still prints the
+table:
+
+| Condition | Warning | Runs shown |
+|-----------|---------|------------|
+| `recipe.log_dir` and HOME are both unset | `warning: recipe log directory unavailable (HOME not set)` | None. |
+| The directory cannot be listed, or is not a directory | `warning: recipe log directory unreadable` | None. |
+| The directory is not owned by you, or group or others may write to it | `warning: recipe log directory is not private; ignoring it` | None. |
+| The directory has more than 2,000 entries | `warning: more than 2000 entries in the recipe log directory; some runs are not shown` | Those found in the first 2,000 entries. |
+
+A directory that does not exist yet gives no warning and no runs.
+`recipe run --detach` creates it with mode `0700`.
 
 ## Stages and progress
 
@@ -293,8 +312,16 @@ without parsing its table. Differences:
   each. A file larger than that is not inspected, so a profile whose only
   API-key sign is in an oversized `.claude.json` is probed like a plan
   login.
-- Like `profile usage`, it refuses to run inside Docker; the section then
-  prints the reason in place of rows.
+- Like `profile usage`, it refuses to run inside Docker. When it refuses, or
+  cannot read the profile store or run the probe, the section prints one
+  fixed reason in place of rows, never a path:
+
+  | Reason | When |
+  |--------|------|
+  | `profile store unavailable in Docker` | Docker mode is on. |
+  | `no profile store` | The store's root cannot be resolved, for example with no HOME or an invalid root setting. |
+  | `profile store unreadable` | The root, or a name in it, cannot be listed safely. |
+  | `usage probe failed` | The probe could not run, for example because `claude` was not found. |
 
 Every profile in the store gets a row, even when its probe did not finish.
 
@@ -363,6 +390,8 @@ process group, which is killed when the limit passes.
 
 - The command only reads. It never changes file modes, writes to the profile
   store or starts a run.
+- The log directory is used only when it is owned by you and not writable by
+  group or others; see [Log directory warnings](#log-directory-warnings).
 - Run records, auto-drive state files and profile files are read only when
   they are regular files, owned by you, have no permission bits for group or
   others (mode `& 0o077` is `0`), and are within their size limit. Others are

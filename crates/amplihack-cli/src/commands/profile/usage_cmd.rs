@@ -228,15 +228,26 @@ pub(crate) fn probe_rows(
     Ok(rows)
 }
 
+/// `workstreams status` refuses logins inside Docker, where profiles are
+/// not applied.
+pub(crate) const REFUSED_DOCKER: &str = "profile store unavailable in Docker";
+/// The store's root cannot be resolved (no HOME, an invalid root setting).
+pub(crate) const REFUSED_NO_STORE: &str = "no profile store";
+/// The store's root exists but cannot be listed safely.
+pub(crate) const REFUSED_UNREADABLE: &str = "profile store unreadable";
+/// The probe itself failed, for example because `claude` was not found.
+pub(crate) const REFUSED_PROBE: &str = "usage probe failed";
+
 /// Issue #1710: every profile in the store for this environment, with its
 /// directory, for `workstreams status`. Refuses where profiles are not
-/// applied (Docker). The error text names no path.
-pub(crate) fn listed_profiles() -> Result<Vec<(String, std::path::PathBuf)>> {
-    super::reject_docker_env()?;
-    let store = ProfileStore::from_env().map_err(super::with_hint)?;
+/// applied (Docker). The error is one of the fixed `REFUSED_*` texts, so it
+/// names no path.
+pub(crate) fn listed_profiles() -> Result<Vec<(String, std::path::PathBuf)>, &'static str> {
+    super::reject_docker_env().map_err(|_| REFUSED_DOCKER)?;
+    let store = ProfileStore::from_env().map_err(|_| REFUSED_NO_STORE)?;
     let mut out = Vec::new();
-    for raw in store.list().map_err(super::with_hint)? {
-        let name = ProfileName::parse(&raw)?;
+    for raw in store.list().map_err(|_| REFUSED_UNREADABLE)? {
+        let name = ProfileName::parse(&raw).map_err(|_| REFUSED_UNREADABLE)?;
         // A profile that no longer resolves still gets a row, with no
         // directory to inspect.
         let dir = store.resolve(&name).unwrap_or_default();
@@ -877,7 +888,7 @@ fn utc_time(t: i64) -> String {
 // ---------------------------------------------------------------------------
 
 /// A percentage as a whole number when whole, otherwise to one decimal.
-pub(crate) fn format_pct(p: f64) -> String {
+pub(super) fn format_pct(p: f64) -> String {
     if p.fract() == 0.0 {
         format!("{p:.0}%")
     } else {
@@ -888,7 +899,7 @@ pub(crate) fn format_pct(p: f64) -> String {
 /// Replaces control characters (C0, DEL, C1) and bidirectional overrides so
 /// untrusted text cannot drive the terminal. `\n` survives only when
 /// `keep_newlines`.
-pub(crate) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
+pub(super) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
     s.chars()
         .map(|c| match c {
             '\n' if keep_newlines => '\n',

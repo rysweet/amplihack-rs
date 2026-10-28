@@ -20,7 +20,8 @@
 //!    line to the 0600 log, and copies the run's output to the pane and the
 //!    log. Any failure before that is written to the log instead.
 //! 4. The launcher waits for one of those two lines before it reports
-//!    success, and removes the spec and context files on every way out.
+//!    success, and removes the spec and context files on every way out, and
+//!    the run record too when the run did not start.
 //!
 //! The launcher also writes `<session>.run.json` (issue #1710, see
 //! `run_record.rs`): the launching session as the run's parent, and later
@@ -137,12 +138,13 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     // interrupted launch still runs the guard below instead of dying.
     crate::commands::recipe::run::stop_signal::arm();
     let (session, log) = claim_session(&base, &log_dir)?;
-    let mut secrets = SecretFiles {
+    let mut secrets = LaunchGuard {
         spec: log_dir.join(format!("{session}.spec.json")),
         context: log_dir.join(format!("{session}.context.json")),
-        keep_context: false,
+        record: None,
+        started: false,
     };
-    record_launch(
+    secrets.record = record_launch(
         &log_dir, &session, parent, started_at, &request, &cwd, &context,
     );
     create_private(&secrets.context)?.write_all(&serde_json::to_vec(&context)?)?;
@@ -177,8 +179,9 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
 
     match wait_for_start(&log, start_timeout()) {
         Start::Started => {
-            // The run owns the context file now, and removes it when it ends.
-            secrets.keep_context = true;
+            // The run owns the context file now, and removes it when it
+            // ends; it writes the record's outcome.
+            secrets.started = true;
         }
         Start::Failed(reason) => {
             kill_session(&session);
@@ -209,7 +212,8 @@ pub(crate) fn launch(request: Launch<'_>) -> Result<()> {
     Ok(())
 }
 
-/// Write the run record. A failure is a warning: the run still starts.
+/// Write the run record and return its path. A failure is a warning and
+/// `None`: the run still starts.
 fn record_launch(
     log_dir: &Path,
     session: &str,
@@ -218,7 +222,7 @@ fn record_launch(
     request: &Launch<'_>,
     cwd: &Path,
     context: &serde_json::Map<String, serde_json::Value>,
-) {
+) -> Option<PathBuf> {
     let run_dir = cwd.join(request.working_dir);
     let run_dir = run_dir.canonicalize().unwrap_or(run_dir);
     let record = run_record::build(
@@ -231,29 +235,39 @@ fn record_launch(
         &run_dir,
     );
     let path = run_record::record_path(log_dir, session);
-    if let Err(error) = run_record::write_new(&path, &record) {
-        eprintln!(
-            "amplihack: warning: the run record was not written: {}",
-            display_safe(&format!("{error:#}"))
-        );
+    match run_record::write_new(&path, &record) {
+        Ok(()) => Some(path),
+        Err(error) => {
+            eprintln!(
+                "amplihack: warning: the run record was not written: {}",
+                display_safe(&format!("{error:#}"))
+            );
+            None
+        }
     }
 }
 
-/// The spec and context files of a launch. Both hold secrets (the caller's
-/// environment, the task text), so dropping this removes them on every way
-/// out of [`launch`]: an error, a signal, a timeout. Only a run that started
-/// keeps the context file, which it removes itself.
-struct SecretFiles {
+/// The files of a launch. The spec and context files hold secrets (the
+/// caller's environment, the task text), so dropping this removes them on
+/// every way out of [`launch`]: an error, a signal, a timeout. Only a run
+/// that started keeps the context file, which it removes itself, and the run
+/// record, whose outcome it writes; a run that never started leaves no
+/// record that would show it as stopped part-way.
+struct LaunchGuard {
     spec: PathBuf,
     context: PathBuf,
-    keep_context: bool,
+    record: Option<PathBuf>,
+    started: bool,
 }
 
-impl Drop for SecretFiles {
+impl Drop for LaunchGuard {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.spec);
-        if !self.keep_context {
+        if !self.started {
             let _ = fs::remove_file(&self.context);
+            if let Some(record) = &self.record {
+                let _ = fs::remove_file(record);
+            }
         }
     }
 }
@@ -392,7 +406,7 @@ pub(crate) fn log_dir() -> Result<PathBuf> {
 
 /// Create `dir` (and missing parents) with mode 0700. An existing directory
 /// must be owned by this user, and loses group and other access.
-pub(super) fn ensure_private_dir(dir: &Path) -> Result<()> {
+fn ensure_private_dir(dir: &Path) -> Result<()> {
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)

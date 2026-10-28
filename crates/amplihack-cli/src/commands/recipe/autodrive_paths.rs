@@ -13,7 +13,7 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use super::run_record::{is_owned_dir, is_owned_file};
+use super::run_record::{is_owned_dir, read_owned};
 
 /// Subdirectory of the state directory that holds every auto-drive key.
 pub(crate) const STATE_SUBDIR: &str = "auto-drive";
@@ -34,6 +34,8 @@ const MAX_ROUND_ENTRIES: usize = 500;
 const LOOSE_DIR_BITS: u32 = 0o022;
 /// Mode bits a state file may not have: any group or world access.
 const LOOSE_FILE_BITS: u32 = 0o077;
+/// Largest state file read.
+const MAX_STATE_FILE: u64 = 64 * 1024;
 
 /// `autodrive_state_key`: the origin without one trailing `.git` (`local`
 /// without an origin), `/`, the ident, with every byte outside
@@ -125,11 +127,7 @@ fn round_number(name: &str, prefix: &str) -> Option<u64> {
 /// `concern_count` from [`CRUSTY_LATEST`], when the file is a private
 /// regular file of this user and the value is a whole non-negative number.
 pub(crate) fn concern_count(dir: &Path) -> Option<u64> {
-    let path = dir.join(CRUSTY_LATEST);
-    if !is_owned_file(&path, LOOSE_FILE_BITS) {
-        return None;
-    }
-    let text = crate::user_config::safe::read_bounded(&path).ok()??;
-    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let bytes = read_owned(&dir.join(CRUSTY_LATEST), LOOSE_FILE_BITS, MAX_STATE_FILE)?;
+    let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
     value.get("concern_count")?.as_u64()
 }

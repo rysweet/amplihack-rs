@@ -1,8 +1,5 @@
 //! The logins section (D11), built from the rows `profile usage` reads.
 
-use std::fs::OpenOptions;
-use std::io::Read;
-use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use serde_json::Value;
@@ -10,7 +7,7 @@ use serde_json::Value;
 use super::render::{LoginRow, Reading};
 use crate::commands::profile::usage_cmd::Row;
 use crate::commands::profile::usage_parse::{UsageState, UsageWindow};
-use crate::commands::recipe::run_record::is_owned_file;
+use crate::commands::recipe::run_record::read_owned;
 
 /// Largest profile file inspected for an API-key sign.
 const MAX_PROFILE_FILE: u64 = 4 * 1024 * 1024;
@@ -37,26 +34,7 @@ pub(crate) fn is_api_key_profile(dir: &Path) -> bool {
 /// The JSON in `path` when it is a private regular file of this user of at
 /// most [`MAX_PROFILE_FILE`] bytes.
 fn read_json(path: &Path) -> Option<Value> {
-    if !is_owned_file(path, LOOSE_BITS) {
-        return None;
-    }
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
-        .open(path)
-        .ok()?;
-    let meta = file.metadata().ok()?;
-    if !meta.is_file() || meta.len() > MAX_PROFILE_FILE {
-        return None;
-    }
-    let mut bytes = Vec::new();
-    file.take(MAX_PROFILE_FILE + 1)
-        .read_to_end(&mut bytes)
-        .ok()?;
-    if bytes.len() as u64 > MAX_PROFILE_FILE {
-        return None;
-    }
-    serde_json::from_slice(&bytes).ok()
+    serde_json::from_slice(&read_owned(path, LOOSE_BITS, MAX_PROFILE_FILE)?).ok()
 }
 
 /// One row per profile, in the order of `profiles` (the bool marks an

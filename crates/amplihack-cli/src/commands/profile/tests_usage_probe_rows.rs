@@ -12,15 +12,27 @@
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
-use super::usage_cmd::probe_rows;
+use super::usage_cmd::{REFUSED_NO_STORE, REFUSED_UNREADABLE, listed_profiles, probe_rows};
 use super::usage_parse::UsageState;
 use crate::binary_finder::BinaryInfo;
+use crate::test_support::{EnvGuard, HomeGuard, env_lock};
 use std::collections::BTreeMap;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
+
+/// The shared environment lock, Docker mode off and HOME at `home`, so the
+/// probe neither sees another test's environment nor reads the real home.
+fn isolated(home: &Path) -> (std::sync::MutexGuard<'static, ()>, EnvGuard, HomeGuard) {
+    let lock = env_lock().lock().unwrap_or_else(|e| e.into_inner());
+    (
+        lock,
+        EnvGuard::unset(["AMPLIHACK_USE_DOCKER"]),
+        HomeGuard::set(home),
+    )
+}
 
 fn fake_claude(dir: &Path, body: &str) -> BinaryInfo {
     let p = dir.join("claude");
@@ -66,6 +78,7 @@ fn tree(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 #[test]
 fn an_empty_store_gives_no_rows() {
     let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
     let store = store_with(&d.path().join("root"), &[]);
     let bin = fake_claude(d.path(), "exit 0");
     let cancel = AtomicBool::new(false);
@@ -76,6 +89,7 @@ fn an_empty_store_gives_no_rows() {
 #[test]
 fn probe_rows_gives_one_row_per_profile_and_leaves_the_store_untouched() {
     let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
     let root = d.path().join("root");
     let store = store_with(&root, &["work", "spare"]);
     let bin = fake_claude(d.path(), "echo 'nothing parseable'");
@@ -97,6 +111,7 @@ fn probe_rows_gives_one_row_per_profile_and_leaves_the_store_untouched() {
 #[test]
 fn named_profiles_limit_the_rows() {
     let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
     let store = store_with(&d.path().join("root"), &["work", "spare"]);
     let bin = fake_claude(d.path(), "exit 0");
     let cancel = AtomicBool::new(false);
@@ -115,6 +130,7 @@ fn named_profiles_limit_the_rows() {
 #[test]
 fn setting_the_cancel_flag_stops_a_stalled_probe_promptly() {
     let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
     let store = store_with(&d.path().join("root"), &["slow"]);
     let pid_file = d.path().join("pid");
     let bin = fake_claude(
@@ -152,4 +168,27 @@ fn setting_the_cancel_flag_stops_a_stalled_probe_promptly() {
             "the probe outlived its cancel: {state}"
         );
     }
+}
+
+/// Review of #1710: the refusal `workstreams status` shows comes from a
+/// fixed set, even when the store's own error names a path.
+#[test]
+fn a_store_error_naming_a_path_is_refused_with_fixed_text() {
+    let d = tempfile::tempdir().unwrap();
+    let _env = isolated(d.path());
+    let real = d.path().join("real-root");
+    fs::create_dir(&real).unwrap();
+    let link = d.path().join("linked-root");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+
+    let _root = EnvGuard::set([("AMPLIHACK_CLAUDE_PROFILE_ROOT", link.to_str().unwrap())]);
+    let refused = listed_profiles().unwrap_err();
+    assert_eq!(refused, REFUSED_UNREADABLE);
+    assert!(!refused.contains('/'), "{refused}");
+    drop(_root);
+
+    let _root = EnvGuard::set([("AMPLIHACK_CLAUDE_PROFILE_ROOT", "relative/root")]);
+    let refused = listed_profiles().unwrap_err();
+    assert_eq!(refused, REFUSED_NO_STORE);
+    assert!(!refused.contains('/'), "{refused}");
 }

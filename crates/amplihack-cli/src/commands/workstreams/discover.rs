@@ -4,12 +4,24 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
+use std::io::ErrorKind;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
 use crate::commands::recipe::run_record::{self, RunRecord, valid_session};
 
 /// Directory entries read from the log directory.
 const MAX_ENTRIES: usize = 2_000;
+/// Mode bits that make the log directory shared.
+const SHARED_DIR_BITS: u32 = 0o022;
+/// The log directory exists but cannot be listed.
+pub(crate) const UNREADABLE: &str = "warning: recipe log directory unreadable";
+/// The log directory is not owned by this user, or others may write to it.
+pub(crate) const NOT_PRIVATE: &str = "warning: recipe log directory is not private; ignoring it";
+/// The log directory has more entries than [`MAX_ENTRIES`].
+pub(crate) const TRUNCATED: &str =
+    "warning: more than 2000 entries in the recipe log directory; some runs are not shown";
+
 /// Runs a walk selects at most.
 const MAX_SELECTED: usize = 2_000;
 /// Levels of descendants a walk follows at most.
@@ -26,14 +38,36 @@ pub(crate) struct Discovered {
 }
 
 /// One entry per session that has a `<session>.run.json` or a
-/// `<session>.log`, reading at most [`MAX_ENTRIES`] entries. Temporary
-/// files and the secret spec and context files are skipped.
-pub(crate) fn scan(log_dir: &Path) -> Vec<Discovered> {
-    let Ok(entries) = fs::read_dir(log_dir) else {
-        return Vec::new();
+/// `<session>.log` owned by this user, reading at most [`MAX_ENTRIES`]
+/// entries, and the warning to print, if any. Temporary files and the secret
+/// spec and context files are skipped.
+///
+/// A missing directory has no runs and no warning. One that cannot be read,
+/// or that is not owned by this user or is writable by others, has no runs
+/// and a fixed warning that names neither the path nor the OS error. One
+/// with more entries than the cap gives the runs it read and [`TRUNCATED`].
+pub(crate) fn scan(log_dir: &Path) -> (Vec<Discovered>, Option<&'static str>) {
+    scan_capped(log_dir, MAX_ENTRIES)
+}
+
+/// [`scan`] with a cap of `cap` entries.
+pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Option<&'static str>) {
+    let meta = match fs::metadata(log_dir) {
+        Ok(meta) => meta,
+        Err(e) if e.kind() == ErrorKind::NotFound => return (Vec::new(), None),
+        Err(_) => return (Vec::new(), Some(UNREADABLE)),
+    };
+    if !meta.is_dir() {
+        return (Vec::new(), Some(UNREADABLE));
+    }
+    if meta.uid() != euid() || meta.mode() & SHARED_DIR_BITS != 0 {
+        return (Vec::new(), Some(NOT_PRIVATE));
+    }
+    let Ok(mut entries) = fs::read_dir(log_dir) else {
+        return (Vec::new(), Some(UNREADABLE));
     };
     let mut found: BTreeMap<String, Discovered> = BTreeMap::new();
-    for entry in entries.take(MAX_ENTRIES).filter_map(Result::ok) {
+    for entry in entries.by_ref().take(cap).filter_map(Result::ok) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -51,6 +85,10 @@ pub(crate) fn scan(log_dir: &Path) -> Vec<Discovered> {
         if !valid_session(session) {
             continue;
         }
+        // Another user's log is not one of this user's runs.
+        if !is_record && !entry.metadata().is_ok_and(|m| m.uid() == euid()) {
+            continue;
+        }
         let slot = found
             .entry(session.to_string())
             .or_insert_with(|| Discovered {
@@ -64,7 +102,13 @@ pub(crate) fn scan(log_dir: &Path) -> Vec<Discovered> {
             slot.log = Some(entry.path());
         }
     }
-    found.into_values().collect()
+    let truncated = entries.next().is_some().then_some(TRUNCATED);
+    (found.into_values().collect(), truncated)
+}
+
+fn euid() -> u32 {
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    unsafe { libc::geteuid() }
 }
 
 /// With `all`, every run. Otherwise the runs whose `parent` is `identity`,

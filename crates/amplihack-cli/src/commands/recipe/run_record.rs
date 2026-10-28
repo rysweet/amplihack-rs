@@ -11,7 +11,7 @@
 //! `owner/name` before it gets here. Every read re-validates every field, so
 //! a record edited by hand cannot put arbitrary text in front of a reader.
 
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -22,8 +22,9 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::bounded_cmd::run_bounded;
+use super::detach::create_private;
 use super::run::{FAILURE_CLASS_MARKER_PREFIX, FailureClass, classify_failure_text};
-use crate::user_config::safe::read_bounded;
 
 /// The only schema version written and read.
 const VERSION: u32 = 1;
@@ -37,6 +38,8 @@ const MAX_PARENT: usize = 256;
 const MAX_RECIPE: usize = 256;
 /// Mode bits a record may not have.
 const LOOSE_RECORD_BITS: u32 = 0o077;
+/// Largest record read.
+const MAX_RECORD_BYTES: u64 = 64 * 1024;
 
 /// Every failure class, so a marker's class is accepted only when it is one
 /// of their names.
@@ -162,25 +165,31 @@ pub(crate) fn write_outcome(path: &Path, outcome: Outcome) -> Result<()> {
     written
 }
 
-fn create_private(path: &Path) -> Result<File> {
-    OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)
-        .with_context(|| format!("cannot create {}", path.display()))
-}
-
 /// The record at `path`, when it is a regular file owned by this user with
 /// no group or other access, parses, and every field is valid.
 pub(crate) fn read(path: &Path) -> Option<RunRecord> {
-    if !is_owned_file(path, LOOSE_RECORD_BITS) {
+    let bytes = read_owned(path, LOOSE_RECORD_BITS, MAX_RECORD_BYTES)?;
+    let record: RunRecord = serde_json::from_slice(&bytes).ok()?;
+    valid(&record).then_some(record)
+}
+
+/// The contents of `path`, when it is a regular file (not a symlink) owned
+/// by this user with none of `loose_bits` set and at most `max` bytes. The
+/// checks are made on the opened file, so nothing can be swapped in between
+/// a check and the read.
+pub(crate) fn read_owned(path: &Path, loose_bits: u32, max: u64) -> Option<Vec<u8>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK | libc::O_CLOEXEC)
+        .open(path)
+        .ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() || !owned(&meta, loose_bits) || meta.len() > max {
         return None;
     }
-    let text = read_bounded(path).ok()??;
-    let record: RunRecord = serde_json::from_str(&text).ok()?;
-    valid(&record).then_some(record)
+    let mut bytes = Vec::new();
+    file.take(max + 1).read_to_end(&mut bytes).ok()?;
+    (bytes.len() as u64 <= max).then_some(bytes)
 }
 
 fn valid(r: &RunRecord) -> bool {
@@ -236,12 +245,6 @@ fn known_class(class: &str) -> Option<&'static str> {
         .find(|known| *known == class)
 }
 
-/// Whether `path` is a regular file (not a symlink) owned by this user with
-/// none of `loose_bits` set.
-pub(crate) fn is_owned_file(path: &Path, loose_bits: u32) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.is_file() && owned(&m, loose_bits))
-}
-
 /// Whether `path` is a directory (not a symlink) owned by this user with
 /// none of `loose_bits` set.
 pub(crate) fn is_owned_dir(path: &Path, loose_bits: u32) -> bool {
@@ -255,10 +258,10 @@ fn owned(meta: &fs::Metadata, loose_bits: u32) -> bool {
 
 /// The outcome class of a log tail.
 ///
-/// With an exit code: the class of the last marker line naming a known
-/// failure class, whatever the code; otherwise `ok` for 0; otherwise the
-/// class the failure text matches; otherwise `error`. Without one (a run
-/// with no record), only a marker line gives a class.
+/// With an exit code: the class of the last terminal marker line naming a
+/// known failure class, whatever the code; otherwise `ok` for 0; otherwise
+/// the class the failure text matches; otherwise `error`. Without one (a run
+/// with no record), only a terminal marker line gives a class.
 pub(crate) fn classify_tail(tail: &str, exit_code: Option<i32>) -> Option<&'static str> {
     if let Some(class) = tail.lines().rev().find_map(marker_class) {
         return Some(class);
@@ -272,12 +275,18 @@ pub(crate) fn classify_tail(tail: &str, exit_code: Option<i32>) -> Option<&'stat
     }
 }
 
-/// The class of a well-formed marker line naming a failure class.
+/// The class of a well-formed marker line naming a failure class, when the
+/// runner gave up on it. A `retry` marker is for a failure that was retried,
+/// so it says nothing about how the run ended.
 fn marker_class(line: &str) -> Option<&'static str> {
     let payload = line
         .trim_start()
         .strip_prefix(FAILURE_CLASS_MARKER_PREFIX)?;
     let value: Value = serde_json::from_str(payload.trim_end()).ok()?;
+    let action = value.get("action")?.as_str()?;
+    if !matches!(action, "terminal" | "terminal_budget_exhausted") {
+        return None;
+    }
     let class = value.get("class")?.as_str()?;
     FAILURE_CLASSES
         .map(FailureClass::as_str)
@@ -347,7 +356,7 @@ pub(crate) fn origin_url(dir: &Path, timeout: Duration) -> Option<String> {
         ])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
-    let out = crate::commands::workstreams::sources::run_bounded(cmd, timeout)?;
+    let out = run_bounded(cmd, timeout)?;
     if !out.success {
         return None;
     }

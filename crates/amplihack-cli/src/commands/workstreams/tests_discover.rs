@@ -2,17 +2,22 @@
 //! the caller's descendants.
 //!
 //! Contract (`discover`):
-//! - `scan(log_dir) -> Vec<Discovered>`: one entry per session found as a
-//!   readable `<session>.run.json` or a `<session>.log`; names containing
-//!   `.tmp.` and `*.context.json` / `*.spec.json` are skipped; at most 2,000
-//!   directory entries are read. `Discovered { session, record, log }`.
+//! - `scan(log_dir) -> (Vec<Discovered>, Option<&'static str>)`: one entry
+//!   per session found as a readable `<session>.run.json` or a
+//!   `<session>.log` owned by this user; names containing `.tmp.` and
+//!   `*.context.json` / `*.spec.json` are skipped; at most 2,000 directory
+//!   entries are read. `Discovered { session, record, log }`. The second
+//!   value is a fixed warning: `UNREADABLE` for a directory that cannot be
+//!   listed, `NOT_PRIVATE` (and no runs) for one not owned by this user or
+//!   writable by group or others, `TRUNCATED` when entries were left unread.
+//!   A missing directory gives no runs and no warning.
 //! - `select(runs, identity, all) -> Vec<Discovered>`: with `all`, every
 //!   run; otherwise runs whose `parent` is `identity`, then repeatedly runs
 //!   whose `parent` is `run:<session>` of a selected run. A cycle is visited
 //!   once; at most 2,000 runs and 32 levels. No identity and not `all`
 //!   gives nothing. Runs without a record appear only under `all`.
 
-use super::discover::{Discovered, scan, select};
+use super::discover::{Discovered, NOT_PRIVATE, TRUNCATED, UNREADABLE, scan, scan_capped, select};
 use crate::commands::recipe::run_record::{RunRecord, build, record_path, write_new};
 use chrono::{TimeZone, Utc};
 use serde_json::Map;
@@ -168,7 +173,8 @@ fn scan_finds_records_and_logs_without_records() {
     write_record(d.path(), "with-record", Some(ME));
     fs::write(d.path().join("legacy.log"), "old run\n").unwrap();
 
-    let found = scan(d.path());
+    let (found, warning) = scan(d.path());
+    assert_eq!(warning, None);
     assert_eq!(sessions(&found), set(&["with-record", "legacy"]));
     let rec = found.iter().find(|r| r.session == "with-record").unwrap();
     assert_eq!(
@@ -196,7 +202,7 @@ fn scan_skips_temporary_and_secret_files() {
     ] {
         fs::write(d.path().join(name), "{}").unwrap();
     }
-    assert_eq!(sessions(&scan(d.path())), set(&["real"]));
+    assert_eq!(sessions(&scan(d.path()).0), set(&["real"]));
 }
 
 #[test]
@@ -208,7 +214,7 @@ fn a_record_that_fails_the_file_check_is_not_trusted() {
         fs::Permissions::from_mode(0o644),
     )
     .unwrap();
-    let found = scan(d.path());
+    let (found, _) = scan(d.path());
     let loose = found.iter().find(|r| r.session == "loose");
     assert!(
         loose.is_none_or(|r| r.record.is_none()),
@@ -221,7 +227,7 @@ fn a_record_that_fails_the_file_check_is_not_trusted() {
 #[test]
 fn a_missing_log_directory_is_empty() {
     let d = private_log_dir();
-    assert!(scan(&d.path().join("absent")).is_empty());
+    assert_eq!(scan(&d.path().join("absent")), (Vec::new(), None));
 }
 
 #[test]
@@ -230,8 +236,54 @@ fn scan_reads_at_most_2000_entries() {
     for n in 0..3_000 {
         fs::write(d.path().join(format!("s{n}.log")), "").unwrap();
     }
-    let found = scan(d.path());
+    let (found, warning) = scan(d.path());
     assert!(found.len() <= 2_000, "{}", found.len());
+    assert_eq!(warning, Some(TRUNCATED));
+}
+
+#[test]
+fn the_cap_warns_only_when_entries_are_left_unread() {
+    let d = private_log_dir();
+    for n in 0..5 {
+        fs::write(d.path().join(format!("s{n}.log")), "").unwrap();
+    }
+    let (found, warning) = scan_capped(d.path(), 3);
+    assert_eq!(found.len(), 3);
+    assert_eq!(warning, Some(TRUNCATED));
+    let (found, warning) = scan_capped(d.path(), 5);
+    assert_eq!(found.len(), 5);
+    assert_eq!(warning, None);
+}
+
+#[test]
+fn a_log_directory_others_may_write_to_is_ignored_with_a_warning() {
+    for mode in [0o770, 0o702, 0o777] {
+        let d = private_log_dir();
+        write_record(d.path(), "r", Some(ME));
+        fs::set_permissions(d.path(), fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(scan(d.path()), (Vec::new(), Some(NOT_PRIVATE)), "{mode:o}");
+    }
+}
+
+#[test]
+fn a_log_directory_that_cannot_be_listed_warns_without_its_path() {
+    let d = private_log_dir();
+    let file = d.path().join("not-a-dir");
+    fs::write(&file, "").unwrap();
+    assert_eq!(scan(&file), (Vec::new(), Some(UNREADABLE)));
+
+    // SAFETY: geteuid has no preconditions. Root lists any directory.
+    if unsafe { libc::geteuid() } != 0 {
+        let locked = d.path().join("locked");
+        fs::create_dir(&locked).unwrap();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000)).unwrap();
+        let result = scan(&locked);
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(result, (Vec::new(), Some(UNREADABLE)));
+    }
+    for warning in [UNREADABLE, NOT_PRIVATE, TRUNCATED] {
+        assert!(!warning.contains('/'), "{warning}");
+    }
 }
 
 #[test]

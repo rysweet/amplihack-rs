@@ -404,8 +404,10 @@ markers are removed from the run's environment.
 
 `outcome.class` comes from the exit code and the last 64 KiB of the log:
 
-1. the `class` of the last failure-class marker line, when it is a known
-   class, whatever the exit code;
+1. the `class` of the last failure-class marker line whose `action` is
+   `terminal` or `terminal_budget_exhausted`, when it is a known class,
+   whatever the exit code (a `retry` marker, or one without an `action`, is
+   skipped, so a run that retried and then exited `0` is `ok`);
 2. otherwise `ok` when the exit code is `0`;
 3. otherwise, for a non-zero exit code, the class the failure text in that
    tail matches;
@@ -413,13 +415,19 @@ markers are removed from the run's environment.
 
 Failure text alone never changes the class of a run that exited `0`, so a
 successful run whose log mentions a usage limit is still `ok`.
+The runner writes a terminal marker only for a run that fails, but a step
+that runs another recipe copies that recipe's markers into the log, so a run
+that tolerated a failed sub-recipe and exited `0` takes the sub-recipe's
+class.
 
 The record holds no task text, context values other than the two numbers,
 environment values or URLs. It is created 0600 and never replaced with
 looser permissions; the outcome is written to a temporary file and renamed
 over it. Unlike `<session>.context.json`, it is not removed when the run
 ends. A record that cannot be written produces a warning on stderr; the
-launch still goes ahead.
+launch still goes ahead. A launch that fails before the run starts (tmux
+cannot create the session, the pane reports a start-up error, or the start
+times out) removes the record, so no run that never started is listed.
 
 ### recipe stop
 

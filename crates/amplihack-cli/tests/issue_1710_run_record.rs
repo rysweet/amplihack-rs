@@ -223,3 +223,88 @@ fn a_tokenised_origin_is_reduced_to_owner_and_name_and_never_shown() {
         assert!(!launch_output.contains(leak), "{leak} in launch output");
     }
 }
+
+/// A tmux that answers `-V` and has no sessions. `new-session` sets `$log`
+/// to the pane's log, notes in `$RECORD_DIR/record-seen` that the run record
+/// beside it exists, then runs `new_session`.
+fn fake_tmux(new_session: &str) -> String {
+    format!(
+        r#"#!/bin/sh
+case "$1" in
+  -V) echo "tmux 3.4" ;;
+  kill-session) exit 0 ;;
+  new-session)
+    for a; do [ "$prev" = --log ] && log=$a; prev=$a; done
+    [ -f "${{log%.log}}.run.json" ] && touch "$RECORD_DIR/record-seen"
+    {new_session} ;;
+  *) exit 1 ;;
+esac
+"#
+    )
+}
+
+/// Runs a detached launch with `tmux` on PATH as `script`; it must fail.
+/// Returns its stderr.
+fn failed_launch(fx: &Fx, script: &str) -> String {
+    let tools = fx.home.parent().unwrap().join("tools");
+    crate::support::exec_stub::write_executable(&tools.join("tmux"), script, 0o755);
+    let mut args = fx.recipe_run_args();
+    args.extend(["--detach", "-c", "issue_number=1710"].map(String::from));
+    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+    let out = fx.run(&args, &[("AMPLIHACK_TEST_DETACH_START_SECS", "1")]);
+    let err = text(&out.stderr);
+    assert!(!out.status.success(), "{err}");
+    let seen = fx
+        .home
+        .parent()
+        .unwrap()
+        .join("records")
+        .join("record-seen");
+    assert!(
+        seen.is_file(),
+        "the record did not exist before the failure"
+    );
+    err
+}
+
+/// Names in the log directory ending with `suffix`.
+fn files_ending(fx: &Fx, suffix: &str) -> Vec<String> {
+    fs::read_dir(fx.log_dir())
+        .map(|dir| {
+            dir.filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|name| name.ends_with(suffix))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Review of #1710: a launch that fails after the record is written removes
+/// it, so `workstreams status` never lists a run that never started. (A run
+/// that starts keeps its record: see the first test in this file.)
+#[test]
+fn a_failed_tmux_new_session_leaves_no_record() {
+    let fx = Fx::new();
+    let err = failed_launch(&fx, &fake_tmux("echo refused >&2; exit 1"));
+    assert!(err.contains("tmux new-session failed"), "{err}");
+    assert!(files_ending(&fx, ".run.json").is_empty(), "{err}");
+    assert!(files_ending(&fx, ".spec.json").is_empty());
+}
+
+#[test]
+fn a_pane_start_up_error_leaves_no_record() {
+    let fx = Fx::new();
+    let write_error = r#"echo "amplihack: the detached run could not start: fake" >> "$log""#;
+    let err = failed_launch(&fx, &fake_tmux(write_error));
+    assert!(err.contains("could not start: fake"), "{err}");
+    assert!(files_ending(&fx, ".run.json").is_empty(), "{err}");
+}
+
+#[test]
+fn a_start_that_times_out_leaves_no_record() {
+    let fx = Fx::new();
+    let err = failed_launch(&fx, &fake_tmux("exit 0"));
+    assert!(err.contains("did not start"), "{err}");
+    assert!(files_ending(&fx, ".run.json").is_empty(), "{err}");
+    assert!(files_ending(&fx, ".context.json").is_empty());
+}

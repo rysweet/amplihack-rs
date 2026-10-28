@@ -10,10 +10,14 @@
 //!   only to derive the auto-drive state key.
 //! - `UsageSource: Send + Sync` with `profiles(&self) -> Result<Vec<(String,
 //!   bool)>, String>` (`Err` is a refusal such as Docker) and `probe(&self,
-//!   cancel: &AtomicBool) -> Result<Vec<Row>, String>`.
-//! - `Sources { prs, live, origin, usage: Option<Arc<dyn UsageSource>>, now }`.
-//! - `StatusInput { log_dir, state_root, manifest: Option<ManifestPath>,
-//!   identity, all, logins_deadline }`, `ManifestPath::{Default, Explicit}`.
+//!   profiles, cancel: &AtomicBool) -> Result<Vec<Row>, String>`, given the
+//!   profiles already read: `profiles` is called once per snapshot.
+//! - `Sources { prs, live, origin, usage: Option<Arc<dyn UsageSource>>, now,
+//!   warn }`; `warn` receives each fixed warning line.
+//! - `StatusInput { log_dir: Result<PathBuf, &'static str>, state_root,
+//!   manifest: Option<ManifestPath>, identity, all, logins_deadline }`,
+//!   `ManifestPath::{Default, Explicit}`. An `Err` log directory is warned
+//!   about and gives no runs.
 //! - `snapshot(&StatusInput, &Sources) -> anyhow::Result<Snapshot>`; the
 //!   probe runs on a worker thread, and at the deadline the cancel flag is
 //!   set and the snapshot is built at most 1 s later.
@@ -87,14 +91,18 @@ struct FakeUsage {
     rows: Vec<Row>,
     stall: Option<Duration>,
     probes: AtomicUsize,
+    reads: AtomicUsize,
+    probed_with: Mutex<Vec<(String, bool)>>,
 }
 
 impl UsageSource for FakeUsage {
     fn profiles(&self) -> Result<Vec<(String, bool)>, String> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
         self.profiles.clone()
     }
-    fn probe(&self, cancel: &AtomicBool) -> Result<Vec<Row>, String> {
+    fn probe(&self, profiles: &[(String, bool)], cancel: &AtomicBool) -> Result<Vec<Row>, String> {
         self.probes.fetch_add(1, Ordering::SeqCst);
+        *self.probed_with.lock().unwrap() = profiles.to_vec();
         if let Some(stall) = self.stall {
             // Ignores the cancel flag on purpose: a probe that never returns.
             let _ = cancel;
@@ -217,7 +225,7 @@ impl Fx {
 
     fn input(&self, identity: Option<&str>, all: bool) -> StatusInput {
         StatusInput {
-            log_dir: self.logs.clone(),
+            log_dir: Ok(self.logs.clone()),
             state_root: Some(self.state_root.clone()),
             manifest: None,
             identity: identity.map(str::to_string),
@@ -236,7 +244,16 @@ fn sources(prs: FakePrs, live: &[(&str, i64)], now: i64) -> Sources {
         origin: Box::new(FakeOrigin(Some(ORIGIN.to_string()))),
         usage: None,
         now,
+        warn: Box::new(|_| {}),
     }
+}
+
+/// Collects what `s` warns about.
+fn collect_warnings(s: &mut Sources) -> Arc<Mutex<Vec<&'static str>>> {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let sink = Arc::clone(&seen);
+    s.warn = Box::new(move |w| sink.lock().unwrap().push(w));
+    seen
 }
 
 fn row<'a>(snap: &'a Snapshot, label: &str) -> &'a WorkRow {
@@ -287,6 +304,75 @@ fn the_default_view_lists_only_the_callers_tree() {
         "{all_labels:?}"
     );
     assert!(all_labels.contains(&"legacy"), "{all_labels:?}");
+}
+
+/// Review of #1710: a log directory the command cannot use is one fixed
+/// warning line, with no path, and the table still renders without runs.
+#[test]
+fn an_unavailable_log_directory_warns_once_and_shows_no_runs() {
+    let fx = Fx::new();
+    fx.run("mine", Some(ME), Some(1710), None);
+    let mut input = fx.input(Some(ME), true);
+    input.log_dir = Err(super::LOG_DIR_UNAVAILABLE);
+    input.manifest = Some(ManifestPath::Default(fx.manifest("docs sweep\t1720\t-\n")));
+    let mut s = sources(FakePrs::default(), &[], 0);
+    let warnings = collect_warnings(&mut s);
+
+    let snap = snapshot(&input, &s).unwrap();
+    assert_eq!(labels(&snap), ["docs sweep"]);
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["warning: recipe log directory unavailable (HOME not set)"]
+    );
+}
+
+#[test]
+fn a_log_directory_others_may_write_to_shows_no_runs_and_warns() {
+    let fx = Fx::new();
+    fx.run("mine", Some(ME), Some(1710), None);
+    fs::set_permissions(&fx.logs, fs::Permissions::from_mode(0o777)).unwrap();
+    let mut s = sources(FakePrs::default(), &[], 0);
+    let warnings = collect_warnings(&mut s);
+
+    let snap = snapshot(&fx.input(Some(ME), true), &s).unwrap();
+    assert!(snap.workstreams.is_empty(), "{:?}", labels(&snap));
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["warning: recipe log directory is not private; ignoring it"]
+    );
+}
+
+#[test]
+fn an_unreadable_log_directory_warns_without_its_path() {
+    let fx = Fx::new();
+    let mut input = fx.input(Some(ME), true);
+    let file = fx.work.join("not-a-dir");
+    fs::write(&file, "").unwrap();
+    input.log_dir = Ok(file);
+    let mut s = sources(FakePrs::default(), &[], 0);
+    let warnings = collect_warnings(&mut s);
+
+    snapshot(&input, &s).unwrap();
+    assert_eq!(
+        *warnings.lock().unwrap(),
+        ["warning: recipe log directory unreadable"]
+    );
+}
+
+#[test]
+fn a_missing_log_directory_and_a_private_one_give_no_warning() {
+    let fx = Fx::new();
+    fx.run("mine", Some(ME), Some(1710), None);
+    let mut s = sources(FakePrs::default(), &[], 0);
+    let warnings = collect_warnings(&mut s);
+    assert_eq!(
+        labels(&snapshot(&fx.input(Some(ME), false), &s).unwrap()),
+        ["default-workflow #1710"]
+    );
+    let mut input = fx.input(Some(ME), true);
+    input.log_dir = Ok(fx.logs.join("absent"));
+    snapshot(&input, &s).unwrap();
+    assert!(warnings.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -659,6 +745,8 @@ fn a_prompt_probe_gives_readings_and_api_key_profiles_are_not_probed_as_plans() 
         rows: vec![ok_row("work")],
         stall: None,
         probes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        probed_with: Mutex::new(Vec::new()),
     });
     let mut src = sources(FakePrs::default(), &[], 0);
     src.usage = Some(usage.clone());
@@ -669,6 +757,51 @@ fn a_prompt_probe_gives_readings_and_api_key_profiles_are_not_probed_as_plans() 
     assert_eq!(rows.len(), 2);
     assert!(matches!(rows[0].reading, Reading::Bars { .. }));
     assert!(matches!(rows[1].reading, Reading::ApiKey));
+    // Review of #1710: the profiles are read once, and the probe gets them.
+    assert_eq!(usage.reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        *usage.probed_with.lock().unwrap(),
+        [("work".to_string(), false), ("platform".to_string(), true)]
+    );
+}
+
+/// A PR source that takes `delay` to answer.
+struct SlowPrs(Duration);
+
+impl PrSource for SlowPrs {
+    fn list(&self, _repo: &str) -> anyhow::Result<Vec<PrInfo>> {
+        std::thread::sleep(self.0);
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn the_logins_probe_runs_while_github_is_asked() {
+    let fx = Fx::new();
+    fx.run("amp-a", Some(ME), Some(1710), None);
+    let usage = Arc::new(FakeUsage {
+        profiles: Ok(vec![("a".into(), false)]),
+        rows: vec![ok_row("a")],
+        stall: Some(Duration::from_millis(1_000)),
+        probes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        probed_with: Mutex::new(Vec::new()),
+    });
+    let mut src = sources(FakePrs::default(), &[], 0);
+    src.prs = Box::new(SlowPrs(Duration::from_millis(1_000)));
+    src.usage = Some(usage);
+    let mut input = fx.input(Some(ME), false);
+    input.logins_deadline = Duration::from_secs(5);
+
+    let start = Instant::now();
+    let snap = snapshot(&input, &src).unwrap();
+    let took = start.elapsed();
+    // One second each, run one after the other, would take two.
+    assert!(took < Duration::from_millis(1_800), "took {took:?}");
+    let Some(LoginsSection::Rows(rows)) = &snap.logins else {
+        panic!("{:?}", snap.logins);
+    };
+    assert!(matches!(rows[0].reading, Reading::Bars { .. }), "{rows:?}");
 }
 
 #[test]
@@ -679,6 +812,8 @@ fn a_stalled_probe_returns_within_the_deadline_plus_one_second() {
         rows: vec![ok_row("a"), ok_row("b")],
         stall: Some(Duration::from_secs(30)),
         probes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        probed_with: Mutex::new(Vec::new()),
     });
     let mut src = sources(FakePrs::default(), &[], 0);
     src.usage = Some(usage);
@@ -706,10 +841,12 @@ fn a_stalled_probe_returns_within_the_deadline_plus_one_second() {
 fn a_refused_usage_source_is_reported_in_place_of_rows() {
     let fx = Fx::new();
     let usage = Arc::new(FakeUsage {
-        profiles: Err("profiles are not applied in Docker".into()),
+        profiles: Err(crate::commands::profile::usage_cmd::REFUSED_DOCKER.into()),
         rows: vec![],
         stall: None,
         probes: AtomicUsize::new(0),
+        reads: AtomicUsize::new(0),
+        probed_with: Mutex::new(Vec::new()),
     });
     let mut src = sources(FakePrs::default(), &[], 0);
     src.usage = Some(usage.clone());

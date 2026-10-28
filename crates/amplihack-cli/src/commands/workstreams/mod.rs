@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::DateTime;
@@ -57,6 +57,9 @@ use stage::{PrState, StageInput};
 const DEFAULT_DEADLINE_SECS: u64 = 8;
 /// How long a probe has to stop after its cancel flag is set.
 const CANCEL_GRACE: Duration = Duration::from_secs(1);
+/// `recipe.log_dir` is unset and so is HOME.
+pub(crate) const LOG_DIR_UNAVAILABLE: &str =
+    "warning: recipe log directory unavailable (HOME not set)";
 
 /// `amplihack workstreams <subcommand>`
 #[derive(Subcommand, Debug)]
@@ -108,7 +111,7 @@ fn status(all: bool, no_logins: bool, manifest: Option<PathBuf>, deadline: u64) 
     let input = StatusInput {
         // Without a log directory there is nothing to discover; the table
         // still shows manifest rows and logins.
-        log_dir: crate::commands::recipe::detach::log_dir().unwrap_or_default(),
+        log_dir: crate::commands::recipe::detach::log_dir().map_err(|_| LOG_DIR_UNAVAILABLE),
         state_root: state_root(),
         manifest,
         identity: caller_identity_from_env(),
@@ -120,9 +123,10 @@ fn status(all: bool, no_logins: bool, manifest: Option<PathBuf>, deadline: u64) 
     let sources = Sources {
         prs: Box::new(sources::GhPrs),
         live: Box::new(sources::TmuxSessions),
-        origin: Box::new(sources::GitOrigin),
+        origin: Box::new(sources::GitOrigin::default()),
         usage,
         now: chrono::Utc::now().timestamp(),
+        warn: Box::new(|warning| eprintln!("{warning}")),
     };
     print!("{}", render::render(&snapshot(&input, &sources)?));
     Ok(())
@@ -139,7 +143,8 @@ pub(crate) enum ManifestPath {
 /// What [`snapshot`] reads, apart from its outside sources.
 #[derive(Debug, Clone)]
 pub(crate) struct StatusInput {
-    pub log_dir: PathBuf,
+    /// The recipe log directory, or the warning to print when there is none.
+    pub log_dir: Result<PathBuf, &'static str>,
     /// The auto-drive state root; `None` when HOME and the state directory
     /// are both unset.
     pub state_root: Option<PathBuf>,
@@ -158,6 +163,8 @@ pub(crate) struct Sources {
     pub usage: Option<Arc<dyn UsageSource>>,
     /// Unix seconds.
     pub now: i64,
+    /// Prints a fixed warning line; it never holds a path or an OS error.
+    pub warn: Box<dyn Fn(&'static str)>,
 }
 
 /// Everything the table shows. Errors only for an explicit manifest that
@@ -168,11 +175,19 @@ pub(crate) fn snapshot(input: &StatusInput, sources: &Sources) -> Result<Snapsho
         Some(ManifestPath::Default(path)) => manifest::load(path, false)?,
         Some(ManifestPath::Explicit(path)) => manifest::load(path, true)?,
     };
-    let runs = discover::select(
-        discover::scan(&input.log_dir),
-        input.identity.as_deref(),
-        input.all,
-    );
+    // Started first so the probe overlaps tmux, gh and git below.
+    let logins = sources
+        .usage
+        .as_ref()
+        .map(|usage| PendingLogins::start(usage, input.logins_deadline));
+    let (found, warning) = match &input.log_dir {
+        Ok(dir) => discover::scan(dir),
+        Err(warning) => (Vec::new(), Some(*warning)),
+    };
+    if let Some(warning) = warning {
+        (sources.warn)(warning);
+    }
+    let runs = discover::select(found, input.identity.as_deref(), input.all);
     let live: HashMap<String, i64> = sources.live.list().into_iter().collect();
     let prs = pr_lists(&runs, sources.prs.as_ref());
 
@@ -201,10 +216,7 @@ pub(crate) fn snapshot(input: &StatusInput, sources: &Sources) -> Result<Snapsho
     Ok(Snapshot {
         no_identity: input.identity.is_none() && !input.all,
         workstreams,
-        logins: sources
-            .usage
-            .as_ref()
-            .map(|usage| logins_section(usage, input.logins_deadline)),
+        logins: logins.map(PendingLogins::finish),
     })
 }
 
@@ -242,11 +254,7 @@ fn run_row(
         .and_then(|r| r.repo.as_deref())
         .and_then(|repo| prs.get(repo))
         .and_then(Option::as_deref);
-    let info = list.and_then(|list| match (pr_number, issue) {
-        (Some(n), _) => list.iter().find(|p| p.number == n),
-        (None, Some(i)) => stage::pr_for_issue(list, i),
-        (None, None) => None,
-    });
+    let info = list.and_then(|list| find_pr(list, pr_number, issue));
     pr_number = pr_number.or(info.map(|p| p.number));
     if matched.is_none() {
         matched = manifest_match(manifest, used, issue, pr_number);
@@ -334,13 +342,19 @@ fn manifest_match(
     Some(i)
 }
 
+/// The PR numbered `pr`, else the first whose title names `issue`.
+fn find_pr(list: &[PrInfo], pr: Option<u64>, issue: Option<u64>) -> Option<&PrInfo> {
+    match (pr, issue) {
+        (Some(n), _) => list.iter().find(|p| p.number == n),
+        (None, Some(i)) => stage::pr_for_issue(list, i),
+        (None, None) => None,
+    }
+}
+
 /// `<recipe> #<issue>`, or the session name.
 fn default_label(record: Option<&RunRecord>, session: &str) -> String {
-    match record {
-        Some(r) => match r.issue_number {
-            Some(issue) => format!("{} #{issue}", r.recipe),
-            None => session.to_string(),
-        },
+    match record.and_then(|r| Some((&r.recipe, r.issue_number?))) {
+        Some((recipe, issue)) => format!("{recipe} #{issue}"),
         None => session.to_string(),
     }
 }
@@ -360,11 +374,7 @@ fn epoch(rfc3339: &str) -> Option<i64> {
 /// runs name exactly one repository, so a number is never matched against
 /// another repository's PRs.
 fn queued_row(row: &ManifestRow, list: Option<&[PrInfo]>) -> WorkRow {
-    let info = list.and_then(|list| match (row.pr, row.issue) {
-        (Some(n), _) => list.iter().find(|p| p.number == n),
-        (None, Some(i)) => stage::pr_for_issue(list, i),
-        (None, None) => None,
-    });
+    let info = list.and_then(|list| find_pr(list, row.pr, row.issue));
     let pr_state = info.and_then(|p| PrState::from_github(&p.state));
     let stage = stage::classify(&StageInput {
         pr: pr_state,
@@ -397,33 +407,69 @@ fn queued_row(row: &ManifestRow, list: Option<&[PrInfo]>) -> WorkRow {
     }
 }
 
-/// The logins section: the probe runs on a worker thread; at the deadline
-/// the cancel flag is set and the section is built at most
-/// [`CANCEL_GRACE`] later, with `no reading` for every profile that has no
-/// result. A probe that still has not returned is left to finish on its
-/// detached thread.
-fn logins_section(usage: &Arc<dyn UsageSource>, deadline: Duration) -> LoginsSection {
-    let profiles = match usage.profiles() {
-        Ok(profiles) => profiles,
-        Err(reason) => return LoginsSection::Refused(reason),
-    };
-    if profiles.iter().all(|(_, api_key)| *api_key) {
-        return LoginsSection::Rows(logins::login_rows(&profiles, Some(&[])));
+/// The logins section: the probe runs on a worker thread from the start of
+/// [`snapshot`]; at the deadline the cancel flag is set and the section is
+/// built at most [`CANCEL_GRACE`] later, with `no reading` for every
+/// profile that has no result. A probe that still has not returned is left
+/// to finish on its detached thread.
+enum PendingLogins {
+    Ready(LoginsSection),
+    Probing {
+        profiles: Vec<(String, bool)>,
+        rx: mpsc::Receiver<Result<Vec<crate::commands::profile::usage_cmd::Row>, String>>,
+        cancel: Arc<AtomicBool>,
+        due: Instant,
+    },
+}
+
+impl PendingLogins {
+    fn start(usage: &Arc<dyn UsageSource>, deadline: Duration) -> Self {
+        let due = Instant::now() + deadline;
+        let profiles = match usage.profiles() {
+            Ok(profiles) => profiles,
+            Err(reason) => return Self::Ready(LoginsSection::Refused(reason)),
+        };
+        if profiles.iter().all(|(_, api_key)| *api_key) {
+            return Self::Ready(LoginsSection::Rows(logins::login_rows(
+                &profiles,
+                Some(&[]),
+            )));
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let (tx, rx) = mpsc::channel();
+        let (worker_usage, worker_cancel) = (Arc::clone(usage), Arc::clone(&cancel));
+        let worker_profiles = profiles.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(worker_usage.probe(&worker_profiles, &worker_cancel));
+        });
+        Self::Probing {
+            profiles,
+            rx,
+            cancel,
+            due,
+        }
     }
-    let cancel = Arc::new(AtomicBool::new(false));
-    let (tx, rx) = mpsc::channel();
-    let (worker_usage, worker_cancel) = (Arc::clone(usage), Arc::clone(&cancel));
-    std::thread::spawn(move || {
-        let _ = tx.send(worker_usage.probe(&worker_cancel));
-    });
-    let result = rx.recv_timeout(deadline).ok().or_else(|| {
-        cancel.store(true, Ordering::SeqCst);
-        rx.recv_timeout(CANCEL_GRACE).ok()
-    });
-    match result {
-        Some(Err(reason)) => LoginsSection::Refused(reason),
-        // A probe cut short by the cancel flag reports it as a timeout.
-        Some(Ok(rows)) => LoginsSection::Rows(logins::login_rows(&profiles, Some(&rows))),
-        None => LoginsSection::Rows(logins::login_rows(&profiles, None)),
+
+    fn finish(self) -> LoginsSection {
+        let (profiles, rx, cancel, due) = match self {
+            Self::Ready(section) => return section,
+            Self::Probing {
+                profiles,
+                rx,
+                cancel,
+                due,
+            } => (profiles, rx, cancel, due),
+        };
+        let left = due.saturating_duration_since(Instant::now());
+        let result = rx.recv_timeout(left).ok().or_else(|| {
+            cancel.store(true, Ordering::SeqCst);
+            rx.recv_timeout(CANCEL_GRACE).ok()
+        });
+        match result {
+            Some(Err(reason)) => LoginsSection::Refused(reason),
+            // A probe cut short by the cancel flag reports it as a timeout.
+            Some(Ok(rows)) => LoginsSection::Rows(logins::login_rows(&profiles, Some(&rows))),
+            None => LoginsSection::Rows(logins::login_rows(&profiles, None)),
+        }
     }
 }
