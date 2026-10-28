@@ -6,14 +6,36 @@
 //! suite never exercised the helper. This test runs both suites and fails if
 //! either reports a failed check.
 //!
+//! Each suite runs in a cleared environment, as `issue_1551_merge_guard.rs`
+//! starts its bash children. Only [`KEPT_VARS`] (and `LC_*`) are carried over;
+//! `HOME` points at a directory under the test's temp dir. `BASH_ENV`, every
+//! `AMPLIHACK_*` variable, `CLAUDE_CONFIG_DIR`, `GH_*`, `GIT_*` and
+//! `PR_NUMBER` are left unset, so neither the developer's `~/.amplihack`, the
+//! profile root nor an auto-drive shell's `gh` merge guard reaches the suites
+//! or the `bash` children they start. The suites set `AMPLIHACK_HOME` per
+//! invocation where they need it.
+//!
 //! The suites read recipe YAML with `python3` and PyYAML. When the system
-//! `python3` cannot import `yaml`, the test builds a temporary virtual
-//! environment with PyYAML using `uv` and puts it first on `PATH`. If that
-//! is not possible the test fails rather than skipping, so a missing
-//! dependency cannot pass as coverage.
+//! `python3` cannot import `yaml`, the test builds one virtual environment
+//! with PyYAML using `uv` and puts its `bin` first on the suites' `PATH`.
+//! The venv is built once per test process (behind a `OnceLock`) and removed
+//! at exit. `cargo test` runs both tests in one process, so it builds the
+//! venv once; `nextest` runs each test in its own process, so it builds it
+//! twice, and the second build is served from uv's cache. `uv` runs with the
+//! real `HOME` so that it uses the real `~/.cache/uv`: on a cold cache it
+//! downloads PyYAML from PyPI, so such a host needs `uv` and network access
+//! once. If the venv cannot be built the test fails rather than skipping, so
+//! a missing dependency cannot pass as coverage.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
+
+/// Variables carried over from the test process, the same set
+/// `tests/support/isolated_amplihack.rs` keeps. Everything else is cleared.
+const KEPT_VARS: &[&str] = &[
+    "PATH", "TMPDIR", "LANG", "TERM", "USER", "LOGNAME", "SHELL", "TZ",
+];
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -32,57 +54,90 @@ fn command_succeeds(program: &str, args: &[&str]) -> bool {
 }
 
 /// Returns a directory to prepend to `PATH` so that `python3` can import
-/// `yaml`, or `None` when the system `python3` already can.
+/// `yaml`, or `None` when the system `python3` already can. Built at most
+/// once per test process.
 ///
-/// The fallback is a virtual environment built by `uv` in the test's temp
-/// directory. A real interpreter is needed on `PATH`: a `python3` script that
-/// calls `uv run` would be found again by uv's own interpreter discovery, and
-/// the suites point `HOME` at a fake directory, which would hide uv's cache.
-fn pyyaml_path_dir(tmp: &Path) -> Option<PathBuf> {
-    if command_succeeds("python3", &["-c", "import yaml"]) {
-        return None;
-    }
-    let venv = tmp.join("pyyaml-venv");
-    let venv_str = venv.to_str().expect("utf-8 temp path");
-    let python = venv.join("bin/python3");
-    let python_str = python.to_str().expect("utf-8 temp path");
-    assert!(
-        command_succeeds("uv", &["venv", "--quiet", "--python", "python3", venv_str])
-            && command_succeeds(
-                "uv",
-                &[
-                    "pip", "install", "--quiet", "--python", python_str, "pyyaml"
-                ]
-            )
-            && command_succeeds(python_str, &["-c", "import yaml"]),
-        "the claim-check suites need python3 with PyYAML: install python3-yaml or uv"
-    );
-    Some(venv.join("bin"))
+/// The fallback is a virtual environment built by `uv`. A real interpreter is
+/// needed on `PATH`: a `python3` script that calls `uv run` would be found
+/// again by uv's own interpreter discovery, and the suites run with a fake
+/// `HOME`, which would hide uv's cache.
+fn pyyaml_path_dir() -> Option<&'static Path> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        if command_succeeds("python3", &["-c", "import yaml"]) {
+            return None;
+        }
+        let root = tempfile::Builder::new()
+            .prefix("issue1707-pyyaml-")
+            .tempdir()
+            .expect("tempdir for the PyYAML venv")
+            .keep();
+        // A static is never dropped, so remove the venv at process exit.
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.set(root.clone()).expect("PyYAML venv root set once");
+        extern "C" fn remove_at_exit() {
+            if let Some(root) = ROOT.get() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+        // SAFETY: registering a plain `extern "C"` function has no
+        // preconditions; it runs once, at normal process exit.
+        unsafe { libc::atexit(remove_at_exit) };
+
+        let venv = root.join("venv");
+        let venv_str = venv.to_str().expect("utf-8 temp path");
+        let python = venv.join("bin/python3");
+        let python_str = python.to_str().expect("utf-8 temp path");
+        assert!(
+            command_succeeds("uv", &["venv", "--quiet", "--python", "python3", venv_str])
+                && command_succeeds(
+                    "uv",
+                    &[
+                        "pip", "install", "--quiet", "--python", python_str, "pyyaml"
+                    ]
+                )
+                && command_succeeds(python_str, &["-c", "import yaml"]),
+            "the claim-check suites need python3 with PyYAML: install python3-yaml, \
+             or uv (which fetches PyYAML from PyPI on a cold cache)"
+        );
+        Some(venv.join("bin"))
+    })
+    .as_deref()
 }
 
-fn run_suite(script: &str) {
-    let tmp = tempfile::TempDir::new().expect("tempdir");
+/// A `bash` command for `script` with a cleared environment: only
+/// [`KEPT_VARS`] and `LC_*` from the test process, `PATH` with `pyyaml_dir`
+/// in front when given, and `HOME` and `TMPDIR` under `tmp`.
+fn isolated_suite_command(script: &Path, tmp: &Path, pyyaml_dir: Option<&Path>) -> Command {
+    let mut command = Command::new("bash");
+    command.arg(script).env_clear();
+    for (key, value) in std::env::vars_os() {
+        let Some(name) = key.to_str() else { continue };
+        if KEPT_VARS.contains(&name) || name.starts_with("LC_") {
+            command.env(&key, value);
+        }
+    }
     let mut path = std::env::var_os("PATH").unwrap_or_default();
-    if let Some(dir) = pyyaml_path_dir(tmp.path()) {
-        let mut joined = dir.into_os_string();
+    if let Some(dir) = pyyaml_dir {
+        let mut joined = dir.as_os_str().to_os_string();
         joined.push(":");
         joined.push(&path);
         path = joined;
     }
-
-    let root = repo_root();
-    let output = Command::new("bash")
-        .arg(root.join(script))
-        .current_dir(&root)
+    let home = tmp.join("home");
+    std::fs::create_dir_all(&home).expect("create the suite HOME");
+    command
         .env("PATH", path)
-        .env("TMPDIR", tmp.path())
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .env_remove("GIT_COMMON_DIR")
-        .env_remove("GIT_OBJECT_DIRECTORY")
-        .env_remove("GIT_ALTERNATE_OBJECT_DIRECTORIES")
-        .env_remove("GH_REPO")
+        .env("HOME", home)
+        .env("TMPDIR", tmp);
+    command
+}
+
+fn run_suite(script: &str) {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let root = repo_root();
+    let output = isolated_suite_command(&root.join(script), tmp.path(), pyyaml_path_dir())
+        .current_dir(&root)
         .output()
         .expect("run shell suite");
 
@@ -96,6 +151,48 @@ fn run_suite(script: &str) {
         output.status.success() && failed.is_empty(),
         "{script} failed (status {:?}); failing checks: {failed:#?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
         output.status.code()
+    );
+}
+
+/// The suites' environment carries nothing from the developer's or an
+/// auto-drive shell beyond [`KEPT_VARS`]: no `BASH_ENV` (which would source
+/// the merge guard's `gh` shim into every bash child), no `AMPLIHACK_*`, no
+/// `CLAUDE_CONFIG_DIR`, no `GIT_*`/`GH_*`, no `PR_NUMBER`, and a `HOME` under
+/// the test's temp dir.
+#[test]
+fn issue_1707_suite_environment_is_isolated() {
+    let tmp = tempfile::TempDir::new().expect("tempdir");
+    let probe = tmp.path().join("probe.sh");
+    std::fs::write(&probe, "env\n").expect("write probe");
+    let output = isolated_suite_command(&probe, tmp.path(), None)
+        .output()
+        .expect("run probe");
+    assert!(output.status.success(), "probe failed: {output:?}");
+    let env = String::from_utf8_lossy(&output.stdout);
+    let names: Vec<&str> = env
+        .lines()
+        .filter_map(|line| line.split_once('=').map(|(name, _)| name))
+        .collect();
+    for name in &names {
+        assert!(
+            !name.starts_with("AMPLIHACK_")
+                && !name.starts_with("GIT_")
+                && !name.starts_with("GH_")
+                && !matches!(
+                    *name,
+                    "BASH_ENV" | "ENV" | "CLAUDE_CONFIG_DIR" | "PR_NUMBER" | "EXISTING_BRANCH"
+                ),
+            "{name} reached the suite environment:\n{env}"
+        );
+    }
+    let home = env
+        .lines()
+        .find_map(|line| line.strip_prefix("HOME="))
+        .expect("HOME is set");
+    assert!(
+        Path::new(home).starts_with(tmp.path()),
+        "HOME {home} is outside the test temp dir {}",
+        tmp.path().display()
     );
 }
 
