@@ -27,8 +27,8 @@ mod settings_refresh;
 mod shared_dirs;
 mod store;
 mod supervise_gate;
-mod usage_cmd;
-mod usage_parse;
+pub(crate) mod usage_cmd;
+pub(crate) mod usage_parse;
 
 #[cfg(test)]
 mod tests_commands;
@@ -62,6 +62,8 @@ mod tests_store;
 mod tests_usage_cmd;
 #[cfg(test)]
 mod tests_usage_parse;
+#[cfg(all(test, unix))]
+mod tests_usage_probe_rows;
 #[cfg(test)]
 mod tests_verify;
 

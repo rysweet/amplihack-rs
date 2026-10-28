@@ -716,4 +716,92 @@ mod tests {
             other => panic!("unexpected {other:?}"),
         }
     }
+    // Issue #1710: `amplihack workstreams status`.
+
+    fn workstreams_status(args: &[&str]) -> crate::commands::workstreams::WorkstreamsCommands {
+        let mut argv = vec!["amplihack", "workstreams", "status"];
+        argv.extend_from_slice(args);
+        match Cli::try_parse_from(argv).unwrap().command {
+            Commands::Workstreams { command } => command,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn workstreams_status_parses_bare_with_defaults() {
+        let _env = launcher_env_lock();
+        match workstreams_status(&[]) {
+            crate::commands::workstreams::WorkstreamsCommands::Status {
+                all,
+                no_logins,
+                manifest,
+                logins_deadline,
+            } => {
+                assert!(!all && !no_logins);
+                assert_eq!(manifest, None);
+                assert_eq!(logins_deadline, 8);
+            }
+        }
+    }
+
+    #[test]
+    fn workstreams_status_parses_every_flag() {
+        let _env = launcher_env_lock();
+        match workstreams_status(&[
+            "--all",
+            "--no-logins",
+            "--manifest",
+            "/tmp/m.tsv",
+            "--logins-deadline",
+            "60",
+        ]) {
+            crate::commands::workstreams::WorkstreamsCommands::Status {
+                all,
+                no_logins,
+                manifest,
+                logins_deadline,
+            } => {
+                assert!(all && no_logins);
+                assert_eq!(manifest, Some(PathBuf::from("/tmp/m.tsv")));
+                assert_eq!(logins_deadline, 60);
+            }
+        }
+        match workstreams_status(&["--logins-deadline", "1"]) {
+            crate::commands::workstreams::WorkstreamsCommands::Status {
+                logins_deadline, ..
+            } => assert_eq!(logins_deadline, 1),
+        }
+    }
+
+    #[test]
+    fn workstreams_status_refuses_bad_deadlines_and_a_bare_manifest_flag() {
+        let _env = launcher_env_lock();
+        for bad in [
+            &["--logins-deadline", "0"][..],
+            &["--logins-deadline", "61"],
+            &["--logins-deadline", "-1"],
+            &["--logins-deadline", "soon"],
+            &["--manifest"],
+            &["--parent", "x"],
+        ] {
+            let mut argv = vec!["amplihack", "workstreams", "status"];
+            argv.extend_from_slice(bad);
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        assert!(Cli::try_parse_from(["amplihack", "workstreams"]).is_err());
+    }
+
+    #[test]
+    fn workstreams_status_help_lists_every_flag() {
+        let _env = launcher_env_lock();
+        let help = Cli::try_parse_from(["amplihack", "workstreams", "status", "--help"])
+            .unwrap_err()
+            .to_string();
+        for want in ["--all", "--no-logins", "--manifest", "--logins-deadline"] {
+            assert!(help.contains(want), "help lists {want}: {help}");
+        }
+    }
 }

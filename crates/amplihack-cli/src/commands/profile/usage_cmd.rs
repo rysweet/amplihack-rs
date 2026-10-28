@@ -49,7 +49,7 @@ const ENV_CREDENTIAL_VARS: [&str; 3] = [
 
 /// Why a probe could not run. Fixed text: never an I/O error or a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ErrorReason {
+pub(crate) enum ErrorReason {
     ProfileRefused,
     StartFailed,
     ReadFailed,
@@ -69,9 +69,9 @@ impl ErrorReason {
 
 /// What `claude` printed, kept only with `--raw`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(super) struct Raw {
-    pub(super) stdout: String,
-    pub(super) stderr: String,
+pub(crate) struct Raw {
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
 }
 
 /// The outcome of one `claude -p /usage` run.
@@ -94,26 +94,26 @@ impl Probe {
 
 /// One output row.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Row {
-    pub(super) profile: String,
+pub(crate) struct Row {
+    pub(crate) profile: String,
     /// The account live in the profile's directory.
-    pub(super) account: String,
-    pub(super) default: bool,
+    pub(crate) account: String,
+    pub(crate) default: bool,
     /// The directory this profile's login is lent to.
-    pub(super) leased_to: Option<String>,
+    pub(crate) leased_to: Option<String>,
     /// The login is live in `~/.claude` and the numbers were read there.
-    pub(super) live_in: bool,
+    pub(crate) live_in: bool,
     /// Marked as credit-backed overflow in `<root>/.auto-switch`.
-    pub(super) overflow: bool,
+    pub(crate) overflow: bool,
     /// The end of the rotator's active spend block on this overflow
     /// profile, epoch seconds.
-    pub(super) overflow_blocked_until: Option<i64>,
+    pub(crate) overflow_blocked_until: Option<i64>,
     /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
     /// never recorded.
-    pub(super) live_in_home: bool,
-    pub(super) report: UsageReport,
-    pub(super) error: Option<ErrorReason>,
-    pub(super) raw: Option<Raw>,
+    pub(crate) live_in_home: bool,
+    pub(crate) report: UsageReport,
+    pub(crate) error: Option<ErrorReason>,
+    pub(crate) raw: Option<Raw>,
 }
 
 pub(super) fn run(
@@ -156,6 +156,7 @@ pub(super) fn run(
         Duration::from_secs(secs),
         now,
         raw,
+        &PROBE_CANCEL,
     );
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
@@ -174,6 +175,86 @@ pub(super) fn run(
     }
     record(store, &rows, swapped.as_ref(), json);
     Ok(())
+}
+
+/// Issue #1710: the rows `profile usage` would show, for `workstreams
+/// status`. Probes like [`run`], at most `timeout` each, and stops when
+/// `cancel` is set, killing each probe's process group. Never records or
+/// persists anything and prints nothing; refuses to run where profiles are
+/// not applied (Docker). The `~/.claude` row is added only when `names` is
+/// empty, as in [`run`].
+pub(crate) fn probe_rows(
+    store: &ProfileStore,
+    binary: &BinaryInfo,
+    names: &[String],
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Vec<Row>> {
+    super::reject_docker_env()?;
+    let profiles = selected_profiles(store, names)?;
+    if profiles.is_empty() {
+        return Ok(Vec::new());
+    }
+    let home = home_dir();
+    // Detection warnings are for `profile usage`; this caller shows rows only.
+    let (live, home_row) = match default_live::detect_for_usage(store, home.as_deref()) {
+        default_live::UsageLive::Profile(name) => (Some(name), false),
+        default_live::UsageLive::Home => (None, true),
+        default_live::UsageLive::Detected(live, _) => (live.map(|l| l.name), false),
+    };
+    let live = live.filter(|n| profiles.contains(n));
+    let marks = Marks {
+        default: pointer::read(store.root()).ok().flatten(),
+        lease: auto_switch::lease_view(store.root()).ok().flatten(),
+    };
+    let now = now_secs();
+    let probes = probe_all(
+        store,
+        binary,
+        &profiles,
+        live.as_ref(),
+        timeout,
+        now,
+        false,
+        cancel,
+    );
+    let mut rows = build_rows(&marks, &profiles, probes, live.as_ref());
+    if home_row && names.is_empty() && !cancel.load(Ordering::Relaxed) {
+        let cmd = run::build_home_command(binary, &["-p".into(), "/usage".into()]);
+        rows.push(home_row_of(probe_cancellable(
+            cmd, timeout, now, false, cancel,
+        )));
+    }
+    Ok(rows)
+}
+
+/// Issue #1710: every profile in the store for this environment, with its
+/// directory, for `workstreams status`. Refuses where profiles are not
+/// applied (Docker). The error text names no path.
+pub(crate) fn listed_profiles() -> Result<Vec<(String, std::path::PathBuf)>> {
+    super::reject_docker_env()?;
+    let store = ProfileStore::from_env().map_err(super::with_hint)?;
+    let mut out = Vec::new();
+    for raw in store.list().map_err(super::with_hint)? {
+        let name = ProfileName::parse(&raw)?;
+        // A profile that no longer resolves still gets a row, with no
+        // directory to inspect.
+        let dir = store.resolve(&name).unwrap_or_default();
+        out.push((raw, dir));
+    }
+    Ok(out)
+}
+
+/// Issue #1710: [`probe_rows`] against the store for this environment and
+/// the `claude` binary `profile usage` would use.
+pub(crate) fn probe_listed(
+    names: &[String],
+    timeout: Duration,
+    cancel: &AtomicBool,
+) -> Result<Vec<Row>> {
+    let store = ProfileStore::from_env().map_err(super::with_hint)?;
+    let binary = run::resolve_claude_binary()?;
+    probe_rows(&store, &binary, names, timeout, cancel)
 }
 
 /// `$HOME` as an absolute path; `None` when it is unset, empty or relative.
@@ -445,7 +526,9 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Probes every profile, at most [`MAX_PARALLEL`] at once; `live` is probed
-/// against `~/.claude`. Results are in the order of `profiles`.
+/// against `~/.claude`. Results are in the order of `profiles`. Setting
+/// `cancel` stops every running probe and fails the ones not yet started.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn probe_all(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -454,6 +537,7 @@ pub(super) fn probe_all(
     timeout: Duration,
     now: i64,
     keep_raw: bool,
+    cancel: &AtomicBool,
 ) -> Vec<Probe> {
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
@@ -474,7 +558,12 @@ pub(super) fn probe_all(
                         run::build_profile_command
                     };
                     let p = match build(binary, store, name, &args) {
-                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
+                        Ok(_) if cancel.load(Ordering::Relaxed) => Probe {
+                            report: UsageReport::empty(UsageState::Timeout),
+                            error: None,
+                            raw: None,
+                        },
+                        Ok(cmd) => probe_cancellable(cmd, timeout, now, keep_raw, cancel),
                         // Reported as its fixed reason (and a stderr
                         // warning); the detail can name paths.
                         Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
@@ -549,7 +638,18 @@ impl Stream {
 /// On Unix the child leads its own process group, and the whole group is
 /// killed when the probe ends, so processes `claude` started (MCP servers,
 /// for example) do not outlive it.
-pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
+pub(super) fn probe(cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
+    probe_cancellable(cmd, timeout, now, keep_raw, &PROBE_CANCEL)
+}
+
+/// [`probe`], stopped early as a timeout when `cancel` is set.
+fn probe_cancellable(
+    mut cmd: Command,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+    cancel: &AtomicBool,
+) -> Probe {
     cmd.stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -584,7 +684,7 @@ pub(super) fn probe(mut cmd: Command, timeout: Duration, now: i64, keep_raw: boo
                 let _ = child.wait();
                 break;
             }
-            Ok(false) if start.elapsed() >= timeout || PROBE_CANCEL.load(Ordering::Relaxed) => {
+            Ok(false) if start.elapsed() >= timeout || cancel.load(Ordering::Relaxed) => {
                 stop(&mut child);
                 return Probe {
                     report: UsageReport::empty(UsageState::Timeout),
@@ -777,7 +877,7 @@ fn utc_time(t: i64) -> String {
 // ---------------------------------------------------------------------------
 
 /// A percentage as a whole number when whole, otherwise to one decimal.
-pub(super) fn format_pct(p: f64) -> String {
+pub(crate) fn format_pct(p: f64) -> String {
     if p.fract() == 0.0 {
         format!("{p:.0}%")
     } else {
@@ -788,7 +888,7 @@ pub(super) fn format_pct(p: f64) -> String {
 /// Replaces control characters (C0, DEL, C1) and bidirectional overrides so
 /// untrusted text cannot drive the terminal. `\n` survives only when
 /// `keep_newlines`.
-pub(super) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
+pub(crate) fn sanitize_display(s: &str, keep_newlines: bool) -> String {
     s.chars()
         .map(|c| match c {
             '\n' if keep_newlines => '\n',

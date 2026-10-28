@@ -140,6 +140,12 @@ mod issue_1688_routing_gap_report;
 mod issue_1690_isolated_autostart;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
+#[path = "issue_1710_autodrive_parity.rs"]
+mod issue_1710_autodrive_parity;
+#[path = "issue_1710_run_record.rs"]
+mod issue_1710_run_record;
+#[path = "issue_1710_workstreams_smoke.rs"]
+mod issue_1710_workstreams_smoke;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -210,3 +216,5 @@ mod signal_validator_parity;
 mod spec_conformance;
 #[path = "system_prompt_append_fragment.rs"]
 mod system_prompt_append_fragment;
+#[path = "workstream_status_skill_present.rs"]
+mod workstream_status_skill_present;

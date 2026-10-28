@@ -515,6 +515,14 @@ MODEL SELECTION (issues #1421, #1527)
         command: crate::commands::session_tree::SessionTreeCommands,
     },
 
+    /// Status of the workstreams this session started, and login capacity.
+    ///
+    /// Plain text for an agent to paste into its reply (issue #1710).
+    Workstreams {
+        #[command(subcommand)]
+        command: crate::commands::workstreams::WorkstreamsCommands,
+    },
+
     /// Validate C# files at configurable strictness levels (1-4).
     ///
     /// Level 1: syntax (balanced delimiters, patterns). Level 2: + dotnet build.

@@ -67,7 +67,16 @@ pub fn measure(
                 }
             }
         });
-        let probes = usage_cmd::probe_all(store, binary, candidates, None, timeout, now, false);
+        let probes = usage_cmd::probe_all(
+            store,
+            binary,
+            candidates,
+            None,
+            timeout,
+            now,
+            false,
+            &usage_cmd::PROBE_CANCEL,
+        );
         let others = candidates
             .iter()
             .zip(probes.iter())

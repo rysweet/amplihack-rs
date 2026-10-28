@@ -11,6 +11,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+/// Issue #1710: where auto-drive keeps its state, for readers in Rust.
+pub(crate) mod autodrive_paths;
 /// Issue #1606: `recipe run --detach`.
 pub mod detach;
 pub mod list;
@@ -20,6 +22,10 @@ mod parse;
 mod process_tree;
 mod resolve;
 pub mod run;
+/// Issue #1710: the caller identity a detached run records as its parent.
+pub(crate) mod run_identity;
+/// Issue #1710: `<session>.run.json`, the durable record of a detached run.
+pub(crate) mod run_record;
 pub mod show_validate;
 /// Issue #1606: `recipe stop`.
 pub mod stop;
@@ -227,3 +233,9 @@ pub(crate) fn home_dir() -> Result<PathBuf> {
 
 #[cfg(test)]
 mod recipe_tests;
+#[cfg(test)]
+mod tests_autodrive_paths;
+#[cfg(test)]
+mod tests_run_identity;
+#[cfg(test)]
+mod tests_run_record;

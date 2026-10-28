@@ -162,6 +162,7 @@ amplihack copilot
 - [Rotate Claude Logins](howto/claude-profile-rotation.md) - Keep `~/.claude` on the account with the most capacity with `amplihack profile rotate`, and resume sessions stopped by a usage limit
 - [Keep Tests from Leaking Rotator Daemons](howto/keep-tests-from-leaking-rotator-daemons.md) - How tests avoid starting a real `rotate watch --spawned` daemon, and the CI leak check that catches one
 - [`amplihack profile` Reference](reference/profile-command.md) - Seeding allowlists, the `profile usage` command, auto-switch, `profile rotate`, security rules, and errors
+- [`amplihack workstreams` Reference](reference/workstreams-command.md) - Plain-text status table of the detached runs a session started and the capacity of each Claude login, used by the `workstream-status` skill
 - [Install/Update PATH Conflict Reference](reference/install-update-path-conflicts.md) - Rust binary precedence, stale wrapper neutralization, and PATH profile persistence
 - [Framework Bundle Compatibility](reference/framework-bundle-compatibility.md) - Atomic bundle refresh and active `orch_helper.py` rejection
 - [Azure Integration](AZURE_INTEGRATION.md) - Deploy to Azure cloud

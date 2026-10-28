@@ -5,8 +5,8 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 
 ## Summary
 
-- **Unique bundled skill names:** 125
-- **Skill definition files:** 125
+- **Unique bundled skill names:** 126
+- **Skill definition files:** 126
 
 ## Bundled Skills
 
@@ -136,4 +136,5 @@ Those bundled `SKILL.md` files are the install-time source of truth.
 | `workflow-enforcement` | `workflow-enforcement/SKILL.md` |
 | `workiq-wsl` | `workiq-wsl/SKILL.md` |
 | `workstream-coordinator` | `workstream-coordinator/SKILL.md` |
+| `workstream-status` | `workstream-status/SKILL.md` |
 | `xlsx` | `xlsx/SKILL.md` |

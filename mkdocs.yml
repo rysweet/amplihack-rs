@@ -239,6 +239,7 @@ nav:
       - install Command: reference/install-command.md
       - Install/Update PATH Conflicts: reference/install-update-path-conflicts.md
       - recipe Command: reference/recipe-command.md
+      - workstreams Command: reference/workstreams-command.md
       - RustyClawd Command: reference/rustyclawd-command.md
       - uvx-help Command: reference/uvx-help-command.md
       - resolve-bundle-asset Command: reference/resolve-bundle-asset-command.md
