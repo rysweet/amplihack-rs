@@ -1111,6 +1111,22 @@ Do not run `/login` in `~/.claude` because of this line. If the ledger is
 right, the login there is `ryan-ryansweet`'s, and a `/login` would leave that
 profile with no login anywhere. The next cycle reads the file again.
 
+If the file still has no readable account 5 minutes later, the line changes:
+it says what is wrong with the file and gives two fixes, both of which keep
+`ryan-ryansweet`'s login. `rotate status` shows them too:
+
+```
+ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=ryan-ryansweet): it has no oauthAccount block; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace ryan-ryansweet's login
+fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if /home/you/.claude.json then holds an account, the next cycle goes on
+fix 2: or give ryan-ryansweet its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e /home/you/.claude-profiles/ryan-ryansweet/.credentials.json && mv -n /home/you/.claude/.credentials.json /home/you/.claude-profiles/ryan-ryansweet/ && rm /home/you/.claude-profiles/.auto-switch.d/rotate/ledger.json; then run claude with no CLAUDE_CONFIG_DIR and /login
+```
+
+Try `fix 1` first. `fix 2` puts the login back in the profile it belongs to
+before you log in to `~/.claude` again. The other things the file can be:
+missing, not valid JSON, not a JSON object, or an `oauthAccount` with no
+usable account id or e-mail. The reference lists each wording under
+[Stuck `~/.claude.json`](../reference/profile-command.md#stuck-claudejson).
+
 For example, with no profile holding the account:
 
 ```

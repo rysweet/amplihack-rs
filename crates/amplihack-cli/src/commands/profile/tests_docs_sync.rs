@@ -522,6 +522,12 @@ fn docs_describe_hand_change_recovery() {
             "no profile has that account; no swap",
             "the next cycle then recovers",
             "none needed; the next cycle reads ~/.claude.json again",
+            "~/.claude.json has had no account that can be read for 5 minutes or more (live=",
+            "no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace",
+            "fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if",
+            "then holds an account, the next cycle goes on",
+            "its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e",
+            "it has no oauthAccount block",
             "ALERT: the account in ~/.claude.json cannot be read (live=",
             "no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace",
             "close the claude sessions that use",
@@ -555,6 +561,12 @@ fn docs_describe_hand_change_recovery() {
         "the account in ~/.claude.json cannot be read;",
         "~/.claude has no login;",
         "recovery refused: <reason>;",
+        "home_unreadable_since",
+        "it does not exist",
+        "it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)",
+        "it is not valid JSON (empty or cut short)",
+        "it is not a JSON object",
+        "its oauthAccount block has no usable accountUuid or emailAddress",
     ] {
         assert!(reference.contains(line), "reference is missing `{line}`");
     }

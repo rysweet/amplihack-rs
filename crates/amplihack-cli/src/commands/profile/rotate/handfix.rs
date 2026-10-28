@@ -4,8 +4,10 @@
 //! one profile `M` holds that account, `M` is recorded as live; if `M` also
 //! has its own login, that copy is first renamed into a fresh
 //! `<root>/.rejected-logins/rotate-<M>-<time>/`. Anything else gives exact
-//! guidance, written every cycle until resolved. See "Rotate hand-change
-//! recovery" in docs/reference/profile-command.md.
+//! guidance, written every cycle until resolved. A `~/.claude.json` with no
+//! readable account is not a hand change; once it has stayed so for
+//! `HOME_UNREADABLE_GRACE` it gets guidance too (#1702 review). See "Rotate
+//! hand-change recovery" in docs/reference/profile-command.md.
 //!
 //! Only `.claude.json` files and metadata are read; a login is moved only by
 //! `move_login` (rename without replace) and never opened, copied or deleted.
@@ -14,7 +16,7 @@ use super::backup::{BackupRefusal, first_free, fresh_backup, rejected_dir, stamp
 use super::cycle::Ctx;
 use super::guide::{self, Fix, Kind, Paths};
 use super::identify::{self, Holders, LiveId};
-use super::ledger::{MAX_GUIDANCE_LINE, RotateLedger, RotateState};
+use super::ledger::{HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, RotateLedger, RotateState};
 use super::log::{Sink, cut, msg};
 use super::lost;
 pub use super::precheck::Env;
@@ -90,37 +92,79 @@ fn refused<'a>(case: &Case, m: &ProfileName, own_login: bool, why: (String, Fix)
     Plan::Guide(refused_lines(case, m, own_login, why), case.skip())
 }
 
-/// Decides without writing anything; `None` without a hand change. Checks
-/// for one once, and calls `env_for` only after one.
+/// The paths the guidance may name.
+fn paths(store: &ProfileStore, rs: &RotateState, home: &Path, t: i64) -> Paths {
+    Paths {
+        home: home.to_path_buf(),
+        root: store.root().to_path_buf(),
+        ledger: rs.ledger.clone(),
+        manual: store
+            .root()
+            .join(REJECTED_DIR)
+            .join(format!("manual-{}", stamp(t))),
+    }
+}
+
+/// When `~/.claude.json` has been unreadable since, counting this cycle at
+/// `t`: the ledger's time, or `t` when it has none or it lies in the future.
+fn unreadable_since(stored: Option<i64>, t: i64) -> i64 {
+    stored.filter(|s| *s <= t).unwrap_or(t)
+}
+
+/// Decides without writing anything. The plan is `None` with neither a hand
+/// change nor a `~/.claude.json` that has stayed unreadable for
+/// [`HOME_UNREADABLE_GRACE`]; the flag says whether `~/.claude.json` had no
+/// readable account under a ledger-named live profile this cycle. `since`
+/// is the ledger's `home_unreadable_since`. Calls `env_for` only after a
+/// hand change.
 fn plan<'a>(
     store: &ProfileStore,
     rs: &RotateState,
     home: &Path,
+    since: Option<i64>,
     env_for: impl FnOnce() -> Env<'a>,
     t: i64,
-) -> Result<Option<Plan<'a>>, ProfileError> {
-    let LiveId::HandChanged(l) = identify::live(store, rs, home)?.0 else {
-        return Ok(None);
+) -> Result<(Option<Plan<'a>>, bool), ProfileError> {
+    let l = match identify::live(store, rs, home)?.0 {
+        LiveId::HandChanged(l) => l,
+        // #1702 review: one bad read is Claude rewriting the file, so the
+        // cycle only alerts; a file that stays unreadable gets fix lines.
+        // `l_lost` is false: L's login is the one in ~/.claude.
+        LiveId::HomeUnreadable(l) => {
+            if t - unreadable_since(since, t) < HOME_UNREADABLE_GRACE {
+                return Ok((None, true));
+            }
+            let kind = Kind::HomeStuck {
+                problem: identify::home_problem(home),
+            };
+            let lines = guide::lines(&l, false, &kind, &paths(store, rs, home, t));
+            return Ok((Some(Plan::Guide(lines, None)), true));
+        }
+        _ => return Ok((None, false)),
     };
+    plan_hand_change(store, rs, home, l, env_for, t).map(|p| (Some(p), false))
+}
+
+/// [`plan`] after a hand change from `l`.
+fn plan_hand_change<'a>(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+    l: ProfileName,
+    env_for: impl FnOnce() -> Env<'a>,
+    t: i64,
+) -> Result<Plan<'a>, ProfileError> {
     let env = env_for();
     let key = identify::home_key(home);
     let holders = identify::home_holders(store, home)?;
     let case = Case {
         l_lost: lost::lost(store, l.as_str()),
         l,
-        paths: Paths {
-            home: home.to_path_buf(),
-            root: store.root().to_path_buf(),
-            ledger: rs.ledger.clone(),
-            manual: store
-                .root()
-                .join(REJECTED_DIR)
-                .join(format!("manual-{}", stamp(t))),
-        },
+        paths: paths(store, rs, home, t),
     };
     let guide = |kind: Kind<'_>| {
         let lines = guide::lines(&case.l, case.l_lost, &kind, &case.paths);
-        Ok(Some(Plan::Guide(lines, case.skip())))
+        Ok(Plan::Guide(lines, case.skip()))
     };
     let (m, own_login, key) = match (holders, key) {
         (Holders::One { name, own_login }, Some(key)) => (name, own_login, key),
@@ -131,15 +175,15 @@ fn plan<'a>(
         (Holders::Unreadable(v), _) => return guide(Kind::Unreadable(&v)),
     };
     if let Some(why) = record_check(store, rs, home) {
-        return Ok(Some(refused(&case, &m, own_login, why)));
+        return Ok(refused(&case, &m, own_login, why));
     }
     if !own_login {
-        return Ok(Some(Plan::Record { case, m, key }));
+        return Ok(Plan::Record { case, m, key });
     }
     if let Some(why) = move_check(store, home, &m, &env) {
-        return Ok(Some(refused(&case, &m, own_login, why)));
+        return Ok(refused(&case, &m, own_login, why));
     }
-    Ok(Some(Plan::Move { case, m, key, env }))
+    Ok(Plan::Move { case, m, key, env })
 }
 
 /// Case B after the checks: create the backup, check `~/.claude.json`
@@ -206,9 +250,11 @@ pub fn step_with<'a>(
     env_for: impl FnOnce() -> Env<'a>,
     t: i64,
 ) -> Result<Step, ProfileError> {
-    let plan = plan(store, rs, home, env_for, t)?;
     let mut ledger = rs.load_ledger()?.unwrap_or_default();
     let before = ledger.clone();
+    let (plan, unreadable) = plan(store, rs, home, ledger.home_unreadable_since, env_for, t)?;
+    ledger.home_unreadable_since =
+        unreadable.then(|| unreadable_since(ledger.home_unreadable_since, t));
     lost::prune(&mut ledger, store);
     let mut skip = None;
     let (step, lines) = match plan {
@@ -277,7 +323,8 @@ pub fn preview<'a>(
         let text = line.strip_prefix("recovered: ").unwrap_or(&line);
         vec![format!("would recover: {text}")]
     };
-    let Some(plan) = plan(store, rs, home, env_for, t)? else {
+    let since = rs.load_ledger()?.and_then(|l| l.home_unreadable_since);
+    let (Some(plan), _) = plan(store, rs, home, since, env_for, t)? else {
         return Ok(Vec::new());
     };
     let lines = match plan {

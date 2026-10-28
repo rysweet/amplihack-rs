@@ -5,7 +5,8 @@
 use super::ledger::{RotateState, safe_account};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CREDS, Ledger, Liveness, exists, movable_login, read_claude_json,
+    CLAUDE_JSON, CREDS, Ledger, Liveness, MAX_CLAUDE_JSON, exists, movable_login,
+    read_bounded_nofollow, read_claude_json,
 };
 use crate::commands::profile::default_live::{self, Prototype};
 use crate::commands::profile::name::ProfileName;
@@ -351,4 +352,27 @@ pub fn home_key(home: &Path) -> Option<String> {
 /// Whether `~/.claude.json`, read again, still holds the account `key`.
 pub fn home_still_matches(home: &Path, key: &str) -> bool {
     Account::of_dir(home).is_some_and(|a| a.matches_key(key))
+}
+
+/// Why `~/.claude.json` has no usable account, in words for the escalated
+/// `home-unreadable` guidance (#1702 review). Reads the file the same way
+/// [`Account::of_dir`] does; never returns any of its content.
+pub fn home_problem(home: &Path) -> &'static str {
+    let raw = match read_bounded_nofollow(&home.join(CLAUDE_JSON), MAX_CLAUDE_JSON) {
+        Ok(None) => return "it does not exist",
+        Err(_) => {
+            return "it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)";
+        }
+        Ok(Some((raw, _))) => raw,
+    };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
+        return "it is not valid JSON (empty or cut short)";
+    };
+    if !v.is_object() {
+        return "it is not a JSON object";
+    }
+    match v.get("oauthAccount") {
+        None | Some(serde_json::Value::Null) => "it has no oauthAccount block",
+        Some(_) => "its oauthAccount block has no usable accountUuid or emailAddress",
+    }
 }

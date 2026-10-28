@@ -23,6 +23,13 @@ pub const MAX_GUIDANCE_LINE: usize = 1024;
 pub const MAX_LOST_LOGIN: usize = 64;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
+/// How long, in seconds, `~/.claude.json` may have no readable account before
+/// the `home-unreadable` ALERT stops saying "the next cycle reads it again"
+/// and names a fix. Claude rewrites the file often, so one failed read is
+/// normal; five minutes of them is not (#1702 review). With the default
+/// 600-second interval the second such cycle escalates; a cycle never
+/// escalates on its own first read.
+pub const HOME_UNREADABLE_GRACE: i64 = 300;
 
 /// The `last_cycle.outcome` written by `profile switch NAME` (issue #1691):
 /// the person vouches for NAME's login, so the limit-resume hook counts it as
@@ -67,6 +74,13 @@ pub struct RotateLedger {
     /// every cycle while `~/.claude` holds another account than `account`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub guidance: Option<Vec<String>>,
+    /// When a cycle first found `~/.claude.json` with no account that can be
+    /// read, while a login is in `~/.claude` and the ledger names a live
+    /// profile; cleared by the first cycle that reads an account there (or
+    /// finds no login). Once it is [`HOME_UNREADABLE_GRACE`] old the
+    /// `home-unreadable` ALERT gets real `fix` lines (#1702 review).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_unreadable_since: Option<i64>,
     /// Profiles recorded as live that lost their login to a manual `/login`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub lost_login: Vec<String>,
@@ -84,6 +98,7 @@ impl Default for RotateLedger {
             alert: None,
             last_cycle: None,
             guidance: None,
+            home_unreadable_since: None,
             lost_login: Vec::new(),
         }
     }
@@ -328,6 +343,7 @@ pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
             c.measured_at = None;
         }
         out.guidance = None;
+        out.home_unreadable_since = None;
         out.lost_login.clear();
     }
     out

@@ -18,7 +18,7 @@ use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Liveness, now};
 use std::collections::BTreeSet;
 
-fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
+pub(super) fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
     let s = settings::resolve(&super::TuneFlags::default(), None, &|_| None).unwrap();
     let mut ctx = Ctx::new(f.store.clone(), f.home.clone(), s);
     ctx.scan = |_| Liveness::Known(BTreeSet::new());
@@ -29,7 +29,7 @@ fn ctx(f: &Fx, measure: super::cycle::MeasureFn) -> Ctx {
 /// M is spent and every candidate has capacity; decided by the real
 /// `decide`. The snapshot must already name M, read from the ledger that
 /// recovery wrote earlier in this same cycle.
-fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
+pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     assert_eq!(snap.live, LiveId::Known(n(M)), "snapshot after recovery");
     assert_eq!(snap.candidates, vec![n(C)], "L has no login, M is live");
     let reading = Reading::Measured {
@@ -55,7 +55,7 @@ fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileError> {
     })
 }
 
-fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
+pub(super) fn never(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
     panic!("this cycle must end before measuring")
 }
 

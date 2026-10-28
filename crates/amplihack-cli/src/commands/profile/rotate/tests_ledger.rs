@@ -356,6 +356,7 @@ fn with_handfix() -> RotateLedger {
             "fix 1: amplihack profile login work".into(),
         ]),
         lost_login: vec!["work".into()],
+        home_unreadable_since: Some(1_700_000_000),
         ..ledger()
     }
 }
@@ -379,12 +380,14 @@ fn a_ledger_without_the_new_fields_loads_and_writes_none() {
     write_raw(&r, &serde_json::json!({"version": 1, "live": "spare"}));
     let l = r.rs.load_ledger().unwrap().unwrap();
     assert_eq!(l.guidance, None);
+    assert_eq!(l.home_unreadable_since, None);
     assert!(l.lost_login.is_empty());
     r.rs.save_ledger(&l).unwrap();
     let raw: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&r.rs.ledger).unwrap()).unwrap();
     assert!(raw.get("guidance").is_none(), "{raw}");
     assert!(raw.get("lost_login").is_none(), "{raw}");
+    assert!(raw.get("home_unreadable_since").is_none(), "{raw}");
     assert_eq!(RotateLedger::default().guidance, None);
     assert!(RotateLedger::default().lost_login.is_empty());
 }
@@ -393,6 +396,7 @@ fn a_ledger_without_the_new_fields_loads_and_writes_none() {
 fn older_readers_get_a_ledger_without_the_new_fields() {
     let older = for_older_readers(&with_handfix(), true);
     assert_eq!(older.guidance, None);
+    assert_eq!(older.home_unreadable_since, None);
     assert!(older.lost_login.is_empty());
     serde_json::from_slice::<OldLedger>(&serde_json::to_vec(&older).unwrap())
         .expect("the old reader accepts it");

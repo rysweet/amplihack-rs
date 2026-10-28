@@ -68,6 +68,8 @@ mod tests_handfix;
 #[cfg(all(test, unix))]
 mod tests_handfix_cycle;
 #[cfg(all(test, unix))]
+mod tests_home_unreadable;
+#[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_ledger;

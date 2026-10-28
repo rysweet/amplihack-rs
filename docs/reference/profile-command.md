@@ -2454,7 +2454,7 @@ values are never logged or printed.
 |----------------------------|--------|
 | `~/.claude/.credentials.json` is missing or not a regular file | ALERT `no-login`. No swap. A login is never moved into an empty `~/.claude`. |
 | The rotate ledger exists and its `account` matches `~/.claude.json` | Its `live` profile. |
-| The rotate ledger exists, and `~/.claude.json` has no account that can be read | ALERT `home-unreadable`: `ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login`. Nothing is recovered, moved or swapped, and no `fix` line is written. Claude rewrites `~/.claude.json` often, so one failed read is not taken as a hand change: if the ledger is right, the login in `~/.claude` is `<L>`'s, and a `/login` there would leave `<L>` with no login anywhere. |
+| The rotate ledger exists, and `~/.claude.json` has no account that can be read | ALERT `home-unreadable`: `ALERT: the account in ~/.claude.json cannot be read (live=<L>); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace <L>'s login`. Nothing is recovered, moved or swapped, and no `fix` line is written. Claude rewrites `~/.claude.json` often, so one failed read is not taken as a hand change: if the ledger is right, the login in `~/.claude` is `<L>`'s, and a `/login` there would leave `<L>` with no login anywhere. This holds only for the first 5 minutes: once the file has had no readable account for 5 minutes or more, the cycle writes the [stuck `~/.claude.json` guidance](#stuck-claudejson) instead, with the file's problem and `fix` lines. |
 | The rotate ledger exists and its `account` does not match | [Hand-change recovery](#rotate-hand-change-recovery) decides. It runs before this table in every cycle, `--dry-run` included, and either records a matching ledger or stops the cycle, so this row is never reached. |
 | No rotate ledger; the prototype ledger `<root>/.rotator/ledger.json` is trusted (the trust rules in [Logins in `~/.claude`](#logins-in-claude)), names a profile that has nothing at `<root>/<name>/.credentials.json`, and that profile's `.claude.json` either has no account or has the account in `~/.claude.json` | That profile. |
 | No rotate ledger; the prototype ledger exists but fails the row above | The prototype ledger is ignored and logged as `skip: prototype ledger ignored (<reason>)`; the next two rows decide. |
@@ -2609,7 +2609,9 @@ Hand-change recovery runs under the lock in every non-dry-run `rotate`,
 live profile is identified. It acts only when the ledger's `account` does not
 match the account read from `~/.claude.json`; when no account can be read
 there, it does nothing and the cycle ends with the `home-unreadable` ALERT
-from [Rotate live profile](#rotate-live-profile). `profile switch` does not
+from [Rotate live profile](#rotate-live-profile), until that has lasted 5
+minutes; from then on it writes the
+[stuck `~/.claude.json` guidance](#stuck-claudejson). `profile switch` does not
 run it: a switch refuses a hand-changed login (see
 [Rotate switch](#rotate-switch)) and leaves recovery to the next cycle. It reads `.claude.json` files and file metadata only,
 and moves at most one login, by rename. It never opens, copies or deletes a
@@ -2761,6 +2763,53 @@ character, or the whole line would be longer than 1024 bytes, the line is
 `<what>` is `the login in ~/.claude` or `<M>'s copy`. A line that names a
 path is never cut, since a cut path names another file; only lines without
 a path are cut to 1024 bytes.
+
+#### Stuck `~/.claude.json`
+
+A `~/.claude.json` with no readable account while a login is in `~/.claude`
+and the ledger names a live profile `<L>` starts a *spell*. The first cycle
+that sees it records the time in the ledger's `home_unreadable_since`; the
+first cycle that reads an account there again, or finds no login in
+`~/.claude`, clears it. A time later than the cycle's (the clock went back)
+counts as the cycle's time.
+
+While the spell is under 5 minutes old (`HOME_UNREADABLE_GRACE`, 300
+seconds), the cycle writes only the `home-unreadable` ALERT from
+[Rotate live profile](#rotate-live-profile). A cycle never escalates on its
+own first read, so with the default 600-second interval the second cycle in
+a row is the first that can. From 5 minutes on, every cycle, `--dry-run`
+included, writes this ALERT and these `fix` lines to the log and the
+ledger's `guidance`, so `rotate status` shows them, and ends `alerted`
+without a swap. Nothing moves.
+
+```
+ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live=<L>): <problem>; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace <L>'s login
+fix 1: run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if <home>/.claude.json then holds an account, the next cycle goes on
+fix 2: or give <L> its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e <root>/<L>/.credentials.json && mv -n <home>/.claude/.credentials.json <root>/<L>/ && rm <ledger>; then run claude with no CLAUDE_CONFIG_DIR and /login
+```
+
+`<problem>` is the first that holds:
+
+| State of `<home>/.claude.json` | `<problem>` |
+|--------------------------------|-------------|
+| Missing | `it does not exist` |
+| A symlink, not a regular file, over 32 MiB, or not readable | `it cannot be read (a symlink, not a regular file, over 32 MiB or not readable)` |
+| Empty or not JSON | `it is not valid JSON (empty or cut short)` |
+| JSON, but not an object | `it is not a JSON object` |
+| No `oauthAccount` key, or `null` | `it has no oauthAccount block` |
+| An `oauthAccount` with no `accountUuid` or `emailAddress` that passes the [account value rules](#rotate-live-profile) | `its oauthAccount block has no usable accountUuid or emailAddress` |
+
+Both fixes keep `<L>`'s login. `fix 1` lets Claude write the file again
+from the login it already has. `fix 2` renames that login back into
+`<L>`'s profile directory, where it came from, before any `/login`: the
+`test` stops the line when `<L>` already has a login file, so nothing is
+replaced, and `mv` fails when `<root>/<L>` is not a directory. With the
+ledger gone, the next cycle identifies the new login as usual. The
+`fix 1: amplihack profile login <L>` line of the hand-change guidance is not
+written here, because `<L>`'s login is the one in `~/.claude`.
+`amplihack profile switch` is not offered: a switch refuses while the live
+login is `home-unreadable` (see [Rotate switch](#rotate-switch)). Paths are
+printed by the rules above.
 
 Separately, every cycle writes, for each profile in the ledger's
 `lost_login`:
@@ -3077,7 +3126,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 
 | Path | Contents |
 |------|----------|
-| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; and `outcome`). Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. |
+| `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), and `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; and `outcome`). Optionally `guidance`, the current [hand-change](#rotate-hand-change-recovery) ALERT and `fix` lines (at most 16, each at most 1024 bytes, with no control or bidirectional-override characters), and `lost_login`, the profiles that lost their login to a manual `/login` (at most 64 distinct valid names). Both are omitted when empty, and a ledger that breaks these limits is `RotateInconsistent`. Optionally `home_unreadable_since`, the epoch seconds when a [stuck `~/.claude.json`](#stuck-claudejson) spell started. All three are left out for a rotator that started before they existed. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
 | `rotate.log` | The log. |

@@ -44,7 +44,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 /// 2026-10-27T03:17:05Z, the first hand-change ALERT in the #1693 log.
-const T: i64 = 1_793_071_025;
+pub(super) const T: i64 = 1_793_071_025;
 const STAMP: &str = "20261027T031705Z";
 pub(super) const L: &str = "ryan-ryansweet";
 pub(super) const M: &str = "ryan-mistt-org";
@@ -65,7 +65,7 @@ fn real_dev(p: &Path) -> Option<u64> {
 
 fn noop() {}
 
-fn seam() -> Seam<'static> {
+pub(super) fn seam() -> Seam<'static> {
     Seam {
         liveness: Liveness::Known(BTreeSet::new()),
         auto_switch: Some(Ledger::default()),
@@ -172,7 +172,7 @@ fn fx_at(home_rel: &str, m_own: bool, capacity: bool) -> Fx {
 }
 
 impl Fx {
-    fn step(&self, s: &Seam<'_>, t: i64) -> Step {
+    pub(super) fn step(&self, s: &Seam<'_>, t: i64) -> Step {
         let mut out = Sink::new(open_or_warn(&self.rs.log, &self.rs.log1), false, true);
         step_with(&self.store, &self.rs, &self.home, &mut out, || s.clone(), t).unwrap()
     }
@@ -190,7 +190,7 @@ impl Fx {
         self.rs.load_ledger().unwrap().unwrap()
     }
 
-    fn status(&self) -> Vec<String> {
+    pub(super) fn status(&self) -> Vec<String> {
         status_alerts(&self.ledger())
     }
 
@@ -594,19 +594,26 @@ fn an_unreadable_profile_makes_the_match_uncertain_even_with_one_match() {
 /// `~/.claude` is L's, and a `/login` there would leave L with no login
 /// anywhere: the loss #1693 is about. So nothing recovers, nothing moves, no
 /// guidance is written, and the live ALERT says the next cycle reads again.
+/// The only ledger change is the time the unreadable spell started, which
+/// later cycles use to escalate (tests_home_unreadable.rs).
 #[cfg(target_os = "linux")]
 #[test]
 fn an_unreadable_home_account_is_unknown_not_a_hand_change() {
     let f = fx(true, false);
     private(&f.home.join(".claude.json"), r#"{"projects":{}}"#);
-    let before = fs::read(&f.rs.ledger).unwrap();
+    let mut before = f.ledger();
     assert_eq!(
         live(&f.store, &f.rs, &f.home).unwrap().0,
         LiveId::HomeUnreadable(n(L))
     );
     assert_eq!(f.step(&seam(), T), Step::Clear);
     assert!(f.logged().is_empty(), "{:?}", f.logged());
-    assert_eq!(fs::read(&f.rs.ledger).unwrap(), before, "ledger untouched");
+    before.home_unreadable_since = Some(T);
+    assert_eq!(
+        f.ledger(),
+        before,
+        "only the start of the spell is recorded"
+    );
     f.assert_nothing_moved();
     assert!(
         preview(&f.store, &f.rs, &f.home, seam, T)

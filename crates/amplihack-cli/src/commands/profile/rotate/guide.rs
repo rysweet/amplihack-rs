@@ -47,6 +47,12 @@ pub enum Kind<'a> {
     None,
     Unreadable(&'a [ProfileName]),
     HomeUnreadable,
+    /// `~/.claude.json` has had no readable account for at least
+    /// `HOME_UNREADABLE_GRACE` seconds; `problem` says why, from
+    /// `identify::home_problem` (#1702 review).
+    HomeStuck {
+        problem: &'a str,
+    },
     HomeNoLogin,
     Refused {
         m: &'a ProfileName,
@@ -102,6 +108,7 @@ pub fn lines(l: &ProfileName, l_lost: bool, kind: &Kind<'_>, p: &Paths) -> Vec<S
             join(v)
         ),
         Kind::HomeUnreadable => "the account in ~/.claude.json cannot be read".into(),
+        Kind::HomeStuck { .. } => String::new(),
         Kind::HomeNoLogin => "~/.claude has no login".into(),
         Kind::Refused {
             m,
@@ -117,14 +124,17 @@ pub fn lines(l: &ProfileName, l_lost: bool, kind: &Kind<'_>, p: &Paths) -> Vec<S
             format!("profile {m} holds the same account{own}; recovery refused: {reason}")
         }
     };
-    let head = format!(
-        "ALERT: the account in ~/.claude is not the one the ledger names (live={l}); {middle}; no swap"
-    );
+    let head = match kind {
+        Kind::HomeStuck { problem } => home_stuck_head(l, problem),
+        _ => format!(
+            "ALERT: the account in ~/.claude is not the one the ledger names (live={l}); {middle}; no swap"
+        ),
+    };
     let mut fixes = Vec::new();
     if l_lost {
         fixes.push(plain(format!("amplihack profile login {l}")));
     }
-    fixes.extend(kind_fixes(kind, p));
+    fixes.extend(kind_fixes(l, kind, p));
     let mut out = vec![clean(&head)];
     for (i, f) in fixes.into_iter().enumerate() {
         let prefix = format!("fix {}: ", i + 1);
@@ -151,7 +161,14 @@ fn clean(s: &str) -> String {
     cut(&sanitize_display(s, false), MAX_GUIDANCE_LINE)
 }
 
-fn kind_fixes(kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
+/// The ALERT for a `~/.claude.json` that has stayed unreadable.
+pub fn home_stuck_head(l: &ProfileName, problem: &str) -> String {
+    format!(
+        "ALERT: ~/.claude.json has had no account that can be read for 5 minutes or more (live={l}): {problem}; no swap until it is fixed; do not /login in ~/.claude before the login there is set aside, it would replace {l}'s login"
+    )
+}
+
+fn kind_fixes(l: &ProfileName, kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
     match kind {
         Kind::Many(v) => vec![plain(format!(
             "keep this account in one of {}: log the others in to another account or remove them; the next cycle then recovers",
@@ -191,6 +208,32 @@ fn kind_fixes(kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
         Kind::HomeUnreadable => vec![plain(
             "none needed; the next cycle reads ~/.claude.json again".into(),
         )],
+        // The login in ~/.claude is L's as far as anyone knows: neither fix
+        // replaces it. The first lets Claude write the file again; the
+        // second gives L its login back before any `/login` (#1702 review).
+        Kind::HomeStuck { .. } => {
+            let json = p.home.join(".claude.json");
+            let home_creds = p.home.join(".claude").join(CREDS);
+            let l_dir = p.root.join(l.as_str());
+            vec![
+                with_paths(HOME_WHAT, std::slice::from_ref(&json), |q| {
+                    format!(
+                        "run claude with no CLAUDE_CONFIG_DIR and without /login, then quit it; if {} then holds an account, the next cycle goes on",
+                        q[0]
+                    )
+                }),
+                with_paths(
+                    HOME_WHAT,
+                    &[home_creds, l_dir.join(CREDS), l_dir, p.ledger.clone()],
+                    |q| {
+                        format!(
+                            "or give {l} its login back and start over: close every claude session that uses ~/.claude, then run: test ! -e {1} && mv -n {0} {2}/ && rm {3}; then run claude with no CLAUDE_CONFIG_DIR and /login",
+                            q[0], q[1], q[2], q[3]
+                        )
+                    },
+                ),
+            ]
+        }
         Kind::HomeNoLogin => vec![plain(
             "run claude with no CLAUDE_CONFIG_DIR and /login".into(),
         )],
