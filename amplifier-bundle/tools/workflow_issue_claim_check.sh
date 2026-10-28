@@ -26,17 +26,41 @@
 #
 # WHAT COUNTS AS A CLAIM
 #
-# Three signals, each of which is a PR *claiming* the issue rather than merely
+# Four signals, each of which is a PR *claiming* the issue rather than merely
 # mentioning it. "Referencing #N" would be too loose — a PR body that says
 # "similar to #1361" would refuse a run for no reason — so a passing mention is
 # deliberately NOT a claim:
 #
 #   1. closingIssuesReferences contains N. This is GitHub's own resolved link,
 #      populated from `Closes #N` / `Fixes #N` in the body. Authoritative.
-#   2. The title contains "(#N)". This is the exact shape the workflow gives its
+#   2. The body contains a closing keyword followed by #N: close, closes,
+#      closed, fix, fixes, fixed, resolve, resolves or resolved, in any case,
+#      with an optional colon and any whitespace before the `#`. The keyword
+#      must start the body or follow a non-word character, so `prefixes #N`
+#      does not match. `Fixes #N`, `closes #N` and `Resolves: #N` are claims;
+#      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own keyword, as on GitHub, so
+#      `Closes #119, #N` does not claim N. This repeats signal 1 in most cases;
+#      it matters when GitHub leaves closingIssuesReferences empty, as it does
+#      for a PR whose base is not the default branch.
+#   3. The title contains "(#N)". This is the exact shape the workflow gives its
 #      own PRs (`Update <scope> (#N)`, `fix(#N): ...`).
-#   3. The head branch encodes the issue number in the workflow's own branch
-#      conventions: `fix/1084-...`, `feat/issue-1277-...`, `docs/issue-1277-...`.
+#   4. The head branch is `<prefix>/issue-<N>`, optionally followed by `-` or
+#      `/` and more text: `feat/issue-1277-...`, `docs/issue-1277-...`,
+#      `fix/issue-1277/...`. That is the only shape the workflow derives
+#      (`${BRANCH_PREFIX:-feat}/issue-<N>-<slug>`). The prefix is exactly one
+#      segment, and the match is case-sensitive.
+#
+# A bare number in a branch name is NOT a claim (#1707). The earlier rule
+# accepted N anywhere between separators, so another tool's branch
+# `codex/p5-1084-agent-preview-controls-2232`, whose `1084` is that tool's own
+# task number, was reported as claiming issue #1084 and refused the run. Such a
+# PR still claims the issue if it says so through signals 1 to 3. A branch the
+# workflow did not derive, such as `fix/1084-...`, is likewise only a claim when
+# its PR says so.
+#
+# The body is fetched for matching only. It is dropped from every PR before the
+# result is reported, so body text never appears on stdout, in the ERROR block
+# or in logs.
 #
 # WHICH PULL REQUESTS ARE SEARCHED
 #
@@ -158,7 +182,7 @@ while [ "$#" -gt 0 ]; do
     --head) OWN_HEAD="${2:-}"; shift 2 ;;
     --repo) REPO_SLUG="${2:-}"; shift 2 ;;
     --allow-existing-pr) ALLOW_EXISTING="true"; shift ;;
-    -h|--help) sed -n '1,141p' "$0" >&2; exit 0 ;;
+    -h|--help) sed -n '1,/^#   1  an existing pull request already claims this issue$/p' "$0" >&2; exit 0 ;;
     *) shift ;;
   esac
 done
@@ -274,7 +298,7 @@ command -v jq >/dev/null 2>&1 || unknown "jq-not-installed"
 # 2. Ask GitHub which pull requests exist. Two reads, no search index.
 # ---------------------------------------------------------------------------
 
-FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences"
+FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences,body"
 ERRFILE="$(mktemp "${TMPDIR:-/tmp}/issue-claim-check.XXXXXX")" || unknown "cannot-create-tempfile"
 # shellcheck disable=SC2329  # invoked by the EXIT trap below.
 cleanup() { rm -f "$ERRFILE"; }
@@ -331,9 +355,20 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # 3. Which of them claim this issue?
 # ---------------------------------------------------------------------------
 #
-# The branch pattern is anchored on the separators the workflow's own branch
-# names use — `fix/1084-...`, `feat/issue-1277-...`, `docs/issue-1277-...` —
-# so a number embedded in an unrelated word cannot match.
+# The four signals are described in the header. The branch pattern accepts only
+# the workflow's own `<prefix>/issue-<N>` shape (#1707): a bare number such as
+# the `1084` in `codex/p5-1084-...` is another tool's identifier, not a claim on
+# issue #1084. The body pattern requires a closing keyword directly before #N,
+# preceded by the start of the body or a non-word character, and a non-digit
+# after #N, so `Refs #1084`, `prefixes #1084` and `Fixes #10840` do not match.
+# Both patterns build a regex from $n, which is safe only because --issue has
+# already been checked to be digits.
+#
+# The PR lists reach jq on stdin, not as --argjson arguments. With bodies
+# included, 100 open PRs easily exceed the kernel's 128 KiB limit on a single
+# argument; jq would then fail to start, the result would read as
+# claim-filter-unreadable, and the guard would fail open without a word.
+# `body` is deleted from each selected PR before the split below.
 #
 # The claims are then split in two (#1448). `ours` are the claims this working
 # directory is standing on: same head branch, same repository. They are this
@@ -342,17 +377,18 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # the shape of every incident in #1361, and they still refuse the run.
 
 CLAIMS="$(
-  jq -nc \
-    --argjson open "$OPEN_JSON" \
-    --argjson merged "$MERGED_JSON" \
+  printf '%s\n%s\n' "$OPEN_JSON" "$MERGED_JSON" | jq -sc \
     --arg issue "$ISSUE" \
     --arg own_head "$OWN_HEAD" \
     --arg cwd_head "$CWD_HEAD" \
     --arg cutoff "$CUTOFF" '
-      def claims_issue($n):
+      .[0] as $open
+      | .[1] as $merged
+      | def claims_issue($n):
         ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
         or (((.title // "") | contains("(#" + $n + ")")))
-        or (((.headRefName // "") | test("(^|[/-])(issue-)?" + $n + "([/-]|$)")));
+        or ((.body // "") | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#" + $n + "([^0-9]|$)"; "i"))
+        or ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)"));
       def is_ours:
         ($cwd_head != "")
         and ((.headRefName // "") == $cwd_head)
@@ -362,6 +398,7 @@ CLAIMS="$(
         | .[]
         | select(claims_issue($issue))
         | select(($own_head == "") or ((.headRefName // "") != $own_head))
+        | del(.body)
       ]
       | {ours: map(select(is_ours)), others: map(select(is_ours | not))}
     ' 2>>"$ERRFILE"
