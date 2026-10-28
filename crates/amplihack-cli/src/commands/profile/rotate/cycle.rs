@@ -7,9 +7,13 @@ use super::identify::{LiveId, Skip};
 use super::ledger::{RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
-    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
+    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, platform_block_reason,
+    reading_of, snapshot,
 };
-use super::overflow_record::{block_spend_limited, note_move, record, refresh_capacity, stay_note};
+use super::overflow_record::{
+    alert_line, block_spend_limited, log_ignored, note_live, note_move, record, refresh_capacity,
+    stay_note,
+};
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
@@ -157,9 +161,11 @@ fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &st
 }
 
 /// Logs the skipped profiles and the ignored prototype ledger when they
-/// differ from what this process last logged.
+/// differ from what this process last logged, and each API-key profile
+/// ignored in `overflow=` once per process.
 fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
     let t = now();
+    log_ignored(out, snap, t);
     if snap.proto != ctx.last_proto {
         if let Some(reason) = snap.proto {
             out.emit(t, &format!("skip: prototype ledger ignored ({reason})"));
@@ -199,18 +205,6 @@ fn refusal_kind(e: &ProfileError) -> String {
         kind.push(c);
     }
     kind
-}
-
-/// Records a known live profile and its account, so `profile usage` and the
-/// next cycle read it from the ledger.
-fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
-    if let (LiveId::Known(n), Some(key)) = (&snap.live, &snap.account) {
-        if l.live.as_deref() != Some(n.as_str()) {
-            l.live = Some(n.to_string());
-            l.since = Some(t);
-        }
-        l.account = Some(key.clone());
-    }
 }
 
 pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError> {
@@ -270,7 +264,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);
-    if let Some((kind, line)) = live_alert(&first.live) {
+    if let Some((kind, line)) = live_alert(&first) {
         alert(ctx, &mut out, kind, live_name(&first.live), &line)?;
         return Ok(CycleOutcome::Alerted);
     }
@@ -337,14 +331,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
                 // A refusal repeats every cycle until a person acts: one
                 // ALERT per reason, and the cycle is recorded.
                 Err(e @ ProfileError::RotateRefused(_)) => {
-                    let live = live_name(&first.live);
-                    alert(
-                        ctx,
-                        &mut out,
-                        &refusal_kind(&e),
-                        live,
-                        &format!("ALERT: {e}"),
-                    )?;
+                    // Issue #1700: a login without OAuth is refused once per
+                    // profile, keyed by the profile it would have made live.
+                    let (kind, live) = if swap::is_no_oauth(&e) {
+                        ("no_oauth".to_string(), Some(&to))
+                    } else {
+                        (refusal_kind(&e), live_name(&first.live))
+                    };
+                    alert(ctx, &mut out, &kind, live, &format!("ALERT: {e}"))?;
                     return match mode {
                         Mode::Watch => Ok(CycleOutcome::Alerted),
                         _ => Err(e),
@@ -355,7 +349,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             swapped = Some([to.clone(), from.clone()]);
             let target = reading_of(&others, &to);
             out.emit(now(), &msg::swap(&from, &to, &live, &target, reason));
-            note_move(&mut out, tag, &from, &to, next_plan_reset);
+            note_move(&mut out, tag, &from, &to, next_plan_reset, first.platform());
             ctx.failed_live = 0;
             l = ctx.rs.load_ledger()?.unwrap_or_default();
             CycleOutcome::Swapped
@@ -375,8 +369,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Decision::Alert => {
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
-            let line = msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live);
-            alert_once(&mut out, &mut l, &alert_key("no-capacity", name), t, &line);
+            let (kind, line) = alert_line(&first, tag, &live, || platform_block_reason(ctx));
+            alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
             CycleOutcome::Alerted
         }
     };
@@ -387,6 +381,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         &others,
         t,
         tag,
+        first.platform(),
     );
     save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the

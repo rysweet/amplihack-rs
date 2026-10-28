@@ -213,6 +213,7 @@ fn cycle(outcome: &str, at_offset: i64, alert: bool) -> CycleStatus {
         alert,
         live: Some("spare".into()),
         overflow: None,
+        platform_live: false,
     }
 }
 
@@ -469,6 +470,7 @@ fn fresh_capacity_refuses_no_capacity_states() {
         alert: false,
         live: None,
         overflow: None,
+        platform_live: false,
     };
     assert!(!fresh_capacity(Some(&no_at), START));
 }
@@ -1232,6 +1234,7 @@ fn the_wait_ends_when_its_session_exits() {
 fn overflow_cycle(outcome: &str, tag: &str, at_offset: i64, alert: bool) -> CycleStatus {
     CycleStatus {
         overflow: Some(tag.into()),
+        platform_live: false,
         live: Some("cred".into()),
         ..cycle(outcome, at_offset, alert)
     }

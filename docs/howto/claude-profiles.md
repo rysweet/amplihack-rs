@@ -26,6 +26,8 @@ another account automatically when one runs out of quota, see
 [Switch accounts automatically](#switch-accounts-automatically). To keep the
 default `~/.claude` login on the account with the most capacity, see
 [Rotate Claude logins automatically](claude-profile-rotation.md).
+To run Claude on a Claude Platform API key billed per token, see
+[Use an API-key profile](#use-an-api-key-profile).
 To be told when every account is out of capacity, see
 [When no account has capacity](#when-no-account-has-capacity).
 For what a recipe step does when every account is out of quota, see
@@ -601,8 +603,9 @@ env -i HOME="$HOME" PATH="$PATH" amplihack profile list
 
 ```
 root: /home/you/.claude-profiles (source: config)
-* personal
-  work
+  NAME      KIND
+* personal  subscription
+  work      subscription
 ```
 
 ```cron
@@ -655,7 +658,8 @@ amplihack profile remove personal --yes
 
 `list` starts with the root in use, for example
 `root: /home/you/.claude-profiles (source: config)`, then one profile per
-line with the default marked `*`.
+line with the default marked `*` and its kind, `subscription` or `api-key`
+(see [Use an API-key profile](#use-an-api-key-profile)).
 
 `remove` deletes only the verified profile directory, requires `--yes`, and
 clears the default pointer if it named that profile. This deletes that
@@ -711,6 +715,7 @@ What the `STATE` column means:
 | `ok` | Ready to use. |
 | `session_exhausted` / `weekly_exhausted` | Wait for the reset shown, or use another profile. |
 | `spend_limit` | Your organisation's spend limit was reached. |
+| `api_key` | An [API-key profile](#use-an-api-key-profile). Not probed; work on it is billed per token. |
 | `not_logged_in` | `amplihack profile login <name>` |
 | `timeout` | Claude did not answer in time (30 seconds by default). Try again. |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
@@ -755,7 +760,10 @@ A profile marked as credit-backed overflow
 limit. When its login is the one in `~/.claude` and its probe shows the
 session or all-models weekly limit reached, the table ends with
 `running on overflow: <name>`. In `--json`, every row has `overflow` and
-`overflow_blocked_until`. See
+`overflow_blocked_until`. An [API-key profile](#use-an-api-key-profile) is not
+probed and shows `api-key (billed per token)`; while it is live in
+`~/.claude` the table ends with
+`live: work is running on the API key (billed per token)`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
 The command exits with status 0 whenever the probes ran, whatever their
@@ -827,6 +835,109 @@ cannot see a profile that became live after the command started, or a swap
 away and back again when the ledger has no `since` time. See
 [Logins in `~/.claude`](../reference/profile-command.md#logins-in-claude)
 for the exact rules and warnings.
+
+## Use an API-key profile
+
+An *API-key profile* runs Claude Code on the Claude Platform API, billed
+per token, instead of a claude.ai subscription. Every other profile is a
+*subscription profile*.
+
+### Create one
+
+Create the profile and log it in, choosing the Claude Console (API) sign-in
+when Claude asks:
+
+```bash
+amplihack profile add console
+amplihack profile login console
+```
+
+Claude stores the API credential outside the profile directory, under your
+home directory, and leaves the profile with a `.credentials.json` that holds no
+OAuth login. That is how amplihack recognises the profile:
+
+```bash
+amplihack profile list
+```
+
+```
+root: /home/you/.claude-profiles (source: config)
+  NAME      KIND
+  console   api-key
+* personal  subscription
+  work      subscription
+```
+
+`amplihack profile kind list` shows why each kind was chosen. If one is
+wrong, set it with `amplihack profile kind set <name> api-key` or
+`subscription`; `auto` removes the setting.
+
+Because the credential is in your home directory, not in the profile, every
+API-key profile under one home uses the same key.
+
+Running `profile login` on it again prints
+`note: this profile uses a Claude Platform credential stored outside the profile directory, which amplihack does not manage.`
+
+### Run it
+
+```bash
+amplihack profile run console -- --model haiku -p "reply with OK"
+```
+
+```
+OK
+```
+
+That one prompt is billed per token. `profile usage` does not probe the
+profile, so checking it costs nothing:
+
+```bash
+amplihack profile usage console
+```
+
+```
+PROFILE  MARKS  STATE    SESSION                     SESSION RESETS  WEEK  WEEK RESETS
+console  -      api_key  api-key (billed per token)  -               -     -
+```
+
+`profile show` reports whether the profile itself names a key setting
+(`ANTHROPIC_API_KEY` under `env`, `apiKeyHelper`, or `primaryApiKey`). It
+never prints the key:
+
+```
+kind: api-key (detected: login file has no oauth login)
+API key configured: no
+```
+
+`no` is normal for a profile that uses the credential Claude stores outside
+the profile directory.
+
+### Why some launches are refused
+
+Any config directory without an OAuth login falls back to the API key. A
+subscription profile whose login is somewhere else, for example lent to
+another session or never logged in, would therefore bill per token if you
+launched it. `profile run`, `launch --profile` and `profile switch` refuse
+such a profile:
+
+```
+error: profile work is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login work', or run 'amplihack profile kind set work api-key' if per-token billing is intended.
+hint: amplihack profile login work, or: amplihack profile kind set work api-key
+```
+
+Log the profile in again, or wait for its login to come back. While the
+[rotator](claude-profile-rotation.md) holds the login in `~/.claude`,
+`amplihack launch --profile work` and `amplihack claude --profile work` are
+redirected there and run, and `amplihack profile switch work` is allowed.
+`amplihack profile run work` is still refused, because `profile run` is
+[never redirected](#launching-the-rotators-live-profile) and would start the
+profile's empty directory.
+
+API-key profiles are left out of the
+[duplicate-login check](#duplicate-logins): they share one credential by
+design. To have the rotator use the API key when every subscription and
+credit login is exhausted, see
+[Use an API key as the last resort](claude-profile-rotation.md#use-an-api-key-as-the-last-resort).
 
 ## Accounts, organizations and duplicate logins
 

@@ -302,6 +302,46 @@ pub mod msg {
         format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
     }
 
+    /// After an `overflow-in` swap onto API-key profile `to` (issue #1700).
+    pub fn onto_platform(to: &ProfileName) -> String {
+        format!("moved ~/.claude onto API key profile {to} (billed per token)")
+    }
+
+    /// After a swap off API-key profile `from` onto `to`.
+    pub fn off_platform(from: &ProfileName, to: &ProfileName) -> String {
+        format!("moved ~/.claude off API key profile {from} to {to}")
+    }
+
+    /// A new API-key block.
+    pub fn alert_platform_block(reason: &str, until: i64) -> String {
+        format!(
+            "ALERT: the API key is blocked ({reason}) until {}; API-key profiles are not used",
+            super::timestamp(until)
+        )
+    }
+
+    /// The live API-key profile is blocked and nothing else can be used.
+    pub fn alert_platform_stuck(reason: &str, live: &ProfileName) -> String {
+        format!(
+            "ALERT: the API key is blocked ({reason}) and no plan or credit profile can be used; staying on {live}"
+        )
+    }
+
+    pub const AMBIGUOUS_PLATFORM: &str =
+        "ALERT: more than one API-key profile could be live in ~/.claude; no swap";
+
+    /// An API-key profile listed in `overflow=`.
+    pub fn platform_ignored_in_overflow(name: &ProfileName) -> String {
+        format!(
+            "skip: API-key profile {name} ignored in overflow=; API-key profiles are always the last tier"
+        )
+    }
+
+    /// A session saw a key error but the block could not be stored.
+    pub fn platform_block_not_recorded(kind: &str) -> String {
+        format!("platform block not recorded: {kind}")
+    }
+
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")

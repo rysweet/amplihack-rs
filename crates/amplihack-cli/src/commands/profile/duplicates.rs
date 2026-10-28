@@ -4,6 +4,10 @@
 //! `profile usage` to warn about one. Read-only:
 //! only `.claude.json` files (each profile's and `$HOME`'s) and the saved
 //! `oauthAccount` blocks are read; account values are never printed.
+//!
+//! Issue #1700: API-key profiles are left out on both sides, and so is
+//! `~/.claude` while it holds a login without OAuth: they share one Claude
+//! Platform credential by design.
 
 use super::auto_switch::kit::{Ledger, State, account};
 use super::default_live;
@@ -54,11 +58,13 @@ pub(super) fn try_accounts(
     store: &ProfileStore,
     home: Option<&Path>,
 ) -> anyhow::Result<Vec<(Holder, Account)>> {
+    let kinds = super::kind::Ctx::load(store, home);
     let names: Vec<ProfileName> = store
         .list()
         .map_err(|e| anyhow::anyhow!("could not list profiles: {e}"))?
         .iter()
         .filter_map(|n| ProfileName::parse(n).ok())
+        .filter(|n| kinds.resolve(store, n).kind != super::kind::Kind::Platform)
         .collect();
     let live = default_live::live_name(store, home);
     let state = State::new(store.root())
@@ -90,7 +96,14 @@ pub(super) fn accounts_with(
 }
 
 fn home_entry(home: Option<&Path>, live: Option<ProfileName>) -> Option<(Holder, Account)> {
-    Account::of_dir(home?).map(|a| (Holder::Home { live }, a))
+    let home = home?;
+    // On the API key, `$HOME/.claude.json` may still name the account of the
+    // login that left: it is not the login in `~/.claude`.
+    let creds = home.join(".claude").join(super::auto_switch::kit::CREDS);
+    if super::rotate::identify::login_kind(&creds) == super::rotate::identify::LoginKind::NoOAuth {
+        return None;
+    }
+    Account::of_dir(home).map(|a| (Holder::Home { live }, a))
 }
 
 /// Every pair of holders with the same account: profile pairs in list

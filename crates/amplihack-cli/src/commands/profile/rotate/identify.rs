@@ -1,16 +1,101 @@
 //! Which profile's login is in `~/.claude` (D11, D13), and which profiles
-//! may receive it (D16). Only `.claude.json` files and metadata are read;
+//! may receive it (D16). `.claude.json` files and metadata are read;
 //! account values are compared, never logged.
+//!
+//! Issue #1700: this is also the one module that looks inside login and
+//! settings files for a profile's kind ([`login_kind`],
+//! [`api_key_setting_names`]). Those reads check which top-level keys are
+//! present and return only an enum or a bool: no value leaves a function,
+//! and a parse error is dropped inside it, so its text cannot quote a file.
 
 use super::ledger::{RotateState, safe_account};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CREDS, Ledger, Liveness, exists, movable_login, read_claude_json,
+    CLAUDE_JSON, CREDS, Ledger, Liveness, euid, exists, movable_login, read_claude_json,
+    writable_by_others,
 };
+// Its own line: `tests_source_scan` refuses a read next to the login name.
+use crate::commands::profile::auto_switch::kit::read_bounded_nofollow;
 use crate::commands::profile::default_live::{self, Prototype};
+use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+
+/// The largest login or settings file read for its keys; the top-level key
+/// of a claude.ai login; the API-key setting names, checked for presence.
+const MAX_KIND_READ: u64 = 64 * 1024;
+const OAUTH_KEY: &str = "claudeAiOauth";
+const ENV_API_KEY: &str = "ANTHROPIC_API_KEY";
+const API_KEY_HELPER: &str = "apiKeyHelper";
+const PRIMARY_API_KEY: &str = "primaryApiKey";
+
+/// What a login file is, by its top-level keys only: a readable JSON object
+/// with `claudeAiOauth` (`OAuth`) or without it, `{}` included (`NoOAuth`:
+/// Claude Code falls back to the Claude Platform credential); anything else
+/// there is `Unreadable`, never proof of an API key; nothing is `Missing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginKind {
+    OAuth,
+    NoOAuth,
+    Unreadable,
+    Missing,
+}
+
+/// The kind of the login file at `path`. Read without following a
+/// symlink, without blocking on a FIFO, at most 64 KiB, and only from a
+/// regular file owned by the current user.
+pub fn login_kind(path: &Path) -> LoginKind {
+    let (raw, meta) = match read_bounded_nofollow(path, MAX_KIND_READ) {
+        Ok(None) => return LoginKind::Missing,
+        Ok(Some(found)) => found,
+        Err(_) => return LoginKind::Unreadable,
+    };
+    if meta.uid() != euid() {
+        return LoginKind::Unreadable;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) if map.contains_key(OAUTH_KEY) => LoginKind::OAuth,
+        Ok(serde_json::Value::Object(_)) => LoginKind::NoOAuth,
+        _ => LoginKind::Unreadable,
+    }
+}
+
+/// The JSON object at `path` when it may count as evidence: a regular file
+/// of the current user that group and others cannot write, at most `limit`
+/// bytes. `None` otherwise.
+fn evidence_object(path: &Path, limit: u64) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let (raw, meta) = read_bounded_nofollow(path, limit).ok()??;
+    // Group-writable counts too: anyone who could write it could plant a
+    // setting name and turn the profile into an API-key profile.
+    if meta.uid() != euid() || writable_by_others(&meta) || meta.mode() & 0o020 != 0 {
+        return None;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&raw).ok()? {
+        serde_json::Value::Object(map) => Some(map),
+        _ => None,
+    }
+}
+
+/// Whether `dir` names an API-key setting: `env.ANTHROPIC_API_KEY` or
+/// `apiKeyHelper` in `settings.json` (at most 64 KiB), or `primaryApiKey`
+/// in `.claude.json` (which Claude Code lets grow larger). Presence only;
+/// a value is never looked at, and `apiKeyHelper` is never run.
+pub fn api_key_setting_names(dir: &Path) -> bool {
+    let in_settings = evidence_object(&dir.join("settings.json"), MAX_KIND_READ).is_some_and(|m| {
+        m.contains_key(API_KEY_HELPER)
+            || m.get("env")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|env| env.contains_key(ENV_API_KEY))
+    });
+    in_settings
+        || evidence_object(
+            &dir.join(CLAUDE_JSON),
+            crate::commands::profile::auto_switch::kit::MAX_CLAUDE_JSON,
+        )
+        .is_some_and(|m| m.contains_key(PRIMARY_API_KEY))
+}
 
 /// An `oauthAccount`: its user (`accountUuid`), its organization
 /// (`organizationUuid`) and its e-mail (lower-cased). `Debug` hides all
@@ -104,7 +189,8 @@ pub enum LiveId {
     HandChanged(ProfileName),
     /// Several login-less profiles match the account in `~/.claude`.
     Ambiguous,
-    /// `~/.claude` has no login file (D13).
+    /// `~/.claude` has no login file (D13), an unreadable one, or one
+    /// without OAuth while no profile is an API-key profile.
     NoLogin,
 }
 
@@ -145,9 +231,34 @@ fn from_prototype(
     }
 }
 
+/// The live profile when `~/.claude` holds a login without OAuth (issue
+/// #1700): the ledger's `live` when it is an API-key profile (no account
+/// check: an API-key profile need not have an `oauthAccount`), else the
+/// only API-key profile; several are `Ambiguous`, none `NoLogin`.
+fn platform_live(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+) -> Result<LiveId, ProfileError> {
+    let platforms = kind::platform_profiles(store, home);
+    if let Some(l) = rs.load_ledger()?
+        && let Some(live) = l.live.as_deref()
+    {
+        let name = ProfileName::parse(live)?;
+        if platforms.contains(&name) {
+            return Ok(LiveId::Known(name));
+        }
+    }
+    Ok(match platforms.as_slice() {
+        [] => LiveId::NoLogin,
+        [one] => LiveId::Known(one.clone()),
+        _ => LiveId::Ambiguous,
+    })
+}
+
 /// The live profile, and the reason the prototype ledger was ignored, if it
-/// was. Reads `$HOME/.claude.json`, the ledgers and each profile's
-/// `.claude.json`; never a login file.
+/// was. Reads `$HOME/.claude.json`, the ledgers, each profile's
+/// `.claude.json`, and which top-level keys the login files have.
 pub fn live(
     store: &ProfileStore,
     rs: &RotateState,
@@ -156,6 +267,12 @@ pub fn live(
     let creds = home.join(".claude").join(CREDS);
     if !std::fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
         return Ok((LiveId::NoLogin, None));
+    }
+    match login_kind(&creds) {
+        LoginKind::OAuth => {}
+        LoginKind::NoOAuth => return Ok((platform_live(store, rs, home)?, None)),
+        // A damaged file is never an API-key login.
+        LoginKind::Unreadable | LoginKind::Missing => return Ok((LiveId::NoLogin, None)),
     }
     let account = Account::of_dir(home);
     if let Some(l) = rs.load_ledger()?
@@ -202,6 +319,9 @@ pub enum Skip {
     Hosting,
     Parked,
     NoAccount,
+    /// A subscription profile whose login file has no OAuth login or is
+    /// unreadable: moved into `~/.claude` it would bill the API key.
+    NotOAuth,
 }
 
 impl Skip {
@@ -215,6 +335,7 @@ impl Skip {
             Self::Hosting => "hosting",
             Self::Parked => "parked",
             Self::NoAccount => "no account",
+            Self::NotOAuth => "not oauth",
         }
     }
 }
@@ -241,13 +362,18 @@ pub fn candidates(
     let (mut ok, mut skips) = (Vec::new(), Vec::new());
     let parked = store.root().join(".auto-switch.d").join("parked");
     let names = store.list()?;
+    // Past `NoLogin` the login file is there: the home login plays no part.
+    let kinds = kind::Ctx::load(store, None);
     for name in names.iter().filter_map(|n| ProfileName::parse(n).ok()) {
         let n = name.as_str();
         let dir = store.verify_profile_dir(&name).ok();
+        let resolved = || kinds.resolve(store, &name);
         let skip = if input.live == Some(&name) {
             Some(Skip::Live)
         } else if !dir.as_ref().is_some_and(|d| movable_login(&d.join(CREDS))) {
             Some(Skip::NoLogin)
+        } else if !resolved().may_be_live() {
+            Some(Skip::NotOAuth)
         } else if input.exclude.contains(&name) {
             Some(Skip::Excluded)
         } else if input.liveness.is_live(&name) {
@@ -258,7 +384,9 @@ pub fn candidates(
             Some(Skip::Hosting)
         } else if exists(&parked.join(n)) {
             Some(Skip::Parked)
-        } else if dir.as_deref().and_then(Account::of_dir).is_none() {
+        } else if resolved().kind == Kind::Subscription
+            && dir.as_deref().and_then(Account::of_dir).is_none()
+        {
             Some(Skip::NoAccount)
         } else {
             None

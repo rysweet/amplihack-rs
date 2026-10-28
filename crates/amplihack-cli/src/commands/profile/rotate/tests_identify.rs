@@ -1,6 +1,6 @@
 //! `rotate::identify`: which profile is live in `~/.claude`, and which
 //! profiles may receive it (D11, D13, D16, issue #1592). Only `.claude.json`
-//! files and metadata are read; the login fixtures are mode 0000.
+//! files and metadata are read, and login files only for their top-level keys.
 //!
 //! Contract:
 //! - `Account::from_claude_json(&[u8]) -> Option<Account>`; `Account::same`
@@ -38,11 +38,9 @@ fn private(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
+/// An OAuth login (issue #1700: its top-level keys are read for the kind).
 fn login(path: &Path) {
-    private(path, "SENTINEL");
-    if crate::commands::profile::auto_switch::euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
 }
 
 fn acct(uuid: &str, email: &str) -> String {

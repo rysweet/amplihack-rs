@@ -3,10 +3,13 @@
 //! no-capacity file, which reads `ok` while the live login runs on credits.
 
 use super::decide::Reading;
+use super::identify::LiveId;
 use super::ledger::{
-    LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, active_blocks, prune_blocks,
+    LIVE_KIND_PLATFORM, LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState,
+    active_blocks, prune_blocks,
 };
 use super::log::{Sink, msg};
+use super::observe::Snap;
 use super::overflow::Tag;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation};
@@ -53,17 +56,21 @@ fn was_on_overflow(l: &RotateLedger, live: Option<&ProfileName>) -> bool {
     matches!(tag, Some("in" | "on")) && live.is_some_and(|n| l.live.as_deref() == Some(n.as_str()))
 }
 
-/// The `credits:` line after a swap from `from` to `to`, if it moved onto
-/// or off credits.
+/// The `overflow:` line after a swap from `from` to `to`, if it moved onto
+/// or off overflow; the `moved ~/.claude` line instead when the move was
+/// onto or off the API-key profile `platform` (issue #1700).
 pub fn note_move(
     out: &mut Sink,
     tag: Option<Tag>,
     from: &ProfileName,
     to: &ProfileName,
     next_plan_reset: Option<i64>,
+    platform: Option<&ProfileName>,
 ) {
     let t = crate::commands::profile::auto_switch::kit::now();
     match tag {
+        Some(Tag::In) if Some(to) == platform => out.emit(t, &msg::onto_platform(to)),
+        Some(Tag::Out) if Some(from) == platform => out.emit(t, &msg::off_platform(from, to)),
         Some(Tag::In) => out.emit(t, &msg::onto_overflow(to, next_plan_reset)),
         Some(Tag::Out) => out.emit(t, &msg::off_overflow(from, to)),
         Some(Tag::On) | None => {}
@@ -85,7 +92,8 @@ pub fn stay_note(
 
 /// Rewrites the no-capacity file from this cycle's readings: the live
 /// profile's and every other candidate's, as measured. On credits it reads
-/// `ok`, since work can go on.
+/// `ok`, since work can go on. The API-key profile's synthetic reading
+/// (issue #1700) is left out: it is never plan capacity.
 pub fn refresh_capacity(
     root: &Path,
     live: Option<&ProfileName>,
@@ -93,6 +101,7 @@ pub fn refresh_capacity(
     others: &[(ProfileName, Reading)],
     t: i64,
     tag: Option<Tag>,
+    platform: Option<&ProfileName>,
 ) {
     let of = |r: &Reading| match *r {
         Reading::Measured { session, week } => Rotated::Measured { session, week },
@@ -103,6 +112,7 @@ pub fn refresh_capacity(
         .map(|n| (n.clone(), of(reading)))
         .into_iter()
         .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .filter(|(n, _)| Some(n) != platform)
         .collect();
     capacity_from_rotation(root, &readings, t, Tag::on_overflow(tag));
 }
@@ -126,4 +136,65 @@ pub fn record(
     });
     prune_blocks(l, t);
     rs.save_ledger(l)
+}
+
+/// Records a known live profile and its account, so `profile usage` and the
+/// next cycle read it from the ledger. An API-key profile (issue #1700) is
+/// recorded with `live_kind` and no account: `$HOME/.claude.json` may still
+/// hold the previous login's account, which is not this login's.
+pub fn note_live(l: &mut RotateLedger, snap: &Snap, t: i64) {
+    let LiveId::Known(n) = &snap.live else {
+        return;
+    };
+    let account = if snap.platform_live() {
+        None
+    } else if let Some(key) = &snap.account {
+        Some(key.clone())
+    } else {
+        return;
+    };
+    if l.live.as_deref() != Some(n.as_str()) {
+        l.live = Some(n.to_string());
+        l.since = Some(t);
+    }
+    l.account = account;
+    l.live_kind = snap.platform_live().then(|| LIVE_KIND_PLATFORM.to_string());
+}
+
+/// Logs each API-key profile listed in `overflow=` once per process
+/// (issue #1700): it is ignored there and always the last tier.
+pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
+    static IGNORED: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let Ok(mut seen) = IGNORED.lock() else {
+        return;
+    };
+    for n in &snap.ignored {
+        if !seen.iter().any(|s| s == n.as_str()) {
+            seen.push(n.to_string());
+            out.emit(t, &msg::platform_ignored_in_overflow(n));
+        }
+    }
+}
+
+/// The ALERT key kind and line for an alerted cycle: the blocked API key
+/// with nowhere to go (issue #1700; it stays, with no swap), else no
+/// capacity. `reason` gives the block's reason, read only when needed.
+pub fn alert_line(
+    snap: &Snap,
+    tag: Option<Tag>,
+    live: &Reading,
+    reason: impl FnOnce() -> String,
+) -> (&'static str, String) {
+    match &snap.live {
+        LiveId::Known(n) if tag == Some(Tag::On) && snap.platform_live() => {
+            ("platform-blocked", msg::alert_platform_stuck(&reason(), n))
+        }
+        id => {
+            let name = match id {
+                LiveId::Known(n) | LiveId::HandChanged(n) => n.as_str(),
+                _ => "-",
+            };
+            ("no-capacity", msg::alert_no_capacity_for(name, live))
+        }
+    }
 }

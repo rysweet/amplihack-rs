@@ -14,5 +14,5 @@ pub use super::mv::{
     MoveError, REFRESH_LOCK, abort_point, exchange_logins, move_login, release_refresh_lock_at,
     take_refresh_lock_at,
 };
-pub use super::state::{CLAUDE_JSON, CREDS, Ledger, State};
+pub use super::state::{CLAUDE_JSON, CREDS, Ledger, MAX_CLAUDE_JSON, State};
 pub use super::swap::{account, guard_held, read_claude_json, recover as recover_auto_switch};

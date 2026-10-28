@@ -70,6 +70,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         .and_then(|l| l.last_cycle.as_ref())
         .and_then(|c| c.overflow.clone());
     let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref());
+    let api_key = api_key_line(&store, home, ledger.as_ref().ok().and_then(Option::as_ref));
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
@@ -97,7 +98,10 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
-    println!("overflow: {overflow}\non overflow: {on_overflow}");
+    println!("overflow: {overflow}\napi key: {api_key}\non overflow: {on_overflow}");
+    if let Some(line) = super::platform_live_line(store.root()) {
+        println!("{line}");
+    }
     // `.default` bypasses the rotator: say so when it names an overflow profile.
     if let Ok(Some(d)) = pointer::read(store.root())
         && names.contains(&d)
@@ -236,6 +240,27 @@ fn overflow_line(
 /// overflow; plan capacity remains)` when it is an overflow profile without
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
+/// The `api key:` line (issue #1700): the API-key profile the tier uses,
+/// with the active API-key block, or `-`.
+fn api_key_line(
+    store: &ProfileStore,
+    home: Option<&Path>,
+    ledger: Option<&RotateLedger>,
+) -> String {
+    let platforms = crate::commands::profile::kind::Ctx::load(store, home).platform_profiles(store);
+    let Some(first) = platforms.first() else {
+        return "-".into();
+    };
+    match ledger.and_then(|l| super::platform_block::active(l, now())) {
+        Some(b) => format!(
+            "{first} (blocked until {}, {})",
+            timestamp(b.until),
+            sanitize_display(&b.reason, false)
+        ),
+        None => first.to_string(),
+    }
+}
+
 fn on_overflow_line(
     store: &ProfileStore,
     rs: &RotateState,
@@ -244,6 +269,15 @@ fn on_overflow_line(
     last_tag: Option<&str>,
 ) -> String {
     let live = home.and_then(|h| identify::live(store, rs, h).ok());
+    // An API-key login is always billed per token, whatever the last cycle.
+    if let Some((LiveId::Known(n), _)) = &live
+        && rs.load_ledger().ok().flatten().is_some_and(|l| {
+            l.live_kind.as_deref() == Some(super::ledger::LIVE_KIND_PLATFORM)
+                && l.live.as_deref() == Some(n.as_str())
+        })
+    {
+        return format!("yes ({n})");
+    }
     match live {
         Some((LiveId::Known(n), _)) if overflow.contains(&n) => {
             if matches!(last_tag, Some("in" | "on")) {

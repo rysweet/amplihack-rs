@@ -1,5 +1,5 @@
 //! The rotate ledger, `<root>/.auto-switch.d/rotate/ledger.json`, read
-//! loosely: only `version`, `live`, `alert` and
+//! loosely: only `version`, `live`, `live_kind`, `alert` and
 //! `last_cycle.{at,measured_at,outcome,overflow}` matter, unknown fields
 //! are ignored, and a wrongly typed field reads as absent. The rotator's own
 //! reader is strict; the hook must keep working across ledger additions
@@ -32,6 +32,10 @@ pub struct CycleStatus {
     /// onto an overflow profile), `out` (moved off one) or `on` (stayed on
     /// one). `None` for no overflow activity or any other value.
     pub overflow: Option<String>,
+    /// The ledger's `live_kind` is `"platform"` (issue #1700): the live
+    /// login is an API-key profile, billed per token. `false` for any other
+    /// value, a wrongly typed one, or without a valid `live`.
+    pub platform_live: bool,
 }
 
 impl CycleStatus {
@@ -109,6 +113,8 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         .and_then(Value::as_str)
         .filter(|n| super::valid_live_name(n))
         .map(str::to_string);
+    let platform_live =
+        live.is_some() && map.get("live_kind").and_then(Value::as_str) == Some("platform");
     Some(CycleStatus {
         at: time("at"),
         measured_at: time("measured_at"),
@@ -116,6 +122,7 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         alert,
         live,
         overflow,
+        platform_live,
     })
 }
 

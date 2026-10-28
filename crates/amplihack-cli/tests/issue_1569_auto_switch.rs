@@ -758,7 +758,12 @@ fn state_directory_never_appears_in_profile_list() {
     f.seed_usage(&[("X", 10.0)]);
     let list = f.stdout(&["profile", "list"]);
     assert!(!list.contains(".auto-switch"), "{list}");
-    let n = list.lines().filter(|l| !l.starts_with("root: ")).count();
+    // The `root:` line and the `NAME`/`KIND` header (issue #1700) are not
+    // profiles.
+    let n = list
+        .lines()
+        .filter(|l| !l.starts_with("root: ") && l.split_whitespace().next() != Some("NAME"))
+        .count();
     assert_eq!(n, PROFILES.len(), "{list}");
 }
 

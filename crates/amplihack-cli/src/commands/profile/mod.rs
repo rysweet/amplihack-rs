@@ -13,6 +13,8 @@ mod default_live;
 #[cfg(unix)]
 mod duplicates;
 #[cfg(unix)]
+mod kind;
+#[cfg(unix)]
 mod limit_wait;
 #[cfg(unix)]
 mod login_check;
@@ -36,8 +38,12 @@ mod tests_commands;
 mod tests_default_live;
 #[cfg(test)]
 mod tests_docs_sync;
+#[cfg(test)]
+mod tests_docs_sync_platform;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_kind;
 #[cfg(all(test, unix))]
 mod tests_login_check;
 #[cfg(test)]
@@ -74,6 +80,7 @@ pub(crate) use auto_switch::{
 };
 use clap::Subcommand;
 use name::ProfileName;
+#[cfg(test)]
 use root_cmd::{render_list, render_show};
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
@@ -160,6 +167,14 @@ pub enum ProfileError {
     #[error("rotate: {0}")]
     RotateDaemon(String),
     #[error(
+        "profile {0} is a subscription profile with no login of its own; launching it would bill the Claude Platform API key per token. Run 'amplihack profile login {0}', or run 'amplihack profile kind set {0} api-key' if per-token billing is intended."
+    )]
+    SubscriptionNoLogin(String),
+    #[error(
+        "profile {0} is an API-key profile; API-key profiles are always the last overflow tier and cannot be marked"
+    )]
+    PlatformNotMarkable(String),
+    #[error(
         "inherited AMPLIHACK_CLAUDE_PROFILE {value}: {}",
         .source.inherited_reason()
     )]
@@ -228,6 +243,10 @@ impl ProfileError {
             }
             Self::RotateUnsupported => "rotate needs Linux or another Unix",
             Self::RotateDaemon(_) => "run `amplihack profile rotate status`",
+            Self::SubscriptionNoLogin(_) => {
+                "amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
+            }
+            Self::PlatformNotMarkable(_) => "run `amplihack profile kind list`",
             Self::Inherited { source, .. } if matches!(**source, Self::UnsupportedMode(_)) => {
                 "unset AMPLIHACK_CLAUDE_PROFILE and CLAUDE_CONFIG_DIR to run with --docker/--auto"
             }
@@ -345,6 +364,12 @@ pub enum ProfileCommands {
         #[command(subcommand)]
         command: overflow::OverflowCommand,
     },
+    /// Show or override each profile's kind: subscription or api-key (billed per token)
+    #[cfg(unix)]
+    Kind {
+        #[command(subcommand)]
+        command: kind::KindCommand,
+    },
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
     Statusline {
@@ -382,18 +407,43 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         }
         ProfileCommands::List => {
             println!("{}", root_cmd::root_line(store.root(), source));
-            let out = render_list(&store)?;
+            let mut warnings = Vec::new();
+            let out = root_cmd::render_list_with(
+                &store,
+                usage_cmd::home_dir().as_deref(),
+                &mut warnings,
+            )?;
             if out.is_empty() {
                 println!("no profiles; create one with `amplihack profile add <name>`");
             } else {
                 print!("{out}");
             }
+            for w in warnings {
+                eprintln!("{w}");
+            }
         }
-        ProfileCommands::Show => print!("{}", render_show(&store)?),
+        ProfileCommands::Show => {
+            let mut warnings = Vec::new();
+            print!(
+                "{}",
+                root_cmd::render_show_with(
+                    &store,
+                    usage_cmd::home_dir().as_deref(),
+                    &mut warnings
+                )?
+            );
+            for w in warnings {
+                eprintln!("{w}");
+            }
+        }
         ProfileCommands::Switch { none: true, .. } => println!("{}", clear_default(&store)?),
         ProfileCommands::Switch { name, .. } => {
             let name = ProfileName::parse(name.as_deref().unwrap_or_default())?;
             store.resolve(&name)?;
+            // Issue #1700: the rotator's live login counts as held here, since
+            // `launch` and `claude` redirect that profile to `~/.claude`.
+            #[cfg(unix)]
+            kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), true)?;
             pointer::write(store.root(), &name)?;
             println!("default profile: {name}");
             shared_dirs::ensure_for(&store, &name);
@@ -410,6 +460,14 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
             let name = ProfileName::parse(&name)?;
             store.resolve(&name)?;
             auto_switch::guard(&store, &name, auto_switch::Action::Login)?;
+            #[cfg(unix)]
+            if kind::Ctx::load(&store, usage_cmd::home_dir().as_deref())
+                .resolve(&store, &name)
+                .kind
+                == kind::Kind::Platform
+            {
+                println!("{}", kind::LOGIN_NOTE);
+            }
             // Login spawns claude itself, not through the pre-spawn check.
             shared_dirs::ensure_for(&store, &name);
             #[cfg(unix)]
@@ -422,6 +480,10 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Run { name, args } => {
             let name = ProfileName::parse(&name)?;
             store.resolve(&name)?;
+            // `run` is never redirected to `~/.claude`, so the rotator's
+            // live login does not count as held.
+            #[cfg(unix)]
+            kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), false)?;
             auto_switch::guard(&store, &name, auto_switch::Action::Launch { join: false })?;
             run::run(&store, &name, args)?
         }
@@ -434,11 +496,38 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
+        #[cfg(unix)]
+        ProfileCommands::Kind { command } => {
+            kind::run(&store, command, usage_cmd::home_dir().as_deref())?
+        }
         ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
             unreachable!("handled above")
         }
     }
     Ok(())
+}
+
+/// The launch guard (issue #1700): refuses a subscription profile with no
+/// login of its own, before anything is set or spawned, unless its login is
+/// held for it: leased or hosted by auto-switch, or, with `rotator_live`,
+/// the rotator's identified live login.
+#[cfg(unix)]
+fn kind_guard(
+    store: &ProfileStore,
+    name: &ProfileName,
+    home: Option<&std::path::Path>,
+    rotator_live: bool,
+) -> Result<kind::Resolved, ProfileError> {
+    let held = || {
+        auto_switch::login_held_elsewhere(store, name)
+            || (rotator_live && rotate::is_live(store, home, name))
+    };
+    // The cheap check first: most launches have their own OAuth login.
+    match kind::launch_guard(store, name, home, false) {
+        Ok(r) => Ok(r),
+        Err(e) if held() => kind::launch_guard(store, name, home, true).map_err(|_| e),
+        Err(e) => Err(e),
+    }
 }
 
 /// Printed by `profile switch --none`.
@@ -550,6 +639,9 @@ pub(crate) fn verify_launch_profile_dir(dir: &std::path::Path) -> Result<auto_sw
             dir.display().to_string(),
         )));
     }
+    // Issue #1700: checked again right before the spawn.
+    #[cfg(unix)]
+    kind_guard(&store, &name, usage_cmd::home_dir().as_deref(), false).map_err(with_hint)?;
     let join = LAUNCH_MAY_JOIN.load(std::sync::atomic::Ordering::Relaxed)
         && auto_switch::inside_session(dir);
     let hold = auto_switch::guard_launch(&store, &name, join).map_err(with_hint)?;
@@ -662,6 +754,10 @@ fn launch_profile_dir_with(
         auto_switch::guard(&store, &c, auto_switch::Action::Launch { join: false })?;
         return Ok(Some(dir));
     }
+    // Issue #1700: a subscription profile with no login of its own would
+    // run on the Claude Platform API key.
+    #[cfg(unix)]
+    kind_guard(&store, &name, home, false)?;
     let join = is_inherited && auto_switch::inside_session(&dir);
     LAUNCH_MAY_JOIN.store(is_inherited, std::sync::atomic::Ordering::Relaxed);
     auto_switch::guard(&store, &name, auto_switch::Action::Launch { join })?;

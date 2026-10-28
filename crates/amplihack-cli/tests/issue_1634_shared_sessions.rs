@@ -243,7 +243,17 @@ impl Fixture {
         self.ok_cmd(&mut self.cmd(args))
     }
 
+    /// Gives `p` an OAuth login unless it has a login file: the launch
+    /// guard (issue #1700) refuses a profile without one.
+    fn login(&self, p: &str) {
+        let creds = self.dir(p).join(".credentials.json");
+        if fs::symlink_metadata(&creds).is_err() {
+            rotate::private_file(&creds, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
+        }
+    }
+
     fn launch(&self, p: &str) -> Command {
+        self.login(p);
         self.cmd(&[
             "claude",
             "--profile",
@@ -427,6 +437,7 @@ fn profile_run_and_login_both_establish_the_links() {
     f.legacy("R", "projects/-work/r.jsonl", "r");
     f.legacy("L", "projects/-work/l.jsonl", "l");
 
+    f.login("R");
     f.ok(&["profile", "run", "R", "--", "-p", "x"]);
     f.ok(&["profile", "login", "L"]);
 
@@ -447,6 +458,7 @@ fn profile_run_and_login_both_establish_the_links() {
 fn switch_links_on_stderr_and_keeps_its_stdout() {
     let f = Fixture::new(&["A"]);
     f.legacy("A", "projects/-work/s.jsonl", "s");
+    f.login("A");
     let out = f.ok(&["profile", "switch", "A"]);
     assert_eq!(text(&out.stdout), "default profile: A\n");
     assert!(text(&out.stderr).contains("amplihack: profile A: projects: moved 1 files"));
@@ -500,7 +512,10 @@ fn remove_keeps_the_shared_sessions() {
 #[test]
 fn logins_are_never_moved_into_the_shared_store_by_a_migration() {
     let f = Fixture::new(&["A"]);
-    rotate::private_file(&f.dir("A").join(".credentials.json"), "SENTINEL-A");
+    rotate::private_file(
+        &f.dir("A").join(".credentials.json"),
+        r#"{"claudeAiOauth":{"accessToken":"SENTINEL-A"}}"#,
+    );
     rotate::private_file(&f.dir("A").join(".claude.json"), "{}");
     f.legacy("A", "projects/-work/s1.jsonl", "s1");
     f.legacy("A", "projects/-work/.credentials.json", "SENTINEL-NESTED");

@@ -5,9 +5,11 @@
 
 use super::fsx;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::kind::Kind;
 use crate::commands::profile::name::ProfileName;
 pub use crate::commands::profile::overflow::OverflowEntry;
 use amplihack_utils::rotator_status::{self as shared, DEFAULT_THRESHOLD, Toggle, ToggleFile};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -38,6 +40,8 @@ pub struct Config {
     /// They are used only when every plan profile is exhausted; see
     /// [`Config::overflow_order`] for the order they are tried in.
     pub overflow: Vec<OverflowEntry>,
+    /// Kind overrides (issue #1700), the `kind=` line.
+    pub kind: BTreeMap<ProfileName, Kind>,
 }
 
 impl Config {
@@ -62,6 +66,7 @@ impl Default for Config {
             threshold: DEFAULT_THRESHOLD,
             exclude: Vec::new(),
             overflow: Vec::new(),
+            kind: BTreeMap::new(),
         }
     }
 }
@@ -131,18 +136,27 @@ impl Config {
                     .map_err(|_| "invalid profile name in overflow")
             })
             .collect::<Result<_, _>>()?;
+        let mut kind = BTreeMap::new();
+        for (n, k) in &t.kind {
+            let name = ProfileName::parse(n).map_err(|_| "invalid profile name in kind")?;
+            // The shared parser keeps only the two spellings it stores.
+            let k = Kind::parse(k).ok_or("unknown kind")?;
+            kind.insert(name, k);
+        }
         Ok(Self {
             enabled: t.enabled,
             threshold: t.threshold,
             exclude,
             overflow,
+            kind,
         })
     }
 }
 
-/// The file's text. `overflow=` comes last and only when the list is not
-/// empty, so a file without overflow profiles is unchanged by this key. An
-/// entry in the default tier is written as its bare name.
+/// The file's text. `overflow=` and then `kind=` come last, each only when
+/// it is not empty, so a file without them is unchanged by these keys. An
+/// overflow entry in the default tier is written as its bare name; a kind
+/// is written as `platform` or `subscription`.
 pub fn render(c: &Config) -> String {
     let exclude: Vec<&str> = c.exclude.iter().map(ProfileName::as_str).collect();
     let mut out = format!(
@@ -164,6 +178,14 @@ pub fn render(c: &Config) -> String {
             })
             .collect();
         out.push_str(&format!("overflow={}\n", entries.join(",")));
+    }
+    if !c.kind.is_empty() {
+        let entries: Vec<String> = c
+            .kind
+            .iter()
+            .map(|(n, k)| format!("{n}:{}", k.stored()))
+            .collect();
+        out.push_str(&format!("kind={}\n", entries.join(",")));
     }
     out
 }

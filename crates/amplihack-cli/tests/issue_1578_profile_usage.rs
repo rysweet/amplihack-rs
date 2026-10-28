@@ -120,7 +120,6 @@ impl Fixture {
             f.ok(&["profile", "add", p]);
         }
         f.root = f.root.canonicalize().unwrap();
-        f.ok(&["profile", "switch", "c"]);
         let (h, w) = (f.base + 2 * 3600, f.base + 3 * 86_400);
         f.canned(
             "a",
@@ -160,6 +159,8 @@ impl Fixture {
                 &format!("{{\"claudeAiOauth\":{{\"accessToken\":\"SENTINEL-TOKEN-{p}\"}}}}"),
             );
         }
+        // After the logins: `switch` refuses a profile with none (issue #1700).
+        f.ok(&["profile", "switch", "c"]);
         if lease {
             let state = f.state();
             fs::create_dir_all(&state).unwrap();

@@ -26,6 +26,9 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 - The user has usage credits on an account and wants the rotator to use it
   when every plan login is exhausted, or mentions overflow or "running on
   credits".
+- The user has an API-key (Claude Platform) profile, asks about per-token
+  billing, or sees `api-key (billed per token)` or a launch refused with
+  `subscription profile with no login of its own`.
 - The user mentions rotating, swapping or balancing Claude logins, or the
   `claude-rotator` tmux session.
 - A session stopped with "You've hit your ... limit" and did not resume, or
@@ -34,7 +37,9 @@ the "Rotate" section of `docs/reference/profile-command.md`.
 ## Rules
 
 - Never open, read, print, copy, hash or log any `.credentials.json` or token.
-  To inspect logins, use `ls -li` only.
+  To inspect logins, use `ls -li` only. To see a profile's kind, use
+  `amplihack profile kind list`, never `cat`. Never read
+  `~/.config/anthropic`, `apiKeyHelper` or any API key value.
 - Never copy a login file. Move it with `mv -n` if a person must move one.
 - Always run a dry run before the first real rotation, and after any threshold
   change.
@@ -160,8 +165,8 @@ An unknown plan reset (no reading reports one) does **not** move work onto
 overflow unless the user opts in with `--overflow-unknown-reset 1`
 (`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1`); with it, an unknown reset
 spends money at once. Overflow marks have a tier (`overflow add <name>
---tier N`, 1-9, default 1): lower tiers are tried first, for example usage
-credits before an API key.
+--tier N`, 1-9, default 1): lower tiers are tried first. API-key profiles
+are never marked; they are the last tier (see below).
 
 Before marking a profile, tell the user:
 
@@ -229,6 +234,47 @@ limit at https://claude.ai/settings/usage, then remove the mark. If sessions
 on the overflow profile fail with the spend-limit message but `overflow list`
 shows no block: after `remove`, the rotator swaps it out only after three
 failed probes in a row; after `rotate stop`, nothing moves it.
+
+## API key as the last resort
+
+An API-key profile runs on the Claude Platform API key that Claude Code
+stores outside the profile directory, **billed per token**. It is detected, not marked: its
+`.credentials.json` holds `{}` or no `claudeAiOauth` key. Check with
+`amplihack profile kind list`; fix a wrong guess with
+`amplihack profile kind set <name> api-key|subscription|auto` (writes the
+`kind=` line in `<root>/.auto-switch`; upgrade every binary and restart the
+rotator first, because older binaries read that line as corrupt).
+
+Order: plan profiles, then credit overflow tiers 1-9, then the API-key tier
+(10). The rotator moves onto the API key only under the same
+`--overflow-wait` gate, and only when no credit profile can be used. While
+on it, every cycle, with no hold: plan capacity -> move to plan; else a
+usable credit profile -> move to credits; else stay. Auto-switch follows the
+same rule. All API-key profiles share one key, so only the first by name is
+used. They are never probed with `/usage`.
+
+What to tell the user:
+
+- `rotate status` shows `~/.claude is on API key profile <name>: work is
+  billed per token (since <ts>)` while it is live; `profile usage` shows
+  `api-key (billed per token)` and `live: work is running on the API key
+  (billed per token)`.
+- Log lines: `moved ~/.claude onto API key profile <name> (billed per
+  token)` and `moved ~/.claude off API key profile <name> to <target>`.
+- `profile run`, `launch --profile` and `profile switch` refuse a
+  subscription profile with no login of its own, because it would fall back
+  to the API key. Fix: `amplihack profile login <name>`.
+
+| ALERT | What to tell the user |
+|-------|-----------------------|
+| `the API key is blocked (<reason>) until <time>; API-key profiles are not used` | A supervised agent step failed with a key error: `key_exhausted` (out of funds), `key_revoked` (invalid key) or `key_rate_limited`. The first two last until cleared (stored as 62 days). After fixing the key: `amplihack profile overflow clear --platform`. |
+| `swap refused: <name> has no oauth login and is not an API-key profile` | The profile's login file has no OAuth login. Log it in again, or `kind set <name> api-key` if it is meant to bill per token. |
+| `more than one API-key profile could be live in ~/.claude; no swap` | `~/.claude` holds a login without OAuth and the ledger does not say which API-key profile it belongs to. They all share one key, so the user needs only one: suggest `amplihack profile remove <extra> --yes` for the others, after asking. |
+
+To stop using it: `amplihack profile auto-switch exclude <names, including
+the API-key profile>`; to stop billing at once, disable the key in the
+Claude Console. Full guide: "Use an API key as the last resort" in
+`docs/howto/claude-profile-rotation.md`.
 
 ## Resuming sessions stopped by a limit
 

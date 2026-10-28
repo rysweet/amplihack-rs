@@ -72,6 +72,13 @@ impl Fixture {
         };
         for name in ["X", "Y", "Z"] {
             f.ok(&["profile", "add", name]);
+            // An OAuth login: the launch guard (issue #1700) refuses a
+            // profile without one.
+            fs::write(
+                f.profile_dir(name).join(".credentials.json"),
+                r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#,
+            )
+            .unwrap();
         }
         f
     }

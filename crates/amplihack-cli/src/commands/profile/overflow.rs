@@ -31,9 +31,20 @@ pub struct OverflowEntry {
     pub tier: u8,
 }
 
+/// The API-key tier (issue #1700): after every `overflow=` tier (1 to 9).
+pub const PLATFORM_TIER: u8 = 10;
+
 impl OverflowEntry {
     pub fn new(name: ProfileName, tier: u8) -> Self {
         Self { name, tier }
+    }
+
+    /// The API-key profile's entry, at [`PLATFORM_TIER`].
+    pub fn platform(name: ProfileName) -> Self {
+        Self {
+            name,
+            tier: PLATFORM_TIER,
+        }
     }
 }
 
@@ -113,8 +124,14 @@ pub enum OverflowCommand {
     Remove { name: String },
     /// List the overflow profiles in the order they are tried, with tier and any spend block
     List,
-    /// Lift the rotator's spend-limit block on a profile
-    Clear { name: String },
+    /// Lift the rotator's spend-limit block on a profile, or the API-key block with --platform
+    #[command(group(clap::ArgGroup::new("target").required(true).args(["name", "platform"])))]
+    Clear {
+        name: Option<String>,
+        /// Lift the API-key block instead
+        #[arg(long)]
+        platform: bool,
+    },
 }
 
 /// The overflow entries under `root`, in the order they are tried (tier,
@@ -140,6 +157,39 @@ pub fn overflow_names(root: &Path) -> Vec<ProfileName> {
     overflow_entries(root).into_iter().map(|e| e.name).collect()
 }
 
+/// Every tier the rotator and auto-switch try, in order: the `overflow=`
+/// entries without API-key profiles, then the first API-key profile by name
+/// at [`PLATFORM_TIER`] (issue #1700). Empty when `.auto-switch` is
+/// corrupt, so a damaged file never spends, on credits or on the API key.
+/// `home` is the user's home directory.
+#[cfg(all(test, unix))]
+pub fn tiers(store: &ProfileStore, home: &Path) -> Vec<OverflowEntry> {
+    tiers_detail(store, Some(home)).0
+}
+
+/// [`tiers`], and the API-key profiles that `overflow=` lists, which are
+/// left out of the credit tiers.
+#[cfg(unix)]
+pub fn tiers_detail(
+    store: &ProfileStore,
+    home: Option<&Path>,
+) -> (Vec<OverflowEntry>, Vec<ProfileName>) {
+    use super::auto_switch::config::{self, FileState};
+    let marked = match config::read(store.root()) {
+        FileState::Valid(c) => c.overflow_order(),
+        FileState::Missing => Vec::new(),
+        FileState::Corrupt => return (Vec::new(), Vec::new()),
+    };
+    let platforms = super::kind::Ctx::load(store, home).platform_profiles(store);
+    let (ignored, mut out): (Vec<OverflowEntry>, Vec<OverflowEntry>) = marked
+        .into_iter()
+        .partition(|e| platforms.contains(&e.name));
+    if let Some(first) = platforms.first() {
+        out.push(OverflowEntry::platform(first.clone()));
+    }
+    (out, ignored.into_iter().map(|e| e.name).collect())
+}
+
 #[cfg(unix)]
 pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileError> {
     use super::auto_switch::config::{self, ReadMode};
@@ -149,6 +199,14 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
             let name = ProfileName::parse(&name)?;
             // An existing profile directory, not a symlink.
             store.resolve(&name)?;
+            let home = super::usage_cmd::home_dir();
+            if super::kind::Ctx::load(store, home.as_deref())
+                .resolve(store, &name)
+                .kind
+                == super::kind::Kind::Platform
+            {
+                return Err(ProfileError::PlatformNotMarkable(name.to_string()));
+            }
             // `before`: `None` when newly added, else the tier it had. A
             // repeated `add` without `--tier` keeps the tier.
             let mut before = None;
@@ -213,10 +271,13 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
         }
         OverflowCommand::List => {
             let c = config::read_editable(root)?;
-            if c.overflow.is_empty() {
+            let home = super::usage_cmd::home_dir();
+            let platforms = super::kind::Ctx::load(store, home.as_deref()).platform_profiles(store);
+            if c.overflow.is_empty() && platforms.is_empty() {
                 println!("overflow: none");
                 return Ok(());
             }
+            let ledger = super::rotate::ledger::RotateState::new(root).load_ledger();
             let blocks = match super::rotate::overflow_blocks(root, now()) {
                 Ok(b) => b,
                 Err(e) => {
@@ -224,6 +285,10 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                     Default::default()
                 }
             };
+            let key_block = ledger
+                .ok()
+                .flatten()
+                .and_then(|l| super::rotate::platform_block::active(&l, now()).cloned());
             for e in c.overflow_order() {
                 let n = &e.name;
                 let mut line = format!("{n}  tier {}", e.tier);
@@ -238,9 +303,30 @@ pub fn run(store: &ProfileStore, cmd: OverflowCommand) -> Result<(), ProfileErro
                 }
                 println!("{line}");
             }
+            for (i, p) in platforms.iter().enumerate() {
+                let mut line = format!("{p}  api-key tier");
+                match (&key_block, platforms.first()) {
+                    (_, Some(first)) if i > 0 => {
+                        line.push_str(&format!("  not used ({first} comes first)"));
+                    }
+                    (Some(b), _) => line.push_str(&format!(
+                        "  blocked until {} ({})",
+                        super::rotate::timestamp(b.until),
+                        b.reason
+                    )),
+                    _ => {}
+                }
+                println!("{line}");
+            }
         }
-        OverflowCommand::Clear { name } => {
-            let name = ProfileName::parse(&name)?;
+        OverflowCommand::Clear { platform: true, .. } => {
+            match super::rotate::platform_block::clear_reason(root)? {
+                Some(reason) => println!("overflow: cleared the API-key block ({reason})"),
+                None => println!("overflow: the API key is not blocked"),
+            }
+        }
+        OverflowCommand::Clear { name, .. } => {
+            let name = ProfileName::parse(name.as_deref().unwrap_or_default())?;
             if super::rotate::clear_overflow_block(root, &name)? {
                 println!("overflow: cleared the spend block on {name}");
             } else {

@@ -43,12 +43,13 @@ fn private(path: &Path, body: &str) {
     fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
 }
 
-/// A login file nobody can read; returns its inode.
+/// An OAuth login (issue #1700: its top-level keys are read for the kind);
+/// its value is a sentinel that must never be printed. Returns its inode.
 fn login(path: &Path) -> u64 {
-    private(path, "SENTINEL-TOKEN");
-    if super::auto_switch::euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private(
+        path,
+        r#"{"claudeAiOauth":{"accessToken":"SENTINEL-TOKEN"}}"#,
+    );
     ino(path).unwrap()
 }
 

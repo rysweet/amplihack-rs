@@ -4,28 +4,31 @@
 //! `lstat`, exchanged, and renamed without replacing: each login is in
 //! exactly one place at every step and `~/.claude` always holds one.
 
-use super::identify::Account;
-use super::ledger::{Phase, RotateJournal, RotateState};
+use super::identify::{Account, LoginKind, login_kind};
+use super::ledger::{LIVE_KIND_PLATFORM, Phase, RotateJournal, RotateState};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, euid,
-    exchange_logins, exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
-    take_refresh_lock_at, writable_by_others, write_atomic_keep_mode, write_private_atomic,
+    CLAUDE_JSON, CREDS, MoveError, REFRESH_LOCK, abort_point, check_root_private, exchange_logins,
+    exists, movable_login, move_login, read_claude_json, release_refresh_lock_at,
+    take_refresh_lock_at, write_atomic_keep_mode, write_private_atomic,
 };
+use crate::commands::profile::kind::{self, Kind};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub use super::recover::{RecoverOutcome, recover};
+pub use super::swap_check::is_no_oauth;
+use super::swap_check::{account_block, check_home, may_go_live, no_oauth};
 
 const ADOPT_NAME: &str = "default-original";
 
 // The reasons the how-to quotes word for word; `tests_docs_sync` holds the
 // docs to them.
-const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
-const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
+pub(super) const HOME_NOT_OWNED: &str = "HOME is not a directory owned by you";
+pub(super) const DOT_CLAUDE_NOT_PRIVATE: &str = "~/.claude is not a private directory owned by you";
 const LOGIN_NOT_MOVABLE: &str = "a login file is not a private regular file with one link";
 const DIFFERENT_DEVICES: &str = "~/.claude and the profile root are on different devices";
 const NO_EXCHANGE: &str = "atomic exchange is not supported here";
@@ -91,32 +94,6 @@ pub fn adoption_name(store: &ProfileStore) -> Result<ProfileName, ProfileError> 
     Err(refused("no free default-original name"))
 }
 
-/// `$HOME` and `~/.claude` may be changed by this user only.
-fn check_home(home: &Path) -> Result<PathBuf, ProfileError> {
-    if !home.is_absolute() {
-        return Err(refused("HOME is not an absolute path"));
-    }
-    let m = fs::symlink_metadata(home).map_err(|_| refused("HOME cannot be read"))?;
-    if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid() {
-        return Err(refused(HOME_NOT_OWNED));
-    }
-    let dot = home.join(".claude");
-    let m = fs::symlink_metadata(&dot).map_err(|_| refused("~/.claude cannot be read"))?;
-    if m.file_type().is_symlink() || !m.is_dir() || m.uid() != euid() || writable_by_others(&m) {
-        return Err(refused(DOT_CLAUDE_NOT_PRIVATE));
-    }
-    Ok(dot)
-}
-
-/// The `oauthAccount` block of `dir/.claude.json`, if it is an object.
-fn account_block(dir: &Path) -> Option<serde_json::Value> {
-    read_claude_json(dir)?
-        .0
-        .get("oauthAccount")
-        .filter(|b| b.is_object())
-        .cloned()
-}
-
 /// Runs the swap; returns the profile the outgoing login went to. Every
 /// check runs before anything is written; a failure there is
 /// `RotateRefused` and nothing changes.
@@ -140,7 +117,15 @@ pub fn swap(
     if !movable_login(&l) || !movable_login(&t) {
         return Err(refused(LOGIN_NOT_MOVABLE));
     }
-    if account_block(&to_dir).is_none() {
+    // Issue #1700: `~/.claude` is never left without an OAuth login unless
+    // the incoming profile is an API-key profile; checked before J0, so a
+    // refusal writes no journal, and again once J0 records `T`'s inode.
+    let platform = kind::resolve(store, to, home).kind == Kind::Platform;
+    if !may_go_live(&t, platform) {
+        return Err(no_oauth(to));
+    }
+    // An API-key profile need not have an `oauthAccount`.
+    if !platform && account_block(&to_dir).is_none() {
         return Err(refused(format!(
             "profile {to} has no account in .claude.json"
         )));
@@ -202,6 +187,14 @@ pub fn swap(
         });
     if let Err(e) = locked {
         return Err(abandon(store, rs, home, &mut j, e));
+    }
+    // The file the journal names is still the one checked, and still may
+    // go live: a file replaced in between is caught here.
+    if ino_at(&t) != Some(target_ino) {
+        return Err(abandon(store, rs, home, &mut j, refused(LOGIN_NOT_MOVABLE)));
+    }
+    if !may_go_live(&t, platform) {
+        return Err(abandon(store, rs, home, &mut j, no_oauth(to)));
     }
     abort_point("rotate-J0");
 
@@ -363,6 +356,10 @@ pub(super) fn finish(
         .as_ref()
         .and_then(Account::from_block)
         .map(|a| a.key().to_string());
+    // Issue #1700: the incoming login is now in `~/.claude`; one without
+    // OAuth is only ever an API-key profile's (`swap` checks that).
+    l.live_kind = (login_kind(&home.join(".claude").join(CREDS)) != LoginKind::OAuth)
+        .then(|| LIVE_KIND_PLATFORM.to_string());
     l.since = Some(j.started_at);
     l.swapped_at = Some(j.started_at);
     l.alert = None;
@@ -372,7 +369,9 @@ pub(super) fn finish(
 }
 
 /// `s3`: replaces only `oauthAccount` in `$HOME/.claude.json`, keeping
-/// every other key and the file's mode. A missing file is created.
+/// every other key and the file's mode. A missing file is created. With no
+/// block (an API-key profile without `oauthAccount`) the file is left
+/// byte for byte as it was.
 fn patch_home_account(home: &Path, block: Option<&serde_json::Value>) -> Result<(), ProfileError> {
     let Some(block) = block else {
         return Ok(());

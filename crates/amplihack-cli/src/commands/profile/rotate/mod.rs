@@ -25,7 +25,7 @@ mod gate_record;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
-mod ledger;
+pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
@@ -37,6 +37,8 @@ mod overflow;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
+pub(super) mod platform_block;
+#[cfg(unix)]
 mod recover;
 #[cfg(unix)]
 mod settings;
@@ -44,6 +46,8 @@ mod settings;
 mod spend_blocks;
 #[cfg(unix)]
 mod swap;
+#[cfg(unix)]
+mod swap_check;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
 
@@ -67,6 +71,12 @@ mod tests_live_readers;
 mod tests_log;
 #[cfg(all(test, unix))]
 mod tests_overflow;
+#[cfg(all(test, unix))]
+mod tests_platform;
+#[cfg(all(test, unix))]
+mod tests_platform_block;
+#[cfg(all(test, unix))]
+mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -110,6 +120,40 @@ pub(super) fn overflow_gate_at(
     env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
 ) -> (Option<super::overflow::Gate>, GateSource) {
     gate_record::effective_at(root, proc_root, exe_name, env)
+}
+
+/// Whether rotate live-profile detection names `name` as the login in
+/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
+/// hand change, an ambiguous or an adopted login is not.
+#[cfg(unix)]
+pub(super) fn is_live(
+    store: &super::store::ProfileStore,
+    home: Option<&std::path::Path>,
+    name: &super::name::ProfileName,
+) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    let rs = ledger::RotateState::new(store.root());
+    matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
+}
+
+/// The status line while the rotate ledger says the live login is an
+/// API-key profile (issue #1700), for `rotate status` and `auto-switch
+/// status`. The ledger is the only evidence; nothing is probed.
+#[cfg(unix)]
+pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
+    let l = ledger::RotateState::new(root).load_ledger().ok()??;
+    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
+        return None;
+    }
+    let live = l.live?;
+    let since = l
+        .since
+        .map_or_else(|| "unknown".to_string(), log::timestamp);
+    Some(format!(
+        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
+    ))
 }
 
 /// The `overflow gate:` line of `auto-switch status`.

@@ -189,6 +189,7 @@ impl<'a> Case<'a> {
             candidates: &self.candidates,
             overflow: &overflow,
             blocks: &self.blocks,
+            platform_block: None,
             swapped_at: self.swapped_at,
             now: NOW,
         })

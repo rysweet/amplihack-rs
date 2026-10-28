@@ -241,6 +241,62 @@ pub(crate) fn usage_limited(attempt: &Attempt, now: i64) -> Option<Limited> {
     })
 }
 
+/// Issue #1700: when a failed attempt ran on an API-key profile (`profile`,
+/// else the inherited `AMPLIHACK_CLAUDE_PROFILE`, else `~/.claude` holding
+/// a login without OAuth) and its output says the key is out of funds,
+/// revoked or rate-limited, records the API-key block under `root` (else
+/// the resolved profile root), with one ALERT for a new block. The output
+/// is matched and dropped: never stored, logged or printed. A subscription
+/// attempt is never read here, since `authentication_error` there means
+/// "not logged in".
+pub(crate) fn note_key_error(
+    attempt: &Attempt,
+    profile: Option<&ProfileName>,
+    root: Option<&Path>,
+) {
+    use super::kind::{Ctx, Kind};
+    use super::rotate::identify::{LoginKind, login_kind};
+    if attempt.signalled || attempt.code == 0 {
+        return;
+    }
+    let Some(root) = root
+        .map(Path::to_path_buf)
+        .or_else(amplihack_utils::rotator_status::resolve_root)
+    else {
+        return;
+    };
+    let store = super::store::ProfileStore::new(root);
+    let home = super::usage_cmd::home_dir();
+    let named = profile.cloned().or_else(|| {
+        std::env::var(PROFILE_ENV)
+            .ok()
+            .and_then(|v| ProfileName::parse(&v).ok())
+    });
+    let platform = match named {
+        Some(p) => Ctx::load(&store, home.as_deref()).resolve(&store, &p).kind == Kind::Platform,
+        None => home.as_deref().is_some_and(|h| {
+            login_kind(&h.join(".claude").join(super::auto_switch::CREDS)) == LoginKind::NoOAuth
+        }),
+    };
+    if !platform {
+        return;
+    }
+    let out_tail = tail(&attempt.stdout).unwrap_or_else(|e| {
+        eprintln!(
+            "amplihack: could not read this step's buffered output: {}",
+            e.kind()
+        );
+        Vec::new()
+    });
+    let found = super::usage_parse::classify_key_error(&joined(&attempt.stderr_tail, &out_tail));
+    let Some((reason, retry_after)) = found else {
+        return;
+    };
+    let now = fsx::now();
+    let until = retry_after.and_then(|s| now.checked_add(s));
+    super::rotate::platform_block::record_and_alert(store.root(), reason, until, now);
+}
+
 /// An attempt hit its usage limit only when it was not killed by a signal,
 /// exited non-zero, and the recipe runner's classifier calls its stderr tail
 /// followed by its stdout tail `UsageLimit`. Work and environmental markers
