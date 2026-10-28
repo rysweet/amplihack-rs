@@ -293,17 +293,19 @@ class Workflow:
         require(isinstance(root, str) and Path(root).is_absolute() and Path(root) == actual_root,
                 'IDENTITY_MISMATCH', 'Repository root must be the invoking canonical worktree root')
         self.root = actual_root
-        selectors = [self.context[k] for k in ('repo_path', 'repository_root') if k in self.context]
-        selectors += [os.environ[k] for k in ('REPO_PATH', 'RECIPE_VAR_repo_path') if k in os.environ]
-        for selector in selectors:
-            if selector != '':
-                require(text(selector) and Path(selector).is_absolute() and
-                        Path(selector).resolve() == self.root, 'IDENTITY_MISMATCH', 'Task repository selector mismatch')
         wt = self.context.get('worktree_setup', {})
         if isinstance(wt, str) and wt.strip(): wt = parse(wt.encode())
         require(isinstance(wt, dict), 'INVALID_CONTEXT', 'Selected worktree setup must be an object')
+        self.selected_worktree = bool(wt.get('worktree_path'))
         if wt.get('worktree_path'):
-            require(Path(wt['worktree_path']).resolve() == self.root, 'IDENTITY_MISMATCH', 'Selected worktree mismatch')
+            require(text(wt['worktree_path']) and Path(wt['worktree_path']).is_absolute() and
+                    Path(wt['worktree_path']).resolve() == self.root, 'IDENTITY_MISMATCH', 'Selected worktree mismatch')
+        selectors = [(k, self.context[k]) for k in ('repo_path', 'repository_root') if k in self.context]
+        selectors += [(k, os.environ[k]) for k in ('REPO_PATH', 'RECIPE_VAR_repo_path') if k in os.environ]
+        for key, selector in selectors:
+            if selector != '':
+                require(self.repository_path_matches(selector, allow_main=key != 'repository_root'),
+                        'IDENTITY_MISMATCH', 'Task repository selector mismatch')
         for key in ('workflow_name', 'workflow_started_at'):
             require(key not in self.context or text(self.context[key]), 'INVALID_CONTEXT', 'Invalid original workflow identity: ' + key)
         started = self.context.get('workflow_started_at') or os.environ.get('WORKFLOW_STARTED_AT')
@@ -389,6 +391,23 @@ class Workflow:
             name = 'RECIPE_VAR_' + key
             if name in os.environ: obj[key] = os.environ[name]
         return obj
+
+    def repository_path_matches(self, value, allow_main=False):
+        if not text(value) or not Path(value).is_absolute(): return False
+        candidate = Path(value).resolve()
+        if candidate == self.root: return True
+        if not allow_main or not self.selected_worktree or not candidate.is_dir(): return False
+        # The stock runner retains repo_path for the main checkout while cwd
+        # and worktree_setup select the task. A sibling worktree or clone must
+        # never acquire that role, even when its HEAD is identical.
+        result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--show-toplevel',
+                                 '--git-dir', '--git-common-dir'], cwd=candidate,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0: return False
+        paths = result.stdout.decode().splitlines()
+        if len(paths) != 3: return False
+        common = Path(run(['git', 'rev-parse', '--path-format=absolute', '--git-common-dir'], self.root).decode().strip()).resolve()
+        return Path(paths[0]).resolve() == candidate and all(Path(p).resolve() == common for p in paths[1:])
 
     def repo_identity(self):
         remote = subprocess.run(['git', 'config', '--get', 'remote.origin.url'], cwd=self.root,
@@ -1272,8 +1291,7 @@ class Workflow:
                 'IDENTITY_MISMATCH', 'Collected repository identity missing')
         observed = evidence['git']
         for key in ('repo_path', 'worktree_path'):
-            require(text(observed.get(key)) and Path(observed[key]).is_absolute() and
-                    Path(observed[key]).resolve() == self.root,
+            require(self.repository_path_matches(observed.get(key), allow_main=key == 'repo_path'),
                     'IDENTITY_MISMATCH', 'Collected repository does not match invoking worktree')
         head = observed.get('head_sha')
         require(text(head) and re.fullmatch(r'[0-9a-f]{40}|[0-9a-f]{64}', head) and head == self.source()['head'],

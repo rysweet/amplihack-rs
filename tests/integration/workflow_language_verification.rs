@@ -2056,6 +2056,91 @@ fn review_repository_substitution_is_rejected_even_at_equal_head() {
     }
 }
 
+fn task_worktree_fixture() -> (Fixture, std::path::PathBuf) {
+    let mut f = Fixture::javascript();
+    let main = f.repo.clone();
+    let task = f.tmp.path().join("task");
+    f.native(
+        "git",
+        &["worktree", "add", "-b", "task", task.to_str().unwrap()],
+    );
+    f.native(
+        "git",
+        &["commit", "--allow-empty", "-m", "main checkout advances"],
+    );
+    f.repo = task.clone();
+    f.context["repo_path"] = json!(main);
+    f.context["branch_name"] = json!("task");
+    f.context["worktree_setup"] = json!({"worktree_path": task});
+    f.env.insert("REPO_PATH".into(), main.display().to_string());
+    f.env
+        .insert("RECIPE_VAR_repo_path".into(), main.display().to_string());
+    f.plan = f.node_plan("javascript");
+    (f, main)
+}
+
+#[test]
+fn main_checkout_metadata_keeps_evidence_bound_to_the_selected_task_worktree() {
+    let (mut f, main) = task_worktree_fixture();
+    f.verified_cohort();
+    let restored = f.restore();
+    restored.exit(0);
+    assert_eq!(restored.json()["implementation_valid"], true);
+    assert_eq!(restored.json()["verification_valid"], true);
+    let collected = f.finalize("collect");
+    collected.exit(0);
+    let evidence = collected.json();
+    assert_eq!(evidence["git"]["repo_path"], json!(main));
+    assert_eq!(evidence["git"]["worktree_path"], json!(f.repo));
+    assert_eq!(evidence["git"]["head_sha"], f.head());
+    f.context["finalization_evidence"] = evidence;
+    // Validation may still reject unrelated platform criteria, but repository
+    // identity must survive the stock main-checkout/task-worktree layout.
+    let validated = f.finalize("validate").json();
+    assert_ne!(validated["error"]["code"], "IDENTITY_MISMATCH");
+}
+
+#[test]
+fn main_checkout_metadata_requires_the_exact_selected_task_worktree() {
+    for absent in [true, false] {
+        let (mut f, main) = task_worktree_fixture();
+        if absent {
+            f.context.as_object_mut().unwrap().remove("worktree_setup");
+        } else {
+            f.context["worktree_setup"] = json!({"worktree_path": main});
+        }
+        f.call("plan", &f.plan).error("IDENTITY_MISMATCH");
+    }
+}
+
+#[test]
+fn sibling_worktree_cannot_replace_main_checkout_or_canonical_repository_root() {
+    let (mut f, main) = task_worktree_fixture();
+    let sibling = f.tmp.path().join("sibling");
+    f.native(
+        "git",
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "sibling",
+            sibling.to_str().unwrap(),
+        ],
+    );
+    f.context["repo_path"] = json!(sibling);
+    f.env
+        .insert("REPO_PATH".into(), sibling.display().to_string());
+    f.env
+        .insert("RECIPE_VAR_repo_path".into(), sibling.display().to_string());
+    f.call("plan", &f.plan).error("IDENTITY_MISMATCH");
+    f.context["repo_path"] = json!(main);
+    f.env.insert("REPO_PATH".into(), main.display().to_string());
+    f.env
+        .insert("RECIPE_VAR_repo_path".into(), main.display().to_string());
+    f.context["repository_root"] = json!(main);
+    f.call("plan", &f.plan).error("IDENTITY_MISMATCH");
+}
+
 #[test]
 fn review_collected_repository_head_is_checked_before_completion() {
     let mut f = Fixture::javascript();

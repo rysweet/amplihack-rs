@@ -7,6 +7,12 @@ installation directory does not select the task repository. Selected-file
 transport takes precedence over environment aliases. Only declared empty recipe
 defaults count as missing; malformed, null and negative records retain authority.
 
+The stock runner's `repo_path` may name the primary checkout when an explicit
+`worktree_setup.worktree_path` selects the invoking task worktree. Git must prove
+that checkout owns the task's common Git directory. A sibling worktree, clone,
+missing selection or mismatched canonical `repository_root` is rejected. Source
+and capture bindings always retain the task worktree and its actual HEAD.
+
 `checkpoint-implementation` is passive. It stores all original outputs, including
 unsuccessful attempts, and atomically publishes the latest generation. `verify`
 does the same for verification. Restoration reads that latest generation only.

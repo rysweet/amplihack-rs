@@ -473,11 +473,20 @@ impl Fixture {
     pub fn install_original_implementation(&mut self) {
         // Execute real source inspection and verification surrounded by the
         // observer. The fixture uses the documented stock verifier output.
-        self.file(".git/fixture-builder.py", "from pathlib import Path\ns=Path('contract.js').read_text()\nassert 'decode' in s\nprint('Files modified: contract.js\\nDiff summary: public decoder with invalid-input rejection.')\n");
-        self.file(".git/fixture-verifier.py", "import json,subprocess\nfrom pathlib import Path\nassert 'decode' in Path('contract.js').read_text()\nsubprocess.run(['node','--test','contract.test.js'],check=True)\nprint('Inspected and executed concrete decoder assertions.')\nprint(json.dumps(dict(verdict='WORK_VERIFIED',evidence=['contract.js','contract.test.js'],rationale='Inspected and executed public decoder assertions')))\n");
+        // A linked worktree has a .git file. Keep fixture scripts inside its
+        // root so the observer can bind them without admitting external inputs.
+        let directory = if self.repo.join(".git").is_dir() {
+            ".git"
+        } else {
+            "node_modules/.workflow-fixture"
+        };
+        let builder = format!("{directory}/fixture-builder.py");
+        let verifier = format!("{directory}/fixture-verifier.py");
+        self.file(&builder, "from pathlib import Path\ns=Path('contract.js').read_text()\nassert 'decode' in s\nprint('Files modified: contract.js\\nDiff summary: public decoder with invalid-input rejection.')\n");
+        self.file(&verifier, "import json,subprocess\nfrom pathlib import Path\nassert 'decode' in Path('contract.js').read_text()\nsubprocess.run(['node','--test','contract.test.js'],check=True)\nprint('Inspected and executed concrete decoder assertions.')\nprint(json.dumps(dict(verdict='WORK_VERIFIED',evidence=['contract.js','contract.test.js'],rationale='Inspected and executed public decoder assertions')))\n");
         let mut request = self.request();
-        request["producer_argv"] = json!(["python3", ".git/fixture-builder.py"]);
-        request["verifier_argv"] = json!(["python3", ".git/fixture-verifier.py"]);
+        request["producer_argv"] = json!(["python3", builder]);
+        request["verifier_argv"] = json!(["python3", verifier]);
         request["cwd"] = json!(self.repo);
         let run = self.call("observe-implementation", &request);
         run.exit(0);
