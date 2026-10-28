@@ -66,6 +66,7 @@ nav:
       - Claude Login Profiles: howto/claude-profiles.md
       - Claude Login Rotation: howto/claude-profile-rotation.md
       - Keep Tests from Leaking Rotator Daemons: howto/keep-tests-from-leaking-rotator-daemons.md
+      - Keep Tests out of the Real Profile Root: howto/keep-tests-out-of-the-real-profile-root.md
       - Profile Command Reference: reference/profile-command.md
       - ccswitch Review: reviews/ccswitch-review.md
   - Core Concepts:

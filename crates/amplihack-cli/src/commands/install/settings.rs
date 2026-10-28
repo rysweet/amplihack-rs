@@ -188,7 +188,9 @@ pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REF
 
 /// Issue #1661: gives every profile's existing `settings.json` the same hook
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
-/// profile that cannot be refreshed is reported and skipped.
+/// profile that cannot be refreshed is reported and skipped. Issue #1699: a
+/// `hooks_bin` that does not exist, or that lies under a temporary directory
+/// while the profile root is outside HOME, is refused for every profile.
 pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     use crate::commands::profile::{Refresh, refresh_profile_settings};
     // This crate's in-process install tests inherit the developer's
@@ -200,7 +202,7 @@ pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     }
     let with_xpia = xpia_hooks_dir().is_ok_and(|dir| dir.exists());
     let limit_resume = claude_too_old_for_limit_resume().is_none();
-    let results = refresh_profile_settings(&|settings| {
+    let results = refresh_profile_settings(hooks_bin, &|settings| {
         register_hooks(settings, hooks_bin, with_xpia, limit_resume)
     });
     let updated = results

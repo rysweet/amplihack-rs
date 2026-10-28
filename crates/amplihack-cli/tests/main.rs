@@ -140,6 +140,10 @@ mod issue_1688_routing_gap_report;
 mod issue_1690_isolated_autostart;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
+#[path = "issue_1699_isolated_profile_root.rs"]
+mod issue_1699_isolated_profile_root;
+#[path = "issue_1699_real_root_guard.rs"]
+mod issue_1699_real_root_guard;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

@@ -670,6 +670,35 @@ Rules:
   (never a symlink), is rewritten atomically with mode `0600` only when it
   changes, and is never created. A file that cannot be read, parsed or
   written is reported and skipped; the install still succeeds.
+- Before it opens any profile's `settings.json`, the refresh checks the hooks
+  path it is about to write (issue #1699). It refuses the whole refresh in
+  two cases. First, when the `amplihack-hooks` binary does not exist or is
+  not a regular file (a symlink to a regular file is accepted). Second, when
+  the binary's canonical path lies under a temporary directory (`/tmp`,
+  `$TMPDIR` if it is set to an absolute path, or the platform temp dir) and
+  the profile root does not lie under the current `$HOME`, or `$HOME` is
+  unset. The second case is the shape of a test install with a temp `HOME`
+  that inherited a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`: without the check,
+  every real profile would point at a hooks binary that is deleted when the
+  test ends. A refusal writes nothing and changes no mtime; each profile is
+  reported with one line, and the install still succeeds:
+
+  ```text
+  Profile work: settings.json not refreshed (hooks binary /tmp/.tmpQ3x9/home/.local/bin/amplihack-hooks is under temporary directory /tmp; profile root /home/ryan/.claude-profiles is outside HOME)
+  Profile work: settings.json not refreshed (hooks binary /nonexistent/amplihack-hooks does not exist)
+  ```
+
+  Comparisons are component-wise, so `/tmpfoo` is not under `/tmp`. The
+  hooks path is canonicalised first, so a `~/.local/bin` symlink into `/tmp`
+  counts as under `/tmp`. The refresh never changes `statusLine`, so a
+  [status-line wrapper](#status-line-wrapper) survives it. The
+  `~/.claude/settings.json` registration is not affected by the check. When
+  `HOME` is unset, the reason reads `hooks binary <path> is under temporary
+  directory <base>; HOME is unset`. If your real `HOME` is under a temporary
+  directory and your profile root is outside it, move the root under `HOME`
+  (see [Root command](#root-command)) and run `amplihack install` again.
+  Changing `TMPDIR` does not help when `HOME` is under `/tmp`, because `/tmp`
+  is always treated as a temporary directory.
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.
