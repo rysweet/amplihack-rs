@@ -28,7 +28,7 @@
 //!   the hold, and it wins over every rule here: the cycle stops on the pin
 //!   before measuring, so this function never runs while one is in force.
 //!   A held cycle still probes a pinned live overflow profile for the spend
-//!   limit (`cycle::watch_pinned_spend`), and `profile switch` refuses one
+//!   limit (`held::watch_pinned_spend`), and `profile switch` refuses one
 //!   with an active block. See `tests_pin_overflow` and "Pin and overflow"
 //!   in docs/reference/profile-command.md.
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
