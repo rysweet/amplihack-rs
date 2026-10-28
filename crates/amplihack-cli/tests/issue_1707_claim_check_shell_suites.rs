@@ -6,9 +6,15 @@
 //! suite never exercised the helper. This test runs both suites and fails if
 //! either reports a failed check.
 //!
-//! Each suite runs in a cleared environment, as `issue_1551_merge_guard.rs`
-//! starts its bash children. Only [`KEPT_VARS`] (and `LC_*`) are carried over;
-//! `HOME` points at a directory under the test's temp dir. `BASH_ENV`, every
+//! Each suite's `bash` is started through the shared helper
+//! [`crate::isolated_amplihack::isolated`], the one way a test starts a child
+//! in this harness. There is no second keep-list here: the suites get exactly
+//! the environment that helper builds (its `KEPT_VARS`, `CARGO*`, `RUST*` and
+//! `LC_*`, plus `AMPLIHACK_TEST_HOME_GUARD=1` and
+//! `AMPLIHACK_ROTATE_AUTOSTART=0`), so a suite that one day starts
+//! `amplihack` gets the same safeguards as every other test. On top of that
+//! this file sets `HOME` and `TMPDIR` to the test's own temp dir and puts the
+//! PyYAML venv, when one is needed, first on `PATH`. `BASH_ENV`, every other
 //! `AMPLIHACK_*` variable, `CLAUDE_CONFIG_DIR`, `GH_*`, `GIT_*` and
 //! `PR_NUMBER` are left unset, so neither the developer's `~/.amplihack`, the
 //! profile root nor an auto-drive shell's `gh` merge guard reaches the suites
@@ -18,24 +24,22 @@
 //! The suites read recipe YAML with `python3` and PyYAML. When the system
 //! `python3` cannot import `yaml`, the test builds one virtual environment
 //! with PyYAML using `uv` and puts its `bin` first on the suites' `PATH`.
-//! The venv is built once per test process (behind a `OnceLock`) and removed
-//! at exit. `cargo test` runs both tests in one process, so it builds the
-//! venv once; `nextest` runs each test in its own process, so it builds it
-//! twice, and the second build is served from uv's cache. `uv` runs with the
-//! real `HOME` so that it uses the real `~/.cache/uv`: on a cold cache it
-//! downloads PyYAML from PyPI, so such a host needs `uv` and network access
-//! once. If the venv cannot be built the test fails rather than skipping, so
-//! a missing dependency cannot pass as coverage.
+//! The venv is built once per test process (behind a `OnceLock`) inside the
+//! shared per-process temp home from
+//! [`crate::isolated_amplihack::shared_temp_home`], so it is removed at exit
+//! together with that directory. `cargo test` runs both tests in one process,
+//! so it builds the venv once; `nextest` runs each test in its own process,
+//! so it builds it twice, and the second build is served from uv's cache.
+//! `uv` runs with the real `HOME` so that it uses the real `~/.cache/uv`: on
+//! a cold cache it downloads PyYAML from PyPI, so such a host needs `uv` and
+//! network access once. If the venv cannot be built the test fails rather
+//! than skipping, so a missing dependency cannot pass as coverage.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-/// Variables carried over from the test process, the same set
-/// `tests/support/isolated_amplihack.rs` keeps. Everything else is cleared.
-const KEPT_VARS: &[&str] = &[
-    "PATH", "TMPDIR", "LANG", "TERM", "USER", "LOGNAME", "SHELL", "TZ",
-];
+use crate::isolated_amplihack::{HOME_GUARD_ENV, ROTATE_AUTOSTART_ENV, isolated, shared_temp_home};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -71,12 +75,11 @@ fn pyyaml_path_dir() -> Option<&'static Path> {
         // build fails, the assert below unwinds, the `TempDir` drops and the
         // directory is removed. `get_or_init` leaves `DIR` uninitialised
         // after a panic, so under `cargo test` the other suite test runs
-        // this closure again and reports the same build failure, rather
-        // than tripping over state left by the first attempt. Nothing is
-        // kept or registered for removal at exit until the build succeeds.
+        // this closure again in a fresh directory and reports the same build
+        // failure, rather than tripping over state left by the first attempt.
         let dir = tempfile::Builder::new()
             .prefix("issue1707-pyyaml-")
-            .tempdir()
+            .tempdir_in(shared_temp_home())
             .expect("tempdir for the PyYAML venv");
         let venv = dir.path().join("venv");
         let venv_str = venv.to_str().expect("utf-8 temp path");
@@ -95,40 +98,19 @@ fn pyyaml_path_dir() -> Option<&'static Path> {
              or uv (which fetches PyYAML from PyPI on a cold cache)"
         );
 
-        // The build succeeded, so this closure finishes and `DIR` is set:
-        // it cannot run again, and `ROOT` is set exactly once. A static is
-        // never dropped, so remove the venv at process exit instead.
-        let root = dir.keep();
-        static ROOT: OnceLock<PathBuf> = OnceLock::new();
-        ROOT.set(root.clone())
-            .expect("ROOT is set only after a successful build, which initialises DIR");
-        extern "C" fn remove_at_exit() {
-            if let Some(root) = ROOT.get() {
-                let _ = std::fs::remove_dir_all(root);
-            }
-        }
-        // SAFETY: registering a plain `extern "C"` function has no
-        // preconditions; it runs once, at normal process exit.
-        unsafe { libc::atexit(remove_at_exit) };
-
-        let venv = root.join("venv");
-        Some(venv.join("bin"))
+        // The build succeeded. Keep the directory: it lives under the shared
+        // temp home, which `isolated_amplihack` removes at process exit.
+        Some(dir.keep().join("venv").join("bin"))
     })
     .as_deref()
 }
 
-/// A `bash` command for `script` with a cleared environment: only
-/// [`KEPT_VARS`] and `LC_*` from the test process, `PATH` with `pyyaml_dir`
-/// in front when given, and `HOME` and `TMPDIR` under `tmp`.
+/// A `bash` command for `script`, built by the shared [`isolated`] helper,
+/// with `HOME` and `TMPDIR` under `tmp` and `pyyaml_dir`, when given, first
+/// on `PATH`.
 fn isolated_suite_command(script: &Path, tmp: &Path, pyyaml_dir: Option<&Path>) -> Command {
-    let mut command = Command::new("bash");
-    command.arg(script).env_clear();
-    for (key, value) in std::env::vars_os() {
-        let Some(name) = key.to_str() else { continue };
-        if KEPT_VARS.contains(&name) || name.starts_with("LC_") {
-            command.env(&key, value);
-        }
-    }
+    let mut command = isolated("bash");
+    command.arg(script);
     let mut path = std::env::var_os("PATH").unwrap_or_default();
     if let Some(dir) = pyyaml_dir {
         let mut joined = dir.as_os_str().to_os_string();
@@ -144,7 +126,6 @@ fn isolated_suite_command(script: &Path, tmp: &Path, pyyaml_dir: Option<&Path>) 
         .env("TMPDIR", tmp);
     command
 }
-
 fn run_suite(script: &str) {
     let tmp = tempfile::TempDir::new().expect("tempdir");
     let root = repo_root();
@@ -166,11 +147,13 @@ fn run_suite(script: &str) {
     );
 }
 
-/// The suites' environment carries nothing from the developer's or an
-/// auto-drive shell beyond [`KEPT_VARS`]: no `BASH_ENV` (which would source
-/// the merge guard's `gh` shim into every bash child), no `AMPLIHACK_*`, no
-/// `CLAUDE_CONFIG_DIR`, no `GIT_*`/`GH_*`, no `PR_NUMBER`, and a `HOME` under
-/// the test's temp dir.
+/// The suites' environment is the shared [`isolated`] helper's, so it carries
+/// nothing from the developer's or an auto-drive shell beyond that helper's
+/// keep-list: no `BASH_ENV` (which would source the merge guard's `gh` shim
+/// into every bash child), no `AMPLIHACK_*` other than the helper's two
+/// safeguards, no `CLAUDE_CONFIG_DIR`, no `GIT_*`/`GH_*`, no `PR_NUMBER`, and
+/// a `HOME` under the test's temp dir. The safeguards themselves must be set,
+/// which shows the command came from the shared helper and not a copy.
 #[test]
 fn issue_1707_suite_environment_is_isolated() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -187,7 +170,9 @@ fn issue_1707_suite_environment_is_isolated() {
         .collect();
     for name in &names {
         assert!(
-            !name.starts_with("AMPLIHACK_")
+            (!name.starts_with("AMPLIHACK_")
+                || *name == HOME_GUARD_ENV
+                || *name == ROTATE_AUTOSTART_ENV)
                 && !name.starts_with("GIT_")
                 && !name.starts_with("GH_")
                 && !matches!(
@@ -197,10 +182,13 @@ fn issue_1707_suite_environment_is_isolated() {
             "{name} reached the suite environment:\n{env}"
         );
     }
-    let home = env
-        .lines()
-        .find_map(|line| line.strip_prefix("HOME="))
-        .expect("HOME is set");
+    let value_of = |name: &str| {
+        env.lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix('='))
+    };
+    assert_eq!(value_of(HOME_GUARD_ENV), Some("1"), "{env}");
+    assert_eq!(value_of(ROTATE_AUTOSTART_ENV), Some("0"), "{env}");
+    let home = value_of("HOME").expect("HOME is set");
     assert!(
         Path::new(home).starts_with(tmp.path()),
         "HOME {home} is outside the test temp dir {}",
