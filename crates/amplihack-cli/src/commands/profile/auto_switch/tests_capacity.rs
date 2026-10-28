@@ -101,6 +101,8 @@ fn compute(
 const GATE: Gate = Gate {
     wait: 1800,
     unknown_reset: false,
+    session_at: 85,
+    week_at: 90,
 };
 
 #[test]

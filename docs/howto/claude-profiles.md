@@ -1472,13 +1472,14 @@ do not depend on these two behaviours.
   fails with a usage limit and finds no profile left to rerun on does not
   update it.
 - **Overflow profiles come last and cost money.** A profile marked with
-  `amplihack profile overflow add` is chosen only when every plan profile is
-  over the threshold and the earliest plan reset is more than the overflow
-  wait away (`AMPLIHACK_ROTATE_OVERFLOW_WAIT`, default 1800 seconds), the
-  same rule the
+  `amplihack profile overflow add` is chosen only when no plan profile has
+  capacity (below the rotator's `--session-at` and `--week-at`, 85% and 90%
+  by default) and the earliest plan reset is more than the overflow wait
+  away (default 1800 seconds). This is the rule the
   [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
-  follows. A session or nested launch on an overflow profile moves back to a
-  plan profile as soon as one reads under the threshold. See
+  follows, with the running rotator's own settings. A session or nested
+  launch on an overflow profile moves back to a plan profile as soon as one
+  has capacity. See
   [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was

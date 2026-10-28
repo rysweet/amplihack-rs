@@ -37,10 +37,14 @@ impl OverflowEntry {
     }
 }
 
-/// When work may move onto an overflow profile. The rotator
-/// (`rotate::overflow`) and auto-switch (`auto_switch::candidate`) both ask
-/// this one rule, each with its own test of "plan capacity", so they never
-/// disagree about when money is spent.
+/// When work may move onto an overflow profile, and what counts as plan
+/// capacity. The rotator (`rotate::overflow`) and auto-switch
+/// (`auto_switch::candidate`) both decide with one `Gate`, and auto-switch
+/// takes its `Gate` from the running rotator (`rotate::gate_record`), so on
+/// the same readings the two agree about when money is spent. Only when no
+/// rotator runs does auto-switch build a `Gate` from the
+/// `AMPLIHACK_ROTATE_*` variables, and then there is no rotator to disagree
+/// with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Gate {
     /// Seconds: the earliest plan reset must be further away than this
@@ -50,9 +54,30 @@ pub struct Gate {
     /// than `wait` (`--overflow-unknown-reset`, default off). Off, an
     /// unknown reset never moves work onto an overflow profile.
     pub unknown_reset: bool,
+    /// A plan login whose session (five-hour) use is at or above this has no
+    /// capacity (`--session-at`, default 85).
+    pub session_at: u8,
+    /// A plan login whose weekly (seven-day) use is at or above this has no
+    /// capacity (`--week-at`, default 90).
+    pub week_at: u8,
 }
 
 impl Gate {
+    /// Whether a plan login using `session`% and `week`% has capacity: both
+    /// below their thresholds.
+    pub fn plan_capacity(&self, session: f64, week: f64) -> bool {
+        session < f64::from(self.session_at) && week < f64::from(self.week_at)
+    }
+
+    /// Which of a plan login's windows are at their thresholds:
+    /// `(session, week)`.
+    pub fn at_threshold(&self, session: f64, week: f64) -> (bool, bool) {
+        (
+            session >= f64::from(self.session_at),
+            week >= f64::from(self.week_at),
+        )
+    }
+
     /// Whether the earliest plan reset is far enough away to pay for
     /// overflow: strictly more than `wait` seconds after `now`. `None`
     /// (no reading reports a reset time) is far only with `unknown_reset`.

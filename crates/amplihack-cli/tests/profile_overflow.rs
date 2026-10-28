@@ -589,6 +589,50 @@ fn rotate_status_names_a_default_that_is_an_overflow_profile() {
     assert!(!s.contains("default: "), "{s}");
 }
 
+/// `extra` is overflow and `spare` (10/20) still has capacity.
+fn plan_capacity_left(f: &Fixture) {
+    mark(f, "extra");
+}
+
+/// D7: `.default` bypasses the rotator for launches, and the rotator's
+/// verdict does not depend on it. The same cycle, with `.default` unset or
+/// naming the overflow profile or a plan profile, moves the same login with
+/// the same reason and records the same overflow tag.
+#[test]
+fn the_default_pointer_does_not_change_the_rotators_verdict() {
+    type Setup = fn(&Fixture);
+    let setups: [(&str, Setup); 2] = [
+        ("every plan login out", all_plan_logins_out),
+        ("plan capacity left", plan_capacity_left),
+    ];
+    for (what, setup) in setups {
+        let verdict = |default: Option<&str>| {
+            let f = Fixture::new();
+            setup(&f);
+            if let Some(d) = default {
+                f.ok(&["profile", "switch", d]);
+            }
+            let s = stdout(&f.ok(&["profile", "rotate"]));
+            let reason = s
+                .split_whitespace()
+                .find(|w| w.starts_with("reason="))
+                .map(str::to_string);
+            let l = f.ledger().unwrap();
+            (
+                reason,
+                l["live"].clone(),
+                l["last_cycle"]["outcome"].clone(),
+                l["last_cycle"].get("overflow").cloned(),
+            )
+        };
+        let base = verdict(None);
+        assert!(base.0.is_some(), "{what}: the cycle swaps: {base:?}");
+        for d in ["extra", "work", "spare"] {
+            assert_eq!(verdict(Some(d)), base, "{what}, .default = {d}");
+        }
+    }
+}
+
 #[test]
 fn list_marks_a_profile_with_no_directory_as_missing() {
     let f = Fixture::new();

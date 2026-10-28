@@ -237,6 +237,15 @@ pub fn watch(
             format!("{}\n", std::process::id()).as_bytes(),
         )?;
     }
+    // Auto-switch reads its overflow gate from this record, so it applies
+    // this rotator's flags, not its own environment. Without the record it
+    // uses no overflow at all.
+    if let Err(e) = super::gate_record::write(&rs, std::process::id(), &s) {
+        log_line(
+            &rs,
+            &format!("overflow: gate not recorded, auto-switch will not use overflow ({e})"),
+        );
+    }
     let mut ctx = Ctx::new(store.clone(), home, s);
     ctx.stop = Some(stop.clone());
     let mut idle = false;

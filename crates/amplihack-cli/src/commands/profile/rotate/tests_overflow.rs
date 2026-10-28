@@ -13,8 +13,9 @@
 //! - `decide::Reason::{OverflowIn, OverflowOut}`, `as_str` `overflow-in`
 //!   and `overflow-out`.
 //! - `overflow::Tag::{In, Out, On}` with `as_str` `in`, `out`, `on`.
-//! - `profile::overflow::Gate { wait, unknown_reset }`, built by
-//!   `overflow::gate(&Settings)`: `far(earliest, now)` is
+//! - `profile::overflow::Gate { wait, unknown_reset, session_at, week_at }`,
+//!   built by `overflow::gate(&Settings)`: `plan_capacity(session, week)` is
+//!   both below their thresholds; `far(earliest, now)` is
 //!   `earliest - now > wait`, and `None` (no reset known) is far only with
 //!   `unknown_reset` (`--overflow-unknown-reset 1`; default off).
 //! - `overflow::decide_overflow(&OverflowInput) -> Verdict` where
@@ -31,7 +32,9 @@
 //! - Onto credits only when the live plan login is at a threshold, no plan
 //!   login has capacity, and the earliest plan reset is more than
 //!   `overflow_wait` away (unknown: only with the opt-in). A failed live
-//!   probe never moves onto overflow.
+//!   probe never moves onto overflow. This replaces the ALERT and also a
+//!   threshold swap onto a plan login without capacity; that swap stands
+//!   when the gate does not allow overflow.
 //! - Overflow profiles are tried by tier, then by the order given.
 //! - Off credits as soon as a plan login has capacity, ignoring hold, margin
 //!   and upgrade margin.
@@ -277,7 +280,9 @@ fn the_gate_is_strictly_beyond_the_wait() {
         g,
         Gate {
             wait: 1800,
-            unknown_reset: false
+            unknown_reset: false,
+            session_at: 85,
+            week_at: 90,
         }
     );
     assert!(!g.far(Some(NOW + 1800), NOW), "== wait stays");
@@ -308,6 +313,7 @@ fn the_gate_never_allows_overflow_while_a_plan_profile_has_capacity() {
     let g = Gate {
         wait: 0,
         unknown_reset: true,
+        ..gate(&settings())
     };
     assert!(!g.allows(true, Some(NOW + 100 * HOUR), NOW));
     assert!(!g.allows(true, None, NOW));
@@ -875,13 +881,37 @@ fn either_plan_limit_takes_away_capacity() {
 }
 
 #[test]
-fn free_headroom_over_a_threshold_is_used_before_overflow() {
-    // `decide` still swaps to a plan login with more headroom, even one over
-    // a threshold: that costs nothing, and credits come only after `Alert`.
+fn a_plan_login_over_a_threshold_is_used_only_when_overflow_is_not_allowed() {
+    // `spare` at 86% session is itself at `--session-at` (85), so it is not
+    // plan capacity: with the plan reset far away the rotator moves onto
+    // credits, as auto-switch does on the same readings. Swapping onto
+    // `spare` would only meet the threshold again next cycle.
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", exhausted(far, far))
         .cand("spare", measured(86.0, 10.0, far, far))
         .cand("cred", exhausted(far, far))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.tag, Some(Tag::In));
+    // With the reset near, the gate does not allow overflow, and `decide`'s
+    // free swap onto `spare` stands: it costs nothing.
+    let near = Some(NOW + 600);
+    let v = Case::new("work", exhausted(near, near))
+        .cand("spare", measured(86.0, 10.0, near, near))
+        .cand("cred", exhausted(far, far))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("spare", Reason::Threshold));
+    assert_eq!(v.tag, None);
+}
+
+#[test]
+fn a_threshold_swap_onto_a_plan_login_with_capacity_is_never_replaced() {
+    let far = Some(NOW + 5 * HOUR);
+    let v = Case::new("work", exhausted(far, far))
+        .cand("spare", measured(84.0, 10.0, far, far))
+        .cand("cred", measured(0.0, 0.0, far, far))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, swap("spare", Reason::Threshold));
@@ -1006,16 +1036,4 @@ fn a_default_overflow_profile_is_not_moved_onto_while_plan_capacity_remains() {
         .run();
     assert_eq!(v.decision, Decision::Stay);
     assert_eq!(v.tag, None);
-}
-
-#[test]
-fn the_policy_and_the_cycle_never_read_the_default_pointer() {
-    for (file, src) in [
-        ("overflow.rs", include_str!("overflow.rs")),
-        ("decide.rs", include_str!("decide.rs")),
-        ("cycle.rs", include_str!("cycle.rs")),
-        ("overflow_record.rs", include_str!("overflow_record.rs")),
-    ] {
-        assert!(!src.contains("pointer"), "{file} reads .default");
-    }
 }

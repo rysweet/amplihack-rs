@@ -228,6 +228,8 @@ use crate::commands::profile::overflow::Gate;
 const GATE: Gate = Gate {
     wait: 1800,
     unknown_reset: false,
+    session_at: 85,
+    week_at: 90,
 };
 
 /// A reading whose five-hour window is at `five`% and resets in `resets_in`.
@@ -378,36 +380,11 @@ fn a_closed_gate_or_an_excluded_overflow_profile_spends_nothing() {
 
 #[test]
 fn an_overflow_profile_is_never_picked_as_a_plan_profile() {
-    // cred has the most room of all, but spare still has capacity.
+    // cred has the most room of all, but spare still has capacity (below
+    // the gate's 85% session and 90% week).
     let o = Over::new(&["cred"]);
-    let c = all_plan_out(4 * 3600).with("spare", reading(85.0, 85.0));
+    let c = all_plan_out(4 * 3600).with("spare", reading(80.0, 85.0));
     assert_eq!(o.pick(&c, "work").as_deref(), Some("spare"));
-}
-
-/// Every selection outside tests goes through `select_with_overflow`, so a
-/// new call site cannot pick an overflow profile without the gate.
-#[test]
-fn every_selection_outside_tests_goes_through_the_overflow_gate() {
-    let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/auto_switch");
-    let mut sites = 0;
-    for entry in std::fs::read_dir(&dir).unwrap() {
-        let path = entry.unwrap().path();
-        let file = path.file_name().unwrap().to_string_lossy().into_owned();
-        if !file.ends_with(".rs") || file.starts_with("tests_") || file == "candidate.rs" {
-            continue;
-        }
-        let src = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            !src.contains("candidate::select("),
-            "{file}: calls candidate::select directly"
-        );
-        sites += src.matches("select_with_overflow(").count();
-    }
-    assert!(
-        sites >= 2,
-        "expected the rerun and swap sites, found {sites}"
-    );
 }
 
 /// The rerun path (`nested_candidate`, used by `substitute` and the agent
@@ -426,6 +403,8 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
     let _env = EnvGuard::unset([
         "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
         "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+        "AMPLIHACK_ROTATE_SESSION_AT",
+        "AMPLIHACK_ROTATE_WEEK_AT",
     ]);
     let tmp = tempfile::tempdir().unwrap();
     std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();

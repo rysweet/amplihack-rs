@@ -4,6 +4,7 @@
 
 use super::TuneFlags;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::overflow::Gate;
 use std::ffi::OsString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -161,6 +162,30 @@ pub fn resolve(
             .resolve(tune.overflow_unknown_reset.as_deref(), env)?
             == 1,
     })
+}
+
+/// The overflow [`Gate`] from its four variables only
+/// (`AMPLIHACK_ROTATE_OVERFLOW_WAIT`, `..._OVERFLOW_UNKNOWN_RESET`,
+/// `..._SESSION_AT`, `..._WEEK_AT`), for auto-switch when no rotator runs.
+/// Another `AMPLIHACK_ROTATE_*` variable, valid or not, plays no part.
+pub fn gate_from_env(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Gate, ProfileError> {
+    Ok(Gate {
+        wait: OVERFLOW_WAIT.resolve(None, env)?,
+        unknown_reset: OVERFLOW_UNKNOWN_RESET.resolve(None, env)? == 1,
+        session_at: SESSION_AT.resolve(None, env)? as u8,
+        week_at: WEEK_AT.resolve(None, env)? as u8,
+    })
+}
+
+/// Whether `g` holds values the rotator could have resolved: thresholds
+/// from 1 to 100 and a wait of at most a week. A recorded gate that fails
+/// this is not used.
+pub fn gate_in_range(g: &Gate) -> bool {
+    let pct =
+        |spec: &Spec, v: u8| u64::from(v) >= spec.min && spec.max.is_none_or(|m| u64::from(v) <= m);
+    pct(&SESSION_AT, g.session_at)
+        && pct(&WEEK_AT, g.week_at)
+        && OVERFLOW_WAIT.max.is_none_or(|m| g.wait <= m)
 }
 
 impl Settings {

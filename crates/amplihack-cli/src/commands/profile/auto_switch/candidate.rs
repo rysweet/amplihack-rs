@@ -4,7 +4,8 @@
 //!
 //! Overflow profiles (issue #1606) are chosen only by [`select_with_overflow`]:
 //! after every plan profile, and only when the shared overflow [`Gate`]
-//! allows it. The rotator asks the same gate.
+//! allows it. The gate is the running rotator's, thresholds included, so
+//! both measure plan capacity the same way.
 
 use super::usage::{Reading, Window};
 use crate::commands::profile::name::ProfileName;
@@ -84,32 +85,59 @@ pub struct OverflowPool<'a> {
     pub gate: Option<Gate>,
 }
 
-/// When an exhausted reading has capacity again: the latest reset of its
-/// windows at or above `threshold`. `None` when no window is.
-pub fn regains(r: &Reading, threshold: u8, now: i64) -> Option<i64> {
-    [r.five_hour.as_ref(), r.seven_day.as_ref()]
-        .into_iter()
-        .flatten()
-        .filter(|w| adjusted(Some(w), now) >= f64::from(threshold))
-        .map(|w| w.resets_at)
-        .max()
+/// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
+/// a missing or reset window.
+fn session_week(r: &Reading, now: i64) -> (f64, f64) {
+    (
+        adjusted(r.five_hour.as_ref(), now),
+        adjusted(r.seven_day.as_ref(), now),
+    )
 }
 
-/// [`select`] with overflow profiles. In order:
+/// Whether a plan reading has capacity by the gate's test, the one the
+/// rotator applies ([`Gate::plan_capacity`]).
+pub fn gate_capacity(r: &Reading, g: &Gate, now: i64) -> bool {
+    let (session, week) = session_week(r, now);
+    g.plan_capacity(session, week)
+}
+
+/// When a plan reading without capacity by the gate's test has it again:
+/// the reset of the window at its threshold, or the later of the two when
+/// both are, as the rotator computes it. `None` when neither is.
+pub fn regains(r: &Reading, g: &Gate, now: i64) -> Option<i64> {
+    let (session, week) = session_week(r, now);
+    let (session_hit, week_hit) = g.at_threshold(session, week);
+    let session_reset = r.five_hour.as_ref().map(|w| w.resets_at);
+    let week_reset = r.seven_day.as_ref().map(|w| w.resets_at);
+    match (session_hit, week_hit) {
+        (true, false) => session_reset,
+        (false, true) => week_reset,
+        (true, true) => Some(session_reset?.max(week_reset?)),
+        (false, false) => None,
+    }
+}
+
+/// [`select`] with overflow profiles. With a gate, "plan capacity" is the
+/// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
+/// `--week-at`), so auto-switch and the rotator agree on when money is
+/// spent. In order:
 ///
-/// 1. The best plan profile ([`select`] with the overflow profiles excluded).
-///    This is also how a session on an overflow profile moves back: any plan
-///    profile with capacity wins, whether or not the overflow profile is
-///    exhausted.
+/// 1. The best plan profile ([`select`] with the overflow profiles excluded)
+///    that has capacity by the gate's test, or has no reading. This is also
+///    how a session on an overflow profile moves back.
 /// 2. `None` when `current` is an overflow profile that is neither exhausted
 ///    nor blocked: it stays there until a plan profile has capacity.
 /// 3. The first overflow profile in `ov.order` that is not `current`, not
 ///    excluded, not blocked, not exhausted and `eligible`, when the gate
-///    allows it: no plan profile other than `current` has a reading under
-///    the threshold, and the earliest plan reset is far enough away.
+///    allows it: no plan profile other than `current` has capacity by the
+///    gate's test, and the earliest plan reset is far enough away.
+/// 4. Otherwise the best plan profile under the auto-switch threshold
+///    ([`select`]): a plan profile between the gate's thresholds and the
+///    auto-switch threshold still beats an ALERT, and costs nothing.
 ///
-/// A plan profile with no reading never counts as capacity here; if it is
-/// eligible, step 1 has already picked it.
+/// Without a gate (overflow closed) this is [`select`] on the plan profiles.
+/// A plan profile with no reading never counts as capacity in step 3; if
+/// it is eligible, step 1 has already picked it.
 pub fn select_with_overflow<'a>(
     pool: &Pool<'a>,
     ov: &OverflowPool<'a>,
@@ -127,8 +155,23 @@ pub fn select_with_overflow<'a>(
         now: pool.now,
     };
     // `select` borrows `plan_exclude`; hand back the caller's own name.
-    if let Some(p) = select(&plan_pool, current, &eligible).cloned() {
-        return pool.profiles.iter().find(|q| **q == p);
+    let own = |p: Option<&ProfileName>| {
+        let p = p?.clone();
+        pool.profiles.iter().find(|q| **q == p)
+    };
+    let fallback = || own(select(&plan_pool, current, &eligible));
+    let Some(gate) = ov.gate else {
+        return fallback();
+    };
+    let has_capacity = |p: &ProfileName| {
+        pool.readings
+            .get(p.as_str())
+            .is_none_or(|r| gate_capacity(r, &gate, pool.now))
+    };
+    if let Some(p) = own(select(&plan_pool, current, |p| {
+        has_capacity(p) && eligible(p)
+    })) {
+        return Some(p);
     }
     let exhausted = |name: &str| is_exhausted(pool.readings.get(name), pool.threshold, pool.now);
     let blocked = |name: &str| ov.blocked.iter().any(|b| b == name);
@@ -136,7 +179,6 @@ pub fn select_with_overflow<'a>(
     if on_overflow && !exhausted(current) && !blocked(current) {
         return None;
     }
-    let gate = ov.gate?;
     let plan: Vec<&ProfileName> = pool
         .profiles
         .iter()
@@ -147,25 +189,27 @@ pub fn select_with_overflow<'a>(
             && pool
                 .readings
                 .get(p.as_str())
-                .is_some_and(|r| !is_exhausted(Some(r), pool.threshold, pool.now))
+                .is_some_and(|r| gate_capacity(r, &gate, pool.now))
     });
     let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
     let earliest = plan
         .iter()
         .filter_map(|p| pool.readings.get(p.as_str()))
         .chain(current_reading)
-        .filter_map(|r| regains(r, pool.threshold, pool.now))
+        .filter_map(|r| regains(r, &gate, pool.now))
         .min();
-    if !gate.allows(plan_has_capacity, earliest, pool.now) {
-        return None;
+    if gate.allows(plan_has_capacity, earliest, pool.now)
+        && let Some(o) = ov.order.iter().find(|o| {
+            let n = o.as_str();
+            n != current
+                && pool.profiles.contains(o)
+                && !pool.exclude.contains(o)
+                && !blocked(n)
+                && !exhausted(n)
+                && eligible(o)
+        })
+    {
+        return Some(o);
     }
-    ov.order.iter().find(|o| {
-        let n = o.as_str();
-        n != current
-            && pool.profiles.contains(o)
-            && !pool.exclude.contains(o)
-            && !blocked(n)
-            && !exhausted(n)
-            && eligible(o)
-    })
+    fallback()
 }

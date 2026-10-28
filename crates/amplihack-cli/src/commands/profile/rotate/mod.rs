@@ -21,6 +21,8 @@ mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
+mod gate_record;
+#[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
 mod ledger;
@@ -54,6 +56,8 @@ mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
 #[cfg(all(test, unix))]
+mod tests_gate_record;
+#[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_ledger;
@@ -84,15 +88,35 @@ pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
 
-/// The overflow [`Gate`](super::overflow::Gate) for a process that is not
-/// the rotator (auto-switch, the capacity file): `--overflow-wait` and
-/// `--overflow-unknown-reset` from their `AMPLIHACK_ROTATE_*` variables, or
-/// the defaults. An invalid value is an error, which callers treat as "no
-/// overflow", so a typo never spends money.
 #[cfg(unix)]
-pub(super) fn overflow_gate_from_env() -> Result<super::overflow::Gate, super::ProfileError> {
-    let s = settings::resolve(&TuneFlags::default(), None, &|k| std::env::var_os(k))?;
-    Ok(overflow::gate(&s))
+pub(super) use gate_record::GateSource;
+
+/// The overflow [`Gate`](super::overflow::Gate) auto-switch uses under
+/// `root`, and where it came from: the running rotator's own settings, or,
+/// when no rotator runs, the `AMPLIHACK_ROTATE_*` variables. `None` means
+/// no overflow, so an unreadable record or a typo never spends money. See
+/// `gate_record`.
+#[cfg(unix)]
+pub(super) fn overflow_gate(root: &std::path::Path) -> (Option<super::overflow::Gate>, GateSource) {
+    gate_record::effective(root)
+}
+
+/// [`overflow_gate`] against another `/proc` and environment, for tests.
+#[cfg(all(test, unix))]
+pub(super) fn overflow_gate_at(
+    root: &std::path::Path,
+    proc_root: &std::path::Path,
+    exe_name: &std::ffi::OsStr,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> (Option<super::overflow::Gate>, GateSource) {
+    gate_record::effective_at(root, proc_root, exe_name, env)
+}
+
+/// The `overflow gate:` line of `auto-switch status`.
+#[cfg(unix)]
+pub(super) fn overflow_gate_line(root: &std::path::Path) -> String {
+    let (gate, source) = gate_record::effective(root);
+    gate_record::status_line(gate, &source)
 }
 
 /// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when

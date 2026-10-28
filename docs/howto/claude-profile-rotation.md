@@ -788,9 +788,13 @@ that names the flag or the variable. `0` means credits are used as soon as
 every plan login is out of capacity. The live login still has to reach
 `--session-at` or `--week-at` first.
 
-Auto-switch reads the same wait from `AMPLIHACK_ROTATE_OVERFLOW_WAIT` in its
-own environment. If you start the rotator with `--overflow-wait`, set the
-variable to the same value so the two agree.
+Auto-switch uses the running rotator's wait: `rotate watch` records its
+overflow settings when it starts, and every Claude session reads them from
+there, so there is nothing to keep in step. Check with
+`amplihack profile auto-switch status`, whose `overflow gate:` line shows
+the values and says `from the rotator`. Only while no rotator runs does
+auto-switch read `AMPLIHACK_ROTATE_OVERFLOW_WAIT` from its own environment.
+See [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
 
 ### When no plan reset time is known
 
@@ -805,8 +809,9 @@ amplihack profile rotate stop
 amplihack profile rotate start --overflow-unknown-reset 1
 ```
 
-`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1` does the same for the rotator
-and for auto-switch. The `overflow: on` log line then reads `next plan reset
+`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1` in the environment of
+`rotate start` does the same. Auto-switch follows the running rotator's
+choice either way. The `overflow: on` log line then reads `next plan reset
 unknown`.
 
 ### Rank overflow profiles

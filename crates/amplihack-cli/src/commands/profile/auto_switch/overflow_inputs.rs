@@ -1,10 +1,12 @@
 //! What auto-switch reads to consider overflow profiles (issue #1606): their
 //! order from `.auto-switch`, the spend blocks from the rotate ledger, and
-//! the overflow gate from the `AMPLIHACK_ROTATE_OVERFLOW_*` variables. The
+//! the overflow gate from the running rotator's record (`rotate::gate_record`;
+//! the `AMPLIHACK_ROTATE_*` variables only when no rotator runs). The
 //! decision itself is `candidate::select_with_overflow`, which is pure.
 //!
 //! Every failure closes the gate: an unreadable rotate ledger (spend blocks
-//! unknown) or an invalid variable means no overflow profile is chosen.
+//! unknown), a running rotator without a usable record, or an invalid
+//! variable means no overflow profile is chosen.
 
 use super::candidate::OverflowPool;
 use super::config::Config;
@@ -23,13 +25,37 @@ impl OverflowInputs {
     /// Reads what `cfg` needs; reads nothing when it has no overflow
     /// profiles.
     pub fn load(root: &Path, cfg: &Config, now: i64) -> Self {
+        if cfg.overflow.is_empty() {
+            return Self::none();
+        }
+        Self::load_with_gate(root, cfg, rotate::overflow_gate(root), now)
+    }
+
+    /// [`Self::load`] with the gate already resolved (tests resolve it
+    /// against a fake `/proc`).
+    pub fn load_with_gate(
+        root: &Path,
+        cfg: &Config,
+        gate: (Option<Gate>, rotate::GateSource),
+        now: i64,
+    ) -> Self {
         let order: Vec<ProfileName> = cfg.overflow_order().into_iter().map(|e| e.name).collect();
         if order.is_empty() {
             return Self::none();
         }
-        let gate = rotate::overflow_gate_from_env()
-            .map_err(|e| tracing::debug!(op = "overflow gate", error = %e))
-            .ok();
+        Self::with_gate(root, order, gate.0, &gate.1, now)
+    }
+
+    fn with_gate(
+        root: &Path,
+        order: Vec<ProfileName>,
+        gate: Option<Gate>,
+        source: &rotate::GateSource,
+        now: i64,
+    ) -> Self {
+        if let rotate::GateSource::Closed(why) = source {
+            tracing::debug!(op = "overflow gate", closed = %why);
+        }
         match rotate::overflow_blocks(root, now) {
             Ok(b) => Self {
                 order,

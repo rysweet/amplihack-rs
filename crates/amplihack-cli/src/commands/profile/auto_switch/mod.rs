@@ -66,6 +66,10 @@ use std::path::Path;
 /// supervise itself. Removed before Claude starts.
 pub const SUPERVISED_ENV: &str = "AMPLIHACK_AUTO_SWITCH_SUPERVISED";
 
+/// For the rotate tests that check the rotator and auto-switch agree on
+/// when overflow is used (issue #1606).
+#[cfg(all(test, unix))]
+pub(super) use candidate::{OverflowPool, Pool, select_with_overflow};
 #[cfg(unix)]
 pub use cli::AutoSwitchCommand;
 /// File helpers `default_live` reuses for its read-only checks.
@@ -74,12 +78,16 @@ pub(super) use fsx::{check_root_private, euid, exists, read_bounded_nofollow, wr
 /// For the shared-session liveness tests (issue #1634).
 #[cfg(all(test, unix))]
 pub(super) use liveness::scan;
+#[cfg(all(test, unix))]
+pub(super) use overflow_inputs::OverflowInputs;
 #[cfg(unix)]
 pub(super) use state::CREDS;
 #[cfg(unix)]
 pub(super) use swap::read_claude_json;
 #[cfg(all(test, unix))]
 pub(crate) use swap::rerun_owner;
+#[cfg(all(test, unix))]
+pub(super) use usage::{Reading as SwitchReading, ReadingSource, Window};
 #[cfg(unix)]
 pub(crate) use {swap::sweep_rerun, usage::reset_or_default};
 

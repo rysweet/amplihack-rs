@@ -1496,6 +1496,16 @@ switch: off (file)
 autostart: on (default) — inactive (auto-switch off)
 ```
 
+When any profile is marked [overflow](#rotate-overflow), the next line is
+`overflow gate:`, the gate auto-switch uses and where it came from (see
+[Auto-switch and overflow profiles](#auto-switch-and-overflow-profiles)):
+
+```
+overflow gate: wait 7200s, unknown reset waits, plan capacity below 85% session and 90% week (from the rotator, pid 4242)
+overflow gate: wait 1800s, unknown reset waits, plan capacity below 85% session and 90% week (no rotator runs; from AMPLIHACK_ROTATE_* or defaults)
+overflow gate: closed (the running rotator (pid 4242) has not recorded its overflow settings; restart it)
+```
+
 `status` prints `wrapper` as `installed`, `missing`, `stale` (an older or
 edited wrapper command, one wrapped twice, or one pointing at a different
 binary) or `unsafe` (the binary is in a location `install` would refuse).
@@ -1708,38 +1718,61 @@ is current can still be switched away from.
 #### Auto-switch and overflow profiles
 
 [Overflow](#rotate-overflow) profiles are chosen only after every plan
-profile, by the same rule the rotator follows, through the same gate. Every
-selection (in-session swaps, nested launches and
+profile, by the rule the rotator follows, with the rotator's own gate. The
+gate has four values: the overflow wait, the unknown-reset choice, and the
+two thresholds that define *plan capacity*. A plan account has capacity
+when its five-hour use is below the rotator's `--session-at` and its
+seven-day use is below its `--week-at` (85% and 90% by default), the test
+the rotator applies to its [plan pool](#plan-pool). Every selection
+(in-session swaps, nested launches and
 [usage-limit reruns](#usage-limit-reruns)) works like this:
 
 1. The best plan profile, by the order above, with the overflow profiles
-   left out. A session on an overflow profile moves back to it as soon as
-   one is eligible, whether or not the overflow profile is near its own
-   limit.
+   left out, among those with plan capacity or no reading. A session on an
+   overflow profile moves back to it as soon as one is eligible, whether or
+   not the overflow profile is near its own limit.
 2. A session on an overflow profile that is not over the threshold and not
    [spend-blocked](#overflow-spend-limit-block) stays where it is.
 3. An overflow profile, only when **both** hold:
-   - no plan profile other than the current one has a reading below the
-     threshold, whether or not this session could use it (one leased to
-     another session still counts as capacity, so no money is spent while
-     it exists);
+   - no plan profile other than the current one has plan capacity, whether
+     or not this session could use it (one leased to another session still
+     counts as capacity, so no money is spent while it exists);
    - the earliest plan reset is more than the overflow wait away. The plan
-     reset of an account is the latest reset of its windows at or above the
-     threshold; the earliest plan reset is the earliest of those over every
-     plan account, the current one included.
+     reset of an account is the reset of its window at its threshold, or
+     the later of the two when both are; the earliest plan reset is the
+     earliest of those over every plan account, the current one included.
 
    The first overflow profile by tier, then by list order within a tier,
    that is not current, not excluded, not spend-blocked, not over the
    threshold and eligible is chosen.
+4. Otherwise the best plan profile below the auto-switch threshold, by the
+   order above. A plan account between the gate's thresholds and the
+   auto-switch threshold (for example at 87% session) is used only here:
+   when overflow is not allowed, it beats waiting, and it costs nothing.
 
-The wait and the unknown-reset choice are the rotator's `--overflow-wait`
-and `--overflow-unknown-reset`, read by auto-switch from
-`AMPLIHACK_ROTATE_OVERFLOW_WAIT` and `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET`
-in its own environment, with the same defaults (1800 seconds, off). A rotator
-started with different flags does not pass them to auto-switch; set the
-variables to keep the two in step. An invalid value, or a rotate ledger that
-cannot be read (so spend blocks are unknown), means no overflow profile is
-chosen.
+The rotator decides in the same order (plan capacity, then overflow, then a
+free swap onto a plan login without capacity), so on the same readings the
+two agree on when money is spent. In particular, a plan account at 87%
+session counts as capacity for neither: both move onto an overflow profile
+when the plan reset is beyond the wait, and both use the 87% account when it
+is not.
+
+Auto-switch takes the gate from the running rotator. `rotate watch` writes
+its pid and the gate it resolved from its flags to
+`<root>/.auto-switch.d/rotate/gate.json` when it starts, so
+`profile rotate start --overflow-wait 7200` gives every Claude session the
+same two-hour wait with nothing to keep in step. Where the gate comes from:
+
+| Rotator | Gate auto-switch uses |
+|---------|-----------------------|
+| Runs, and `gate.json` names its pid | The recorded gate. `AMPLIHACK_ROTATE_*` in the session's environment is ignored. |
+| Runs, and `gate.json` is missing, damaged, out of range or names another pid (for example a rotator from an amplihack without this record, which never uses overflow) | None: no overflow profile is chosen. Restart the rotator. |
+| Cannot be verified (no `/proc`) | None. |
+| Not running | `AMPLIHACK_ROTATE_OVERFLOW_WAIT`, `AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET`, `AMPLIHACK_ROTATE_SESSION_AT` and `AMPLIHACK_ROTATE_WEEK_AT` from auto-switch's own environment, with the rotator's defaults (1800 seconds, off, 85, 90). An invalid value of one of these four means no gate; other `AMPLIHACK_ROTATE_*` variables play no part. |
+
+`auto-switch status` prints the gate and its source on its
+`overflow gate:` line. A rotate ledger that cannot be read (so spend blocks
+are unknown) also means no overflow profile is chosen.
 
 The status-line check that runs a swap normally does nothing while the
 session is under the threshold. When the account in the session's directory
@@ -2664,8 +2697,8 @@ Credits cost money and plan capacity does not, so the rotator:
 - moves back to a plan profile in the first cycle in which one has capacity.
 
 [Auto-switch](#auto-switch-and-overflow-profiles) follows the same rule
-through the same gate (the wait and the unknown-reset choice), with its own
-test of plan capacity: a reading below the auto-switch threshold.
+with the running rotator's gate: the wait, the unknown-reset choice, and
+the plan-capacity test below (`--session-at`, `--week-at`).
 
 #### Plan pool
 
@@ -2739,17 +2772,26 @@ exhausted readings too.
 While the live login is a plan profile, the rotator first applies the
 [decision rule](#rotate-decision-rule) and the
 [failed-probe rules](#rotate-failed-live-probes) to the plan pool alone.
-Only when that gives `ALERT no-capacity` on a measured live reading does it
-consider overflow:
+Only when that gives `ALERT no-capacity`, or a `reason=threshold` swap onto
+a plan candidate that does not itself [have capacity](#plan-pool), on a
+measured live reading does it consider overflow. A threshold swap onto a
+plan candidate with capacity always stands:
 
 | Condition | Outcome |
 |-----------|---------|
 | Live probe failed | As without overflow. A failed live probe never moves work onto credits. |
 | A plan candidate has capacity (it is below both thresholds but short of `--margin`) | ALERT `no-capacity`, as without overflow. Credits are never used while a plan login has capacity. |
 | `earliest plan reset - now > overflow-wait`, and an overflow candidate is eligible | Swap to the first eligible one, `reason=overflow-in`. The `--hold` does not apply. |
-| `earliest plan reset - now <= overflow-wait` | ALERT `no-capacity`, as without overflow. |
-| Earliest plan reset unknown | ALERT `no-capacity`, as without overflow. With `--overflow-unknown-reset 1`, as for a reset beyond the wait. |
-| No overflow candidate is eligible | ALERT `no-capacity`, as without overflow. |
+| `earliest plan reset - now <= overflow-wait` | As without overflow: the ALERT, or the threshold swap onto the plan candidate without capacity, which costs nothing. |
+| Earliest plan reset unknown | As without overflow. With `--overflow-unknown-reset 1`, as for a reset beyond the wait. |
+| No overflow candidate is eligible | As without overflow. |
+
+For example, with the live login at 95% session and a plan candidate at 87%
+session, the decision rule would swap onto the candidate, but it is at
+`--session-at` itself and would be swapped away from in the next cycle. With
+the plan reset beyond the wait, the rotator moves onto credits instead; with
+the reset near, it makes the free swap. Auto-switch makes the same choice on
+the same readings.
 
 The comparison is strict: a reset exactly `--overflow-wait` seconds away
 stays. With `--overflow-wait 0` the rotator moves onto overflow as soon as
@@ -3027,6 +3069,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `ledger.json` | `live`, `account`, `since` (epoch seconds when `live` last changed), `swapped_at`, `previous`, `alert` (the de-duplication key, `<kind>:<live profile or ->`), `last_cycle` (`at`, when the cycle was recorded; `measured_at`, when it started measuring usage, absent for a cycle that measured nothing; `outcome`; and, for an [overflow](#rotate-overflow) cycle, `overflow`), and `overflow_blocked` (the [spend blocks](#overflow-spend-limit-block)). While a rotator from an older amplihack binary runs, `measured_at`, `overflow` and `overflow_blocked` are left out so that rotator can read the file. |
 | `journal.json` | The swap in progress: `from`, `to`, `adopt`, `phase` (`j0`, `s1`, `s2`, `s3`, `s4` or `inconsistent`), `home`, `live_ino`, `target_ino`, `home_lock_ino` and `to_lock_ino` (each present once that refresh lock is taken), `started_at` and `pid`. |
 | `rotate.pid` | The background process's pid, as ASCII decimal. |
+| `gate.json` | Written by `rotate watch` when it starts: `version`, `pid`, and the [overflow](#rotate-overflow) gate it resolved from its flags (`overflow_wait`, `overflow_unknown_reset`, `session_at`, `week_at`). [Auto-switch](#auto-switch-and-overflow-profiles) uses it only while the rotator with that pid runs. If it cannot be written, the log says `overflow: gate not recorded, auto-switch will not use overflow (<error>)` and auto-switch uses no overflow profile. |
 | `rotate.log` | The log. |
 | `rotate.log.1` | The previous log, after rotation. |
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
@@ -4007,7 +4050,8 @@ rotate ledger stops the cycle, a failed live probe never moves onto credits,
 an overflow profile whose probe failed is not used, `exclude` beats
 `overflow`, an unknown plan reset never moves onto overflow without
 `--overflow-unknown-reset 1`, and auto-switch uses an overflow profile only
-under the rotator's gate, with spend blocks unknown meaning none. The rotator is
+under the running rotator's own gate (none when that rotator has not
+recorded one), with spend blocks unknown meaning none. The rotator is
 not a spending cap: the organization spend limit at
 <https://claude.ai/settings/usage> is the only hard limit, and a session
 resumed by the [hook](#capacity-for-a-resume) while on credits spends them.

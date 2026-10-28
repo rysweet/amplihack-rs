@@ -269,6 +269,10 @@ fn status(store: &ProfileStore) -> Result<String> {
         };
         let line = crate::commands::profile::rotate::autostart_line(root);
         writeln!(out, "{line}{inactive}")?;
+        if !eff.config.overflow.is_empty() {
+            let line = crate::commands::profile::rotate::overflow_gate_line(root);
+            writeln!(out, "{line}")?;
+        }
     }
     writeln!(out, "threshold: {}%", eff.config.threshold)?;
     writeln!(out, "exclude: {}", list(&eff.config.exclude))?;

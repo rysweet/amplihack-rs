@@ -5,12 +5,16 @@
 //!
 //! - With no overflow profiles the verdict is exactly `decide` (P1).
 //! - A plan login has capacity when its probe read `ok` and its session and
-//!   week use are below `--session-at` and `--week-at`; margins and the hold
-//!   play no part.
+//!   week use pass [`Gate::plan_capacity`] (below `--session-at` and
+//!   `--week-at`); margins and the hold play no part. Auto-switch applies the
+//!   same test with the same thresholds, read from the running rotator.
 //! - Onto overflow only when the live plan login is at a threshold (and its
 //!   probe did not fail), and the shared [`Gate`] allows it: no plan login
 //!   has capacity and the earliest plan reset is more than `overflow_wait`
 //!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
+//!   This replaces the ALERT, and also a threshold swap onto a plan login
+//!   that is itself at a threshold; that swap still happens when the gate
+//!   does not allow overflow. Auto-switch decides in the same order.
 //! - The overflow profile chosen is the first usable one by tier, then by
 //!   file order within a tier.
 //! - Off overflow as soon as a plan login has capacity, ignoring the hold
@@ -78,12 +82,11 @@ pub struct Verdict {
     pub next_plan_reset: Option<i64>,
 }
 
-/// A plan login with capacity: an `ok` probe below both thresholds.
+/// A plan login with capacity: an `ok` probe that passes
+/// [`Gate::plan_capacity`], the test auto-switch also applies.
 pub fn plan_usable(s: &Settings, r: &Reading) -> bool {
     match r {
-        Reading::Measured { session, week } => {
-            *session < f64::from(s.session_at) && *week < f64::from(s.week_at)
-        }
+        Reading::Measured { session, week } => gate(s).plan_capacity(*session, *week),
         Reading::Exhausted | Reading::Failed => false,
     }
 }
@@ -97,8 +100,9 @@ pub fn regains(s: &Settings, r: &Reading, w: &Windows) -> Option<i64> {
         Reading::Measured { session, week } => (Some(*session), Some(*week)),
         Reading::Exhausted => (w.session.map(|x| x.used), w.week.map(|x| x.used)),
     };
-    let session_hit = session_used.is_some_and(|u| u >= f64::from(s.session_at));
-    let week_hit = week_used.is_some_and(|u| u >= f64::from(s.week_at));
+    let g = gate(s);
+    let session_hit = session_used.is_some_and(|u| g.at_threshold(u, 0.0).0);
+    let week_hit = week_used.is_some_and(|u| g.at_threshold(0.0, u).1);
     let session_reset = w.session.and_then(|x| x.resets_at);
     let week_reset = w.week.and_then(|x| x.resets_at);
     match (session_hit, week_hit) {
@@ -119,11 +123,15 @@ pub fn earliest_plan_reset<'a>(
     pool.into_iter().filter_map(|(r, w)| regains(s, r, w)).min()
 }
 
-/// The rotator's [`Gate`]: `--overflow-wait` and `--overflow-unknown-reset`.
+/// The rotator's [`Gate`]: `--overflow-wait`, `--overflow-unknown-reset`,
+/// `--session-at` and `--week-at`. The running rotator records it for
+/// auto-switch (`gate_record`).
 pub fn gate(s: &Settings) -> Gate {
     Gate {
         wait: s.overflow_wait,
         unknown_reset: s.overflow_unknown_reset,
+        session_at: s.session_at,
+        week_at: s.week_at,
     }
 }
 
@@ -190,9 +198,23 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
 
     if !live_over {
         let d = decide(s, &i.live.reading, &plan, i.swapped_at, i.now);
-        // Overflow only replaces today's no-capacity outcome, and never for
-        // a login whose state is unknown.
-        if i.overflow.is_empty() || d != Decision::Alert || i.live.reading == Reading::Failed {
+        // Overflow only replaces a move off a live login at a threshold (an
+        // ALERT, or a threshold swap onto a plan login that is itself
+        // without capacity), and never for a login whose state is unknown.
+        // A threshold swap onto a plan login with capacity stands. This is
+        // auto-switch's order too: plan capacity, then overflow, then a plan
+        // login without capacity.
+        let moving_without_capacity = match &d {
+            Decision::Alert => true,
+            Decision::Swap {
+                to,
+                reason: Reason::Threshold,
+            } => !plan
+                .iter()
+                .any(|c| &c.name == to && plan_usable(s, &c.reading)),
+            _ => false,
+        };
+        if i.overflow.is_empty() || !moving_without_capacity || i.live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
         let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));

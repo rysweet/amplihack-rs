@@ -1124,6 +1124,34 @@ mod swap {
         f.assert_no_leak();
     }
 
+    /// The in-session swap asks the overflow gate (issue #1606): a plan
+    /// profile with capacity wins over the overflow profile; with none, and
+    /// the plan reset an hour away (beyond the default 30-minute wait), the
+    /// session moves onto the overflow profile. "Capacity" is the rotator's
+    /// test, below 85% session and 90% week, so a plan profile at 87%
+    /// session does not count. No rotator runs here, so the gate is the
+    /// defaults.
+    #[test]
+    fn the_swap_uses_overflow_only_when_no_plan_profile_has_capacity() {
+        for (y, to) in [(40.0, "Y"), (87.0, "Z"), (99.0, "Z")] {
+            let f = Fixture::new();
+            prime(&f);
+            f.ok(&["profile", "overflow", "add", "Z"]);
+            f.seed_usage(&[("Y", y), ("Z", 0.0)]);
+            let _session = f.hold("X");
+            let out = f.tick("X", 95.0);
+            assert!(out.status.success(), "{}", text(&out.stderr));
+            assert_eq!(
+                f.hosts().get("X").map(String::as_str),
+                Some(to),
+                "Y at {y}%: {}",
+                text(&out.stderr)
+            );
+            f.assert_one_place_each();
+            f.assert_no_leak();
+        }
+    }
+
     #[test]
     fn no_swap_below_threshold_or_when_off() {
         let f = Fixture::new();

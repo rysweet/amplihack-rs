@@ -241,7 +241,7 @@ impl RotateState {
 
     /// A state file: `None` when missing; an error for a symlink, a file
     /// over 64 KiB, or one that is someone else's or writable by others.
-    fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
+    pub(super) fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
         match read_bounded_nofollow(path, MAX_STATE) {
             Ok(None) => Ok(None),
             Ok(Some((raw, m))) if m.uid() == euid() && !writable_by_others(&m) => Ok(Some(raw)),
@@ -250,7 +250,7 @@ impl RotateState {
         }
     }
 
-    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
+    pub(super) fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
         self.ensure()?;
         write_private_atomic(&self.dir, name, bytes).map_err(ProfileError::Io)
     }
