@@ -145,6 +145,21 @@ bash scripts/check-leaked-rotators.sh
 
 See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md).
 
+### Real Profile Root Guard (#1699)
+
+A test must not write to the `settings.json` files in your real Claude
+profiles. Wrap the test run in a snapshot and a compare:
+
+```bash
+mkdir -p ~/.amplihack/work
+bash scripts/check-real-profile-root.sh snapshot ~/.amplihack/work/profile-root.snap
+cargo test -p amplihack-cli
+bash scripts/check-real-profile-root.sh compare ~/.amplihack/work/profile-root.snap
+```
+
+The compare exits 1 and names each file that changed. See
+[Keep Tests from Writing Real Profiles](./keep-tests-from-writing-real-profiles.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -160,3 +175,4 @@ pre-commit run --all-files
 - [Create Your Own Tools](../howto/create-your-own-tools.md) — building custom tools
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
+- [Keep Tests from Writing Real Profiles](./keep-tests-from-writing-real-profiles.md) — the hook path checks and the guard that catches a test writing to a real profile root

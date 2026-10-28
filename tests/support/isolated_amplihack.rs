@@ -42,6 +42,10 @@ pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
 /// The variable that turns the rotator's launch autostart off.
 pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 
+/// The profile root variable (issue #1699). An inherited value under a temp
+/// HOME made `amplihack install` write temp hook paths into real profiles.
+pub const PROFILE_ROOT_ENV: &str = "AMPLIHACK_CLAUDE_PROFILE_ROOT";
+
 /// A temp `HOME` for tests that do not make their own: one per test process,
 /// created by `tempfile` (a fresh random name, mode 0700, owned by this user,
 /// so never a directory someone else made or an earlier run left), and
@@ -96,6 +100,9 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     command
         .env("HOME", shared_temp_home())
         .env(HOME_GUARD_ENV, "1")
-        .env(ROTATE_AUTOSTART_ENV, "0");
+        .env(ROTATE_AUTOSTART_ENV, "0")
+        // Issue #1699: already gone after env_clear(); removed by name so the
+        // rule is visible in get_envs() and a test can assert it.
+        .env_remove(PROFILE_ROOT_ENV);
     command
 }

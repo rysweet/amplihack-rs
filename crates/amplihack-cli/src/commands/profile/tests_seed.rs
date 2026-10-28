@@ -398,3 +398,139 @@ mod race_and_nested {
         assert_eq!(m(dir.join("rules/x/r.md")), 0o600);
     }
 }
+
+/// Issue #1699: seeding a new profile leaves out amplihack hook entries whose
+/// `amplihack-hooks` path is missing, or is under the temp dir while the new
+/// profile is not. User hooks and `statusLine` are copied unchanged. `TMPDIR`
+/// is pointed at `test_support::fake_system_tmp_base()/tmp` under
+/// `env_lock()`, so the fixture's profile root counts as outside the temp dir.
+#[cfg(unix)]
+#[test]
+fn seeding_leaves_out_unsafe_amplihack_hook_paths() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let (d, source, store) = fixture();
+    let base = d.path().canonicalize().unwrap();
+    // A stand-in temp dir that outlives this test (see fake_system_tmp_base);
+    // the fixture's profile root is outside it.
+    let tmp = crate::test_support::fake_system_tmp_base().join("tmp");
+    let temp_case = tempfile::tempdir_in(&tmp).unwrap();
+    let temp_bin = temp_case.path().join("home/.local/bin/amplihack-hooks");
+    fs::create_dir_all(temp_bin.parent().unwrap()).unwrap();
+    fs::write(&temp_bin, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&temp_bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let missing = base.join("gone/amplihack-hooks");
+
+    let status = serde_json::json!({
+        "type": "command",
+        "command": "amplihack profile statusline -- ccstatusline"
+    });
+    let settings = serde_json::json!({
+        "statusLine": status,
+        "hooks": {
+            "Stop": [{"hooks": [
+                {"type": "command", "command": format!("\"{}\" stop", temp_bin.display())},
+                {"type": "command", "command": format!("\"{}\" stop --key sk-test-SENTINEL", missing.display())},
+                {"type": "command", "command": "echo user-hook"}
+            ]}],
+            "SessionStart": [{"hooks": [
+                {"type": "command", "command": format!("\"{}\" session-start", temp_bin.display())}
+            ]}]
+        }
+    });
+    fs::write(source.join("settings.json"), settings.to_string()).unwrap();
+
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: edition 2024 requires unsafe; the test holds env_lock().
+            unsafe {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("TMPDIR", v),
+                    None => std::env::remove_var("TMPDIR"),
+                }
+            }
+        }
+    }
+    let _restore = Restore(std::env::var_os("TMPDIR"));
+    // SAFETY: as above.
+    unsafe { std::env::set_var("TMPDIR", &tmp) };
+
+    let profile = store.add(&n("work")).unwrap();
+    let text = fs::read_to_string(profile.join("settings.json")).unwrap();
+    let seeded: serde_json::Value = serde_json::from_str(&text).unwrap();
+
+    assert_eq!(
+        seeded["statusLine"], status,
+        "statusLine is copied unchanged"
+    );
+    let stop: Vec<&str> = seeded["hooks"]["Stop"][0]["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|h| h["command"].as_str())
+        .collect();
+    assert_eq!(stop, vec!["echo user-hook"], "{text}");
+    assert!(
+        seeded["hooks"].get("SessionStart").is_none(),
+        "an event left empty is removed: {text}"
+    );
+    assert!(!text.contains(&temp_bin.display().to_string()), "{text}");
+    assert!(!text.contains(&missing.display().to_string()), "{text}");
+}
+
+/// Issue #1699: a source whose amplihack hooks are all safe for the new
+/// profile is copied with its hooks unchanged.
+#[cfg(unix)]
+#[test]
+fn seeding_keeps_safe_amplihack_hook_paths() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    let (d, source, store) = fixture();
+    let base = d.path().canonicalize().unwrap();
+    // The binary is outside the temp dir below, so it is never "temporary".
+    let bin = base.join("home/.local/bin/amplihack-hooks");
+    fs::create_dir_all(bin.parent().unwrap()).unwrap();
+    fs::write(&bin, "#!/bin/sh\n").unwrap();
+    fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+    let hooks = serde_json::json!({
+        "Stop": [{"hooks": [
+            {"type": "command", "command": format!("\"{}\" stop", bin.display())},
+            {"type": "command", "command": "amplihack-hooks stop"}
+        ]}]
+    });
+    fs::write(
+        source.join("settings.json"),
+        serde_json::json!({"hooks": hooks}).to_string(),
+    )
+    .unwrap();
+
+    struct Restore(Option<std::ffi::OsString>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            // SAFETY: edition 2024 requires unsafe; the test holds env_lock().
+            unsafe {
+                match self.0.take() {
+                    Some(v) => std::env::set_var("TMPDIR", v),
+                    None => std::env::remove_var("TMPDIR"),
+                }
+            }
+        }
+    }
+    let _restore = Restore(std::env::var_os("TMPDIR"));
+    // A stand-in temp dir that outlives this test (see fake_system_tmp_base).
+    let tmp = crate::test_support::fake_system_tmp_base().join("tmp");
+    // SAFETY: as above.
+    unsafe { std::env::set_var("TMPDIR", &tmp) };
+
+    let profile = store.add(&n("work")).unwrap();
+    let seeded: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(profile.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(seeded["hooks"], hooks);
+}

@@ -147,6 +147,9 @@ jobs:
       - name: Leaked-rotator detector — finds a left-behind rotate watch daemon (issue #1690)
         shell: bash
         run: bash tests/issue_1690_leaked_rotator_check.sh
+      - name: Real profile root guard — notices a changed profile settings.json (issue #1699)
+        shell: bash
+        run: bash tests/issue_1699_real_root_guard_check.sh
       - name: Migrate skill — refuses the host it is running on (issue #1167)
         shell: bash
         run: bash tests/issue_1167_migrate_same_host_guard.sh
@@ -490,6 +493,26 @@ jobs:
         run: bash scripts/install-pinned-recipe-runner.sh
       - name: Disk + sccache stats (before)
         run: df -h / && sccache --show-stats
+      # Issue #1699: a real-looking profile root that no test may write. The
+      # variable that let a temp-HOME install find real profiles is exported
+      # for every later step, so a test that leaks it writes the sentinel and
+      # the compare step below fails. The snapshot holds paths, sizes and
+      # hashes only and is never uploaded.
+      - name: Real profile root sentinel and snapshot (issue #1699)
+        shell: bash
+        run: |
+          root="$HOME/.claude-profiles"
+          mkdir -p "$root/ci-sentinel"
+          chmod 700 "$root" "$root/ci-sentinel"
+          cat >"$root/ci-sentinel/settings.json" <<'JSON'
+          {
+            "hooks": {"Stop": [{"hooks": [{"type": "command", "command": "\"/usr/local/bin/amplihack-hooks\" stop"}]}]},
+            "statusLine": {"type": "command", "command": "amplihack profile statusline"}
+          }
+          JSON
+          chmod 600 "$root/ci-sentinel/settings.json"
+          echo "AMPLIHACK_CLAUDE_PROFILE_ROOT=$root" >>"$GITHUB_ENV"
+          bash scripts/check-real-profile-root.sh snapshot "$RUNNER_TEMP/profile-root.snap"
       # nextest: better parallelism and lower peak disk than `cargo test`.
       - run: cargo nextest run --workspace --locked
       # Issue #1278: CI is the only place this suite runs WITHOUT git's hook
@@ -523,6 +546,10 @@ jobs:
         if: always()
         shell: bash
         run: bash scripts/check-leaked-rotators.sh
+      - name: Real profile root unchanged (issue #1699)
+        if: always()
+        shell: bash
+        run: bash scripts/check-real-profile-root.sh compare "$RUNNER_TEMP/profile-root.snap"
       - name: Disk + sccache stats (after)
         if: always()
         run: df -h / && sccache --show-stats

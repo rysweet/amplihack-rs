@@ -1044,10 +1044,17 @@ fn write_filtered_settings(raw: &[u8], destination: &Path) -> Result<(), Profile
             "expected a JSON object".into(),
         ));
     };
-    let safe: serde_json::Map<String, serde_json::Value> = settings
+    let mut safe: serde_json::Map<String, serde_json::Value> = settings
         .into_iter()
         .filter(|(key, _)| SHARED_SETTINGS_KEYS.contains(&key.as_str()))
         .collect();
+    // Issue #1699: never seed a missing or temp-dir hooks path.
+    let target = destination.parent().unwrap_or(destination);
+    for path in super::hook_path_guard::strip_unsafe_hooks(&mut safe, target) {
+        eprintln!(
+            "⚠️  New profile: left out amplihack hook {path:?} (missing, unsafe or temporary)"
+        );
+    }
     if safe.is_empty() {
         return Ok(());
     }

@@ -411,6 +411,15 @@ pub(crate) fn ensure_framework_installed_with<W: std::io::Write>(notice: &mut W)
             return Ok(());
         }
     }
+    // Issue #1699: never write a hooks path that does not exist or is not
+    // safe to run. Warn and carry on; `amplihack install` repairs it.
+    if let Err(reason) = crate::commands::profile::hook_path_guard::check_hook_binary(&hooks_bin) {
+        tracing::warn!(hooks_bin = ?hooks_bin, "hook auto-repair skipped");
+        eprintln!(
+            "amplihack: warning: hook auto-repair skipped ({reason}). Run `amplihack install`."
+        );
+        return Ok(());
+    }
     tracing::warn!("hooks not registered in settings.json — auto-repairing");
     let timestamp = unix_timestamp();
     let (settings_ok, _events) =

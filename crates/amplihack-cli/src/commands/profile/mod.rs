@@ -12,6 +12,7 @@ mod auto_switch;
 mod default_live;
 #[cfg(unix)]
 mod duplicates;
+pub(crate) mod hook_path_guard;
 #[cfg(unix)]
 mod limit_wait;
 #[cfg(unix)]
@@ -37,6 +38,8 @@ mod tests_default_live;
 mod tests_docs_sync;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
+#[cfg(all(test, unix))]
+mod tests_hook_path_guard;
 #[cfg(all(test, unix))]
 mod tests_login_check;
 #[cfg(test)]
@@ -77,7 +80,7 @@ use root_cmd::{render_list, render_show};
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
-pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
+pub(crate) use settings_refresh::{Refresh, refresh_profile_settings_guarded};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;

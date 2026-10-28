@@ -274,3 +274,37 @@ impl Drop for ClearedGraphDbEnv {
         }
     }
 }
+
+/// Issue #1699: a stand-in for the system temp dir, for in-process tests that
+/// point `TMPDIR` at it (under `env_lock()`) so that a sibling counts as
+/// "outside the temp dir". Returns `<base>`: `<base>/tmp` is the stand-in, and
+/// every other path under `<base>` is outside it. Tests make their own
+/// subdirs with `tempfile::tempdir_in`.
+///
+/// One per test process, and never removed while tests run: a parallel test
+/// that does not hold `env_lock()` may create its own tempdir inside
+/// `<base>/tmp` while `TMPDIR` points there. It is removed at process exit.
+#[cfg(unix)]
+pub(crate) fn fake_system_tmp_base() -> &'static Path {
+    static BASE: OnceLock<PathBuf> = OnceLock::new();
+    BASE.get_or_init(|| {
+        let dir = tempfile::Builder::new()
+            .prefix("amplihack-1699-")
+            .tempdir()
+            .expect("create the fake temp dir base")
+            .keep();
+        let dir = dir
+            .canonicalize()
+            .expect("canonicalise the fake temp dir base");
+        std::fs::create_dir_all(dir.join("tmp")).expect("create the fake temp dir");
+        extern "C" fn remove_at_exit() {
+            if let Some(base) = BASE.get() {
+                let _ = std::fs::remove_dir_all(base);
+            }
+        }
+        // SAFETY: registering a plain `extern "C"` function has no
+        // preconditions; it runs once, at normal process exit.
+        unsafe { libc::atexit(remove_at_exit) };
+        dir
+    })
+}

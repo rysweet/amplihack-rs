@@ -649,6 +649,17 @@ Rules:
   (never a symlink), is rewritten atomically with mode `0600` only when it
   changes, and is never created. A file that cannot be read, parsed or
   written is reported and skipped; the install still succeeds.
+- Before any hook is written into a profile, the `amplihack-hooks` path is
+  checked (issue #1699). It must be an absolute path to an existing regular
+  file; on Unix it must be executable, owned by the user or root and not
+  writable by group or others. If it is under the system temp dir
+  (`std::env::temp_dir()`), the profile directory must be under it too. On
+  failure, `amplihack install` skips that profile without opening its file
+  (`⚠️ Profile <name>: settings.json not refreshed (<reason>)`), and seeding
+  leaves out only the amplihack hook entries whose path fails, keeping user
+  hooks, `statusLine` and the other keys. A bare `amplihack-hooks` command
+  (found through `PATH`) has no path to check and is copied unchanged. See
+  [Keep Tests from Writing Real Profiles](../howto/keep-tests-from-writing-real-profiles.md#what-stops-a-bad-hook-path).
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.

@@ -54,6 +54,14 @@ amplihack's hook entries with the ones it writes to `~/.claude/settings.json`
 and leaves the rest of the file alone. A profile without a `settings.json` is
 left without one.
 
+If the `amplihack-hooks` binary is missing, is not safe to run (not
+executable, owned by another user, or writable by group or others), or sits
+in a temporary directory while the profile does not, the profile is skipped
+with a warning instead.
+This stops an install run with a temporary `HOME` from writing hook paths
+that later disappear; see
+[Keep Tests from Writing Real Profiles](./keep-tests-from-writing-real-profiles.md).
+
 Never copied: `.credentials.json`, `.claude.json`, `history*`,
 `sessions/`, `todos/`, `statsig/`, `shell-snapshots/`, `ide/`, and anything else not
 on the allowlist (so plugins and MCP server settings are not carried over), and the `env` and `apiKeyHelper` settings keys (and any other
