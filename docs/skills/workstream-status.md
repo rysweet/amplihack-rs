@@ -181,12 +181,13 @@ command only reads: it records no readings and changes no profile.
 
 ` (live)` marks the profile whose login is in `~/.claude`.
 
-A profile is an API-key profile when its stored configuration holds an API-key
-credential: a non-empty `primaryApiKey` in its `.claude.json`, or an
-`apiKeyHelper` or `env.ANTHROPIC_API_KEY` entry in its `settings.json`. The
-profile's name plays no part. The command checks only that the entry is
-present and never reads or prints its value. No probe runs for an API-key
-profile.
+A profile is an API-key profile when it is named `api-key`, or when its stored
+configuration holds an API-key setting: a `primaryApiKey` in its
+`.claude.json`, or an `apiKeyHelper` or `env.ANTHROPIC_API_KEY` entry in its
+`settings.json`. The name is checked first, and then no file is read. For the
+settings, only the entry's presence counts, so an empty `primaryApiKey` counts
+too. The command never reads or prints a key's value. No probe runs for an
+API-key profile.
 
 ## Manifest file
 
@@ -277,6 +278,13 @@ repositories are fetched in parallel; more repositories give a warning. A call
 that fails or times out leaves that part unknown and the rest of the table is
 still printed.
 
+The command looks at most 4,096 entries in the recipe log directory and in
+each auto-drive state directory. Past that it prints one warning, such as
+`warning: more than 4096 entries in the recipe log directory; some runs may be
+missing`, and lists what it read. When the recipe log directory cannot be
+found at all, it warns `warning: recipe log directory cannot be resolved; no
+runs listed`. Neither warning names a path.
+
 ## Privacy and safety
 
 - The meta file holds no task text, URLs, tokens or other environment values.
@@ -297,7 +305,7 @@ still printed.
 | Code | Meaning |
 | --- | --- |
 | `0` | The table was printed, including when some parts are unknown or timed out. |
-| `2` | Usage error, or an explicit `--manifest` that is a symlink, is not a regular file, is missing or cannot be read. |
+| `2` | Usage error, an explicit `--manifest` that is a symlink, is not a regular file, is missing or cannot be read, or a table that cannot be written to stdout. A closed pipe, as in `amplihack workstreams status \| head`, still exits 0. |
 
 ## Related
 

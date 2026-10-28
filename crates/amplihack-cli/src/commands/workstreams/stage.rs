@@ -39,8 +39,8 @@ pub(crate) struct RunFacts {
     pub autodrive: Option<AutoDriveState>,
     /// The log pointer's final exit code.
     pub exit_code: Option<i32>,
-    /// The end of the log, for the usage-limit classifier only.
-    pub log_tail: Vec<u8>,
+    /// The end of its log reads as a usage-limit stop ([`tail_shows_limit`]).
+    pub stopped_on_limit: bool,
     pub started: Option<DateTime<Utc>>,
 }
 
@@ -171,7 +171,7 @@ pub(crate) fn status(f: &RunFacts, now: DateTime<Utc>) -> Status {
     let marker = if f.live {
         Marker::Live
     } else {
-        parts.push(reason(f, now).to_string());
+        parts.push(reason(f));
         Marker::Waiting
     };
     parts.push(elapsed);
@@ -198,8 +198,8 @@ fn rounds_text(name: &str, rounds: u32) -> String {
 
 /// Why a run that is not live is not running. Fixed text only: the log is
 /// classified, never quoted.
-fn reason(f: &RunFacts, now: DateTime<Utc>) -> String {
-    if limit_message(&f.log_tail, b"", now.timestamp()).is_some() {
+fn reason(f: &RunFacts) -> String {
+    if f.stopped_on_limit {
         return "stopped on a usage limit".to_string();
     }
     match f.exit_code {
@@ -207,6 +207,14 @@ fn reason(f: &RunFacts, now: DateTime<Utc>) -> String {
         Some(code) => format!("failed (exit {code})"),
         None => "(waiting or stopped)".to_string(),
     }
+}
+
+/// The end of a log reads as a harness usage-limit stop. Discovery calls this
+/// as it reads each log and keeps only the answer, so the 64 KiB tails of
+/// thousands of runs are never held at once. The reset time is not used, so
+/// the clock passed to the classifier does not matter.
+pub(crate) fn tail_shows_limit(tail: &[u8]) -> bool {
+    limit_message(tail, b"", 0).is_some()
 }
 
 /// Time since `started`: `<1m`, `Nm`, `NhMMm` or `NdNh`; `?` when the start

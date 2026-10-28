@@ -16,7 +16,8 @@
 //! - `autodrive`: `parse_layout(&str) -> Result<Layout>`, `layout() -> &'static Layout`,
 //!   `state_root(Option<&OsStr>, &Path) -> PathBuf`,
 //!   `state_key(Option<&str>, &str) -> String`, `read(&Path) -> Option<AutoDriveState>`,
-//!   `AutoDriveState { phases, crusty_rounds, merge_ready_rounds, concerns }` (`Default`).
+//!   `AutoDriveState { phases, crusty_rounds, merge_ready_rounds, concerns, truncated }`
+//!   (`Default`).
 //! - `sources`: traits `Clock`, `LiveSessions`, `PrSource`, `GitOrigin`,
 //!   `UsageSource`; structs `LiveSession`, `Pr` (deserialises `gh pr list
 //!   --json` output), `ProfileInfo`, `UsageStream`, `Sources`.
@@ -25,7 +26,9 @@
 //! - `manifest`: `ManifestRow`, `parse`, `merge`, `Entry`.
 //! - `discover`: `Scope`, `scope_from_env`, `Run` (`Default`, `Clone`),
 //!   `Discovery { runs, warnings }`, `discover(&Path, &Scope) -> Discovery`.
-//! - `logins`: `LoginCell`, `LoginRow`, `is_api_key_profile(&Path) -> bool`,
+//! - `logins`: `LoginCell`, `LoginRow`, `is_api_key_profile(&Path) -> bool`
+//!   (true for a profile dir named `api-key`, else by the presence of a
+//!   stored API-key setting, never its value),
 //!   `cell_from(&UsageReport) -> LoginCell`, `collect(UsageStream, Instant) -> Vec<LoginRow>`.
 //! - `render`: `WIDTH`, `bar(u8, usize)`, `fit(&str, usize)`, `WorkRow`,
 //!   `Report`, `render(&Report) -> String`.
@@ -348,6 +351,7 @@ fn ad(
         crusty_rounds: crusty,
         merge_ready_rounds: merge_ready,
         concerns,
+        truncated: false,
     })
 }
 
@@ -624,7 +628,9 @@ fn an_unknown_pr_lookup_says_so_instead_of_guessing() {
 fn a_usage_limit_in_the_log_tail_is_the_reason() {
     let s = stage::status(
         &RunFacts {
-            log_tail: b"...\nYou've hit your session limit \xc2\xb7 resets 4pm (UTC)\n".to_vec(),
+            stopped_on_limit: stage::tail_shows_limit(
+                b"...\nYou've hit your session limit \xc2\xb7 resets 4pm (UTC)\n",
+            ),
             exit_code: Some(1),
             ..facts()
         },
@@ -2106,13 +2112,14 @@ fn api_profile(kind: &str) -> tempfile::TempDir {
 
 #[test]
 fn api_key_profiles_are_detected_from_stored_settings() {
-    for kind in ["primary", "helper", "env"] {
+    // Presence decides, never the value: an empty key still counts.
+    for kind in ["primary", "empty-primary", "helper", "env"] {
         assert!(
             logins::is_api_key_profile(api_profile(kind).path()),
             "{kind}"
         );
     }
-    for kind in ["empty-primary", "oauth", "none"] {
+    for kind in ["oauth", "none"] {
         assert!(
             !logins::is_api_key_profile(api_profile(kind).path()),
             "{kind}"
@@ -2121,10 +2128,22 @@ fn api_key_profiles_are_detected_from_stored_settings() {
 }
 
 #[test]
-fn the_profile_name_plays_no_part_in_api_key_detection() {
+fn a_profile_named_api_key_is_an_api_key_profile() {
+    // D16: the name decides, even with an empty login file and no settings.
     let t = tempfile::tempdir().unwrap();
     let dir = t.path().join("api-key");
     private_dir(&dir);
+    private_file(&dir.join(".claude.json"), "{}");
+    assert!(logins::is_api_key_profile(&dir));
+}
+
+#[test]
+fn a_profile_with_another_name_and_empty_files_is_not_an_api_key_profile() {
+    let t = tempfile::tempdir().unwrap();
+    let dir = t.path().join("work");
+    private_dir(&dir);
+    private_file(&dir.join(".claude.json"), "{}");
+    private_file(&dir.join("settings.json"), "{}");
     assert!(!logins::is_api_key_profile(&dir));
 }
 
@@ -2630,6 +2649,9 @@ fn no_source_spawns_a_shell() {
         if path.file_name().is_some_and(|n| n == "tests.rs") {
             continue;
         }
+        if !path.is_file() || path.extension().is_none_or(|e| e != "rs") {
+            continue;
+        }
         let text = fs::read_to_string(&path).unwrap();
         for bad in [
             r#"Command::new("sh")"#,
@@ -2638,5 +2660,122 @@ fn no_source_spawns_a_shell() {
         ] {
             assert!(!text.contains(bad), "{} contains {bad}", path.display());
         }
+    }
+}
+
+// =========================================================== review fixes
+
+/// T7: a listing past the entry cap warns once, without the path, and still
+/// lists runs.
+#[test]
+fn a_log_dir_past_the_entry_cap_warns_once_and_still_lists_runs() {
+    let (_t, dir) = log_dir();
+    for i in 0..5000 {
+        private_file(&dir.join(format!("run-{i:04}.log")), "");
+    }
+    let found = discover::discover(&dir, &Scope::All);
+    assert!(!found.runs.is_empty());
+    assert_eq!(found.warnings.len(), 1, "{:?}", found.warnings);
+    assert!(
+        found.warnings[0].contains("more than 4096 entries in the recipe log directory"),
+        "{:?}",
+        found.warnings
+    );
+    assert!(!found.warnings[0].contains(dir.to_str().unwrap()));
+}
+
+#[test]
+fn a_log_dir_under_the_entry_cap_gives_no_warning() {
+    let (_t, dir) = log_dir();
+    add_run(&dir, "r", MetaFixture::default());
+    assert!(discover::discover(&dir, &Scope::All).warnings.is_empty());
+}
+
+#[test]
+fn an_autodrive_dir_past_the_entry_cap_is_marked_truncated() {
+    let (_t, dir) = state_dir();
+    assert!(!autodrive::read(&dir).unwrap().truncated);
+    for i in 0..5000 {
+        private_file(&dir.join(format!("junk-{i:04}")), "");
+    }
+    assert!(autodrive::read(&dir).unwrap().truncated);
+}
+
+struct TokenGit;
+impl GitOrigin for TokenGit {
+    fn origin(&self, _cwd: &Path) -> Option<String> {
+        Some("https://user:SECRETTOKEN@host/o/r.git".to_string())
+    }
+}
+
+/// T10: a credential in the origin URL reaches neither stdout nor stderr.
+#[test]
+fn an_origin_url_credential_never_reaches_the_output() {
+    let (t, dir) = log_dir();
+    let cwd = t.path().to_str().unwrap().to_string();
+    add_run(
+        &dir,
+        "amp-a",
+        MetaFixture {
+            parent_session_id: Some("S"),
+            issue: Some(1710),
+            cwd: Some(&cwd),
+            ..Default::default()
+        },
+    );
+    let (live, prs, usage) = (
+        FakeLive::default(),
+        FakePrs::default(),
+        FakeUsage::new(UsageMode::Immediate),
+    );
+    let src = Sources {
+        git: &TokenGit,
+        ..sources(&dir, &live, &prs, &usage)
+    };
+    let (code, out, err) = run_cmd(
+        &args(false, None, true, None),
+        &src,
+        &env_of(&[("AMPLIHACK_SESSION_ID", "S")]),
+    );
+    assert_eq!(code, 0);
+    assert!(!out.contains("SECRETTOKEN"), "{out}");
+    assert!(!err.contains("SECRETTOKEN"), "{err}");
+    assert!(out.contains("PR state unknown"), "{out}");
+}
+
+struct FailingWriter(std::io::ErrorKind);
+impl std::io::Write for FailingWriter {
+    fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+        Err(self.0.into())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Err(self.0.into())
+    }
+}
+
+#[test]
+fn a_failed_stdout_write_exits_two_and_a_closed_pipe_exits_zero() {
+    let (_t, dir) = log_dir();
+    let (live, prs, usage) = (
+        FakeLive::default(),
+        FakePrs::default(),
+        FakeUsage::new(UsageMode::Immediate),
+    );
+    let src = sources(&dir, &live, &prs, &usage);
+    let env = env_of(&[("AMPLIHACK_SESSION_ID", "S")]);
+    for (kind, want) in [
+        (std::io::ErrorKind::BrokenPipe, 0),
+        (std::io::ErrorKind::Other, 2),
+    ] {
+        let mut err = Vec::new();
+        let code = run_with(
+            &args(false, None, true, None),
+            &src,
+            &env,
+            &mut FailingWriter(kind),
+            &mut err,
+        );
+        assert_eq!(code, want, "{kind:?}");
+        assert!(err.is_empty(), "{}", String::from_utf8_lossy(&err));
     }
 }

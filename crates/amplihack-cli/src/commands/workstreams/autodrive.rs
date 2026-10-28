@@ -146,6 +146,8 @@ pub(crate) struct AutoDriveState {
     pub merge_ready_rounds: u32,
     /// `concern_count` of the latest crusty round.
     pub concerns: Option<u32>,
+    /// The dir held more than [`MAX_ENTRIES`] entries, so rounds may be undercounted.
+    pub truncated: bool,
 }
 
 /// Read the state dir `dir`. `None` when it is missing, a symlink, not owned
@@ -165,17 +167,26 @@ pub(crate) fn read(dir: &Path) -> Option<AutoDriveState> {
                 .filter(|p| !p.is_empty())
                 .collect()
         })
+        // A missing or unreadable phases file shows an empty progress column
+        // on purpose: the column is display-only.
         .unwrap_or_default();
-    let names: Vec<String> = fs::read_dir(dir)
+    // One entry past the cap tells a full listing from a cut one.
+    let mut listed: Vec<fs::DirEntry> = fs::read_dir(dir)
         .map(|entries| {
             entries
-                .take(MAX_ENTRIES)
+                .take(MAX_ENTRIES + 1)
                 .filter_map(|e| e.ok())
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
-                .filter_map(|e| e.file_name().into_string().ok())
                 .collect()
         })
+        // An unlistable dir counts no rounds, on purpose, as above.
         .unwrap_or_default();
+    let truncated = listed.len() > MAX_ENTRIES;
+    listed.truncate(MAX_ENTRIES);
+    let names: Vec<String> = listed
+        .into_iter()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect();
     let concerns = meta::read_private(
         &dir.join(format!("{}{}", l.loop_crusty, l.latest_suffix)),
         MAX_STATE_BYTES,
@@ -188,6 +199,7 @@ pub(crate) fn read(dir: &Path) -> Option<AutoDriveState> {
         crusty_rounds: rounds(dir, &names, &l.loop_crusty),
         merge_ready_rounds: rounds(dir, &names, &l.loop_merge_ready),
         concerns,
+        truncated,
     })
 }
 

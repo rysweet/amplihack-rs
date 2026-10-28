@@ -65,8 +65,8 @@ pub(crate) struct Run {
     /// The meta file's start time, else the log pointer's; never a file time.
     pub started: Option<DateTime<Utc>>,
     pub exit_code: Option<i32>,
-    /// The end of the log, for the usage-limit classifier only.
-    pub log_tail: Vec<u8>,
+    /// The end of the log reads as a usage-limit stop.
+    pub stopped_on_limit: bool,
 }
 
 #[derive(Debug, Default)]
@@ -101,9 +101,20 @@ pub(crate) fn discover(log_dir: &Path, scope: &Scope) -> Discovery {
             .push("warning: the recipe log directory cannot be listed; no runs listed".to_string());
         return found;
     };
-    let mut sessions: Vec<String> = entries
-        .take(MAX_ENTRIES)
+    // One entry past the cap tells a full listing from a cut one.
+    let mut listed: Vec<fs::DirEntry> = entries
+        .take(MAX_ENTRIES + 1)
         .filter_map(|e| e.ok())
+        .collect();
+    if listed.len() > MAX_ENTRIES {
+        listed.truncate(MAX_ENTRIES);
+        found.warnings.push(format!(
+            "warning: more than {MAX_ENTRIES} entries in the recipe log directory; \
+             some runs may be missing"
+        ));
+    }
+    let mut sessions: Vec<String> = listed
+        .into_iter()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
         .filter_map(|e| e.file_name().into_string().ok())
         .filter_map(|name| name.strip_suffix(".log").map(str::to_string))
@@ -184,6 +195,6 @@ fn build_run(log_dir: &Path, session: &str, m: Option<&RunMeta>) -> Run {
         cwd,
         started: m.and_then(|m| m.started_at).or(info.started),
         exit_code: info.exit_code,
-        log_tail: info.tail,
+        stopped_on_limit: super::stage::tail_shows_limit(&info.tail),
     }
 }

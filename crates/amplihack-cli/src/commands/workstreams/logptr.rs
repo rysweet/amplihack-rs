@@ -64,7 +64,11 @@ pub(crate) fn read(log: &Path) -> LogInfo {
     let len = meta.len();
     let (head, tail) = if len <= 2 * EDGE_BYTES {
         let mut all = Vec::new();
-        if file.read_to_end(&mut all).is_err() {
+        if (&mut file)
+            .take(2 * EDGE_BYTES)
+            .read_to_end(&mut all)
+            .is_err()
+        {
             return LogInfo::default();
         }
         let tail_start = all.len().saturating_sub(EDGE_BYTES as usize);

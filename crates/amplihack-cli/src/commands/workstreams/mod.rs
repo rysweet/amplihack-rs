@@ -79,7 +79,12 @@ pub fn dispatch(command: WorkstreamsCommands) -> anyhow::Result<()> {
 
 fn run(args: &WorkstreamsStatusArgs) -> i32 {
     let home = crate::user_config::home_dir();
-    let log_dir = crate::commands::recipe::detach::log_dir().ok();
+    let log_dir = crate::commands::recipe::detach::log_dir();
+    if log_dir.is_err() {
+        // A fixed message: the error text could name a path.
+        eprintln!("warning: recipe log directory cannot be resolved; no runs listed");
+    }
+    let log_dir = log_dir.ok();
     let state_root = home
         .as_deref()
         .map(|h| autodrive::state_root(std::env::var_os("AMPLIHACK_STATE_DIR").as_deref(), h));
@@ -103,7 +108,8 @@ fn run(args: &WorkstreamsStatusArgs) -> i32 {
 }
 
 /// The whole command over injected sources. Returns the exit code: 0, or 2
-/// for an explicit `--manifest` that cannot be read.
+/// for an explicit `--manifest` that cannot be read or a table that cannot be
+/// written (a closed pipe still gives 0).
 pub(crate) fn run_with(
     args: &WorkstreamsStatusArgs,
     src: &Sources<'_>,
@@ -128,12 +134,9 @@ pub(crate) fn run_with(
         let deadline = begun + Duration::from_secs(secs);
         match src.usage.start(Duration::from_secs(secs)) {
             Ok(stream) => Some((stream, deadline)),
-            Err(e) => {
-                let _ = writeln!(
-                    err,
-                    "warning: login usage cannot be read: {}",
-                    sanitize_display(&format!("{e:#}"), false)
-                );
+            Err(_) => {
+                // A fixed message: an error chain could name a profile path.
+                let _ = writeln!(err, "warning: login usage cannot be read");
                 None
             }
         }
@@ -156,6 +159,7 @@ pub(crate) fn run_with(
     let now = src.clock.now().to_utc();
 
     let entries = manifest::merge(manifest_rows, runs);
+    let mut state_truncated = false;
     let rows = entries
         .into_iter()
         .map(|e| {
@@ -194,6 +198,7 @@ pub(crate) fn run_with(
                 let root = src.state_root.as_deref()?;
                 read_autodrive(root, r.origin.as_deref(), pr_number, run.branch.as_deref())
             });
+            state_truncated |= autodrive.as_ref().is_some_and(|a| a.truncated);
             let live_entry = live_created.get(run.session.as_str());
             let facts = RunFacts {
                 queued: false,
@@ -202,7 +207,7 @@ pub(crate) fn run_with(
                 autodrive,
                 exit_code: run.exit_code,
                 started: run.started.or_else(|| live_entry.copied().flatten()),
-                log_tail: run.log_tail,
+                stopped_on_limit: run.stopped_on_limit,
             };
             WorkRow {
                 label: e.label,
@@ -212,6 +217,14 @@ pub(crate) fn run_with(
             }
         })
         .collect();
+    if state_truncated {
+        // No path: the state dir name can hold the origin URL (SR-24).
+        let _ = writeln!(
+            err,
+            "warning: more than 4096 entries in the auto-drive state directory; \
+             some rounds may be missing"
+        );
+    }
 
     let logins = usage.map(|(stream, deadline)| logins::collect(stream, deadline));
     let report = Report {
@@ -220,9 +233,14 @@ pub(crate) fn run_with(
         rows,
         logins,
     };
-    let _ = out.write_all(render::render(&report).as_bytes());
-    let _ = out.flush();
-    0
+    match out
+        .write_all(render::render(&report).as_bytes())
+        .and_then(|()| out.flush())
+    {
+        Ok(()) => 0,
+        Err(e) if e.kind() == std::io::ErrorKind::BrokenPipe => 0,
+        Err(_) => 2,
+    }
 }
 
 /// The logins deadline: the flag, else the environment variable (1–600; a

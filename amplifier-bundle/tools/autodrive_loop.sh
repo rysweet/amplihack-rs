@@ -86,10 +86,14 @@ LOOP_HOME="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)"
 . "${LOOP_HOME}/autodrive_state.sh" 2>/dev/null \
   || { echo "ERROR: autodrive_loop.sh: autodrive_state.sh is missing beside it (${LOOP_HOME:-<unknown>}); the state dir cannot be made private" >&2; exit 2; }
 # The state file names come from autodrive_layout.sh (issue #1710), which
-# autodrive_state.sh has sourced; sourced again here so this file names it.
+# autodrive_state.sh has sourced; sourced again here so this file names it,
+# with the same symlink refusal autodrive_state.sh applies.
 # shellcheck source=autodrive_layout.sh
-. "$(dirname -- "${BASH_SOURCE[0]}")/autodrive_layout.sh" 2>/dev/null \
-  || { echo "ERROR: autodrive_layout.sh not found beside autodrive_loop.sh; the auto-drive state layout is unknown" >&2; exit 2; }
+if [ -f "${LOOP_HOME}/autodrive_layout.sh" ] && [ ! -L "${LOOP_HOME}/autodrive_layout.sh" ]; then
+  . "${LOOP_HOME}/autodrive_layout.sh"
+else
+  echo "ERROR: autodrive_layout.sh not found beside autodrive_loop.sh; the auto-drive state layout is unknown" >&2; exit 2
+fi
 autodrive_private_dir "$STATE_DIR" || exit 2
 CALLER_UMASK="$(umask)"
 umask 077

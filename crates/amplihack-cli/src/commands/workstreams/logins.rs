@@ -2,6 +2,7 @@
 //! probes `amplihack profile usage` runs, collected until a deadline.
 
 use std::collections::HashMap;
+use std::ffi::OsStr;
 use std::path::Path;
 use std::sync::mpsc::RecvTimeoutError;
 use std::time::Instant;
@@ -14,6 +15,8 @@ use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow
 
 /// Settings files larger than this are not read.
 const MAX_SETTINGS_BYTES: u64 = 16 * 1024 * 1024;
+/// The profile name that marks an API-key profile (D16).
+const API_KEY_PROFILE: &str = "api-key";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LoginCell {
@@ -40,7 +43,7 @@ pub(crate) struct LoginRow {
 #[derive(Deserialize)]
 struct ClaudeJson {
     #[serde(rename = "primaryApiKey")]
-    primary_api_key: Option<String>,
+    primary_api_key: Option<serde::de::IgnoredAny>,
 }
 
 #[derive(Deserialize)]
@@ -56,15 +59,18 @@ struct SettingsEnv {
     anthropic_api_key: Option<serde::de::IgnoredAny>,
 }
 
-/// Whether the profile in `dir` holds an API-key credential: a non-empty
-/// `primaryApiKey` in `.claude.json`, or an `apiKeyHelper` or
-/// `env.ANTHROPIC_API_KEY` entry in `settings.json`. The profile's name plays
-/// no part, and no key is kept.
+/// Whether the profile in `dir` is an API-key profile (D16): its name is
+/// `api-key`, which decides before any file is read; else `.claude.json` has
+/// a `primaryApiKey`, or `settings.json` an `apiKeyHelper` or
+/// `env.ANTHROPIC_API_KEY` entry. Only the presence of a setting counts; no
+/// value is ever read.
 pub(crate) fn is_api_key_profile(dir: &Path) -> bool {
+    if dir.file_name() == Some(OsStr::new(API_KEY_PROFILE)) {
+        return true;
+    }
     let primary = meta::read_private(&dir.join(".claude.json"), MAX_SETTINGS_BYTES)
         .and_then(|b| serde_json::from_slice::<ClaudeJson>(&b).ok())
-        .and_then(|c| c.primary_api_key)
-        .is_some_and(|k| !k.is_empty());
+        .is_some_and(|c| c.primary_api_key.is_some());
     if primary {
         return true;
     }
