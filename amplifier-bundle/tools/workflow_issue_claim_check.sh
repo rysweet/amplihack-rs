@@ -41,13 +41,24 @@
 #      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own
 #      keyword, as on GitHub, so `Closes #119, #N` does not claim N.
 #
+#      The reference may also name this repository in full, as GitHub accepts:
+#      `Closes owner/repo#N` and `Fixes https://<host>/owner/repo/issues/N`,
+#      where owner/repo is the slug being checked (case-insensitive). A
+#      reference to another repository's issue N is not a claim on this one,
+#      and if the slug is not plain `owner/repo` only the `#N` form is matched.
+#
 #      This signal is a FALLBACK for signal 1, not a parallel claim. It is
 #      consulted only when GitHub could not have resolved the keywords itself:
 #      closingIssuesReferences is empty AND the PR's base is not the default
 #      branch (GitHub links keywords only on PRs that target the default
 #      branch). When the default branch cannot be established, the first
 #      condition alone applies. Fenced code blocks and inline code spans are
-#      removed before matching, as GitHub ignores keywords inside them.
+#      removed before matching, as GitHub ignores keywords inside them. Both
+#      follow CommonMark closely enough for this purpose: a fence opens only
+#      at the start of a line (up to three spaces of indent), and a code span
+#      is a backtick run closed by a run of exactly the same length. A
+#      mid-line ``` or ~~~, or an unmatched run, is ordinary text and is
+#      matched as such. See strip_code in section 3.
 #
 #      Why so narrow: workflow-written PR bodies routinely quote keyword
 #      examples, earlier PRs and test scenarios. Matched against the raw body
@@ -412,12 +423,24 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # claim-filter-unreadable, and the guard would fail open without a word.
 # `body` is deleted from each selected PR before the split below.
 #
-# strip_code removes fenced blocks first, then inline code spans. An inline
-# span may wrap onto the next line but may not cross a blank line: in
-# CommonMark a blank line ends the paragraph, so a single stray backtick never
-# opens a span that reaches the next paragraph. Without that limit, one
-# unpaired backtick before a real `Fixes #N` would remove the keyword and fail
-# open. `\r` is allowed in the blank line because bodies are often CRLF.
+# strip_code removes fenced blocks first, then inline code spans
+# (CommonMark 0.31, sections 4.5 and 6.1). Every pattern is bounded so that
+# stray punctuation cannot swallow a real `Fixes #N` that follows it, which
+# would fail open:
+#
+#   - A fence opens only at the start of a line, after at most three spaces,
+#     and a paired fence closes only on a line of its own. A ``` or ~~~ in
+#     the middle of a line is text, not a fence. Only a fence that does open
+#     and never closes runs to the end of the body, as CommonMark specifies.
+#   - A code span opens with a backtick run of any length and closes at the
+#     next run of exactly that length; the lookarounds stop a run of two from
+#     being read as two runs of one, so ``Fixes #N`` is removed whole. A run
+#     with no partner is text. A span may wrap onto the next line but may not
+#     cross a blank line, since a blank line ends the paragraph. `\r` is
+#     allowed in the blank line because bodies are often CRLF.
+#
+# jq's regex engine (Oniguruma) supports the backreference and lookbehind
+# used here.
 #
 # The claims are then split in two (#1448). `ours` are the claims this working
 # directory is standing on: same head branch, same repository. They are this
@@ -431,14 +454,18 @@ CLAIMS="$(
     --arg own_head "$OWN_HEAD" \
     --arg cwd_head "$CWD_HEAD" \
     --arg cutoff "$CUTOFF" \
-    --arg default "$DEFAULT_BRANCH" '
+    --arg default "$DEFAULT_BRANCH" \
+    --arg repo "$REPO_SLUG" '
       .[0] as $open
       | .[1] as $merged
+      | (if ($repo | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+         then ($repo | gsub("\\."; "\\."))
+         else "(?!)" end) as $repo_re
       | def strip_code:
-        gsub("```[\\s\\S]*?```"; " ")
-        | gsub("~~~[\\s\\S]*?~~~"; " ")
-        | gsub("(```|~~~)[\\s\\S]*$"; " ")
-        | gsub("`(?:[^`\n]|\n(?![ \t\r]*\n))*`"; " ");
+        gsub("(^|\n)[ ]{0,3}```[^`\n]*\n(?:[\\s\\S]*?\n)?[ ]{0,3}```+[ \t\r]*(?=\n|$)"; "\n")
+        | gsub("(^|\n)[ ]{0,3}~~~[^\n]*\n(?:[\\s\\S]*?\n)?[ ]{0,3}~~~+[ \t\r]*(?=\n|$)"; "\n")
+        | gsub("(^|\n)[ ]{0,3}(```|~~~)[\\s\\S]*$"; "\n")
+        | gsub("(?<!`)(`+)(?!`)(?:[^\n]|\n(?![ \t\r]*\n))*?(?<!`)\\1(?!`)"; " ");
       def body_applies:
         ((.closingIssuesReferences // []) | length == 0)
         and (($default == "") or ((.baseRefName // "") != $default));
@@ -447,7 +474,9 @@ CLAIMS="$(
              then "closing-ref" else empty end),
           (if body_applies
               and ((.body // "") | strip_code
-                   | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*#" + $n + "([^0-9]|$)"; "i"))
+                   | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*"
+                        + "(#|" + $repo_re + "#|https?://[^/[:space:]]+/" + $repo_re + "/issues/)"
+                        + $n + "([^0-9]|$)"; "i"))
              then "body-keyword" else empty end),
           (if ((.title // "") | contains("(#" + $n + ")")) then "title" else empty end),
           (if ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)")) then "branch" else empty end)

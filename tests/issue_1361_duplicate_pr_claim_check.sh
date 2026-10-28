@@ -131,6 +131,20 @@ case "\${FAKE_GH:-none}" in
   body_code_and_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1726,"url":"https://github.com/o/r/pull/1726","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-o","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1726 \`Refs #1\` and then Fixes #1084"}]' || printf '[]\n' ;;
   body_stray_backtick) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1727,"url":"https://github.com/o/r/pull/1727","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-p","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1727 Run the \`make target first.\\n\\nFixes #1084\\n\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
   body_stray_crlf) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1728,"url":"https://github.com/o/r/pull/1728","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-q","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1728 Run the \`make target first.\\r\\n\\r\\nFixes #1084\\r\\n\\r\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
+  # Round 6: a fence opens only at the start of a line, and a code span closes
+  # only on a backtick run of its own length (CommonMark 0.31, 4.5 and 6.1).
+  body_midline_fence) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1729,"url":"https://github.com/o/r/pull/1729","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1729","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1729 Use \`\`\` for code.\\n\\nFixes #1084"}]' || printf '[]\n' ;;
+  body_midline_tilde) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1730,"url":"https://github.com/o/r/pull/1730","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1730","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1730 see ~~~ tilde\\n\\nResolves #1084"}]' || printf '[]\n' ;;
+  body_fence_then_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1731,"url":"https://github.com/o/r/pull/1731","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1731","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1731\\n\\n\`\`\`\\nx\\n\`\`\`\\n\\nFixes #1084"}]' || printf '[]\n' ;;
+  body_mixed_runs) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1732,"url":"https://github.com/o/r/pull/1732","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1732","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1732 \`\`a\`b\`\` and then Fixes #1084"}]' || printf '[]\n' ;;
+  body_double_tick) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1733,"url":"https://github.com/o/r/pull/1733","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1733","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1733 \`\`Fixes #1084\`\`"}]' || printf '[]\n' ;;
+  body_triple_span) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1734,"url":"https://github.com/o/r/pull/1734","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1734","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1734 \`\`\`Fixes #1084\`\`\` inline"}]' || printf '[]\n' ;;
+  body_indented_fence) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1735,"url":"https://github.com/o/r/pull/1735","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1735","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1735\\n\\n   \`\`\`\\nFixes #1084\\n   \`\`\`\\n"}]' || printf '[]\n' ;;
+  # Same-repository long forms, which GitHub links; another repository's are not ours.
+  body_repo_qualified) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1736,"url":"https://github.com/o/r/pull/1736","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1736","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1736 Closes o/r#1084"}]' || printf '[]\n' ;;
+  body_repo_url) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1737,"url":"https://github.com/o/r/pull/1737","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1737","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1737 Fixes https://github.com/o/r/issues/1084"}]' || printf '[]\n' ;;
+  body_repo_case) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1738,"url":"https://github.com/o/r/pull/1738","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1738","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1738 fixes O/R#1084"}]' || printf '[]\n' ;;
+  body_other_repo) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1739,"url":"https://github.com/o/r/pull/1739","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1739","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1739 Closes x/y#1084 and Fixes https://github.com/x/y/issues/1084"}]' || printf '[]\n' ;;
   body_newline)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1717,"url":"https://github.com/o/r/pull/1717","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-h","closingIssuesReferences":[],"body":"BODYTEXT-1717 Fixes\\n#1084"}]' || printf '[]\n' ;;
   big_bodies)      [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
   ratelimit)   echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001. (HTTP 403)' >&2; exit 1 ;;
@@ -206,6 +220,13 @@ run "$WORK/gh" FAKE_GH=body_release_base;  claimed "a PR to a non-default base w
 run "$WORK/gh" FAKE_GH=body_code_and_real; claimed "a body with an inline code span before a real Fixes #N" 1726
 run "$WORK/gh" FAKE_GH=body_stray_backtick; claimed "a body with an unpaired backtick a paragraph before a real Fixes #N" 1727
 run "$WORK/gh" FAKE_GH=body_stray_crlf;     claimed "a CRLF body with an unpaired backtick a paragraph before a real Fixes #N" 1728
+run "$WORK/gh" FAKE_GH=body_midline_fence;   claimed "a body with a mid-line triple backtick before a real Fixes #N" 1729
+run "$WORK/gh" FAKE_GH=body_midline_tilde;   claimed "a body with a mid-line ~~~ before a real Resolves #N" 1730
+run "$WORK/gh" FAKE_GH=body_fence_then_real; claimed "a body with a closed fence before a real Fixes #N" 1731
+run "$WORK/gh" FAKE_GH=body_mixed_runs;      claimed "a body with a double-backtick span holding a single backtick before a real Fixes #N" 1732
+run "$WORK/gh" FAKE_GH=body_repo_qualified;  claimed "a body that says Closes owner/repo#N for this repository" 1736
+run "$WORK/gh" FAKE_GH=body_repo_url;        claimed "a body that says Fixes <issue URL> for this repository" 1737
+run "$WORK/gh" FAKE_GH=body_repo_case;       claimed "a body that names this repository in another case" 1738
 run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=
 claimed "a body keyword when the default branch cannot be established" 1720
 run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH='[]'
@@ -283,6 +304,10 @@ unclaimed body_table_code   "a body keyword inside inline code in a table cell"
 unclaimed body_fenced       "a body keyword inside a fenced code block"
 unclaimed body_unclosed     "a body keyword inside an unclosed fence"
 unclaimed body_prose_linked "a prose fix #N next to non-empty closingIssuesReferences"
+unclaimed body_double_tick    "a body keyword inside a double-backtick span"
+unclaimed body_triple_span    "a body keyword inside a mid-line triple-backtick span"
+unclaimed body_indented_fence "a body keyword inside a fence indented three spaces"
+unclaimed body_other_repo     "a closing keyword naming another repository's issue N"
 
 # The default branch comes from the local origin/HEAD when there is one, with
 # the origin/ prefix stripped, and the API is then not asked. The fake API is
