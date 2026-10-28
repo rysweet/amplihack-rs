@@ -7,9 +7,10 @@ use super::ledger::{
     LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, active_blocks, prune_blocks,
 };
 use super::log::{Sink, msg};
+use super::observe::rotated;
 use super::overflow::Tag;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation};
+use crate::commands::profile::auto_switch::kit::capacity_from_rotation;
 use crate::commands::profile::name::ProfileName;
 use std::path::Path;
 
@@ -111,9 +112,11 @@ pub fn stay_note(
     Some(msg::stay_on_overflow(live, next_plan_reset))
 }
 
-/// Rewrites the no-capacity file from this cycle's readings: the live
-/// profile's and every other candidate's, as measured. On credits it reads
-/// `ok`, since work can go on.
+/// Rewrites the no-capacity file from this cycle's readings
+/// ([`rotated`]: the live profile's and every other candidate's, as
+/// measured). On credits it reads `ok`, since work can go on: the
+/// limit-resume hook and the recipe-run wait must see overflow as capacity
+/// (issue #1694 point 4), so the tag is passed through, never dropped.
 pub fn refresh_capacity(
     root: &Path,
     live: Option<&ProfileName>,
@@ -122,17 +125,12 @@ pub fn refresh_capacity(
     t: i64,
     tag: Option<Tag>,
 ) {
-    let of = |r: &Reading| match *r {
-        Reading::Measured { session, week } => Rotated::Measured { session, week },
-        Reading::Exhausted => Rotated::Exhausted,
-        Reading::Failed => Rotated::Failed,
-    };
-    let readings: Vec<(ProfileName, Rotated)> = live
-        .map(|n| (n.clone(), of(reading)))
-        .into_iter()
-        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
-        .collect();
-    capacity_from_rotation(root, &readings, t, Tag::on_overflow(tag));
+    capacity_from_rotation(
+        root,
+        &rotated(live, reading, others),
+        t,
+        Tag::on_overflow(tag),
+    );
 }
 
 /// Records the cycle as ended at `t` with `outcome`, after measuring from

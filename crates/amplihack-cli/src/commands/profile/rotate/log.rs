@@ -160,6 +160,34 @@ pub fn open_or_warn(log: &Path, rotated: &Path) -> Option<RotateLog> {
         .ok()
 }
 
+/// `p` for a shell command (issue #1693): bare when every byte is in
+/// `A-Za-z0-9/._+-`, else single-quoted with each `'` written as `'\''`.
+/// `None` for a path that is not UTF-8 or has a control or
+/// bidirectional-override character, which no command may show.
+pub fn sh_quote(p: &Path) -> Option<String> {
+    let s = p.to_str()?;
+    if s.chars().any(super::ledger::unprintable) {
+        return None;
+    }
+    let bare = |b: u8| b.is_ascii_alphanumeric() || b"/._+-".contains(&b);
+    if !s.is_empty() && s.bytes().all(bare) {
+        return Some(s.to_string());
+    }
+    Some(format!("'{}'", s.replace('\'', r"'\''")))
+}
+
+/// `s` cut to at most `max` bytes on a character boundary.
+pub fn cut(s: &str, max: usize) -> String {
+    if s.len() <= max {
+        return s.to_string();
+    }
+    let mut end = max;
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    s[..end].to_string()
+}
+
 /// The message grammar of docs/reference/profile-command.md, Rotate log.
 pub mod msg {
     use super::{Reading, Reason};
@@ -257,73 +285,19 @@ pub mod msg {
         )
     }
 
+    /// `~/.claude.json` could not be read: no recovery and no swap, and no
+    /// `/login` advice, which would replace `live`'s login (#1702).
+    pub fn home_unreadable(live: &ProfileName) -> String {
+        format!(
+            "ALERT: the account in ~/.claude.json cannot be read (live={live}); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace {live}'s login"
+        )
+    }
+
     pub fn inconsistent(reason: &str) -> String {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
     }
 
-    /// `<time>` for a known reset, else `unknown`.
-    fn reset(at: Option<i64>) -> String {
-        at.map_or_else(|| "unknown".to_string(), super::timestamp)
-    }
-
-    /// After an `overflow-in` swap onto `to`.
-    pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
-        format!(
-            "overflow: on {to}; no plan profile has capacity, next plan reset {}",
-            reset(next_reset)
-        )
-    }
-
-    /// A stay on overflow profile `live` that the previous cycle did not
-    /// record as on credits.
-    pub fn stay_on_overflow(live: &ProfileName, next_reset: Option<i64>) -> String {
-        format!(
-            "overflow: staying on {live}; no plan profile has capacity, next plan reset {}",
-            reset(next_reset)
-        )
-    }
-
-    /// After a swap off overflow profile `from` onto plan profile `to`.
-    pub fn off_overflow(from: &ProfileName, to: &ProfileName) -> String {
-        format!("overflow: off {from}; back on plan profile {to}")
-    }
-
-    /// A spend block was recorded for overflow profile `name`.
-    pub fn alert_spend_limit(name: &ProfileName, until: i64) -> String {
-        format!(
-            "ALERT: overflow profile {name} hit its spend limit; blocked until {}",
-            super::timestamp(until)
-        )
-    }
-
-    /// The spend-limit ALERT for an overflow profile that a `profile switch`
-    /// pin holds the live login on. The rotator will not move off it while
-    /// pinned, so the line says how to release it.
-    pub fn alert_spend_limit_pinned(name: &ProfileName, until: i64) -> String {
-        format!(
-            "ALERT: overflow profile {name} hit its spend limit; blocked until {}; \
-             rotation is held on it by `profile switch`, so run \
-             `amplihack profile switch --none` to move off it",
-            super::timestamp(until)
-        )
-    }
-
-    /// `profile switch` refuses an overflow profile with an active spend
-    /// block.
-    pub fn switch_spend_blocked(name: &ProfileName, until: i64) -> String {
-        format!(
-            "overflow profile {name} is blocked for its spend limit until {}; \
-             clear the block with `amplihack profile overflow clear {name}` once \
-             credits are added",
-            super::timestamp(until)
-        )
-    }
-
-    /// A spend limit on overflow profile `name` that could not be stored
-    /// as a block, and why. The cycle still leaves the profile alone.
-    pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
-        format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
-    }
+    pub use super::super::overflow_msg::*;
 
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {
@@ -350,5 +324,33 @@ pub mod msg {
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")
+    }
+
+    /// Written every cycle while `name` is in the ledger's `lost_login`.
+    pub fn lost_login(name: &ProfileName) -> String {
+        format!(
+            "ALERT: profile {name} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {name}"
+        )
+    }
+
+    /// Written once, when `name` is not added to the full `lost_login`
+    /// list and so gets no [`lost_login`] line.
+    pub fn lost_login_cap(name: &ProfileName) -> String {
+        format!(
+            "ALERT: profile {name} has no login anywhere, and the list of such profiles is full, so this is not repeated. Run: amplihack profile login {name}"
+        )
+    }
+
+    /// Hand-change recovery, case A: `m` had no login of its own.
+    pub fn recovered_record(m: &ProfileName, l: &ProfileName) -> String {
+        format!("recovered: ~/.claude holds {m}'s login (ledger named {l}); recorded {m} as live")
+    }
+
+    /// Hand-change recovery, case B: `m`'s own copy was moved to `to`.
+    pub fn recovered_moved(m: &ProfileName, to: &std::path::Path) -> String {
+        format!(
+            "recovered: ~/.claude and {m} held the same account; kept ~/.claude, moved {m}'s copy to {}; recorded {m} as live",
+            to.display()
+        )
     }
 }

@@ -14,6 +14,8 @@ mod alert;
 #[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
+mod backup;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -26,6 +28,12 @@ mod decide;
 #[cfg(unix)]
 mod gate_record;
 #[cfg(unix)]
+mod guide;
+#[cfg(unix)]
+mod hand_fields;
+#[cfg(unix)]
+mod handfix;
+#[cfg(unix)]
 mod held;
 #[cfg(unix)]
 pub(super) mod identify;
@@ -34,15 +42,23 @@ mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
+mod lost;
+#[cfg(unix)]
 mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod older_readers;
+#[cfg(unix)]
 mod overflow;
+#[cfg(unix)]
+mod overflow_msg;
 #[cfg(unix)]
 mod overflow_record;
 #[cfg(unix)]
 mod pin;
+#[cfg(unix)]
+mod precheck;
 #[cfg(unix)]
 mod prelude;
 #[cfg(unix)]
@@ -68,6 +84,14 @@ mod tests_damp;
 mod tests_decide;
 #[cfg(all(test, unix))]
 mod tests_gate_record;
+#[cfg(all(test, unix))]
+mod tests_handfix;
+#[cfg(all(test, unix))]
+mod tests_handfix_cycle;
+#[cfg(all(test, unix))]
+mod tests_handfix_overflow;
+#[cfg(all(test, unix))]
+mod tests_home_unreadable;
 #[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
@@ -106,11 +130,15 @@ use super::root_config::RootSource;
 use super::store::ProfileStore;
 
 #[cfg(unix)]
+pub(in crate::commands::profile) use autostart::autostart_line;
+#[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
 #[cfg(unix)]
 pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
+#[cfg(unix)]
+pub(crate) use older_readers::warn_foreign_rotator;
 
 // Auto-switch's overflow gate (`gate_record`): the running rotator's own
 // settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
@@ -118,21 +146,6 @@ pub(super) use log::timestamp;
 pub(super) use gate_record::effective_at as overflow_gate_at;
 #[cfg(unix)]
 pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
-
-/// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
-/// the rotator for `root` (default: this environment's root) runs another
-/// amplihack binary, which keeps reading the ledger in its own format until
-/// it is restarted.
-#[cfg(unix)]
-pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
-    let root = match root {
-        Some(r) => Some(r.to_path_buf()),
-        None => amplihack_utils::rotator_status::resolve_root(),
-    };
-    if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
-        eprintln!("{}", ledger::foreign_rotator_note(pid));
-    }
-}
 
 /// The tail of the warning printed after `profile switch NAME` (issue
 /// #1691) while a rotator from another amplihack binary runs: one started
@@ -171,12 +184,6 @@ fn warn_switch_hold(root: &std::path::Path) {
 /// `autostart`. Nothing to start off Unix.
 #[cfg(not(unix))]
 pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
-
-/// The `autostart:` status line for `root`, for `auto-switch status`.
-#[cfg(unix)]
-pub(in crate::commands::profile) fn autostart_line(root: &std::path::Path) -> String {
-    autostart::status_line(autostart::effective(root, &|k| std::env::var_os(k)))
-}
 
 /// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
 /// `watch` go after the subcommand.

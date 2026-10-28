@@ -67,6 +67,8 @@ fn refused(line: &str) -> ProfileError {
     ProfileError::RotateRefused(reason_of(line))
 }
 
+const GUIDED: &str = "~/.claude was logged in by hand; the next rotate cycle recovers or guides";
+
 fn lock_busy() -> ProfileError {
     refused(msg::LOCK_BUSY)
 }
@@ -80,7 +82,8 @@ fn lock_busy() -> ProfileError {
 /// the default for new launches does not depend on moving the live login
 /// (issue #1691, "keeps the `.default` pointer behaviour"). No refusal writes
 /// a pin or an ALERT; recovery of an interrupted swap may already have run
-/// and stays done.
+/// and stays done. Hand-change recovery (issue #1693) is left to the next
+/// rotate cycle: a hand-changed login is refused here as `LiveUnusable`.
 pub fn switch_live(
     store: &ProfileStore,
     home: &Path,
@@ -98,7 +101,7 @@ pub(super) fn switch_in(
 ) -> Result<Result<Switched, AfterSwapFailure>, ProfileError> {
     let store = &ctx.store.clone();
     let home = &ctx.home.clone();
-    let (mut out, prelude) = locked_prelude(&mut ctx, false)?;
+    let (mut out, prelude) = locked_prelude(&mut ctx, false, false)?;
     let (lock, first) = match prelude {
         Prelude::Ready { lock, first, .. } => (lock, first),
         Prelude::LockBusy => return Err(lock_busy()),
@@ -107,6 +110,9 @@ pub(super) fn switch_in(
         Prelude::LiveUnusable { line, .. } => {
             return default_only(&ctx.rs, store, name, reason_of(&line));
         }
+        // Hand-change recovery is not asked for here, so this is not
+        // reached; a hand change arrives as `LiveUnusable` (issue #1693).
+        Prelude::Guided => return default_only(&ctx.rs, store, name, GUIDED.into()),
     };
     let source = match &first.live {
         LiveId::Known(live) if live == name => None,

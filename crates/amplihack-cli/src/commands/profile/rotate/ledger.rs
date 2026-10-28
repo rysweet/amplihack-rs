@@ -16,6 +16,11 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+pub use super::hand_fields::{
+    HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
+};
+use super::hand_fields::{valid_guidance, valid_lost_login};
+pub use super::older_readers::for_older_readers;
 pub use super::spend_blocks::{active_blocks, prune_blocks, spend_reset};
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
@@ -100,6 +105,20 @@ pub struct RotateLedger {
     /// Overflow profiles blocked by a spend limit, by profile name.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub overflow_blocked: BTreeMap<String, OverflowBlock>,
+    /// The current hand-change ALERT and `fix` lines (issue #1693), written
+    /// every cycle while `~/.claude` holds another account than `account`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<Vec<String>>,
+    /// When a cycle first found `~/.claude.json` with no account that can be
+    /// read, while a login is in `~/.claude` and the ledger names a live
+    /// profile; cleared by the first cycle that reads an account there (or
+    /// finds no login). Once it is [`HOME_UNREADABLE_GRACE`] old the
+    /// `home-unreadable` ALERT gets real `fix` lines (#1702 review).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_unreadable_since: Option<i64>,
+    /// Profiles recorded as live that lost their login to a manual `/login`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub lost_login: Vec<String>,
 }
 
 impl Default for RotateLedger {
@@ -114,6 +133,9 @@ impl Default for RotateLedger {
             alert: None,
             last_cycle: None,
             overflow_blocked: BTreeMap::new(),
+            guidance: None,
+            home_unreadable_since: None,
+            lost_login: Vec::new(),
         }
     }
 }
@@ -291,6 +313,11 @@ impl RotateState {
         if !valid_overflow(&l) {
             return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
         }
+        if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
+            return Err(inconsistent(format!(
+                "{WHAT}: invalid guidance or lost_login"
+            )));
+        }
         Ok(Some(l))
     }
 
@@ -343,38 +370,6 @@ impl RotateState {
             Err(e) => Err(e.into()),
         }
     }
-}
-
-/// The ledger as written for its readers. With `older` (a rotator from
-/// another binary runs), fields added after the ledger first shipped are
-/// left out, because amplihack before #1659 rejects unknown ledger fields:
-/// - `last_cycle.measured_at`, without which the limit-resume hook falls
-///   back to its 60-second margin;
-/// - `last_cycle.overflow` and `overflow_blocked` (issue #1606). An older
-///   rotator never moves onto an overflow profile, so it has no use for
-///   them. A spend block dropped this way is not a cost: when this binary
-///   runs the rotator again, the blocked profile's probe still reports the
-///   spend limit, and a profile reporting one is blocked again and never
-///   moved onto.
-pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
-    let mut out = l.clone();
-    if older {
-        if let Some(c) = &mut out.last_cycle {
-            c.measured_at = None;
-            c.overflow = None;
-        }
-        out.overflow_blocked.clear();
-    }
-    out
-}
-
-/// The one line printed when a rotator from another amplihack binary runs.
-pub fn foreign_rotator_note(pid: u32) -> String {
-    format!(
-        "amplihack: the Claude login rotator (pid {pid}) runs another amplihack binary, so the \
-         rotate ledger is written in the format it reads; restart it to finish the upgrade: \
-         amplihack profile rotate stop && amplihack profile rotate start"
-    )
 }
 
 /// Line and column only: a serde message can quote input.

@@ -199,7 +199,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         return dry_run(ctx);
     }
     // Step 3: recover and identify under the lock.
-    let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot)?;
+    let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
     let (lock, state, first) = match prelude {
         Prelude::Ready { lock, state, first } => (lock, state, first),
         Prelude::LockBusy => {
@@ -226,6 +226,12 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         }
         Prelude::LiveUnusable { kind, live, line } => {
             alert(ctx, &mut out, kind, live.as_ref(), &line)?;
+            return Ok(CycleOutcome::Alerted);
+        }
+        // Issue #1693: the prelude already wrote the guidance.
+        Prelude::Guided => {
+            let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+            save(ctx, &mut l, CycleOutcome::Alerted, now(), None, None)?;
             return Ok(CycleOutcome::Alerted);
         }
     };

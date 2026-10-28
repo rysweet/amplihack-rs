@@ -59,6 +59,7 @@ fn rotate_has_the_planned_files() {
         "daemon.rs",
         "damp.rs",
         "autostart.rs",
+        "handfix.rs",
         "pin.rs",
         "prelude.rs",
         "switch.rs",
@@ -114,6 +115,31 @@ fn unsafe_blocks_carry_a_safety_comment() {
             );
         }
     }
+}
+
+/// Issue #1693: hand-change recovery moves a login by rename only, so it
+/// must name the login file only next to `lstat`-style checks and the move.
+#[test]
+fn handfix_moves_logins_only_through_the_shared_move() {
+    let text = fs::read_to_string(rotate_dir().join("handfix.rs")).expect("rotate/handfix.rs");
+    for f in [
+        "fs::rename",
+        "remove_file",
+        "remove_dir",
+        "fs::write",
+        "hard_link",
+    ] {
+        assert!(
+            !text
+                .lines()
+                .any(|l| l.split("//").next().unwrap_or_default().contains(f)),
+            "handfix.rs calls `{f}`"
+        );
+    }
+    assert!(
+        text.contains("move_login"),
+        "the login is moved with move_login"
+    );
 }
 
 // --- Issue #1691: the rotation pin and `profile switch NAME` ----------------
@@ -360,5 +386,44 @@ fn the_hold_warning_takes_proc_as_a_seam() {
     assert!(
         !seam.contains("\"/proc\""),
         "the seam must not hard-code /proc"
+    );
+}
+
+/// Every rotate submodule is unix-only (they use `std::os::unix` and each
+/// other). No CI target builds for non-unix any more, so a merge that drops
+/// one `#[cfg(unix)]` would go unnoticed until someone builds elsewhere —
+/// which is what happened to `mod pin;` in the merge for #1693. Check the
+/// guard in the source instead.
+#[test]
+fn every_rotate_submodule_is_unix_only() {
+    let text = fs::read_to_string(rotate_dir().join("mod.rs")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut checked = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        let t = t.strip_prefix("pub(super) ").unwrap_or(t);
+        let t = t.strip_prefix("pub ").unwrap_or(t);
+        if !(t.starts_with("mod ") && t.ends_with(';')) {
+            continue;
+        }
+        // This scan only reads source text, so it runs on every platform.
+        if t == "mod tests_source_scan;" {
+            continue;
+        }
+        checked += 1;
+        let guard = i.checked_sub(1).map(|j| lines[j].trim()).unwrap_or("");
+        // `target_os = "linux"` is a narrower guard than `unix` (every Linux
+        // target is a unix one), used by tests that read Linux-only state.
+        assert!(
+            guard.starts_with("#[cfg(")
+                && (guard.contains("unix") || guard.contains("target_os = \"linux\"")),
+            "rotate/mod.rs:{}: `{}` needs #[cfg(unix)] (or #[cfg(all(test, unix))]) on the line above",
+            i + 1,
+            line.trim()
+        );
+    }
+    assert!(
+        checked > 20,
+        "found only {checked} mod lines in rotate/mod.rs"
     );
 }

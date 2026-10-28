@@ -1,9 +1,14 @@
 //! The locked start shared by a rotate cycle and `profile switch NAME`
 //! (issue #1691): prototype check, lock, recovery of an interrupted
-//! auto-switch or rotate swap, then who is live. It writes no ALERT; each
-//! caller decides what a result other than `Ready` means.
+//! auto-switch or rotate swap, hand-change recovery (issue #1693), then who
+//! is live. It writes no ALERT of its own; each caller decides what a result
+//! other than `Ready` means. Hand-change recovery runs only for a rotate
+//! cycle (`hand_change`): a switch must change nothing but `.default` when it
+//! refuses, so it refuses a hand-changed login as `LiveUnusable` and leaves
+//! recovery to the next cycle, which runs it before reading the ledger.
 
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
+use super::handfix;
 use super::identify::Skip;
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{Snap, live_alert, live_name, snapshot};
@@ -28,11 +33,20 @@ pub enum Prelude {
         live: Option<ProfileName>,
         line: String,
     },
+    /// Issue #1693, rotate cycle only: `~/.claude` was logged in by hand and
+    /// could not be recovered safely; the guidance is already in the log and
+    /// the ledger.
+    Guided,
 }
 
 /// Runs the prelude. The sink writes to the rotate log, and to stdout when
-/// `stdout` is set; it is returned for the caller's own lines.
-pub fn locked_prelude(ctx: &mut Ctx, stdout: bool) -> Result<(Sink, Prelude), ProfileError> {
+/// `stdout` is set; it is returned for the caller's own lines. `hand_change`
+/// runs hand-change recovery (issue #1693); only a rotate cycle sets it.
+pub fn locked_prelude(
+    ctx: &mut Ctx,
+    stdout: bool,
+    hand_change: bool,
+) -> Result<(Sink, Prelude), ProfileError> {
     prototype_guard(ctx.store.root())?;
     ctx.rs.ensure()?;
     let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
@@ -61,6 +75,11 @@ pub fn locked_prelude(ctx: &mut Ctx, stdout: bool) -> Result<(Sink, Prelude), Pr
             return Ok((out, Prelude::Inconsistent(reason)));
         }
         Err(e) => return Err(e),
+    }
+    // Issue #1693: after swap recovery, so the ledger it reads is settled,
+    // and before the snapshot, so the snapshot reads the recovered ledger.
+    if hand_change && handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
+        return Ok((out, Prelude::Guided));
     }
     let first = snapshot(ctx, &state)?;
     log_skips(ctx, &mut out, &first);

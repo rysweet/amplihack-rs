@@ -48,6 +48,7 @@ fn row(name: &str, rep: UsageReport) -> Row {
         live_in: false,
         overflow: false,
         overflow_blocked_until: None,
+        live_in_home: false,
         report: rep,
         error: None,
         raw: None,
@@ -1060,4 +1061,45 @@ fn json_rows_carry_the_overflow_fields() {
     assert_eq!(arr[0]["overflow_blocked_until"], 1_793_491_200);
     assert_eq!(arr[1]["overflow"], false);
     assert!(arr[1]["overflow_blocked_until"].is_null());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1693: the `~/.claude` row for an account no profile has
+// ---------------------------------------------------------------------------
+
+fn home_row() -> Row {
+    let mut r = ok(
+        "~/.claude",
+        Some((10.0, Some(NOW + HOUR))),
+        Some((95.0, Some(NOW + DAY))),
+    );
+    r.live_in = true;
+    r.live_in_home = true;
+    r
+}
+
+#[test]
+fn the_home_row_is_shown_with_the_literal_label() {
+    let v = json(&[home_row()]);
+    assert_eq!(v[0]["profile"], "~/.claude");
+    assert_eq!(v[0]["account"], "~/.claude");
+    assert_eq!(v[0]["live_in"], "~/.claude");
+    assert_eq!(v[0]["default"], false);
+    assert!(v[0]["leased_to"].is_null());
+}
+
+#[test]
+fn the_home_row_is_never_recorded() {
+    let rows = vec![
+        home_row(),
+        ok("work", Some((20.0, None)), Some((30.0, None))),
+    ];
+    let obs = observations(&rows);
+    let got: Vec<&str> = obs.iter().map(|o| o.profile.as_str()).collect();
+    assert_eq!(got, ["work"]);
+}
+
+#[test]
+fn no_profile_can_be_named_like_the_home_row() {
+    assert!(super::name::ProfileName::parse("~/.claude").is_err());
 }

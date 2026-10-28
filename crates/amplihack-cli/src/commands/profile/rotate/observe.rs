@@ -4,7 +4,8 @@
 
 use super::cycle::{Ctx, CycleOutcome};
 use super::damp::{damp, next_failed};
-use super::decide::{Decision, Measured, Reading};
+use super::decide::{Decision, Measured, Probed, Reading};
+use super::handfix;
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
 use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
@@ -13,7 +14,9 @@ use super::overflow::{OverflowInput, Tag, decide_overflow};
 use super::pin::{self, Gate as PinGate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, State, effective, exists, now};
+use crate::commands::profile::auto_switch::kit::{
+    Liveness, Rotated, State, effective, exists, now,
+};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::overflow::OverflowEntry;
 use crate::commands::profile::run::resolve_claude_binary;
@@ -68,7 +71,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
 
 pub fn live_name(id: &LiveId) -> Option<&ProfileName> {
     match id {
-        LiveId::Known(n) | LiveId::HandChanged(n) => Some(n),
+        LiveId::Known(n) | LiveId::HandChanged(n) | LiveId::HomeUnreadable(n) => Some(n),
         _ => None,
     }
 }
@@ -78,6 +81,7 @@ pub fn live_alert(id: &LiveId) -> Option<(&'static str, String)> {
     match id {
         LiveId::NoLogin => Some(("no-login", msg::NO_LOGIN.to_string())),
         LiveId::HandChanged(n) => Some(("hand-change", msg::hand_change(n))),
+        LiveId::HomeUnreadable(n) => Some(("home-unreadable", msg::home_unreadable(n))),
         LiveId::Ambiguous => Some(("ambiguous", msg::AMBIGUOUS.to_string())),
         LiveId::Known(_) | LiveId::Adopt => None,
     }
@@ -121,6 +125,19 @@ pub fn measure_and_decide(
         _ => Live::Unowned,
     };
     let (probe, probes) = measure::measure(&ctx.store, binary, live, &snap.candidates, measured_at);
+    decide_measured(ctx, snap, probe, probes, measured_at)
+}
+
+/// Step 5 of a cycle: the overflow-aware decision on this cycle's probes,
+/// the live profile's and each candidate's, measured from `measured_at`.
+/// Tests that stub probing call this, so they run the real decision.
+pub(super) fn decide_measured(
+    ctx: &Ctx,
+    snap: &Snap,
+    probe: Probed,
+    probes: Vec<(ProfileName, Probed)>,
+    measured_at: i64,
+) -> Result<Measurement, ProfileError> {
     let measured: Vec<Measured> = probes
         .iter()
         .map(|(name, p)| Measured::new(name.clone(), p))
@@ -215,6 +232,15 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     let state = State::new(ctx.store.root())?;
+    // Issue #1693: what hand-change recovery would do; it stops here.
+    let env_for = || handfix::Env::system(ctx.store.root(), &state, ctx.scan);
+    let lines = handfix::preview(&ctx.store, &ctx.rs, &ctx.home, env_for, now())?;
+    if !lines.is_empty() {
+        for l in &lines {
+            out.emit(0, l);
+        }
+        return Ok(CycleOutcome::Alerted);
+    }
     let snap = snapshot(ctx, &state)?;
     if let Some((_, line)) = live_alert(&snap.live) {
         let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
@@ -291,4 +317,22 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     Ok(outcome)
+}
+
+/// This cycle's readings for the no-capacity file: the live profile's and
+/// every other candidate's, as measured.
+pub(super) fn rotated(
+    live: Option<&ProfileName>,
+    reading: &Reading,
+    others: &[(ProfileName, Reading)],
+) -> Vec<(ProfileName, Rotated)> {
+    let of = |r: &Reading| match *r {
+        Reading::Measured { session, week } => Rotated::Measured { session, week },
+        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Failed => Rotated::Failed,
+    };
+    live.map(|n| (n.clone(), of(reading)))
+        .into_iter()
+        .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
+        .collect()
 }

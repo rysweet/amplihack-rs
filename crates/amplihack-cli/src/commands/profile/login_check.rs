@@ -33,7 +33,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-const REJECTED_DIR: &str = ".rejected-logins";
+pub(super) const REJECTED_DIR: &str = ".rejected-logins";
 /// The `oauthAccount` block saved next to a held or set-aside login.
 const SAVED_BLOCK: &str = "oauthAccount.json";
 
@@ -517,21 +517,26 @@ fn save_block(dir: &Path, block: &serde_json::Value) -> io::Result<()> {
     write_private_atomic(dir, SAVED_BLOCK, &bytes)
 }
 
+/// Creates `path` as a new private directory, never through a symlink, and
+/// syncs its parent; an existing one is `AlreadyExists`. Shared with rotate's
+/// hand-change recovery (issue #1693).
+pub(super) fn create_fresh_dir(path: &Path) -> io::Result<()> {
+    private_dir_builder().create(path)?;
+    match path.parent().map(fsync_dir) {
+        Some(Err(e)) => Err(e),
+        _ => Ok(()),
+    }
+}
+
 /// Creates `path` as a new private directory; an existing one is an error.
 fn create_fresh(path: &Path) -> std::result::Result<(), String> {
-    match private_dir_builder().create(path) {
-        Ok(()) => {}
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-            return Err(format!(
-                "{} already exists; nothing was moved into it",
-                show(path)
-            ));
-        }
-        Err(e) => return Err(format!("{}: {e}", show(path))),
-    }
-    match path.parent().map(fsync_dir) {
-        Some(Err(e)) => Err(format!("{}: {e}", show(path))),
-        _ => Ok(()),
+    match create_fresh_dir(path) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Err(format!(
+            "{} already exists; nothing was moved into it",
+            show(path)
+        )),
+        Err(e) => Err(format!("{}: {e}", show(path))),
     }
 }
 

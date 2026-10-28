@@ -5,7 +5,7 @@
 use super::daemon::{DaemonState, current_state, daemon_err};
 use super::identify::{self, LiveId};
 use super::ledger::{LastCycle, Phase, RotateLedger, RotateState, active_blocks};
-use super::log::timestamp;
+use super::log::{msg, timestamp};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{State, now};
 use crate::commands::profile::name::ProfileName;
@@ -78,20 +78,21 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
             .unwrap_or_else(|| "-".into()),
         Err(_) => "- (ledger unreadable)".into(),
     };
-    let last = match ledger.ok().flatten().and_then(|l| l.last_cycle) {
+    let ledger = ledger.ok().flatten();
+    let last = match ledger.as_ref().and_then(|l| l.last_cycle.as_ref()) {
         Some(LastCycle {
             at,
             outcome,
             overflow,
             ..
         }) => {
-            let tag = overflow.map_or_else(String::new, |t| {
-                format!(" overflow={}", sanitize_display(&t, false))
+            let tag = overflow.as_ref().map_or_else(String::new, |t| {
+                format!(" overflow={}", sanitize_display(t, false))
             });
             format!(
                 "{} {}{tag}",
-                timestamp(at),
-                sanitize_display(&outcome, false)
+                timestamp(*at),
+                sanitize_display(outcome, false)
             )
         }
         None => "-".into(),
@@ -112,6 +113,9 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         super::pin::PinState::Missing(n) => println!("hold: {n} (profile missing; ignored)"),
         super::pin::PinState::Unreadable => println!("hold: unreadable"),
     }
+    for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
+        println!("{line}");
+    }
     match rs.load_journal() {
         Ok(Some(j)) if j.phase == Phase::Inconsistent => println!("journal: inconsistent"),
         Ok(Some(j)) => println!("journal: pending (phase {})", j.phase.as_str()),
@@ -119,6 +123,26 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         Err(_) => println!("journal: damaged"),
     }
     println!("log: {}", rs.log.display());
+}
+
+/// The `alert:` lines of the ledger's hand-change guidance, then a
+/// `warning:` line for each profile in `lost_login` (issue #1693). Shows
+/// what the last cycle decided; compares no accounts.
+pub fn status_alerts(l: &RotateLedger) -> Vec<String> {
+    let alerts = l.guidance.iter().flatten().map(|g| {
+        let text = g.strip_prefix("ALERT: ").unwrap_or(g);
+        format!("alert: {}", sanitize_display(text, false))
+    });
+    let warnings = l
+        .lost_login
+        .iter()
+        .filter_map(|n| ProfileName::parse(n).ok())
+        .map(|n| {
+            let line = msg::lost_login(&n);
+            let text = line.strip_prefix("ALERT: ").unwrap_or(&line);
+            format!("warning: {}", sanitize_display(text, false))
+        });
+    alerts.chain(warnings).collect()
 }
 
 /// `stop`: SIGTERM to a verified rotator only, then up to 10 seconds for it
