@@ -103,6 +103,11 @@ pub(super) struct Row {
     pub(super) leased_to: Option<String>,
     /// The login is live in `~/.claude` and the numbers were read there.
     pub(super) live_in: bool,
+    /// Marked as credit-backed overflow in `<root>/.auto-switch`.
+    pub(super) overflow: bool,
+    /// The end of the rotator's active spend block on this overflow
+    /// profile, epoch seconds.
+    pub(super) overflow_blocked_until: Option<i64>,
     /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
     /// never recorded.
     pub(super) live_in_home: bool,
@@ -221,6 +226,9 @@ fn home_row_of(p: Probe) -> Row {
         default: false,
         leased_to: None,
         live_in: true,
+        // A login no profile holds is never marked overflow.
+        overflow: false,
+        overflow_blocked_until: None,
         live_in_home: true,
         report: p.report,
         error: p.error,
@@ -255,10 +263,13 @@ fn swapped_live(
 }
 
 /// The default profile and the auto-switch leases, each `None` (with a
-/// warning) when it cannot be read.
+/// warning) when it cannot be read, and the overflow profiles with the
+/// rotator's active spend blocks.
 struct Marks {
     default: Option<ProfileName>,
     lease: Option<auto_switch::LeaseView>,
+    overflow: Vec<ProfileName>,
+    blocked: std::collections::BTreeMap<String, i64>,
 }
 
 fn read_marks(store: &ProfileStore) -> Marks {
@@ -270,7 +281,37 @@ fn read_marks(store: &ProfileStore) -> Marks {
         eprintln!("warning: could not read auto-switch leases ({e}); no lease marks");
         None
     });
-    Marks { default, lease }
+    let overflow = super::overflow::overflow_names(store.root());
+    let blocked = overflow_blocks(store, &overflow);
+    Marks {
+        default,
+        lease,
+        overflow,
+        blocked,
+    }
+}
+
+/// The active spend blocks, read only when a profile is marked overflow.
+#[cfg(unix)]
+fn overflow_blocks(
+    store: &ProfileStore,
+    overflow: &[ProfileName],
+) -> std::collections::BTreeMap<String, i64> {
+    if overflow.is_empty() {
+        return Default::default();
+    }
+    super::rotate::overflow_blocks(store.root(), now_secs()).unwrap_or_else(|e| {
+        eprintln!("warning: could not read the rotate ledger ({e}); no spend-block marks");
+        Default::default()
+    })
+}
+
+#[cfg(not(unix))]
+fn overflow_blocks(
+    _store: &ProfileStore,
+    _overflow: &[ProfileName],
+) -> std::collections::BTreeMap<String, i64> {
+    Default::default()
 }
 
 /// One row per probe, with the default, lease and `~/.claude` marks.
@@ -280,7 +321,12 @@ fn build_rows(
     probes: Vec<Probe>,
     live: Option<&ProfileName>,
 ) -> Vec<Row> {
-    let Marks { default, lease } = marks;
+    let Marks {
+        default,
+        lease,
+        overflow,
+        blocked,
+    } = marks;
     profiles
         .iter()
         .zip(probes)
@@ -295,6 +341,11 @@ fn build_rows(
                     .and_then(|l| l.leased_to(n))
                     .map(str::to_string),
                 live_in: live == Some(name),
+                overflow: overflow.contains(name),
+                overflow_blocked_until: overflow
+                    .contains(name)
+                    .then(|| blocked.get(n).copied())
+                    .flatten(),
                 live_in_home: false,
                 report: p.report,
                 error: p.error,
@@ -684,7 +735,7 @@ fn back_at(r: &UsageReport) -> Option<i64> {
 }
 
 /// `*` for the default, `leased→<dir>`, `hosts:<account>`, `live in
-/// ~/.claude`; `-` for none.
+/// ~/.claude`, `overflow[, blocked until <time>]`; `-` for none.
 pub(super) fn marks(row: &Row) -> String {
     let mut parts = Vec::new();
     if row.default {
@@ -700,11 +751,25 @@ pub(super) fn marks(row: &Row) -> String {
         // The wording auto-switch uses for a login live in another directory.
         parts.push(format!("live in {}", default_live::LABEL));
     }
+    if row.overflow {
+        parts.push(match row.overflow_blocked_until {
+            Some(t) => format!("overflow, blocked until {}", utc_time(t)),
+            None => "overflow".to_string(),
+        });
+    }
     if parts.is_empty() {
         "-".to_string()
     } else {
         parts.join(" ")
     }
+}
+
+/// UTC time as `YYYY-MM-DDTHH:MM:SSZ`, the rotate log's format.
+fn utc_time(t: i64) -> String {
+    chrono::DateTime::from_timestamp(t, 0).map_or_else(
+        || "1970-01-01T00:00:00Z".to_string(),
+        |d| d.format("%Y-%m-%dT%H:%M:%SZ").to_string(),
+    )
 }
 
 // ---------------------------------------------------------------------------
@@ -803,7 +868,33 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             raw_block(&mut out, "stderr", &raw.stderr);
         }
     }
+    if let Some(r) = rows
+        .iter()
+        .find(|r| r.live_in && r.overflow && plan_limit_reached(r))
+    {
+        out.push_str(&format!(
+            "running on overflow: {}\n",
+            sanitize_display(&r.profile, false)
+        ));
+    }
     out
+}
+
+/// The row's own probe in this run shows a plan limit reached: an
+/// exhausted state, or the session or all-models weekly window at 100%.
+/// Either is enough. These are the two windows the rotator's capacity test
+/// (`plan_usable` in rotate/overflow.rs) reads; a per-model weekly window is
+/// not. A failed or spend-limited probe is not evidence of credits.
+fn plan_limit_reached(r: &Row) -> bool {
+    let full = |w: &UsageWindow| w.used_percentage >= 100.0;
+    match r.report.state {
+        UsageState::SessionExhausted | UsageState::WeeklyExhausted => true,
+        UsageState::Ok => {
+            r.report.session.as_ref().is_some_and(full)
+                || r.report.week_all.as_ref().is_some_and(full)
+        }
+        _ => false,
+    }
 }
 
 fn raw_block(out: &mut String, name: &str, text: &str) {
@@ -826,6 +917,8 @@ struct JsonRow<'a> {
     default: bool,
     leased_to: Option<&'a str>,
     live_in: Option<&'static str>,
+    overflow: bool,
+    overflow_blocked_until: Option<i64>,
     state: UsageState,
     session: Option<&'a UsageWindow>,
     week_all: Option<&'a UsageWindow>,
@@ -846,6 +939,8 @@ pub(super) fn render_json(rows: &[Row]) -> String {
             default: r.default,
             leased_to: r.leased_to.as_deref(),
             live_in: r.live_in.then_some(default_live::LABEL),
+            overflow: r.overflow,
+            overflow_blocked_until: r.overflow_blocked_until,
             state: r.report.state,
             session: r.report.session.as_ref(),
             week_all: r.report.week_all.as_ref(),

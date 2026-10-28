@@ -1,6 +1,6 @@
 //! Contracts for the macOS lint allows in `issue_1569_auto_switch.rs` (PR #1530).
 //!
-//! Six items in that test file are used only from code gated on
+//! Seven items in that test file are used only from code gated on
 //! `#[cfg(target_os = "linux")]`. On macOS the gated code is compiled out, the
 //! items become dead, and `cargo clippy --all-targets -- -D warnings` fails
 //! the pre-commit hook. Each item therefore carries
@@ -27,6 +27,7 @@ const HELPERS: &[(&str, &str)] = &[
     ("fn hosts(", ".hosts("),
     ("fn oauth_uuid(", ".oauth_uuid("),
     ("fn parked(", ".parked("),
+    ("fn age_swaps(", ".age_swaps("),
 ];
 
 fn lines() -> Vec<String> {

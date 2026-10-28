@@ -503,7 +503,11 @@ amplihack profile show
 After this, `amplihack claude` runs with no profile and leaves
 `CLAUDE_CONFIG_DIR` alone. The login in `~/.claude` does not move; the
 rotator is free to swap it again on its next cycle. The second line appears
-only when a `switch` had held rotation. If no default was set, the command
+only when a `switch` had held rotation. Clear the default when the
+[rotator](claude-profile-rotation.md) uses a
+[credit-backed overflow profile](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted):
+a default always wins over the rotator, so a default that names the overflow
+profile spends credits on every launch. If no default was set, the command
 prints `No default profile was set.` and still exits 0. `--none` cannot be combined
 with a name, and `switch` with neither is a usage error (exit 2).
 
@@ -765,6 +769,15 @@ to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
 for when a reading is not recorded.
+
+A profile marked as credit-backed overflow
+(`amplihack profile overflow add <name>`) shows the mark `overflow`, and
+`overflow, blocked until <time>` after the rotator has blocked it on a spend
+limit. When its login is the one in `~/.claude` and its probe shows the
+session or all-models weekly limit reached, the table ends with
+`running on overflow: <name>`. In `--json`, every row has `overflow` and
+`overflow_blocked_until`. See
+[Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
@@ -1479,6 +1492,16 @@ do not depend on these two behaviours.
   the status line, `profile usage` or the rotator records usage. A step that
   fails with a usage limit and finds no profile left to rerun on does not
   update it.
+- **Overflow profiles come last and cost money.** A profile marked with
+  `amplihack profile overflow add` is chosen only when no plan profile has
+  capacity (below the rotator's `--session-at` and `--week-at`, 85% and 90%
+  by default) and the earliest plan reset is more than the overflow wait
+  away (default 1800 seconds). This is the rule the
+  [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+  follows, with the running rotator's own settings. A session or nested
+  launch on an overflow profile moves back to a plan profile as soon as one
+  has capacity. See
+  [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.

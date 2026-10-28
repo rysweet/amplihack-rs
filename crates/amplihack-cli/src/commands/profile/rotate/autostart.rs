@@ -349,3 +349,8 @@ pub fn autostart_on_launch(docker_flag: bool) {
         },
     );
 }
+
+/// The `autostart:` status line for `root`, for `auto-switch status`.
+pub(in crate::commands::profile) fn autostart_line(root: &std::path::Path) -> String {
+    status_line(effective(root, &|k| std::env::var_os(k)))
+}

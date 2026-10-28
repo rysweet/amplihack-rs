@@ -4,19 +4,21 @@
 
 use super::cycle::{Ctx, CycleOutcome};
 use super::damp::{damp, next_failed};
-use super::decide::{Decision, Measured, Reading, decide};
+use super::decide::{Decision, Measured, Probed, Reading};
 use super::handfix;
 use super::identify::{self, Account, CandidateInput, LiveId, Skip};
-use super::ledger::Phase;
-use super::log::{Sink, msg};
+use super::ledger::{Phase, spend_reset};
+use super::log::{Sink, msg, timestamp};
 use super::measure::{self, Live};
-use super::pin::{self, Gate, PinState};
+use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::pin::{self, Gate as PinGate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
     Liveness, Rotated, State, effective, exists, now,
 };
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::OverflowEntry;
 use crate::commands::profile::run::resolve_claude_binary;
 
 /// Who is live, who may receive the login, and the rotation pin: compared
@@ -30,6 +32,10 @@ pub struct Snap {
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
+    /// The overflow entries with their tiers, in file order. Part of the
+    /// snapshot, so a mark or tier changed during measurement skips the
+    /// cycle.
+    pub overflow: Vec<OverflowEntry>,
     pub pin: PinState,
 }
 
@@ -42,9 +48,11 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         LiveId::Known(n) => Some(n.clone()),
         _ => None,
     };
+    let config = effective(root).config;
+    let overflow = config.overflow;
     let input = CandidateInput {
         live: live_name.as_ref(),
-        exclude: effective(root).config.exclude,
+        exclude: config.exclude,
         liveness,
         auto_switch: state.load_ledger()?,
     };
@@ -56,6 +64,7 @@ pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
         candidates,
         skips,
         sees_sessions,
+        overflow,
         pin: pin::read(&ctx.rs),
     })
 }
@@ -85,7 +94,8 @@ pub fn reading_of(others: &[(ProfileName, Reading)], name: &ProfileName) -> Read
         .map_or(Reading::Failed, |(_, r)| *r)
 }
 
-/// One cycle's measurements and its decision, after failed-probe damping.
+/// One cycle's measurements and its decision, after the overflow policy
+/// and failed-probe damping.
 pub struct Measurement {
     pub live: Reading,
     pub others: Vec<(ProfileName, Reading)>,
@@ -94,6 +104,12 @@ pub struct Measurement {
     pub note: Option<String>,
     /// Consecutive failed live probes, including this cycle's.
     pub failed: u32,
+    /// What the cycle records about overflow.
+    pub tag: Option<Tag>,
+    /// Overflow profiles to block for a spend limit.
+    pub new_blocks: Vec<ProfileName>,
+    /// The earliest plan reset, for the `overflow:` log lines.
+    pub next_plan_reset: Option<i64>,
     /// When measuring started, epoch seconds.
     pub measured_at: i64,
 }
@@ -108,26 +124,75 @@ pub fn measure_and_decide(
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
     };
-    let (reading, others) =
-        measure::measure(&ctx.store, binary, live, &snap.candidates, measured_at);
-    let measured: Vec<Measured> = others
+    let (probe, probes) = measure::measure(&ctx.store, binary, live, &snap.candidates, measured_at);
+    decide_measured(ctx, snap, probe, probes, measured_at)
+}
+
+/// Step 5 of a cycle: the overflow-aware decision on this cycle's probes,
+/// the live profile's and each candidate's, measured from `measured_at`.
+/// Tests that stub probing call this, so they run the real decision.
+pub(super) fn decide_measured(
+    ctx: &Ctx,
+    snap: &Snap,
+    probe: Probed,
+    probes: Vec<(ProfileName, Probed)>,
+    measured_at: i64,
+) -> Result<Measurement, ProfileError> {
+    let measured: Vec<Measured> = probes
         .iter()
-        .map(|(name, reading)| Measured {
-            name: name.clone(),
-            reading: *reading,
-        })
+        .map(|(name, p)| Measured::new(name.clone(), p))
         .collect();
-    let swapped_at = ctx.rs.load_ledger()?.and_then(|l| l.swapped_at);
+    // A ledger that cannot be read ends the cycle here, before any move onto
+    // credits: its spend blocks are unknown. Only a missing ledger means no
+    // blocks.
+    let ledger = ctx.rs.load_ledger()?;
+    let swapped_at = ledger.as_ref().and_then(|l| l.swapped_at);
+    let blocks = ledger.map(|l| l.overflow_blocked).unwrap_or_default();
+    let live_name = match &snap.live {
+        LiveId::Known(n) => Some(n),
+        _ => None,
+    };
     let t = now();
-    let raw = decide(&ctx.settings, &reading, &measured, swapped_at, t);
-    let failed = next_failed(ctx.failed_live, &reading);
-    let (decision, note) = damp(raw, &reading, failed, swapped_at, t, &ctx.settings);
+    let verdict = decide_overflow(&OverflowInput {
+        settings: &ctx.settings,
+        live_name,
+        live: &probe,
+        candidates: &measured,
+        overflow: &snap.overflow,
+        blocks: &blocks,
+        swapped_at,
+        now: t,
+    });
+    // A spend limit on a live overflow profile is handled by its block, so
+    // it does not count towards the failed live probes.
+    let live_over = live_name.is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
+    let failed = if live_over && probe.spend_limit {
+        ctx.failed_live
+    } else {
+        next_failed(ctx.failed_live, &probe.reading)
+    };
+    let (decision, note) = damp(
+        verdict.decision,
+        &probe.reading,
+        failed,
+        swapped_at,
+        t,
+        &ctx.settings,
+    );
+    // A damped move off credits is a stay on them.
+    let tag = match (&decision, verdict.tag) {
+        (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
+        (_, tag) => tag,
+    };
     Ok(Measurement {
-        live: reading,
-        others,
+        live: probe.reading,
+        others: probes.into_iter().map(|(n, p)| (n, p.reading)).collect(),
         decision,
         note,
         failed,
+        tag,
+        new_blocks: verdict.new_blocks,
+        next_plan_reset: verdict.next_plan_reset,
         measured_at,
     })
 }
@@ -183,11 +248,11 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         return Ok(CycleOutcome::Alerted);
     }
     match pin::gate(&snap.pin) {
-        Gate::Open => {}
-        Gate::Ignored(line) => out.emit(0, &line),
+        PinGate::Open => {}
+        PinGate::Ignored(line) => out.emit(0, &line),
         // `skip: held by switch to NAME; run ...` -> `would stay (held by
         // switch to NAME)`.
-        Gate::Held(line) => {
+        PinGate::Held(line) => {
             let text = line.strip_prefix("skip: ").unwrap_or(&line);
             let why = text.split(';').next().unwrap_or(text);
             out.emit(0, &format!("would stay ({why})"));
@@ -201,10 +266,21 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         others,
         decision,
         note,
+        new_blocks,
         ..
     } = measure_and_decide(ctx, &binary, &snap)?;
     let name = live_name(&snap.live);
     out.emit(0, &msg::cycle(name, &live, &others));
+    let t = now();
+    for n in &new_blocks {
+        out.emit(
+            0,
+            &format!(
+                "would block {n} (spend limit) until {}",
+                timestamp(spend_reset(t))
+            ),
+        );
+    }
     let outcome = would(&decision);
     match decision {
         Decision::Stay => match note {
@@ -241,21 +317,6 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
         }
     }
     Ok(outcome)
-}
-
-/// The ALERT key kind for a refused swap: its reason, without control
-/// characters and short enough that the key passes the ledger's 320-byte
-/// check with any profile name.
-pub(super) fn refusal_kind(e: &ProfileError) -> String {
-    let reason: String = e.to_string().chars().filter(|c| !c.is_control()).collect();
-    let mut kind = String::from("refused ");
-    for c in reason.chars() {
-        if kind.len() + c.len_utf8() > 200 {
-            break;
-        }
-        kind.push(c);
-    }
-    kind
 }
 
 /// This cycle's readings for the no-capacity file: the live profile's and

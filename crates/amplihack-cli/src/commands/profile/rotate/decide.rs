@@ -3,7 +3,7 @@
 
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::usage_parse::{UsageReport, UsageState};
+use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 
 /// What one probe showed, reduced to what the rule needs.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,10 +50,83 @@ impl Reading {
     }
 }
 
+/// One usage window as measured: percent used and when it resets.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Win {
+    pub used: f64,
+    /// Epoch seconds; `None` when Claude printed no readable reset.
+    pub resets_at: Option<i64>,
+}
+
+/// The session and weekly (all models) windows of one probe, kept for every
+/// state, exhausted ones included, so the overflow rule knows when a plan
+/// login is back.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Windows {
+    pub session: Option<Win>,
+    pub week: Option<Win>,
+}
+
+impl Windows {
+    pub fn from_report(r: &UsageReport) -> Self {
+        let win = |w: &UsageWindow| Win {
+            used: w.used_percentage,
+            resets_at: w.resets_at,
+        };
+        Self {
+            session: r.session.as_ref().map(win),
+            week: r.week_all.as_ref().map(win),
+        }
+    }
+}
+
+/// A probe as the rotator keeps it: the reading `decide` uses, the windows
+/// with their reset times, and whether Claude reported the organisation's
+/// spend limit (which still reads `Failed`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Probed {
+    pub reading: Reading,
+    pub windows: Windows,
+    pub spend_limit: bool,
+}
+
+impl Probed {
+    pub fn from_report(r: &UsageReport) -> Self {
+        Self {
+            reading: Reading::from_report(r),
+            windows: Windows::from_report(r),
+            spend_limit: r.state == UsageState::SpendLimit,
+        }
+    }
+
+    /// A probe that failed before any output was read.
+    pub fn failed() -> Self {
+        Self {
+            reading: Reading::Failed,
+            windows: Windows::default(),
+            spend_limit: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Measured {
     pub name: ProfileName,
     pub reading: Reading,
+    pub windows: Windows,
+    /// Claude reported the organisation's spend limit for this profile.
+    pub spend_limit: bool,
+}
+
+impl Measured {
+    pub fn new(name: ProfileName, p: &Probed) -> Self {
+        Self {
+            name,
+            reading: p.reading,
+            windows: p.windows.clone(),
+            spend_limit: p.spend_limit,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,6 +135,10 @@ pub enum Reason {
     Upgrade,
     /// A threshold swap made after repeated failed live probes; see `damp`.
     FailedProbe,
+    /// A move onto a credit-backed overflow profile; see `overflow`.
+    OverflowIn,
+    /// A move off an overflow profile onto a plan login with capacity.
+    OverflowOut,
 }
 
 impl Reason {
@@ -70,6 +147,8 @@ impl Reason {
             Self::Threshold => "threshold",
             Self::Upgrade => "upgrade",
             Self::FailedProbe => "failed-probe",
+            Self::OverflowIn => "overflow-in",
+            Self::OverflowOut => "overflow-out",
         }
     }
 }
@@ -86,7 +165,7 @@ pub enum Decision {
 }
 
 /// Whether the live login has reached a threshold. A failed probe counts.
-fn needs_swap(s: &Settings, live: &Reading) -> bool {
+pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     match live {
         Reading::Failed | Reading::Exhausted => true,
         Reading::Measured { session, week } => {
@@ -97,7 +176,7 @@ fn needs_swap(s: &Settings, live: &Reading) -> bool {
 
 /// The candidate with the most headroom; ties go to the first name. Failed
 /// and exhausted candidates are never chosen.
-fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
+pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
     candidates
         .iter()
         .filter(|c| !matches!(c.reading, Reading::Exhausted))

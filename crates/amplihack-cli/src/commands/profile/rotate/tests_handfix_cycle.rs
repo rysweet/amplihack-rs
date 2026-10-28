@@ -42,6 +42,8 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
         .map(|c| Measured {
             name: c.clone(),
             reading,
+            windows: Default::default(),
+            spend_limit: false,
         })
         .collect();
     let decision = decide(&ctx.settings, &Reading::Exhausted, &measured, None, now());
@@ -51,6 +53,9 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
         decision,
         note: None,
         failed: 0,
+        tag: None,
+        new_blocks: Vec::new(),
+        next_plan_reset: None,
         measured_at: now(),
     })
 }
@@ -69,6 +74,9 @@ fn stay(_: &Ctx, _: &Snap) -> Result<Measurement, ProfileError> {
         decision: Decision::Stay,
         note: None,
         failed: 0,
+        tag: None,
+        new_blocks: Vec::new(),
+        next_plan_reset: None,
         measured_at: now(),
     })
 }

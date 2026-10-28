@@ -6,13 +6,15 @@
 //! Every root is a temporary directory (0700); `HOME` is temporary wherever it
 //! matters. Tests that touch the environment hold `env_lock()`.
 
+use super::candidate::{OverflowPool, Pool, select_with_overflow};
 use super::capacity::{
-    Evidence, Rotated, compute, launch_warning, recipe_warning, refresh, refresh_from_rotation,
+    Evidence, Rotated, launch_warning, recipe_warning, refresh, refresh_from_rotation,
 };
 use super::config::{self, Config};
 use super::state::{HostEntry, Ledger, State, UsageFile};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use crate::test_support::{EnvGuard, env_lock};
 use amplihack_utils::claude_capacity::{self as cap, CapacityFile, State as Cap};
 use chrono::DateTime;
@@ -48,6 +50,7 @@ fn cfg(threshold: u8, exclude: &[&str]) -> Config {
         enabled: true,
         threshold,
         exclude: names(exclude),
+        overflow: Vec::new(),
     }
 }
 
@@ -78,6 +81,29 @@ fn ev(pairs: Vec<(&str, Evidence)>) -> BTreeMap<String, Evidence> {
 // ---------------------------------------------------------------------------
 // compute (pure)
 // ---------------------------------------------------------------------------
+
+/// `compute` with no overflow inputs.
+fn compute(
+    profiles: &[ProfileName],
+    evidence: &BTreeMap<String, Evidence>,
+    cfg: &Config,
+    now: i64,
+    writer: &str,
+) -> CapacityFile {
+    let none = OverflowPool {
+        order: &[],
+        blocked: &[],
+        gate: None,
+    };
+    super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
+}
+
+const GATE: Gate = Gate {
+    wait: 1800,
+    unknown_reset: false,
+    session_at: 85,
+    week_at: 90,
+};
 
 #[test]
 fn all_over_threshold_is_low() {
@@ -176,6 +202,203 @@ fn an_excluded_profile_is_ignored() {
     let f = compute(&names(&["a", "b"]), &evidence, &cfg(90, &["b"]), T, "x");
     assert_eq!(f.state, Cap::Low, "b has room but is excluded");
     assert_eq!(f.over, vec!["a".to_string()]);
+}
+
+// --- Overflow (issue #1606) -------------------------------------------------
+//
+// The plan profiles decide the state. When every one is over the threshold,
+// an overflow profile makes it `ok` exactly when auto-switch could move onto
+// it: the shared gate allows it (earliest plan reset beyond the wait), and
+// the profile is not blocked and not excluded. Its own plan reading does
+// not count (issue #1694): a credit account at its plan limit is usable.
+
+/// a and b (plan) over the threshold, the earliest resetting at `reset`;
+/// cred (overflow) at 5%.
+fn overflow_case(reset: i64, blocked: &[String], gate: Option<Gate>) -> CapacityFile {
+    overflow_case_cred(reset, blocked, gate, 5.0)
+}
+
+/// [`overflow_case`] with cred's own plan use at `cred_pct`.
+fn overflow_case_cred(
+    reset: i64,
+    blocked: &[String],
+    gate: Option<Gate>,
+    cred_pct: f64,
+) -> CapacityFile {
+    let mut c = cfg(90, &[]);
+    c.overflow = vec![OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1)];
+    let order = names(&["cred"]);
+    let pool = OverflowPool {
+        order: &order,
+        blocked,
+        gate,
+    };
+    super::capacity::compute(
+        &names(&["a", "b", "cred"]),
+        &ev(vec![
+            ("a", usage(95.0, reset + HOUR)),
+            ("b", usage(91.0, reset)),
+            ("cred", usage(cred_pct, T + HOUR)),
+        ]),
+        &c,
+        &pool,
+        T,
+        "usage",
+    )
+}
+
+#[test]
+fn a_credit_profile_at_its_plan_limit_still_makes_the_file_ok() {
+    let f = overflow_case_cred(T + 2 * HOUR, &[], Some(GATE), 100.0);
+    assert_eq!(f.state, Cap::Ok, "auto-switch moves onto cred at 100%");
+    assert_eq!(f.earliest_reset, None);
+    assert!(!f.over.contains(&"cred".to_string()), "cred is not plan");
+    let f = overflow_case_cred(T + 2 * HOUR, &["cred".to_string()], Some(GATE), 100.0);
+    assert_eq!(f.state, Cap::Low, "only a spend block makes it unusable");
+}
+
+#[test]
+fn a_usable_overflow_profile_makes_the_file_ok_once_the_plan_reset_is_far() {
+    let f = overflow_case(T + 2 * HOUR, &[], Some(GATE));
+    assert_eq!(f.state, Cap::Ok, "auto-switch could move onto cred");
+    assert_eq!(f.earliest_reset, None, "no reset to wait for");
+    assert_eq!(
+        f.over,
+        vec!["a".to_string(), "b".to_string()],
+        "the plan profiles still over"
+    );
+}
+
+#[test]
+fn an_overflow_profile_does_not_count_while_the_plan_reset_is_inside_the_wait() {
+    let f = overflow_case(T + 1800, &[], Some(GATE));
+    assert_eq!(
+        f.state,
+        Cap::Low,
+        "a reset exactly at the wait keeps the plan"
+    );
+    assert_eq!(f.over, vec!["a".to_string(), "b".to_string()]);
+    assert_eq!(f.earliest_reset, Some(ts(T + 1800)));
+}
+
+#[test]
+fn a_blocked_overflow_profile_or_a_closed_gate_is_no_capacity() {
+    let f = overflow_case(T + 2 * HOUR, &["cred".to_string()], Some(GATE));
+    assert_eq!(f.state, Cap::Low, "spend-blocked");
+    let f = overflow_case(T + 2 * HOUR, &[], None);
+    assert_eq!(f.state, Cap::Low, "gate unreadable");
+}
+
+/// The file and the selection on the same readings (issue #1606, review
+/// round 3): `ok` through overflow exactly when a session on `a`, at the
+/// threshold, would be moved onto `cred`. Plan profiles `a` and `b` read
+/// `a` and `b`; `cred` reads `cred_pct` on its five-hour window.
+fn file_and_selection(threshold: u8, a: Reading, b: Reading, cred_pct: f64) -> (Cap, bool) {
+    let mut c = cfg(threshold, &[]);
+    c.overflow = vec![OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1)];
+    let order = names(&["cred"]);
+    let pool = OverflowPool {
+        order: &order,
+        blocked: &[],
+        gate: Some(GATE),
+    };
+    let profiles = names(&["a", "b", "cred"]);
+    let cred = reading(win(cred_pct, T + HOUR), None, T);
+    let file = super::capacity::compute(
+        &profiles,
+        &ev(vec![
+            ("a", Evidence::Usage(a.clone())),
+            ("b", Evidence::Usage(b.clone())),
+            ("cred", Evidence::Usage(cred.clone())),
+        ]),
+        &c,
+        &pool,
+        T,
+        "usage",
+    );
+    let readings: BTreeMap<String, Reading> = [("a", a), ("b", b), ("cred", cred)]
+        .into_iter()
+        .map(|(k, v)| (k.to_string(), v))
+        .collect();
+    let p = Pool {
+        profiles: &profiles,
+        readings: &readings,
+        threshold,
+        exclude: &[],
+        now: T,
+    };
+    let picked = select_with_overflow(&p, &pool, "a", |_| true);
+    (file.state, picked.is_some_and(|p| p.as_str() == "cred"))
+}
+
+#[test]
+fn the_overflow_state_uses_the_gate_s_reset_not_the_threshold_s() {
+    // b: session 87% (at the gate's 85, under the threshold 90) resetting in
+    // two hours, week 95% resetting in ten minutes. b regains capacity by
+    // the gate's test only when both have reset, in two hours: beyond the
+    // 30-minute wait, so auto-switch moves onto cred. The file must say so,
+    // not take the week's reset alone because only the week is over 90.
+    let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+    let b = reading(win(87.0, T + 2 * HOUR), win(95.0, T + 600), T);
+    let (state, spends) = file_and_selection(90, a, b, 5.0);
+    assert!(spends, "the selection moves onto cred");
+    assert_eq!(state, Cap::Ok, "so the file is ok");
+}
+
+#[test]
+fn a_plan_profile_with_gate_capacity_over_the_threshold_keeps_the_file_low() {
+    // Threshold 80, below the gate's 85/90. b at 0% session and 85% week is
+    // over 80 but has capacity by the gate's test: the rotator would not
+    // spend, auto-switch does not move onto cred, and the file stays low.
+    let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+    let b = reading(win(0.0, T + 2 * HOUR), win(85.0, T + 100 * HOUR), T);
+    let (state, spends) = file_and_selection(80, a, b, 5.0);
+    assert!(!spends, "the selection keeps the plan");
+    assert_eq!(state, Cap::Low);
+}
+
+#[test]
+fn the_file_and_the_selection_agree_on_overflow() {
+    for (threshold, cred_pct) in [70u8, 80, 90]
+        .into_iter()
+        .flat_map(|t| [(t, 5.0), (t, 100.0)])
+    {
+        for (bs, bw, bs_reset, bw_reset) in [
+            (87.0, 95.0, 2 * HOUR, 600),
+            (87.0, 95.0, 600, 2 * HOUR),
+            (95.0, 10.0, 600, 100 * HOUR),
+            (95.0, 10.0, 2 * HOUR, 100 * HOUR),
+            (0.0, 85.0, HOUR, 100 * HOUR),
+            (0.0, 92.0, HOUR, 100 * HOUR),
+            (82.0, 10.0, HOUR, 100 * HOUR),
+        ] {
+            let a = reading(win(95.0, T + 3 * HOUR), win(10.0, T + 100 * HOUR), T);
+            let b = reading(win(bs, T + bs_reset), win(bw, T + bw_reset), T);
+            let (state, spends) = file_and_selection(threshold, a, b, cred_pct);
+            if b_over(threshold, bs, bw) {
+                assert_eq!(
+                    state == Cap::Ok,
+                    spends,
+                    "threshold {threshold}, cred {cred_pct}%, b {bs}/{bw} resets {bs_reset}/{bw_reset}"
+                );
+            }
+        }
+    }
+}
+
+/// b over the auto-switch threshold: only then does overflow decide the
+/// file's state (otherwise b keeps it `ok`).
+fn b_over(threshold: u8, session: f64, week: f64) -> bool {
+    session.max(week) >= f64::from(threshold)
+}
+
+#[test]
+fn an_overflow_profile_is_never_plan_capacity() {
+    // Only cred is under the threshold, but it is overflow: with the gate
+    // shut, the plan state stands and cred is not listed as over.
+    let f = overflow_case(T + 600, &[], Some(GATE));
+    assert_eq!(f.state, Cap::Low);
+    assert!(!f.over.contains(&"cred".to_string()));
 }
 
 #[test]
@@ -600,6 +823,7 @@ fn refresh_does_not_write_while_auto_switch_is_off() {
         &r.root,
         &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
         now(),
+        false,
     );
     assert!(!r.capacity().exists());
 }
@@ -706,17 +930,17 @@ fn a_null_reset_state_gets_a_heartbeat_rewrite_after_an_hour() {
         (names(&["a"])[0].clone(), Rotated::Exhausted),
         (names(&["b"])[0].clone(), Rotated::Exhausted),
     ];
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     let f = cap::read(&r.root).expect("written");
     assert_eq!((f.state, f.earliest_reset), (Cap::Exhausted, None));
     assert_eq!(f.writer, "rotate");
 
     let recent = backdate(&r, 10 * 60);
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     assert_eq!(fs::read(r.capacity()).unwrap(), recent, "under 1h: skipped");
 
     backdate(&r, 2 * HOUR);
-    refresh_from_rotation(&r.root, &both, now());
+    refresh_from_rotation(&r.root, &both, now(), false);
     let f = cap::read(&r.root).unwrap();
     assert!(
         (f.written_at.timestamp() - now()).abs() <= 5,
@@ -762,6 +986,7 @@ fn rotation_resets_come_from_usage_json_and_the_auto_switch_threshold() {
             ),
         ],
         t,
+        false,
     );
     let f = cap::read(&r.root).expect("written");
     assert_eq!(f.state, Cap::Low);
@@ -781,6 +1006,7 @@ fn rotation_with_a_failed_probe_is_ok_and_writes_nothing_new() {
             (names(&["b"])[0].clone(), Rotated::Failed),
         ],
         now(),
+        false,
     );
     assert!(!r.capacity().exists());
 }
@@ -801,6 +1027,7 @@ fn write_errors_are_swallowed() {
         &r.root,
         &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
         now(),
+        false,
     );
     assert!(r.capacity().is_dir(), "left alone, no panic");
 }
@@ -952,4 +1179,65 @@ fn recipe_warning_is_silent_when_off_or_ok() {
         let _p = planted(Cap::Ok, "1");
         assert_eq!(recipe(), "");
     }
+}
+
+// ---------------------------------------------------------------------------
+// refresh_from_rotation on credits (issue #1606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn on_overflow_overwrites_an_exhausted_file_with_ok() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a", "cred"]);
+    let a = names(&["a"])[0].clone();
+    let cred = names(&["cred"])[0].clone();
+    let both = [(a, Rotated::Exhausted), (cred, Rotated::Exhausted)];
+    refresh_from_rotation(&r.root, &both, now(), false);
+    assert_eq!(cap::read(&r.root).expect("written").state, Cap::Exhausted);
+    refresh_from_rotation(&r.root, &both, now(), true);
+    let f = cap::read(&r.root).expect("still a file");
+    assert_eq!(
+        f.state,
+        Cap::Ok,
+        "the live login runs on overflow: work can go on"
+    );
+    assert_eq!(f.writer, "rotate");
+}
+
+#[test]
+fn on_overflow_never_creates_the_file() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a", "cred"]);
+    let both = [
+        (names(&["a"])[0].clone(), Rotated::Exhausted),
+        (names(&["cred"])[0].clone(), Rotated::Exhausted),
+    ];
+    refresh_from_rotation(&r.root, &both, now(), true);
+    assert!(!r.capacity().exists());
+}
+
+#[test]
+fn off_overflow_the_result_is_as_before() {
+    let _l = lock();
+    let _on = on();
+    let r = root(&["a"]);
+    let one = [(names(&["a"])[0].clone(), Rotated::Exhausted)];
+    refresh_from_rotation(&r.root, &one, now(), false);
+    assert_eq!(cap::read(&r.root).expect("written").state, Cap::Exhausted);
+}
+
+#[test]
+fn on_overflow_writes_nothing_while_auto_switch_is_off() {
+    let _l = lock();
+    let _off = EnvGuard::set([(config::TOGGLE_ENV, "0")]);
+    let r = root(&["a"]);
+    refresh_from_rotation(
+        &r.root,
+        &[(names(&["a"])[0].clone(), Rotated::Exhausted)],
+        now(),
+        true,
+    );
+    assert!(!r.capacity().exists());
 }

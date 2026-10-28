@@ -168,6 +168,8 @@ mod issue_899_merge_validations_abstention;
 mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
+#[path = "profile_overflow.rs"]
+mod profile_overflow;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

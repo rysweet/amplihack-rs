@@ -10,6 +10,8 @@
 //! with `lstat` and moved with rename and exchange calls only.
 
 #[cfg(unix)]
+mod alert;
+#[cfg(unix)]
 mod autostart;
 #[cfg(unix)]
 mod backup;
@@ -24,9 +26,15 @@ mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
+mod gate_record;
+#[cfg(unix)]
 mod guide;
 #[cfg(unix)]
+mod hand_fields;
+#[cfg(unix)]
 mod handfix;
+#[cfg(unix)]
+mod held;
 #[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
@@ -40,6 +48,14 @@ mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod older_readers;
+#[cfg(unix)]
+mod overflow;
+#[cfg(unix)]
+mod overflow_msg;
+#[cfg(unix)]
+mod overflow_record;
+#[cfg(unix)]
 mod pin;
 #[cfg(unix)]
 mod precheck;
@@ -49,6 +65,8 @@ mod prelude;
 mod recover;
 #[cfg(unix)]
 mod settings;
+#[cfg(unix)]
+mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
@@ -65,9 +83,13 @@ mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
 #[cfg(all(test, unix))]
+mod tests_gate_record;
+#[cfg(all(test, unix))]
 mod tests_handfix;
 #[cfg(all(test, unix))]
 mod tests_handfix_cycle;
+#[cfg(all(test, unix))]
+mod tests_handfix_overflow;
 #[cfg(all(test, unix))]
 mod tests_home_unreadable;
 #[cfg(all(test, unix))]
@@ -79,7 +101,11 @@ mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
+mod tests_overflow;
+#[cfg(all(test, unix))]
 mod tests_pin;
+#[cfg(all(test, target_os = "linux"))]
+mod tests_pin_overflow;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -104,22 +130,22 @@ use super::root_config::RootSource;
 use super::store::ProfileStore;
 
 #[cfg(unix)]
-pub(crate) use autostart::autostart_on_launch;
-
-/// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
-/// the rotator for `root` (default: this environment's root) runs another
-/// amplihack binary, which keeps reading the ledger in its own format until
-/// it is restarted.
+pub(in crate::commands::profile) use autostart::autostart_line;
 #[cfg(unix)]
-pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
-    let root = match root {
-        Some(r) => Some(r.to_path_buf()),
-        None => amplihack_utils::rotator_status::resolve_root(),
-    };
-    if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
-        eprintln!("{}", ledger::foreign_rotator_note(pid));
-    }
-}
+pub(crate) use autostart::autostart_on_launch;
+#[cfg(unix)]
+pub(super) use control::{clear_overflow_block, overflow_blocks};
+#[cfg(unix)]
+pub(super) use log::timestamp;
+#[cfg(unix)]
+pub(crate) use older_readers::warn_foreign_rotator;
+
+// Auto-switch's overflow gate (`gate_record`): the running rotator's own
+// settings, or, when no rotator runs, the `AMPLIHACK_ROTATE_*` variables.
+#[cfg(all(test, unix))]
+pub(super) use gate_record::effective_at as overflow_gate_at;
+#[cfg(unix)]
+pub(super) use gate_record::{GateSource, effective as overflow_gate, line as overflow_gate_line};
 
 /// The tail of the warning printed after `profile switch NAME` (issue
 /// #1691) while a rotator from another amplihack binary runs: one started
@@ -158,12 +184,6 @@ fn warn_switch_hold(root: &std::path::Path) {
 /// `autostart`. Nothing to start off Unix.
 #[cfg(not(unix))]
 pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
-
-/// The `autostart:` status line for `root`, for `auto-switch status`.
-#[cfg(unix)]
-pub(in crate::commands::profile) fn autostart_line(root: &std::path::Path) -> String {
-    autostart::status_line(autostart::effective(root, &|k| std::env::var_os(k)))
-}
 
 /// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
 /// `watch` go after the subcommand.
@@ -215,6 +235,12 @@ pub struct TuneFlags {
     /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
+    /// Move onto an overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
+    #[arg(long, value_name = "SECS")]
+    pub overflow_wait: Option<String>,
+    /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
+    #[arg(long, value_name = "0|1")]
+    pub overflow_unknown_reset: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]

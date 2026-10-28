@@ -46,6 +46,9 @@ fn decided(measured_at: i64) -> Measurement {
         },
         note: None,
         failed: 0,
+        tag: None,
+        new_blocks: Vec::new(),
+        next_plan_reset: None,
         measured_at,
     }
 }
@@ -72,6 +75,7 @@ fn a_hand_pin_and_a_record(ctx: &Ctx) {
         at: now(),
         measured_at: Some(now()),
         outcome: "stayed".into(),
+        overflow: None,
     });
     ctx.rs.save_ledger(&l).unwrap();
 }

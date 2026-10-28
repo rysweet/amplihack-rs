@@ -10,6 +10,7 @@
 use super::candidate::{self, Pool};
 use super::config::{self, Config};
 use super::fsx;
+use super::overflow_inputs::OverflowInputs;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
@@ -26,8 +27,13 @@ use std::path::PathBuf;
 #[cfg(test)]
 pub(super) use crate::commands::profile::attempt::limit_reset;
 
-/// An eligible profile for a nested launch: not excluded, not exhausted, not
-/// in `skip`, holding its own login at home, and not hosting another account.
+/// An eligible profile for a nested launch: not excluded, not exhausted (an
+/// overflow profile: not spend-blocked; its own plan reading does not
+/// count), not in `skip`, holding its own login at home, and not hosting
+/// another account. Plan profiles come first; an overflow profile only when
+/// no plan profile has capacity and the overflow gate allows it (issue #1606), and
+/// a launch on an overflow profile gets a plan profile as soon as one has
+/// capacity (see `candidate::select_with_overflow`).
 pub fn nested_candidate(
     state: &State,
     ledger: &Ledger,
@@ -37,14 +43,16 @@ pub fn nested_candidate(
     current: &str,
     skip: &[String],
 ) -> Option<ProfileName> {
+    let now = fsx::now();
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
     let pool = Pool {
         profiles,
         readings,
         threshold: cfg.threshold,
         exclude: &cfg.exclude,
-        now: fsx::now(),
+        now,
     };
-    candidate::select(&pool, current, |c| {
+    candidate::select_with_overflow(&pool, &overflow.pool(), current, |c| {
         let n = c.as_str();
         !skip.iter().any(|s| s == n)
             && !ledger.hosts.contains_key(n)
@@ -113,7 +121,9 @@ pub struct Substitute {
 }
 
 /// The profile a nested launch inheriting `inherited` should use, when the
-/// account live there is exhausted and another profile has quota left.
+/// account live there is exhausted and another profile has quota left, or
+/// when `inherited` is an overflow profile and a plan profile has capacity
+/// (issue #1606: overflow is left as soon as a plan profile can work).
 pub fn substitute(
     store: &ProfileStore,
     state: &State,
@@ -133,12 +143,16 @@ pub fn substitute(
     let account = ledger.account_in(inherited.as_str()).to_string();
     let readings = state.load_usage_or_warn().accounts;
     let now = fsx::now();
-    let reading = readings.get(&account)?;
-    if !candidate::is_exhausted(Some(reading), cfg.threshold, now) {
-        return None;
-    }
-    let reason = limit_reason(reading, now);
-    let inherited_reset = exhausted_reset(reading, now);
+    let reading = readings.get(&account);
+    let exhausted = candidate::is_exhausted(reading, cfg.threshold, now);
+    let (reason, inherited_reset) = match reading {
+        Some(r) if exhausted => (limit_reason(r, now), exhausted_reset(r, now)),
+        _ if cfg.is_overflow(inherited) => (
+            "an overflow profile and a plan profile has capacity".to_string(),
+            None,
+        ),
+        _ => return None,
+    };
     let profiles = profile_names(store);
     let skip = vec![inherited.to_string()];
     nested_candidate(state, &ledger, &profiles, &readings, cfg, &account, &skip).map(|c| {

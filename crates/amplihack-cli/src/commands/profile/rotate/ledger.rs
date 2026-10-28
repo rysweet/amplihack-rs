@@ -12,24 +12,20 @@ use crate::commands::profile::auto_switch::kit::{
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+pub use super::hand_fields::{
+    HOME_UNREADABLE_GRACE, MAX_GUIDANCE_LINE, MAX_GUIDANCE_LINES, MAX_LOST_LOGIN, unprintable,
+};
+use super::hand_fields::{valid_guidance, valid_lost_login};
+pub use super::older_readers::for_older_readers;
+pub use super::spend_blocks::{active_blocks, prune_blocks, spend_reset};
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
-/// Limits on the hand-change fields (issue #1693).
-pub const MAX_GUIDANCE_LINES: usize = 16;
-pub const MAX_GUIDANCE_LINE: usize = 1024;
-pub const MAX_LOST_LOGIN: usize = 64;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
-/// How long, in seconds, `~/.claude.json` may have no readable account before
-/// the `home-unreadable` ALERT stops saying "the next cycle reads it again"
-/// and names a fix. Claude rewrites the file often, so one failed read is
-/// normal; five minutes of them is not (#1702 review). With the default
-/// 600-second interval the second such cycle escalates; a cycle never
-/// escalates on its own first read.
-pub const HOME_UNREADABLE_GRACE: i64 = 300;
 
 /// The `last_cycle.outcome` written by `profile switch NAME` (issue #1691):
 /// the person vouches for NAME's login, so the limit-resume hook counts it as
@@ -46,6 +42,42 @@ pub struct LastCycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
+    /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<String>,
+}
+
+/// The tags `LastCycle.overflow` may hold.
+pub const OVERFLOW_TAGS: [&str; 3] = ["in", "out", "on"];
+/// The only reason an overflow profile is blocked.
+pub const SPEND_LIMIT: &str = "spend_limit";
+/// The most overflow blocks a ledger may hold.
+pub const MAX_BLOCKS: usize = 256;
+/// The longest a loaded block may last. The writer uses the next spend
+/// reset, at most 31 days away; the slack lets a later change take the
+/// reset from Claude's message without invalidating older ledgers.
+pub const MAX_BLOCK_SECS: i64 = 62 * 86_400;
+
+/// An overflow profile that reported the organisation's spend limit: not
+/// used from `at` until `until` (the 1st of the next month, 00:00 UTC) or
+/// until `profile overflow clear`. Unknown fields are ignored, so a later
+/// binary can add one without making this ledger unreadable here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverflowBlock {
+    pub at: i64,
+    pub until: i64,
+    pub reason: String,
+}
+
+impl OverflowBlock {
+    /// A spend-limit block recorded at `at`.
+    pub fn spend_limit(at: i64) -> Self {
+        Self {
+            at,
+            until: spend_reset(at),
+            reason: SPEND_LIMIT.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +102,9 @@ pub struct RotateLedger {
     pub alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
+    /// Overflow profiles blocked by a spend limit, by profile name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overflow_blocked: BTreeMap<String, OverflowBlock>,
     /// The current hand-change ALERT and `fix` lines (issue #1693), written
     /// every cycle while `~/.claude` holds another account than `account`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -97,6 +132,7 @@ impl Default for RotateLedger {
             previous: None,
             alert: None,
             last_cycle: None,
+            overflow_blocked: BTreeMap::new(),
             guidance: None,
             home_unreadable_since: None,
             lost_login: Vec::new(),
@@ -184,29 +220,32 @@ pub fn safe_account(v: &str) -> bool {
     !v.is_empty() && v.len() <= MAX_ACCOUNT && !v.chars().any(char::is_control)
 }
 
-/// A control or bidirectional-override character: never stored in, or
-/// printed from, a guidance line or a command.
-pub fn unprintable(c: char) -> bool {
-    c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
-}
-
-fn valid_guidance(g: Option<&[String]>) -> bool {
-    g.is_none_or(|g| {
-        g.len() <= MAX_GUIDANCE_LINES
-            && g.iter()
-                .all(|l| l.len() <= MAX_GUIDANCE_LINE && !l.chars().any(unprintable))
-    })
-}
-
-fn valid_lost_login(v: &[String]) -> bool {
-    v.len() <= MAX_LOST_LOGIN
-        && v.iter()
-            .enumerate()
-            .all(|(i, n)| ProfileName::parse(n).is_ok() && !v[..i].contains(n))
-}
-
 fn valid_name(v: Option<&str>) -> bool {
     v.is_none_or(|n| ProfileName::parse(n).is_ok())
+}
+
+/// The overflow fields of a loaded ledger: a known tag, at most
+/// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
+/// recorded at a positive time and ending after it but within
+/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. An end
+/// that cannot be computed counts as invalid.
+fn valid_overflow(l: &RotateLedger) -> bool {
+    let tag_ok = l
+        .last_cycle
+        .as_ref()
+        .and_then(|c| c.overflow.as_deref())
+        .is_none_or(|t| OVERFLOW_TAGS.contains(&t));
+    tag_ok
+        && l.overflow_blocked.len() <= MAX_BLOCKS
+        && l.overflow_blocked.iter().all(|(name, b)| {
+            ProfileName::parse(name).is_ok()
+                && b.reason == SPEND_LIMIT
+                && b.at > 0
+                && b.at < b.until
+                && b.at
+                    .checked_add(MAX_BLOCK_SECS)
+                    .is_some_and(|max| b.until <= max)
+        })
 }
 
 impl RotateState {
@@ -239,7 +278,7 @@ impl RotateState {
 
     /// A state file: `None` when missing; an error for a symlink, a file
     /// over 64 KiB, or one that is someone else's or writable by others.
-    fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
+    pub(super) fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
         match read_bounded_nofollow(path, MAX_STATE) {
             Ok(None) => Ok(None),
             Ok(Some((raw, m))) if trusted(&m) => Ok(Some(raw)),
@@ -248,7 +287,7 @@ impl RotateState {
         }
     }
 
-    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
+    pub(super) fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
         self.ensure()?;
         write_private_atomic(&self.dir, name, bytes).map_err(ProfileError::Io)
     }
@@ -270,6 +309,9 @@ impl RotateState {
             || l.alert.as_deref().is_some_and(|a| !safe_account(a))
         {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
+        }
+        if !valid_overflow(&l) {
+            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
         }
         if !valid_guidance(l.guidance.as_deref()) || !valid_lost_login(&l.lost_login) {
             return Err(inconsistent(format!(
@@ -330,53 +372,7 @@ impl RotateState {
     }
 }
 
-/// The ledger as written for its readers. With `older` (a rotator from
-/// another binary runs), fields added after the ledger first shipped are
-/// left out, because amplihack before #1659 rejects unknown ledger fields:
-/// today `last_cycle.measured_at`, without which the limit-resume hook
-/// falls back to its 60-second margin, and `guidance` and `lost_login`
-/// (issue #1693), which only `rotate status` shows.
-pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
-    let mut out = l.clone();
-    if older {
-        if let Some(c) = &mut out.last_cycle {
-            c.measured_at = None;
-        }
-        out.guidance = None;
-        out.home_unreadable_since = None;
-        out.lost_login.clear();
-    }
-    out
-}
-
-/// The one line printed when a rotator from another amplihack binary runs.
-pub fn foreign_rotator_note(pid: u32) -> String {
-    format!(
-        "amplihack: the Claude login rotator (pid {pid}) runs another amplihack binary, so the \
-         rotate ledger is written in the format it reads; restart it to finish the upgrade: \
-         amplihack profile rotate stop && amplihack profile rotate start"
-    )
-}
-
 /// Line and column only: a serde message can quote input.
 fn position(e: &serde_json::Error) -> String {
     format!("invalid JSON at line {} column {}", e.line(), e.column())
-}
-
-pub fn alert_key(kind: &str, live: Option<&ProfileName>) -> String {
-    format!("{kind}:{}", live.map_or("-", ProfileName::as_str))
-}
-
-/// Whether an ALERT with `key` is to be written: only when the stored key
-/// differs. Stores `key`.
-pub fn should_alert(l: &mut RotateLedger, key: &str) -> bool {
-    if l.alert.as_deref() == Some(key) {
-        return false;
-    }
-    l.alert = Some(key.to_string());
-    true
-}
-
-pub fn clear_alert(l: &mut RotateLedger) {
-    l.alert = None;
 }

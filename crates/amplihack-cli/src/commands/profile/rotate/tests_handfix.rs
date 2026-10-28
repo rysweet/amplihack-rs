@@ -82,6 +82,8 @@ fn settings() -> Settings {
         upgrade_margin: 30,
         hold: 3600,
         interval: 600,
+        overflow_wait: 1800,
+        overflow_unknown_reset: false,
     }
 }
 
@@ -359,6 +361,8 @@ fn reproduction_27_oct_moves_the_duplicate_aside_and_swaps_to_capacity() {
             session: 12.0,
             week: 40.0,
         },
+        windows: Default::default(),
+        spend_limit: false,
     };
     let d = decide(&settings(), &Reading::Exhausted, &[target], None, T);
     assert!(

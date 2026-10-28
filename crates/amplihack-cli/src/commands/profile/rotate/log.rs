@@ -297,6 +297,8 @@ pub mod msg {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
     }
 
+    pub use super::super::overflow_msg::*;
+
     /// A cycle stopped by the rotation pin (issue #1691).
     pub fn held(name: &ProfileName) -> String {
         format!("skip: held by switch to {name}; run `amplihack profile switch --none` to release")
