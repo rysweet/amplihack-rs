@@ -211,11 +211,19 @@ extern "C" fn check_at_exit() {
         let changed = diff_snapshots(&baseline.files, &snapshot(&baseline.roots));
         (!changed.is_empty()).then(|| report(&changed))
     });
-    if let Ok(Some(text)) = result {
-        use std::io::Write;
-        let _ = std::io::stderr().write_all(text.as_bytes());
-        // SAFETY: _exit ends the process at once; nothing runs after it.
-        unsafe { libc::_exit(1) };
+    use std::io::Write;
+    match result {
+        Ok(Some(text)) => {
+            let _ = std::io::stderr().write_all(text.as_bytes());
+            // SAFETY: _exit ends the process at once; nothing runs after it.
+            unsafe { libc::_exit(1) };
+        }
+        Ok(None) => {}
+        Err(_) => {
+            let _ = std::io::stderr().write_all(
+                b"issue_1699 real-root guard: exit check panicked; profile root not verified\n",
+            );
+        }
     }
 }
 

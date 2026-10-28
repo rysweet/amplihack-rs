@@ -73,7 +73,9 @@ pub(crate) fn hook_path_refusal(
 ) -> Option<String> {
     let shown = hooks_bin.display();
     if !std::fs::metadata(hooks_bin).is_ok_and(|meta| meta.is_file()) {
-        return Some(format!("hooks binary {shown} does not exist"));
+        return Some(format!(
+            "hooks binary {shown} does not exist or is not a regular file"
+        ));
     }
     let bin = match hooks_bin.canonicalize() {
         Ok(path) => path,
@@ -138,23 +140,13 @@ fn current_home() -> Option<PathBuf> {
 /// Every profile's result when the hooks path is refused. Only stats
 /// `settings.json`; nothing is opened.
 fn refused_all(store: &ProfileStore, reason: &str) -> Vec<(String, Refresh)> {
-    let Ok(names) = store.list() else {
-        return Vec::new();
-    };
-    names
-        .into_iter()
-        .filter_map(|name| {
-            let parsed = ProfileName::parse(&name).ok()?;
-            let result = match store.resolve(&parsed) {
-                Ok(dir) => match std::fs::symlink_metadata(dir.join("settings.json")) {
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Refresh::Missing,
-                    _ => Refresh::Skipped(reason.to_string()),
-                },
-                Err(error) => Refresh::Skipped(error.to_string()),
-            };
-            Some((name, result))
-        })
-        .collect()
+    each_profile(
+        store,
+        &|dir| match std::fs::symlink_metadata(dir.join("settings.json")) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Refresh::Missing,
+            _ => Refresh::Skipped(reason.to_string()),
+        },
+    )
 }
 
 /// Unchecked: it does not consult [`hook_path_refusal`]. Production code
@@ -163,6 +155,12 @@ pub(crate) fn refresh_in(
     store: &ProfileStore,
     update: &dyn Fn(&mut Value),
 ) -> Vec<(String, Refresh)> {
+    each_profile(store, &|dir| refresh_one(dir, update))
+}
+
+/// `act` applied to each listed profile's directory; a profile whose name
+/// does not parse is left out, and one that does not resolve is `Skipped`.
+fn each_profile(store: &ProfileStore, act: &dyn Fn(&Path) -> Refresh) -> Vec<(String, Refresh)> {
     let Ok(names) = store.list() else {
         return Vec::new();
     };
@@ -171,7 +169,7 @@ pub(crate) fn refresh_in(
         .filter_map(|name| {
             let parsed = ProfileName::parse(&name).ok()?;
             let result = match store.resolve(&parsed) {
-                Ok(dir) => refresh_one(&dir, update),
+                Ok(dir) => act(&dir),
                 Err(error) => Refresh::Skipped(error.to_string()),
             };
             Some((name, result))

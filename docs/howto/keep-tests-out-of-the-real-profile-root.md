@@ -32,7 +32,7 @@ a test that exercises the refresh, and what to do when the guard fails.
 |---------|-------|--------------|
 | Refusal | `refresh_profile_settings` in `crates/amplihack-cli/src/commands/profile/settings_refresh.rs` | Refuses the refresh when the hooks binary is missing, or is under a temp directory while the profile root is outside `HOME`. See [the profile reference](../reference/profile-command.md#seeding). |
 | Isolation | `tests/support/isolated_amplihack.rs` | `isolated(..)` clears the environment and also calls `.env_remove(PROFILE_ROOT_ENV)`, so no child inherits `AMPLIHACK_CLAUDE_PROFILE_ROOT`. |
-| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files when the guard test starts and again when the test process exits, and fails the run if any changed. |
+| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits, and fails the run if any changed. |
 
 The refusal is the only one that protects users. It is enforced in
 `refresh_profile_settings`, the single production entry point; `refresh_in`
@@ -41,8 +41,13 @@ is unchecked and is called directly only by unit tests.
 `env_clear()` in `isolated(..)` remains the main isolation control. The
 explicit `env_remove` is a second layer that still holds if a later change
 adds the profile root to the list of variables `isolated(..)` keeps.
-`crates/amplihack-cli/tests/issue_1699_isolated_profile_root.rs` checks that
-`cmd.get_envs()` contains `("AMPLIHACK_CLAUDE_PROFILE_ROOT", None)`.
+`crates/amplihack-cli/tests/issue_1699_isolated_profile_root.rs` checks it
+twice. One test sets the variable and asserts that the built `Command` gives
+the child no value for it; after `env_clear()` this only catches a kept list
+that copies the variable. A source assertion checks that
+`tests/support/isolated_amplihack.rs` calls `env_remove(PROFILE_ROOT_ENV)`
+after the loop that copies the kept variables, so deleting that line fails
+the test.
 
 ## Write a test that starts the binary
 
@@ -95,13 +100,14 @@ The guard prints the changed paths and exits the test process with status 1:
 
 ```text
 real profile root changed during this test run:
-  /home/ryan/.claude-profiles/work/settings.json
+  /home/user/.claude-profiles/work/settings.json
 ```
 
 1. Check whether you changed the file yourself during the run, for example
-   with `amplihack install` or `/config` in a live session. The guard
-   compares content, not mtimes, so only a real change trips it. If so, run
-   the tests again.
+   with `amplihack install` or `/config` in a live session, or by a rotator
+   restart, because `record_root` rewrites `<root>/.auto-switch.d/rotate/root`.
+   The guard compares content, not mtimes, so only a real change trips it.
+   If so, run the tests again.
 2. Otherwise a test wrote the file. List the tests that set `HOME` without
    `isolated(..)`:
 
@@ -125,9 +131,12 @@ nothing and passes.
 
 ## Limits
 
-- The guard does not see changes made before the guard test starts, or
-  changes made by other test binaries. libtest has no hook that runs before
-  or after the whole suite.
+- The guard takes its baseline in `.init_array` before `main` on Linux, and
+  when the guard test runs on other Unix systems, so it does not see changes
+  made before that point. It does not see changes made by other test
+  binaries; libtest has no hook that runs before or after the whole suite.
+- A `settings.json` that cannot be read both before and after the run is not
+  compared. A change in readability is reported.
 - On failure the guard calls `_exit(1)`, which skips later exit handlers. A
   leftover temp directory is possible.
 - The refusal does not cover a real `HOME` with a hooks binary under the temp

@@ -6,9 +6,9 @@
 //! `PROFILE_ROOT_ENV` explicitly after copying the kept variables, so a future
 //! change to the kept list cannot let it through. After `env_clear()`, std's
 //! `env_remove` deletes the key rather than recording `(key, None)`, so the
-//! test asserts the observable result: the built `Command` gives the child no
-//! value for the variable. These read the built `Command` only; nothing is
-//! spawned.
+//! environment test only catches a kept list that copies the variable; it
+//! still passes with the `env_remove` line deleted. The source assertion pins
+//! that line. Nothing is spawned.
 
 use crate::isolated_amplihack::{PROFILE_ROOT_ENV, isolated};
 use crate::support::quiet_process::{child_set_var, in_quiet_process};
@@ -44,5 +44,20 @@ fn profile_root_env_name_matches_the_binary() {
     assert!(
         source.contains(&format!("\"{PROFILE_ROOT_ENV}\"")),
         "the binary reads its profile root from {PROFILE_ROOT_ENV}"
+    );
+}
+
+#[test]
+fn isolated_removes_the_profile_root_after_the_kept_vars() {
+    let source = include_str!("../../../tests/support/isolated_amplihack.rs");
+    let kept_loop = source
+        .find("for (key, value) in std::env::vars_os()")
+        .expect("isolated(..) copies the kept variables in a loop");
+    let removal = source
+        .find("command.env_remove(PROFILE_ROOT_ENV);")
+        .expect("isolated(..) must remove PROFILE_ROOT_ENV explicitly");
+    assert!(
+        removal > kept_loop,
+        "isolated(..) must remove {PROFILE_ROOT_ENV} after copying the kept variables"
     );
 }
