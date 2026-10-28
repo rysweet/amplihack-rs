@@ -397,6 +397,7 @@ its own copy.
 | Recipe | Setting | Effect |
 | --- | --- | --- |
 | `autodrive-build.yaml` step-02 | `blocked_ci_handoff: "true"` in the sub-recipe `context:` | The only setter in the bundle. |
+| `autodrive-build.yaml` | `blocked_ci_handoff: ""` in `context:` | Off for autodrive-build's own steps. Step-03 sources the brick that reads the key, so it is declared (#1561); step-02's `"true"` overrides it for the sub-recipe only. |
 | `default-workflow.yaml` | `blocked_ci_handoff: ""` in `context:`, beside `no_merge: ""` | Every standalone run, and every other caller of `default-workflow`, starts with the hand-off off, even when `RECIPE_VAR_blocked_ci_handoff` is set in the environment. |
 | `workflow-finalize.yaml` | Not declared | Inherits the value from `default-workflow`, as it does `no_merge`. |
 

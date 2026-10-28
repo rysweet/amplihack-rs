@@ -43,6 +43,9 @@ context:
   # Set by step-02's default-workflow sub-recipe (workflow-finalize's typed
   # result); step-03 decides the BLOCKED_CI hand-off from it (#1714).
   workflow_result: ""
+  # Off here; step-02 passes "true" to its default-workflow sub-recipe only.
+  # Declared because step-03 sources the brick that reads it (#1714, #1561).
+  blocked_ci_handoff: ""
   # Phase 1 never merges. auto-drive-to-merge owns that decision.
   no_merge: "true"
 

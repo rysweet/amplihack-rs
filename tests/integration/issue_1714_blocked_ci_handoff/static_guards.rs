@@ -39,7 +39,8 @@ fn rel(path: &std::path::Path) -> String {
         .to_string()
 }
 
-// T6: only autodrive-build step-02 sets the flag; default-workflow declares "".
+// T6: only autodrive-build step-02 sets the flag; default-workflow and
+// autodrive-build's own context declare "".
 #[test]
 fn only_autodrive_build_step_02_switches_the_handoff_on() {
     let mut setters = Vec::new();
@@ -58,7 +59,7 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
         .iter()
         .filter(|s| {
             !(s.starts_with("amplifier-bundle/recipes/autodrive-build.yaml:")
-                && s.ends_with("=\"true\"")
+                && (s.ends_with("=\"true\"") || s.ends_with("=\"\""))
                 || s.starts_with("amplifier-bundle/recipes/default-workflow.yaml:")
                     && s.ends_with("=\"\""))
         })
@@ -67,7 +68,7 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
         unexpected.is_empty(),
         "unexpected blocked_ci_handoff settings: {unexpected:?}"
     );
-    assert_eq!(setters.len(), 2, "{setters:?}");
+    assert_eq!(setters.len(), 3, "{setters:?}");
 
     let build = recipe_yaml("autodrive-build");
     let step02 = step(&build, "step-02-default-workflow");
@@ -76,9 +77,10 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
         Some("true")
     );
     assert_eq!(build["context"]["workflow_result"].as_str(), Some(""));
-    assert!(
-        build["context"].get("blocked_ci_handoff").is_none(),
-        "autodrive-build's own context must not switch the flag on for other steps"
+    assert_eq!(
+        build["context"]["blocked_ci_handoff"].as_str(),
+        Some(""),
+        "autodrive-build's own context must declare the flag off"
     );
     let default = recipe_yaml("default-workflow");
     assert_eq!(default["context"]["blocked_ci_handoff"].as_str(), Some(""));
