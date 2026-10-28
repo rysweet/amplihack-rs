@@ -222,10 +222,10 @@ impl Fixture {
                 cmd.env(key, value);
             }
         }
-        if std::env::var_os("RUSTUP_HOME").is_none() {
-            if let Some(home) = std::env::var_os("HOME") {
-                cmd.env("RUSTUP_HOME", PathBuf::from(home).join(".rustup"));
-            }
+        if std::env::var_os("RUSTUP_HOME").is_none()
+            && let Some(home) = std::env::var_os("HOME")
+        {
+            cmd.env("RUSTUP_HOME", PathBuf::from(home).join(".rustup"));
         }
         cmd.envs(&self.env);
         cmd
