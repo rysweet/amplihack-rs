@@ -26,10 +26,12 @@
 use super::backup::{BackupRefusal, fresh_backup, rejected_dir};
 use super::control::status_alerts;
 use super::decide::{Decision, Measured, Reading, decide};
+use super::guide::{Kind, Paths, lines as guide_lines};
 use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::identify::{CandidateInput, LiveId, Skip, candidates, live};
 use super::ledger::{MAX_LOST_LOGIN, Phase, RotateJournal, RotateLedger, RotateState};
 use super::log::{Sink, open_or_warn, sh_quote};
+use super::observe::live_alert;
 use super::settings::Settings;
 use super::swap::{Source, swap};
 use super::tests_swap::{ino_at, login, n, private};
@@ -44,12 +46,12 @@ use std::path::{Path, PathBuf};
 /// 2026-10-27T03:17:05Z, the first hand-change ALERT in the #1693 log.
 const T: i64 = 1_793_071_025;
 const STAMP: &str = "20261027T031705Z";
-const L: &str = "ryan-ryansweet";
-const M: &str = "ryan-mistt-org";
-const C: &str = "rssourcelabs";
-const CREDS: &str = ".credentials.json";
+pub(super) const L: &str = "ryan-ryansweet";
+pub(super) const M: &str = "ryan-mistt-org";
+pub(super) const C: &str = "rssourcelabs";
+pub(super) const CREDS: &str = ".credentials.json";
 
-fn acct(uuid: &str, email: &str) -> String {
+pub(super) fn acct(uuid: &str, email: &str) -> String {
     serde_json::json!({"oauthAccount": {"accountUuid": uuid, "emailAddress": email}}).to_string()
 }
 
@@ -83,19 +85,19 @@ fn settings() -> Settings {
     }
 }
 
-struct Fx {
+pub(super) struct Fx {
     _tmp: tempfile::TempDir,
-    base: PathBuf,
-    home: PathBuf,
-    root: PathBuf,
-    store: ProfileStore,
-    rs: RotateState,
+    pub(super) base: PathBuf,
+    pub(super) home: PathBuf,
+    pub(super) root: PathBuf,
+    pub(super) store: ProfileStore,
+    pub(super) rs: RotateState,
     /// The login in `~/.claude` (the manual `/login`).
-    h: u64,
+    pub(super) h: u64,
     /// M's own login, when it has one.
-    m: Option<u64>,
+    pub(super) m: Option<u64>,
     /// C's login, when C exists.
-    c: Option<u64>,
+    pub(super) c: Option<u64>,
 }
 
 fn dir700(p: &Path) {
@@ -105,7 +107,7 @@ fn dir700(p: &Path) {
 
 /// The #1693 state. `m_own`: M has its own login (case B), else case A.
 /// `capacity`: C exists with a login.
-fn fx(m_own: bool, capacity: bool) -> Fx {
+pub(super) fn fx(m_own: bool, capacity: bool) -> Fx {
     fx_at("home", m_own, capacity)
 }
 
@@ -176,7 +178,7 @@ impl Fx {
     }
 
     /// Every log line, without its time.
-    fn logged(&self) -> Vec<String> {
+    pub(super) fn logged(&self) -> Vec<String> {
         fs::read_to_string(&self.rs.log)
             .unwrap_or_default()
             .lines()
@@ -184,7 +186,7 @@ impl Fx {
             .collect()
     }
 
-    fn ledger(&self) -> RotateLedger {
+    pub(super) fn ledger(&self) -> RotateLedger {
         self.rs.load_ledger().unwrap().unwrap()
     }
 
@@ -192,15 +194,15 @@ impl Fx {
         status_alerts(&self.ledger())
     }
 
-    fn live(&self) -> PathBuf {
+    pub(super) fn live(&self) -> PathBuf {
         self.home.join(".claude").join(CREDS)
     }
 
-    fn slot(&self, p: &str) -> PathBuf {
+    pub(super) fn slot(&self, p: &str) -> PathBuf {
         self.root.join(p).join(CREDS)
     }
 
-    fn rejected(&self) -> PathBuf {
+    pub(super) fn rejected(&self) -> PathBuf {
         self.root.join(".rejected-logins")
     }
 
@@ -213,7 +215,7 @@ impl Fx {
     }
 
     /// Login files under `.rejected-logins`, by inode.
-    fn backed_up(&self) -> Vec<u64> {
+    pub(super) fn backed_up(&self) -> Vec<u64> {
         let Ok(rd) = fs::read_dir(self.rejected()) else {
             return Vec::new();
         };
@@ -242,7 +244,7 @@ impl Fx {
     }
 
     /// Each original login exists exactly once, and no other login appeared.
-    fn assert_each_login_once(&self) {
+    pub(super) fn assert_each_login_once(&self) {
         assert_eq!(
             self.all_logins(),
             self.originals(),
@@ -251,7 +253,7 @@ impl Fx {
     }
 
     /// Nothing moved, nothing was backed up, and the ledger still names L.
-    fn assert_nothing_moved(&self) {
+    pub(super) fn assert_nothing_moved(&self) {
         assert_eq!(ino_at(&self.live()), Some(self.h));
         assert_eq!(ino_at(&self.slot(M)), self.m);
         assert_eq!(ino_at(&self.slot(C)), self.c);
@@ -286,17 +288,17 @@ fn login_l() -> String {
     format!("fix 1: amplihack profile login {L}")
 }
 
-fn lost_l() -> String {
+pub(super) fn lost_l() -> String {
     format!(
         "ALERT: profile {L} has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login {L}"
     )
 }
 
-fn recorded_line() -> String {
+pub(super) fn recorded_line() -> String {
     format!("recovered: ~/.claude holds {M}'s login (ledger named {L}); recorded {M} as live")
 }
 
-fn moved_line(to: &Path) -> String {
+pub(super) fn moved_line(to: &Path) -> String {
     format!(
         "recovered: ~/.claude and {M} held the same account; kept ~/.claude, moved {M}'s copy to {}; recorded {M} as live",
         to.display()
@@ -587,20 +589,61 @@ fn an_unreadable_profile_makes_the_match_uncertain_even_with_one_match() {
     );
 }
 
+/// #1702: Claude rewrites `~/.claude.json` often, so one read that finds no
+/// account is not a hand change. If the ledger is right, the login in
+/// `~/.claude` is L's, and a `/login` there would leave L with no login
+/// anywhere: the loss #1693 is about. So nothing recovers, nothing moves, no
+/// guidance is written, and the live ALERT says the next cycle reads again.
 #[cfg(target_os = "linux")]
 #[test]
-fn an_unreadable_home_account_asks_for_a_new_login() {
+fn an_unreadable_home_account_is_unknown_not_a_hand_change() {
     let f = fx(true, false);
     private(&f.home.join(".claude.json"), r#"{"projects":{}}"#);
-    guided(
-        &f,
-        &seam(),
-        &[
-            alert("the account in ~/.claude.json cannot be read"),
-            login_l(),
-            "fix 2: run claude with no CLAUDE_CONFIG_DIR and /login again".into(),
-        ],
+    let before = fs::read(&f.rs.ledger).unwrap();
+    assert_eq!(
+        live(&f.store, &f.rs, &f.home).unwrap().0,
+        LiveId::HomeUnreadable(n(L))
     );
+    assert_eq!(f.step(&seam(), T), Step::Clear);
+    assert!(f.logged().is_empty(), "{:?}", f.logged());
+    assert_eq!(fs::read(&f.rs.ledger).unwrap(), before, "ledger untouched");
+    f.assert_nothing_moved();
+    assert!(
+        preview(&f.store, &f.rs, &f.home, seam, T)
+            .unwrap()
+            .is_empty(),
+        "--dry-run previews no recovery either"
+    );
+    let (kind, line) = live_alert(&LiveId::HomeUnreadable(n(L))).unwrap();
+    assert_eq!(kind, "home-unreadable");
+    assert_eq!(
+        line,
+        format!(
+            "ALERT: the account in ~/.claude.json cannot be read (live={L}); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace {L}'s login"
+        )
+    );
+}
+
+/// #1702: the account was read once and did not match, then could not be
+/// read for the holder check (Claude rewrote it in between). The guidance
+/// still never says `/login`: it says the next cycle reads the file again.
+#[test]
+fn guidance_for_an_unreadable_home_account_never_says_login() {
+    let paths = Paths {
+        home: PathBuf::from("/h"),
+        root: PathBuf::from("/r"),
+        ledger: PathBuf::from("/r/ledger.json"),
+        manual: PathBuf::from("/r/.rejected-logins/manual-x"),
+    };
+    let got = guide_lines(&n(L), false, &Kind::HomeUnreadable, &paths);
+    assert_eq!(
+        got,
+        vec![
+            alert("the account in ~/.claude.json cannot be read"),
+            "fix 1: none needed; the next cycle reads ~/.claude.json again".to_string(),
+        ]
+    );
+    assert!(got.iter().all(|l| !l.contains("/login")), "{got:?}");
 }
 
 #[cfg(target_os = "linux")]

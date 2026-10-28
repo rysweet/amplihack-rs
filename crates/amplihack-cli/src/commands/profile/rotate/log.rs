@@ -285,8 +285,38 @@ pub mod msg {
         )
     }
 
+    /// `~/.claude.json` could not be read: no recovery and no swap, and no
+    /// `/login` advice, which would replace `live`'s login (#1702).
+    pub fn home_unreadable(live: &ProfileName) -> String {
+        format!(
+            "ALERT: the account in ~/.claude.json cannot be read (live={live}); no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace {live}'s login"
+        )
+    }
+
     pub fn inconsistent(reason: &str) -> String {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
+    }
+
+    /// A cycle stopped by the rotation pin (issue #1691).
+    pub fn held(name: &ProfileName) -> String {
+        format!("skip: held by switch to {name}; run `amplihack profile switch --none` to release")
+    }
+
+    /// The pin file cannot be trusted; never names its content.
+    pub const PIN_UNREADABLE: &str = "skip: pin unreadable; run `amplihack profile switch --none`";
+
+    pub fn pin_missing(name: &ProfileName) -> String {
+        format!("skip: pin names missing profile {name}; ignored")
+    }
+
+    /// `profile switch` moved a login. Not `swap ...`, so a search for the
+    /// rotator's swaps does not match it.
+    pub fn switched(from: &ProfileName, to: &ProfileName) -> String {
+        format!("switch {from}->{to}")
+    }
+
+    pub fn switched_already_live(name: &ProfileName) -> String {
+        format!("skip: {name} is already the live login; nothing moved")
     }
 
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {

@@ -312,10 +312,13 @@ impl Step03Run {
 fn run_step_03(host: &str, issue_number: &str, task: &str, env: &[(&str, &str)]) -> Step03Run {
     let sandbox = Sandbox::new();
     let mut cmd = sandbox.bash(&extract_step_body("step-03-create-issue"));
-    cmd.env("REMOTE_HOST_TYPE", host)
-        .env("ISSUE_NUMBER", issue_number)
+    cmd.env("RECIPE_VAR_remote_host_type", host)
+        .env("RECIPE_VAR_issue_number", issue_number)
         .env("TASK_DESCRIPTION", task)
-        .env("FINAL_REQUIREMENTS", "Issue #1595 test requirements");
+        .env(
+            "RECIPE_VAR_final_requirements",
+            "Issue #1595 test requirements",
+        );
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -337,7 +340,7 @@ fn step_03b_issue_number(run: &Step03Run, task: &str) -> String {
     let sandbox = Sandbox::new();
     let output = sandbox
         .bash(&extract_step_body("step-03b-extract-issue-number"))
-        .env("ISSUE_CREATION", run.stdout())
+        .env("RECIPE_VAR_issue_creation", run.stdout())
         .env("TASK_DESCRIPTION", task)
         .output()
         .expect("run step-03b-extract-issue-number");

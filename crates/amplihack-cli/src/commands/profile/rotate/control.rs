@@ -68,6 +68,13 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
+    // Issue #1691: a hold leaves the switch as the last cycle, so say it.
+    match super::pin::read(&rs) {
+        super::pin::PinState::None => {}
+        super::pin::PinState::Pinned(n) => println!("hold: {n}"),
+        super::pin::PinState::Missing(n) => println!("hold: {n} (profile missing; ignored)"),
+        super::pin::PinState::Unreadable => println!("hold: unreadable"),
+    }
     for line in ledger.as_ref().map(status_alerts).unwrap_or_default() {
         println!("{line}");
     }

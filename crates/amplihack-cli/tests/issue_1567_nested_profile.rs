@@ -11,6 +11,7 @@
 #![cfg(unix)]
 
 use crate::support::amplihack_bin::amplihack_bin;
+use crate::support::profile_default::{give_logins, set_default};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
@@ -70,9 +71,13 @@ impl Fixture {
             work,
             tools,
         };
-        for name in ["X", "Y", "Z"] {
+        for name in ["W", "X", "Y", "Z"] {
             f.ok(&["profile", "add", name]);
         }
+        // Since #1691 the fake `claude`'s `profile switch` moves a login into
+        // `~/.claude`, so there must be one to move: W's is live, and X, Y
+        // and Z each have one stored.
+        give_logins(&f.home, &f.root, "W", &["X", "Y", "Z"]);
         f
     }
 
@@ -178,7 +183,7 @@ impl Fixture {
 #[test]
 fn nested_launch_keeps_flag_profile_despite_pointer_and_switch() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&[
         "claude",
@@ -209,7 +214,7 @@ fn nested_launch_keeps_flag_profile_despite_pointer_and_switch() {
 #[test]
 fn nested_launch_keeps_pointer_profile_resolved_by_parent_after_switch() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "X"]);
+    set_default(&f.root, "X");
 
     let mut parent = f.cmd(&["claude", "--subprocess-safe", "--", "-p", "outer"]);
     parent.env("SWITCH_TO", "Y");
@@ -238,7 +243,7 @@ fn nested_launch_keeps_pointer_profile_resolved_by_parent_after_switch() {
 #[test]
 fn nested_launch_receives_the_profile_root() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&[
         "claude",
@@ -266,7 +271,7 @@ fn nested_launch_receives_the_profile_root() {
 #[test]
 fn nested_launch_inside_profile_run_keeps_its_profile() {
     let f = Fixture::new();
-    f.ok(&["profile", "switch", "Y"]);
+    set_default(&f.root, "Y");
 
     let mut parent = f.cmd(&["profile", "run", "X", "--", "-p", "outer"]);
     parent.env("SWITCH_TO", "Z");

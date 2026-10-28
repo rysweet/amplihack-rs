@@ -186,8 +186,10 @@ fn kind_fixes(kind: &Kind<'_>, p: &Paths) -> Vec<FixLine> {
                 ))
             })
             .collect(),
+        // Never `/login` after one failed read: Claude rewrites
+        // ~/.claude.json often, and a `/login` replaces the login there (#1702).
         Kind::HomeUnreadable => vec![plain(
-            "run claude with no CLAUDE_CONFIG_DIR and /login again".into(),
+            "none needed; the next cycle reads ~/.claude.json again".into(),
         )],
         Kind::HomeNoLogin => vec![plain(
             "run claude with no CLAUDE_CONFIG_DIR and /login".into(),

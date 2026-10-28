@@ -18,7 +18,8 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  force_single_workstream: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -125,7 +126,7 @@ steps:
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
-      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
       RAW_OBJ=$(amplihack orch helper extract-json < "$_DECOMP_TMPFILE")
       if [ "$RAW_OBJ" = "{}" ]; then
         cat <<'WARN' >&2
@@ -168,9 +169,9 @@ steps:
       _DECOMP_TMPFILE=$(mktemp)
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
-      printf '%s' "$DECOMPOSITION_JSON" > "$_DECOMP_TMPFILE"
-      TASK_TYPE="$TASK_TYPE"
-      FORCE_SINGLE="$FORCE_SINGLE_WORKSTREAM"
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
+      TASK_TYPE="${RECIPE_VAR_task_type:-}"
+      FORCE_SINGLE="${RECIPE_VAR_force_single_workstream:-}"
       RAW_COUNT=$(amplihack orch helper count-workstreams < "$_DECOMP_TMPFILE")
       case "$(printf '%s' "$FORCE_SINGLE" | tr '[:upper:]' '[:lower:]')" in
         true|1) COUNT=1 ;;
@@ -213,7 +214,7 @@ steps:
   - id: "materialize-force-single-workstream"
     type: "bash"
     command: |
-      printf '%s' "$FORCE_SINGLE_WORKSTREAM"
+      printf '%s' "${RECIPE_VAR_force_single_workstream:-}"
     output: "force_single_workstream"
 
   # ─────────────────────────────────────────────────────────────────────────

@@ -15,7 +15,12 @@
 //! - `HOME` set to a temp directory shared by this test process (a test that
 //!   needs its own sets `HOME` again afterwards);
 //! - `AMPLIHACK_TEST_HOME_GUARD=1`, on this child only: with it the config
-//!   loader ignores any `HOME` outside the temp dir.
+//!   loader ignores any `HOME` outside the temp dir, and the binary never
+//!   autostarts the Claude login rotator;
+//! - `AMPLIHACK_ROTATE_AUTOSTART=0` (issue #1690), so a launch never starts a
+//!   detached `profile rotate watch --spawned` daemon that outlives the test.
+//!   The guard above is the stop that still holds when a test clears the
+//!   environment and sets only the guard again.
 
 #![allow(dead_code)]
 
@@ -33,6 +38,9 @@ const KEPT_VARS: &[&str] = &[
 
 /// The variable the user-config loader checks.
 pub const HOME_GUARD_ENV: &str = "AMPLIHACK_TEST_HOME_GUARD";
+
+/// The variable that turns the rotator's launch autostart off.
+pub const ROTATE_AUTOSTART_ENV: &str = "AMPLIHACK_ROTATE_AUTOSTART";
 
 /// A temp `HOME` for tests that do not make their own: one per test process,
 /// created by `tempfile` (a fresh random name, mode 0700, owned by this user,
@@ -87,6 +95,7 @@ pub fn isolated(bin: impl AsRef<OsStr>) -> Command {
     }
     command
         .env("HOME", shared_temp_home())
-        .env(HOME_GUARD_ENV, "1");
+        .env(HOME_GUARD_ENV, "1")
+        .env(ROTATE_AUTOSTART_ENV, "0");
     command
 }

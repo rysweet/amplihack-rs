@@ -521,7 +521,9 @@ fn docs_describe_hand_change_recovery() {
             "fix 1: amplihack profile login",
             "no profile has that account; no swap",
             "the next cycle then recovers",
-            "run claude with no CLAUDE_CONFIG_DIR and /login again",
+            "none needed; the next cycle reads ~/.claude.json again",
+            "ALERT: the account in ~/.claude.json cannot be read (live=",
+            "no swap this cycle, the next cycle reads it again; do not /login in ~/.claude, it would replace",
             "close the claude sessions that use",
             "wait; the next cycle retries",
             "wait for the auto-switch session to end; the next cycle retries",
@@ -535,6 +537,11 @@ fn docs_describe_hand_change_recovery() {
         ] {
             assert!(doc.contains(stem), "{name} is missing `{stem}`");
         }
+        // #1702: one failed read of ~/.claude.json never advises a /login.
+        assert!(
+            !doc.contains("/login again"),
+            "{name} still advises `/login again` for an unreadable ~/.claude.json"
+        );
     }
     let reference = flat(REFERENCE);
     for line in [

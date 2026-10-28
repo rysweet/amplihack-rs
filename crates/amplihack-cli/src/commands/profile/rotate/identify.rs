@@ -102,6 +102,11 @@ pub enum LiveId {
     /// The rotate ledger names this profile, but `~/.claude` holds another
     /// account: someone changed the login by hand.
     HandChanged(ProfileName),
+    /// The rotate ledger names this profile, `~/.claude` has a login file,
+    /// but `~/.claude.json` has no account that can be read. Claude rewrites
+    /// that file often, so one bad read is not a hand change: nothing is
+    /// recovered or swapped, and the next cycle reads it again (#1702).
+    HomeUnreadable(ProfileName),
     /// Several login-less profiles match the account in `~/.claude`.
     Ambiguous,
     /// `~/.claude` has no login file (D13).
@@ -165,7 +170,8 @@ pub fn live(
         let name = ProfileName::parse(live)?;
         return Ok(match &account {
             Some(a) if a.matches_key(key) => (LiveId::Known(name), None),
-            _ => (LiveId::HandChanged(name), None),
+            Some(_) => (LiveId::HandChanged(name), None),
+            None => (LiveId::HomeUnreadable(name), None),
         });
     }
     let ignored = match from_prototype(store, account.as_ref()) {

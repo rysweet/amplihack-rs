@@ -24,6 +24,11 @@ pub const MAX_LOST_LOGIN: usize = 64;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
 
+/// The `last_cycle.outcome` written by `profile switch NAME` (issue #1691):
+/// the person vouches for NAME's login, so the limit-resume hook counts it as
+/// capacity measured at the switch. A held cycle never replaces it.
+pub const SWITCHED: &str = "switched";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LastCycle {
     /// When the cycle was recorded, at its end.
@@ -138,11 +143,20 @@ pub struct RotateState {
     pub dir: PathBuf,
     pub ledger: PathBuf,
     pub journal: PathBuf,
+    /// The rotation pin written by `profile switch NAME` (issue #1691); read
+    /// and written only by `pin.rs`.
+    pub pin: PathBuf,
     pub pid: PathBuf,
     pub log: PathBuf,
     pub log1: PathBuf,
     /// The background process's own stdout and stderr.
     pub err: PathBuf,
+}
+
+/// A state file amplihack may act on: this user's, and not writable by the
+/// group or others.
+fn trusted(m: &std::fs::Metadata) -> bool {
+    m.uid() == euid() && !writable_by_others(m)
 }
 
 fn inconsistent(msg: impl Into<String>) -> ProfileError {
@@ -188,6 +202,7 @@ impl RotateState {
         Self {
             ledger: dir.join("ledger.json"),
             journal: dir.join("journal.json"),
+            pin: dir.join("pin"),
             pid: dir.join("rotate.pid"),
             log: dir.join("rotate.log"),
             log1: dir.join("rotate.log.1"),
@@ -212,7 +227,7 @@ impl RotateState {
     fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
         match read_bounded_nofollow(path, MAX_STATE) {
             Ok(None) => Ok(None),
-            Ok(Some((raw, m))) if m.uid() == euid() && !writable_by_others(&m) => Ok(Some(raw)),
+            Ok(Some((raw, m))) if trusted(&m) => Ok(Some(raw)),
             Ok(Some(_)) => Err(inconsistent(format!("{what}: not a private file"))),
             Err(e) => Err(inconsistent(format!("{what}: {e}"))),
         }
@@ -262,12 +277,12 @@ impl RotateState {
     /// The pid of a running `profile rotate watch` whose executable is not
     /// this process's, for example one started before an upgrade.
     pub fn foreign_rotator(&self) -> Option<u32> {
-        let exe = std::env::current_exe().ok();
-        amplihack_utils::rotator_status::foreign_rotator(
-            &self.pid,
-            Path::new("/proc"),
-            exe.as_deref(),
-        )
+        self.foreign_rotator_at(Path::new("/proc"), std::env::current_exe().ok().as_deref())
+    }
+
+    /// [`Self::foreign_rotator`] against another `/proc` and executable.
+    pub fn foreign_rotator_at(&self, proc_root: &Path, exe: Option<&Path>) -> Option<u32> {
+        amplihack_utils::rotator_status::foreign_rotator(&self.pid, proc_root, exe)
     }
 
     pub fn load_journal(&self) -> Result<Option<RotateJournal>, ProfileError> {

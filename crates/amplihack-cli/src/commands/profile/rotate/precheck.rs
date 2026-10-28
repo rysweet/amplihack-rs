@@ -9,7 +9,6 @@ use super::swap::{self, DIFFERENT_DEVICES, LOGIN_NOT_MOVABLE};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
     CREDS, Ledger, Liveness, REFRESH_LOCK, State, check_root_private, exists, movable_login,
-    scan_system,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
@@ -38,10 +37,11 @@ fn real_dev(p: &Path) -> Option<u64> {
 fn nothing() {}
 
 impl Env<'static> {
-    /// This host's sessions, the auto-switch ledger and real devices.
-    pub fn system(root: &Path, state: &State) -> Self {
+    /// The sessions `scan` finds (the cycle's own `Ctx::scan`), the
+    /// auto-switch ledger and real devices.
+    pub fn system(root: &Path, state: &State, scan: fn(&Path) -> Liveness) -> Self {
         Self {
-            liveness: scan_system(root),
+            liveness: scan(root),
             auto_switch: state.load_ledger().ok(),
             dev: &real_dev,
             after_create: &nothing,

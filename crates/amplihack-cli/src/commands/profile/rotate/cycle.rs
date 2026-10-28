@@ -3,19 +3,22 @@
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
 use super::decide::Decision;
-use super::handfix;
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateLedger, RotateState, alert_key, clear_alert, should_alert};
-use super::log::{Sink, msg, open_or_warn};
-use super::observe::{
-    Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of,
-    refusal_kind, rotated, snapshot,
+use super::ledger::{
+    LastCycle, RotateLedger, RotateState, SWITCHED, alert_key, clear_alert, should_alert,
 };
+use super::log::{Sink, msg};
+use super::observe::{
+    Measurement, Snap, dry_run, live_name, measure_and_decide, reading_of, refusal_kind, rotated,
+    snapshot,
+};
+use super::pin::{self, Gate};
+use super::prelude::{Prelude, locked_prelude};
 use super::settings::Settings;
-use super::swap::{self, RecoverOutcome, Source};
+use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
-    State, capacity_from_rotation, exists, now, recover_auto_switch,
+    Liveness, capacity_from_rotation, exists, now, scan_system,
 };
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
@@ -42,6 +45,8 @@ pub enum CycleOutcome {
     Stayed,
     Alerted,
     Skipped,
+    /// A `profile switch` pin stopped the cycle before measuring (#1691).
+    Held,
     /// `watch` received a signal and abandoned the cycle.
     Stopped,
 }
@@ -53,23 +58,35 @@ impl CycleOutcome {
             Self::Stayed => "stayed",
             Self::Alerted => "alerted",
             Self::Skipped => "skipped",
+            Self::Held => "held",
             Self::Stopped => "stopped",
         }
     }
 }
 
+/// Steps 4 and 5 of a cycle: measure, then decide.
+pub(super) type MeasureFn = fn(&Ctx, &Snap) -> Result<Measurement, ProfileError>;
+
 /// What a cycle needs, and what `watch` remembers between cycles: the last
-/// skips, so a `skip:` line is written only when it changes, and the count
-/// of consecutive failed live probes for failed-probe damping.
+/// skips and pin line, so a `skip:` line is written only when it changes,
+/// and the count of consecutive failed live probes for failed-probe damping.
 pub struct Ctx {
     pub store: ProfileStore,
     pub rs: RotateState,
     pub home: PathBuf,
     pub settings: Settings,
     pub stop: Option<Arc<AtomicBool>>,
-    last_skips: Option<Vec<(ProfileName, Skip)>>,
-    last_proto: Option<&'static str>,
+    pub(super) last_skips: Option<Vec<(ProfileName, Skip)>>,
+    pub(super) last_proto: Option<&'static str>,
+    last_gate: Option<String>,
     pub(super) failed_live: u32,
+    /// Finds the running sessions; `scan_system` outside tests. A test sets
+    /// it to return `Liveness::Unsupported`, which is what every non-Linux
+    /// system gets.
+    pub(super) scan: fn(&Path) -> Liveness,
+    /// Replaces steps 4 and 5 (find `claude`, measure, decide) when set. Only
+    /// tests set it, to act while the cycle is measuring without the lock.
+    pub(super) measure: Option<MeasureFn>,
 }
 
 impl Ctx {
@@ -83,7 +100,10 @@ impl Ctx {
             stop: None,
             last_skips: None,
             last_proto: None,
+            last_gate: None,
             failed_live: 0,
+            scan: scan_system,
+            measure: None,
         }
     }
 
@@ -163,34 +183,11 @@ fn record(
     ctx.rs.save_ledger(l)
 }
 
-/// Logs the skipped profiles and the ignored prototype ledger when they
-/// differ from what this process last logged.
-fn log_skips(ctx: &mut Ctx, out: &mut Sink, snap: &Snap) {
-    let t = now();
-    if snap.proto != ctx.last_proto {
-        if let Some(reason) = snap.proto {
-            out.emit(t, &format!("skip: prototype ledger ignored ({reason})"));
-        }
-        ctx.last_proto = snap.proto;
-    }
-    let skips: Vec<_> = snap
-        .skips
-        .iter()
-        .filter(|(_, s)| *s != Skip::Live)
-        .cloned()
-        .collect();
-    if ctx.last_skips.as_ref() != Some(&skips) {
-        if !snap.sees_sessions {
-            out.emit(t, msg::NO_LIVENESS);
-        }
-        for (n, s) in skips
-            .iter()
-            .filter(|(_, s)| snap.sees_sessions || *s != Skip::SessionRunning)
-        {
-            out.emit(t, &format!("skip: {n} ({})", s.as_str()));
-        }
-        ctx.last_skips = Some(skips);
-    }
+/// Whether `last` was written after a cycle began measuring at
+/// `measured_at`, so another writer used the ledger while that cycle held no
+/// lock. A switch record always counts, whatever the clock says.
+pub(super) fn newer_than(last: Option<&LastCycle>, measured_at: i64) -> bool {
+    last.is_some_and(|c| c.outcome == SWITCHED || c.at >= measured_at)
 }
 
 /// Records a known live profile and its account, so `profile usage` and the
@@ -209,75 +206,77 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if mode == Mode::DryRun {
         return dry_run(ctx);
     }
-    prototype_guard(ctx.store.root())?;
-    ctx.rs.ensure()?;
-    let log = open_or_warn(&ctx.rs.log, &ctx.rs.log1);
-    let mut out = Sink::new(log, mode == Mode::OneShot, true);
-    let state = State::new(ctx.store.root())?;
-
     // Step 3: recover and identify under the lock.
-    let Some(lock) = state.try_lock(LOCK_WAIT)? else {
-        out.emit(now(), msg::LOCK_BUSY);
-        return Ok(CycleOutcome::Skipped);
+    let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
+    let (lock, state, first) = match prelude {
+        Prelude::Ready { lock, state, first } => (lock, state, first),
+        Prelude::LockBusy => {
+            out.emit(now(), msg::LOCK_BUSY);
+            return Ok(CycleOutcome::Skipped);
+        }
+        Prelude::AutoSwitchInconsistent => {
+            let line = msg::AUTO_SWITCH_INCONSISTENT;
+            alert(ctx, &mut out, "auto-switch", None, line)?;
+            return Ok(CycleOutcome::Alerted);
+        }
+        Prelude::Inconsistent(reason) => {
+            alert(
+                ctx,
+                &mut out,
+                "inconsistent",
+                None,
+                &msg::inconsistent(&reason),
+            )?;
+            return match mode {
+                Mode::Watch => Ok(CycleOutcome::Alerted),
+                _ => Err(ProfileError::RotateInconsistent(reason)),
+            };
+        }
+        Prelude::LiveUnusable { kind, live, line } => {
+            alert(ctx, &mut out, kind, live.as_ref(), &line)?;
+            return Ok(CycleOutcome::Alerted);
+        }
+        // Issue #1693: the prelude already wrote the guidance.
+        Prelude::Guided => {
+            let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+            record(ctx, &mut l, CycleOutcome::Alerted, now(), None)?;
+            return Ok(CycleOutcome::Alerted);
+        }
     };
-    if let Err(e) = recover_auto_switch(&state) {
-        if !matches!(e, ProfileError::AutoSwitchInvariant(_)) {
-            return Err(e);
-        }
-        alert(
-            ctx,
-            &mut out,
-            "auto-switch",
-            None,
-            msg::AUTO_SWITCH_INCONSISTENT,
-        )?;
-        return Ok(CycleOutcome::Alerted);
-    }
-    let inconsistent = match swap::recover(&ctx.store, &ctx.rs, &ctx.home) {
-        Ok(RecoverOutcome::None) => None,
-        Ok(RecoverOutcome::RolledBack { from, to }) => {
-            out.emit(now(), &msg::recovered(false, &from, &to));
-            None
-        }
-        Ok(RecoverOutcome::RolledForward { from, to }) => {
-            out.emit(now(), &msg::recovered(true, &from, &to));
-            None
-        }
-        Ok(RecoverOutcome::Inconsistent(reason))
-        | Err(ProfileError::RotateInconsistent(reason)) => Some(reason),
-        Err(e) => return Err(e),
+    // Issue #1691: a `profile switch` pin stops the cycle here, before
+    // `claude` is looked for, so nothing is measured while pinned.
+    let (line, held) = match pin::gate(&first.pin) {
+        Gate::Open => (None, false),
+        Gate::Ignored(line) => (Some(line), false),
+        Gate::Held(line) => (Some(line), true),
     };
-    if let Some(reason) = inconsistent {
-        alert(
-            ctx,
-            &mut out,
-            "inconsistent",
-            None,
-            &msg::inconsistent(&reason),
-        )?;
-        return match mode {
-            Mode::Watch => Ok(CycleOutcome::Alerted),
-            _ => Err(ProfileError::RotateInconsistent(reason)),
-        };
+    if let Some(line) = &line
+        && ctx.last_gate.as_ref() != Some(line)
+    {
+        out.emit(now(), line);
     }
-    // Issue #1693: a manual `/login` in `~/.claude`; recovery or guidance.
-    if handfix::step(ctx, &state, &mut out, now())? == handfix::Step::Guided {
+    ctx.last_gate = line;
+    if held {
+        let t = now();
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Alerted, now(), None)?;
-        return Ok(CycleOutcome::Alerted);
-    }
-    let first = snapshot(ctx, &state)?;
-    log_skips(ctx, &mut out, &first);
-    if let Some((kind, line)) = live_alert(&first.live) {
-        alert(ctx, &mut out, kind, live_name(&first.live), &line)?;
-        return Ok(CycleOutcome::Alerted);
+        note_live(&mut l, &first, t);
+        clear_alert(&mut l);
+        if l.last_cycle.as_ref().is_some_and(|c| c.outcome == SWITCHED) {
+            // The switch's record stands for the whole hold: it is what lets
+            // the limit-resume hook wake sessions stopped before the switch.
+            ctx.rs.save_ledger(&l)?;
+        } else {
+            // Nothing was measured, so no `measured_at` (#1659), and `held`
+            // is not capacity: a hold with no switch record (a pin written
+            // by hand or by an older build) wakes no session.
+            record(ctx, &mut l, CycleOutcome::Held, t, None)?;
+        }
+        return Ok(CycleOutcome::Held);
     }
     drop(lock);
 
     // Steps 4 and 5: measure without the lock, then decide. Recovery does
     // not need `claude`, so it is looked for only now.
-    let binary = resolve_claude_binary()
-        .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
     let Measurement {
         live,
         others,
@@ -285,7 +284,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         note,
         failed,
         measured_at,
-    } = measure_and_decide(ctx, &binary, &first)?;
+    } = match ctx.measure {
+        Some(stub) => stub(ctx, &first)?,
+        None => {
+            let binary = resolve_claude_binary()
+                .map_err(|e| ProfileError::Io(std::io::Error::other(e.to_string())))?;
+            measure_and_decide(ctx, &binary, &first)?
+        }
+    };
     ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
     if ctx.stopping() {
@@ -304,7 +310,15 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Skipped, t, Some(measured_at))?;
+        // A record written while this cycle measured unlocked (a `profile
+        // switch`, or another cycle) is newer than anything this cycle knows.
+        // Overwriting it with `skipped` would lose a switch's record, and the
+        // held cycles after it would then write a bare `held`, so the
+        // limit-resume hook would never wake sessions stopped before the
+        // switch (#1691).
+        if !newer_than(l.last_cycle.as_ref(), measured_at) {
+            record(ctx, &mut l, CycleOutcome::Skipped, t, Some(measured_at))?;
+        }
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();

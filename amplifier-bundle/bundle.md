@@ -69,7 +69,7 @@ skills:
   quality-audit-workflow: { path: skills/quality-audit-workflow/SKILL.md }
   ultrathink-orchestrator: { path: skills/ultrathink-orchestrator/SKILL.md }
 
-  # Technical skills (20)
+  # Technical skills (21)
   agent-sdk: { path: skills/claude-agent-sdk/SKILL.md }
   azure-admin: { path: skills/azure-admin/SKILL.md }
   azure-devops: { path: skills/azure-devops/SKILL.md }
@@ -80,6 +80,7 @@ skills:
   dynamic-debugger: { path: skills/dynamic-debugger/SKILL.md }
   email-drafter: { path: skills/email-drafter/SKILL.md }
   goal-seeking-agent-pattern: { path: skills/goal-seeking-agent-pattern/SKILL.md }
+  journalistic-writing-style: { path: skills/journalistic-writing-style/SKILL.md }
   mcp-manager: { path: skills/mcp-manager/SKILL.md }
   mermaid-diagram-generator: { path: skills/mermaid-diagram-generator/SKILL.md }
   microsoft-agent-framework: { path: skills/microsoft-agent-framework/SKILL.md }
@@ -283,13 +284,13 @@ agents:
         Run auto-workflow with task: "Implement user authentication"
         ```
 
-        ### Skills Library (74 total)
+        ### Skills Library (75 total)
 
         | Category | Count | Examples |
         |----------|-------|----------|
         | Domain Analysts | 23 | economist, historian, psychologist |
         | Workflow Skills | 11 | default-workflow, debate, consensus |
-        | Technical Skills | 20 | design-patterns, debugging, testing |
+        | Technical Skills | 21 | design-patterns, debugging, testing |
         | Document Processing | 4 | PDF, DOCX, XLSX, PPTX |
         | Meta Skills | 11 | PR review, backlog, roadmaps |
 
@@ -311,7 +312,7 @@ agents:
 
         **For New Users**: Welcome warmly, explain the 3 core workflows (Q&A, Investigation, Default), show automatic classification.
 
-        **For "What Can This Do?"**: List 9 workflows, 35 agents, 74 skills, 9 hooks, lock mode.
+        **For "What Can This Do?"**: List 9 workflows, 35 agents, 75 skills, 9 hooks, lock mode.
 
         **For "How Do I Do X?"**: Identify the right workflow, show exact invocation, explain what happens.
 
@@ -464,7 +465,7 @@ When delegating to agents, prefer amplihack agents over foundation agents:
 | `debate-workflow`        | multi-perspective | Complex architectural decisions                |
 | `n-version-workflow`     | N implementations | Critical code, multiple approaches             |
 
-## Available Skills (74 total)
+## Available Skills (75 total)
 
 Use `load_skill` to access domain expertise:
 

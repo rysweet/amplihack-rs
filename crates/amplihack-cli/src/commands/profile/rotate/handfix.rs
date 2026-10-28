@@ -259,7 +259,7 @@ pub fn step_with<'a>(
 /// [`step_with`] on this host: `/proc` and the auto-switch ledger are read
 /// only after a hand change.
 pub fn step(ctx: &Ctx, state: &State, out: &mut Sink, t: i64) -> Result<Step, ProfileError> {
-    let env_for = || Env::system(ctx.store.root(), state);
+    let env_for = || Env::system(ctx.store.root(), state, ctx.scan);
     step_with(&ctx.store, &ctx.rs, &ctx.home, out, env_for, t)
 }
 

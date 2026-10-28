@@ -289,10 +289,13 @@ exit 7
         // step-00a. The resolution cascade itself is exercised by
         // tests/issue_1361_duplicate_pr_claim_check.sh.
         .env("AMPLIHACK_HOME", workspace_root())
-        .env("REMOTE_HOST_TYPE", host_type)
+        .env("RECIPE_VAR_remote_host_type", host_type)
         .env("TASK_DESCRIPTION", task_description)
-        .env("FINAL_REQUIREMENTS", "Issue #718 regression requirements")
-        .env("ISSUE_NUMBER", issue_number)
+        .env(
+            "RECIPE_VAR_final_requirements",
+            "Issue #718 regression requirements",
+        )
+        .env("RECIPE_VAR_issue_number", issue_number)
         .env("GIT_LOG", &git_log)
         .env("GH_LOG", &gh_log)
         .env("AZ_LOG", &az_log);
@@ -342,7 +345,7 @@ fn run_step_03b(issue_creation: &str, task_description: &str) -> Output {
         .arg(command)
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
-        .env("ISSUE_CREATION", issue_creation)
+        .env("RECIPE_VAR_issue_creation", issue_creation)
         .env("TASK_DESCRIPTION", task_description)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -665,12 +668,22 @@ fn step_16_pr_body_not_hardcoded_closes() {
 fn step_16_consumes_remote_host_type() {
     let recipe = load_recipe("workflow-publish");
     let body = extract_step_body(recipe, "step-16-create-draft-pr");
-
+    // step-16 hands PR creation to workflow_publish_pr.sh, and the host-type
+    // decision is made there; the step body itself has no use for it (#1684).
     assert!(
-        body.contains("REMOTE_HOST_TYPE"),
-        "step-16 must reference REMOTE_HOST_TYPE (from context/env) \
+        body.contains("workflow_publish_pr.sh"),
+        "step-16 must create the PR through workflow_publish_pr.sh. (Issue #684)"
+    );
+    assert!(
+        publish_tool_text().contains("REMOTE_HOST_TYPE"),
+        "workflow_publish_pr.sh must reference REMOTE_HOST_TYPE (from context/env) \
          to decide PR creation behavior and issue ref format. (Issue #684)"
     );
+}
+
+fn publish_tool_text() -> String {
+    let path = workspace_root().join("amplifier-bundle/tools/workflow_publish_pr.sh");
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()))
 }
 
 // ===========================================================================
@@ -1424,15 +1437,15 @@ fn step_15_uses_host_type_safe_default() {
 
 #[test]
 fn step_16_uses_host_type_safe_default() {
-    let recipe = load_recipe("workflow-publish");
-    let body = extract_step_body(recipe, "step-16-create-draft-pr");
+    // The host type is read in workflow_publish_pr.sh, which step-16 runs.
+    let body = publish_tool_text();
 
     let has_safe_default =
         body.contains("${REMOTE_HOST_TYPE:-") || body.contains("HOST_TYPE=${REMOTE_HOST_TYPE:-");
 
     assert!(
         has_safe_default,
-        "step-16 must use safe default pattern for REMOTE_HOST_TYPE \
+        "workflow_publish_pr.sh (step-16) must use safe default pattern for REMOTE_HOST_TYPE \
          (e.g., '${{REMOTE_HOST_TYPE:-other}}') for set -u safety. (Issue #684)"
     );
 }

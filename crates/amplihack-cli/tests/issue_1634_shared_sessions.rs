@@ -445,12 +445,33 @@ fn profile_run_and_login_both_establish_the_links() {
 #[cfg(target_os = "linux")]
 #[test]
 fn switch_links_on_stderr_and_keeps_its_stdout() {
-    let f = Fixture::new(&["A"]);
-    f.legacy("A", "projects/-work/s.jsonl", "s");
-    let out = f.ok(&["profile", "switch", "A"]);
-    assert_eq!(text(&out.stdout), "default profile: A\n");
-    assert!(text(&out.stderr).contains("amplihack: profile A: projects: moved 1 files"));
-    f.assert_linked("A");
+    // Since issue #1691 `switch` moves the live login, as a rotate swap does,
+    // and links both profiles it swapped.
+    let f = rotate::Fixture::new();
+    let canon = f.home.join(".claude");
+    fs::create_dir_all(f.root.join("spare/projects/-work")).unwrap();
+    fs::write(f.root.join("spare/projects/-work/s.jsonl"), "s").unwrap();
+    let out = f.ok(&["profile", "switch", "spare"]);
+    assert_eq!(
+        text(&out.stdout),
+        "Live login moved: work -> spare\n\
+         Default for new launches: spare\n\
+         Rotation held on spare until `amplihack profile switch --none`.\n"
+    );
+    assert!(text(&out.stderr).contains("amplihack: profile spare: projects: moved 1 files"));
+    for p in ["work", "spare"] {
+        for name in SHARED {
+            let link = f.root.join(p).join(name);
+            assert!(is_link(&link), "{} not linked after switch", link.display());
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                canon.canonicalize().unwrap().join(name)
+            );
+        }
+    }
+    assert!(canon.join("projects/-work/s.jsonl").is_file());
+    assert_no_credentials_under(&canon);
+    f.assert_each_login_once();
 }
 
 #[test]
