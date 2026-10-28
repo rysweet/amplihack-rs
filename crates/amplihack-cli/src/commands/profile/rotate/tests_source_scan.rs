@@ -380,3 +380,39 @@ fn the_hold_warning_takes_proc_as_a_seam() {
         "the seam must not hard-code /proc"
     );
 }
+
+/// Every rotate submodule is unix-only (they use `std::os::unix` and each
+/// other). No CI target builds for non-unix any more, so a merge that drops
+/// one `#[cfg(unix)]` would go unnoticed until someone builds elsewhere —
+/// which is what happened to `mod pin;` in the merge for #1693. Check the
+/// guard in the source instead.
+#[test]
+fn every_rotate_submodule_is_unix_only() {
+    let text = fs::read_to_string(rotate_dir().join("mod.rs")).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    let mut checked = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let t = line.trim_start();
+        let t = t.strip_prefix("pub(super) ").unwrap_or(t);
+        let t = t.strip_prefix("pub ").unwrap_or(t);
+        if !(t.starts_with("mod ") && t.ends_with(';')) {
+            continue;
+        }
+        // This scan only reads source text, so it runs on every platform.
+        if t == "mod tests_source_scan;" {
+            continue;
+        }
+        checked += 1;
+        let guard = i.checked_sub(1).map(|j| lines[j].trim()).unwrap_or("");
+        assert!(
+            guard.starts_with("#[cfg(") && guard.contains("unix"),
+            "rotate/mod.rs:{}: `{}` needs #[cfg(unix)] (or #[cfg(all(test, unix))]) on the line above",
+            i + 1,
+            line.trim()
+        );
+    }
+    assert!(
+        checked > 20,
+        "found only {checked} mod lines in rotate/mod.rs"
+    );
+}

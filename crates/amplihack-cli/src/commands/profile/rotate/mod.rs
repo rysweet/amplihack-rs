@@ -39,6 +39,7 @@ mod lost;
 mod measure;
 #[cfg(unix)]
 mod observe;
+#[cfg(unix)]
 mod pin;
 #[cfg(unix)]
 mod precheck;
