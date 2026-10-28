@@ -168,8 +168,13 @@ fn rerun_owner_parses_out_names_only() {
 }
 
 /// A pid that has exited (and been reaped), so it names no live process.
+/// Spawned as `/bin/sh -c "exit 0"`: an absolute path keeps it independent
+/// of tests that change `PATH`, and `/bin/true` is absent on macOS.
 fn dead_pid() -> u32 {
-    let mut c = Command::new("/bin/true").spawn().unwrap();
+    let mut c = Command::new("/bin/sh")
+        .args(["-c", "exit 0"])
+        .spawn()
+        .unwrap();
     let pid = c.id();
     c.wait().unwrap();
     pid
