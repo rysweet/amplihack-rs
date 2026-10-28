@@ -61,7 +61,10 @@ OLD="$(date -u -d '-40 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-40d +
 # exec fails with E2BIG and the check silently fails open; the claiming PR
 # below is then never seen. Only its body claims the issue.
 BIG_OPEN="$WORK/big_open.json"
-FILLER="$(printf '%*s' 2048 '' | tr ' ' 'x')"
+# The filler is words separated by spaces, as real bodies are. An all-`x`
+# filler hid a quadratic whitespace substitution that took minutes on real
+# listings; the run below is time-bounded so that cannot return unnoticed.
+FILLER="$(printf 'a %.0s' $(seq 1 1024))"
 {
   printf '['
   for i in $(seq 2000 2148); do
@@ -177,7 +180,12 @@ grep -q 'BODYTEXT' <<<"$OUT" \
 
 # Fetching bodies must not push the listing through argv: a large repository
 # would otherwise fail open with E2BIG and a body-only claim would be missed.
+BIG_START=$SECONDS
 run "$WORK/gh" FAKE_GH=big_bodies; claimed "a body-only claim among 150 PRs with 2 KiB bodies" 1750
+BIG_SECS=$((SECONDS - BIG_START))
+[ "$BIG_SECS" -le 10 ] \
+  && pass "a large PR listing is checked in ${BIG_SECS}s (limit 10s)" \
+  || fail "a large PR listing took ${BIG_SECS}s to check (limit 10s)"
 grep -q 'unknown' <<<"$OUT" \
   && fail "a large PR listing made the check unreadable: ${OUT:0:400}" \
   || pass "a large PR listing is read in full, not reported as unknown"

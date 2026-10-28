@@ -345,8 +345,12 @@ RC=0
 MERGED_JSON="$(gh_list merged "$MERGED_LIMIT")" || RC=$?
 [ "$RC" -eq 0 ] || classify_failure "$RC"
 
-[ -n "${OPEN_JSON//[[:space:]]/}" ] || OPEN_JSON="[]"
-[ -n "${MERGED_JSON//[[:space:]]/}" ] || MERGED_JSON="[]"
+# An empty answer reads as no pull requests. The test is a regex, not
+# `${VAR//[[:space:]]/}`: with PR bodies included the listings run to hundreds
+# of kilobytes, and bash's pattern substitution is quadratic in the number of
+# whitespace characters, so that form took minutes on a real repository (#1707).
+[[ "$OPEN_JSON" =~ [^[:space:]] ]] || OPEN_JSON="[]"
+[[ "$MERGED_JSON" =~ [^[:space:]] ]] || MERGED_JSON="[]"
 
 CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -v-"${WINDOW_H}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
