@@ -4,6 +4,7 @@
 
 use super::TuneFlags;
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::overflow::Gate;
 use std::ffi::OsString;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,6 +17,14 @@ pub struct Settings {
     pub hold: u64,
     /// Seconds between `watch` cycles.
     pub interval: u64,
+    /// Seconds: the rotator and auto-switch move onto an overflow profile
+    /// only when the earliest plan reset is further away than this.
+    pub overflow_wait: u64,
+    /// Whether a plan reset that no reading reports may count as further
+    /// away than `overflow_wait`. Off by default: with no known reset time
+    /// nothing moves onto an overflow profile, because that move costs
+    /// money and the plan login may come back in minutes.
+    pub overflow_unknown_reset: bool,
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -61,6 +70,20 @@ const HOLD: Spec = Spec {
     default: 3600,
     min: 0,
     max: None,
+};
+const OVERFLOW_WAIT: Spec = Spec {
+    flag: "--overflow-wait",
+    var: "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+    default: 1800,
+    min: 0,
+    max: Some(604_800),
+};
+const OVERFLOW_UNKNOWN_RESET: Spec = Spec {
+    flag: "--overflow-unknown-reset",
+    var: "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+    default: 0,
+    min: 0,
+    max: Some(1),
 };
 const INTERVAL: Spec = Spec {
     flag: "--interval",
@@ -134,7 +157,35 @@ pub fn resolve(
         upgrade_margin: pct(&UPGRADE_MARGIN, &tune.upgrade_margin)?,
         hold: HOLD.resolve(tune.hold.as_deref(), env)?,
         interval: INTERVAL.resolve(interval, env)?,
+        overflow_wait: OVERFLOW_WAIT.resolve(tune.overflow_wait.as_deref(), env)?,
+        overflow_unknown_reset: OVERFLOW_UNKNOWN_RESET
+            .resolve(tune.overflow_unknown_reset.as_deref(), env)?
+            == 1,
     })
+}
+
+/// The overflow [`Gate`] from its four variables only
+/// (`AMPLIHACK_ROTATE_OVERFLOW_WAIT`, `..._OVERFLOW_UNKNOWN_RESET`,
+/// `..._SESSION_AT`, `..._WEEK_AT`), for auto-switch when no rotator runs.
+/// Another `AMPLIHACK_ROTATE_*` variable, valid or not, plays no part.
+pub fn gate_from_env(env: &dyn Fn(&str) -> Option<OsString>) -> Result<Gate, ProfileError> {
+    Ok(Gate {
+        wait: OVERFLOW_WAIT.resolve(None, env)?,
+        unknown_reset: OVERFLOW_UNKNOWN_RESET.resolve(None, env)? == 1,
+        session_at: SESSION_AT.resolve(None, env)? as u8,
+        week_at: WEEK_AT.resolve(None, env)? as u8,
+    })
+}
+
+/// Whether `g` holds values the rotator could have resolved: thresholds
+/// from 1 to 100 and a wait of at most a week. A recorded gate that fails
+/// this is not used.
+pub fn gate_in_range(g: &Gate) -> bool {
+    let pct =
+        |spec: &Spec, v: u8| u64::from(v) >= spec.min && spec.max.is_none_or(|m| u64::from(v) <= m);
+    pct(&SESSION_AT, g.session_at)
+        && pct(&WEEK_AT, g.week_at)
+        && OVERFLOW_WAIT.max.is_none_or(|m| g.wait <= m)
 }
 
 impl Settings {
@@ -147,6 +198,11 @@ impl Settings {
             (MARGIN.flag, u64::from(self.margin)),
             (UPGRADE_MARGIN.flag, u64::from(self.upgrade_margin)),
             (HOLD.flag, self.hold),
+            (OVERFLOW_WAIT.flag, self.overflow_wait),
+            (
+                OVERFLOW_UNKNOWN_RESET.flag,
+                u64::from(self.overflow_unknown_reset),
+            ),
         ] {
             args.push(flag.to_string());
             args.push(v.to_string());

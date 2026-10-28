@@ -670,6 +670,7 @@ impl Deps for DiskDeps {
             outcome: Some("swapped".into()),
             alert: false,
             live: Some("spare".into()),
+            overflow: None,
         })
     }
     fn guard(&mut self) -> &mut dyn GuardStore {

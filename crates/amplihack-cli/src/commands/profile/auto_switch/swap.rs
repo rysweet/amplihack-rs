@@ -8,6 +8,7 @@ use super::config::Config;
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::mv::{self, MoveError, abort_point};
+use super::overflow_inputs::OverflowInputs;
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
@@ -470,10 +471,16 @@ pub fn swap_check(
     cfg: &Config,
 ) -> Result<(), ProfileError> {
     let now = fsx::now();
-    // Most updates are below the threshold: decide that from the reading
-    // alone, before recovery and the `/proc` scan. The status-line wrapper
-    // ran recovery moments ago in this same update.
-    if !candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now) {
+    // Most updates need no move: decide that cheaply, before recovery and
+    // the `/proc` scan. The status-line wrapper ran recovery moments ago in
+    // this same update. On a plan profile, the reading alone decides. On an
+    // overflow profile its own reading does not count (issue #1606: a credit
+    // account at its plan limit is still usable); only a spend block or a
+    // plan profile to move back to is worth the full check.
+    let exhausted =
+        candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now);
+    let worth_checking = overflow_precheck(state, owner, cfg, now).unwrap_or(exhausted);
+    if !worth_checking {
         return Ok(());
     }
     let live = match recover(state)? {
@@ -494,6 +501,11 @@ pub fn swap_check(
         return Ok(()); // no file to move (Keychain, logged out, or linked)
     }
     let readings = state.load_usage().accounts;
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    if !exhausted && !leaving_overflow {
+        return Ok(()); // the account changed since the first check
+    }
     let pool = Pool {
         profiles,
         readings: &readings,
@@ -509,7 +521,9 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) = candidate::select(&pool, &current, eligible).cloned() else {
+    let Some(target) =
+        candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
+    else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -537,12 +551,64 @@ pub fn swap_check(
     let result = transfer(state, &mut ledger, j);
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    let why = if !leaving_overflow {
+        "reached the auto-switch threshold"
+    } else if !candidate::overflow_usable(&current, &overflow.blocked) {
+        "is an overflow profile that reached its spend limit"
+    } else {
+        "is an overflow profile and a plan profile has capacity again"
+    };
     eprintln!(
-        "amplihack: profile {current:?} reached the auto-switch threshold; the session in profile {:?} now uses the login of profile {:?}",
+        "amplihack: profile {current:?} {why}; the session in profile {:?} now uses the login of profile {:?}",
         owner.as_str(),
         target.as_str()
     );
     Ok(())
+}
+
+/// The status line's cheap pre-check for a session whose account in
+/// `owner`'s directory is an overflow profile: `Some(true)` when the full
+/// check may move it, `Some(false)` when it cannot, `None` when the account
+/// is not an overflow profile (the reading alone decides then). It may move
+/// when the profile has a spend block, or when some plan profile may be
+/// moved back to by [`candidate::may_return_to`]: the tests the selection
+/// applies ([`candidate::overflow_usable`] and `may_return_to`, step 2 of
+/// `select_with_overflow`), on the same inputs ([`OverflowInputs`]), so the
+/// check does not pass on readings the selection then refuses, nor stop one
+/// it would act on. The overflow profile's own reading plays no part.
+/// Reads the ledger, `usage.json`, the spend blocks and the gate; no
+/// recovery, no `/proc` scan.
+fn overflow_precheck(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> Option<bool> {
+    if cfg.overflow.is_empty() {
+        return None;
+    }
+    let ledger = state.load_ledger().ok()?;
+    let account = ProfileName::parse(ledger.account_in(owner.as_str())).ok()?;
+    if !cfg.is_overflow(&account) {
+        return None;
+    }
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    let readings = state.load_usage().accounts;
+    Some(overflow_may_move(&account, cfg, &overflow, &readings, now))
+}
+
+/// The decision of [`overflow_precheck`] for a session on overflow profile
+/// `account`, from what it read. Pure.
+pub(super) fn overflow_may_move(
+    account: &ProfileName,
+    cfg: &Config,
+    overflow: &OverflowInputs,
+    readings: &std::collections::BTreeMap<String, usage::Reading>,
+    now: i64,
+) -> bool {
+    if !candidate::overflow_usable(account.as_str(), &overflow.blocked) {
+        return true;
+    }
+    readings
+        .iter()
+        .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
+        .filter(|(n, _)| !cfg.is_overflow(n) && !cfg.exclude.contains(n))
+        .any(|(_, r)| candidate::may_return_to(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 
 // ---------------------------------------------------------------------------

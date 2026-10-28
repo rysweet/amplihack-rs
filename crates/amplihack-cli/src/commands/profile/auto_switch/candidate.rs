@@ -1,8 +1,15 @@
 //! Candidate selection: a pure function of the profiles, their readings, the
-//! threshold, the exclusions and an eligibility filter supplied by the caller.
+//! threshold, the exclusions, the overflow profiles and an eligibility filter
+//! supplied by the caller.
+//!
+//! Overflow profiles (issue #1606) are chosen only by [`select_with_overflow`]:
+//! after every plan profile, and only when the shared overflow [`Gate`]
+//! allows it. The gate is the running rotator's, thresholds included, so
+//! both measure plan capacity the same way.
 
 use super::usage::{Reading, Window};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::Gate;
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 
@@ -39,6 +46,22 @@ pub fn select<'a>(
     current: &str,
     eligible: impl Fn(&ProfileName) -> bool,
 ) -> Option<&'a ProfileName> {
+    select_by(
+        pool,
+        current,
+        |r| !is_exhausted(r, pool.threshold, pool.now),
+        eligible,
+    )
+}
+
+/// [`select`] with `usable` in place of "under the threshold": a profile
+/// whose reading (`None` when it has none) fails `usable` is skipped.
+fn select_by<'a>(
+    pool: &Pool<'a>,
+    current: &str,
+    usable: impl Fn(Option<&Reading>) -> bool,
+    eligible: impl Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
     let mut known: Vec<(f64, &'a ProfileName)> = Vec::new();
     let mut unknown: Vec<&'a ProfileName> = Vec::new();
     for p in pool.profiles {
@@ -46,7 +69,7 @@ pub fn select<'a>(
             continue;
         }
         let reading = pool.readings.get(p.as_str());
-        if is_exhausted(reading, pool.threshold, pool.now) || !eligible(p) {
+        if !usable(reading) || !eligible(p) {
             continue;
         }
         match reading {
@@ -64,4 +87,206 @@ pub fn select<'a>(
         .first()
         .map(|k| k.1)
         .or_else(|| unknown.first().copied())
+}
+
+/// The overflow side of a selection (issue #1606).
+pub struct OverflowPool<'a> {
+    /// The overflow profiles in the order they are tried: tier, then file
+    /// order within a tier.
+    pub order: &'a [ProfileName],
+    /// Overflow profiles with an active spend block.
+    pub blocked: &'a [String],
+    /// `None` when overflow may not be used at all: the gate's settings or
+    /// the spend blocks could not be read.
+    pub gate: Option<Gate>,
+}
+
+/// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
+/// a missing or reset window.
+fn session_week(r: &Reading, now: i64) -> (f64, f64) {
+    (
+        adjusted(r.five_hour.as_ref(), now),
+        adjusted(r.seven_day.as_ref(), now),
+    )
+}
+
+/// Whether a plan reading has capacity by the gate's test, the one the
+/// rotator applies ([`Gate::plan_capacity`]).
+pub fn gate_capacity(r: &Reading, g: &Gate, now: i64) -> bool {
+    let (session, week) = session_week(r, now);
+    g.plan_capacity(session, week)
+}
+
+/// When a plan reading without capacity by the gate's test has it again:
+/// the reset of the window at its threshold, or the later of the two when
+/// both are, as the rotator computes it. `None` when neither is.
+pub fn regains(r: &Reading, g: &Gate, now: i64) -> Option<i64> {
+    regains_at(
+        g,
+        session_week(r, now),
+        (
+            r.five_hour.as_ref().map(|w| w.resets_at),
+            r.seven_day.as_ref().map(|w| w.resets_at),
+        ),
+    )
+}
+
+/// [`regains`] from (session, week) use and their reset times (`None` when
+/// unknown), for callers that hold the parts rather than a [`Reading`].
+pub fn regains_at(
+    g: &Gate,
+    (session, week): (f64, f64),
+    (session_reset, week_reset): (Option<i64>, Option<i64>),
+) -> Option<i64> {
+    let (session_hit, week_hit) = g.at_threshold(session, week);
+    match (session_hit, week_hit) {
+        (true, false) => session_reset,
+        (false, true) => week_reset,
+        (true, true) => Some(session_reset?.max(week_reset?)),
+        (false, false) => None,
+    }
+}
+
+/// Whether a session on an overflow profile may move back to a plan profile
+/// with reading `r` (issue #1606). This is the one rule for the move back,
+/// used by the selection ([`select_with_overflow`]) and by the status line's
+/// cheap pre-check (`swap::overflow_precheck`):
+///
+/// - with a gate, the gate's capacity test alone ([`gate_capacity`], the
+///   rotator's `--session-at` and `--week-at`), whatever the auto-switch
+///   threshold, so a session leaves overflow exactly when the rotator would;
+/// - without one (overflow closed), under the auto-switch threshold, as for
+///   any other move.
+///
+/// A profile with no reading may always be moved back to.
+pub fn may_return_to(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, now: i64) -> bool {
+    match (r, gate) {
+        (None, _) => true,
+        (Some(r), Some(g)) => gate_capacity(r, g, now),
+        (Some(r), None) => !is_exhausted(Some(r), threshold, now),
+    }
+}
+
+/// Whether overflow profile `name` may be used or stayed on: it has no
+/// active spend block. Its own plan reading does not count (issue #1694:
+/// "the plan limits shown for an overflow profile count as exhausted, but
+/// that profile is still usable"); the rotator's `next_overflow` skips an
+/// overflow profile only for a spend limit or a failed probe, and
+/// auto-switch has no probe of its own, only the usage readings. The one
+/// test for the selection ([`select_with_overflow`]), the capacity file
+/// (`capacity::compute`) and the status line's pre-check
+/// (`swap::overflow_precheck`).
+pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
+    !blocked.iter().any(|b| b == name)
+}
+
+/// [`select`] with overflow profiles. With a gate, "plan capacity" is the
+/// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
+/// `--week-at`), so auto-switch and the rotator agree on when money is
+/// spent. In order:
+///
+/// 1. The best plan profile (the overflow profiles excluded) that has
+///    capacity by the gate's test, or has no reading. From a plan profile it
+///    must also be under the auto-switch threshold, as for any plan-to-plan
+///    move. From an overflow profile the gate's test alone decides
+///    ([`may_return_to`]): this is how a session moves back, and it does so
+///    exactly when the rotator would, even with an auto-switch threshold
+///    below `--session-at` or `--week-at`.
+/// 2. `None` when `current` is an overflow profile without a spend block: it
+///    stays there until a plan profile has capacity.
+/// 3. The first overflow profile in `ov.order` that is not `current`, not
+///    excluded, not blocked and `eligible`, when the gate
+///    allows it: no plan profile has capacity by the gate's test, and the
+///    earliest plan reset is far enough away. `current` counts too: a
+///    plan profile at the auto-switch threshold that still has capacity by
+///    the gate's test is one the rotator would not leave for overflow, so
+///    neither does auto-switch, and the move back in step 1 cannot flap.
+/// 4. Otherwise the best plan profile under the auto-switch threshold
+///    ([`select`]): a plan profile between the gate's thresholds and the
+///    auto-switch threshold still beats an ALERT, and costs nothing.
+///
+/// An overflow profile's own plan reading plays no part in steps 2 and 3
+/// ([`overflow_usable`]): a credit account at its plan limit is the case
+/// overflow exists for, and the rotator ignores that reading too.
+///
+/// Without a gate (overflow closed) this is [`select`] on the plan profiles.
+/// A plan profile with no reading never counts as capacity in step 3; if
+/// it is eligible, step 1 has already picked it.
+pub fn select_with_overflow<'a>(
+    pool: &Pool<'a>,
+    ov: &OverflowPool<'a>,
+    current: &str,
+    eligible: impl Fn(&ProfileName) -> bool,
+) -> Option<&'a ProfileName> {
+    let is_overflow = |p: &ProfileName| ov.order.contains(p);
+    let mut plan_exclude = pool.exclude.to_vec();
+    plan_exclude.extend(ov.order.iter().cloned());
+    let plan_pool = Pool {
+        profiles: pool.profiles,
+        readings: pool.readings,
+        threshold: pool.threshold,
+        exclude: &plan_exclude,
+        now: pool.now,
+    };
+    // `select` borrows `plan_exclude`; hand back the caller's own name.
+    let own = |p: Option<&ProfileName>| {
+        let p = p?.clone();
+        pool.profiles.iter().find(|q| **q == p)
+    };
+    let fallback = || own(select(&plan_pool, current, &eligible));
+    let Some(gate) = ov.gate else {
+        return fallback();
+    };
+    let has_capacity = |p: &ProfileName| {
+        pool.readings
+            .get(p.as_str())
+            .is_none_or(|r| gate_capacity(r, &gate, pool.now))
+    };
+    let on_overflow = ov.order.iter().any(|o| o.as_str() == current);
+    let back = if on_overflow {
+        select_by(
+            &plan_pool,
+            current,
+            |r| may_return_to(r, Some(&gate), pool.threshold, pool.now),
+            &eligible,
+        )
+    } else {
+        select(&plan_pool, current, |p| has_capacity(p) && eligible(p))
+    };
+    if let Some(p) = own(back) {
+        return Some(p);
+    }
+    if on_overflow && overflow_usable(current, ov.blocked) {
+        return None;
+    }
+    let plan: Vec<&ProfileName> = pool
+        .profiles
+        .iter()
+        .filter(|p| !is_overflow(p) && !pool.exclude.contains(p))
+        .collect();
+    let plan_has_capacity = plan.iter().any(|p| {
+        pool.readings
+            .get(p.as_str())
+            .is_some_and(|r| gate_capacity(r, &gate, pool.now))
+    });
+    let current_reading = (!on_overflow).then(|| pool.readings.get(current)).flatten();
+    let earliest = plan
+        .iter()
+        .filter_map(|p| pool.readings.get(p.as_str()))
+        .chain(current_reading)
+        .filter_map(|r| regains(r, &gate, pool.now))
+        .min();
+    if gate.allows(plan_has_capacity, earliest, pool.now)
+        && let Some(o) = ov.order.iter().find(|o| {
+            let n = o.as_str();
+            n != current
+                && pool.profiles.contains(o)
+                && !pool.exclude.contains(o)
+                && overflow_usable(n, ov.blocked)
+                && eligible(o)
+        })
+    {
+        return Some(o);
+    }
+    fallback()
 }

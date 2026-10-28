@@ -17,6 +17,7 @@ mod limit_wait;
 #[cfg(unix)]
 mod login_check;
 mod name;
+mod overflow;
 mod pointer;
 mod root_cmd;
 mod root_config;
@@ -339,6 +340,11 @@ pub enum ProfileCommands {
     Root { dir: Option<String> },
     /// Keep the login in ~/.claude on the profile with the most capacity left
     Rotate(Box<rotate::RotateArgs>),
+    /// Mark profiles as credit-backed overflow for the rotator (costs real money)
+    Overflow {
+        #[command(subcommand)]
+        command: overflow::OverflowCommand,
+    },
     /// Status-line wrapper run by Claude Code (installed by `auto-switch install`)
     #[command(hide = true)]
     Statusline {
@@ -427,6 +433,7 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
+        ProfileCommands::Overflow { command } => overflow::run(&store, command)?,
         ProfileCommands::Statusline { .. } | ProfileCommands::Root { .. } => {
             unreachable!("handled above")
         }

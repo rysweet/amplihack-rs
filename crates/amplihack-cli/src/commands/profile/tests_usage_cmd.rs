@@ -46,6 +46,8 @@ fn row(name: &str, rep: UsageReport) -> Row {
         default: false,
         leased_to: None,
         live_in: false,
+        overflow: false,
+        overflow_blocked_until: None,
         report: rep,
         error: None,
         raw: None,
@@ -428,6 +430,8 @@ fn json_is_an_array_of_rows_with_the_exact_keys() {
                 "error",
                 "leased_to",
                 "live_in",
+                "overflow",
+                "overflow_blocked_until",
                 "profile",
                 "session",
                 "state",
@@ -949,4 +953,111 @@ fn swap_warning_names_the_profile_in_fixed_text() {
         swap_warning(&name),
         "warning: the login in ~/.claude changed while profile \"work\" was probed; its usage was not recorded"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Overflow marks (issue #1606)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn overflow_rows_are_marked_with_any_block() {
+    let mut r = ok("cred", Some((10.0, None)), Some((20.0, None)));
+    r.overflow = true;
+    assert_eq!(marks(&r), "overflow");
+    r.overflow_blocked_until = Some(1_793_491_200);
+    assert_eq!(marks(&r), "overflow, blocked until 2026-11-01T00:00:00Z");
+    r.default = true;
+    assert_eq!(marks(&r), "* overflow, blocked until 2026-11-01T00:00:00Z");
+}
+
+// "running on overflow" needs the live row to be marked and its own probe in
+// this run to show a plan limit reached: an exhausted state, or the session
+// or all-models weekly window at 100%. Either limit is enough; both are not
+// needed.
+
+fn live_cred(state: UsageState, s: f64, w: f64) -> Row {
+    let mut r = row("cred", report(state, Some((s, None)), Some((w, None))));
+    r.overflow = true;
+    r.live_in = true;
+    r
+}
+
+#[test]
+fn the_table_says_when_the_live_login_runs_on_overflow() {
+    let mut cred = live_cred(UsageState::SessionExhausted, 100.0, 40.0);
+    cred.live_in = false;
+    let mut work = ok("work", Some((10.0, None)), Some((20.0, None)));
+    work.live_in = true;
+    let out = render_table(&[work.clone(), cred.clone()]);
+    assert!(!out.contains("running on overflow"), "{out}");
+    work.live_in = false;
+    cred.live_in = true;
+    let out = render_table(&[work, cred]);
+    assert!(out.ends_with("running on overflow: cred\n"), "{out}");
+}
+
+#[test]
+fn a_marked_live_login_with_plan_capacity_is_not_on_overflow() {
+    let out = render_table(&[live_cred(UsageState::Ok, 10.0, 20.0)]);
+    assert!(!out.contains("running on overflow"), "{out}");
+}
+
+#[test]
+fn either_plan_limit_on_the_live_marked_login_means_overflow() {
+    for (state, s, w) in [
+        (UsageState::SessionExhausted, 100.0, 10.0),
+        (UsageState::WeeklyExhausted, 10.0, 100.0),
+        (UsageState::Ok, 100.0, 10.0),
+        (UsageState::Ok, 10.0, 100.0),
+    ] {
+        let out = render_table(&[live_cred(state, s, w)]);
+        assert!(
+            out.ends_with("running on overflow: cred\n"),
+            "{state:?} {s}/{w}: {out}"
+        );
+    }
+}
+
+#[test]
+fn a_full_per_model_weekly_window_alone_is_not_overflow() {
+    // The rotator's capacity test reads the session and all-models weekly
+    // windows only, so a full per-model window leaves plan capacity.
+    let mut r = live_cred(UsageState::Ok, 10.0, 20.0);
+    r.report.week_models.push(UsageWindow {
+        label: "Opus".into(),
+        used_percentage: 100.0,
+        resets_text: None,
+        resets_at: None,
+    });
+    let out = render_table(&[r]);
+    assert!(!out.contains("running on overflow"), "{out}");
+}
+
+#[test]
+fn a_failed_probe_on_the_live_marked_login_is_not_shown_as_overflow() {
+    for state in [
+        UsageState::Timeout,
+        UsageState::Error,
+        UsageState::SpendLimit,
+    ] {
+        let out = render_table(&[row("cred", report(state, None, None))].map(|mut r| {
+            r.overflow = true;
+            r.live_in = true;
+            r
+        }));
+        assert!(!out.contains("running on overflow"), "{state:?}: {out}");
+    }
+}
+
+#[test]
+fn json_rows_carry_the_overflow_fields() {
+    let mut cred = ok("cred", Some((10.0, None)), Some((20.0, None)));
+    cred.overflow = true;
+    cred.overflow_blocked_until = Some(1_793_491_200);
+    let v = json(&[cred, ok("work", None, Some((5.0, None)))]);
+    let arr = v.as_array().expect("still a top-level array");
+    assert_eq!(arr[0]["overflow"], true);
+    assert_eq!(arr[0]["overflow_blocked_until"], 1_793_491_200);
+    assert_eq!(arr[1]["overflow"], false);
+    assert!(arr[1]["overflow_blocked_until"].is_null());
 }

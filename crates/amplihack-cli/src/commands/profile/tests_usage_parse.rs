@@ -629,3 +629,19 @@ fn parser_survives_long_lines_and_percent_floods() {
         let _ = resolve_reset("11:59pm (Pacific/Kiritimati)", now);
     }
 }
+
+/// Both wordings Claude uses for an exhausted or disabled credit balance
+/// (issue #1606, D3), on either stream, are a spend limit.
+#[test]
+fn both_spend_limit_wordings_are_a_spend_limit() {
+    for msg in [
+        "You've hit your org's monthly spend limit · resets Nov 1, 12am (UTC)",
+        "You\u{2019}ve hit your org\u{2019}s monthly spend limit",
+        "Your organization has reached its monthly spend limit",
+    ] {
+        let out = parse_usage(&format!("{msg}\n"), "", NOW);
+        assert_eq!(out.state, UsageState::SpendLimit, "stdout: {msg:?}");
+        let err = parse_usage("", &format!("{msg}\n"), NOW);
+        assert_eq!(err.state, UsageState::SpendLimit, "stderr: {msg:?}");
+    }
+}

@@ -182,6 +182,26 @@ impl Fixture {
         .unwrap();
     }
 
+    /// Like [`Self::usage`], with both windows resetting `hours` from now
+    /// (1 to 23), written the way Claude writes reset times, in UTC.
+    pub fn usage_resetting(&self, p: &str, session: u32, week: u32, hours: i64) {
+        assert!(
+            (1..24).contains(&hours),
+            "a time-only reset is within a day"
+        );
+        let at = chrono::Utc::now() + chrono::Duration::hours(hours);
+        let time = at.format("%-I:%M%P");
+        let date = at.format("%b %-d, %-I:%M%P");
+        fs::write(
+            self.canned.join(format!("{}.out", email(p))),
+            format!(
+                "{BANNER}\n\nCurrent session: {session}% used · resets {time} (UTC)\n\
+                 Current week (all models): {week}% used · resets {date} (UTC)\n"
+            ),
+        )
+        .unwrap();
+    }
+
     pub fn home_account(&self) -> String {
         let v: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(self.home.join(".claude.json")).unwrap())

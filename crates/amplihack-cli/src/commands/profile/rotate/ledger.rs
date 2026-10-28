@@ -12,9 +12,11 @@ use crate::commands::profile::auto_switch::kit::{
 };
 use crate::commands::profile::name::ProfileName;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+pub use super::spend_blocks::{active_blocks, prune_blocks, spend_reset};
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
 /// The longest account value accepted (an e-mail address is at most 320).
@@ -30,6 +32,42 @@ pub struct LastCycle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub measured_at: Option<i64>,
     pub outcome: String,
+    /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overflow: Option<String>,
+}
+
+/// The tags `LastCycle.overflow` may hold.
+pub const OVERFLOW_TAGS: [&str; 3] = ["in", "out", "on"];
+/// The only reason an overflow profile is blocked.
+pub const SPEND_LIMIT: &str = "spend_limit";
+/// The most overflow blocks a ledger may hold.
+pub const MAX_BLOCKS: usize = 256;
+/// The longest a loaded block may last. The writer uses the next spend
+/// reset, at most 31 days away; the slack lets a later change take the
+/// reset from Claude's message without invalidating older ledgers.
+pub const MAX_BLOCK_SECS: i64 = 62 * 86_400;
+
+/// An overflow profile that reported the organisation's spend limit: not
+/// used from `at` until `until` (the 1st of the next month, 00:00 UTC) or
+/// until `profile overflow clear`. Unknown fields are ignored, so a later
+/// binary can add one without making this ledger unreadable here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverflowBlock {
+    pub at: i64,
+    pub until: i64,
+    pub reason: String,
+}
+
+impl OverflowBlock {
+    /// A spend-limit block recorded at `at`.
+    pub fn spend_limit(at: i64) -> Self {
+        Self {
+            at,
+            until: spend_reset(at),
+            reason: SPEND_LIMIT.to_string(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -54,6 +92,9 @@ pub struct RotateLedger {
     pub alert: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_cycle: Option<LastCycle>,
+    /// Overflow profiles blocked by a spend limit, by profile name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub overflow_blocked: BTreeMap<String, OverflowBlock>,
 }
 
 impl Default for RotateLedger {
@@ -67,6 +108,7 @@ impl Default for RotateLedger {
             previous: None,
             alert: None,
             last_cycle: None,
+            overflow_blocked: BTreeMap::new(),
         }
     }
 }
@@ -146,6 +188,30 @@ fn valid_name(v: Option<&str>) -> bool {
     v.is_none_or(|n| ProfileName::parse(n).is_ok())
 }
 
+/// The overflow fields of a loaded ledger: a known tag, at most
+/// [`MAX_BLOCKS`] blocks, each keyed by a profile name, for a spend limit,
+/// recorded at a positive time and ending after it but within
+/// [`MAX_BLOCK_SECS`], so no block can be made to last for ever. An end
+/// that cannot be computed counts as invalid.
+fn valid_overflow(l: &RotateLedger) -> bool {
+    let tag_ok = l
+        .last_cycle
+        .as_ref()
+        .and_then(|c| c.overflow.as_deref())
+        .is_none_or(|t| OVERFLOW_TAGS.contains(&t));
+    tag_ok
+        && l.overflow_blocked.len() <= MAX_BLOCKS
+        && l.overflow_blocked.iter().all(|(name, b)| {
+            ProfileName::parse(name).is_ok()
+                && b.reason == SPEND_LIMIT
+                && b.at > 0
+                && b.at < b.until
+                && b.at
+                    .checked_add(MAX_BLOCK_SECS)
+                    .is_some_and(|max| b.until <= max)
+        })
+}
+
 impl RotateState {
     /// `root` is canonicalised when it exists.
     pub fn new(root: &Path) -> Self {
@@ -175,7 +241,7 @@ impl RotateState {
 
     /// A state file: `None` when missing; an error for a symlink, a file
     /// over 64 KiB, or one that is someone else's or writable by others.
-    fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
+    pub(super) fn read(&self, path: &Path, what: &str) -> Result<Option<Vec<u8>>, ProfileError> {
         match read_bounded_nofollow(path, MAX_STATE) {
             Ok(None) => Ok(None),
             Ok(Some((raw, m))) if m.uid() == euid() && !writable_by_others(&m) => Ok(Some(raw)),
@@ -184,7 +250,7 @@ impl RotateState {
         }
     }
 
-    fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
+    pub(super) fn write(&self, name: &str, bytes: &[u8]) -> Result<(), ProfileError> {
         self.ensure()?;
         write_private_atomic(&self.dir, name, bytes).map_err(ProfileError::Io)
     }
@@ -206,6 +272,9 @@ impl RotateState {
             || l.alert.as_deref().is_some_and(|a| !safe_account(a))
         {
             return Err(inconsistent(format!("{WHAT}: invalid account or alert")));
+        }
+        if !valid_overflow(&l) {
+            return Err(inconsistent(format!("{WHAT}: invalid overflow field")));
         }
         Ok(Some(l))
     }
@@ -264,12 +333,22 @@ impl RotateState {
 /// The ledger as written for its readers. With `older` (a rotator from
 /// another binary runs), fields added after the ledger first shipped are
 /// left out, because amplihack before #1659 rejects unknown ledger fields:
-/// today `last_cycle.measured_at`, without which the limit-resume hook
-/// falls back to its 60-second margin.
+/// - `last_cycle.measured_at`, without which the limit-resume hook falls
+///   back to its 60-second margin;
+/// - `last_cycle.overflow` and `overflow_blocked` (issue #1606). An older
+///   rotator never moves onto an overflow profile, so it has no use for
+///   them. A spend block dropped this way is not a cost: when this binary
+///   runs the rotator again, the blocked profile's probe still reports the
+///   spend limit, and a profile reporting one is blocked again and never
+///   moved onto.
 pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
     let mut out = l.clone();
-    if older && let Some(c) = &mut out.last_cycle {
-        c.measured_at = None;
+    if older {
+        if let Some(c) = &mut out.last_cycle {
+            c.measured_at = None;
+            c.overflow = None;
+        }
+        out.overflow_blocked.clear();
     }
     out
 }

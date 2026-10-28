@@ -21,6 +21,8 @@ mod damp;
 #[cfg(unix)]
 mod decide;
 #[cfg(unix)]
+mod gate_record;
+#[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
 mod ledger;
@@ -31,9 +33,15 @@ mod measure;
 #[cfg(unix)]
 mod observe;
 #[cfg(unix)]
+mod overflow;
+#[cfg(unix)]
+mod overflow_record;
+#[cfg(unix)]
 mod recover;
 #[cfg(unix)]
 mod settings;
+#[cfg(unix)]
+mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(all(test, unix))]
@@ -48,6 +56,8 @@ mod tests_damp;
 #[cfg(all(test, unix))]
 mod tests_decide;
 #[cfg(all(test, unix))]
+mod tests_gate_record;
+#[cfg(all(test, unix))]
 mod tests_identify;
 #[cfg(all(test, unix))]
 mod tests_ledger;
@@ -55,6 +65,8 @@ mod tests_ledger;
 mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
+#[cfg(all(test, unix))]
+mod tests_overflow;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -71,6 +83,41 @@ use super::store::ProfileStore;
 
 #[cfg(unix)]
 pub(crate) use autostart::autostart_on_launch;
+#[cfg(unix)]
+pub(super) use control::{clear_overflow_block, overflow_blocks};
+#[cfg(unix)]
+pub(super) use log::timestamp;
+
+#[cfg(unix)]
+pub(super) use gate_record::GateSource;
+
+/// The overflow [`Gate`](super::overflow::Gate) auto-switch uses under
+/// `root`, and where it came from: the running rotator's own settings, or,
+/// when no rotator runs, the `AMPLIHACK_ROTATE_*` variables. `None` means
+/// no overflow, so an unreadable record or a typo never spends money. See
+/// `gate_record`.
+#[cfg(unix)]
+pub(super) fn overflow_gate(root: &std::path::Path) -> (Option<super::overflow::Gate>, GateSource) {
+    gate_record::effective(root)
+}
+
+/// [`overflow_gate`] against another `/proc` and environment, for tests.
+#[cfg(all(test, unix))]
+pub(super) fn overflow_gate_at(
+    root: &std::path::Path,
+    proc_root: &std::path::Path,
+    exe_name: &std::ffi::OsStr,
+    env: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> (Option<super::overflow::Gate>, GateSource) {
+    gate_record::effective_at(root, proc_root, exe_name, env)
+}
+
+/// The `overflow gate:` line of `auto-switch status`.
+#[cfg(unix)]
+pub(super) fn overflow_gate_line(root: &std::path::Path) -> String {
+    let (gate, source) = gate_record::effective(root);
+    gate_record::status_line(gate, &source)
+}
 
 /// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
 /// the rotator for `root` (default: this environment's root) runs another
@@ -148,6 +195,12 @@ pub struct TuneFlags {
     /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
+    /// Move onto an overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
+    #[arg(long, value_name = "SECS")]
+    pub overflow_wait: Option<String>,
+    /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
+    #[arg(long, value_name = "0|1")]
+    pub overflow_unknown_reset: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]

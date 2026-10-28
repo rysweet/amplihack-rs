@@ -18,13 +18,21 @@ pub const DEFAULT_THRESHOLD: u8 = 90;
 const MAX_NAME: usize = 64;
 const RESERVED: [&str; 6] = ["CON", "PRN", "AUX", "NUL", "CONIN$", "CONOUT$"];
 
-/// A toggle file that parsed. Every name in `exclude` passes
-/// [`valid_live_name`].
+/// The overflow tier an entry gets when the file names none.
+pub const DEFAULT_TIER: u8 = 1;
+/// The highest overflow tier.
+pub const MAX_TIER: u8 = 9;
+
+/// A toggle file that parsed. Every name in `exclude` and `overflow`
+/// passes [`valid_live_name`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Toggle {
     pub enabled: bool,
     pub threshold: u8,
     pub exclude: Vec<String>,
+    /// Overflow profiles (issue #1606) as `(name, tier)`, in file order.
+    /// Tier 1 is tried before tier 2 and so on; file order breaks ties.
+    pub overflow: Vec<(String, u8)>,
 }
 
 /// The toggle file as read from disk.
@@ -77,13 +85,15 @@ pub fn auto_switch_on_from(env: Option<&OsStr>, root: &Path) -> bool {
 }
 
 /// The toggle file under `root`: read without following a symlink, and
-/// only when it is a regular file of the current user.
+/// only when it is a regular file of the current user that group and
+/// others cannot write: anyone who could write it could otherwise mark a
+/// profile as overflow and spend money on it.
 #[cfg(unix)]
 pub fn read_toggle(root: &Path) -> ToggleFile {
-    use crate::secure_files::{owned_by_euid, read_bounded_nofollow};
+    use crate::secure_files::{owned_by_euid, read_bounded_nofollow, writable_by_others};
     match read_bounded_nofollow(&root.join(TOGGLE_FILE), MAX_TOGGLE_BYTES) {
         Ok(None) => ToggleFile::Missing,
-        Ok(Some((raw, meta))) if owned_by_euid(&meta) => {
+        Ok(Some((raw, meta))) if owned_by_euid(&meta) && !writable_by_others(&meta) => {
             parse_toggle(&raw).map_or(ToggleFile::Corrupt, ToggleFile::Valid)
         }
         _ => ToggleFile::Corrupt,
@@ -97,16 +107,17 @@ pub fn read_toggle(_root: &Path) -> ToggleFile {
 }
 
 /// Parses a toggle file: `key=value` lines, keys `enabled` (required,
-/// `on`/`off`), `threshold` (`1`..=`100`) and `exclude` (comma-separated
-/// profile names), each at most once, one optional final newline. The
-/// error is a short reason that never quotes the input.
+/// `on`/`off`), `threshold` (`1`..=`100`), `exclude` (comma-separated
+/// profile names) and `overflow` (comma-separated `name` or `name:tier`,
+/// tier `1`..=`9`, no name twice), each at most once, one optional final
+/// newline. The error is a short reason that never quotes the input.
 pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
     if raw.len() as u64 > MAX_TOGGLE_BYTES {
         return Err("file too large");
     }
     let text = std::str::from_utf8(raw).map_err(|_| "not valid UTF-8")?;
     let body = text.strip_suffix('\n').unwrap_or(text);
-    let (mut enabled, mut threshold, mut exclude) = (None, None, None);
+    let (mut enabled, mut threshold, mut exclude, mut overflow) = (None, None, None, None);
     for line in body.split('\n') {
         let (key, value) = line.split_once('=').ok_or("line without '='")?;
         let repeated = match key {
@@ -119,6 +130,7 @@ pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
                 .is_some(),
             "threshold" => threshold.replace(parse_threshold(value)?).is_some(),
             "exclude" => exclude.replace(parse_exclude(value)?).is_some(),
+            "overflow" => overflow.replace(parse_overflow(value)?).is_some(),
             _ => return Err("unknown key"),
         };
         if repeated {
@@ -129,6 +141,7 @@ pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
         enabled: enabled.ok_or("missing enabled")?,
         threshold: threshold.unwrap_or(DEFAULT_THRESHOLD),
         exclude: exclude.unwrap_or_default(),
+        overflow: overflow.unwrap_or_default(),
     })
 }
 
@@ -156,6 +169,36 @@ fn parse_exclude(value: &str) -> Result<Vec<String>, &'static str> {
                 .ok_or("invalid profile name in exclude")
         })
         .collect()
+}
+
+/// `name` or `name:tier`; the tier is `1`..=`9`, one digit.
+pub fn parse_overflow_entry(raw: &str) -> Result<(String, u8), &'static str> {
+    let (name, tier) = match raw.split_once(':') {
+        None => (raw, DEFAULT_TIER),
+        Some((name, t)) => match t.as_bytes() {
+            [d @ b'1'..=b'9'] => (name, d - b'0'),
+            _ => return Err("overflow tier must be a digit from 1 to 9"),
+        },
+    };
+    if !valid_live_name(name) {
+        return Err("invalid profile name in overflow");
+    }
+    Ok((name.to_string(), tier))
+}
+
+fn parse_overflow(value: &str) -> Result<Vec<(String, u8)>, &'static str> {
+    let mut out: Vec<(String, u8)> = Vec::new();
+    if value.is_empty() {
+        return Ok(out);
+    }
+    for raw in value.split(',') {
+        let entry = parse_overflow_entry(raw)?;
+        if out.iter().any(|(n, _)| *n == entry.0) {
+            return Err("repeated profile name in overflow");
+        }
+        out.push(entry);
+    }
+    Ok(out)
 }
 
 /// The profile-name rule: 1 to 64 ASCII letters, digits, `.`, `_` or `-`,

@@ -21,9 +21,9 @@ pub use daemon::{
     rotator_down_at,
 };
 pub use gate::{
-    DEFAULT_THRESHOLD, EnvToggle, MAX_TOGGLE_BYTES, TOGGLE_ENV, TOGGLE_FILE, Toggle, ToggleFile,
-    auto_switch_on, auto_switch_on_from, env_toggle, parse_threshold, parse_toggle, read_toggle,
-    valid_live_name,
+    DEFAULT_THRESHOLD, DEFAULT_TIER, EnvToggle, MAX_TIER, MAX_TOGGLE_BYTES, TOGGLE_ENV,
+    TOGGLE_FILE, Toggle, ToggleFile, auto_switch_on, auto_switch_on_from, env_toggle,
+    parse_overflow_entry, parse_threshold, parse_toggle, read_toggle, valid_live_name,
 };
 pub use ledger::{CycleStatus, Ledger, ledger_path, parse_cycle, read_cycle, read_ledger};
 pub use root::{

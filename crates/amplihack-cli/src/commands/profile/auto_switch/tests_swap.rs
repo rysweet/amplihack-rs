@@ -316,3 +316,107 @@ fn a_change_of_whole_seconds_alone_counts_as_a_new_version() {
         &fs::symlink_metadata(&file).unwrap()
     ));
 }
+
+// --- Status-line pre-check on an overflow profile (issue #1606) ------------
+//
+// A session on a credit account at its plan limit is not worth the full
+// check (recovery and the `/proc` scan): its own reading does not count.
+// Only a spend block, or a plan profile it may move back to, is.
+
+mod overflow_precheck {
+    use super::super::super::config::Config;
+    use super::super::super::overflow_inputs::OverflowInputs;
+    use super::super::super::usage::{Reading, ReadingSource, Window};
+    use super::super::overflow_may_move;
+    use crate::commands::profile::name::ProfileName;
+    use crate::commands::profile::overflow::{Gate, OverflowEntry};
+    use std::collections::BTreeMap;
+
+    const NOW: i64 = 1_760_000_000;
+    const GATE: Gate = Gate {
+        wait: 1800,
+        unknown_reset: false,
+        session_at: 85,
+        week_at: 90,
+    };
+
+    fn n(s: &str) -> ProfileName {
+        ProfileName::parse(s).unwrap()
+    }
+
+    fn reading(five: f64, seven: f64) -> Reading {
+        let w = |pct, resets_in| {
+            Some(Window {
+                used_percentage: pct,
+                resets_at: NOW + resets_in,
+            })
+        };
+        Reading {
+            five_hour: w(five, 4 * 3600),
+            seven_day: w(seven, 86_400),
+            observed_at: NOW - 10,
+            source: ReadingSource::Statusline,
+        }
+    }
+
+    fn cfg(threshold: u8) -> Config {
+        Config {
+            enabled: true,
+            threshold,
+            exclude: Vec::new(),
+            overflow: vec![OverflowEntry::new(n("cred"), 1)],
+        }
+    }
+
+    fn inputs(blocked: &[&str]) -> OverflowInputs {
+        OverflowInputs {
+            order: vec![n("cred")],
+            blocked: blocked.iter().map(|b| b.to_string()).collect(),
+            gate: Some(GATE),
+        }
+    }
+
+    fn readings(work: Reading) -> BTreeMap<String, Reading> {
+        [("work", work), ("cred", reading(100.0, 100.0))]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect()
+    }
+
+    #[test]
+    fn a_credit_account_at_its_plan_limit_returns_early() {
+        let r = readings(reading(95.0, 10.0));
+        assert!(!overflow_may_move(
+            &n("cred"),
+            &cfg(90),
+            &inputs(&[]),
+            &r,
+            NOW
+        ));
+    }
+
+    #[test]
+    fn a_spend_block_is_worth_the_full_check() {
+        let r = readings(reading(95.0, 10.0));
+        assert!(overflow_may_move(
+            &n("cred"),
+            &cfg(90),
+            &inputs(&["cred"]),
+            &r,
+            NOW
+        ));
+    }
+
+    #[test]
+    fn a_plan_profile_to_move_back_to_is_worth_the_full_check() {
+        // 75%: over a 70 threshold, but capacity by the gate's 85/90.
+        let r = readings(reading(75.0, 10.0));
+        assert!(overflow_may_move(
+            &n("cred"),
+            &cfg(70),
+            &inputs(&[]),
+            &r,
+            NOW
+        ));
+    }
+}

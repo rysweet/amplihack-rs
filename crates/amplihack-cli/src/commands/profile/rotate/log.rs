@@ -261,6 +261,47 @@ pub mod msg {
         format!("ALERT: rotate recovery is inconsistent: {reason}; no swap until it is resolved")
     }
 
+    /// `<time>` for a known reset, else `unknown`.
+    fn reset(at: Option<i64>) -> String {
+        at.map_or_else(|| "unknown".to_string(), super::timestamp)
+    }
+
+    /// After an `overflow-in` swap onto `to`.
+    pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
+        format!(
+            "overflow: on {to}; no plan profile has capacity, next plan reset {}",
+            reset(next_reset)
+        )
+    }
+
+    /// A stay on overflow profile `live` that the previous cycle did not
+    /// record as on credits.
+    pub fn stay_on_overflow(live: &ProfileName, next_reset: Option<i64>) -> String {
+        format!(
+            "overflow: staying on {live}; no plan profile has capacity, next plan reset {}",
+            reset(next_reset)
+        )
+    }
+
+    /// After a swap off overflow profile `from` onto plan profile `to`.
+    pub fn off_overflow(from: &ProfileName, to: &ProfileName) -> String {
+        format!("overflow: off {from}; back on plan profile {to}")
+    }
+
+    /// A spend block was recorded for overflow profile `name`.
+    pub fn alert_spend_limit(name: &ProfileName, until: i64) -> String {
+        format!(
+            "ALERT: overflow profile {name} hit its spend limit; blocked until {}",
+            super::timestamp(until)
+        )
+    }
+
+    /// A spend limit on overflow profile `name` that could not be stored
+    /// as a block, and why. The cycle still leaves the profile alone.
+    pub fn spend_limit_not_blocked(name: &ProfileName, why: &str) -> String {
+        format!("ALERT: overflow profile {name} hit its spend limit; not blocked ({why})")
+    }
+
     pub fn recovered(forward: bool, from: &ProfileName, to: &ProfileName) -> String {
         let what = if forward { "finished" } else { "rolled back" };
         format!("recovery: {what} an interrupted swap {from}->{to}")

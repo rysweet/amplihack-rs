@@ -102,6 +102,10 @@ fn usage_file(r: &Root) -> PathBuf {
 
 #[test]
 fn nothing_is_created_when_auto_switch_is_not_set_up() {
+    // Other tests set the toggle under this lock; read it under it too.
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     if std::env::var_os("AMPLIHACK_CLAUDE_AUTO_SWITCH").is_some_and(|v| !v.is_empty()) {
         return; // the environment decides the gate in this process
     }
