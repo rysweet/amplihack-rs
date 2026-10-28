@@ -27,10 +27,11 @@ use std::path::PathBuf;
 #[cfg(test)]
 pub(super) use crate::commands::profile::attempt::limit_reset;
 
-/// An eligible profile for a nested launch: not excluded, not exhausted, not
-/// in `skip`, holding its own login at home, and not hosting another account.
-/// Plan profiles come first; an overflow profile only when every plan
-/// profile is exhausted and the overflow gate allows it (issue #1606), and
+/// An eligible profile for a nested launch: not excluded, not exhausted (an
+/// overflow profile: not spend-blocked; its own plan reading does not
+/// count), not in `skip`, holding its own login at home, and not hosting
+/// another account. Plan profiles come first; an overflow profile only when
+/// no plan profile has capacity and the overflow gate allows it (issue #1606), and
 /// a launch on an overflow profile gets a plan profile as soon as one has
 /// capacity (see `candidate::select_with_overflow`).
 pub fn nested_candidate(

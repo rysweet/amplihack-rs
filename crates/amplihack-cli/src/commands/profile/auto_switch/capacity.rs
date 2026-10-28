@@ -9,7 +9,9 @@
 //! `amplihack_utils::claude_capacity`. See "When no account has capacity" in
 //! docs/reference/profile-command.md.
 
-use super::candidate::{OverflowPool, adjusted, gate_capacity, is_exhausted, regains, regains_at};
+use super::candidate::{
+    OverflowPool, adjusted, gate_capacity, is_exhausted, overflow_usable, regains, regains_at,
+};
 use super::config::{self, Config};
 use super::fsx;
 use super::overflow_inputs::OverflowInputs;
@@ -179,7 +181,8 @@ fn gate_view(e: Option<&Evidence>, g: &Gate, now: i64) -> Option<(bool, Option<i
 /// auto-switch could move onto it (issue #1606): the overflow gate allows
 /// it, judged on the gate's own capacity test and plan resets
 /// ([`gate_view`], the selection's helpers, not the auto-switch threshold),
-/// and the profile is not blocked and not over the threshold. The
+/// and the profile has no spend block ([`overflow_usable`]; its own plan
+/// reading does not count, as in the selection and the rotator). The
 /// rotator also forces `ok` while the live login is on an overflow profile
 /// (`refresh_from_rotation`). Pure.
 pub fn compute(
@@ -216,8 +219,7 @@ pub fn compute(
             && overflow.order.iter().any(|o| {
                 profiles.contains(o)
                     && !cfg.exclude.contains(o)
-                    && !overflow.blocked.iter().any(|b| b == o.as_str())
-                    && classify(evidence.get(o.as_str()), cfg.threshold, now).is_none()
+                    && overflow_usable(o.as_str(), overflow.blocked)
             })
     };
     let all_over = !eligible.is_empty() && over.len() == eligible.len();

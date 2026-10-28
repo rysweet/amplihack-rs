@@ -147,9 +147,14 @@ and the extra use is billed to the credits. Marked as an *overflow profile*,
 the rotator moves work onto it only when every plan login is out of capacity
 and the next plan reset is known and more than `--overflow-wait` seconds away
 (default 1800), and moves work back in the first cycle in which a plan login
-has capacity. Auto-switch follows the same rule through the same gate: it
-uses an overflow profile only when every plan profile is over the threshold
-beyond the wait, and moves the session back once a plan profile has room.
+has capacity. Auto-switch follows the same rule through the same gate,
+whatever its own threshold: it uses an overflow profile only when no plan
+profile has capacity by the rotator's limits (`--session-at` and
+`--week-at`, 85% and 90% by default) and the next plan reset is beyond the
+wait, and moves the session back once a plan profile is under those limits.
+The overflow profile's own plan reading does not count: a credit account at
+100% of its plan limits is still used, and only a spend block moves work
+to the next overflow profile.
 
 An unknown plan reset (no reading reports one) does **not** move work onto
 overflow unless the user opts in with `--overflow-unknown-reset 1`

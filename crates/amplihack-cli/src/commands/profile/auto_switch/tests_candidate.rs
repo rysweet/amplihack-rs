@@ -220,7 +220,9 @@ fn eligibility_filter_is_only_asked_about_other_profiles() {
 // - onto the first usable overflow profile (tier, then file order) when every
 //   plan profile is exhausted and the earliest plan reset is beyond the wait;
 // - back to a plan profile as soon as one has capacity, whether or not the
-//   overflow profile is exhausted; otherwise it stays on the overflow profile.
+//   overflow profile is exhausted; otherwise it stays on the overflow profile;
+// - an overflow profile's own plan reading never counts: only a spend block
+//   makes it unusable (issue #1694).
 
 use super::candidate::OverflowPool;
 use crate::commands::profile::overflow::Gate;
@@ -333,16 +335,49 @@ fn moves_back_off_overflow_once_a_plan_profile_recovers() {
     assert_eq!(o.pick(&c, "cred").as_deref(), Some("spare"));
 }
 
+/// A credit account at its plan limit: the account issue #1694 is about.
+/// Its own plan reading does not make it unusable.
+fn credit_used_up() -> Reading {
+    reading(100.0, 100.0)
+}
+
 #[test]
-fn an_exhausted_or_blocked_overflow_profile_moves_to_the_next_one() {
+fn a_credit_profile_at_its_plan_limit_is_moved_onto() {
+    let o = Over::new(&["cred"]);
+    let c = all_plan_out(4 * 3600).with("cred", credit_used_up());
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("cred"));
+    // A plan reset inside the wait still keeps it unused.
+    let c = all_plan_out(60).with("cred", credit_used_up());
+    assert_eq!(o.pick(&c, "work"), None);
+}
+
+#[test]
+fn a_session_on_a_credit_profile_at_its_plan_limit_stays() {
     let mut o = Over::new(&["cred", "cred2"]);
-    let mut c = all_plan_out(4 * 3600);
+    let mut c = all_plan_out(4 * 3600)
+        .with("cred", credit_used_up())
+        .with("cred2", reading(0.0, 0.0));
     c.profiles.push(n("cred2"));
-    let c = c
-        .with("cred2", reading(0.0, 0.0))
-        .with("cred", reading(95.0, 0.0));
-    assert_eq!(o.pick(&c, "cred").as_deref(), Some("cred2"));
-    let c = c.with("cred", reading(0.0, 0.0));
+    assert_eq!(o.pick(&c, "cred"), None, "no move to the next overflow");
+    // Without a second overflow profile, no move to a plan profile either.
+    o.order = vec![n("cred")];
+    assert_eq!(
+        o.pick(
+            &all_plan_out(4 * 3600).with("cred", credit_used_up()),
+            "cred"
+        ),
+        None
+    );
+}
+
+#[test]
+fn only_a_spend_block_moves_a_session_to_the_next_overflow_profile() {
+    let mut o = Over::new(&["cred", "cred2"]);
+    let mut c = all_plan_out(4 * 3600)
+        .with("cred", credit_used_up())
+        .with("cred2", credit_used_up());
+    c.profiles.push(n("cred2"));
+    assert_eq!(o.pick(&c, "cred"), None);
     o.blocked = vec!["cred".into()];
     assert_eq!(o.pick(&c, "cred").as_deref(), Some("cred2"));
     assert_eq!(
@@ -350,6 +385,19 @@ fn an_exhausted_or_blocked_overflow_profile_moves_to_the_next_one() {
         Some("cred2"),
         "never onto a blocked one"
     );
+}
+
+#[test]
+fn a_plan_exhausted_tier_1_profile_beats_a_fresh_tier_2_profile() {
+    // Tier order is the order given (`Config::overflow_order`): tier 1 credits
+    // first, then a tier 2 API key that reads 0%.
+    let o = Over::new(&["credits", "api-key"]);
+    let c = Case::new(&["work", "credits", "api-key"])
+        .with("work", five_hour(95.0, 4 * 3600))
+        .with("credits", credit_used_up())
+        .with("api-key", reading(0.0, 0.0));
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("credits"));
+    assert_eq!(o.pick(&c, "credits"), None, "stays on tier 1");
 }
 
 #[test]
@@ -437,7 +485,8 @@ fn the_rerun_candidate_follows_the_overflow_rule() {
     let mut readings = BTreeMap::new();
     readings.insert("work".to_string(), live(95.0, 4 * 3600));
     readings.insert("spare".to_string(), live(40.0, 4 * 3600));
-    readings.insert("cred".to_string(), live(0.0, 4 * 3600));
+    // cred is a credit account at its plan limit: still usable.
+    readings.insert("cred".to_string(), live(100.0, 4 * 3600));
     let pick = |readings: &BTreeMap<String, Reading>, current: &str| {
         let skip = [current.to_string()];
         nested_candidate(

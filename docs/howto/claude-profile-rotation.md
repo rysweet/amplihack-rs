@@ -847,8 +847,10 @@ to one that has it, so it does not bounce between credits and a login that
 is already at a threshold.
 
 An overflow profile's own session and weekly limits show as exhausted in
-`profile usage`. That does not stop it being used; those are the plan limits
-the credits cover.
+`profile usage`. That does not stop it being used, by the rotator or by
+auto-switch; those are the plan limits the credits cover. Only a
+[spend block](../reference/profile-command.md#overflow-spend-limit-block)
+moves work from one overflow profile to the next.
 
 The log shows each move:
 

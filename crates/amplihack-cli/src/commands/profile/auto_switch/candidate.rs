@@ -150,7 +150,7 @@ pub fn regains_at(
 /// Whether a session on an overflow profile may move back to a plan profile
 /// with reading `r` (issue #1606). This is the one rule for the move back,
 /// used by the selection ([`select_with_overflow`]) and by the status line's
-/// cheap pre-check (`swap::may_leave_overflow`):
+/// cheap pre-check (`swap::overflow_precheck`):
 ///
 /// - with a gate, the gate's capacity test alone ([`gate_capacity`], the
 ///   rotator's `--session-at` and `--week-at`), whatever the auto-switch
@@ -167,6 +167,19 @@ pub fn may_return_to(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, no
     }
 }
 
+/// Whether overflow profile `name` may be used or stayed on: it has no
+/// active spend block. Its own plan reading does not count (issue #1694:
+/// "the plan limits shown for an overflow profile count as exhausted, but
+/// that profile is still usable"); the rotator's `next_overflow` skips an
+/// overflow profile only for a spend limit or a failed probe, and
+/// auto-switch has no probe of its own, only the usage readings. The one
+/// test for the selection ([`select_with_overflow`]), the capacity file
+/// (`capacity::compute`) and the status line's pre-check
+/// (`swap::overflow_precheck`).
+pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
+    !blocked.iter().any(|b| b == name)
+}
+
 /// [`select`] with overflow profiles. With a gate, "plan capacity" is the
 /// gate's test ([`Gate::plan_capacity`], the rotator's `--session-at` and
 /// `--week-at`), so auto-switch and the rotator agree on when money is
@@ -179,10 +192,10 @@ pub fn may_return_to(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, no
 ///    ([`may_return_to`]): this is how a session moves back, and it does so
 ///    exactly when the rotator would, even with an auto-switch threshold
 ///    below `--session-at` or `--week-at`.
-/// 2. `None` when `current` is an overflow profile that is neither exhausted
-///    nor blocked: it stays there until a plan profile has capacity.
+/// 2. `None` when `current` is an overflow profile without a spend block: it
+///    stays there until a plan profile has capacity.
 /// 3. The first overflow profile in `ov.order` that is not `current`, not
-///    excluded, not blocked, not exhausted and `eligible`, when the gate
+///    excluded, not blocked and `eligible`, when the gate
 ///    allows it: no plan profile has capacity by the gate's test, and the
 ///    earliest plan reset is far enough away. `current` counts too: a
 ///    plan profile at the auto-switch threshold that still has capacity by
@@ -191,6 +204,10 @@ pub fn may_return_to(r: Option<&Reading>, gate: Option<&Gate>, threshold: u8, no
 /// 4. Otherwise the best plan profile under the auto-switch threshold
 ///    ([`select`]): a plan profile between the gate's thresholds and the
 ///    auto-switch threshold still beats an ALERT, and costs nothing.
+///
+/// An overflow profile's own plan reading plays no part in steps 2 and 3
+/// ([`overflow_usable`]): a credit account at its plan limit is the case
+/// overflow exists for, and the rotator ignores that reading too.
 ///
 /// Without a gate (overflow closed) this is [`select`] on the plan profiles.
 /// A plan profile with no reading never counts as capacity in step 3; if
@@ -239,9 +256,7 @@ pub fn select_with_overflow<'a>(
     if let Some(p) = own(back) {
         return Some(p);
     }
-    let exhausted = |name: &str| is_exhausted(pool.readings.get(name), pool.threshold, pool.now);
-    let blocked = |name: &str| ov.blocked.iter().any(|b| b == name);
-    if on_overflow && !exhausted(current) && !blocked(current) {
+    if on_overflow && overflow_usable(current, ov.blocked) {
         return None;
     }
     let plan: Vec<&ProfileName> = pool
@@ -267,8 +282,7 @@ pub fn select_with_overflow<'a>(
             n != current
                 && pool.profiles.contains(o)
                 && !pool.exclude.contains(o)
-                && !blocked(n)
-                && !exhausted(n)
+                && overflow_usable(n, ov.blocked)
                 && eligible(o)
         })
     {

@@ -1697,10 +1697,13 @@ An account is *exhausted* when the higher of its two adjusted windows is
 at or above the threshold (`max(five_hour, seven_day) >= threshold`). An
 *adjusted* window is one whose `resets_at` is at or before now, which counts
 as 0%. A window without `resets_at` is used as read. An account with no
-reading is not exhausted. Exhausted accounts are never chosen.
+reading is not exhausted. Exhausted plan accounts are never chosen; an
+[overflow](#auto-switch-and-overflow-profiles) profile's own reading does
+not count.
 
 An account is *eligible* when it is not excluded, not the current account,
-not [leased](#leases), and not exhausted, plus the extra conditions for an
+not [leased](#leases), and not exhausted (overflow profiles: not
+spend-blocked instead), plus the extra conditions for an
 [in-session swap](#in-session-swap) or a
 [nested launch](#nested-launches-and-auto-switch).
 
@@ -1738,9 +1741,16 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
    and the default 85%/90%, a plan account whose session has reset and
    whose week reads 85% brings the session back: 85% is over 80 but under
    the 90% week threshold. The status-line check that decides whether a
-   session on an overflow profile is worth a full check uses the same rule.
-2. A session on an overflow profile that is not over the threshold and not
-   [spend-blocked](#overflow-spend-limit-block) stays where it is.
+   session on an overflow profile is worth a full check uses the same rule,
+   plus step 2's spend block: without either, it stops there, whatever the
+   overflow profile's own reading, so a session on credits does not run
+   recovery or the `/proc` scan on every update.
+2. A session on an overflow profile that is not
+   [spend-blocked](#overflow-spend-limit-block) stays where it is. Its own
+   plan reading plays no part: a credit account reads at or near 100% of
+   its plan limits while it spends credits, and that is the account
+   overflow exists for. Only a spend block moves a session from one
+   overflow profile to the next, as in the rotator.
 3. An overflow profile, only when **both** hold:
    - no plan profile has plan capacity, the current one included, whether
      or not this session could use it (one leased to another session still
@@ -1756,8 +1766,10 @@ the rotator applies to its [plan pool](#plan-pool). Every selection
      earliest of those over every plan account, the current one included.
 
    The first overflow profile by tier, then by list order within a tier,
-   that is not current, not excluded, not spend-blocked, not over the
-   threshold and eligible is chosen.
+   that is not current, not excluded, not spend-blocked and eligible is
+   chosen. Its own plan reading is not checked, so a tier 1 credit account
+   at 100% of its plan limits is still chosen before a tier 2 API key at
+   0%.
 4. Otherwise the best plan profile below the auto-switch threshold, by the
    order above. A plan account between the gate's thresholds and the
    auto-switch threshold (for example at 87% session) is used only here:
