@@ -2739,3 +2739,80 @@ fn review_submodule_dirty_source_invalidates_even_when_parent_status_hides_it() 
     let failed = Run(f.command("npm").arg("test").output().unwrap());
     failed.exit(1);
 }
+
+#[test]
+fn review_maintained_checker_configuration_requires_resolved_quality_commands() {
+    for (language, manifest, contents, config, tool) in [
+        (
+            "python",
+            "pyproject.toml",
+            "[tool.ruff]\nline-length=100\n",
+            "",
+            "ruff",
+        ),
+        (
+            "go",
+            "go.mod",
+            "module example.invalid/required\n\ngo 1.22\n",
+            ".golangci.yml",
+            "golangci-lint",
+        ),
+        (
+            "rust",
+            "Cargo.toml",
+            "[package]\nname='required'\nversion='0.1.0'\n[workspace]\nmembers=['.']\n",
+            "clippy.toml",
+            "clippy",
+        ),
+        (
+            "dotnet",
+            "Contract.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\"/>\n",
+            "Directory.Build.targets",
+            "Quality",
+        ),
+    ] {
+        let mut f = Fixture::javascript();
+        fs::remove_file(f.repo.join("package.json")).unwrap();
+        f.file(manifest, contents);
+        if !config.is_empty() {
+            f.file(
+                config,
+                if language == "dotnet" {
+                    "<Project><Target Name=\"Quality\" /></Project>\n"
+                } else {
+                    ""
+                },
+            );
+        }
+        f.file("README.md", "No separately resolved quality command.\n");
+        f.commit("configured checker with unresolved command");
+        f.plan["components"][0]["toolchain"] = json!(language);
+        f.plan["components"][0]["inspected"] = json!([f.reference(manifest)]);
+        f.plan["obligations"].as_array_mut().unwrap().remove(1);
+        f.plan["obligations"][0]["toolchain"] = json!(language);
+        if language == "rust" {
+            f.plan["obligations"][0]["argv"] = json!(["cargo", "test", "--workspace", "--locked"]);
+            f.plan["obligations"][0]["scope"] = json!("FULL_WORKSPACE");
+            f.plan["obligations"][0]["threading"] = json!("DEFAULT");
+        }
+        // References remain mandatory; rebuild them without borrowing the plan.
+        let reference = f.reference("README.md");
+        for obligation in f.plan["obligations"].as_array_mut().unwrap() {
+            obligation["selected_from"] = json!([reference.clone()]);
+            if obligation["kind"] == "consumer" {
+                obligation["scenario"]["inspected"] = json!([reference.clone()]);
+            }
+        }
+        f.plan["exclusions"][0]["policy_refs"] = json!([reference]);
+        let result = f.call("plan", &f.plan);
+        result.exit(1);
+        assert!(
+            result.json()["unresolved"].to_string().contains(&format!(
+                "Configured {tool} applicability/command unresolved"
+            )),
+            "{language}: {}",
+            result.describe()
+        );
+    }
+}

@@ -701,6 +701,11 @@ class Workflow:
                             unresolved.append('Configured ' + name + ' omitted: ' + c['id'])
                 if c['toolchain'] == 'typescript' and not any(o['kind'] == 'typecheck' for o in selected):
                     unresolved.append('TypeScript typecheck unresolved: ' + c['id'])
+            for kind, tool in self.configured_quality_tools(c):
+                if not any(o['kind'] == kind and Path(o['cwd']) == self.root / c['root'] and
+                           (tool in [Path(arg).name for arg in o['argv']] or c['toolchain'] == 'dotnet' and
+                            any(arg in ('-t:' + tool, '-target:' + tool, '/t:' + tool) for arg in o['argv'])) for o in selected):
+                    unresolved.append('Configured ' + tool + ' applicability/command unresolved: ' + c['id'])
             for kind, argv, cwd in self.required_documented_checks(c):
                 if not any(o['kind'] == kind and Path(o['cwd']) == cwd and
                            self.same_policy_command(cwd, argv, o['argv']) for o in obligations):
@@ -856,6 +861,39 @@ class Workflow:
         elif o['kind'] == 'test' and o['toolchain'] != 'rust': self.suite_execution(o, e)
         elif o['kind'] == 'precommit': self.hook_execution(o, e)
         return index['record']
+
+    def configured_quality_tools(self, component):
+        """Recognise maintained check configuration without inventing argv.
+
+        If the project has not documented how to run a configured checker,
+        command validation keeps it unproven. Presence is never a passed check.
+        """
+        root = self.root / component['root']; tools = set()
+        language = component['toolchain']
+        if language == 'python':
+            project = root / 'pyproject.toml'
+            tables = tomllib.loads(read_regular(project).decode()).get('tool', {}) if project.is_file() else {}
+            for tool in ('ruff', 'black', 'isort', 'pylint', 'mypy', 'pyright'):
+                if tool in tables: tools.add(('typecheck' if tool in ('mypy', 'pyright') else 'quality', tool))
+            for name, kind, tool in (('ruff.toml', 'quality', 'ruff'), ('.ruff.toml', 'quality', 'ruff'),
+                                     ('mypy.ini', 'typecheck', 'mypy'), ('.mypy.ini', 'typecheck', 'mypy'),
+                                     ('pyrightconfig.json', 'typecheck', 'pyright')):
+                if (root / name).is_file(): tools.add((kind, tool))
+        if language == 'go' and any((root / name).is_file() for name in ('.golangci.yml', '.golangci.yaml', '.golangci.toml', '.golangci.json')):
+            tools.add(('quality', 'golangci-lint'))
+        if language == 'rust':
+            for names, tool in ((('clippy.toml', '.clippy.toml'), 'clippy'), (('rustfmt.toml', '.rustfmt.toml'), 'fmt')):
+                if any((root / name).is_file() for name in names): tools.add(('quality', tool))
+        if language == 'dotnet':
+            targets = root / 'Directory.Build.targets'
+            if targets.is_file():
+                try: document = ET.fromstring(read_regular(targets))
+                except ET.ParseError as exc: raise EvidenceError('OBLIGATION_UNRESOLVED', 'Invalid .NET check configuration') from exc
+                for target in document.iter():
+                    name = target.attrib.get('Name', '')
+                    if target.tag.rsplit('}', 1)[-1] == 'Target' and name.lower() in ('quality', 'lint', 'typecheck'):
+                        tools.add(('typecheck' if name.lower() == 'typecheck' else 'quality', name))
+        return sorted(tools)
 
     def same_policy_command(self, cwd, required, selected):
         if required == selected: return True
@@ -1031,7 +1069,8 @@ class Workflow:
                 except SyntaxError as exc: raise EvidenceError('SCENARIO_UNPROVEN', 'Consumer source is not executable Python') from exc
                 executable_assertions = any(isinstance(node, ast.Assert) or isinstance(node, ast.Call) and
                     isinstance(node.func, ast.Attribute) and node.func.attr.startswith('assert') for node in ast.walk(tree))
-                case_source = '\n'.join(str(node.value) for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str))
+                case_source = '\n'.join([str(node.value) for node in ast.walk(tree) if isinstance(node, ast.Constant) and isinstance(node.value, str)] +
+                                        [node.name for node in ast.walk(tree) if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))])
             else:
                 tokens = re.compile(r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(/\*.*?\*/|//[^\n]*)""", re.DOTALL)
                 case_source = tokens.sub(lambda m: m.group(1) or '', contents)

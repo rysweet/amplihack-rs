@@ -55,7 +55,8 @@ hooks cannot establish success.
 Each consumer scenario supplies `role`, `assertions`, `inspected`, `entry_points`,
 `cases` and `assertion_refs`. Entry points and assertion references identify
 repository-relative executable source. Captured argv selects those files and
-cases. Native harness results must show passing selected tests. Direct Node scenario programs retain native V8 block coverage, bound to the
+cases. Native harness results must show passing selected tests. Direct Node
+scenario programs retain native V8 block coverage, bound to the
 original source, that must show a real assertion call executed. Success markers
 alone do not qualify. Other native scenario adapters require completed selected
 test-harness cases; direct programs without an execution adapter remain unproven.
@@ -83,6 +84,8 @@ Caller-declared component exclusions cannot waive maintained checks. Unsupported
 exclusion authority leaves the plan unproven. Explicit labelled quality and
 typecheck commands in maintained project policy accumulate across all supported
 languages, including documents discovered independently of supplied obligations.
+Known checker configurations also require a resolved maintained command; missing
+applicability or command resolution remains unproven.
 Submodule working contents and Git configuration are recursively fingerprinted;
 uninitialised or excessively nested submodules remain unproven. Unqualified
 shell/runtime startup overrides are rejected before capture. Environment values
