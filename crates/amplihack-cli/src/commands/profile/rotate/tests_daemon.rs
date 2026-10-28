@@ -272,3 +272,50 @@ fn a_symlinked_prototype_lock_is_not_followed() {
         "O_NOFOLLOW: the link's target is never locked"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1690: the CI leak scan and the spawner agree on the daemon's argv.
+// ---------------------------------------------------------------------------
+
+const LEAK_SCAN: &str = include_str!("../../../../../../scripts/check-leaked-rotators.sh");
+
+/// `scripts/check-leaked-rotators.sh` reports a process only when its argv
+/// holds each of these as an exact entry. If `daemon::spawned_args` stops
+/// producing one of them, the scan goes blind and CI stays green while
+/// daemons leak; this test fails first.
+#[test]
+fn the_leak_scan_matches_the_argv_spawn_builds() {
+    let s = super::settings::resolve(&super::TuneFlags::default(), None, &|_: &str| None)
+        .expect("default settings");
+    let args = super::daemon::spawned_args(&s);
+
+    // The argv is a real command line: it parses as `profile rotate watch
+    // --spawned`, so the markers below are what the daemon really runs with.
+    let cli =
+        crate::Cli::try_parse_from(std::iter::once("amplihack".to_string()).chain(args.clone()))
+            .unwrap_or_else(|e| panic!("spawned argv {args:?} does not parse: {e}"));
+    match cli.command {
+        crate::Commands::Profile(crate::commands::profile::ProfileCommands::Rotate(r)) => {
+            match r.action {
+                Some(super::RotateAction::Watch(w)) => assert!(w.spawned, "{args:?}"),
+                other => panic!("spawned argv {args:?} parsed as {other:?}, not `watch`"),
+            }
+        }
+        _ => panic!("spawned argv {args:?} is not `profile rotate`"),
+    }
+
+    for marker in ["profile", "rotate", "watch", "--spawned"] {
+        assert!(
+            args.iter().any(|a| a == marker),
+            "spawned argv {args:?} lacks `{marker}`, which scripts/check-leaked-rotators.sh matches on"
+        );
+        // The `case` arm for this marker, whatever its indentation, must set
+        // the flag named after it (`--spawned` sets `have_spawned`).
+        let flag = marker.trim_start_matches('-');
+        let arm = format!("{marker}) have_{flag}=1");
+        assert!(
+            LEAK_SCAN.lines().any(|l| l.trim_start().starts_with(&arm)),
+            "scripts/check-leaked-rotators.sh no longer matches `{marker}` with `{arm}`"
+        );
+    }
+}

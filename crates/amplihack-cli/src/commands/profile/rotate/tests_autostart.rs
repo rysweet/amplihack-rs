@@ -882,3 +882,164 @@ fn on_launch_under_docker_creates_nothing() {
     let f = on_launch([("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1"), (ENV, "1")], true);
     assert!(!f.state_dir_exists());
 }
+
+// --- Issue #1690: a test process never starts a real rotator ---------------
+//
+// Stop B: `run` returns `Skipped("test")` as its very first step when
+// `AMPLIHACK_TEST_HOME_GUARD` (`user_config::TEST_HOME_GUARD_ENV`) is
+// non-empty, before any gate reads or creates anything.
+// Stop C: in `cfg(test)` builds `autostart_on_launch` hands `run` a spawner
+// that refuses, so an in-crate test can never reach `daemon::spawn`.
+
+use crate::user_config::TEST_HOME_GUARD_ENV;
+
+#[test]
+fn guard_set_skips_before_any_gate() {
+    let f = fx();
+    let (o, err) = f.run_with(Opts {
+        env: vec![(TEST_HOME_GUARD_ENV, "1")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Skipped("test"));
+    assert_eq!(f.spawned(), 0, "never spawns under the test guard");
+    assert!(!f.state_dir_exists(), "creates nothing under the root");
+    assert_eq!(err, "", "prints nothing to the launch's stderr");
+    assert_eq!(f.rotate_err(), "", "logs nothing");
+}
+
+#[test]
+fn guard_skip_comes_before_the_auto_switch_gate() {
+    let f = fx();
+    let (o, _) = f.run_with(Opts {
+        env: vec![(TEST_HOME_GUARD_ENV, "1")],
+        auto_switch: Some(false),
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Skipped("test"), "step 0, not Off");
+}
+
+#[test]
+fn guard_skip_comes_before_the_root_and_root_user_gates() {
+    let f = fx();
+    mode(&f.root, 0o757);
+    let (o, _) = f.run_with(Opts {
+        env: vec![(TEST_HOME_GUARD_ENV, "1")],
+        euid: 0,
+        ..Opts::default()
+    });
+    mode(&f.root, 0o700);
+    assert_eq!(o, Outcome::Skipped("test"));
+    assert_eq!(f.spawned(), 0);
+}
+
+#[test]
+fn guard_skip_wins_over_autostart_forced_on() {
+    for v in ["1", "on"] {
+        let f = fx();
+        let (o, err) = f.run_with(Opts {
+            env: vec![(TEST_HOME_GUARD_ENV, "1"), (ENV, v)],
+            ..Opts::default()
+        });
+        assert_eq!(o, Outcome::Skipped("test"), "{ENV}={v}");
+        assert_eq!(f.spawned(), 0, "{ENV}={v}");
+        assert!(!f.state_dir_exists(), "{ENV}={v}");
+        assert_eq!(err, "");
+    }
+}
+
+#[test]
+fn empty_guard_still_starts() {
+    let f = fx();
+    let (o, err) = f.run_with(Opts {
+        env: vec![(TEST_HOME_GUARD_ENV, "")],
+        ..Opts::default()
+    });
+    assert_eq!(o, Outcome::Started(FAKE_PID), "an empty guard is unset");
+    assert_eq!(f.spawned(), 1);
+    assert_eq!(err, STARTED);
+}
+
+/// Runs `autostart_on_launch` with every gate open, the guard unset and a
+/// valid hold, so the only thing between it and a spawner is Stop C.
+///
+/// If Stop C were removed this would reach the real `daemon::spawn`, which
+/// execs `current_exe()`: the libtest harness binary. libtest rejects the
+/// unknown `--interval`/`--spawned` options and exits at once, so no process
+/// is left behind.
+fn on_launch_reaching_the_spawner() -> Fx {
+    let f = fx();
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _restore = EnvGuard::capture(&[
+        "HOME",
+        ROOT_ENV,
+        ENV,
+        "AMPLIHACK_CLAUDE_AUTO_SWITCH",
+        "AMPLIHACK_ROTATE_HOLD",
+        TEST_HOME_GUARD_ENV,
+    ]);
+    let _unset = EnvGuard::unset([TEST_HOME_GUARD_ENV, "AMPLIHACK_ROTATE_HOLD"]);
+    let _set = EnvGuard::set([
+        ("HOME", f.home.to_str().unwrap()),
+        (ROOT_ENV, f.root.to_str().unwrap()),
+        ("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1"),
+        (ENV, "1"),
+    ]);
+    super::autostart_on_launch(false);
+    f
+}
+
+#[test]
+fn on_launch_in_a_test_build_refuses_to_spawn() {
+    let f = on_launch_reaching_the_spawner();
+    let log = f.rotate_err();
+    // `run` logs `autostart: failed` from several steps; only the refusing
+    // spawner's own text shows the spawner was actually reached.
+    assert!(
+        log.contains("autostart: failed: ") && log.contains(autostart::REFUSED_SPAWN),
+        "the cfg(test) spawner refuses and run() logs its error: {log:?}"
+    );
+    assert!(
+        !log.contains("autostart: started"),
+        "no real rotator was started: {log:?}"
+    );
+    assert!(!f.rs.pid.exists(), "no pid file for a refused spawn");
+}
+
+#[test]
+fn the_refusing_spawner_reveals_no_path() {
+    let f = on_launch_reaching_the_spawner();
+    let log = f.rotate_err();
+    let tmp = f.tmp.path().to_str().unwrap();
+    // Without this the absence check below would pass on an empty log, or on
+    // a failure logged before the spawner was reached.
+    assert!(log.contains(autostart::REFUSED_SPAWN), "{log:?}");
+    assert!(
+        !log.contains(tmp),
+        "fixed error text, no root or home path: {log:?}"
+    );
+}
+
+#[test]
+fn on_launch_with_the_guard_set_creates_nothing() {
+    let f = fx();
+    {
+        let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+        let _restore = EnvGuard::capture(&[
+            "HOME",
+            ROOT_ENV,
+            ENV,
+            "AMPLIHACK_CLAUDE_AUTO_SWITCH",
+            TEST_HOME_GUARD_ENV,
+        ]);
+        let _set = EnvGuard::set([
+            ("HOME", f.home.to_str().unwrap()),
+            (ROOT_ENV, f.root.to_str().unwrap()),
+            ("AMPLIHACK_CLAUDE_AUTO_SWITCH", "1"),
+            (ENV, "1"),
+            (TEST_HOME_GUARD_ENV, "1"),
+        ]);
+        let _hold = EnvGuard::set([("AMPLIHACK_ROTATE_HOLD", "abc")]);
+        super::autostart_on_launch(false);
+    }
+    assert!(!f.state_dir_exists(), "Stop B ends it before ensure()");
+}

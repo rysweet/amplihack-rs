@@ -17,6 +17,7 @@ use crate::commands::profile::auto_switch::kit::{
     State, check_root_private, euid, now, read_bounded_nofollow, write_private_atomic,
 };
 use crate::commands::profile::store::ProfileStore;
+use crate::user_config::TEST_HOME_GUARD_ENV;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
 use std::os::unix::fs::MetadataExt;
@@ -195,8 +196,8 @@ pub struct Deps<'a> {
 pub enum Outcome {
     /// Auto-switch or autostart is off.
     Off,
-    /// A gate refused: `root`, `root-user`, `docker`, `unverifiable` or
-    /// `refused`.
+    /// A gate refused: `test`, `root`, `root-user`, `docker`,
+    /// `unverifiable` or `refused`.
     Skipped(&'static str),
     /// A verified rotator is running.
     Running,
@@ -222,7 +223,16 @@ fn failed(rs: &RotateState, e: &ProfileError) -> Outcome {
 
 /// The autostart steps, in the documented order. Steps 1 to 7 create
 /// nothing; 8 to 11 run under the state lock, tried once without waiting.
+///
+/// Step 0 (#1690): a process a test started (`AMPLIHACK_TEST_HOME_GUARD`
+/// non-empty) never autostarts a rotator. It returns `Skipped("test")` before
+/// any gate, so it reads, creates and prints nothing; a daemon started from
+/// a test's temp `HOME` would outlive the test. A guard value that is not
+/// valid UTF-8 still counts, since only emptiness is checked.
 pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
+    if (d.env)(TEST_HOME_GUARD_ENV).is_some_and(|v| !v.is_empty()) {
+        return Outcome::Skipped("test");
+    }
     if !(d.auto_switch_on)(root) {
         return Outcome::Off;
     }
@@ -289,8 +299,25 @@ pub fn run(root: &Path, docker_flag: bool, d: Deps<'_>) -> Outcome {
     Outcome::Started(pid)
 }
 
+/// The refusing spawner's fixed error text. Tests assert on it so they know
+/// `run` reached the spawner rather than failing at an earlier step.
+#[cfg(test)]
+pub(super) const REFUSED_SPAWN: &str = "a unit test never starts a real rotator";
+
+/// Unit tests get this in place of `daemon::spawn` (#1690), so an in-crate
+/// test can never start a real rotator, whatever its environment holds.
+#[cfg(test)]
+fn refuse_spawn(
+    _: &RotateState,
+    _: &super::settings::Settings,
+    _: &Path,
+) -> Result<u32, ProfileError> {
+    Err(ProfileError::RotateConfig(REFUSED_SPAWN.into()))
+}
+
 /// The launch hook: runs `run` with this process's environment, `/proc`
-/// and the real spawner. Never fails and never writes to stdout.
+/// and the real spawner (a refusing one in unit tests). Never fails and
+/// never writes to stdout.
 pub fn autostart_on_launch(docker_flag: bool) {
     use crate::commands::profile::root_config::{home_from_env, store_from_env};
     let (Ok((store, _)), Some(home), Some(exe_name)) =
@@ -302,6 +329,10 @@ pub fn autostart_on_launch(docker_flag: bool) {
     let auto_switch_on = |r: &Path| crate::commands::profile::auto_switch::kit::effective(r).on;
     let docker_env = crate::commands::profile::docker_env_active;
     let mut err = std::io::stderr();
+    #[cfg(not(test))]
+    let spawn: &Spawner = &daemon::spawn;
+    #[cfg(test)]
+    let spawn: &Spawner = &refuse_spawn;
     run(
         store.root(),
         docker_flag,
@@ -311,7 +342,7 @@ pub fn autostart_on_launch(docker_flag: bool) {
             docker_env: &docker_env,
             proc_root: Path::new("/proc"),
             exe_name: &exe_name,
-            spawn: &daemon::spawn,
+            spawn,
             home: &home,
             euid: euid(),
             err: &mut err,
