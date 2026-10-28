@@ -731,10 +731,11 @@ Rules:
   symlink to a regular file is accepted), or when the binary's canonical path
   lies under a temporary directory (`/tmp`, an absolute `$TMPDIR`, or the
   platform temp dir) and the profile root is not under `$HOME`, or `$HOME` is
-  unset. The path as written is checked as well, so a symlink placed in a
-  temporary directory is refused even when it points elsewhere. That second case is a test install with a temp `HOME` that inherited
-  a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`. A refusal writes nothing; each
-  profile is reported with one line, and the install still succeeds:
+  unset. That second case is a test install with a temp `HOME` that
+  inherited a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`. The path as written is
+  checked as well, so a symlink placed in a temporary directory is refused
+  even when it points elsewhere. A refusal writes nothing; each profile is
+  reported with one line, and the install still succeeds:
 
   ```text
   Profile work: settings.json not refreshed (hooks binary /tmp/.tmpQ3x9/home/.local/bin/amplihack-hooks is under temporary directory /tmp; profile root /home/user/.claude-profiles is outside HOME)

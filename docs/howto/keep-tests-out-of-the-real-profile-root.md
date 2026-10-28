@@ -42,12 +42,19 @@ is unchecked and is called directly only by unit tests.
 explicit `env_remove` is a second layer that still holds if a later change
 adds the profile root to the list of variables `isolated(..)` keeps.
 `crates/amplihack-cli/tests/issue_1699_isolated_profile_root.rs` checks it
-twice. One test sets the variable and asserts that the built `Command` gives
-the child no value for it; after `env_clear()` this only catches a kept list
+in two ways. One test sets the variable and asserts that the built
+`Command` gives the child no value for it; after `env_clear()` this only catches a kept list
 that copies the variable. A source assertion checks that
 `tests/support/isolated_amplihack.rs` calls `env_remove(PROFILE_ROOT_ENV)`
 after the loop that copies the kept variables, so deleting that line fails
 the test.
+
+A test that calls `run_install` in process is outside both `isolated(..)`
+and the library's `cfg!(test)` gate, so it must call
+`child_remove_var("AMPLIHACK_CLAUDE_PROFILE_ROOT")` itself.
+`in_process_installs_remove_the_profile_root` in the same file fails for any
+file under `crates/amplihack-cli/tests` that calls `run_install` without
+that line.
 
 ## Write a test that starts the binary
 

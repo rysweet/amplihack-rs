@@ -61,3 +61,32 @@ fn isolated_removes_the_profile_root_after_the_kept_vars() {
         "isolated(..) must remove {PROFILE_ROOT_ENV} after copying the kept variables"
     );
 }
+
+/// An integration test that calls `run_install` in process is outside both
+/// `isolated(..)` and the library's `cfg!(test)` gate, so the refresh runs
+/// against whatever root it inherited. Each such file must remove the
+/// variable itself.
+#[test]
+fn in_process_installs_remove_the_profile_root() {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut offenders = Vec::new();
+    for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+        let path = entry.path();
+        // This file names the patterns it searches for.
+        if path.extension().is_none_or(|ext| ext != "rs") || path.ends_with(file!()) {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
+        if source.contains("run_install(None") || source.contains("run_install(Some") {
+            let removal = format!("child_remove_var(\"{PROFILE_ROOT_ENV}\")");
+            if !source.contains(&removal) {
+                offenders.push(path);
+            }
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "these tests call run_install in process without removing \
+         {PROFILE_ROOT_ENV}: {offenders:?}"
+    );
+}
