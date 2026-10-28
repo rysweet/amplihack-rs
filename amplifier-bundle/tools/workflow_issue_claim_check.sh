@@ -388,7 +388,10 @@ if [ -z "$DEFAULT_BRANCH" ]; then
     DEFAULT_BRANCH="$(gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
   fi
 fi
-DEFAULT_BRANCH="$(printf '%s' "$DEFAULT_BRANCH" | head -n 1 | tr -d '[:space:]')"
+# First line only, then no whitespace, by parameter expansion: a pipeline
+# ending in an early-exit stage is the shape the #1434 guard bans.
+DEFAULT_BRANCH="${DEFAULT_BRANCH%%$'\n'*}"
+DEFAULT_BRANCH="${DEFAULT_BRANCH//[[:space:]]/}"
 [[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || DEFAULT_BRANCH=""
 
 CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \

@@ -480,6 +480,21 @@ grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes 
   && pass "the step-15 commit message's closing keyword comes from the diff too" \
   || fail "step-15 still hardcodes 'Closes #N' in the commit message"
 
+# The claim-check helper is called from workflow-prep.yaml and the publish
+# helper, not from .github/workflows, so the #1434 guard's derived script list
+# never scans it. Apply the same shape rule to it here. The pattern is built
+# from fragments so this file never contains a literal the guard would flag.
+STOPS_EARLY="$(printf '%s|%s' head tail)"
+EARLY_EXIT_RE="[|][[:space:]]*(${STOPS_EARLY})([[:space:]]|\$)|grep[[:space:]]+-[[:alnum:]]*m[[:space:]]"
+EARLY_HITS=$(awk -v re="$EARLY_EXIT_RE" '
+  /^[[:space:]]*#/   { next }
+  /# early-exit-ok:/ { next }
+  $0 ~ re            { printf "%d:%s\n", FNR, $0 }
+' "$CLAIM")
+[ -z "$EARLY_HITS" ] \
+  && pass "the claim-check helper has no early-exit pipeline stage (#1434)" \
+  || fail "the claim-check helper has an early-exit pipeline stage (#1434): $EARLY_HITS"
+
 echo
 if [ "$fails" -eq 0 ]; then
   echo "issue #1361 duplicate-PR claim check: all checks passed"
