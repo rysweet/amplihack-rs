@@ -129,6 +129,8 @@ case "\${FAKE_GH:-none}" in
   body_unclosed)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1724,"url":"https://github.com/o/r/pull/1724","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-m","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1724\\n\\n~~~\\nFixes #1084\\n"}]' || printf '[]\n' ;;
   body_prose_linked) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1725,"url":"https://github.com/o/r/pull/1725","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-n","baseRefName":"release/1.x","closingIssuesReferences":[{"number":1684}],"body":"BODYTEXT-1725 Closes #1684. Builds on the runner fix #1084 from last week."}]' || printf '[]\n' ;;
   body_code_and_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1726,"url":"https://github.com/o/r/pull/1726","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-o","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1726 \`Refs #1\` and then Fixes #1084"}]' || printf '[]\n' ;;
+  body_stray_backtick) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1727,"url":"https://github.com/o/r/pull/1727","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-p","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1727 Run the \`make target first.\\n\\nFixes #1084\\n\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
+  body_stray_crlf) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1728,"url":"https://github.com/o/r/pull/1728","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-q","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1728 Run the \`make target first.\\r\\n\\r\\nFixes #1084\\r\\n\\r\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
   body_newline)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1717,"url":"https://github.com/o/r/pull/1717","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-h","closingIssuesReferences":[],"body":"BODYTEXT-1717 Fixes\\n#1084"}]' || printf '[]\n' ;;
   big_bodies)      [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
   ratelimit)   echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001. (HTTP 403)' >&2; exit 1 ;;
@@ -202,6 +204,8 @@ run "$WORK/gh" FAKE_GH=body_closes_lc; claimed "an open PR whose body says close
 run "$WORK/gh" FAKE_GH=body_newline;   claimed "an open PR whose body breaks a line between Fixes and #N" 1717
 run "$WORK/gh" FAKE_GH=body_release_base;  claimed "a PR to a non-default base whose body says Fixes #N" 1721
 run "$WORK/gh" FAKE_GH=body_code_and_real; claimed "a body with an inline code span before a real Fixes #N" 1726
+run "$WORK/gh" FAKE_GH=body_stray_backtick; claimed "a body with an unpaired backtick a paragraph before a real Fixes #N" 1727
+run "$WORK/gh" FAKE_GH=body_stray_crlf;     claimed "a CRLF body with an unpaired backtick a paragraph before a real Fixes #N" 1728
 run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=
 claimed "a body keyword when the default branch cannot be established" 1720
 run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH='[]'

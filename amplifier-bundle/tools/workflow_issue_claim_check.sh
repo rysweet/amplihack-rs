@@ -412,6 +412,13 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # claim-filter-unreadable, and the guard would fail open without a word.
 # `body` is deleted from each selected PR before the split below.
 #
+# strip_code removes fenced blocks first, then inline code spans. An inline
+# span may wrap onto the next line but may not cross a blank line: in
+# CommonMark a blank line ends the paragraph, so a single stray backtick never
+# opens a span that reaches the next paragraph. Without that limit, one
+# unpaired backtick before a real `Fixes #N` would remove the keyword and fail
+# open. `\r` is allowed in the blank line because bodies are often CRLF.
+#
 # The claims are then split in two (#1448). `ours` are the claims this working
 # directory is standing on: same head branch, same repository. They are this
 # stream continuing that pull request — a review, a review-fix, a CI fix, a
@@ -431,7 +438,7 @@ CLAIMS="$(
         gsub("```[\\s\\S]*?```"; " ")
         | gsub("~~~[\\s\\S]*?~~~"; " ")
         | gsub("(```|~~~)[\\s\\S]*$"; " ")
-        | gsub("`[^`]*`"; " ");
+        | gsub("`(?:[^`\n]|\n(?![ \t\r]*\n))*`"; " ");
       def body_applies:
         ((.closingIssuesReferences // []) | length == 0)
         and (($default == "") or ((.baseRefName // "") != $default));
