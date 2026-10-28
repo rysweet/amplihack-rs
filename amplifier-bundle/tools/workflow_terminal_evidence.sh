@@ -79,6 +79,7 @@ from contextlib import contextmanager
 import datetime
 import fcntl
 import hashlib
+import hmac
 import json
 import os
 from pathlib import Path
@@ -89,7 +90,7 @@ import stat
 import subprocess
 import sys
 import uuid
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import unquote, urlsplit, urlunsplit
 import tomllib
 import xml.etree.ElementTree as ET
 
@@ -433,8 +434,11 @@ class Workflow:
     def identity(self):
         return {'schema_version': 1, 'workflow': self.workflow, 'repository': self.repository}
 
-    def source(self):
-        names = run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], self.root).split(b'\0')
+    def source(self, root=None, depth=0):
+        root = root or self.root
+        require(depth < 16 and Path(run(['git', 'rev-parse', '--show-toplevel'], root).decode().strip()).resolve() == root,
+                'SOURCE_UNPROVEN', 'Uninitialised or excessively nested submodule: ' + str(root))
+        names = run(['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], root).split(b'\0')
         values = []
         for name in sorted(set(n for n in names if n)):
             relative = os.fsdecode(name)
@@ -442,14 +446,17 @@ class Workflow:
             # products are omitted by Git; tracked files are always observed.
             if relative == '.amplihack/indexing.pid' or relative.startswith('.claude/runtime/'):
                 continue
-            path = self.root / relative
+            path = root / relative
             if not path.exists() and not path.is_symlink(): value = 'DELETED'
             elif path.is_symlink(): value = self.source_file(path)
             elif path.is_dir():
-                value = run(['git', 'rev-parse', 'HEAD'], path).decode().strip()
+                value = self.source(path, depth + 1)
             else: value = file_hash(path)
             values.append((relative, value, stat.S_IMODE(path.lstat().st_mode) if path.exists() else 0))
-        return {'head': run(['git', 'rev-parse', '--verify', 'HEAD'], self.root).decode().strip(),
+        # Submodule Git configuration affects ignored inputs and hook behaviour.
+        # Include only its digest; Git config can contain credentials.
+        if depth: values.append(('git_configuration', digest(run(['git', 'config', '--null', '--list'], root))))
+        return {'head': run(['git', 'rev-parse', '--verify', 'HEAD'], root).decode().strip(),
                 'fingerprint': digest(encode(values))}
 
     def source_file(self, path):
@@ -466,8 +473,21 @@ class Workflow:
         except (EvidenceError, OSError): return None
 
     def environment(self):
+        # Shell/loader startup can exit a hook before its body executes. Those
+        # inputs need their own qualification; a zero exit is insufficient.
+        startup = ('BASH_ENV', 'ENV', 'LD_PRELOAD', 'LD_AUDIT', 'LD_LIBRARY_PATH',
+                   'DYLD_INSERT_LIBRARIES', 'DYLD_LIBRARY_PATH', 'NODE_OPTIONS',
+                   'PYTHONSTARTUP', 'DOTNET_STARTUP_HOOKS', 'NODE_V8_COVERAGE')
+        require(not any(os.environ.get(k) for k in startup), 'TOOL_OVERRIDE_UNPROVEN',
+                'Unqualified shell or runtime startup override')
         keys = set(ENV_KEYS) | {k for k in os.environ if k.startswith(('CARGO_TARGET_', 'CARGO_ALIAS_', 'GIT_CONFIG_KEY_', 'GIT_CONFIG_VALUE_', 'HUSKY_'))}
-        return {k: os.environ[k] for k in sorted(keys) if k in os.environ}
+        # Preserve comparison identity without copying credential-bearing Git,
+        # package-manager or path values into every durable execution record.
+        key_path = 'environment-key.json'
+        if not (self.store.root / key_path).exists(): self.store.put(key_path, uuid.uuid4().hex + uuid.uuid4().hex)
+        key = bytes.fromhex(self.store.get(key_path))
+        return {k: {'hmac_sha256': hmac.new(key, os.environ[k].encode(), hashlib.sha256).hexdigest()}
+                if os.environ[k] else '' for k in sorted(keys) if k in os.environ}
 
     def configurations(self, cwd):
         paths = set()
@@ -589,6 +609,9 @@ class Workflow:
         return found
 
     def plan(self):
+        # Persist producer records before checks without adding a recipe step.
+        # Registration is mandatory before any captured check can execute.
+        self.checkpoint()
         observed_source = self.source()
         p = copy.deepcopy(self.r)
         components, obligations, exclusions = p['components'], p['obligations'], p['exclusions']
@@ -658,8 +681,10 @@ class Workflow:
         if roles != {'basic', 'edge_or_integration'}: unresolved.append('Both consumer scenario roles required')
         for c in components:
             if c['disposition'] == 'excluded':
-                if not any(e['subject'] == 'component' and c['id'] in e['component_ids'] for e in exclusions):
-                    unresolved.append('Component exclusion lacks inspected policy: ' + c['id'])
+                # A caller's prose and reference hash establish no waiver
+                # authority. Keep discovered components unproven until a
+                # separately qualified applicability policy can establish one.
+                unresolved.append('Component exclusion authority unproven: ' + c['id'])
                 continue
             selected = [o for o in obligations if c['id'] in o['component_ids']]
             tests = [o for o in selected if o['kind'] == 'test' and o['toolchain'] == c['toolchain']]
@@ -676,6 +701,10 @@ class Workflow:
                             unresolved.append('Configured ' + name + ' omitted: ' + c['id'])
                 if c['toolchain'] == 'typescript' and not any(o['kind'] == 'typecheck' for o in selected):
                     unresolved.append('TypeScript typecheck unresolved: ' + c['id'])
+            for kind, argv, cwd in self.required_documented_checks(c):
+                if not any(o['kind'] == kind and Path(o['cwd']) == cwd and
+                           self.same_policy_command(cwd, argv, o['argv']) for o in obligations):
+                    unresolved.append('Documented ' + kind + ' omitted: ' + c['id'] + ': ' + shlex.join(argv))
             hooks = any((self.root / c['root'] / n).exists() for n in ('.pre-commit-config.yaml', '.pre-commit-config.yml', '.husky/pre-commit'))
             hook_path = Path(run(['git', 'rev-parse', '--git-path', 'hooks/pre-commit'], self.root).decode().strip())
             if not hook_path.is_absolute(): hook_path = self.root / hook_path
@@ -741,9 +770,17 @@ class Workflow:
         # log; no buffer limit can turn partial output into a successful receipt.
         logpath = self.store.path(prefix + 'raw.log')
         fd = os.open(logpath, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o600)
+        child_env = dict(os.environ)
+        coverage_dir = None
+        if o['kind'] == 'consumer' and o['toolchain'] in ('javascript', 'typescript') and Path(o['argv'][0]).name == 'node':
+            # Native V8 block counts are produced by the executed runtime, not
+            # by a scenario's printed success marker. Keep the files private.
+            coverage_dir = prefix + 'assertion-coverage/'
+            self.store.put(coverage_dir + '.keep', b'', raw=True)
+            child_env['NODE_V8_COVERAGE'] = str(self.store.path(coverage_dir))
         try:
             with os.fdopen(fd, 'wb') as output:
-                child = subprocess.Popen(o['argv'], cwd=o['cwd'], stdout=output, stderr=subprocess.STDOUT)
+                child = subprocess.Popen(o['argv'], cwd=o['cwd'], env=child_env, stdout=output, stderr=subprocess.STDOUT)
                 status = child.wait(); output.flush(); os.fsync(output.fileno())
         except OSError as exc:
             raise EvidenceError('MISSING_TOOLING', 'Capture could not start: ' + str(exc)) from exc
@@ -752,7 +789,10 @@ class Workflow:
         exit_code = status if normal else None
         receipt = self.store.put(prefix + 'exit.txt', (str(status if normal else 128 - status) + '\n').encode(), raw=True)
         log = dict(inspect_regular(logpath)[0], path=prefix + 'raw.log')
+        coverage = [dict(inspect_regular(path)[0], path=str(path.relative_to(self.store.root)))
+                    for path in sorted(self.store.path(coverage_dir).glob('*.json'))] if coverage_dir else []
         metadata = dict(reserved, state='sealed', source_after=after,
+                        assertion_execution={'adapter': 'node-v8-v1' if coverage_dir else None, 'coverage': coverage},
                         process={'termination': 'exited' if normal else 'signaled', 'exit_code': exit_code,
                                  'signal': -status if not normal else None, 'pid': child.pid, 'environment': environment},
                         artifacts={'raw_log': log, 'exit_receipt': receipt})
@@ -816,6 +856,54 @@ class Workflow:
         elif o['kind'] == 'test' and o['toolchain'] != 'rust': self.suite_execution(o, e)
         elif o['kind'] == 'precommit': self.hook_execution(o, e)
         return index['record']
+
+    def same_policy_command(self, cwd, required, selected):
+        if required == selected: return True
+        package = cwd / 'package.json'
+        if package.is_file():
+            scripts = parse(read_regular(package)).get('scripts', {})
+            return any(self.matches_script(required, name, command) and
+                       self.matches_script(selected, name, command) for name, command in scripts.items())
+        return False
+
+    def required_documented_checks(self, component):
+        """Read explicit maintained policy, independently of caller obligations.
+
+        Labelled quality/typecheck commands are mandatory across toolchains.
+        Unparseable labelled commands stay unresolved rather than disappearing.
+        """
+        paths = {self.root / r['path'] for r in component['inspected']}
+        for directory in (self.root, self.root / component['root']):
+            for name in ('README', 'README.md', 'README.rst', 'AGENTS.md', 'CLAUDE.md', 'CONTRIBUTING.md'):
+                if (directory / name).is_file(): paths.add(directory / name)
+        checks = []
+        for path in sorted(paths):
+            if path.suffix.lower() not in ('.md', '.rst', '.txt', ''): continue
+            contents = read_regular(path.resolve()).decode()
+            pattern = r'(?im)(?:^|[.;][ \t]+)(?:required[ \t]+)?(quality|lint|typecheck|type-check|format[ -]check):[ \t]*([^\n;]+?)(?=\.[ \t]+[A-Z]|;|$)'
+            commands = re.findall(pattern, contents)
+            # Also support conventional Markdown quality/typecheck sections.
+            section = None; fence = False
+            for line in contents.splitlines():
+                heading = re.match(r'^#{1,6}\s+(.*)', line)
+                if heading:
+                    title = heading[1].strip().lower()
+                    section = ('typecheck' if title in ('typecheck', 'type-check', 'type checking', 'typechecking') else
+                               'quality' if title in ('quality', 'quality checks', 'lint', 'linting', 'format check') else None)
+                    fence = False
+                elif line.strip().startswith('```'):
+                    fence = not fence
+                elif section and fence and line.strip() and not line.lstrip().startswith('#'):
+                    commands.append((section, line.strip().removeprefix('$ ')))
+            for label, command in commands:
+                command = command.strip().removesuffix('.').strip('`')
+                try: argv = shlex.split(command)
+                except ValueError as exc:
+                    raise EvidenceError('OBLIGATION_UNRESOLVED', 'Malformed required command in ' + str(path)) from exc
+                require(argv, 'OBLIGATION_UNRESOLVED', 'Empty required command in ' + str(path))
+                cwd = self.root if path.parent == self.root else self.root / component['root']
+                checks.append(('typecheck' if label.lower() in ('typecheck', 'type-check') else 'quality', argv, cwd))
+        return checks
 
     def documented_command(self, o):
         # Inspect complete command lines or explicitly labelled commands. A
@@ -896,21 +984,34 @@ class Workflow:
             self.source_file(target)
             # Module/program dispatchers are mapped to their native entrypoint.
             selected = str(target.relative_to(Path(o['cwd']))) in argv
+            command = Path(argv[0]).name
+            if o['toolchain'] in ('javascript', 'typescript'):
+                native_node = command == 'node' and o['runner'] in ('node', 'node:test')
+                harness = o['runner'] in ('vitest', 'jest') and (Path(o['cwd']) / argv[0]).resolve() == (Path(o['cwd']) / 'node_modules/.bin' / o['runner']).resolve()
+                selected = selected and (native_node or harness)
+                require(not any(a in ('--require', '-r', '--import', '--loader', '--experimental-loader') or
+                                a.startswith(('--require=', '--import=', '--loader=', '--experimental-loader=')) for a in argv),
+                        'SCENARIO_UNPROVEN', 'Unqualified Node startup adapter')
             if o['toolchain'] == 'go':
-                selected = './' + str(Path(entry).parent) in argv and Path(entry).name == 'main.go'
+                selected = (command == 'go' and 'test' in argv and './' + str(Path(entry).parent) in argv and
+                            Path(entry).name.endswith('_test.go') and '-run' in argv and '-v' in argv)
                 require(not re.search(rb'(?m)^//(?:go:build|[ ]+\+build)', read_regular(target.resolve())),
                         'SCENARIO_UNPROVEN', 'Go build-tag applicability requires separate proof')
             if o['toolchain'] == 'rust':
                 manifest = tomllib.loads(read_regular(Path(o['cwd']) / 'Cargo.toml').decode())
-                package = manifest.get('package', {})
-                bins = manifest.get('bin', [])
-                # Custom/multiple targets require an explicit inspected adapter.
-                expected = bins[0].get('path') if len(bins) == 1 else 'src/main.rs' if not bins else None
-                selected = ('run' in argv and bool(package) and expected is not None and
-                            target == Path(o['cwd']) / expected and not any(a in ('--bin', '--example', '-p', '--package', '--manifest-path') for a in argv))
+                # Standard integration-test target with explicit case dispatch.
+                selected = (command == 'cargo' and 'test' in argv and '--test' in argv and
+                            argv[argv.index('--test')+1:argv.index('--test')+2] == [target.stem] and
+                            target.parent == Path(o['cwd']) / 'tests' and '--exact' in argv and
+                            not any(a in ('--bin', '--example', '-p', '--package', '--manifest-path', '--no-run') for a in argv) and
+                            not manifest.get('test'))
             if o['toolchain'] == 'dotnet':
                 project = Path(o['cwd']) / argv[argv.index('--project')+1] if '--project' in argv and argv.index('--project')+1 < len(argv) else None
-                selected = ('run' in argv and project is not None and target.parent == project.parent and Path(entry).name == 'Program.cs')
+                if project is None:
+                    projects = [Path(o['cwd']) / arg for arg in argv[1:] if Path(arg).suffix in ('.csproj', '.fsproj', '.vbproj')]
+                    if len(projects) == 1: project = projects[0]
+                selected = (command == 'dotnet' and 'test' in argv and project is not None and target.parent == project.parent and
+                            '--filter' in argv and not any(a in ('--list-tests', '--no-build') for a in argv))
                 if selected:
                     try: config = ET.fromstring(read_regular(project))
                     except ET.ParseError as exc: raise EvidenceError('SCENARIO_UNPROVEN', 'Invalid .NET project configuration') from exc
@@ -918,6 +1019,9 @@ class Workflow:
                                   'DefaultExcludesInProjectFolder', 'Import', 'Target') for element in config.iter()),
                             'SCENARIO_UNPROVEN', 'Custom .NET compile inputs require an explicit inspected adapter')
             if o['toolchain'] == 'python':
+                module = '.'.join(Path(entry).with_suffix('').parts)
+                selected = (command in ('python', 'python3', 'uv') and '-m' in argv and 'unittest' in argv and
+                            any(arg.startswith(module + '.') for arg in argv) and '-v' in argv)
                 require(not os.environ.get('PYTHONOPTIMIZE') and not any(a in ('-O', '-OO') for a in argv),
                         'SCENARIO_UNPROVEN', 'Python assertion optimization disables consumer assertions')
             require(selected, 'SCENARIO_UNPROVEN', 'Captured argv does not select the inspected entry point')
@@ -932,14 +1036,14 @@ class Workflow:
                 tokens = re.compile(r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(/\*.*?\*/|//[^\n]*)""", re.DOTALL)
                 case_source = tokens.sub(lambda m: m.group(1) or '', contents)
                 code = tokens.sub('', contents)
-                executable_assertions = re.search(r'\bassert(?:_eq|_ne)?\s*!|\bassert(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\(|\bexpect\s*\(|\bpanic\s*\(|\bthrow\s+new|\bt\.(?:Fatal|Error)\s*\(', code)
+                executable_assertions = re.search(r'\bassert(?:_eq|_ne)?\s*!|\bassert(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\(|\bAssert\.[A-Za-z_][A-Za-z0-9_]*\s*\(|\bexpect\s*\(|\bpanic\s*\(|\bthrow\s+new|\bt\.(?:Fatal|Error)\s*\(', code)
             require(executable_assertions, 'SCENARIO_UNPROVEN', 'Entry point has no inspectable executable assertions')
             require(all(case in case_source and any(case in arg for arg in argv) for case in cases),
                     'SCENARIO_UNPROVEN', 'Selected cases do not bind source and command')
         return cases
 
     def suite_execution(self, o, e):
-        patterns = (rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?|(?m:^ok[ \t]+[^\n]{1,512})|Passed:[ \t]+[1-9][0-9]{0,8}|check consumer assertions passed)',
+        patterns = (rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?|(?m:^ok[ \t]+[^\n]{1,512})|Passed:[ \t]+[1-9][0-9]{0,8})',
                     rb'(?:(?:# |\xe2\x84\xb9 )fail [1-9]|FAILED|no tests (?:ran|found)|No test files found|\[no tests to run\])')
         hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
         require(hits[0] and not hits[1], 'CHECK_UNPROVEN', 'Configured suite has no completed passing test execution')
@@ -950,18 +1054,47 @@ class Workflow:
         hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
         require(not any(hits), 'HOOK_UNPROVEN', 'Configured hooks were skipped or disabled')
 
+    def node_assertion_execution(self, o, e):
+        proof = e.get('assertion_execution', {})
+        require(proof.get('adapter') == 'node-v8-v1' and proof.get('coverage'),
+                'SCENARIO_UNPROVEN', 'Native assertion execution coverage missing')
+        scripts = []
+        for ref in proof['coverage']:
+            scripts.extend(parse(self.store.artifact(ref)).get('result', []))
+        for entry in o['scenario']['entry_points']:
+            target = (self.root / entry).resolve()
+            contents = read_regular(target).decode()
+            # Keep offsets while removing strings/comments. V8 uses UTF-16
+            # offsets, so non-ASCII source must be measured in the same units.
+            tokens = re.compile(r"""("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`)|(/\*.*?\*/|//[^\n]*)""", re.DOTALL)
+            code = tokens.sub(lambda m: ' ' * len(m.group()), contents)
+            offsets = [len(contents[:m.start()].encode('utf-16-le')) // 2 for m in
+                       re.finditer(r'\bassert(?:\.[A-Za-z_][A-Za-z0-9_]*)?\s*\(', code)]
+            matching = [script for script in scripts if script.get('url', '').startswith('file:') and
+                        Path(unquote(urlsplit(script['url']).path)).resolve() == target]
+            executed = False
+            for script in matching:
+                ranges = [r for f in script.get('functions', []) for r in f.get('ranges', [])]
+                for offset in offsets:
+                    containing = [r for r in ranges if r['startOffset'] <= offset < r['endOffset']]
+                    if containing and min(containing, key=lambda r: r['endOffset'] - r['startOffset'])['count'] > 0:
+                        executed = True
+            require(executed, 'SCENARIO_UNPROVEN', 'No executed native assertion in ' + entry)
+
     def scenario_execution(self, o, e):
         cases = self.scenario_inputs(o)
-        # Native harness counters prove a selected test ran; plain scenario
-        # programs emit a case-specific assertion completion after assertions.
-        patterns = [rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?)',
-                    rb'(?:(?:# |\xe2\x84\xb9 )fail [1-9]|test result: FAILED|FAILED|no tests (?:ran|found)|No test files found)',
-                    rb'consumer assertions passed']
+        if Path(o['argv'][0]).name == 'node':
+            self.node_assertion_execution(o, e)
+        # Other execution adapters must show a native selected test case. A
+        # plain program with assertion tokens and a success marker is unproven.
+        patterns = [rb'(?:(?:# |\xe2\x84\xb9 )pass [1-9][0-9]{0,8}|[1-9][0-9]{0,8} passed|Ran [1-9][0-9]{0,8} tests?|test result: ok\. [1-9][0-9]{0,8} passed|Passed:[ \t]+[1-9][0-9]{0,8}|(?m:^ok[ \t]+[^\n]{1,512}))',
+                    rb'(?:(?:# |\xe2\x84\xb9 )fail [1-9]|test result: FAILED|FAILED|no tests (?:ran|found)|No test files found|Ran 0 tests|test result: ok\. 0 passed|\[no tests to run\])']
         patterns.extend(re.escape(case.encode()) for case in cases)
         hits = self.store.inspect(e['artifacts']['raw_log'], patterns)
         filtered = len(cases) == 1 and any(arg in ('-t', '--testNamePattern', '--test-name-pattern') or
                    arg.startswith(('--test-name-pattern=', '--testNamePattern=')) for arg in o['argv'])
-        require(not hits[1] and (all(hits[3:]) or hits[0] and filtered) and (hits[0] or hits[2]),
+        native_assertion = e.get('assertion_execution', {}).get('adapter') == 'node-v8-v1'
+        require(not hits[1] and (all(hits[2:]) or hits[0] and filtered) and (hits[0] or native_assertion),
                 'SCENARIO_UNPROVEN', 'Selected assertions did not run, were skipped, or no completed case was observed')
 
     def coverage(self, context, plan_id=None):
@@ -1205,6 +1338,8 @@ class Workflow:
                 'errors': [] if state in ('VALID', 'NO_OP') else ['Original typed implementation or verifier support missing/invalid/stale']}, int(state not in ('VALID', 'NO_OP'))
 
     def verify(self):
+        # Explicit no-op paths can skip Step 12 and therefore plan registration.
+        if not self.current().get('implementation'): self.checkpoint()
         self.publish({'verification': {'records': {k:self.context[k] for k in SUPPORT[3:] if k in self.context}, 'state': 'UNPROVEN'}})
         try:
             details = self.coverage(self.context, self.r.get('plan_id'))

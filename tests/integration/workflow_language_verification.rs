@@ -10,26 +10,33 @@ use std::fs;
 use std::path::Path;
 
 #[test]
-fn precommit_checkpoints_original_implementation_before_long_checks() {
-    let text = fs::read_to_string(
-        workspace_root().join("amplifier-bundle/recipes/workflow-precommit-test.yaml"),
-    )
-    .unwrap();
-    let recipe: serde_yaml::Value = serde_yaml::from_str(&text).unwrap();
-    let steps = recipe["steps"].as_sequence().unwrap();
-    let checkpoint = steps
-        .iter()
-        .position(|s| {
-            s["command"]
-                .as_str()
-                .is_some_and(|c| c.contains("checkpoint-implementation"))
-        })
-        .expect("persist original implementation records before long Step 12 checks");
-    let checks = steps
-        .iter()
-        .position(|s| s["id"].as_str() == Some("step-12-run-precommit"))
+fn plan_registration_checkpoints_original_implementation_before_checks() {
+    let mut f = Fixture::javascript();
+    f.context["implementation"] = json!("original producer output");
+    f.context["verdict_json"] = json!("original verifier output");
+    f.context["implementation_terminal_evidence"] = json!({"implementation_completed":"false",
+        "terminal_no_op":"false", "terminal_state":"IMPLEMENTATION_UNPROVEN", "terminal_reason":"unqualified origin"});
+    f.register();
+    let current = files_under(&f.store())
+        .into_iter()
+        .find(|p| p.file_name().unwrap() == "current.json")
         .unwrap();
-    assert!(checkpoint < checks);
+    let pointer: Value = serde_json::from_slice(&fs::read(current).unwrap()).unwrap();
+    let cohort: Value = serde_json::from_slice(&f.artifact(&pointer["cohort"])).unwrap();
+    assert_eq!(
+        cohort["implementation"]["records"]["implementation"],
+        f.context["implementation"]
+    );
+    assert_eq!(
+        cohort["implementation"]["records"]["verdict_json"],
+        f.context["verdict_json"]
+    );
+    assert_eq!(cohort["implementation"]["state"], "INVALID");
+    assert!(
+        !files_under(&f.store())
+            .iter()
+            .any(|p| p.file_name().unwrap() == "raw.log")
+    );
 }
 
 #[test]
@@ -129,10 +136,14 @@ native_positive!(
     "python"
 );
 native_positive!(native_go_executes_module_and_consumer_commands, "go");
-native_positive!(
-    native_dotnet_executes_documented_assertion_harness,
-    "dotnet"
-);
+#[test]
+#[ignore = "native .NET qualification requires its installed SDK; direct programs remain unproven"]
+fn native_dotnet_direct_program_requires_assertion_execution_adapter() {
+    let mut f = Fixture::native_project("dotnet");
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), false);
+}
 
 #[test]
 #[ignore = "native TypeScript proof requires offline npm cache with Vitest and TypeScript; no global installation"]
@@ -2478,4 +2489,253 @@ fn review_no_request_retains_the_original_custom_workflow_name() {
         initial.json()["generation_id"]
     );
     verification(&f.run_raw(&["verify"], b""), false);
+}
+
+#[test]
+fn review_component_exclusions_cannot_waive_rust_workspace_checks() {
+    let mut f = mixed_rust_policy_fixture(&["cargo", "test", "--workspace", "--locked"]);
+    f.plan["components"][1]["disposition"] = json!("excluded");
+    let rust_id = f.plan["components"][1]["id"].clone();
+    f.plan["obligations"]
+        .as_array_mut()
+        .unwrap()
+        .retain(|o| !o["component_ids"].as_array().unwrap().contains(&rust_id));
+    let policy_ref = f.reference("README.md");
+    f.plan["exclusions"].as_array_mut().unwrap().push(json!({
+        "id":"omit-rust", "component_ids":[rust_id], "subject":"component",
+        "reason":"Node selected for this run", "policy_refs":[policy_ref]
+    }));
+    let result = f.call("plan", &f.plan);
+    result.exit(1);
+    assert!(
+        result.json()["unresolved"]
+            .to_string()
+            .contains("exclusion authority unproven")
+    );
+}
+
+#[test]
+fn review_documented_non_node_quality_cannot_be_omitted() {
+    for (language, manifest, content) in [
+        (
+            "python",
+            "pyproject.toml",
+            "[project]\nname='required'\nversion='0.1.0'\n",
+        ),
+        (
+            "go",
+            "go.mod",
+            "module example.invalid/required\n\ngo 1.22\n",
+        ),
+        (
+            "dotnet",
+            "Contract.csproj",
+            "<Project Sdk=\"Microsoft.NET.Sdk\"/>\n",
+        ),
+    ] {
+        let mut f = Fixture::javascript();
+        fs::remove_file(f.repo.join("package.json")).unwrap();
+        f.file(manifest, content);
+        f.file("README.md", "Test: python3 -m unittest test_contract\nQuality: python3 quality.py\nTypecheck: python3 types.py\nNo hooks configured.\n");
+        f.file("quality.py", "raise SystemExit(19)\n");
+        f.commit("documented required quality and typecheck");
+        f.plan["components"][0]["toolchain"] = json!(language);
+        f.plan["components"][0]["inspected"] = json!([f.reference(manifest)]);
+        f.plan["obligations"].as_array_mut().unwrap().remove(1);
+        f.plan["obligations"][0] = f.obligation(
+            "tests",
+            "test",
+            language,
+            "unittest",
+            &["python3", "-m", "unittest", "test_contract"],
+        );
+        for index in [1, 2] {
+            f.plan["obligations"][index]["selected_from"] = json!([f.reference("README.md")]);
+            f.plan["obligations"][index]["scenario"]["inspected"] =
+                json!([f.reference("README.md")]);
+        }
+        f.plan["exclusions"][0]["policy_refs"] = json!([f.reference("README.md")]);
+        let result = f.call("plan", &f.plan);
+        result.exit(1);
+        let unresolved = result.json()["unresolved"].to_string();
+        assert!(
+            unresolved.contains("Documented quality omitted"),
+            "{language}: {unresolved}"
+        );
+        assert!(
+            unresolved.contains("Documented typecheck omitted"),
+            "{language}: {unresolved}"
+        );
+    }
+}
+
+#[test]
+fn review_uncalled_assertions_and_printed_markers_cannot_pass() {
+    let mut f = Fixture::javascript();
+    f.file("consumer.js", "import assert from 'node:assert/strict'; const role=process.argv[2]; function neverCalled(){assert.equal(1,2)}; if(!['basic','edge'].includes(role))process.exit(7); console.log(role+' consumer assertions passed');\n");
+    f.commit("uncalled failing consumer assertions");
+    f.plan = f.node_plan("javascript");
+    let plan = f.register();
+    f.execute_all(&plan);
+    let result = verification(&f.verify(&plan), false);
+    assert!(
+        result["terminal_reason"]
+            .as_str()
+            .unwrap()
+            .contains("No executed native assertion")
+    );
+}
+
+#[test]
+fn review_consumer_assertion_coverage_is_bound_and_required() {
+    let mut f = Fixture::javascript();
+    let plan = f.register();
+    let captures = f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+    let basic = f.execution(&captures[2]);
+    assert_eq!(basic["assertion_execution"]["adapter"], "node-v8-v1");
+    let refs = basic["assertion_execution"]["coverage"].as_array().unwrap();
+    assert!(!refs.is_empty());
+    fs::write(f.artifact_path(&refs[0]), "{\"result\":[]}").unwrap();
+    verification(&f.verify(&plan), false);
+}
+
+#[cfg(unix)]
+#[test]
+fn review_bash_startup_cannot_bypass_mandatory_hook() {
+    use std::os::unix::fs::PermissionsExt;
+    let mut f = Fixture::javascript();
+    let hook = f.repo.join(".git/hooks/pre-commit");
+    f.file(
+        ".git/hooks/pre-commit",
+        "#!/usr/bin/env bash\necho mandatory-hook >&2\nexit 42\n",
+    );
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o700)).unwrap();
+    let startup = f.tmp.path().join("startup.sh");
+    fs::write(
+        &startup,
+        "case \"$0\" in */hooks/pre-commit) exit 0 ;; esac\n",
+    )
+    .unwrap();
+    f.plan["exclusions"] = json!([]);
+    let obligation = f.obligation(
+        "hooks",
+        "precommit",
+        "javascript",
+        "git-hook",
+        &[hook.to_str().unwrap()],
+    );
+    f.plan["obligations"]
+        .as_array_mut()
+        .unwrap()
+        .push(obligation);
+    let plan = f.register();
+    f.env
+        .insert("BASH_ENV".into(), startup.display().to_string());
+    f.call("capture", &f.capture_request(&plan, "hooks"))
+        .error("TOOL_OVERRIDE_UNPROVEN");
+    f.env.remove("BASH_ENV");
+    let actual = f.call("capture", &f.capture_request(&plan, "hooks"));
+    actual.exit(1);
+    assert_eq!(actual.json()["process_exit_code"], 42);
+    verification(&f.verify(&plan), false);
+}
+
+#[test]
+fn review_credential_environment_is_compared_without_plaintext_copies() {
+    let mut f = Fixture::javascript();
+    let credential = "Authorization: Basic synthetic-secret-must-not-be-retained";
+    f.env.insert("GIT_CONFIG_COUNT".into(), "1".into());
+    f.env.insert(
+        "GIT_CONFIG_KEY_0".into(),
+        "http.https://github.com/.extraheader".into(),
+    );
+    f.env.insert("GIT_CONFIG_VALUE_0".into(), credential.into());
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+    for path in files_under(&f.store()) {
+        let bytes = fs::read(path).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains(credential));
+    }
+    f.env
+        .insert("GIT_CONFIG_VALUE_0".into(), "Authorization: changed".into());
+    verification(&f.verify(&plan), false);
+}
+
+#[test]
+fn review_submodule_dirty_source_invalidates_even_when_parent_status_hides_it() {
+    let mut f = Fixture::javascript();
+    let vendor = f.tmp.path().join("vendor-origin");
+    fs::create_dir(&vendor).unwrap();
+    for args in [
+        vec!["init", "-b", "main"],
+        vec!["config", "user.name", "Submodule test"],
+        vec!["config", "user.email", "test@example.invalid"],
+    ] {
+        let out = f
+            .command("git")
+            .current_dir(&vendor)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    }
+    fs::write(
+        vendor.join("decoder.js"),
+        fs::read(f.repo.join("contract.js")).unwrap(),
+    )
+    .unwrap();
+    fs::write(vendor.join("package.json"), "{\"type\":\"module\"}").unwrap();
+    assert!(
+        f.command("git")
+            .current_dir(&vendor)
+            .args(["add", "."])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        f.command("git")
+            .current_dir(&vendor)
+            .args(["commit", "-m", "decoder"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    f.native(
+        "git",
+        &[
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            vendor.to_str().unwrap(),
+            "vendor",
+        ],
+    );
+    f.native("git", &["config", "submodule.vendor.ignore", "dirty"]);
+    f.file(
+        "contract.js",
+        "export {decode} from './vendor/decoder.js';\n",
+    );
+    f.commit("consumer imports actual submodule decoder");
+    f.plan = f.node_plan("javascript");
+    let plan = f.register();
+    f.execute_all(&plan);
+    verification(&f.verify(&plan), true);
+    f.file(
+        "vendor/decoder.js",
+        "export function decode(v) { throw new Error('changed submodule'); }\n",
+    );
+    assert!(
+        f.native("git", &["status", "--porcelain"])
+            .0
+            .stdout
+            .is_empty()
+    );
+    verification(&f.verify(&plan), false);
+    let failed = Run(f.command("npm").arg("test").output().unwrap());
+    failed.exit(1);
 }

@@ -13,7 +13,9 @@ that checkout owns the task's common Git directory. A sibling worktree, clone,
 missing selection or mismatched canonical `repository_root` is rejected. Source
 and capture bindings always retain the task worktree and its actual HEAD.
 
-`checkpoint-implementation` is passive. It stores all original outputs, including
+`plan` passively calls `checkpoint-implementation` before registering checks.
+This preserves the existing recipe inventory and records implementation output
+before a long test can interrupt the workflow. `checkpoint-implementation` is passive. It stores all original outputs, including
 unsuccessful attempts, and atomically publishes the latest generation. `verify`
 does the same for verification. Restoration reads that latest generation only.
 Neither operation searches history for success. An unsuccessful generation sets
@@ -53,8 +55,10 @@ hooks cannot establish success.
 Each consumer scenario supplies `role`, `assertions`, `inspected`, `entry_points`,
 `cases` and `assertion_refs`. Entry points and assertion references identify
 repository-relative executable source. Captured argv selects those files and
-cases. Native harness results must show passing selected tests. Direct scenario
-programs emit the case name and `consumer assertions passed` after assertions.
+cases. Native harness results must show passing selected tests. Direct Node scenario programs retain native V8 block coverage, bound to the
+original source, that must show a real assertion call executed. Success markers
+alone do not qualify. Other native scenario adapters require completed selected
+test-harness cases; direct programs without an execution adapter remain unproven.
 Basic and edge/integration use distinct executions. QA assesses whether the
 assertions establish the required product behavior.
 
@@ -73,3 +77,14 @@ The controller still owns native .NET, full workspace proof, current-head review
 QA, CI and merge through its evidence gate. Historical 2204 evidence retains its
 original identity and `FAILED_IMPLEMENTATION`; server withholding/recheck remains
 `UNMET` without actual server proof.
+
+
+Caller-declared component exclusions cannot waive maintained checks. Unsupported
+exclusion authority leaves the plan unproven. Explicit labelled quality and
+typecheck commands in maintained project policy accumulate across all supported
+languages, including documents discovered independently of supplied obligations.
+Submodule working contents and Git configuration are recursively fingerprinted;
+uninitialised or excessively nested submodules remain unproven. Unqualified
+shell/runtime startup overrides are rejected before capture. Environment values
+are compared using workflow-private keyed hashes; credential values are never
+copied into execution metadata.

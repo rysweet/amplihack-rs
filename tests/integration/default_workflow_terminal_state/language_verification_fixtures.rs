@@ -329,9 +329,9 @@ impl Fixture {
             v["scenario"] = json!({"role":if id=="basic" {"basic"} else {"edge_or_integration"},
                 "assertions":[if id=="basic" {"public decoder doubles [2] to [4]"} else {"empty input and invalid input retain their contract"}],
                 "inspected":[self.reference("README.md")],
-                "entry_points":[match toolchain { "rust" => "src/main.rs", "python" => "consumer.py", "go" => "cmd/consumer/main.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" }],
+                "entry_points":[match toolchain { "rust" => "tests/consumer.rs", "python" => "consumer.py", "go" => "cmd/consumer/consumer_test.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" }],
                 "cases":[if id=="basic" {"basic"} else {"edge"}],
-                "assertion_refs":[self.reference(match toolchain { "rust" => "src/main.rs", "python" => "consumer.py", "go" => "cmd/consumer/main.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" })]});
+                "assertion_refs":[self.reference(match toolchain { "rust" => "tests/consumer.rs", "python" => "consumer.py", "go" => "cmd/consumer/consumer_test.go", "dotnet" => "Program.cs", _ if runner == "vitest" => "consumer.test.ts", _ => "consumer.js" })]});
         }
         v
     }
@@ -546,21 +546,41 @@ impl Fixture {
                 );
                 f.file("Cargo.toml","[package]\nname='evidence-native'\nversion='0.1.0'\nedition='2021'\n[workspace]\nmembers=['.']\n");
                 f.file("src/lib.rs","pub fn decode(v: &[i32]) -> Vec<i32> { v.iter().map(|x|x*2).collect() }\n#[test] fn native_contract() { assert_eq!(decode(&[2]),vec![4]); assert_eq!(decode(&[]),vec![]); }\n");
-                f.file("src/main.rs","fn main() { match std::env::args().nth(1).as_deref() { Some(\"basic\")=>assert_eq!(evidence_native::decode(&[2]),vec![4]), Some(\"edge\")=>assert_eq!(evidence_native::decode(&[]),vec![]), _=>std::process::exit(7) }; println!(\"{} consumer assertions passed\",std::env::args().nth(1).unwrap()); }\n");
+                f.file("tests/consumer.rs", "#[test] fn basic() { assert_eq!(evidence_native::decode(&[2]),vec![4]); }\n#[test] fn edge() { assert_eq!(evidence_native::decode(&[]),vec![]); }\n");
                 f.native("cargo", &["generate-lockfile", "--offline"]);
                 (
                     "Cargo.toml",
                     vec!["cargo", "test", "--workspace", "--locked"],
                     "cargo",
-                    vec!["cargo", "run", "--quiet", "--locked", "--", "basic"],
-                    vec!["cargo", "run", "--quiet", "--locked", "--", "edge"],
+                    vec![
+                        "cargo",
+                        "test",
+                        "--locked",
+                        "--test",
+                        "consumer",
+                        "basic",
+                        "--",
+                        "--exact",
+                        "--nocapture",
+                    ],
+                    vec![
+                        "cargo",
+                        "test",
+                        "--locked",
+                        "--test",
+                        "consumer",
+                        "edge",
+                        "--",
+                        "--exact",
+                        "--nocapture",
+                    ],
                 )
             }
             "python" => {
                 f.file("pyproject.toml","[project]\nname='evidence-native'\nversion='0.1.0'\nrequires-python='>=3.10'\n");
                 f.file("decoder.py","def decode(values):\n    if not isinstance(values, list): raise TypeError('array required')\n    return [x * 2 for x in values]\n");
                 f.file("test_contract.py","import unittest\nfrom decoder import decode\nclass Contract(unittest.TestCase):\n    def test_basic(self): self.assertEqual(decode([2]), [4])\n    def test_edge(self):\n        self.assertEqual(decode([]), [])\n        with self.assertRaises(TypeError): decode(None)\n");
-                f.file("consumer.py","import sys\nfrom decoder import decode\nif sys.argv[1]=='basic': assert decode([2])==[4]\nelif sys.argv[1]=='edge': assert decode([])==[]\nelse: raise SystemExit(7)\nprint(sys.argv[1]+' consumer assertions passed')\n");
+                f.file("consumer.py", "import unittest\nfrom decoder import decode\nclass Consumer(unittest.TestCase):\n    def basic(self): self.assertEqual(decode([2]),[4])\n    def edge(self): self.assertEqual(decode([]),[])\n");
                 (
                     "pyproject.toml",
                     vec![
@@ -580,8 +600,10 @@ impl Fixture {
                         "--offline",
                         "--no-sync",
                         "python",
-                        "consumer.py",
-                        "basic",
+                        "-m",
+                        "unittest",
+                        "-v",
+                        "consumer.Consumer.basic",
                     ],
                     vec![
                         "uv",
@@ -589,8 +611,10 @@ impl Fixture {
                         "--offline",
                         "--no-sync",
                         "python",
-                        "consumer.py",
-                        "edge",
+                        "-m",
+                        "unittest",
+                        "-v",
+                        "consumer.Consumer.edge",
                     ],
                 )
             }
@@ -598,13 +622,13 @@ impl Fixture {
                 f.file("go.mod", "module example.invalid/evidence\n\ngo 1.22\n");
                 f.file("decoder.go","package evidence\nfunc Decode(v []int) []int { r:=make([]int,len(v)); for i,n:=range v { r[i]=n*2 }; return r }\n");
                 f.file("decoder_test.go","package evidence\nimport \"testing\"\nfunc TestContract(t *testing.T) { if Decode([]int{2})[0]!=4 || len(Decode(nil))!=0 { t.Fatal(\"decoder contract\") } }\n");
-                f.file("cmd/consumer/main.go","package main\nimport (\"os\"; \"fmt\"; e \"example.invalid/evidence\")\nfunc main() { switch os.Args[1] { case \"basic\": if e.Decode([]int{2})[0]!=4 { panic(\"basic\") }; case \"edge\": if len(e.Decode(nil))!=0 { panic(\"edge\") }; default: os.Exit(7) }; fmt.Println(os.Args[1]+\" consumer assertions passed\") }\n");
+                f.file("cmd/consumer/consumer_test.go", "package consumer\nimport (\"testing\"; e \"example.invalid/evidence\")\nfunc Testbasic(t *testing.T) { if e.Decode([]int{2})[0]!=4 { t.Fatal(\"basic\") } }\nfunc Testedge(t *testing.T) { if len(e.Decode(nil))!=0 { t.Fatal(\"edge\") } }\n");
                 (
                     "go.mod",
                     vec!["go", "test", "./..."],
                     "go",
-                    vec!["go", "run", "./cmd/consumer", "basic"],
-                    vec!["go", "run", "./cmd/consumer", "edge"],
+                    vec!["go", "test", "-v", "-run", "^Testbasic$", "./cmd/consumer"],
+                    vec!["go", "test", "-v", "-run", "^Testedge$", "./cmd/consumer"],
                 )
             }
             "dotnet" => {

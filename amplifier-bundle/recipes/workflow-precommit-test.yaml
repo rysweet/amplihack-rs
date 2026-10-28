@@ -21,20 +21,6 @@ context:
   allow_no_op: false
 
 steps:
-  - id: "checkpoint-implementation"
-    type: "bash"
-    working_dir: "{{worktree_setup.worktree_path}}"
-    parse_json: true
-    command: |
-      set -euo pipefail
-      EVIDENCE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"
-      # Passive checkpoint: preserves output; never invents producer provenance.
-      # workflow-tdd producing points must be observed by the controller; missing
-      # origin-time bindings remain UNPROVEN and require a genuine refresh.
-      rc=0; bash "$EVIDENCE_HELPER" checkpoint-implementation || rc=$?
-      [ "$rc" -lt 2 ] || exit "$rc"
-    output: "implementation_checkpoint"
-
   - id: "step-12-run-precommit"
     agent: "amplihack:pre-commit-diagnostic"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -58,7 +44,8 @@ steps:
       FILE (or - for stdin), integer schema_version=1, workflow{name,started_at,
       original_run_id?}, and the canonical repository_root. Preserve the original
       WORKFLOW_STARTED_AT. Context operations use the selected recipe context.
-      Register an immutable plan using `plan --request-file FILE`:
+      Plan registration checkpoints original implementation output before any
+      check executes. Register an immutable plan using `plan --request-file FILE`:
       components[{id,root,toolchain,disposition,inspected:[{path,sha256,purpose}],
       justification}], obligations[{id,component_ids,kind,toolchain,runner,argv,
       cwd,scope,threading?,selected_from:[{path,sha256,purpose}],scenario?}],
@@ -70,8 +57,9 @@ steps:
       assertion_refs:[{path,sha256,purpose}]}; roles are basic and edge_or_integration. Assertions must describe
       actual behavior in inspected executable scenarios. Captured argv must select
       those entry points and cases; results must show cases actually ran, with no
-      zero-case or skipped-only success. Plain scenario programs print the case
-      name and "consumer assertions passed" after executing their assertions.
+      zero-case or skipped-only success. Direct Node scenarios require native
+      V8 assertion coverage captured by the helper. Other runners require
+      executed selected tests; printed success markers alone are unproven.
       QA independently judges behavioral meaning. Keep actual runner names,
       including Vitest/tsc where configured. Never invent a command from language alone.
 
