@@ -267,25 +267,25 @@ pub mod msg {
     }
 
     /// After an `overflow-in` swap onto `to`.
-    pub fn on_credits(to: &ProfileName, next_reset: Option<i64>) -> String {
+    pub fn onto_overflow(to: &ProfileName, next_reset: Option<i64>) -> String {
         format!(
-            "credits: on {to}; no plan profile has capacity, next plan reset {}",
+            "overflow: on {to}; no plan profile has capacity, next plan reset {}",
             reset(next_reset)
         )
     }
 
     /// A stay on overflow profile `live` that the previous cycle did not
     /// record as on credits.
-    pub fn stay_on_credits(live: &ProfileName, next_reset: Option<i64>) -> String {
+    pub fn stay_on_overflow(live: &ProfileName, next_reset: Option<i64>) -> String {
         format!(
-            "credits: staying on {live}; no plan profile has capacity, next plan reset {}",
+            "overflow: staying on {live}; no plan profile has capacity, next plan reset {}",
             reset(next_reset)
         )
     }
 
     /// After a swap off overflow profile `from` onto plan profile `to`.
-    pub fn off_credits(from: &ProfileName, to: &ProfileName) -> String {
-        format!("credits: off {from}; back on plan profile {to}")
+    pub fn off_overflow(from: &ProfileName, to: &ProfileName) -> String {
+        format!("overflow: off {from}; back on plan profile {to}")
     }
 
     /// A spend block was recorded for overflow profile `name`.

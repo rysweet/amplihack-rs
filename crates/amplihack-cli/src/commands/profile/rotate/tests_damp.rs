@@ -39,6 +39,7 @@ fn settings() -> Settings {
         hold: 3600,
         interval: 600,
         overflow_wait: 1800,
+        overflow_unknown_reset: false,
     }
 }
 

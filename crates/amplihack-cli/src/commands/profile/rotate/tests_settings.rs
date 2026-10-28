@@ -200,6 +200,7 @@ fn to_args_round_trips_through_resolve() {
             "--upgrade-margin" => back.upgrade_margin = v,
             "--hold" => back.hold = v,
             "--overflow-wait" => back.overflow_wait = v,
+            "--overflow-unknown-reset" => back.overflow_unknown_reset = v,
             "--interval" => interval = v,
             other => panic!("unexpected flag {other}"),
         }

@@ -48,8 +48,10 @@ You need:
 - At least two profiles, each logged in, created with
   `amplihack profile add <name>` and `amplihack profile login <name>`.
 - A login in `~/.claude`, made with plain `claude` and `/login`.
-- `~/.claude` and the profile root (`$AMPLIHACK_CLAUDE_PROFILE_ROOT`, by
-  default `~/.claude-profiles`) on the same filesystem.
+- `~/.claude` and the profile root (`$AMPLIHACK_CLAUDE_PROFILE_ROOT`, then
+  the root saved by `amplihack profile root`, by default
+  `~/.amplihack/claude-profiles`) on the same filesystem. The examples on this
+  page use a root saved as `~/.claude-profiles`.
 
 Check that every profile reports usage:
 
@@ -519,7 +521,13 @@ a login with capacity in `~/.claude`, then tells the session to continue.
 
 You need:
 
-- Claude Code 2.1.306 or later (`claude --version`).
+- Claude Code 2.1.306 or later (`claude --version`). For an older `claude`,
+  `amplihack install` leaves the hook out and says so: Claude Code before
+  2.1.78 does not know `StopFailure` and ignores a settings file that names
+  it. If an earlier amplihack already registered it, the next `amplihack`
+  launch of Claude Code removes it, and an automatic re-stage after an
+  upgrade warns and names `amplihack install`. Launches of copilot or codex
+  do not check the `claude` version and leave the file as it is.
 - `amplihack install` run with this version of amplihack, which registers the
   hook in `~/.claude/settings.json`.
 - Auto-switch on and the rotator running:
@@ -554,10 +562,10 @@ jq '.hooks.StopFailure' ~/.claude/settings.json
 
 1. The turn ends with a usage-limit error, and Claude Code runs the hook in
    the background.
-2. The hook reads the rotator's ledger every 15 seconds. It waits for a cycle
-   recorded more than 60 seconds after the limit hit that ended `swapped` or
-   `stayed` with no ALERT. The margin skips a cycle that was already
-   measuring when the limit hit. After the first hour it reads the ledger
+2. If no rotator is running, the hook exits at once (`rotator-down`).
+   Otherwise it reads the rotator's ledger every 15 seconds. It waits for a
+   cycle that started measuring after the limit hit and ended `swapped` or
+   `stayed` with no ALERT. After the first hour it reads the ledger
    every 5 minutes instead. It stops waiting if you turn auto-switch off
    (`disabled`), if you send a prompt in that session during the wait, for
    example `continue` (`moved-on`), or if the session exits
@@ -596,7 +604,9 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 ```
 
 `no-capacity-timeout` usually means every login was at capacity, so the
-rotator wrote `ALERT: no profile has capacity`, or the rotator was not running.
+rotator wrote `ALERT: no profile has capacity`. `rotator-down` means the
+rotator was not running when the limit hit; start it with
+`amplihack profile rotate start`.
 `moved-on` means you sent a prompt in that session during the wait. The other outcomes are listed in the
 [resume log reference](../reference/profile-command.md#resume-log).
 
@@ -775,10 +785,40 @@ amplihack profile rotate start --overflow-wait 3600
 `AMPLIHACK_ROTATE_OVERFLOW_WAIT` sets the same value. Accepted values are
 whole seconds from `0` to `604800` (7 days); anything else is a usage error
 that names the flag or the variable. `0` means credits are used as soon as
-every plan login is out of capacity. A plan profile whose
-probe failed has no known reset, which counts as far away, so a probe outage
-can bring credits in sooner than you expect. The live login still has to
-reach `--session-at` or `--week-at` first.
+every plan login is out of capacity. The live login still has to reach
+`--session-at` or `--week-at` first.
+
+Auto-switch reads the same wait from `AMPLIHACK_ROTATE_OVERFLOW_WAIT` in its
+own environment. If you start the rotator with `--overflow-wait`, set the
+variable to the same value so the two agree.
+
+### When no plan reset time is known
+
+A plan profile whose probe failed, or that reads exhausted without a reset
+time, has no known reset. Unknown resets are left out: one known reset
+decides the wait. When **none** is known, the rotator does not spend money
+by default: it writes the no-capacity ALERT and stays on the plan login. To
+let an unknown reset move work onto credits at once, opt in:
+
+```bash
+amplihack profile rotate stop
+amplihack profile rotate start --overflow-unknown-reset 1
+```
+
+`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1` does the same for the rotator
+and for auto-switch. The `overflow: on` log line then reads `next plan reset
+unknown`.
+
+### Rank overflow profiles
+
+Each overflow mark has a tier from 1 to 9 (default 1). Lower tiers are tried
+first, so a cheaper kind of overflow comes before a dearer one:
+
+```bash
+amplihack profile overflow add ryan-mistt-org            # tier 1
+amplihack profile overflow add api-key-profile --tier 2  # tried after tier 1
+amplihack profile overflow list
+```
 
 ### What the rotator does
 
@@ -787,8 +827,8 @@ On each cycle:
 1. While the live login is a plan profile, the rotator decides as usual.
    Only when it would write `ALERT: no profile has capacity` does it look at
    overflow: if the earliest plan reset is more than `--overflow-wait` away
-   and an overflow profile can be used, it swaps to it with
-   `reason=overflow-in`. A failed live probe never leads to credits.
+   and an overflow profile can be used, it swaps to the first one by tier
+   with `reason=overflow-in`. A failed live probe never leads to credits.
 2. While the live login is an overflow profile, it checks every plan
    profile. As soon as one has capacity it swaps back with
    `reason=overflow-out`, without waiting for `--hold` or needing `--margin`
@@ -810,15 +850,15 @@ The log shows each move:
 ```
 2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
 2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=97% w=91% target s=100% w=100% reason=overflow-in
-2026-10-24T09:00:05Z credits: on ryan-mistt-org; no plan profile has capacity, next plan reset 2026-10-24T14:00:00Z
+2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no plan profile has capacity, next plan reset 2026-10-24T14:00:00Z
 2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
-2026-10-24T14:10:05Z credits: off ryan-mistt-org; back on plan profile personal
+2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
 ```
 
 To see only overflow moves:
 
 ```bash
-grep -E 'reason=overflow|credits:|spend limit' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+grep -E 'reason=overflow|overflow: (on|off|staying)|spend limit' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
 ### See whether you are running on credits
@@ -835,15 +875,15 @@ pid: 48213
 live: ryan-mistt-org
 last cycle: 2026-10-24T09:10:05Z stayed overflow=on
 overflow: ryan-mistt-org
-on credits: yes (ryan-mistt-org)
+on overflow: yes (ryan-mistt-org)
 log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
 ```
 
-`on credits: yes` needs two things: the login in `~/.claude` is an overflow
+`on overflow: yes` needs two things: the login in `~/.claude` is an overflow
 profile, and the rotator's last cycle recorded `overflow=in` or
 `overflow=on`, meaning it found no plan capacity. If you put the overflow
 login in `~/.claude` yourself while a plan login still has capacity, the line
-reads `on credits: no (ryan-mistt-org is overflow; plan capacity remains)`
+reads `on overflow: no (ryan-mistt-org is overflow; plan capacity remains)`
 until the next cycle moves it out. `status` runs no probe.
 
 When the default pointer names an overflow profile, `status` adds a warning
@@ -855,7 +895,7 @@ default: ryan-mistt-org (overflow; launches use it directly)
 
 `profile usage` marks the profile `overflow` and, when its login is in
 `~/.claude` and its own probe in that run shows the session or all-models
-weekly limit reached, ends with `running on credits: ryan-mistt-org`. A live overflow
+weekly limit reached, ends with `running on overflow: ryan-mistt-org`. A live overflow
 login that still has plan capacity is not on credits and gets no footer. While the
 rotator is on credits it reports capacity, so the no-capacity warning clears
 and the [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit)
@@ -910,7 +950,7 @@ writes `ALERT: no profile has capacity` and leaves the login there, and
 Claude keeps billing work on it to the credits. Stopping the rotator leaves
 the login where it is too.
 
-If `rotate status` shows `on credits: yes`, stop the spending first: turn off
+If `rotate status` shows `on overflow: yes`, stop the spending first: turn off
 usage credits or lower the spend limit at
 <https://claude.ai/settings/usage>. Claude then refuses work on that login,
 and while the mark is still there the rotator blocks the profile and moves
@@ -961,7 +1001,7 @@ To go back to an older binary:
    amplihack profile overflow list
    ```
 2. Make sure the login in `~/.claude` is not on credits. If `rotate status`
-   shows `on credits: yes`, follow
+   shows `on overflow: yes`, follow
    [Turn overflow off](#turn-overflow-off) first.
 3. Remove each mark, then lift each block. `clear` works on a name that is
    no longer marked:
@@ -1128,8 +1168,32 @@ To resolve it by hand, without opening any credentials file:
 7. Start the background process again: `amplihack profile rotate start`.
 
 A `ledger.json` that cannot be read gives the same error. Delete
-`~/.claude-profiles/.auto-switch.d/rotate/ledger.json`; the next cycle works
-out the live profile again from the accounts.
+`<root>/.auto-switch.d/rotate/ledger.json` (`<root>` is the `root:` line of
+`amplihack profile rotate status`); the next cycle works out the live profile
+again from the accounts.
+
+### Go back to an older amplihack
+
+An amplihack older than
+[#1659](https://github.com/rysweet/amplihack-rs/issues/1659) cannot read the
+`last_cycle.measured_at` field this version writes to `ledger.json`. Its
+rotator does not rewrite a ledger it cannot read, so it logs a failed cycle
+every interval and never swaps again, and the limit-resume hook waits its
+full 7 days for a cycle that does not come. Before you run the older binary,
+or launch anything with it while [autostart](#start-the-rotator-automatically)
+is on:
+
+1. Stop the rotator: `amplihack profile rotate stop`.
+2. Delete `<root>/.auto-switch.d/rotate/ledger.json`, where `<root>` is the
+   path on the `root:` line of `amplihack profile rotate status`. With no
+   root set, it is `~/.amplihack/claude-profiles`, so the file is
+   `~/.amplihack/claude-profiles/.auto-switch.d/rotate/ledger.json`.
+3. Start the older rotator: `amplihack profile rotate start`.
+
+The ledger holds only bookkeeping, and the next cycle rebuilds it. Deleting
+it also clears the swap hold, so the first cycle may make an upgrade swap
+sooner than it otherwise would. The same steps recover an older rotator that
+is already running and logging failures.
 
 If you cannot tell which login belongs where, log each affected profile in
 again with `amplihack profile login <name>`.
@@ -1197,15 +1261,11 @@ full rule is in
   or when every login is at capacity, a session stopped by a limit is never
   resumed. The resume waits for at most 7 days; a shorter `--interval`
   resumes sooner. If you send a prompt in the session during the wait, the
-  hook stops without waking it (`moved-on`). With no rotator running, each
-  limited session still leaves a hook process that reads the ledger every
-  5 minutes until its session exits or the 7 days run out
-  ([#1659](https://github.com/rysweet/amplihack-rs/issues/1659)). A session
-  is treated as exited when the hook's parent process changes; if Claude Code
-  runs the hook under a shell that outlives it, the hook waits out the 7 days.
-  With `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS`
-  above about 50 seconds, a cycle measured before the limit can still count,
-  and one resume may be spent on a login that is still at its limit.
+  hook stops without waking it (`moved-on`). A rotator started after the
+  limit does not help that session: its hook already ended as
+  `rotator-down`. A session is treated as exited when the hook's parent
+  process changes; if Claude Code runs the hook under a shell that outlives
+  it, the hook waits out the 7 days.
 - **The ledger records the user, not the organization.** The rotate ledger
   is unchanged and names the account in `~/.claude` by user (or e-mail).
   If someone runs `/login` in `~/.claude` and signs in to the same user in

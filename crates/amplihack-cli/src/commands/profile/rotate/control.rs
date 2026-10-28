@@ -69,7 +69,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
         .and_then(Option::as_ref)
         .and_then(|l| l.last_cycle.as_ref())
         .and_then(|c| c.overflow.clone());
-    let credits = on_credits_line(&store, &rs, home, &names, last_tag.as_deref());
+    let on_overflow = on_overflow_line(&store, &rs, home, &names, last_tag.as_deref());
     let live = match &ledger {
         Ok(l) => l
             .as_ref()
@@ -97,7 +97,7 @@ pub fn status(store: &ProfileStore, home: Option<&Path>, source: RootSource) {
     };
     let auto = super::autostart_line(store.root());
     println!("rotate: {word}\n{auto}\npid: {pid}\nlive: {live}\nlast cycle: {last}");
-    println!("overflow: {overflow}\non credits: {credits}");
+    println!("overflow: {overflow}\non overflow: {on_overflow}");
     // `.default` bypasses the rotator: say so when it names an overflow profile.
     if let Ok(Some(d)) = pointer::read(store.root())
         && names.contains(&d)
@@ -236,7 +236,7 @@ fn overflow_line(
 /// overflow; plan capacity remains)` when it is an overflow profile without
 /// that tag, `no` for a plan profile, `-` when the live profile cannot be
 /// identified. Runs no probe.
-fn on_credits_line(
+fn on_overflow_line(
     store: &ProfileStore,
     rs: &RotateState,
     home: Option<&Path>,

@@ -970,7 +970,7 @@ fn overflow_rows_are_marked_with_any_block() {
     assert_eq!(marks(&r), "* overflow, blocked until 2026-11-01T00:00:00Z");
 }
 
-// "running on credits" needs the live row to be marked and its own probe in
+// "running on overflow" needs the live row to be marked and its own probe in
 // this run to show a plan limit reached: an exhausted state, or the session
 // or all-models weekly window at 100%. Either limit is enough; both are not
 // needed.
@@ -983,27 +983,27 @@ fn live_cred(state: UsageState, s: f64, w: f64) -> Row {
 }
 
 #[test]
-fn the_table_says_when_the_live_login_runs_on_credits() {
+fn the_table_says_when_the_live_login_runs_on_overflow() {
     let mut cred = live_cred(UsageState::SessionExhausted, 100.0, 40.0);
     cred.live_in = false;
     let mut work = ok("work", Some((10.0, None)), Some((20.0, None)));
     work.live_in = true;
     let out = render_table(&[work.clone(), cred.clone()]);
-    assert!(!out.contains("running on credits"), "{out}");
+    assert!(!out.contains("running on overflow"), "{out}");
     work.live_in = false;
     cred.live_in = true;
     let out = render_table(&[work, cred]);
-    assert!(out.ends_with("running on credits: cred\n"), "{out}");
+    assert!(out.ends_with("running on overflow: cred\n"), "{out}");
 }
 
 #[test]
-fn a_marked_live_login_with_plan_capacity_is_not_on_credits() {
+fn a_marked_live_login_with_plan_capacity_is_not_on_overflow() {
     let out = render_table(&[live_cred(UsageState::Ok, 10.0, 20.0)]);
-    assert!(!out.contains("running on credits"), "{out}");
+    assert!(!out.contains("running on overflow"), "{out}");
 }
 
 #[test]
-fn either_plan_limit_on_the_live_marked_login_means_credits() {
+fn either_plan_limit_on_the_live_marked_login_means_overflow() {
     for (state, s, w) in [
         (UsageState::SessionExhausted, 100.0, 10.0),
         (UsageState::WeeklyExhausted, 10.0, 100.0),
@@ -1012,14 +1012,14 @@ fn either_plan_limit_on_the_live_marked_login_means_credits() {
     ] {
         let out = render_table(&[live_cred(state, s, w)]);
         assert!(
-            out.ends_with("running on credits: cred\n"),
+            out.ends_with("running on overflow: cred\n"),
             "{state:?} {s}/{w}: {out}"
         );
     }
 }
 
 #[test]
-fn a_full_per_model_weekly_window_alone_is_not_credits() {
+fn a_full_per_model_weekly_window_alone_is_not_overflow() {
     // The rotator's capacity test reads the session and all-models weekly
     // windows only, so a full per-model window leaves plan capacity.
     let mut r = live_cred(UsageState::Ok, 10.0, 20.0);
@@ -1030,11 +1030,11 @@ fn a_full_per_model_weekly_window_alone_is_not_credits() {
         resets_at: None,
     });
     let out = render_table(&[r]);
-    assert!(!out.contains("running on credits"), "{out}");
+    assert!(!out.contains("running on overflow"), "{out}");
 }
 
 #[test]
-fn a_failed_probe_on_the_live_marked_login_is_not_shown_as_credits() {
+fn a_failed_probe_on_the_live_marked_login_is_not_shown_as_overflow() {
     for state in [
         UsageState::Timeout,
         UsageState::Error,
@@ -1045,7 +1045,7 @@ fn a_failed_probe_on_the_live_marked_login_is_not_shown_as_credits() {
             r.live_in = true;
             r
         }));
-        assert!(!out.contains("running on credits"), "{state:?}: {out}");
+        assert!(!out.contains("running on overflow"), "{state:?}: {out}");
     }
 }
 

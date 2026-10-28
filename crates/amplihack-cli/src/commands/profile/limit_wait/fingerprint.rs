@@ -114,9 +114,12 @@ impl Watch {
         }
     }
 
-    /// The rotator recorded a cycle with capacity more than a minute after
-    /// `start`, so the login now live in `$HOME/.claude` has capacity even
-    /// if it is the one that hit the limit (its limit has since reset).
+    /// The rotator recorded a cycle with capacity whose usage probe began
+    /// after `start` (its `measured_at`, or, from a rotator older than
+    /// #1659, a cycle recorded more than a minute after `start`), so the
+    /// login now live in `$HOME/.claude` has capacity even if it is the one
+    /// that hit the limit (its limit has since reset). The rule is
+    /// [`CycleStatus::fresh_capacity`], shared with the limit-resume hook.
     pub(crate) fn rotator_capacity(&self, start: i64) -> bool {
         self.cycle().is_some_and(|c| c.fresh_capacity(start))
     }

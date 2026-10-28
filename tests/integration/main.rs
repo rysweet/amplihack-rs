@@ -459,3 +459,8 @@ mod auto_drive_to_merge;
 mod issue_1641_finalization_open_pr;
 #[path = "issue_1642_github_origin_parsing.rs"]
 mod issue_1642_github_origin_parsing;
+
+// Issue #1697: bundled journalistic-writing-style skill — content, trigger
+// separation from documentation-writing, registration, isolated install.
+#[path = "journalistic_writing_style_skill_test.rs"]
+mod journalistic_writing_style_skill;

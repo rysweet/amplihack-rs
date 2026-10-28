@@ -666,6 +666,7 @@ impl Deps for DiskDeps {
         }
         Some(CycleStatus {
             at: Some(self.start + 61),
+            measured_at: Some(self.start + 31),
             outcome: Some("swapped".into()),
             alert: false,
             live: Some("spare".into()),
@@ -680,6 +681,9 @@ impl Deps for DiskDeps {
     }
     fn session_alive(&mut self) -> bool {
         true
+    }
+    fn rotator_down(&mut self, _now: i64) -> bool {
+        false
     }
 }
 

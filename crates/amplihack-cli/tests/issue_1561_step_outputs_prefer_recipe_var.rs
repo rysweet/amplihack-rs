@@ -19,6 +19,8 @@
 //! - the bare `NO_MERGE` override can only turn merging off;
 //! - the merge round stops, without running any tool, when its tools dir is
 //!   empty, relative or not a directory, whatever `AUTODRIVE_TOOLS_DIR` says;
+//! - no recipe step or bundle tool reads a step output through a plain bare
+//!   name (#1684), beyond a per-read list that can only shrink;
 //! - behavioural decoy tests for `rv_field`, `worktree_setup_path.sh` and the
 //!   terminal-state probe's inputs.
 //!
@@ -324,9 +326,16 @@ const NESTED_NAME: &str = r"RECIPE_VAR_[A-Za-z0-9]+(_[A-Za-z0-9]+)*__[A-Za-z0-9_
 /// single or double quotes, after a backslash, or inside a word (`${#x}`,
 /// `$#`, `a#b`) is code. A quote left open at the end of the line keeps the
 /// rest of the line as code, which can only make the scan see more.
-fn strip_comment(line: &str) -> &str {
+///
+/// `open` is the quote state at the start of the line, carried from the lines
+/// before it by [`Quotes::mask`]. On the second line of
+/// `--body "Summary` / `Closes #$ISSUE_NUMBER"` the `#` is inside the double
+/// quotes, so it is text and the read after it is code. Starting every line
+/// with no quote open would cut that read off as a comment, and the guards
+/// would pass for the wrong reason. Use [`code_lines`] to scan a whole text.
+fn strip_comment<'a>(line: &'a str, open: &Quotes) -> &'a str {
     let b = line.as_bytes();
-    let (mut sq, mut dq, mut esc) = (false, false, false);
+    let (mut sq, mut dq, mut esc) = (open.sq, open.dq, false);
     // Index of the last escaped byte: `a\ #b` is one word, not a comment.
     let mut escaped_at = usize::MAX;
     for (i, &c) in b.iter().enumerate() {
@@ -359,8 +368,8 @@ fn strip_comment(line: &str) -> &str {
 fn nested_reads(text: &str) -> Vec<(usize, String)> {
     let re = Regex::new(NESTED_NAME).unwrap();
     let mut found = Vec::new();
-    for (i, raw) in text.lines().enumerate() {
-        for m in re.find_iter(strip_comment(raw)) {
+    for (i, code) in code_lines(text).into_iter().enumerate() {
+        for m in re.find_iter(code) {
             found.push((i + 1, m.as_str().to_string()));
         }
     }
@@ -801,7 +810,7 @@ fn only_recipe_var_sh_reads_the_bare_no_merge() {
     let re = Regex::new(r"\$\{?NO_MERGE\b").unwrap();
     let mut readers = BTreeSet::new();
     for (path, text) in scanned_files() {
-        if text.lines().any(|l| re.is_match(strip_comment(l))) {
+        if code_lines(&text).into_iter().any(|l| re.is_match(l)) {
             readers.insert(path);
         }
     }
@@ -1157,4 +1166,454 @@ fn the_terminal_probe_uses_recipe_values_over_bare_decoys() {
         "the recipe's own values reach the probe, and a bare NO_MERGE=false does not \
          clear a recipe no_merge=true"
     );
+}
+
+// ── Plain bare reads of step outputs (#1684) ─────────────────────────────────
+
+/// Every plain bare read of a step output that is not converted yet, as
+/// `(file, step id, bare name, number of reads)`. A tool script has no steps,
+/// so its step id is `""`. Every entry is tracked in #1689. The guard compares
+/// the actual reads with this list exactly: a new read (or one more read of a
+/// listed name) fails, and so does an entry whose count has dropped, so the
+/// list only shrinks. All of these names are scalars, which the runner exports
+/// as bare aliases; the object outputs (`local_testing_gate`,
+/// `precommit_results`) are never exported that way, and none is listed.
+const PLAIN_READS_NOT_YET_CONVERTED: &[(&str, &str, &str, usize)] = &[
+    (
+        "consensus-publish.yaml",
+        "step10-create-pr",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    ("consensus-publish.yaml", "step9-commit", "ISSUE_NUMBER", 1),
+    (
+        "investigation-prep.yaml",
+        "normalize-codebase-path",
+        "CODEBASE_PATH",
+        2,
+    ),
+    (
+        "investigation-prep.yaml",
+        "normalize-question",
+        "INVESTIGATION_QUESTION",
+        2,
+    ),
+    (
+        "smart-validate-summarize.yaml",
+        "complete-session",
+        "SESSION_INFO",
+        1,
+    ),
+    (
+        "workflow-design.yaml",
+        "step-06d-goal-already-met-probe",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    (
+        "workflow-finalize.yaml",
+        "step-21-pr-ready",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-finalize.yaml",
+        "step-22b-final-status",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-publish.yaml",
+        "step-15-commit-push",
+        "ISSUE_NUMBER",
+        1,
+    ),
+    (
+        "workflow-publish.yaml",
+        "step-15-commit-push",
+        "REMOTE_HOST_TYPE",
+        1,
+    ),
+    (
+        "workflow-worktree.yaml",
+        "step-04-setup-worktree",
+        "ISSUE_NUMBER",
+        2,
+    ),
+    ("git-identity.sh", "", "REMOTE_HOST_TYPE", 1),
+    ("workflow_final_status.sh", "", "REMOTE_HOST_TYPE", 2),
+    ("workflow_publish_pr.sh", "", "ISSUE_NUMBER", 1),
+    ("workflow_publish_pr.sh", "", "REMOTE_HOST_TYPE", 1),
+];
+
+/// The caller's own input. `quality-loop.yaml` re-emits it as a step output,
+/// but every run sets it, so its bare alias is this run's value.
+const RUN_INPUTS: &[&str] = &["task_description"];
+
+/// Every `output:` key of every bundle recipe step, except `RUN_INPUTS`.
+fn step_output_keys(recipes: &[(String, String)]) -> BTreeSet<String> {
+    let mut keys = BTreeSet::new();
+    for (_, yaml) in recipes {
+        let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("recipe parses as YAML");
+        for s in doc["steps"].as_sequence().into_iter().flatten() {
+            if let Some(k) = s.get("output").and_then(|v| v.as_str()) {
+                keys.insert(k.to_string());
+            }
+        }
+    }
+    for k in RUN_INPUTS {
+        keys.remove(*k);
+    }
+    keys
+}
+
+/// Quote state carried from line to line, so a string that spans lines stays
+/// a string. Both [`strip_comment`] and [`Quotes::mask`] start from it, so the
+/// two never disagree about where a quote is open.
+#[derive(Default)]
+struct Quotes {
+    sq: bool,
+    dq: bool,
+}
+
+/// The code part of every line of `text`, in order, with the quote state
+/// carried from each line to the next (see [`strip_comment`]).
+fn code_lines(text: &str) -> Vec<&str> {
+    let mut quotes = Quotes::default();
+    text.lines()
+        .map(|raw| {
+            let code = strip_comment(raw, &quotes);
+            quotes.mask(code);
+            code
+        })
+        .collect()
+}
+
+impl Quotes {
+    /// `code` with every quoted byte, quote marks included, replaced by a
+    /// space. What is left is the text bash reads as words, which is the only
+    /// place `NAME=`, `read NAME` or `for NAME in` binds a name.
+    fn mask(&mut self, code: &str) -> String {
+        let mut out = code.as_bytes().to_vec();
+        let mut esc = false;
+        for (i, &c) in code.as_bytes().iter().enumerate() {
+            let quoted_before = self.sq || self.dq;
+            if esc {
+                esc = false;
+            } else {
+                match c {
+                    b'\\' if !self.sq => esc = true,
+                    b'\'' if !self.dq => self.sq = !self.sq,
+                    b'"' if !self.sq => self.dq = !self.dq,
+                    _ => {}
+                }
+            }
+            if quoted_before || self.sq || self.dq {
+                out[i] = b' ';
+            }
+        }
+        // Quote marks are ASCII, so every multi-byte character is either kept
+        // whole or blanked whole: the result is still UTF-8.
+        String::from_utf8(out).expect("masking keeps UTF-8")
+    }
+}
+
+/// `(bare name, source line)` of every read of a step output through its bare
+/// upper-case name in the bash text `body`. A read is `$NAME`, `${NAME…}`,
+/// `${#NAME}` (length) or `${!NAME}` (indirect); a name the text itself
+/// assigned on an earlier line is a local, not an inherited value. The runner
+/// exports the bare alias only for scalars, and a step skipped by its
+/// `condition:` leaves a parent run's value in place, so the only safe read is
+/// `${RECIPE_VAR_<key>:-}`.
+///
+/// Heredoc bodies are text, not shell lines: `#` there is not a comment and
+/// `NAME=` there binds nothing, so neither is applied to them, and the quote
+/// state is left alone (an apostrophe in prose opens nothing). With an
+/// unquoted delimiter (`<<WORD`, `<<-WORD`) bash expands `$NAME` in the body,
+/// so `Closes #$ISSUE_NUMBER` is a read. With a quoted one (`<<'WORD'`,
+/// `<<"WORD"`, `<<\WORD`) bash leaves `$NAME` as text, but that text is
+/// often a script fed to `bash`, `sh` or `ssh`, which reads the inherited
+/// value; the scan counts those reads too, since counting more can only make
+/// the guard stricter.
+fn plain_bare_reads_in(body: &str, outputs: &BTreeSet<String>) -> Vec<(String, String)> {
+    let read = Regex::new(r"\$(?:\{[#!]?)?([A-Z][A-Z0-9_]*)\b").unwrap();
+    // `X=…` binds after the line's own reads; `for X in` before its body.
+    let assign = Regex::new(
+        r"(?:^|[\s;&|(])(?:(?:local|export|readonly|declare(?:\s+-[a-zA-Z]+)?)\s+)?([A-Z][A-Z0-9_]*)=|\bread\s+(?:-\S+\s+)*([A-Z][A-Z0-9_]*)",
+    )
+    .unwrap();
+    let for_var = Regex::new(r"\bfor\s+([A-Z][A-Z0-9_]*)\s+in\b").unwrap();
+    // `<<WORD`, `<<-WORD`, `<<'WORD'`, `<<"WORD"`, `<<\WORD`; not `<<<`.
+    let heredoc =
+        Regex::new(r#"<<(-?)[ \t]*(?:'([^']+)'|"([^"]+)"|\\?([A-Za-z_][A-Za-z0-9_]*))"#).unwrap();
+    let mut locals = BTreeSet::new();
+    let mut found = Vec::new();
+    let mut quotes = Quotes::default();
+    // Heredocs opened on earlier lines, oldest first: (delimiter, `<<-`).
+    let mut pending: std::collections::VecDeque<(String, bool)> = Default::default();
+    for raw in body.lines() {
+        if let Some((word, strip_tabs)) = pending.front() {
+            let line = if *strip_tabs {
+                raw.trim_start_matches('\t')
+            } else {
+                raw
+            };
+            if line == word {
+                pending.pop_front();
+                continue;
+            }
+            for c in read.captures_iter(raw) {
+                let name = &c[1];
+                if outputs.contains(&name.to_ascii_lowercase()) && !locals.contains(name) {
+                    found.push((name.to_string(), raw.trim().to_string()));
+                }
+            }
+            continue;
+        }
+        // Comment-stripping starts from the same carried quote state as the
+        // mask below: inside a multi-line `"…"`, `#` is text.
+        let code = strip_comment(raw, &quotes);
+        // Reads count inside double quotes; bindings count only outside any
+        // quotes, so `echo "no ISSUE_NUMBER= given"` binds nothing.
+        let bare_code = quotes.mask(code);
+        // An opener counts only where bash reads words: `<<` outside quotes
+        // and not part of `<<<`. The mask blanks a quoted delimiter, so the
+        // position is checked in the mask and the word taken from `code`.
+        for c in heredoc.captures_iter(code) {
+            let at = c.get(0).unwrap().start();
+            let outside = bare_code.as_bytes()[at..at + 2] == *b"<<";
+            let herestring = at > 0 && code.as_bytes()[at - 1] == b'<';
+            if outside && !herestring {
+                let word = c.get(2).or(c.get(3)).or(c.get(4)).unwrap().as_str();
+                pending.push_back((word.to_string(), !c[1].is_empty()));
+            }
+        }
+        for c in for_var.captures_iter(&bare_code) {
+            locals.insert(c[1].to_string());
+        }
+        for c in read.captures_iter(code) {
+            let name = &c[1];
+            if outputs.contains(&name.to_ascii_lowercase()) && !locals.contains(name) {
+                found.push((name.to_string(), raw.trim().to_string()));
+            }
+        }
+        for c in assign.captures_iter(&bare_code) {
+            if let Some(m) = c.get(1).or_else(|| c.get(2)) {
+                locals.insert(m.as_str().to_string());
+            }
+        }
+    }
+    found
+}
+
+/// `(step id, bare name, source line)` of every plain bare read of a step
+/// output in a bash step of the recipe `yaml`. Locals are per step.
+fn plain_bare_reads(yaml: &str, outputs: &BTreeSet<String>) -> Vec<(String, String, String)> {
+    let doc: serde_yaml::Value = serde_yaml::from_str(yaml).expect("recipe parses as YAML");
+    let mut found = Vec::new();
+    for s in doc["steps"].as_sequence().into_iter().flatten() {
+        let Some(body) = s.get("command").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let id = s.get("id").and_then(|v| v.as_str()).unwrap_or("?");
+        for (name, line) in plain_bare_reads_in(body, outputs) {
+            found.push((id.to_string(), name, line));
+        }
+    }
+    found
+}
+
+/// Every plain bare read of a step output in the bundle: recipe steps by step
+/// id, and tool scripts as a whole (step id `""`), since a step body moved
+/// into a tool runs with the same environment. Keyed by
+/// `(file name, step id, bare name)`, with the source lines.
+fn bundle_plain_bare_reads() -> BTreeMap<(String, String, String), Vec<String>> {
+    let recipes = recipe_files();
+    let outputs = step_output_keys(&recipes);
+    let mut reads: BTreeMap<(String, String, String), Vec<String>> = BTreeMap::new();
+    let file_name = |path: &str| path.rsplit('/').next().unwrap().to_string();
+    for (path, yaml) in &recipes {
+        for (id, bare, line) in plain_bare_reads(yaml, &outputs) {
+            reads
+                .entry((file_name(path), id, bare))
+                .or_default()
+                .push(line);
+        }
+    }
+    for (path, text) in tool_files() {
+        for (bare, line) in plain_bare_reads_in(&text, &outputs) {
+            reads
+                .entry((file_name(&path), String::new(), bare))
+                .or_default()
+                .push(line);
+        }
+    }
+    reads
+}
+
+#[test]
+fn no_bundle_file_reads_a_step_output_through_a_plain_bare_name() {
+    let reads = bundle_plain_bare_reads();
+    let allowed: BTreeMap<(String, String, String), usize> = PLAIN_READS_NOT_YET_CONVERTED
+        .iter()
+        .map(|(f, id, bare, n)| ((f.to_string(), id.to_string(), bare.to_string()), *n))
+        .collect();
+    assert_eq!(
+        allowed.len(),
+        PLAIN_READS_NOT_YET_CONVERTED.len(),
+        "PLAIN_READS_NOT_YET_CONVERTED lists a (file, step, name) twice"
+    );
+    let mut new_reads = Vec::new();
+    for (key, lines) in &reads {
+        let budget = allowed.get(key).copied().unwrap_or(0);
+        if lines.len() > budget {
+            let (file, id, bare) = key;
+            new_reads.push(format!(
+                "{file}: step {id:?}: {bare}: {} reads, {budget} allowed:\n    {}",
+                lines.len(),
+                lines.join("\n    ")
+            ));
+        }
+    }
+    assert!(
+        new_reads.is_empty(),
+        "{} new reads of a step output through its bare upper-case name (#1561, \
+         #1684). Read it as \"${{RECIPE_VAR_<key>:-}}\" and declare <key> in the \
+         recipe's `context:` unless an earlier unconditional step produces it:\n{}",
+        new_reads.len(),
+        new_reads.join("\n")
+    );
+    let stale: Vec<String> = allowed
+        .iter()
+        .filter(|(key, n)| reads.get(*key).map_or(0, Vec::len) < **n)
+        .map(|((f, id, bare), n)| {
+            let now = reads
+                .get(&(f.clone(), id.clone(), bare.clone()))
+                .map_or(0, Vec::len);
+            format!("({f:?}, {id:?}, {bare:?}, {n}) now has {now}")
+        })
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "lower or remove these PLAIN_READS_NOT_YET_CONVERTED entries; they have fewer \
+         plain bare reads than listed (or the file no longer exists):\n{}",
+        stale.join("\n")
+    );
+}
+
+#[test]
+fn the_plain_read_detector_flags_step_outputs_and_skips_locals() {
+    let yaml = r#"
+steps:
+  - id: "produce"
+    type: "bash"
+    command: "echo x"
+    output: "issue_number"
+  - id: "reads"
+    type: "bash"
+    command: |
+      A="$ISSUE_NUMBER"
+      bash tool --issue "${ISSUE_NUMBER:-}"
+      echo "${RECIPE_VAR_issue_number:-}" "$REPO_PATH"
+      # was "$ISSUE_NUMBER"
+      echo "${#ISSUE_NUMBER}" "${!ISSUE_NUMBER}" "$#ISSUE_NUMBER"
+  - id: "local"
+    type: "bash"
+    command: |
+      ISSUE_NUMBER=7
+      echo "$ISSUE_NUMBER"
+  - id: "loop"
+    type: "bash"
+    command: |
+      for ISSUE_NUMBER in 1 2; do echo "$ISSUE_NUMBER"; done
+"#;
+    let outputs = step_output_keys(&[(String::new(), yaml.to_string())]);
+    let got: Vec<(String, String)> = plain_bare_reads(yaml, &outputs)
+        .into_iter()
+        .map(|(id, bare, _)| (id, bare))
+        .collect();
+    // `$#ISSUE_NUMBER` is `$#` followed by text, not a read.
+    let want = vec![("reads".to_string(), "ISSUE_NUMBER".to_string()); 4];
+    assert_eq!(got, want);
+
+    // A tool script has no steps: the whole file is one body, so an
+    // assignment anywhere earlier makes the name a local.
+    let tool = "ISSUE=\"${ISSUE_NUMBER:-}\"\nLOCAL_TESTING_GATE=x\necho \"$LOCAL_TESTING_GATE\" \"${#ISSUE_NUMBER}\"\n";
+    let outputs: BTreeSet<String> = ["issue_number", "local_testing_gate"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    let got: Vec<String> = plain_bare_reads_in(tool, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER", "ISSUE_NUMBER"]);
+
+    // `NAME=`, `read NAME` or `for NAME in` inside quotes is text, not a
+    // binding: every read below is still flagged, in a step and in a tool,
+    // including after a quoted string that spans lines.
+    let quoted = "echo \"WARN: no ISSUE_NUMBER= given, checking claims\" >&2\n\
+                  gh issue view \"$ISSUE_NUMBER\"\n\
+                  echo 'read ISSUE_NUMBER; for ISSUE_NUMBER in x' \"$ISSUE_NUMBER\"\n\
+                  MSG=\"first line\n\
+                  ISSUE_NUMBER=7 is not set here\"\n\
+                  echo \"${ISSUE_NUMBER:-}\"\n";
+    let got: Vec<String> = plain_bare_reads_in(quoted, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER"; 3]);
+
+    // A heredoc body is text: `#` there is not a comment, `NAME=` there binds
+    // nothing, and an apostrophe there opens no quote. Reads count in every
+    // body, quoted delimiter or not, and the scan resumes as shell after the
+    // delimiter line (with `<<-`, after leading tabs). `<<<` is a here-string,
+    // not a heredoc, so the line after it is shell again.
+    let heredocs = "cat > body.md <<EOFBODY\n\
+                    - issue: #$ISSUE_NUMBER\n\
+                    ISSUE_NUMBER=7 is prose here, and so is don't\n\
+                    Closes #${ISSUE_NUMBER}\n\
+                    EOFBODY\n\
+                    gh issue view \"$ISSUE_NUMBER\" # was #$ISSUE_NUMBER\n\
+                    bash <<'SCRIPT' # child shell reads the inherited value\n\
+                    gh pr list --search \"#$ISSUE_NUMBER\"\n\
+                    SCRIPT\n\
+                    cat <<-\"END\"\n\
+                    \t\tissue #$ISSUE_NUMBER\n\
+                    \tEND\n\
+                    grep -q x <<< \"$LOCAL_TESTING_GATE\"\n\
+                    ISSUE_NUMBER=8\n\
+                    echo \"$ISSUE_NUMBER\"\n";
+    let got: Vec<String> = plain_bare_reads_in(heredocs, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    let mut want = vec!["ISSUE_NUMBER"; 5];
+    want.push("LOCAL_TESTING_GATE");
+    assert_eq!(got, want);
+
+    // On a continuation line of a double-quoted string, `#` after a space is
+    // text, not a comment: bash expands the read after it. A real comment
+    // after the string closes is still a comment.
+    let multiline = "gh pr create --body \"Summary\n\
+                     Closes #$ISSUE_NUMBER\"\n\
+                     echo done # was $LOCAL_TESTING_GATE\n";
+    let got: Vec<String> = plain_bare_reads_in(multiline, &outputs)
+        .into_iter()
+        .map(|(bare, _)| bare)
+        .collect();
+    assert_eq!(got, vec!["ISSUE_NUMBER"]);
+}
+
+/// The other comment-stripping scans carry quote state the same way: a nested
+/// name or `$NO_MERGE` after `#` on a continuation line of a multi-line
+/// double-quoted string is code, not a comment.
+#[test]
+fn comment_stripping_carries_quotes_across_lines() {
+    let text = "MSG=\"one\n  #$RECIPE_VAR_a__b and #$NO_MERGE\"\n# $RECIPE_VAR_c__d\n";
+    assert_eq!(
+        code_lines(text),
+        vec!["MSG=\"one", "  #$RECIPE_VAR_a__b and #$NO_MERGE\"", ""]
+    );
+    assert_eq!(nested_reads(text), vec![(2, "RECIPE_VAR_a__b".to_string())]);
 }

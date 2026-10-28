@@ -1,9 +1,9 @@
 //! The rotate ledger, `<root>/.auto-switch.d/rotate/ledger.json`, read
 //! loosely: only `version`, `live`, `alert` and
-//! `last_cycle.{at,outcome,overflow}` matter, unknown fields are ignored,
-//! and a wrongly typed field reads as absent. The rotator's own reader is
-//! strict; the hook must keep working across ledger additions (#1656,
-//! #1657), so it is not reused.
+//! `last_cycle.{at,measured_at,outcome,overflow}` matter, unknown fields
+//! are ignored, and a wrongly typed field reads as absent. The rotator's own
+//! reader is strict; the hook must keep working across ledger additions
+//! (#1656, #1657), so it is not reused.
 
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -19,6 +19,9 @@ const MAX_SKEW_SECS: i64 = 300;
 pub struct CycleStatus {
     /// When the last cycle was recorded (at its end), epoch seconds.
     pub at: Option<i64>,
+    /// When that cycle started measuring usage, epoch seconds. Absent for
+    /// a cycle that measured nothing, and from rotators older than #1659.
+    pub measured_at: Option<i64>,
     /// The last cycle's outcome: `swapped`, `stayed`, `alerted`, …
     pub outcome: Option<String>,
     /// The rotator's no-capacity alert is set.
@@ -39,21 +42,26 @@ impl CycleStatus {
         !self.alert && matches!(self.outcome.as_deref(), Some("swapped" | "stayed"))
     }
 
-    /// The live login runs on usage credits after the last cycle: it moved
-    /// onto an overflow profile or stayed on one. Capacity is still decided
-    /// by [`Self::has_capacity`]; this only says what the capacity costs.
+    /// The live login runs on an overflow profile after the last cycle: it
+    /// moved onto one or stayed on one. Capacity is still decided by
+    /// [`Self::has_capacity`]; this only says what the capacity costs.
     pub fn on_overflow(&self) -> bool {
         matches!(self.overflow.as_deref(), Some("in" | "on"))
     }
 
-    /// [`has_capacity`](Self::has_capacity), from a cycle recorded more than
-    /// [`FRESH_MARGIN_SECS`](super::FRESH_MARGIN_SECS) after `start`, so its
-    /// usage probe began after a limit hit at `start`.
+    /// [`has_capacity`](Self::has_capacity), from a cycle whose usage probe
+    /// began after a limit hit at `start`: `measured_at` later than
+    /// `start`. A ledger from an older rotator has no `measured_at`; then
+    /// the cycle must have been recorded more than
+    /// [`FRESH_MARGIN_SECS`](super::FRESH_MARGIN_SECS) after `start`.
     pub fn fresh_capacity(&self, start: i64) -> bool {
         self.has_capacity()
-            && self
-                .at
-                .is_some_and(|at| at > start.saturating_add(super::FRESH_MARGIN_SECS))
+            && match self.measured_at {
+                Some(measured) => measured > start,
+                None => self
+                    .at
+                    .is_some_and(|at| at > start.saturating_add(super::FRESH_MARGIN_SECS)),
+            }
     }
 }
 
@@ -67,7 +75,8 @@ pub fn ledger_path(root: &Path) -> PathBuf {
 /// Parses ledger bytes. `None` for anything over 64 KiB, anything that is
 /// not a JSON object, or a `version` other than the integer 1.
 ///
-/// `at` is kept only when `0 < at <= now + 300`; `live` only when it passes
+/// `at` and `measured_at` are kept only when `0 < t <= now + 300`; `live`
+/// only when it passes
 /// [`super::valid_live_name`]. `alert` is set by any non-null value, so a
 /// wrongly typed alert still means no capacity.
 pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
@@ -80,10 +89,11 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         return None;
     }
     let last = map.get("last_cycle").and_then(Value::as_object);
-    let at = last
-        .and_then(|c| c.get("at"))
-        .and_then(Value::as_i64)
-        .filter(|at| *at > 0 && *at <= now.saturating_add(MAX_SKEW_SECS));
+    let time = |key| {
+        last.and_then(|c| c.get(key))
+            .and_then(Value::as_i64)
+            .filter(|t| *t > 0 && *t <= now.saturating_add(MAX_SKEW_SECS))
+    };
     let outcome = last
         .and_then(|c| c.get("outcome"))
         .and_then(Value::as_str)
@@ -100,7 +110,8 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
         .filter(|n| super::valid_live_name(n))
         .map(str::to_string);
     Some(CycleStatus {
-        at,
+        at: time("at"),
+        measured_at: time("measured_at"),
         outcome,
         alert,
         live,
@@ -108,22 +119,39 @@ pub fn parse_cycle(raw: &[u8], now: i64) -> Option<CycleStatus> {
     })
 }
 
-/// Reads and parses the ledger under `root`. `None` when it is missing,
-/// not a regular file, a symlink, owned by another user, writable by other
-/// users, larger than 64 KiB or unparseable. Creates nothing.
+/// The ledger file under `root`, as the hook sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Ledger {
+    Missing,
+    /// Present but not a private regular file of the current user, larger
+    /// than 64 KiB, not JSON, or at a version other than 1.
+    Unreadable,
+    Read(CycleStatus),
+}
+
+/// Reads and parses the ledger under `root`. Creates nothing.
 #[cfg(unix)]
-pub fn read_cycle(root: &Path, now: i64) -> Option<CycleStatus> {
+pub fn read_ledger(root: &Path, now: i64) -> Ledger {
     use crate::secure_files::{owned_by_euid, read_bounded_nofollow, writable_by_others};
     match read_bounded_nofollow(&ledger_path(root), MAX_LEDGER_BYTES) {
+        Ok(None) => Ledger::Missing,
         Ok(Some((raw, meta))) if owned_by_euid(&meta) && !writable_by_others(&meta) => {
-            parse_cycle(&raw, now)
+            parse_cycle(&raw, now).map_or(Ledger::Unreadable, Ledger::Read)
         }
-        _ => None,
+        _ => Ledger::Unreadable,
     }
 }
 
-/// Off Unix there is no rotator: no capacity.
+/// Off Unix there is no rotator.
 #[cfg(not(unix))]
-pub fn read_cycle(_root: &Path, _now: i64) -> Option<CycleStatus> {
-    None
+pub fn read_ledger(_root: &Path, _now: i64) -> Ledger {
+    Ledger::Missing
+}
+
+/// The ledger's last cycle; `None` unless [`read_ledger`] read it.
+pub fn read_cycle(root: &Path, now: i64) -> Option<CycleStatus> {
+    match read_ledger(root, now) {
+        Ledger::Read(status) => Some(status),
+        Ledger::Missing | Ledger::Unreadable => None,
+    }
 }

@@ -9,87 +9,29 @@ use super::log::{Sink, msg, open_or_warn};
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome};
 use crate::commands::profile::auto_switch::kit::{
-    Source, State, check_root_private, effective, euid, now, read_bounded_nofollow,
-    recover_auto_switch, write_private_atomic,
+    Source, State, check_root_private, effective, now, read_bounded_nofollow, recover_auto_switch,
+    write_private_atomic,
 };
 use crate::commands::profile::root_config::{ROTATE_ROOT_FILE, config_dir, save};
 use crate::commands::profile::store::{ProfileStore, ROOT_ENV};
 use crate::commands::profile::usage_cmd::{PROBE_CANCEL, sanitize_display};
 use crate::commands::profile::{PROFILE_ENV, ProfileError};
 use std::ffi::OsStr;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
 const MAX_PID_FILE: usize = 32;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DaemonState {
-    Running(u32),
-    Stopped,
-    Stale,
-    Unverifiable,
-}
+pub use amplihack_utils::rotator_status::DaemonState;
 
 pub(super) fn daemon_err(msg: impl Into<String>) -> ProfileError {
     ProfileError::RotateDaemon(msg.into())
 }
 
-/// A valid pid file: at most 32 bytes of ASCII digits (one trailing newline
-/// allowed) for a pid greater than 1 that is not `own`.
-pub fn parse_pid(bytes: &[u8], own: u32) -> Option<u32> {
-    if bytes.len() > MAX_PID_FILE {
-        return None;
-    }
-    let digits = bytes.strip_suffix(b"\n").unwrap_or(bytes);
-    if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
-        return None;
-    }
-    let pid: u32 = std::str::from_utf8(digits).ok()?.parse().ok()?;
-    (pid > 1 && pid != own).then_some(pid)
-}
-
-/// NUL-separated argv holding `profile`, `rotate` and `watch`, whose
-/// `argv[0]` has the file name `exe_name`.
-pub fn is_rotator(cmdline: &[u8], exe_name: &OsStr) -> bool {
-    use std::os::unix::ffi::OsStrExt;
-    let mut args = cmdline.split(|&b| b == 0).filter(|a| !a.is_empty());
-    let Some(argv0) = args.next() else {
-        return false;
-    };
-    if Path::new(OsStr::from_bytes(argv0)).file_name() != Some(exe_name) {
-        return false;
-    }
-    let rest: Vec<&[u8]> = args.collect();
-    [&b"profile"[..], b"rotate", b"watch"]
-        .iter()
-        .all(|w| rest.contains(w))
-}
-
-/// Whether `pid` is a rotator owned by this user, per `proc_root`.
-fn verified(proc_root: &Path, pid: u32, exe_name: &OsStr) -> bool {
-    let dir = proc_root.join(pid.to_string());
-    let owned = std::fs::symlink_metadata(&dir).is_ok_and(|m| m.uid() == euid());
-    owned
-        && matches!(read_bounded_nofollow(&dir.join("cmdline"), 64 * 1024),
-            Ok(Some((raw, _))) if is_rotator(&raw, exe_name))
-}
-
 /// The daemon's state from the pid file and `proc_root`. Read-only.
 pub fn state_at(rs: &RotateState, proc_root: &Path, exe_name: &OsStr) -> DaemonState {
-    let raw = match read_bounded_nofollow(&rs.pid, MAX_PID_FILE as u64) {
-        Ok(None) => return DaemonState::Stopped,
-        Ok(Some((raw, _))) => raw,
-        Err(_) => return DaemonState::Stale,
-    };
-    if !proc_root.is_dir() {
-        return DaemonState::Unverifiable;
-    }
-    match parse_pid(&raw, std::process::id()) {
-        Some(pid) if verified(proc_root, pid, exe_name) => DaemonState::Running(pid),
-        _ => DaemonState::Stale,
-    }
+    amplihack_utils::rotator_status::daemon_state(&rs.pid, proc_root, Some(exe_name))
 }
 
 pub(super) fn exe_name() -> Option<std::ffi::OsString> {
@@ -213,6 +155,20 @@ fn record_root(rs: &RotateState, home: &Path, root: &Path) -> Vec<ProfileError> 
 /// What starts the background process: [`spawn`], or a fake in tests.
 pub(super) type Spawner = dyn Fn(&RotateState, &Settings, &Path) -> Result<u32, ProfileError>;
 
+/// The argv after the executable that [`spawn`] gives the daemon:
+/// `profile rotate watch <flags> --spawned`.
+///
+/// `scripts/check-leaked-rotators.sh` finds leaked daemons by the exact
+/// entries `profile`, `rotate`, `watch` and `--spawned`;
+/// `tests_daemon::the_leak_scan_matches_the_argv_spawn_builds` fails if
+/// this argv and the script's patterns drift apart (issue #1690).
+pub(super) fn spawned_args(s: &Settings) -> Vec<String> {
+    let mut args: Vec<String> = ["profile", "rotate", "watch"].map(String::from).into();
+    args.extend(s.to_args(true));
+    args.push("--spawned".into());
+    args
+}
+
 /// Starts `<this exe> profile rotate watch <flags> --spawned` in a new
 /// session with SIGHUP ignored, stdin from `/dev/null` and its stdout and
 /// stderr appended to `rotate.err`, so the log keeps its grammar. No shell;
@@ -225,9 +181,7 @@ pub(super) fn spawn(rs: &RotateState, s: &Settings, root: &Path) -> Result<u32, 
     let errors = super::log::RotateLog::open(&rs.err, &rs.err)?;
     let (out, err) = (errors.file()?, errors.file()?);
     let mut cmd = std::process::Command::new(std::env::current_exe()?);
-    cmd.args(["profile", "rotate", "watch"])
-        .args(s.to_args(true))
-        .arg("--spawned")
+    cmd.args(spawned_args(s))
         .stdin(std::process::Stdio::null())
         .stdout(out)
         .stderr(err);
@@ -343,6 +297,7 @@ fn record_idle(rs: &RotateState, store: &ProfileStore) {
         let mut l = l.unwrap_or_default();
         l.last_cycle = Some(LastCycle {
             at: now(),
+            measured_at: None,
             outcome: "idle".into(),
             overflow: None,
         });

@@ -6,19 +6,19 @@
 //! Every root is a temporary directory (0700); `HOME` is temporary wherever it
 //! matters. Tests that touch the environment hold `env_lock()`.
 
+use super::candidate::OverflowPool;
 use super::capacity::{
-    Evidence, Rotated, compute, launch_warning, recipe_warning, refresh, refresh_from_rotation,
+    Evidence, Rotated, launch_warning, recipe_warning, refresh, refresh_from_rotation,
 };
 use super::config::{self, Config};
 use super::state::{HostEntry, Ledger, State, UsageFile};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::root_config;
+use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use crate::test_support::{EnvGuard, env_lock};
 use amplihack_utils::claude_capacity::{self as cap, CapacityFile, State as Cap};
 use chrono::DateTime;
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
@@ -81,6 +81,27 @@ fn ev(pairs: Vec<(&str, Evidence)>) -> BTreeMap<String, Evidence> {
 // ---------------------------------------------------------------------------
 // compute (pure)
 // ---------------------------------------------------------------------------
+
+/// `compute` with no overflow inputs.
+fn compute(
+    profiles: &[ProfileName],
+    evidence: &BTreeMap<String, Evidence>,
+    cfg: &Config,
+    now: i64,
+    writer: &str,
+) -> CapacityFile {
+    let none = OverflowPool {
+        order: &[],
+        blocked: &[],
+        gate: None,
+    };
+    super::capacity::compute(profiles, evidence, cfg, &none, now, writer)
+}
+
+const GATE: Gate = Gate {
+    wait: 1800,
+    unknown_reset: false,
+};
 
 #[test]
 fn all_over_threshold_is_low() {
@@ -181,26 +202,77 @@ fn an_excluded_profile_is_ignored() {
     assert_eq!(f.over, vec!["a".to_string()]);
 }
 
-#[test]
-fn an_overflow_profile_with_capacity_does_not_make_the_file_ok() {
-    // Every plan login is over; the overflow profile is not, and the
-    // rotator is not on credits. Overflow capacity is not plan capacity.
+// --- Overflow (issue #1606) -------------------------------------------------
+//
+// The plan profiles decide the state. When every one is over the threshold,
+// an overflow profile makes it `ok` exactly when auto-switch could move onto
+// it: the shared gate allows it (earliest plan reset beyond the wait), and
+// the profile is not blocked, not excluded and not over the threshold.
+
+/// a and b (plan) over the threshold, the earliest resetting at `reset`;
+/// cred (overflow) at 5%.
+fn overflow_case(reset: i64, blocked: &[String], gate: Option<Gate>) -> CapacityFile {
     let mut c = cfg(90, &[]);
-    c.overflow = names(&["cred"]);
-    let f = compute(
+    c.overflow = vec![OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1)];
+    let order = names(&["cred"]);
+    let pool = OverflowPool {
+        order: &order,
+        blocked,
+        gate,
+    };
+    super::capacity::compute(
         &names(&["a", "b", "cred"]),
         &ev(vec![
-            ("a", usage(95.0, T + 2 * HOUR)),
-            ("b", usage(91.0, T + HOUR)),
+            ("a", usage(95.0, reset + HOUR)),
+            ("b", usage(91.0, reset)),
             ("cred", usage(5.0, T + HOUR)),
         ]),
         &c,
+        &pool,
         T,
-        "rotate",
+        "usage",
+    )
+}
+
+#[test]
+fn a_usable_overflow_profile_makes_the_file_ok_once_the_plan_reset_is_far() {
+    let f = overflow_case(T + 2 * HOUR, &[], Some(GATE));
+    assert_eq!(f.state, Cap::Ok, "auto-switch could move onto cred");
+    assert_eq!(f.earliest_reset, None, "no reset to wait for");
+    assert_eq!(
+        f.over,
+        vec!["a".to_string(), "b".to_string()],
+        "the plan profiles still over"
     );
-    assert_eq!(f.state, Cap::Low);
+}
+
+#[test]
+fn an_overflow_profile_does_not_count_while_the_plan_reset_is_inside_the_wait() {
+    let f = overflow_case(T + 1800, &[], Some(GATE));
+    assert_eq!(
+        f.state,
+        Cap::Low,
+        "a reset exactly at the wait keeps the plan"
+    );
     assert_eq!(f.over, vec!["a".to_string(), "b".to_string()]);
-    assert_eq!(f.earliest_reset, Some(ts(T + HOUR)));
+    assert_eq!(f.earliest_reset, Some(ts(T + 1800)));
+}
+
+#[test]
+fn a_blocked_overflow_profile_or_a_closed_gate_is_no_capacity() {
+    let f = overflow_case(T + 2 * HOUR, &["cred".to_string()], Some(GATE));
+    assert_eq!(f.state, Cap::Low, "spend-blocked");
+    let f = overflow_case(T + 2 * HOUR, &[], None);
+    assert_eq!(f.state, Cap::Low, "gate unreadable");
+}
+
+#[test]
+fn an_overflow_profile_is_never_plan_capacity() {
+    // Only cred is under the threshold, but it is overflow: with the gate
+    // shut, the plan state stands and cred is not listed as over.
+    let f = overflow_case(T + 600, &[], Some(GATE));
+    assert_eq!(f.state, Cap::Low);
+    assert!(!f.over.contains(&"cred".to_string()));
 }
 
 #[test]
@@ -835,178 +907,6 @@ fn write_errors_are_swallowed() {
 }
 
 // ---------------------------------------------------------------------------
-// Parity: utils' gate and root must give this crate's answers
-// ---------------------------------------------------------------------------
-
-#[test]
-fn gate_parity_table() {
-    let _l = lock();
-    let r = root(&["a"]);
-    let toggle = r.root.join(config::FILE);
-    type Plant<'a> = Box<dyn Fn() + 'a>;
-    let files: [(&str, Plant<'_>); 5] = [
-        (
-            "on",
-            Box::new(|| {
-                config::write(&r.root, &cfg(90, &[])).unwrap();
-            }),
-        ),
-        (
-            "off",
-            Box::new(|| {
-                let mut c = cfg(90, &[]);
-                c.enabled = false;
-                config::write(&r.root, &c).unwrap();
-            }),
-        ),
-        ("missing", Box::new(|| {})),
-        (
-            "corrupt",
-            Box::new(|| {
-                fs::write(&toggle, b"enabled=maybe\n").unwrap();
-                fs::set_permissions(&toggle, fs::Permissions::from_mode(0o600)).unwrap();
-            }),
-        ),
-        (
-            "symlink",
-            Box::new(|| {
-                let real = r.root.join("real-toggle");
-                fs::write(&real, b"enabled=on\n").unwrap();
-                fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
-                std::os::unix::fs::symlink(&real, &toggle).unwrap();
-            }),
-        ),
-    ];
-    for env in [Some("1"), Some("0"), None, Some("garbage")] {
-        for (why, plant) in &files {
-            let _ = fs::remove_file(&toggle);
-            let _ = fs::remove_file(r.root.join("real-toggle"));
-            plant();
-            let _env = match env {
-                Some(v) => EnvGuard::set([(config::TOGGLE_ENV, v)]),
-                None => EnvGuard::unset([config::TOGGLE_ENV]),
-            };
-            assert_eq!(
-                cap::auto_switch_on(&r.root),
-                config::effective(&r.root).on,
-                "env {env:?}, file {why}"
-            );
-        }
-    }
-    // And the table is not trivially all-false.
-    let _env = EnvGuard::unset([config::TOGGLE_ENV]);
-    let _ = fs::remove_file(&toggle);
-    config::write(&r.root, &cfg(90, &[])).unwrap();
-    assert!(cap::auto_switch_on(&r.root));
-}
-
-fn env_of(value: Option<OsString>) -> impl Fn(&str) -> Option<OsString> {
-    move |k| {
-        if k == crate::commands::profile::ROOT_ENV {
-            value.clone()
-        } else {
-            None
-        }
-    }
-}
-
-fn saved(home: &Path, bytes: &[u8], mode: u32) {
-    let dir = root_config::config_dir(home);
-    fs::create_dir_all(&dir).unwrap();
-    let f = dir.join(root_config::PROFILE_ROOT_FILE);
-    fs::write(&f, bytes).unwrap();
-    fs::set_permissions(&f, fs::Permissions::from_mode(mode)).unwrap();
-}
-
-#[test]
-fn root_parity_table() {
-    use std::os::unix::ffi::OsStringExt;
-    type Plant = Box<dyn Fn(&Path)>;
-    let none: Plant = Box::new(|_| {});
-    let rows: Vec<(&str, Option<OsString>, Plant)> = vec![
-        ("env absolute", Some("/srv/p".into()), Box::new(|_| {})),
-        ("env relative", Some("srv/p".into()), Box::new(|_| {})),
-        ("env dot-dot", Some("/srv/../p".into()), Box::new(|_| {})),
-        ("env control", Some("/srv/\u{1b}p".into()), Box::new(|_| {})),
-        (
-            "env non-UTF-8",
-            Some(OsString::from_vec(b"/srv/\xff".to_vec())),
-            Box::new(|_| {}),
-        ),
-        ("env empty", Some("".into()), Box::new(|_| {})),
-        ("default", None, none),
-        (
-            "saved ok",
-            None,
-            Box::new(|h| saved(h, b"/srv/saved\n", 0o600)),
-        ),
-        (
-            "saved relative",
-            None,
-            Box::new(|h| saved(h, b"srv/saved\n", 0o600)),
-        ),
-        (
-            "saved dot-dot",
-            None,
-            Box::new(|h| saved(h, b"/srv/../x\n", 0o600)),
-        ),
-        (
-            "saved control",
-            None,
-            Box::new(|h| saved(h, b"/srv/\x07x\n", 0o600)),
-        ),
-        (
-            "saved non-UTF-8",
-            None,
-            Box::new(|h| saved(h, b"/srv/\xffx\n", 0o600)),
-        ),
-        (
-            "saved group-writable",
-            None,
-            Box::new(|h| saved(h, b"/srv/x\n", 0o660)),
-        ),
-        (
-            "saved too large",
-            None,
-            Box::new(|h| {
-                let mut big = b"/srv/".to_vec();
-                big.extend(std::iter::repeat_n(b'x', 5000));
-                saved(h, &big, 0o600);
-            }),
-        ),
-        (
-            "saved symlink",
-            None,
-            Box::new(|h| {
-                let real = h.join("real");
-                fs::write(&real, b"/srv/x\n").unwrap();
-                fs::set_permissions(&real, fs::Permissions::from_mode(0o600)).unwrap();
-                let dir = root_config::config_dir(h);
-                fs::create_dir_all(&dir).unwrap();
-                std::os::unix::fs::symlink(&real, dir.join(root_config::PROFILE_ROOT_FILE))
-                    .unwrap();
-            }),
-        ),
-    ];
-    for (why, env, plant) in rows {
-        let home = tempfile::tempdir().unwrap();
-        plant(home.path());
-        let cli = root_config::resolve_with(env_of(env.clone()), Some(home.path()))
-            .ok()
-            .map(|(p, _)| p);
-        let utils = cap::resolve_root_with(env_of(env), Some(home.path()));
-        assert_eq!(utils, cli, "{why}");
-    }
-    assert_eq!(
-        cap::resolve_root_with(env_of(None), None),
-        root_config::resolve_with(env_of(None), None)
-            .ok()
-            .map(|(p, _)| p),
-        "no HOME"
-    );
-}
-
-// ---------------------------------------------------------------------------
 // Launch and recipe-run warnings
 // ---------------------------------------------------------------------------
 
@@ -1160,7 +1060,7 @@ fn recipe_warning_is_silent_when_off_or_ok() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn on_credits_overwrites_an_exhausted_file_with_ok() {
+fn on_overflow_overwrites_an_exhausted_file_with_ok() {
     let _l = lock();
     let _on = on();
     let r = root(&["a", "cred"]);
@@ -1174,13 +1074,13 @@ fn on_credits_overwrites_an_exhausted_file_with_ok() {
     assert_eq!(
         f.state,
         Cap::Ok,
-        "the live login runs on credits: work can go on"
+        "the live login runs on overflow: work can go on"
     );
     assert_eq!(f.writer, "rotate");
 }
 
 #[test]
-fn on_credits_never_creates_the_file() {
+fn on_overflow_never_creates_the_file() {
     let _l = lock();
     let _on = on();
     let r = root(&["a", "cred"]);
@@ -1193,7 +1093,7 @@ fn on_credits_never_creates_the_file() {
 }
 
 #[test]
-fn off_credits_the_result_is_as_before() {
+fn off_overflow_the_result_is_as_before() {
     let _l = lock();
     let _on = on();
     let r = root(&["a"]);
@@ -1203,7 +1103,7 @@ fn off_credits_the_result_is_as_before() {
 }
 
 #[test]
-fn on_credits_writes_nothing_while_auto_switch_is_off() {
+fn on_overflow_writes_nothing_while_auto_switch_is_off() {
     let _l = lock();
     let _off = EnvGuard::set([(config::TOGGLE_ENV, "0")]);
     let r = root(&["a"]);

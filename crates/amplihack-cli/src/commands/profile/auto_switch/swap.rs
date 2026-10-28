@@ -8,6 +8,7 @@ use super::config::Config;
 use super::fsx;
 use super::liveness::{self, Liveness};
 use super::mv::{self, MoveError, abort_point};
+use super::overflow_inputs::OverflowInputs;
 use super::state::{
     CLAUDE_JSON, CREDS, HostEntry, Journal, Ledger, Lock, MAX_CLAUDE_JSON, Op, PHASE_INCONSISTENT,
     State,
@@ -472,8 +473,12 @@ pub fn swap_check(
     let now = fsx::now();
     // Most updates are below the threshold: decide that from the reading
     // alone, before recovery and the `/proc` scan. The status-line wrapper
-    // ran recovery moments ago in this same update.
-    if !candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now) {
+    // ran recovery moments ago in this same update. A session on an
+    // overflow profile goes on to the check below it even so, to move back
+    // to a plan profile that has capacity again (issue #1606).
+    let exhausted =
+        candidate::is_exhausted(Some(&usage::reading_from(rl, now)), cfg.threshold, now);
+    if !exhausted && !may_leave_overflow(state, owner, cfg, now) {
         return Ok(());
     }
     let live = match recover(state)? {
@@ -494,14 +499,16 @@ pub fn swap_check(
         return Ok(()); // no file to move (Keychain, logged out, or linked)
     }
     let readings = state.load_usage().accounts;
-    // Overflow profiles are never auto-switch candidates (issue #1606): only
-    // the rotator spends credits.
-    let exclude = cfg.selection_exclude();
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    let leaving_overflow = overflow.order.iter().any(|o| o.as_str() == current);
+    if !exhausted && !leaving_overflow {
+        return Ok(()); // the account changed since the first check
+    }
     let pool = Pool {
         profiles,
         readings: &readings,
         threshold: cfg.threshold,
-        exclude: &exclude,
+        exclude: &cfg.exclude,
         now,
     };
     // A candidate's home slot must hold its login; when that slot is its own
@@ -512,7 +519,9 @@ pub fn swap_check(
             && fsx::movable_login(&slot(state, &ledger, owner.as_str(), n))
             && (ledger.hosts.contains_key(n) || n == owner.as_str() || !live.is_live(c))
     };
-    let Some(target) = candidate::select(&pool, &current, eligible).cloned() else {
+    let Some(target) =
+        candidate::select_with_overflow(&pool, &overflow.pool(), &current, eligible).cloned()
+    else {
         return Ok(());
     };
     if !ledger.hosts.contains_key(target.as_str()) {
@@ -540,12 +549,40 @@ pub fn swap_check(
     let result = transfer(state, &mut ledger, j);
     release_refresh_lock(state, owner.as_str(), Some(ino));
     result?;
+    let why = if exhausted {
+        "reached the auto-switch threshold"
+    } else {
+        "is an overflow profile and a plan profile has capacity again"
+    };
     eprintln!(
-        "amplihack: profile {current:?} reached the auto-switch threshold; the session in profile {:?} now uses the login of profile {:?}",
+        "amplihack: profile {current:?} {why}; the session in profile {:?} now uses the login of profile {:?}",
         owner.as_str(),
         target.as_str()
     );
     Ok(())
+}
+
+/// A session under the threshold is still worth the full check when the
+/// account in `owner`'s directory is an overflow profile and some plan
+/// profile reads under the threshold: it should move back (issue #1606).
+/// Reads two small files; no recovery, no `/proc` scan.
+fn may_leave_overflow(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> bool {
+    if cfg.overflow.is_empty() {
+        return false;
+    }
+    let Ok(ledger) = state.load_ledger() else {
+        return false;
+    };
+    let account = ledger.account_in(owner.as_str());
+    let on_overflow = ProfileName::parse(account).is_ok_and(|a| cfg.is_overflow(&a));
+    on_overflow
+        && state.load_usage().accounts.iter().any(|(name, r)| {
+            ProfileName::parse(name).is_ok_and(|n| {
+                !cfg.is_overflow(&n)
+                    && !cfg.exclude.contains(&n)
+                    && !candidate::is_exhausted(Some(r), cfg.threshold, now)
+            })
+        })
 }
 
 // ---------------------------------------------------------------------------

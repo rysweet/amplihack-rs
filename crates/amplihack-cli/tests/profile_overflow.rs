@@ -21,7 +21,11 @@
 //! - A spend-limit reading on an overflow profile stores one block in
 //!   `overflow_blocked` with `reason: "spend_limit"` and writes one log line
 //!   containing `ALERT` and `spend limit`; Claude's own text is never logged.
-//! - `rotate status` prints `overflow:` and `on credits:` lines;
+//! - With no plan reset known, nothing moves onto overflow unless
+//!   `--overflow-unknown-reset 1` is given.
+//! - `profile overflow add <name> --tier N` sets the tier; `list` prints
+//!   `name  tier N` in tier order.
+//! - `rotate status` prints `overflow:` and `on overflow:` lines;
 //!   `profile usage --json` rows carry `overflow` and
 //!   `overflow_blocked_until`.
 
@@ -50,9 +54,17 @@ fn mark(f: &Fixture, name: &str) {
     f.ok(&["profile", "overflow", "add", name]);
 }
 
-/// `extra` is overflow; every plan login (work, spare) is exhausted with no
-/// known reset, so the earliest plan reset is unknown (far).
+/// `extra` is overflow; every plan login (work, spare) is exhausted and
+/// resets in 3 hours, beyond the default 30-minute wait.
 fn all_plan_logins_out(f: &Fixture) {
+    mark(f, "extra");
+    f.usage_resetting("work", 100, 40, 3);
+    f.usage_resetting("spare", 100, 100, 3);
+    f.usage("extra", 100, 100);
+}
+
+/// As [`all_plan_logins_out`], with no plan reset time known.
+fn all_plan_logins_out_unknown_reset(f: &Fixture) {
     mark(f, "extra");
     f.usage("work", 100, 40);
     f.usage("spare", 100, 100);
@@ -71,7 +83,8 @@ fn add_writes_overflow_last_and_is_idempotent() {
     let out = f.ok(&["profile", "overflow", "add", "extra"]);
     let note = format!("{}{}", stdout(&out), stderr(&out));
     assert!(note.contains("https://claude.ai/settings/usage"), "{note}");
-    assert!(note.to_lowercase().contains("credit"), "{note}");
+    assert!(note.contains("billed"), "{note}");
+    assert!(note.contains("tier 1"), "{note}");
     assert_eq!(
         fs::read_to_string(auto_switch(&f)).unwrap(),
         "enabled=off\nthreshold=90\nexclude=\noverflow=extra\n"
@@ -83,6 +96,22 @@ fn add_writes_overflow_last_and_is_idempotent() {
         "enabled=off\nthreshold=90\nexclude=\noverflow=extra,spare\n",
         "no duplicate; config order kept"
     );
+    let out = f.ok(&["profile", "overflow", "add", "spare", "--tier", "2"]);
+    assert!(
+        stdout(&out).contains("moved from tier 1 to tier 2"),
+        "{}",
+        stdout(&out)
+    );
+    f.ok(&["profile", "overflow", "add", "spare"]);
+    assert_eq!(
+        fs::read_to_string(auto_switch(&f)).unwrap(),
+        "enabled=off\nthreshold=90\nexclude=\noverflow=extra,spare:2\n",
+        "a repeated add without --tier keeps the tier"
+    );
+    let list = stdout(&f.ok(&["profile", "overflow", "list"]));
+    assert!(list.starts_with("extra  tier 1\nspare  tier 2"), "{list}");
+    let out = f.run(&["profile", "overflow", "add", "spare", "--tier", "10"]);
+    assert!(!out.status.success(), "tier 10 is out of range");
 }
 
 #[test]
@@ -259,7 +288,7 @@ fn an_overflow_profile_is_not_chosen_while_a_plan_login_has_capacity() {
 }
 
 #[test]
-fn moves_onto_credits_when_every_plan_login_is_out() {
+fn moves_onto_overflow_when_every_plan_login_is_out() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     let out = f.ok(&["profile", "rotate"]);
@@ -270,7 +299,7 @@ fn moves_onto_credits_when_every_plan_login_is_out() {
     );
     assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
     assert!(
-        s.contains("credits: on extra; no plan profile has capacity"),
+        s.contains("overflow: on extra; no plan profile has capacity"),
         "{s}"
     );
     f.assert_each_login_once();
@@ -285,7 +314,39 @@ fn moves_onto_credits_when_every_plan_login_is_out() {
 }
 
 #[test]
-fn a_dry_run_onto_credits_moves_nothing() {
+fn a_known_plan_reset_is_logged_with_the_move() {
+    let f = Fixture::new();
+    all_plan_logins_out(&f);
+    let s = stdout(&f.ok(&["profile", "rotate"]));
+    assert!(s.contains("overflow: on extra"), "{s}");
+    assert!(!s.contains("next plan reset unknown"), "{s}");
+}
+
+#[test]
+fn an_unknown_plan_reset_spends_nothing_by_default() {
+    let f = Fixture::new();
+    all_plan_logins_out_unknown_reset(&f);
+    let s = stdout(&f.ok(&["profile", "rotate"]));
+    assert!(s.contains("ALERT: no profile has capacity"), "{s}");
+    assert!(!s.contains("reason=overflow-in"), "{s}");
+    assert_eq!(ino(&f.home_login()), Some(f.live_ino), "nothing moved");
+}
+
+#[test]
+fn an_unknown_plan_reset_spends_only_with_the_opt_in() {
+    let f = Fixture::new();
+    all_plan_logins_out_unknown_reset(&f);
+    let s = stdout(&f.ok(&["profile", "rotate", "--overflow-unknown-reset", "1"]));
+    assert!(s.contains("reason=overflow-in"), "{s}");
+    assert!(
+        s.contains("overflow: on extra; no plan profile has capacity, next plan reset unknown"),
+        "{s}"
+    );
+    assert_eq!(ino(&f.home_login()), Some(f.extra_ino));
+}
+
+#[test]
+fn a_dry_run_onto_overflow_moves_nothing() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     let out = f.ok(&["profile", "rotate", "--dry-run"]);
@@ -294,7 +355,7 @@ fn a_dry_run_onto_credits_moves_nothing() {
 }
 
 #[test]
-fn stays_on_credits_then_moves_off_when_a_plan_login_recovers() {
+fn stays_on_overflow_then_moves_off_when_a_plan_login_recovers() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate"]);
@@ -316,7 +377,7 @@ fn stays_on_credits_then_moves_off_when_a_plan_login_recovers() {
         "{s}"
     );
     assert!(
-        s.contains("credits: off extra; back on plan profile spare"),
+        s.contains("overflow: off extra; back on plan profile spare"),
         "{s}"
     );
     assert_eq!(ino(&f.home_login()), Some(f.spare_ino));
@@ -341,7 +402,7 @@ fn unmarking_mid_run_takes_effect_next_cycle() {
 }
 
 #[test]
-fn a_spend_limit_on_credits_blocks_once_and_alerts_once() {
+fn a_spend_limit_on_overflow_blocks_once_and_alerts_once() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate"]);
@@ -395,17 +456,17 @@ fn a_spend_limit_on_a_candidate_keeps_the_rotator_off_it() {
 // --- Display ---------------------------------------------------------------
 
 #[test]
-fn rotate_status_shows_overflow_and_credits() {
+fn rotate_status_shows_overflow_and_whether_it_is_used() {
     let f = Fixture::new();
     let s = stdout(&f.ok(&["profile", "rotate", "status"]));
     assert!(s.contains("overflow: -\n"), "{s}");
-    assert!(s.contains("on credits: "), "{s}");
+    assert!(s.contains("on overflow: "), "{s}");
 
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate"]);
     let s = stdout(&f.ok(&["profile", "rotate", "status"]));
     assert!(s.contains("overflow: extra"), "{s}");
-    assert!(s.contains("on credits: yes (extra)"), "{s}");
+    assert!(s.contains("on overflow: yes (extra)"), "{s}");
     assert!(s.contains(" overflow=in"), "{s}");
 }
 
@@ -426,19 +487,19 @@ fn profile_usage_json_marks_overflow_rows() {
 }
 
 #[test]
-fn profile_usage_table_marks_overflow_and_running_on_credits() {
+fn profile_usage_table_marks_overflow_and_running_on_overflow() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     let s = stdout(&f.ok(&["profile", "usage"]));
     assert!(s.contains("overflow"), "{s}");
-    assert!(!s.contains("running on credits"), "{s}");
+    assert!(!s.contains("running on overflow"), "{s}");
     f.ok(&["profile", "rotate"]);
     let s = stdout(&f.ok(&["profile", "usage"]));
-    assert!(s.contains("running on credits: extra"), "{s}");
+    assert!(s.contains("running on overflow: extra"), "{s}");
 }
 
 #[test]
-fn a_damaged_ledger_never_moves_onto_credits() {
+fn a_damaged_ledger_never_moves_onto_overflow() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate", "--dry-run"]); // creates the state directory
@@ -485,17 +546,17 @@ fn live_on_a_marked_profile_with_capacity(f: &Fixture) {
 }
 
 #[test]
-fn rotate_status_needs_a_ledger_tag_to_say_on_credits() {
+fn rotate_status_needs_a_ledger_tag_to_say_on_overflow() {
     let f = Fixture::new();
     live_on_a_marked_profile_with_capacity(&f);
     let s = stdout(&f.ok(&["profile", "rotate", "status"]));
     assert!(s.contains("overflow: extra"), "{s}");
-    assert!(!s.contains("on credits: yes"), "no in/on tag: {s}");
-    assert!(s.contains("on credits: no"), "{s}");
+    assert!(!s.contains("on overflow: yes"), "no in/on tag: {s}");
+    assert!(s.contains("on overflow: no"), "{s}");
 }
 
 #[test]
-fn rotate_status_says_on_credits_while_staying_on_them() {
+fn rotate_status_says_on_overflow_while_staying_on_them() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
     f.ok(&["profile", "rotate"]);
@@ -503,16 +564,16 @@ fn rotate_status_says_on_credits_while_staying_on_them() {
     let ledger = f.ledger().unwrap();
     assert_eq!(ledger["last_cycle"]["overflow"], "on", "{ledger}");
     let s = stdout(&f.ok(&["profile", "rotate", "status"]));
-    assert!(s.contains("on credits: yes (extra)"), "{s}");
+    assert!(s.contains("on overflow: yes (extra)"), "{s}");
 }
 
 #[test]
-fn profile_usage_needs_a_reached_limit_to_say_running_on_credits() {
+fn profile_usage_needs_a_reached_limit_to_say_running_on_overflow() {
     let f = Fixture::new();
     live_on_a_marked_profile_with_capacity(&f);
     let s = stdout(&f.ok(&["profile", "usage"]));
     assert!(s.contains("overflow"), "{s}");
-    assert!(!s.contains("running on credits"), "capacity remains: {s}");
+    assert!(!s.contains("running on overflow"), "capacity remains: {s}");
 }
 
 #[test]

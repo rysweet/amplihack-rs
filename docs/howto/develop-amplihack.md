@@ -134,6 +134,17 @@ cargo clean && cargo build
 cargo test test_name -- --nocapture
 ```
 
+### Leaked Rotator Daemons
+
+A test that launches amplihack must not leave a `profile rotate watch
+--spawned` process behind. Check after a test run:
+
+```bash
+bash scripts/check-leaked-rotators.sh
+```
+
+See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -148,3 +159,4 @@ pre-commit run --all-files
 - [Prerequisites](../reference/prerequisites.md) — detailed tool installation
 - [Create Your Own Tools](../howto/create-your-own-tools.md) — building custom tools
 - [Code Review](../reference/code-review.md) — code review practices
+- [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons

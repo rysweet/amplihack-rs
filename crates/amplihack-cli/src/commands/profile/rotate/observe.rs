@@ -16,6 +16,7 @@ use crate::commands::profile::auto_switch::kit::{
     Liveness, State, effective, exists, now, scan_system,
 };
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::OverflowEntry;
 use crate::commands::profile::run::resolve_claude_binary;
 
 /// Who is live and who may receive the login: compared again under the
@@ -28,9 +29,10 @@ pub struct Snap {
     pub candidates: Vec<ProfileName>,
     pub skips: Vec<(ProfileName, Skip)>,
     pub sees_sessions: bool,
-    /// The credit-backed overflow profiles, in config order. Part of the
-    /// snapshot, so a mark changed during measurement skips the cycle.
-    pub overflow: Vec<ProfileName>,
+    /// The overflow entries with their tiers, in file order. Part of the
+    /// snapshot, so a mark or tier changed during measurement skips the
+    /// cycle.
+    pub overflow: Vec<OverflowEntry>,
 }
 
 pub fn snapshot(ctx: &Ctx, state: &State) -> Result<Snap, ProfileError> {
@@ -96,12 +98,14 @@ pub struct Measurement {
     pub note: Option<String>,
     /// Consecutive failed live probes, including this cycle's.
     pub failed: u32,
-    /// What the cycle records about credits.
+    /// What the cycle records about overflow.
     pub tag: Option<Tag>,
     /// Overflow profiles to block for a spend limit.
     pub new_blocks: Vec<ProfileName>,
-    /// The earliest plan reset, for the `credits:` log lines.
+    /// The earliest plan reset, for the `overflow:` log lines.
     pub next_plan_reset: Option<i64>,
+    /// When measuring started, epoch seconds.
+    pub measured_at: i64,
 }
 
 pub fn measure_and_decide(
@@ -109,12 +113,12 @@ pub fn measure_and_decide(
     binary: &crate::binary_finder::BinaryInfo,
     snap: &Snap,
 ) -> Result<Measurement, ProfileError> {
-    let t = now();
+    let measured_at = now();
     let live = match &snap.live {
         LiveId::Known(n) => Live::Profile(n),
         _ => Live::Unowned,
     };
-    let (probe, probes) = measure::measure(&ctx.store, binary, live, &snap.candidates, t);
+    let (probe, probes) = measure::measure(&ctx.store, binary, live, &snap.candidates, measured_at);
     let measured: Vec<Measured> = probes
         .iter()
         .map(|(name, p)| Measured::new(name.clone(), p))
@@ -142,7 +146,7 @@ pub fn measure_and_decide(
     });
     // A spend limit on a live overflow profile is handled by its block, so
     // it does not count towards the failed live probes.
-    let live_over = live_name.is_some_and(|n| snap.overflow.contains(n));
+    let live_over = live_name.is_some_and(|n| snap.overflow.iter().any(|e| &e.name == n));
     let failed = if live_over && probe.spend_limit {
         ctx.failed_live
     } else {
@@ -170,6 +174,7 @@ pub fn measure_and_decide(
         tag,
         new_blocks: verdict.new_blocks,
         next_plan_reset: verdict.next_plan_reset,
+        measured_at,
     })
 }
 

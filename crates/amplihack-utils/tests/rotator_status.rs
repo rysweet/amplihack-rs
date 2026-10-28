@@ -1,17 +1,16 @@
 //! Issue #1658 (A): `amplihack_utils::rotator_status`, the read-only view of
 //! the rotator that the limit-resume hook uses. It resolves the profile root,
-//! reads the auto-switch toggle and reads the rotate ledger's last cycle.
-//!
-//! The CLI owns the same rules (`root_config`, `auto_switch::config`,
-//! `rotate::ledger`); the drift tests in amplihack-cli check the two agree.
-//! These tests pin the hook-side contract.
+//! reads the auto-switch toggle, reads the rotate ledger's last cycle and
+//! checks that the rotator runs. Since #1659 the CLI calls the same root and
+//! toggle code, so no drift test is needed.
 
 #![cfg(unix)]
 
 use amplihack_utils::rotator_status::{
-    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, MAX_WAIT, POLL_INTERVAL,
-    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, ledger_path, parse_cycle, read_cycle,
-    resolve_root_from, valid_live_name,
+    CycleStatus, FRESH_MARGIN_SECS, LIMIT_RESUME_TIMEOUT_SECS, Ledger, MAX_WAIT, POLL_INTERVAL,
+    SLOW_POLL_AFTER, SLOW_POLL_INTERVAL, auto_switch_on_from, foreign_rotator, is_rotator,
+    ledger_path, parse_cycle, pid_path, read_cycle, read_ledger, resolve_root_from,
+    rotator_down_at, valid_live_name,
 };
 use std::ffi::{OsStr, OsString};
 use std::fs;
@@ -275,12 +274,13 @@ fn ledger(json: &str) -> Vec<u8> {
 }
 
 #[test]
-fn parse_cycle_reads_the_four_fields() {
+fn parse_cycle_reads_the_five_fields() {
     let s = parse_cycle(
         &ledger(&format!(
             r#"{{"version":1,"live":"work","account":"acct-1","since":1,
                 "swapped_at":{t},"previous":"spare","alert":"all-over:-",
-                "last_cycle":{{"at":{t},"outcome":"stayed"}}}}"#,
+                "last_cycle":{{"at":{t},"measured_at":{m},"outcome":"stayed"}}}}"#,
+            m = NOW - 40,
             t = NOW - 10
         )),
         NOW,
@@ -290,6 +290,7 @@ fn parse_cycle_reads_the_four_fields() {
         s,
         CycleStatus {
             at: Some(NOW - 10),
+            measured_at: Some(NOW - 40),
             outcome: Some("stayed".into()),
             alert: true,
             live: Some("work".into()),
@@ -318,6 +319,7 @@ fn parse_cycle_ignores_unknown_fields() {
 fn parse_cycle_without_last_cycle_has_no_at_or_outcome() {
     let s = parse_cycle(b"{\"version\":1}", NOW).unwrap();
     assert_eq!(s.at, None);
+    assert_eq!(s.measured_at, None);
     assert_eq!(s.outcome, None);
     assert!(!s.has_capacity());
 }
@@ -402,7 +404,7 @@ fn parse_cycle_drops_live_that_fails_the_name_rule() {
 #[test]
 fn parse_cycle_wrong_typed_fields_are_treated_as_absent() {
     let s = parse_cycle(
-        br#"{"version":1,"live":5,"alert":7,"last_cycle":{"at":"soon","outcome":3}}"#,
+        br#"{"version":1,"live":5,"alert":7,"last_cycle":{"at":"soon","measured_at":[],"outcome":3}}"#,
         NOW,
     )
     .expect("loose parse keeps the ledger");
@@ -417,6 +419,7 @@ fn parse_cycle_wrong_typed_fields_are_treated_as_absent() {
 fn status(outcome: &str, alert: bool) -> CycleStatus {
     CycleStatus {
         at: Some(NOW),
+        measured_at: Some(NOW),
         outcome: Some(outcome.into()),
         alert,
         live: Some("work".into()),
@@ -593,7 +596,7 @@ fn a_ledger_without_overflow_reads_as_before() {
     assert!(s.has_capacity());
 }
 
-// ── fresh_capacity on credits (issue #1606) ─────────────────────────────────
+// ── fresh_capacity on overflow (issue #1606) ────────────────────────────────
 //
 // A cycle that moved onto an overflow profile (`swapped`, overflow `in`) or
 // stayed on one (`stayed`, overflow `on`) left a login that can work, so the
@@ -601,9 +604,10 @@ fn a_ledger_without_overflow_reads_as_before() {
 // stays `has_capacity` plus the time check; the overflow tag adds nothing
 // and takes nothing away.
 
-fn on_credits(outcome: &str, tag: &str, at: i64) -> CycleStatus {
+fn on_overflow_cycle(outcome: &str, tag: &str, at: i64) -> CycleStatus {
     CycleStatus {
         at: Some(at),
+        measured_at: None,
         outcome: Some(outcome.into()),
         alert: false,
         live: Some("cred".into()),
@@ -612,11 +616,11 @@ fn on_credits(outcome: &str, tag: &str, at: i64) -> CycleStatus {
 }
 
 #[test]
-fn moving_onto_or_staying_on_credits_is_fresh_capacity() {
+fn moving_onto_or_staying_on_overflow_is_fresh_capacity() {
     let start = NOW - 600;
     let after = start + FRESH_MARGIN_SECS + 1;
     for (outcome, tag) in [("swapped", "in"), ("stayed", "on")] {
-        let s = on_credits(outcome, tag, after);
+        let s = on_overflow_cycle(outcome, tag, after);
         assert!(s.on_overflow(), "{outcome}/{tag}");
         assert!(s.has_capacity(), "{outcome}/{tag}");
         assert!(s.fresh_capacity(start), "{outcome}/{tag}");
@@ -624,29 +628,182 @@ fn moving_onto_or_staying_on_credits_is_fresh_capacity() {
 }
 
 #[test]
-fn a_credits_cycle_before_the_limit_hit_is_not_fresh() {
+fn a_overflow_cycle_before_the_limit_hit_is_not_fresh() {
     let start = NOW - 600;
     for at in [start - 1, start, start + FRESH_MARGIN_SECS] {
-        let s = on_credits("swapped", "in", at);
+        let s = on_overflow_cycle("swapped", "in", at);
         assert!(!s.fresh_capacity(start), "at {at}");
     }
 }
 
 #[test]
-fn an_alerted_cycle_with_a_credits_tag_is_not_capacity() {
-    let mut s = on_credits("stayed", "on", NOW);
+fn an_alerted_cycle_with_a_overflow_tag_is_not_capacity() {
+    let mut s = on_overflow_cycle("stayed", "on", NOW);
     s.alert = true;
     assert!(!s.fresh_capacity(NOW - 600));
-    let s = on_credits("alerted", "in", NOW);
+    let s = on_overflow_cycle("alerted", "in", NOW);
     assert!(!s.fresh_capacity(NOW - 600));
 }
 
+/// With #1659's `measured_at`, an overflow cycle is fresh exactly when its
+/// probe began after the limit: the overflow tag changes neither side.
 #[test]
-fn a_ledger_that_moved_onto_credits_reads_as_fresh_capacity() {
+fn an_overflow_cycle_measured_after_the_limit_is_fresh_capacity() {
+    let start = NOW - 600;
+    for (outcome, tag) in [("swapped", "in"), ("stayed", "on")] {
+        let mut s = on_overflow_cycle(outcome, tag, start + 2);
+        s.measured_at = Some(start + 1);
+        assert!(s.fresh_capacity(start), "{outcome}/{tag} measured after");
+        s.measured_at = Some(start);
+        assert!(
+            !s.fresh_capacity(start),
+            "{outcome}/{tag} measured at the limit"
+        );
+    }
+    // Through the ledger file, as the limit-resume hook reads it.
+    let raw = ledger(&format!(
+        r#"{{"version":1,"live":"cred","last_cycle":{{"at":{},"measured_at":{},"outcome":"stayed","overflow":"on"}}}}"#,
+        start + 2,
+        start + 1
+    ));
+    let s = parse_cycle(&raw, NOW).unwrap();
+    assert!(s.on_overflow());
+    assert_eq!(s.measured_at, Some(start + 1));
+    assert!(s.fresh_capacity(start));
+}
+
+#[test]
+fn a_ledger_that_moved_onto_overflow_reads_as_fresh_capacity() {
     let raw = ledger(
         r#"{"version":1,"live":"cred","last_cycle":{"at":1760000000,"outcome":"swapped","overflow":"in"}}"#,
     );
     let s = parse_cycle(&raw, 1_760_000_100).unwrap();
     assert_eq!(s.overflow.as_deref(), Some("in"));
     assert!(s.fresh_capacity(1_760_000_000 - FRESH_MARGIN_SECS - 1));
+}
+
+#[test]
+fn read_ledger_tells_missing_from_unreadable() {
+    let root = tempfile::tempdir().unwrap();
+    assert_eq!(read_ledger(root.path(), NOW), Ledger::Missing);
+    let root = root_with_ledger(br#"{"version":2}"#);
+    assert_eq!(read_ledger(root.path(), NOW), Ledger::Unreadable);
+    let root = root_with_ledger(&good_ledger());
+    assert!(matches!(read_ledger(root.path(), NOW), Ledger::Read(_)));
+}
+
+// ── rotator_down ────────────────────────────────────────────────────────────
+
+const PID: u32 = 4242;
+
+/// A `/proc` with one process of this user running `cmdline`.
+fn fake_proc(cmdline: &[u8]) -> tempfile::TempDir {
+    let proc_root = tempfile::tempdir().unwrap();
+    let dir = proc_root.path().join(PID.to_string());
+    private_dir(&dir);
+    fs::write(dir.join("cmdline"), cmdline).unwrap();
+    proc_root
+}
+
+const WATCH: &[u8] = b"/home/u/.cargo/bin/amplihack\0profile\0rotate\0watch\0";
+
+fn with_pid_file(root: &Path) {
+    let p = pid_path(root);
+    private_dir(p.parent().unwrap());
+    private_file(&p, format!("{PID}\n").as_bytes());
+}
+
+#[test]
+fn a_running_rotator_with_a_readable_or_missing_ledger_is_up() {
+    let proc_root = fake_proc(WATCH);
+    let root = tempfile::tempdir().unwrap();
+    private_dir(&root.path().join(".auto-switch.d"));
+    with_pid_file(root.path());
+    assert!(
+        !rotator_down_at(root.path(), proc_root.path(), NOW),
+        "no cycle yet"
+    );
+    let root = root_with_ledger(&good_ledger());
+    with_pid_file(root.path());
+    assert!(!rotator_down_at(root.path(), proc_root.path(), NOW));
+}
+
+#[test]
+fn no_pid_file_or_a_pid_that_is_no_rotator_is_down() {
+    let root = root_with_ledger(&good_ledger());
+    assert!(rotator_down_at(root.path(), fake_proc(WATCH).path(), NOW));
+    with_pid_file(root.path());
+    let other = fake_proc(b"/usr/bin/sleep\x00600\x00");
+    assert!(rotator_down_at(root.path(), other.path(), NOW));
+    let empty = tempfile::tempdir().unwrap();
+    assert!(rotator_down_at(root.path(), empty.path(), NOW), "pid gone");
+}
+
+#[test]
+fn a_running_rotator_with_an_unreadable_ledger_is_down() {
+    let root = root_with_ledger(br#"{"version":2,"last_cycle":{"at":1,"outcome":"swapped"}}"#);
+    with_pid_file(root.path());
+    assert!(rotator_down_at(root.path(), fake_proc(WATCH).path(), NOW));
+}
+
+#[test]
+fn without_proc_only_the_ledger_counts() {
+    let root = root_with_ledger(&good_ledger());
+    let no_proc = Path::new("/nonexistent-proc-for-test");
+    with_pid_file(root.path());
+    assert!(!rotator_down_at(root.path(), no_proc, NOW));
+    let root = root_with_ledger(b"not json");
+    with_pid_file(root.path());
+    assert!(rotator_down_at(root.path(), no_proc, NOW));
+}
+
+#[test]
+fn is_rotator_checks_the_exe_name_only_when_given() {
+    assert!(is_rotator(WATCH, None));
+    assert!(is_rotator(WATCH, Some(OsStr::new("amplihack"))));
+    assert!(!is_rotator(WATCH, Some(OsStr::new("amplihack-hooks"))));
+    assert!(!is_rotator(b"amplihack\0profile\0rotate\0status\0", None));
+}
+
+/// A `/proc` whose rotator runs the executable `exe`. A hard link, like
+/// the real `exe` link, keeps the inode that ran even if `exe` is replaced.
+fn fake_proc_running(exe: &Path) -> tempfile::TempDir {
+    let proc_root = fake_proc(WATCH);
+    fs::hard_link(exe, proc_root.path().join(PID.to_string()).join("exe")).unwrap();
+    proc_root
+}
+
+#[test]
+fn a_rotator_running_another_binary_is_foreign() {
+    let bins = tempfile::tempdir().unwrap();
+    let (old, new) = (bins.path().join("old"), bins.path().join("new"));
+    fs::write(&old, b"old").unwrap();
+    fs::write(&new, b"new").unwrap();
+    let root = tempfile::tempdir().unwrap();
+    private_dir(&root.path().join(".auto-switch.d"));
+    with_pid_file(root.path());
+    let pid_file = pid_path(root.path());
+
+    let same = fake_proc_running(&new);
+    assert_eq!(foreign_rotator(&pid_file, same.path(), Some(&new)), None);
+    let other = fake_proc_running(&old);
+    assert_eq!(
+        foreign_rotator(&pid_file, other.path(), Some(&new)),
+        Some(PID)
+    );
+    // Replaced at the same path by an upgrade: another inode.
+    fs::remove_file(&new).unwrap();
+    fs::write(&new, b"upgraded").unwrap();
+    assert_eq!(
+        foreign_rotator(&pid_file, same.path(), Some(&new)),
+        Some(PID)
+    );
+    // Unknown is treated as foreign.
+    assert_eq!(
+        foreign_rotator(&pid_file, fake_proc(WATCH).path(), Some(&new)),
+        Some(PID)
+    );
+    // No rotator running: nothing to protect.
+    let none = tempfile::tempdir().unwrap();
+    assert_eq!(foreign_rotator(&pid_file, none.path(), Some(&new)), None);
 }

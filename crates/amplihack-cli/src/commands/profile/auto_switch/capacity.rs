@@ -9,9 +9,10 @@
 //! `amplihack_utils::claude_capacity`. See "When no account has capacity" in
 //! docs/reference/profile-command.md.
 
-use super::candidate::{adjusted, is_exhausted};
+use super::candidate::{OverflowPool, adjusted, is_exhausted};
 use super::config::{self, Config};
 use super::fsx;
+use super::overflow_inputs::OverflowInputs;
 use super::state::{Ledger, State, UsageFile};
 use super::usage::{Reading, ReadingSource, Window};
 use crate::commands::profile::name::ProfileName;
@@ -144,19 +145,27 @@ fn classify(e: Option<&Evidence>, threshold: u8, now: i64) -> Option<Over> {
     }
 }
 
-/// The capacity file for `profiles` (minus `cfg.selection_exclude()`: the
-/// excluded and the overflow profiles), keyed by profile name in `evidence`.
-/// An overflow profile is plan capacity only through the rotator's credits
-/// rule, which `refresh_from_rotation` applies with `on_credits`. Pure.
+/// The capacity file for `profiles`, keyed by profile name in `evidence`.
+/// Excluded profiles never count. The state is decided by the plan profiles
+/// (not overflow): `ok` while one is under the threshold. When every plan
+/// profile is over it, an overflow profile still makes the state `ok` when
+/// auto-switch could move onto it: the overflow gate allows it (issue
+/// #1606), and the profile is not blocked and not over the threshold. The
+/// rotator also forces `ok` while the live login is on an overflow profile
+/// (`refresh_from_rotation`). Pure.
 pub fn compute(
     profiles: &[ProfileName],
     evidence: &BTreeMap<String, Evidence>,
     cfg: &Config,
+    overflow: &OverflowPool<'_>,
     now: i64,
     writer: &str,
 ) -> CapacityFile {
-    let skip = cfg.selection_exclude();
-    let eligible: Vec<&ProfileName> = profiles.iter().filter(|p| !skip.contains(p)).collect();
+    let is_overflow = |p: &ProfileName| overflow.order.contains(p);
+    let eligible: Vec<&ProfileName> = profiles
+        .iter()
+        .filter(|p| !cfg.exclude.contains(p) && !is_overflow(p))
+        .collect();
     let mut over: Vec<(String, Over)> = eligible
         .iter()
         .filter_map(|p| {
@@ -164,8 +173,20 @@ pub fn compute(
         })
         .collect();
     over.sort_by(|a, b| a.0.cmp(&b.0));
+    let earliest_plan_reset = over.iter().filter_map(|(_, o)| o.reset).min();
+    let overflow_usable = || {
+        overflow
+            .gate
+            .is_some_and(|g| g.allows(false, earliest_plan_reset, now))
+            && overflow.order.iter().any(|o| {
+                profiles.contains(o)
+                    && !cfg.exclude.contains(o)
+                    && !overflow.blocked.iter().any(|b| b == o.as_str())
+                    && classify(evidence.get(o.as_str()), cfg.threshold, now).is_none()
+            })
+    };
     let all_over = !eligible.is_empty() && over.len() == eligible.len();
-    let state = if !all_over {
+    let state = if !all_over || overflow_usable() {
         Cap::Ok
     } else if over.iter().all(|(_, o)| o.hard) {
         Cap::Exhausted
@@ -231,9 +252,17 @@ pub fn refresh(state: &State, usage: &UsageFile, ledger: &Ledger, writer: &str) 
             })
             .collect();
         let now = fsx::now();
+        let overflow = OverflowInputs::load(&state.root, &eff.config, now);
         write_if_changed(
             state,
-            &compute(&profiles, &evidence, &eff.config, now, writer),
+            &compute(
+                &profiles,
+                &evidence,
+                &eff.config,
+                &overflow.pool(),
+                now,
+                writer,
+            ),
             now,
         );
     }));
@@ -250,7 +279,7 @@ pub fn refresh_from_rotation(
     root: &Path,
     readings: &[(ProfileName, Rotated)],
     now: i64,
-    on_credits: bool,
+    on_overflow: bool,
 ) {
     // See `refresh` on catch_unwind.
     let _ = catch_unwind(AssertUnwindSafe(|| {
@@ -285,8 +314,16 @@ pub fn refresh_from_rotation(
                 )
             })
             .collect();
-        let mut file = compute(&profiles, &evidence, &eff.config, now, "rotate");
-        if on_credits {
+        let overflow = OverflowInputs::load(&state.root, &eff.config, now);
+        let mut file = compute(
+            &profiles,
+            &evidence,
+            &eff.config,
+            &overflow.pool(),
+            now,
+            "rotate",
+        );
+        if on_overflow {
             file.state = Cap::Ok;
             file.over.clear();
             file.earliest_reset = None;

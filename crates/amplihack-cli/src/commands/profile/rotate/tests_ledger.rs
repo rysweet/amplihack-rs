@@ -6,7 +6,8 @@
 //!   `ledger`, `journal`, `pid`, `log`, `log1`; `ensure()` creates `dir`
 //!   (and `.auto-switch.d`) private.
 //! - `RotateLedger { version, live, account, since, swapped_at, previous,
-//!   alert, last_cycle: Option<LastCycle { at, outcome }> }`, `Default`
+//!   alert, last_cycle: Option<LastCycle { at, measured_at, outcome }> }`,
+//!   `Default`
 //!   with `version: 1`.
 //! - `RotateJournal { version, from, to, adopt, phase: Phase, home,
 //!   live_ino, target_ino, home_lock_ino, to_lock_ino, started_at, pid }`.
@@ -15,11 +16,12 @@
 //! - `alert_key(kind, live: Option<&ProfileName>) -> String`,
 //!   `should_alert(&mut RotateLedger, key) -> bool`, `clear_alert(&mut ..)`.
 
-use super::credits::block_spend_limited;
 use super::ledger::{
     LastCycle, MAX_BLOCKS, OverflowBlock, Phase, RotateJournal, RotateLedger, RotateState,
-    active_blocks, alert_key, clear_alert, prune_blocks, should_alert, spend_reset,
+    active_blocks, alert_key, clear_alert, for_older_readers, prune_blocks, should_alert,
+    spend_reset,
 };
+use super::overflow_record::block_spend_limited;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
 use std::fs;
@@ -47,6 +49,7 @@ fn ledger() -> RotateLedger {
         previous: Some("work".into()),
         last_cycle: Some(LastCycle {
             at: 160,
+            measured_at: Some(130),
             outcome: "stayed".into(),
             overflow: None,
         }),
@@ -146,10 +149,9 @@ fn journal_round_trips_with_lower_case_phases() {
 }
 
 #[test]
-fn unknown_fields_and_versions_fail_closed_and_leave_the_file() {
+fn unknown_versions_fail_closed_and_leave_the_file() {
     let r = root();
     for body in [
-        r#"{"version":1,"live":"spare","surprise":true}"#,
         r#"{"version":2,"live":"spare"}"#,
         r#"{"live":"spare"}"#,
         "not json",
@@ -259,7 +261,7 @@ fn alert_state_persists_through_the_file() {
 //   `outcome`, omitted when `None`.
 // - `RotateLedger.overflow_blocked: BTreeMap<String, OverflowBlock>`, last,
 //   omitted when empty. `OverflowBlock { at, until, reason }` ignores unknown
-//   fields (D5); `LastCycle` and the top level stay strict.
+//   fields (D5), as `LastCycle` and the top level do since #1659.
 // - `load_ledger` checks: each key is a profile name; `reason` is
 //   `spend_limit`; `0 < at < until <= at + 62 days`, computed with checked
 //   arithmetic so an overflowing `at` is invalid rather than a panic (D4); at
@@ -308,6 +310,7 @@ fn a_ledger_without_overflow_is_byte_identical_to_before() {
   "previous": "work",
   "last_cycle": {
     "at": 160,
+    "measured_at": 130,
     "outcome": "stayed"
   }
 }"#
@@ -521,22 +524,6 @@ fn an_unknown_field_inside_a_block_is_ignored() {
 }
 
 #[test]
-fn unknown_fields_outside_a_block_stay_refused() {
-    // #1687 owns the tolerance of `last_cycle` and the top level.
-    let r = root();
-    for body in [
-        serde_json::json!({ "version": 1, "future": 1 }),
-        serde_json::json!({
-            "version": 1,
-            "last_cycle": { "at": 5, "outcome": "stayed", "future": 1 }
-        }),
-    ] {
-        write_raw(&r, &body.to_string());
-        inconsistent(r.rs.load_ledger());
-    }
-}
-
-#[test]
 fn a_saved_ledger_without_overflow_data_writes_no_overflow_keys() {
     let r = root();
     r.rs.save_ledger(&ledger()).unwrap();
@@ -605,4 +592,176 @@ fn a_spend_limit_past_the_block_cap_is_logged_not_stored() {
     assert!(!l.overflow_blocked.contains_key("cred"));
     let log = fs::read_to_string(&r.rs.log).unwrap();
     assert!(log.contains("not blocked (too many blocks)"), "{log}");
+}
+
+/// Issue #1659: the limit-resume hook reads the ledger the rotator writes,
+/// through `amplihack_utils::rotator_status`, and judges freshness by
+/// `measured_at`.
+#[test]
+fn the_hooks_reader_sees_when_the_cycle_measured() {
+    let r = root();
+    r.rs.save_ledger(&ledger()).unwrap();
+    let status = amplihack_utils::rotator_status::read_cycle(&r.rs.root, 200).unwrap();
+    assert_eq!((status.at, status.measured_at), (Some(160), Some(130)));
+    assert!(status.fresh_capacity(129), "measured after a limit at 129");
+    assert!(
+        !status.fresh_capacity(130),
+        "measured before a limit at 130"
+    );
+}
+
+#[test]
+fn a_cycle_that_measured_nothing_writes_no_measured_at() {
+    let r = root();
+    let mut l = ledger();
+    l.last_cycle = Some(LastCycle {
+        at: 160,
+        measured_at: None,
+        outcome: "alerted".into(),
+        overflow: None,
+    });
+    r.rs.save_ledger(&l).unwrap();
+    let raw = fs::read_to_string(&r.rs.ledger).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&raw).unwrap();
+    assert!(json["last_cycle"].get("measured_at").is_none(), "{raw}");
+    assert_eq!(r.rs.load_ledger().unwrap(), Some(l));
+}
+
+/// Issue #1659: a field this binary does not know, at the top or in
+/// `last_cycle`, is ignored, so a newer amplihack's ledger never makes this
+/// rotator report an inconsistency.
+#[test]
+fn unknown_ledger_fields_are_ignored() {
+    let r = root();
+    let body = r#"{"version":1,"live":"spare","surprise":true,
+        "last_cycle":{"at":5,"outcome":"stayed","from_the_future":[1]}}"#;
+    fs::write(&r.rs.ledger, body).unwrap();
+    fs::set_permissions(&r.rs.ledger, fs::Permissions::from_mode(0o600)).unwrap();
+    let l = r.rs.load_ledger().unwrap().unwrap();
+    assert_eq!(l.live.as_deref(), Some("spare"));
+    assert_eq!(l.last_cycle.unwrap().outcome, "stayed");
+}
+
+/// The ledger as amplihack before #1659 read it: unknown fields rejected.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldLedger {
+    version: u32,
+    live: Option<String>,
+    account: Option<String>,
+    since: Option<i64>,
+    swapped_at: Option<i64>,
+    previous: Option<String>,
+    alert: Option<String>,
+    last_cycle: Option<OldLastCycle>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct OldLastCycle {
+    at: i64,
+    outcome: String,
+}
+
+/// Issue #1659: while a rotator from an older binary runs, what this binary
+/// writes is a ledger that rotator parses, so a one-shot `rotate` beside it
+/// cannot start an "inconsistent" ALERT loop. Without the downgrade it would.
+///
+/// The first assertion pins the other direction too: a ledger written with
+/// no older rotator running is one an older binary cannot read, which is why
+/// going back to it needs `rotate stop` and the ledger deleted first (the
+/// "Go back to an older amplihack" section of
+/// docs/howto/claude-profile-rotation.md).
+#[test]
+fn a_ledger_written_beside_an_older_rotator_is_one_it_can_read() {
+    let full = serde_json::to_vec(&for_older_readers(&ledger(), false)).unwrap();
+    assert!(
+        serde_json::from_slice::<OldLedger>(&full).is_err(),
+        "an older reader must reject measured_at, or the rollback steps in the docs are wrong"
+    );
+    let older = serde_json::to_vec(&for_older_readers(&ledger(), true)).unwrap();
+    serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
+}
+
+/// Issue #1606: the overflow fields are left out for an older rotator too,
+/// which would otherwise reject the ledger, and the full form keeps them.
+#[test]
+fn a_ledger_with_overflow_data_written_beside_an_older_rotator_is_one_it_can_read() {
+    let at = utc(2026, 10, 26, 12, 0, 0);
+    let mut l = ledger();
+    l.last_cycle.as_mut().unwrap().overflow = Some("on".into());
+    l.overflow_blocked.insert("cred".into(), ob(at));
+    let full = for_older_readers(&l, false);
+    assert_eq!(full, l, "nothing is dropped without an older rotator");
+    let older = serde_json::to_vec(&for_older_readers(&l, true)).unwrap();
+    serde_json::from_slice::<OldLedger>(&older).expect("the old reader accepts it");
+    let raw = String::from_utf8(older).unwrap();
+    assert!(!raw.contains("overflow"), "{raw}");
+}
+
+// --- The hook's reader on overflow ledgers (issue #1606) --------------------
+//
+// The limit-resume hook reads what the rotator writes through
+// `amplihack_utils::rotator_status::read_cycle`. A cycle that moved onto an
+// overflow profile, or stayed on one, left a login that can work: with a
+// fresh `measured_at` it reads as capacity, so the hook resumes the session.
+
+fn overflow_ledger(outcome: &str, tag: &str, measured_at: i64) -> RotateLedger {
+    let mut l = RotateLedger {
+        live: Some("cred".into()),
+        last_cycle: Some(LastCycle {
+            at: measured_at + 30,
+            measured_at: Some(measured_at),
+            outcome: outcome.into(),
+            overflow: Some(tag.into()),
+        }),
+        ..RotateLedger::default()
+    };
+    l.overflow_blocked
+        .insert("cred2".into(), ob(measured_at - 60));
+    l
+}
+
+#[test]
+fn the_hooks_reader_sees_a_fresh_overflow_cycle_as_capacity() {
+    let r = root();
+    let limit_at = utc(2026, 10, 27, 9, 0, 0);
+    let now = limit_at + 600;
+    for (outcome, tag, on) in [
+        ("swapped", "in", true),
+        ("stayed", "on", true),
+        ("swapped", "out", false),
+    ] {
+        r.rs.save_ledger(&overflow_ledger(outcome, tag, limit_at + 1))
+            .unwrap();
+        let s = amplihack_utils::rotator_status::read_cycle(&r.rs.root, now).unwrap();
+        assert_eq!(s.overflow.as_deref(), Some(tag));
+        assert_eq!(s.on_overflow(), on, "{tag}");
+        assert!(
+            s.fresh_capacity(limit_at),
+            "{outcome}/{tag} measured after the limit"
+        );
+        assert!(
+            !s.fresh_capacity(limit_at + 1),
+            "{outcome}/{tag} measured at the limit is not fresh"
+        );
+    }
+}
+
+#[test]
+fn the_overflow_field_follows_outcome_in_the_ledger_bytes() {
+    let r = root();
+    r.rs.save_ledger(&overflow_ledger(
+        "swapped",
+        "in",
+        utc(2026, 10, 27, 9, 0, 0),
+    ))
+    .unwrap();
+    let raw = fs::read_to_string(&r.rs.ledger).unwrap();
+    let pos = |k: &str| raw.find(&format!("\"{k}\"")).unwrap();
+    assert!(pos("measured_at") < pos("outcome"), "{raw}");
+    assert!(pos("outcome") < pos("overflow"), "{raw}");
+    assert!(raw.contains("\"overflow_blocked\""), "{raw}");
 }

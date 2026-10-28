@@ -3,6 +3,7 @@
 
 use super::config::{self, Config, EnvToggle, FileState, Source};
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::OverflowEntry;
 use std::ffi::OsStr;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
@@ -22,8 +23,16 @@ fn cfg(enabled: bool, threshold: u8, exclude: &[&str]) -> Config {
     }
 }
 
+/// Overflow entries in tier 1.
+fn entries(list: &[&str]) -> Vec<OverflowEntry> {
+    names(list)
+        .into_iter()
+        .map(|n| OverflowEntry::new(n, 1))
+        .collect()
+}
+
 fn with_overflow(mut c: Config, overflow: &[&str]) -> Config {
-    c.overflow = names(overflow);
+    c.overflow = entries(overflow);
     c
 }
 
@@ -254,9 +263,62 @@ fn overflow_parses_in_config_order() {
     assert_eq!(c, with_overflow(cfg(true, 80, &["a"]), &["zeta", "alpha"]));
     assert_eq!(
         c.overflow,
-        names(&["zeta", "alpha"]),
-        "order is the ranking"
+        entries(&["zeta", "alpha"]),
+        "file order, all in tier 1"
     );
+}
+
+#[test]
+fn overflow_tiers_parse_render_and_order() {
+    let c = config::parse(
+        b"enabled=on
+overflow=key:2,cred,cred2:1,last:9
+",
+    )
+    .unwrap();
+    let tiers: Vec<(String, u8)> = c
+        .overflow
+        .iter()
+        .map(|e| (e.name.to_string(), e.tier))
+        .collect();
+    assert_eq!(
+        tiers,
+        [("key", 2), ("cred", 1), ("cred2", 1), ("last", 9)].map(|(n, t)| (n.to_string(), t))
+    );
+    let order: Vec<String> = c
+        .overflow_order()
+        .into_iter()
+        .map(|e| e.name.to_string())
+        .collect();
+    assert_eq!(
+        order,
+        ["cred", "cred2", "key", "last"],
+        "by tier, then file order within a tier"
+    );
+    let text = config::render(&c);
+    assert_eq!(
+        text, "enabled=on\nthreshold=90\nexclude=\noverflow=key:2,cred,cred2,last:9\n",
+        "tier 1 is written as the bare name"
+    );
+    assert_eq!(config::parse(text.as_bytes()).unwrap(), c);
+}
+
+#[test]
+fn overflow_tiers_outside_one_to_nine_are_rejected() {
+    for bad in [
+        &b"enabled=on\noverflow=a:0\n"[..],
+        b"enabled=on\noverflow=a:10\n",
+        b"enabled=on\noverflow=a:\n",
+        b"enabled=on\noverflow=a:x\n",
+        b"enabled=on\noverflow=a:1:2\n",
+        b"enabled=on\noverflow=a:2,a:3\n",
+    ] {
+        assert!(
+            config::parse(bad).is_err(),
+            "{:?}",
+            String::from_utf8_lossy(bad)
+        );
+    }
 }
 
 #[test]
@@ -336,23 +398,12 @@ fn rewriting_exclude_keeps_overflow() {
 }
 
 #[test]
-fn selection_exclude_is_exclude_then_overflow_without_duplicates() {
-    let c = with_overflow(cfg(true, 90, &["b", "a"]), &["c", "a", "d"]);
-    assert_eq!(c.selection_exclude(), names(&["b", "a", "c", "d"]));
-    assert!(cfg(true, 90, &[]).selection_exclude().is_empty());
-    assert_eq!(
-        with_overflow(cfg(true, 90, &[]), &["c"]).selection_exclude(),
-        names(&["c"])
-    );
-}
-
-#[test]
 fn effective_keeps_overflow_from_the_file_whatever_the_env_says() {
     let file = FileState::Valid(with_overflow(cfg(false, 90, &[]), &["cred"]));
     for env in [EnvToggle::On, EnvToggle::Off, EnvToggle::Unset] {
         assert_eq!(
             config::effective_from(env, &file).config.overflow,
-            names(&["cred"]),
+            entries(&["cred"]),
             "{env:?}"
         );
     }
@@ -416,11 +467,12 @@ fn update_applies_the_change_and_returns_the_result() {
     let root = tmp.path();
     write_file(root, "enabled=on\nthreshold=90\nexclude=x\n");
     let c = config::update(root, ReadMode::Editable, |c| {
-        c.overflow.push(ProfileName::parse("cred").unwrap());
+        c.overflow
+            .push(OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1));
         Ok(())
     })
     .unwrap();
-    assert_eq!(c.overflow, names(&["cred"]));
+    assert_eq!(c.overflow, entries(&["cred"]));
     assert_eq!(
         file_text(root),
         "enabled=on\nthreshold=90\nexclude=x\noverflow=cred\n"
@@ -577,7 +629,9 @@ fn concurrent_updates_keep_both_changes() {
                 // Widen the read-modify-write window.
                 std::thread::sleep(Duration::from_millis(50));
                 match field {
-                    "overflow" => c.overflow.push(ProfileName::parse("cred").unwrap()),
+                    "overflow" => c
+                        .overflow
+                        .push(OverflowEntry::new(ProfileName::parse("cred").unwrap(), 1)),
                     _ => c.exclude.push(ProfileName::parse("old").unwrap()),
                 }
                 Ok(())
@@ -619,7 +673,7 @@ fn a_private_file_still_reads_as_valid() {
     let FileState::Valid(c) = config::read(root) else {
         panic!("valid file expected");
     };
-    assert_eq!(c.overflow, names(&["cred"]));
+    assert_eq!(c.overflow, entries(&["cred"]));
 }
 
 /// Every non-test source under `profile/` other than `config.rs` reaches

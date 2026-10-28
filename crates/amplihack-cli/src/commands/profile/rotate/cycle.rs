@@ -2,17 +2,14 @@
 //! (unlocked), decide, revalidate under the lock and swap, record. See
 //! "Rotate cycle" in docs/reference/profile-command.md.
 
-use super::credits::{block_spend_limited, note_move, refresh_capacity, stay_note};
 use super::decide::Decision;
 use super::identify::{LiveId, Skip};
-use super::ledger::{
-    LastCycle, RotateLedger, RotateState, alert_key, clear_alert, prune_blocks, should_alert,
-};
+use super::ledger::{RotateLedger, RotateState, alert_key, clear_alert, should_alert};
 use super::log::{Sink, msg, open_or_warn};
 use super::observe::{
     Measurement, Snap, dry_run, live_alert, live_name, measure_and_decide, reading_of, snapshot,
 };
-use super::overflow::Tag;
+use super::overflow_record::{block_spend_limited, note_move, record, refresh_capacity, stay_note};
 use super::settings::Settings;
 use super::swap::{self, RecoverOutcome, Source};
 use crate::commands::profile::ProfileError;
@@ -134,7 +131,19 @@ fn alert(
     let t = now();
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     alert_once(out, &mut l, &alert_key(kind, live), t, line);
-    record(ctx, &mut l, CycleOutcome::Alerted, t, None)
+    save(ctx, &mut l, CycleOutcome::Alerted, t, None, None)
+}
+
+/// Records the cycle in the ledger; see [`record`].
+fn save(
+    ctx: &Ctx,
+    l: &mut RotateLedger,
+    o: CycleOutcome,
+    t: i64,
+    m: Option<i64>,
+    tag: Option<super::overflow::Tag>,
+) -> Result<(), ProfileError> {
+    record(&ctx.rs, l, o.as_str(), t, m, tag)
 }
 
 /// Logs the ALERT only when its key changed; the one-shot command still
@@ -145,23 +154,6 @@ fn alert_once(out: &mut Sink, l: &mut RotateLedger, key: &str, t: i64, line: &st
     } else {
         out.print(t, line);
     }
-}
-
-/// Records the cycle, with its overflow tag, and drops expired spend blocks.
-fn record(
-    ctx: &Ctx,
-    l: &mut super::ledger::RotateLedger,
-    o: CycleOutcome,
-    t: i64,
-    tag: Option<Tag>,
-) -> Result<(), ProfileError> {
-    l.last_cycle = Some(LastCycle {
-        at: t,
-        outcome: o.as_str().into(),
-        overflow: tag.map(|t| t.as_str().to_string()),
-    });
-    prune_blocks(l, t);
-    ctx.rs.save_ledger(l)
 }
 
 /// Logs the skipped profiles and the ignored prototype ledger when they
@@ -297,6 +289,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         tag,
         new_blocks,
         next_plan_reset,
+        measured_at,
     } = measure_and_decide(ctx, &binary, &first)?;
     ctx.failed_live = failed;
     out.emit(now(), &msg::cycle(live_name(&first.live), &live, &others));
@@ -316,7 +309,14 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
         out.emit(t, msg::CHANGED);
         let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        record(ctx, &mut l, CycleOutcome::Skipped, t, None)?;
+        save(
+            ctx,
+            &mut l,
+            CycleOutcome::Skipped,
+            t,
+            Some(measured_at),
+            None,
+        )?;
         return Ok(CycleOutcome::Skipped);
     }
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
@@ -388,7 +388,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         t,
         tag,
     );
-    record(ctx, &mut l, outcome, now(), tag)?;
+    save(ctx, &mut l, outcome, now(), Some(measured_at), tag)?;
     // Issue #1634: link the session dirs of both profiles swapped, after the
     // lock is released so a long merge never stalls a launch waiting on it.
     drop(lock);

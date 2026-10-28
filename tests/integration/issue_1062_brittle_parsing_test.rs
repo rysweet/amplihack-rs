@@ -587,7 +587,7 @@ fn a2_pr_gate_retains_prose_failure_failsafe() {
 
 fn run_pr_gate(gate_value: &str) -> Run {
     let body = step_command("workflow-pr-review", PR_GATE);
-    run_bash_body(&body, &[("LOCAL_TESTING_GATE", gate_value)])
+    run_bash_body(&body, &[("RECIPE_VAR_local_testing_gate", gate_value)])
 }
 
 #[test]
@@ -822,7 +822,7 @@ fn d1_guard_uses_extract_field_over_json() {
 
 fn run_guard(session_info: &str) -> Run {
     let body = step_command("smart-execute-routing", GUARD_STEP);
-    run_bash_body(&body, &[("SESSION_INFO", session_info)])
+    run_bash_body(&body, &[("RECIPE_VAR_session_info", session_info)])
 }
 
 #[test]

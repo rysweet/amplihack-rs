@@ -13,11 +13,13 @@
 //! - `decide::Reason::{OverflowIn, OverflowOut}`, `as_str` `overflow-in`
 //!   and `overflow-out`.
 //! - `overflow::Tag::{In, Out, On}` with `as_str` `in`, `out`, `on`.
-//! - `overflow::worth_overflow(earliest: Option<i64>, now, wait) -> bool`:
-//!   `earliest - now > wait`; `None` (unknown) is far.
+//! - `profile::overflow::Gate { wait, unknown_reset }`, built by
+//!   `overflow::gate(&Settings)`: `far(earliest, now)` is
+//!   `earliest - now > wait`, and `None` (no reset known) is far only with
+//!   `unknown_reset` (`--overflow-unknown-reset 1`; default off).
 //! - `overflow::decide_overflow(&OverflowInput) -> Verdict` where
 //!   `OverflowInput { settings, live_name: Option<&ProfileName>, live:
-//!   &Probed, candidates: &[Measured], overflow: &[ProfileName], blocks:
+//!   &Probed, candidates: &[Measured], overflow: &[OverflowEntry], blocks:
 //!   &BTreeMap<String, OverflowBlock>, swapped_at, now }` and
 //!   `Verdict { decision: Decision, tag: Option<Tag>, new_blocks:
 //!   Vec<ProfileName> }`.
@@ -28,22 +30,27 @@
 //!   no part in that test.
 //! - Onto credits only when the live plan login is at a threshold, no plan
 //!   login has capacity, and the earliest plan reset is more than
-//!   `overflow_wait` away. A failed live probe never moves onto credits.
+//!   `overflow_wait` away (unknown: only with the opt-in). A failed live
+//!   probe never moves onto overflow.
+//! - Overflow profiles are tried by tier, then by the order given.
 //! - Off credits as soon as a plan login has capacity, ignoring hold, margin
 //!   and upgrade margin.
 //! - A spend-limit reading on an overflow profile blocks it once.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Win, Windows, decide};
 use super::ledger::OverflowBlock;
-use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow, worth_overflow};
+use super::overflow::{OverflowInput, Tag, Verdict, decide_overflow, gate};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::collections::BTreeMap;
 
 const NOW: i64 = 1_760_000_000;
 const HOUR: i64 = 3600;
 const WAIT: u64 = 1800;
+/// A plan reset well beyond the wait.
+const FAR: Option<i64> = Some(NOW + 4 * HOUR);
 
 fn settings() -> Settings {
     Settings {
@@ -54,6 +61,7 @@ fn settings() -> Settings {
         hold: 3600,
         interval: 600,
         overflow_wait: WAIT,
+        overflow_unknown_reset: false,
     }
 }
 
@@ -159,9 +167,18 @@ impl<'a> Case<'a> {
         self
     }
 
+    /// `name` or `name:tier`, as in `.auto-switch`.
     fn run(&self) -> Verdict {
         let live_name = n(self.live_name);
-        let overflow: Vec<ProfileName> = self.overflow.iter().map(|o| n(o)).collect();
+        let overflow: Vec<OverflowEntry> = self
+            .overflow
+            .iter()
+            .map(|o| {
+                let (name, tier) =
+                    amplihack_utils::rotator_status::parse_overflow_entry(o).unwrap();
+                OverflowEntry::new(n(&name), tier)
+            })
+            .collect();
         decide_overflow(&OverflowInput {
             settings: &self.s,
             live_name: Some(&live_name),
@@ -251,20 +268,50 @@ fn new_reasons_and_tags_have_stable_names() {
     assert_eq!(Tag::On.as_str(), "on");
 }
 
-// --- worth_overflow --------------------------------------------------------
+// --- The shared gate --------------------------------------------------------
 
 #[test]
-fn worth_overflow_is_strictly_beyond_the_wait() {
-    assert!(
-        !worth_overflow(Some(NOW + 1800), NOW, 1800),
-        "== wait stays"
+fn the_gate_is_strictly_beyond_the_wait() {
+    let g = gate(&settings());
+    assert_eq!(
+        g,
+        Gate {
+            wait: 1800,
+            unknown_reset: false
+        }
     );
-    assert!(worth_overflow(Some(NOW + 1801), NOW, 1800));
-    assert!(!worth_overflow(Some(NOW + 60), NOW, 1800));
-    assert!(!worth_overflow(Some(NOW - 60), NOW, 1800), "a past reset");
-    assert!(worth_overflow(None, NOW, 1800), "unknown counts as far");
-    assert!(worth_overflow(Some(NOW + 1), NOW, 0), "wait 0");
-    assert!(!worth_overflow(Some(NOW), NOW, 0));
+    assert!(!g.far(Some(NOW + 1800), NOW), "== wait stays");
+    assert!(g.far(Some(NOW + 1801), NOW));
+    assert!(!g.far(Some(NOW + 60), NOW));
+    assert!(!g.far(Some(NOW - 60), NOW), "a past reset");
+    let zero = Gate { wait: 0, ..g };
+    assert!(zero.far(Some(NOW + 1), NOW), "wait 0");
+    assert!(!zero.far(Some(NOW), NOW));
+}
+
+#[test]
+fn an_unknown_reset_is_far_only_with_the_opt_in() {
+    let g = gate(&settings());
+    assert!(
+        !g.far(None, NOW),
+        "the default never spends on an unknown reset"
+    );
+    let opt_in = Gate {
+        unknown_reset: true,
+        ..g
+    };
+    assert!(opt_in.far(None, NOW));
+}
+
+#[test]
+fn the_gate_never_allows_overflow_while_a_plan_profile_has_capacity() {
+    let g = Gate {
+        wait: 0,
+        unknown_reset: true,
+    };
+    assert!(!g.allows(true, Some(NOW + 100 * HOUR), NOW));
+    assert!(!g.allows(true, None, NOW));
+    assert!(g.allows(false, Some(NOW + 1), NOW));
 }
 
 // --- P1: no overflow profiles means today's decide() -----------------------
@@ -282,7 +329,7 @@ fn p1_without_overflow_profiles_the_verdict_is_decide() {
         Case::new("work", measured(10.0, 10.0, far, far))
             .cand("spare", measured(5.0, 5.0, far, far)),
         Case::new("work", exhausted(far, far)).cand("spare", measured(50.0, 50.0, far, far)),
-        Case::new("work", exhausted(None, None)).cand("spare", exhausted(None, None)),
+        Case::new("work", exhausted(FAR, FAR)).cand("spare", exhausted(None, None)),
         Case::new("work", failed()).cand("spare", measured(10.0, 10.0, far, far)),
         Case::new("work", spend_limited()).cand("spare", measured(10.0, 10.0, far, far)),
         Case::new("work", measured(85.0, 0.0, far, far))
@@ -326,7 +373,7 @@ fn all_exhausted_far() -> Case<'static> {
 }
 
 #[test]
-fn moves_onto_credits_when_every_plan_login_is_out_and_the_reset_is_far() {
+fn moves_onto_overflow_when_every_plan_login_is_out_and_the_reset_is_far() {
     let v = all_exhausted_far().run();
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
     assert_eq!(v.tag, Some(Tag::In));
@@ -334,7 +381,7 @@ fn moves_onto_credits_when_every_plan_login_is_out_and_the_reset_is_far() {
 }
 
 #[test]
-fn never_moves_onto_credits_while_a_plan_login_has_capacity() {
+fn never_moves_onto_overflow_while_a_plan_login_has_capacity() {
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(90.0, 40.0, far, far))
         .cand("spare", measured(10.0, 20.0, far, far))
@@ -346,7 +393,7 @@ fn never_moves_onto_credits_while_a_plan_login_has_capacity() {
 }
 
 #[test]
-fn never_upgrades_onto_credits_below_the_thresholds() {
+fn never_upgrades_onto_overflow_below_the_thresholds() {
     let far = Some(NOW + 5 * HOUR);
     let v = Case::new("work", measured(60.0, 60.0, far, far))
         .cand("cred", measured(0.0, 0.0, far, far))
@@ -361,7 +408,7 @@ fn never_upgrades_onto_credits_below_the_thresholds() {
 }
 
 #[test]
-fn a_plan_login_below_the_thresholds_but_short_of_the_margin_alerts_without_credits() {
+fn a_plan_login_below_the_thresholds_but_short_of_the_margin_alerts_without_overflow() {
     // work at the session threshold (headroom 15); spare below both
     // thresholds (headroom 16) but only 1 point better: no plan swap, and
     // spare still has capacity, so no credits either.
@@ -387,7 +434,7 @@ fn a_reset_exactly_at_the_wait_stays_on_the_plan() {
 }
 
 #[test]
-fn a_reset_one_second_past_the_wait_moves_onto_credits() {
+fn a_reset_one_second_past_the_wait_moves_onto_overflow() {
     let past = Some(NOW + WAIT as i64 + 1);
     let v = Case::new("work", exhausted(past, past))
         .cand("cred", exhausted(None, None))
@@ -440,12 +487,38 @@ fn with_both_windows_at_the_threshold_the_later_reset_counts() {
 }
 
 #[test]
-fn an_unknown_reset_counts_as_far() {
+fn an_unknown_reset_never_moves_onto_overflow_by_default() {
+    // No plan login reports a reset time: the default is to stay on the
+    // plan and alert, not to spend.
     let v = Case::new("work", exhausted(None, None))
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
         .run();
+    assert_eq!(v.decision, Decision::Alert);
+    assert_eq!(v.tag, None);
+}
+
+#[test]
+fn an_unknown_reset_moves_onto_overflow_with_the_opt_in() {
+    let mut c = Case::new("work", exhausted(None, None))
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"]);
+    c.s.overflow_unknown_reset = true;
+    let v = c.run();
     assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.next_plan_reset, None, "the log line says unknown");
+}
+
+#[test]
+fn one_known_reset_is_enough_and_unknown_ones_never_shorten_the_wait() {
+    // work's reset is unknown; spare's is known and far: the gate uses it.
+    let v = Case::new("work", exhausted(None, None))
+        .cand("spare", exhausted(FAR, FAR))
+        .cand("cred", exhausted(None, None))
+        .overflow(&["cred"])
+        .run();
+    assert_eq!(v.decision, swap("cred", Reason::OverflowIn));
+    assert_eq!(v.next_plan_reset, FAR);
 }
 
 #[test]
@@ -460,8 +533,8 @@ fn a_failed_plan_candidate_never_shortens_the_wait() {
         .run();
     assert_eq!(v.tag, None);
     assert_eq!(v.decision, Decision::Alert);
-    // With work's reset unknown too, credits start.
-    let v = Case::new("work", exhausted(None, None))
+    // With work's reset far, overflow starts: the failed probe adds nothing.
+    let v = Case::new("work", exhausted(FAR, FAR))
         .cand("spare", failed())
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"])
@@ -470,7 +543,7 @@ fn a_failed_plan_candidate_never_shortens_the_wait() {
 }
 
 #[test]
-fn a_failed_live_probe_never_moves_onto_credits() {
+fn a_failed_live_probe_never_moves_onto_overflow() {
     for live in [failed(), spend_limited()] {
         let v = Case::new("work", live)
             .cand("cred", exhausted(None, None))
@@ -484,7 +557,7 @@ fn a_failed_live_probe_never_moves_onto_credits() {
 
 #[test]
 fn a_failed_overflow_candidate_is_not_eligible() {
-    let v = Case::new("work", exhausted(None, None))
+    let v = Case::new("work", exhausted(FAR, FAR))
         .cand("cred", failed())
         .overflow(&["cred"])
         .run();
@@ -495,15 +568,37 @@ fn a_failed_overflow_candidate_is_not_eligible() {
 #[test]
 fn an_overflow_profile_absent_from_the_candidates_is_not_chosen() {
     // Excluded, leased or parked profiles never reach the candidate list.
-    let v = Case::new("work", exhausted(None, None))
+    let v = Case::new("work", exhausted(FAR, FAR))
         .overflow(&["cred"])
         .run();
     assert_eq!(v.decision, Decision::Alert);
 }
 
 #[test]
+fn a_lower_tier_is_tried_first_whatever_the_order_given() {
+    let v = Case::new("work", exhausted(FAR, FAR))
+        .cand("key", measured(0.0, 0.0, None, None))
+        .cand("cred", measured(0.0, 0.0, None, None))
+        .overflow(&["key:2", "cred"])
+        .run();
+    assert_eq!(
+        v.decision,
+        swap("cred", Reason::OverflowIn),
+        "tier 1 before tier 2"
+    );
+    // With tier 1 blocked, tier 2 is used.
+    let mut c = Case::new("work", exhausted(FAR, FAR))
+        .cand("key", measured(0.0, 0.0, None, None))
+        .cand("cred", measured(0.0, 0.0, None, None))
+        .overflow(&["key:2", "cred"]);
+    c.blocks
+        .insert("cred".into(), block(NOW - 60, NOW + 86_400));
+    assert_eq!(c.run().decision, swap("key", Reason::OverflowIn));
+}
+
+#[test]
 fn config_order_ranks_overflow_profiles() {
-    let v = Case::new("work", exhausted(None, None))
+    let v = Case::new("work", exhausted(FAR, FAR))
         .cand("alpha", measured(0.0, 0.0, None, None))
         .cand("zeta", exhausted(None, None))
         .overflow(&["zeta", "alpha"])
@@ -519,7 +614,7 @@ fn config_order_ranks_overflow_profiles() {
 fn overflow_candidates_never_count_as_plan_capacity() {
     // cred reads well under the thresholds, but it is overflow: work must
     // still go onto credits by the overflow rule, not a plan threshold swap.
-    let v = Case::new("work", exhausted(None, None))
+    let v = Case::new("work", exhausted(FAR, FAR))
         .cand("cred", measured(0.0, 0.0, None, None))
         .overflow(&["cred"])
         .run();
@@ -529,7 +624,7 @@ fn overflow_candidates_never_count_as_plan_capacity() {
 // --- While on credits ------------------------------------------------------
 
 #[test]
-fn moves_off_credits_as_soon_as_a_plan_login_has_capacity() {
+fn moves_off_overflow_as_soon_as_a_plan_login_has_capacity() {
     let v = Case {
         swapped_at: Some(NOW - 10),
         ..Case::new("cred", exhausted(None, None))
@@ -546,7 +641,7 @@ fn moves_off_credits_as_soon_as_a_plan_login_has_capacity() {
 }
 
 #[test]
-fn moving_off_credits_ignores_margin_and_upgrade_margin() {
+fn moving_off_overflow_ignores_margin_and_upgrade_margin() {
     // The overflow login reads only 5% used, so a plan login with 16 points
     // of headroom is a loss by headroom; it still wins because it is free.
     let v = Case::new("cred", measured(5.0, 5.0, None, None))
@@ -558,7 +653,7 @@ fn moving_off_credits_ignores_margin_and_upgrade_margin() {
 }
 
 #[test]
-fn moving_off_credits_picks_the_best_plan_login_with_capacity() {
+fn moving_off_overflow_picks_the_best_plan_login_with_capacity() {
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", measured(60.0, 10.0, None, None))
         .cand("extra", measured(10.0, 10.0, None, None))
@@ -569,7 +664,7 @@ fn moving_off_credits_picks_the_best_plan_login_with_capacity() {
 }
 
 #[test]
-fn a_plan_login_at_a_threshold_is_no_reason_to_leave_credits() {
+fn a_plan_login_at_a_threshold_is_no_reason_to_leave_overflow() {
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", measured(85.0, 0.0, None, None))
         .cand("extra", measured(0.0, 90.0, None, None))
@@ -580,7 +675,7 @@ fn a_plan_login_at_a_threshold_is_no_reason_to_leave_credits() {
 }
 
 #[test]
-fn stays_on_credits_while_no_plan_login_has_capacity() {
+fn stays_on_overflow_while_no_plan_login_has_capacity() {
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", exhausted(Some(NOW + 600), None))
         .cand("extra", failed())
@@ -596,7 +691,7 @@ fn stays_on_credits_while_no_plan_login_has_capacity() {
 }
 
 #[test]
-fn p2_no_flapping_after_moving_off_credits() {
+fn p2_no_flapping_after_moving_off_overflow() {
     // Cycle 1: on credits, spare has capacity -> out.
     let v = Case::new("cred", exhausted(None, None))
         .cand("spare", measured(84.0, 0.0, None, None))
@@ -617,7 +712,7 @@ fn p2_no_flapping_after_moving_off_credits() {
 }
 
 #[test]
-fn p2_no_flapping_after_moving_onto_credits() {
+fn p2_no_flapping_after_moving_onto_overflow() {
     // Cycle 1 moved onto cred because work and spare were exhausted.
     // Cycle 2 sees the same plan readings: stay on.
     let v = Case {
@@ -638,12 +733,20 @@ fn p2_no_flapping_after_moving_onto_credits() {
 fn a_spend_limit_on_the_live_overflow_moves_to_the_next_overflow() {
     let v = Case::new("cred", spend_limited())
         .cand("cred2", exhausted(None, None))
-        .cand("spare", exhausted(None, None))
+        .cand("spare", exhausted(FAR, FAR))
         .overflow(&["cred", "cred2"])
         .run();
     assert_eq!(v.new_blocks, vec![n("cred")]);
     assert_eq!(v.decision, swap("cred2", Reason::OverflowIn));
     assert_eq!(v.tag, Some(Tag::In));
+    // With no plan reset known, the next overflow profile is not started.
+    let v = Case::new("cred", spend_limited())
+        .cand("cred2", exhausted(None, None))
+        .cand("spare", exhausted(None, None))
+        .overflow(&["cred", "cred2"])
+        .run();
+    assert_eq!(v.new_blocks, vec![n("cred")]);
+    assert_ne!(v.decision, swap("cred2", Reason::OverflowIn));
 }
 
 #[test]
@@ -673,7 +776,7 @@ fn a_spend_limit_on_the_live_overflow_with_nowhere_to_go_alerts() {
 
 #[test]
 fn a_spend_limit_on_a_candidate_blocks_it_and_skips_it() {
-    let v = Case::new("work", exhausted(None, None))
+    let v = Case::new("work", exhausted(FAR, FAR))
         .cand("cred", spend_limited())
         .cand("cred2", exhausted(None, None))
         .overflow(&["cred", "cred2"])
@@ -696,7 +799,7 @@ fn a_spend_limit_on_a_candidate_is_blocked_even_when_no_move_happens() {
 
 #[test]
 fn an_active_block_makes_the_profile_ineligible_and_is_not_repeated() {
-    let mut c = Case::new("work", exhausted(None, None))
+    let mut c = Case::new("work", exhausted(FAR, FAR))
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"]);
     c.blocks
@@ -719,6 +822,7 @@ fn an_active_block_makes_the_profile_ineligible_and_is_not_repeated() {
 fn a_blocked_live_overflow_moves_away_without_a_new_reading() {
     let mut c = Case::new("cred", exhausted(None, None))
         .cand("cred2", exhausted(None, None))
+        .cand("spare", exhausted(FAR, FAR))
         .overflow(&["cred", "cred2"]);
     c.blocks
         .insert("cred".into(), block(NOW - HOUR, NOW + 24 * HOUR));
@@ -728,7 +832,7 @@ fn a_blocked_live_overflow_moves_away_without_a_new_reading() {
 
 #[test]
 fn an_expired_block_is_ignored() {
-    let mut c = Case::new("work", exhausted(None, None))
+    let mut c = Case::new("work", exhausted(FAR, FAR))
         .cand("cred", exhausted(None, None))
         .overflow(&["cred"]);
     c.blocks
@@ -771,7 +875,7 @@ fn either_plan_limit_takes_away_capacity() {
 }
 
 #[test]
-fn free_headroom_over_a_threshold_is_used_before_credits() {
+fn free_headroom_over_a_threshold_is_used_before_overflow() {
     // `decide` still swaps to a plan login with more headroom, even one over
     // a threshold: that costs nothing, and credits come only after `Alert`.
     let far = Some(NOW + 5 * HOUR);
@@ -785,8 +889,8 @@ fn free_headroom_over_a_threshold_is_used_before_credits() {
 }
 
 #[test]
-fn every_overflow_profile_blocked_means_no_move_onto_credits() {
-    let mut c = Case::new("work", exhausted(None, None))
+fn every_overflow_profile_blocked_means_no_move_onto_overflow() {
+    let mut c = Case::new("work", exhausted(FAR, FAR))
         .cand("spare", exhausted(None, None))
         .cand("cred", exhausted(None, None))
         .cand("cred2", exhausted(None, None))
@@ -839,7 +943,7 @@ fn a_known_reset_inside_the_wait_keeps_the_plan_even_with_overflow_free() {
 }
 
 #[test]
-fn a_zero_wait_moves_onto_credits_as_soon_as_capacity_is_gone() {
+fn a_zero_wait_moves_onto_overflow_as_soon_as_capacity_is_gone() {
     let mut c = Case::new("work", exhausted(Some(NOW + 60), Some(NOW + 60)))
         .cand("spare", exhausted(Some(NOW + 60), Some(NOW + 60)))
         .cand("cred", exhausted(None, None))
@@ -850,7 +954,7 @@ fn a_zero_wait_moves_onto_credits_as_soon_as_capacity_is_gone() {
 }
 
 #[test]
-fn moving_back_off_credits_ignores_a_recent_swap() {
+fn moving_back_off_overflow_ignores_a_recent_swap() {
     // Swapped onto credits a minute ago; the hold is an hour. A plan login
     // with capacity still wins at once.
     let mut c = Case::new("cred", exhausted(None, None))
@@ -882,7 +986,7 @@ fn a_default_plan_profile_with_capacity_is_not_displaced_by_overflow() {
 }
 
 #[test]
-fn a_default_plan_profile_at_a_threshold_moves_to_plan_capacity_not_credits() {
+fn a_default_plan_profile_at_a_threshold_moves_to_plan_capacity_not_overflow() {
     // `.default` names `work`, which is at a threshold; `spare` has capacity.
     let v = Case::new("work", measured(90.0, 40.0, None, None))
         .cand("spare", measured(10.0, 10.0, None, None))
@@ -910,7 +1014,7 @@ fn the_policy_and_the_cycle_never_read_the_default_pointer() {
         ("overflow.rs", include_str!("overflow.rs")),
         ("decide.rs", include_str!("decide.rs")),
         ("cycle.rs", include_str!("cycle.rs")),
-        ("credits.rs", include_str!("credits.rs")),
+        ("overflow_record.rs", include_str!("overflow_record.rs")),
     ] {
         assert!(!src.contains("pointer"), "{file} reads .default");
     }

@@ -754,7 +754,7 @@ A profile marked as credit-backed overflow
 `overflow, blocked until <time>` after the rotator has blocked it on a spend
 limit. When its login is the one in `~/.claude` and its probe shows the
 session or all-models weekly limit reached, the table ends with
-`running on credits: <name>`. In `--json`, every row has `overflow` and
+`running on overflow: <name>`. In `--json`, every row has `overflow` and
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
@@ -1471,12 +1471,15 @@ do not depend on these two behaviours.
   the status line, `profile usage` or the rotator records usage. A step that
   fails with a usage limit and finds no profile left to rerun on does not
   update it.
-- **Overflow profiles are never chosen.** A profile marked with
-  `amplihack profile overflow add` counts as excluded for every auto-switch
-  choice, even when it is the only account with room. Only the
+- **Overflow profiles come last and cost money.** A profile marked with
+  `amplihack profile overflow add` is chosen only when every plan profile is
+  over the threshold and the earliest plan reset is more than the overflow
+  wait away (`AMPLIHACK_ROTATE_OVERFLOW_WAIT`, default 1800 seconds), the
+  same rule the
   [rotator](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
-  moves work onto credits, because only it knows when the next plan reset
-  is.
+  follows. A session or nested launch on an overflow profile moves back to a
+  plan profile as soon as one reads under the threshold. See
+  [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
 - **Readings come only from sessions with the wrapper and from
   `profile usage`.** A profile that has done neither since the switch was
   turned on has no reading. Run `amplihack profile usage` to fill them in.

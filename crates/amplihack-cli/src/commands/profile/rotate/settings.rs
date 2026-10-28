@@ -16,9 +16,14 @@ pub struct Settings {
     pub hold: u64,
     /// Seconds between `watch` cycles.
     pub interval: u64,
-    /// Seconds: the rotator moves onto a credit-backed overflow profile only
-    /// when the earliest plan reset is further away than this.
+    /// Seconds: the rotator and auto-switch move onto an overflow profile
+    /// only when the earliest plan reset is further away than this.
     pub overflow_wait: u64,
+    /// Whether a plan reset that no reading reports may count as further
+    /// away than `overflow_wait`. Off by default: with no known reset time
+    /// nothing moves onto an overflow profile, because that move costs
+    /// money and the plan login may come back in minutes.
+    pub overflow_unknown_reset: bool,
 }
 
 /// One setting: its flag, its variable, its default and its range.
@@ -71,6 +76,13 @@ const OVERFLOW_WAIT: Spec = Spec {
     default: 1800,
     min: 0,
     max: Some(604_800),
+};
+const OVERFLOW_UNKNOWN_RESET: Spec = Spec {
+    flag: "--overflow-unknown-reset",
+    var: "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+    default: 0,
+    min: 0,
+    max: Some(1),
 };
 const INTERVAL: Spec = Spec {
     flag: "--interval",
@@ -145,6 +157,9 @@ pub fn resolve(
         hold: HOLD.resolve(tune.hold.as_deref(), env)?,
         interval: INTERVAL.resolve(interval, env)?,
         overflow_wait: OVERFLOW_WAIT.resolve(tune.overflow_wait.as_deref(), env)?,
+        overflow_unknown_reset: OVERFLOW_UNKNOWN_RESET
+            .resolve(tune.overflow_unknown_reset.as_deref(), env)?
+            == 1,
     })
 }
 
@@ -159,6 +174,10 @@ impl Settings {
             (UPGRADE_MARGIN.flag, u64::from(self.upgrade_margin)),
             (HOLD.flag, self.hold),
             (OVERFLOW_WAIT.flag, self.overflow_wait),
+            (
+                OVERFLOW_UNKNOWN_RESET.flag,
+                u64::from(self.overflow_unknown_reset),
+            ),
         ] {
             args.push(flag.to_string());
             args.push(v.to_string());

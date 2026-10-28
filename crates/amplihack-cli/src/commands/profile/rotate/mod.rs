@@ -13,8 +13,6 @@ mod autostart;
 #[cfg(unix)]
 mod control;
 #[cfg(unix)]
-mod credits;
-#[cfg(unix)]
 mod cycle;
 #[cfg(unix)]
 mod daemon;
@@ -35,9 +33,13 @@ mod observe;
 #[cfg(unix)]
 mod overflow;
 #[cfg(unix)]
+mod overflow_record;
+#[cfg(unix)]
 mod recover;
 #[cfg(unix)]
 mod settings;
+#[cfg(unix)]
+mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(all(test, unix))]
@@ -68,8 +70,6 @@ mod tests_settings;
 #[cfg(test)]
 mod tests_source_scan;
 #[cfg(all(test, unix))]
-mod tests_status_drift;
-#[cfg(all(test, unix))]
 mod tests_swap;
 #[cfg(all(test, unix))]
 mod tests_swap_refused;
@@ -83,6 +83,32 @@ pub(crate) use autostart::autostart_on_launch;
 pub(super) use control::{clear_overflow_block, overflow_blocks};
 #[cfg(unix)]
 pub(super) use log::timestamp;
+
+/// The overflow [`Gate`](super::overflow::Gate) for a process that is not
+/// the rotator (auto-switch, the capacity file): `--overflow-wait` and
+/// `--overflow-unknown-reset` from their `AMPLIHACK_ROTATE_*` variables, or
+/// the defaults. An invalid value is an error, which callers treat as "no
+/// overflow", so a typo never spends money.
+#[cfg(unix)]
+pub(super) fn overflow_gate_from_env() -> Result<super::overflow::Gate, super::ProfileError> {
+    let s = settings::resolve(&TuneFlags::default(), None, &|k| std::env::var_os(k))?;
+    Ok(overflow::gate(&s))
+}
+
+/// `amplihack install` and one-shot `rotate` (#1659): one line on stderr when
+/// the rotator for `root` (default: this environment's root) runs another
+/// amplihack binary, which keeps reading the ledger in its own format until
+/// it is restarted.
+#[cfg(unix)]
+pub(crate) fn warn_foreign_rotator(root: Option<&std::path::Path>) {
+    let root = match root {
+        Some(r) => Some(r.to_path_buf()),
+        None => amplihack_utils::rotator_status::resolve_root(),
+    };
+    if let Some(pid) = root.and_then(|r| ledger::RotateState::new(&r).foreign_rotator()) {
+        eprintln!("{}", ledger::foreign_rotator_note(pid));
+    }
+}
 
 /// Starts the rotator from a launch when auto-switch is on; see
 /// `autostart`. Nothing to start off Unix.
@@ -145,9 +171,12 @@ pub struct TuneFlags {
     /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
     #[arg(long, value_name = "SECS")]
     pub hold: Option<String>,
-    /// Move onto a credit-backed overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
+    /// Move onto an overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
     #[arg(long, value_name = "SECS")]
     pub overflow_wait: Option<String>,
+    /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
+    #[arg(long, value_name = "0|1")]
+    pub overflow_unknown_reset: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, clap::Args)]
@@ -179,6 +208,9 @@ pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow
                 } else {
                     cycle::Mode::OneShot
                 };
+                if mode == cycle::Mode::OneShot {
+                    warn_foreign_rotator(Some(store.root()));
+                }
                 let mut ctx = cycle::Ctx::new(store.clone(), home?, s);
                 cycle::run_cycle(&mut ctx, mode)?;
             }

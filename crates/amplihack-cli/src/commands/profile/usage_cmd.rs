@@ -841,7 +841,7 @@ pub(super) fn render_table(rows: &[Row]) -> String {
         .find(|r| r.live_in && r.overflow && plan_limit_reached(r))
     {
         out.push_str(&format!(
-            "running on credits: {}\n",
+            "running on overflow: {}\n",
             sanitize_display(&r.profile, false)
         ));
     }

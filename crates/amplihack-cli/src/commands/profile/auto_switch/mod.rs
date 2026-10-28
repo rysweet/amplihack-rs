@@ -26,6 +26,8 @@ mod liveness;
 #[cfg(unix)]
 mod mv;
 #[cfg(unix)]
+mod overflow_inputs;
+#[cfg(unix)]
 pub(super) mod rerun;
 #[cfg(unix)]
 mod state;
@@ -52,8 +54,6 @@ mod tests_liveness;
 mod tests_mv;
 #[cfg(all(test, unix))]
 mod tests_record;
-#[cfg(all(test, unix))]
-mod tests_status_drift;
 #[cfg(all(test, unix))]
 mod tests_usage;
 

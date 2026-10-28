@@ -3,9 +3,12 @@
 //! no-capacity file, which reads `ok` while the live login runs on credits.
 
 use super::decide::Reading;
-use super::ledger::{MAX_BLOCKS, OverflowBlock, RotateLedger, active_blocks, prune_blocks};
+use super::ledger::{
+    LastCycle, MAX_BLOCKS, OverflowBlock, RotateLedger, RotateState, active_blocks, prune_blocks,
+};
 use super::log::{Sink, msg};
 use super::overflow::Tag;
+use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation};
 use crate::commands::profile::name::ProfileName;
 use std::path::Path;
@@ -45,7 +48,7 @@ pub fn block_spend_limited(
 }
 
 /// The previous recorded cycle left the live login `live` on credits.
-fn was_on_credits(l: &RotateLedger, live: Option<&ProfileName>) -> bool {
+fn was_on_overflow(l: &RotateLedger, live: Option<&ProfileName>) -> bool {
     let tag = l.last_cycle.as_ref().and_then(|c| c.overflow.as_deref());
     matches!(tag, Some("in" | "on")) && live.is_some_and(|n| l.live.as_deref() == Some(n.as_str()))
 }
@@ -61,8 +64,8 @@ pub fn note_move(
 ) {
     let t = crate::commands::profile::auto_switch::kit::now();
     match tag {
-        Some(Tag::In) => out.emit(t, &msg::on_credits(to, next_plan_reset)),
-        Some(Tag::Out) => out.emit(t, &msg::off_credits(from, to)),
+        Some(Tag::In) => out.emit(t, &msg::onto_overflow(to, next_plan_reset)),
+        Some(Tag::Out) => out.emit(t, &msg::off_overflow(from, to)),
         Some(Tag::On) | None => {}
     }
 }
@@ -76,8 +79,8 @@ pub fn stay_note(
     live: Option<&ProfileName>,
     next_plan_reset: Option<i64>,
 ) -> Option<String> {
-    let live = live.filter(|_| tag == Some(Tag::On) && !was_on_credits(l, live))?;
-    Some(msg::stay_on_credits(live, next_plan_reset))
+    let live = live.filter(|_| tag == Some(Tag::On) && !was_on_overflow(l, live))?;
+    Some(msg::stay_on_overflow(live, next_plan_reset))
 }
 
 /// Rewrites the no-capacity file from this cycle's readings: the live
@@ -101,5 +104,26 @@ pub fn refresh_capacity(
         .into_iter()
         .chain(others.iter().map(|(n, r)| (n.clone(), of(r))))
         .collect();
-    capacity_from_rotation(root, &readings, t, Tag::on_credits(tag));
+    capacity_from_rotation(root, &readings, t, Tag::on_overflow(tag));
+}
+
+/// Records the cycle as ended at `t` with `outcome`, after measuring from
+/// `measured_at`, with its overflow tag, drops expired spend blocks, and
+/// saves the ledger.
+pub fn record(
+    rs: &RotateState,
+    l: &mut RotateLedger,
+    outcome: &str,
+    t: i64,
+    measured_at: Option<i64>,
+    tag: Option<Tag>,
+) -> Result<(), ProfileError> {
+    l.last_cycle = Some(LastCycle {
+        at: t,
+        measured_at,
+        outcome: outcome.into(),
+        overflow: tag.map(|t| t.as_str().to_string()),
+    });
+    prune_blocks(l, t);
+    rs.save_ledger(l)
 }

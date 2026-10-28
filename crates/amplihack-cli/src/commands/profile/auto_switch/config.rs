@@ -1,19 +1,19 @@
 //! `<root>/.auto-switch`: the on/off switch, threshold, exclusions and
-//! credit-backed overflow profiles, and the `AMPLIHACK_CLAUDE_AUTO_SWITCH`
-//! override. Read again on every check; never cached.
+//! overflow profiles with their tiers, and the `AMPLIHACK_CLAUDE_AUTO_SWITCH`
+//! override. Read again on every check; never cached. The grammar and the
+//! file read are `amplihack_utils::rotator_status`'s, which the hooks use too.
 
 use super::fsx;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::name::ProfileName;
-use std::ffi::OsStr;
-use std::os::unix::fs::MetadataExt;
+pub use crate::commands::profile::overflow::OverflowEntry;
+use amplihack_utils::rotator_status::{self as shared, DEFAULT_THRESHOLD, Toggle, ToggleFile};
 use std::path::Path;
 use std::time::Duration;
 
-pub const FILE: &str = ".auto-switch";
-pub const TOGGLE_ENV: &str = "AMPLIHACK_CLAUDE_AUTO_SWITCH";
-const MAX_BYTES: u64 = 4096;
-const DEFAULT_THRESHOLD: u8 = 90;
+use amplihack_utils::rotator_status::{DEFAULT_TIER, MAX_TOGGLE_BYTES as MAX_BYTES};
+pub use amplihack_utils::rotator_status::{EnvToggle, TOGGLE_ENV, TOGGLE_FILE as FILE, env_toggle};
+
 /// How long a writer waits for the auto-switch state lock, which a rotator
 /// cycle or a swap may hold, before giving up with a retry message.
 pub const CONFIG_LOCK_WAIT: Duration = Duration::from_secs(10);
@@ -34,22 +34,23 @@ pub struct Config {
     pub enabled: bool,
     pub threshold: u8,
     pub exclude: Vec<ProfileName>,
-    /// Credit-backed overflow profiles (issue #1606), in config order, which
-    /// is their ranking. Only the rotator ever moves onto one.
-    pub overflow: Vec<ProfileName>,
+    /// Overflow profiles (issue #1606) in file order, each with its tier.
+    /// They are used only when every plan profile is exhausted; see
+    /// [`Config::overflow_order`] for the order they are tried in.
+    pub overflow: Vec<OverflowEntry>,
 }
 
 impl Config {
-    /// The profiles auto-switch never picks: `exclude`, then the overflow
-    /// profiles not already in it. Auto-switch has no reset or wait inputs,
-    /// so it must never spend credits.
-    pub fn selection_exclude(&self) -> Vec<ProfileName> {
-        let mut out = self.exclude.clone();
-        for n in &self.overflow {
-            if !out.contains(n) {
-                out.push(n.clone());
-            }
-        }
+    /// Whether `name` is an overflow profile.
+    pub fn is_overflow(&self, name: &ProfileName) -> bool {
+        self.overflow.iter().any(|e| &e.name == name)
+    }
+
+    /// The overflow entries in the order they are tried: by tier, then by
+    /// file order within a tier.
+    pub fn overflow_order(&self) -> Vec<OverflowEntry> {
+        let mut out = self.overflow.clone();
+        out.sort_by_key(|e| e.tier);
         out
     }
 }
@@ -70,14 +71,6 @@ pub enum FileState {
     Missing,
     Valid(Config),
     Corrupt,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EnvToggle {
-    Unset,
-    On,
-    Off,
-    Invalid,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,106 +101,71 @@ pub struct Effective {
     pub config: Config,
 }
 
+/// Parses a toggle file into this crate's [`Config`]; [`read`] does the
+/// same for the file on disk.
+#[cfg(test)]
 pub fn parse(raw: &[u8]) -> Result<Config, String> {
-    if raw.len() as u64 > MAX_BYTES {
-        return Err("file too large".into());
-    }
-    let text = std::str::from_utf8(raw).map_err(|_| "not valid UTF-8".to_string())?;
-    let body = text.strip_suffix('\n').unwrap_or(text);
-    let mut enabled = None;
-    let mut threshold = None;
-    let mut exclude = None;
-    let mut overflow = None;
-    for line in body.split('\n') {
-        let (key, value) = line
-            .split_once('=')
-            .ok_or_else(|| "line without '='".to_string())?;
-        let repeated = match key {
-            "enabled" => enabled
-                .replace(match value {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err("enabled must be on or off".into()),
-                })
-                .is_some(),
-            "threshold" => threshold.replace(parse_threshold(value)?).is_some(),
-            "exclude" => exclude
-                .replace(parse_names(value, "exclude", false)?)
-                .is_some(),
-            "overflow" => overflow
-                .replace(parse_names(value, "overflow", true)?)
-                .is_some(),
-            _ => return Err("unknown key".into()),
-        };
-        if repeated {
-            return Err("repeated key".into());
-        }
-    }
-    Ok(Config {
-        enabled: enabled.ok_or_else(|| "missing enabled".to_string())?,
-        threshold: threshold.unwrap_or(DEFAULT_THRESHOLD),
-        exclude: exclude.unwrap_or_default(),
-        overflow: overflow.unwrap_or_default(),
-    })
+    shared::parse_toggle(raw)
+        .and_then(Config::from_toggle)
+        .map_err(String::from)
 }
 
 /// `1`..=`100`, digits only.
 pub fn parse_threshold(value: &str) -> Result<u8, String> {
-    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
-        return Err("threshold must be a whole number from 1 to 100".into());
-    }
-    match value.parse::<u8>() {
-        Ok(n @ 1..=100) => Ok(n),
-        _ => Err("threshold must be a whole number from 1 to 100".into()),
-    }
+    shared::parse_threshold(value).map_err(String::from)
 }
 
-/// A comma-separated list of profile names; empty is an empty list. With
-/// `reject_dupes`, a name given twice is an error.
-fn parse_names(value: &str, key: &str, reject_dupes: bool) -> Result<Vec<ProfileName>, String> {
-    if value.is_empty() {
-        return Ok(Vec::new());
+impl Config {
+    fn from_toggle(t: Toggle) -> Result<Self, &'static str> {
+        let exclude = t
+            .exclude
+            .iter()
+            .map(|n| ProfileName::parse(n).map_err(|_| "invalid profile name in exclude"))
+            .collect::<Result<_, _>>()?;
+        let overflow = t
+            .overflow
+            .iter()
+            .map(|(n, tier)| {
+                ProfileName::parse(n)
+                    .map(|name| OverflowEntry { name, tier: *tier })
+                    .map_err(|_| "invalid profile name in overflow")
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(Self {
+            enabled: t.enabled,
+            threshold: t.threshold,
+            exclude,
+            overflow,
+        })
     }
-    let mut out: Vec<ProfileName> = Vec::new();
-    for raw in value.split(',') {
-        let name = ProfileName::parse(raw).map_err(|_| format!("invalid profile name in {key}"))?;
-        if reject_dupes && out.contains(&name) {
-            return Err(format!("repeated profile name in {key}"));
-        }
-        out.push(name);
-    }
-    Ok(out)
 }
 
 /// The file's text. `overflow=` comes last and only when the list is not
-/// empty, so a file without overflow profiles is unchanged by this key.
+/// empty, so a file without overflow profiles is unchanged by this key. An
+/// entry in the default tier is written as its bare name.
 pub fn render(c: &Config) -> String {
-    let join = |names: &[ProfileName]| {
-        names
-            .iter()
-            .map(ProfileName::as_str)
-            .collect::<Vec<_>>()
-            .join(",")
-    };
+    let exclude: Vec<&str> = c.exclude.iter().map(ProfileName::as_str).collect();
     let mut out = format!(
         "enabled={}\nthreshold={}\nexclude={}\n",
         if c.enabled { "on" } else { "off" },
         c.threshold,
-        join(&c.exclude)
+        exclude.join(",")
     );
     if !c.overflow.is_empty() {
-        out.push_str(&format!("overflow={}\n", join(&c.overflow)));
+        let entries: Vec<String> = c
+            .overflow
+            .iter()
+            .map(|e| {
+                if e.tier == DEFAULT_TIER {
+                    e.name.to_string()
+                } else {
+                    format!("{}:{}", e.name, e.tier)
+                }
+            })
+            .collect();
+        out.push_str(&format!("overflow={}\n", entries.join(",")));
     }
     out
-}
-
-pub fn env_toggle(raw: Option<&OsStr>) -> EnvToggle {
-    match raw.map(|v| v.as_encoded_bytes()) {
-        None | Some(b"") => EnvToggle::Unset,
-        Some(b"1") => EnvToggle::On,
-        Some(b"0") => EnvToggle::Off,
-        Some(_) => EnvToggle::Invalid,
-    }
 }
 
 pub fn effective_from(env: EnvToggle, file: &FileState) -> Effective {
@@ -242,12 +200,10 @@ pub fn effective(root: &Path) -> Effective {
 /// group or others, reads as `Corrupt`, like the rotate ledger: anyone who
 /// can write it could otherwise mark a profile as overflow and spend credits.
 pub fn read(root: &Path) -> FileState {
-    match fsx::read_bounded_nofollow(&root.join(FILE), MAX_BYTES) {
-        Ok(None) => FileState::Missing,
-        Ok(Some((raw, meta))) if meta.uid() == fsx::euid() && !fsx::writable_by_others(&meta) => {
-            parse(&raw).map_or(FileState::Corrupt, FileState::Valid)
-        }
-        _ => FileState::Corrupt,
+    match shared::read_toggle(root) {
+        ToggleFile::Missing => FileState::Missing,
+        ToggleFile::Valid(t) => Config::from_toggle(t).map_or(FileState::Corrupt, FileState::Valid),
+        ToggleFile::Corrupt => FileState::Corrupt,
     }
 }
 

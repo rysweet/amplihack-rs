@@ -145,9 +145,18 @@ grep -E ' (swap|ALERT:) ' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log | 
 An account with usage credits turned on keeps working past its plan limit,
 and the extra use is billed to the credits. Marked as an *overflow profile*,
 the rotator moves work onto it only when every plan login is out of capacity
-and the next plan reset is more than `--overflow-wait` seconds away (default
-1800), and moves work back in the first cycle in which a plan login has
-capacity. Auto-switch never chooses an overflow profile.
+and the next plan reset is known and more than `--overflow-wait` seconds away
+(default 1800), and moves work back in the first cycle in which a plan login
+has capacity. Auto-switch follows the same rule through the same gate: it
+uses an overflow profile only when every plan profile is over the threshold
+beyond the wait, and moves the session back once a plan profile has room.
+
+An unknown plan reset (no reading reports one) does **not** move work onto
+overflow unless the user opts in with `--overflow-unknown-reset 1`
+(`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1`); with it, an unknown reset
+spends money at once. Overflow marks have a tier (`overflow add <name>
+--tier N`, 1-9, default 1): lower tiers are tried first, for example usage
+credits before an API key.
 
 Before marking a profile, tell the user:
 
@@ -178,19 +187,19 @@ every cycle, and one location avoids two sources of truth. `add` and
 again. `overflow list` prints `missing` after a marked name with no profile
 directory.
 
-`--overflow-wait` takes `0` to `604800` seconds; `0` uses credits as soon as
-plan capacity is gone. A plan login loses capacity when either its session
+`--overflow-wait` takes `0` to `604800` seconds; `0` uses overflow as soon as
+plan capacity is gone and a plan reset is known. A plan login loses capacity when either its session
 or its week use reaches the threshold.
 
-`rotate status` shows `overflow:` and `on credits:` lines. `on credits: yes
+`rotate status` shows `overflow:` and `on overflow:` lines. `on overflow: yes
 (<name>)` needs the live login to be marked and the last cycle to have
 recorded `overflow=in` or `on`; `no (<name> is overflow; plan capacity
 remains)` means it was put there while a plan login had room. A `default:`
 line appears when the default pointer names an overflow profile. `profile
-usage` marks the profile `overflow` and ends with `running on credits:
+usage` marks the profile `overflow` and ends with `running on overflow:
 <name>` only when its login is in `~/.claude` and its probe shows the session
 or weekly limit reached. Log lines: `reason=overflow-in`,
-`reason=overflow-out`, `credits: on|staying on|off ...`.
+`reason=overflow-out`, `overflow: on|staying on|off ...`.
 
 An excluded profile is never used, even when marked. If the user moves an
 overflow login into `~/.claude` by hand while a plan login has capacity, the
@@ -221,7 +230,7 @@ failed probes in a row; after `rotate stop`, nothing moves it.
 `amplihack install` registers the `amplihack-hooks limit-resume` hook on
 Claude Code's `StopFailure` event (matcher `rate_limit`, `asyncRewake: true`).
 When a turn ends on a usage limit and auto-switch is on, it waits up to 7
-days for a rotator cycle recorded more than 60 seconds after the limit that
+days for a rotator cycle that started measuring after the limit and
 ended `swapped` or `stayed` with no ALERT, then exits `2` with a continue
 message, which wakes the session. That wake, and Claude Code running
 `StopFailure` instead of `Stop` on a limit, were verified live on Claude Code
@@ -232,7 +241,8 @@ is installed.
 Tell the user it needs:
 
 - Claude Code 2.1.306 or later, and `amplihack install` run again after
-  upgrading amplihack;
+  upgrading amplihack or Claude Code (install leaves the hook out for an
+  older `claude`);
 - auto-switch on and `amplihack profile rotate start` running.
 
 Check it is registered:
@@ -250,7 +260,8 @@ tail ~/.claude-profiles/.auto-switch.d/resume/resume.log
 | Outcome | What to tell the user |
 |---------|-----------------------|
 | `resumed` | The session was told to continue. |
-| `no-capacity-timeout` | No login had capacity within 7 days, or the rotator was not running. |
+| `no-capacity-timeout` | No login had capacity within 7 days. |
+| `rotator-down` | The rotator was not running (or its ledger was unreadable) when the limit hit; start it. |
 | `session-gone` | The session exited while the hook waited; nothing was done. |
 | `moved-on` | The user sent a prompt in that session during the wait (for example `continue`), so the hook did not wake it. |
 | `disabled` | Auto-switch was turned off while the hook was waiting. |

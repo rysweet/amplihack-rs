@@ -1,7 +1,9 @@
 //! `<root>/.auto-switch.d/rotate/`: the rotate ledger and journal, the pid
-//! file and the log (D7). Ledger and journal are versioned, reject unknown
-//! fields, are capped at 64 KiB and are written privately and atomically. A
-//! file that fails to parse is reported and never overwritten here.
+//! file and the log (D7). Ledger and journal are versioned, capped at 64 KiB
+//! and written privately and atomically. The journal rejects unknown fields;
+//! the ledger ignores them (#1659), so a field added by a newer amplihack
+//! never stops an older rotator. A file that fails to parse is reported and
+//! never overwritten here.
 
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{
@@ -14,15 +16,21 @@ use std::collections::BTreeMap;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
+pub use super::spend_blocks::{active_blocks, prune_blocks, spend_reset};
 const VERSION: u32 = 1;
 const MAX_STATE: u64 = 64 * 1024;
 /// The longest account value accepted (an e-mail address is at most 320).
 pub const MAX_ACCOUNT: usize = 320;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct LastCycle {
+    /// When the cycle was recorded, at its end.
     pub at: i64,
+    /// When the cycle started measuring usage (issue #1659): a waiting
+    /// limit-resume hook trusts only a measurement taken after its limit.
+    /// Absent for a cycle that measured nothing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub measured_at: Option<i64>,
     pub outcome: String,
     /// The credit-backed overflow tag (issue #1606): `in`, `out` or `on`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -63,7 +71,6 @@ impl OverflowBlock {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct RotateLedger {
     pub version: u32,
     /// The profile whose login is in `~/.claude`.
@@ -272,9 +279,25 @@ impl RotateState {
         Ok(Some(l))
     }
 
+    /// Writes the ledger. While a rotator from another amplihack binary
+    /// runs ([`Self::foreign_rotator`]), it is written as that binary reads
+    /// it ([`for_older_readers`]).
     pub fn save_ledger(&self, l: &RotateLedger) -> Result<(), ProfileError> {
-        let bytes = serde_json::to_vec_pretty(l).map_err(|e| inconsistent(e.to_string()))?;
+        let older = self.foreign_rotator().is_some();
+        let bytes = serde_json::to_vec_pretty(&for_older_readers(l, older))
+            .map_err(|e| inconsistent(e.to_string()))?;
         self.write("ledger.json", &bytes)
+    }
+
+    /// The pid of a running `profile rotate watch` whose executable is not
+    /// this process's, for example one started before an upgrade.
+    pub fn foreign_rotator(&self) -> Option<u32> {
+        let exe = std::env::current_exe().ok();
+        amplihack_utils::rotator_status::foreign_rotator(
+            &self.pid,
+            Path::new("/proc"),
+            exe.as_deref(),
+        )
     }
 
     pub fn load_journal(&self) -> Result<Option<RotateJournal>, ProfileError> {
@@ -307,6 +330,38 @@ impl RotateState {
     }
 }
 
+/// The ledger as written for its readers. With `older` (a rotator from
+/// another binary runs), fields added after the ledger first shipped are
+/// left out, because amplihack before #1659 rejects unknown ledger fields:
+/// - `last_cycle.measured_at`, without which the limit-resume hook falls
+///   back to its 60-second margin;
+/// - `last_cycle.overflow` and `overflow_blocked` (issue #1606). An older
+///   rotator never moves onto an overflow profile, so it has no use for
+///   them. A spend block dropped this way is not a cost: when this binary
+///   runs the rotator again, the blocked profile's probe still reports the
+///   spend limit, and a profile reporting one is blocked again and never
+///   moved onto.
+pub fn for_older_readers(l: &RotateLedger, older: bool) -> RotateLedger {
+    let mut out = l.clone();
+    if older {
+        if let Some(c) = &mut out.last_cycle {
+            c.measured_at = None;
+            c.overflow = None;
+        }
+        out.overflow_blocked.clear();
+    }
+    out
+}
+
+/// The one line printed when a rotator from another amplihack binary runs.
+pub fn foreign_rotator_note(pid: u32) -> String {
+    format!(
+        "amplihack: the Claude login rotator (pid {pid}) runs another amplihack binary, so the \
+         rotate ledger is written in the format it reads; restart it to finish the upgrade: \
+         amplihack profile rotate stop && amplihack profile rotate start"
+    )
+}
+
 /// Line and column only: a serde message can quote input.
 fn position(e: &serde_json::Error) -> String {
     format!("invalid JSON at line {} column {}", e.line(), e.column())
@@ -328,36 +383,4 @@ pub fn should_alert(l: &mut RotateLedger, key: &str) -> bool {
 
 pub fn clear_alert(l: &mut RotateLedger) {
     l.alert = None;
-}
-
-/// When an organisation's monthly spend resets, as assumed for a block
-/// recorded at `at`: the 1st of the next calendar month, 00:00 UTC. Claude's
-/// message gives no reset time, so this is the documented assumption.
-pub fn spend_reset(at: i64) -> i64 {
-    use chrono::{Datelike, TimeZone, Utc};
-    let Some(t) = chrono::DateTime::from_timestamp(at, 0) else {
-        return at;
-    };
-    let (y, m) = if t.month() == 12 {
-        (t.year() + 1, 1)
-    } else {
-        (t.year(), t.month() + 1)
-    };
-    Utc.with_ymd_and_hms(y, m, 1, 0, 0, 0)
-        .single()
-        .map_or(at, |d| d.timestamp())
-}
-
-/// The blocks still in force at `now` (`now < until`).
-pub fn active_blocks(l: &RotateLedger, now: i64) -> BTreeMap<String, OverflowBlock> {
-    l.overflow_blocked
-        .iter()
-        .filter(|(_, b)| now < b.until)
-        .map(|(n, b)| (n.clone(), b.clone()))
-        .collect()
-}
-
-/// Drops the blocks that ended at or before `now`.
-pub fn prune_blocks(l: &mut RotateLedger, now: i64) {
-    l.overflow_blocked.retain(|_, b| now < b.until);
 }

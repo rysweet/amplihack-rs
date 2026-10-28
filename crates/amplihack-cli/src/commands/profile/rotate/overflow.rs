@@ -1,5 +1,5 @@
-//! The credit-backed overflow policy (issue #1606): a pure function of the
-//! settings, the readings with their reset times, the overflow names, the
+//! The rotator's overflow policy (issue #1606): a pure function of the
+//! settings, the readings with their reset times, the overflow entries, the
 //! spend blocks and the clock. See `tests_overflow` for the contract and
 //! "Rotate overflow" in docs/reference/profile-command.md.
 //!
@@ -7,21 +7,25 @@
 //! - A plan login has capacity when its probe read `ok` and its session and
 //!   week use are below `--session-at` and `--week-at`; margins and the hold
 //!   play no part.
-//! - Onto credits only when the live plan login is at a threshold (and its
-//!   probe did not fail), no plan login has capacity and the earliest plan
-//!   reset is more than `overflow_wait` away.
-//! - Off credits as soon as a plan login has capacity, ignoring the hold and
-//!   both margins. Both rules use the same capacity test, so the rotator
-//!   does not flap (P2).
+//! - Onto overflow only when the live plan login is at a threshold (and its
+//!   probe did not fail), and the shared [`Gate`] allows it: no plan login
+//!   has capacity and the earliest plan reset is more than `overflow_wait`
+//!   away. An unknown reset allows it only with `--overflow-unknown-reset 1`.
+//! - The overflow profile chosen is the first usable one by tier, then by
+//!   file order within a tier.
+//! - Off overflow as soon as a plan login has capacity, ignoring the hold
+//!   and both margins. Both rules use the same capacity test, so the
+//!   rotator does not flap (P2).
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
+use crate::commands::profile::overflow::{Gate, OverflowEntry};
 use std::collections::BTreeMap;
 
-/// What a cycle records about credits in `last_cycle.overflow`.
+/// What a cycle records about overflow in `last_cycle.overflow`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tag {
     /// Moved onto an overflow profile.
@@ -41,8 +45,8 @@ impl Tag {
         }
     }
 
-    /// The live login runs on credits after this cycle.
-    pub fn on_credits(tag: Option<Self>) -> bool {
+    /// The live login runs on an overflow profile after this cycle.
+    pub fn on_overflow(tag: Option<Self>) -> bool {
         matches!(tag, Some(Self::In | Self::On))
     }
 }
@@ -53,8 +57,9 @@ pub struct OverflowInput<'a> {
     pub live_name: Option<&'a ProfileName>,
     pub live: &'a Probed,
     pub candidates: &'a [Measured],
-    /// The overflow profiles, in config order.
-    pub overflow: &'a [ProfileName],
+    /// The overflow entries, in any order: they are tried by tier, then in
+    /// the order given within a tier.
+    pub overflow: &'a [OverflowEntry],
     /// The ledger's spend blocks, by profile name; expired ones are ignored.
     pub blocks: &'a BTreeMap<String, OverflowBlock>,
     pub swapped_at: Option<i64>,
@@ -68,8 +73,8 @@ pub struct Verdict {
     /// Overflow profiles that reported a spend limit and have no active
     /// block yet: each is blocked, with one ALERT, by the cycle.
     pub new_blocks: Vec<ProfileName>,
-    /// The earliest plan reset, for the `credits:` log lines; `None` when
-    /// unknown or when the verdict does not use credits.
+    /// The earliest plan reset, for the `overflow:` log lines; `None` when
+    /// unknown or when the verdict does not use overflow.
     pub next_plan_reset: Option<i64>,
 }
 
@@ -105,7 +110,8 @@ pub fn regains(s: &Settings, r: &Reading, w: &Windows) -> Option<i64> {
 }
 
 /// The earliest known time any of `pool` regains capacity. Unknown resets
-/// count as far away, so they never shorten the wait.
+/// are left out, so they never shorten the wait; `None` when no reset in
+/// `pool` is known, which [`Gate::far`] treats as far only by opt-in.
 pub fn earliest_plan_reset<'a>(
     s: &Settings,
     pool: impl IntoIterator<Item = (&'a Reading, &'a Windows)>,
@@ -113,10 +119,12 @@ pub fn earliest_plan_reset<'a>(
     pool.into_iter().filter_map(|(r, w)| regains(s, r, w)).min()
 }
 
-/// Whether the earliest plan reset is more than `wait` seconds after `now`.
-/// `None` (unknown) is far away.
-pub fn worth_overflow(earliest: Option<i64>, now: i64, wait: u64) -> bool {
-    earliest.is_none_or(|t| t.saturating_sub(now) > i64::try_from(wait).unwrap_or(i64::MAX))
+/// The rotator's [`Gate`]: `--overflow-wait` and `--overflow-unknown-reset`.
+pub fn gate(s: &Settings) -> Gate {
+    Gate {
+        wait: s.overflow_wait,
+        unknown_reset: s.overflow_unknown_reset,
+    }
 }
 
 fn active(blocks: &BTreeMap<String, OverflowBlock>, name: &ProfileName, now: i64) -> bool {
@@ -125,7 +133,12 @@ fn active(blocks: &BTreeMap<String, OverflowBlock>, name: &ProfileName, now: i64
 
 pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     let s = i.settings;
-    let is_overflow = |n: &ProfileName| i.overflow.contains(n);
+    let gate = gate(s);
+    // Tried by tier; a stable sort keeps the given order within a tier.
+    let mut order: Vec<&OverflowEntry> = i.overflow.iter().collect();
+    order.sort_by_key(|e| e.tier);
+    let order: Vec<&ProfileName> = order.into_iter().map(|e| &e.name).collect();
+    let is_overflow = |n: &ProfileName| order.contains(&n);
     let live_over = i.live_name.is_some_and(is_overflow);
 
     // Spend-limit evidence on any overflow profile, live or candidate,
@@ -138,7 +151,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     {
         new_blocks.push(live.clone());
     }
-    for o in i.overflow {
+    for &o in &order {
         if Some(o) == i.live_name || active(i.blocks, o, i.now) {
             continue;
         }
@@ -147,11 +160,12 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         }
     }
     let blocked = |n: &ProfileName| active(i.blocks, n, i.now) || new_blocks.contains(n);
-    // The first overflow profile in config order that may be moved to:
-    // a candidate, not live, not blocked, and its probe did not fail.
+    // The first overflow profile by tier, then given order, that may be
+    // moved to: a candidate, not live, not blocked, its probe did not fail.
     let next_overflow = || {
-        i.overflow
+        order
             .iter()
+            .copied()
             .filter(|o| Some(*o) != i.live_name && !blocked(o))
             .find_map(|o| {
                 i.candidates
@@ -176,18 +190,16 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
 
     if !live_over {
         let d = decide(s, &i.live.reading, &plan, i.swapped_at, i.now);
-        // Credits only replace today's no-capacity outcome, and never for a
-        // login whose state is unknown.
+        // Overflow only replaces today's no-capacity outcome, and never for
+        // a login whose state is unknown.
         if i.overflow.is_empty() || d != Decision::Alert || i.live.reading == Reading::Failed {
             return verdict(d, None, None);
         }
-        if plan.iter().any(|c| plan_usable(s, &c.reading)) {
-            return verdict(d, None, None);
-        }
+        let plan_has_capacity = plan.iter().any(|c| plan_usable(s, &c.reading));
         let pool = std::iter::once((&i.live.reading, &i.live.windows))
             .chain(plan.iter().map(|c| (&c.reading, &c.windows)));
         let earliest = earliest_plan_reset(s, pool);
-        if !worth_overflow(earliest, i.now, s.overflow_wait) {
+        if !gate.allows(plan_has_capacity, earliest, i.now) {
             return verdict(d, None, None);
         }
         return match next_overflow() {
@@ -196,7 +208,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         };
     }
 
-    // On credits: leave as soon as a plan login has capacity.
+    // On overflow: leave as soon as a plan login has capacity.
     let with_capacity: Vec<Measured> = plan
         .iter()
         .filter(|c| plan_usable(s, &c.reading))
@@ -209,7 +221,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     if i.live_name.is_some_and(blocked) {
         // The live overflow cannot spend: the next overflow profile if the
         // wait still holds, else the best plan login, else the ALERT.
-        if worth_overflow(earliest, i.now, s.overflow_wait)
+        if gate.far(earliest, i.now)
             && let Some(to) = next_overflow()
         {
             return verdict(swap(to, Reason::OverflowIn), Some(Tag::In), earliest);
@@ -220,7 +232,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         return verdict(Decision::Alert, None, None);
     }
     // A failed live probe: the failed-probe rules with plan candidates as
-    // the only targets (`damp` then applies); otherwise stay on credits.
+    // the only targets (`damp` then applies); otherwise stay on overflow.
     if i.live.reading == Reading::Failed
         && let d @ Decision::Swap { .. } = decide(s, &i.live.reading, &plan, i.swapped_at, i.now)
     {

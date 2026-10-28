@@ -212,32 +212,182 @@ fn eligibility_filter_is_only_asked_about_other_profiles() {
     assert_eq!(picked.map(|p| p.to_string()).as_deref(), Some("a"));
 }
 
-// --- Overflow profiles (issue #1606, D7) -----------------------------------
+// --- Overflow profiles (issue #1606) ---------------------------------------
+//
+// Auto-switch follows the rotator's rule, through the same `Gate`:
+// - never onto an overflow profile while any plan profile reads under the
+//   threshold, eligible for this session or not;
+// - onto the first usable overflow profile (tier, then file order) when every
+//   plan profile is exhausted and the earliest plan reset is beyond the wait;
+// - back to a plan profile as soon as one has capacity, whether or not the
+//   overflow profile is exhausted; otherwise it stays on the overflow profile.
 
-#[test]
-fn auto_switch_never_picks_an_overflow_profile_even_as_the_only_option() {
-    use super::config::Config;
-    let cfg = Config {
-        enabled: true,
-        threshold: 90,
-        exclude: Vec::new(),
-        overflow: vec![n("cred")],
-    };
-    let mut c = Case::new(&["work", "spare", "cred"])
-        .with("work", reading(95.0, 50.0))
-        .with("spare", reading(99.0, 99.0))
-        .with("cred", reading(0.0, 0.0));
-    c.exclude = cfg.selection_exclude();
-    assert_eq!(c.pick("work"), None, "only the rotator spends credits");
-    c.readings.insert("spare".into(), reading(10.0, 10.0));
-    assert_eq!(c.pick("work").as_deref(), Some("spare"));
+use super::candidate::OverflowPool;
+use crate::commands::profile::overflow::Gate;
+
+const GATE: Gate = Gate {
+    wait: 1800,
+    unknown_reset: false,
+};
+
+/// A reading whose five-hour window is at `five`% and resets in `resets_in`.
+fn five_hour(five: f64, resets_in: i64) -> Reading {
+    Reading {
+        five_hour: w(five, resets_in),
+        seven_day: w(10.0, 86_400),
+        observed_at: NOW - 10,
+        source: ReadingSource::Statusline,
+    }
 }
 
-/// AU4: every `Pool` built outside tests takes its exclusions from
-/// `Config::selection_exclude()`, so a new call site cannot let auto-switch
-/// spend credits by using `exclude` alone.
+struct Over {
+    order: Vec<ProfileName>,
+    blocked: Vec<String>,
+    gate: Option<Gate>,
+}
+
+impl Over {
+    fn new(order: &[&str]) -> Self {
+        Self {
+            order: order.iter().map(|o| n(o)).collect(),
+            blocked: Vec::new(),
+            gate: Some(GATE),
+        }
+    }
+
+    fn pool(&self) -> OverflowPool<'_> {
+        OverflowPool {
+            order: &self.order,
+            blocked: &self.blocked,
+            gate: self.gate,
+        }
+    }
+
+    fn pick(&self, c: &Case, current: &str) -> Option<String> {
+        self.pick_if(c, current, |_| true)
+    }
+
+    fn pick_if(
+        &self,
+        c: &Case,
+        current: &str,
+        ok: impl Fn(&ProfileName) -> bool,
+    ) -> Option<String> {
+        candidate::select_with_overflow(&c.pool(), &self.pool(), current, ok).map(|p| p.to_string())
+    }
+}
+
+/// work (live) and spare exhausted, spare resetting in `spare_reset`; cred
+/// is overflow with nothing used.
+fn all_plan_out(spare_reset: i64) -> Case {
+    Case::new(&["work", "spare", "cred"])
+        .with("work", five_hour(95.0, 4 * 3600))
+        .with("spare", five_hour(99.0, spare_reset))
+        .with("cred", reading(0.0, 0.0))
+}
+
 #[test]
-fn every_pool_construction_uses_selection_exclude() {
+fn no_move_onto_overflow_while_a_plan_profile_has_capacity() {
+    let o = Over::new(&["cred"]);
+    let c = all_plan_out(4 * 3600).with("spare", reading(40.0, 40.0));
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("spare"));
+    // Even when that plan profile cannot take this session (leased, no
+    // login file): it is not exhausted, so no money is spent.
+    assert_eq!(o.pick_if(&c, "work", |p| p.as_str() != "spare"), None);
+}
+
+#[test]
+fn moves_onto_overflow_when_every_plan_profile_is_exhausted_beyond_the_wait() {
+    let o = Over::new(&["cred"]);
+    let c = all_plan_out(1801);
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("cred"));
+}
+
+#[test]
+fn a_plan_reset_inside_the_wait_keeps_overflow_unused() {
+    let o = Over::new(&["cred"]);
+    assert_eq!(
+        o.pick(&all_plan_out(1800), "work"),
+        None,
+        "exactly at the wait"
+    );
+    assert_eq!(o.pick(&all_plan_out(60), "work"), None);
+    // The live profile's own reset counts too.
+    let c = all_plan_out(4 * 3600).with("work", five_hour(95.0, 600));
+    assert_eq!(o.pick(&c, "work"), None);
+}
+
+#[test]
+fn moves_back_off_overflow_once_a_plan_profile_recovers() {
+    let o = Over::new(&["cred"]);
+    // On cred, no plan capacity: stay.
+    let c = all_plan_out(4 * 3600);
+    assert_eq!(o.pick(&c, "cred"), None, "stays on the overflow profile");
+    // spare recovers: move back, though cred is far from exhausted.
+    let c = c.with("spare", reading(30.0, 30.0));
+    assert_eq!(o.pick(&c, "cred").as_deref(), Some("spare"));
+    // A reset that passed counts as recovered as well.
+    let c = all_plan_out(4 * 3600).with("spare", five_hour(99.0, 0));
+    assert_eq!(o.pick(&c, "cred").as_deref(), Some("spare"));
+}
+
+#[test]
+fn an_exhausted_or_blocked_overflow_profile_moves_to_the_next_one() {
+    let mut o = Over::new(&["cred", "cred2"]);
+    let mut c = all_plan_out(4 * 3600);
+    c.profiles.push(n("cred2"));
+    let c = c
+        .with("cred2", reading(0.0, 0.0))
+        .with("cred", reading(95.0, 0.0));
+    assert_eq!(o.pick(&c, "cred").as_deref(), Some("cred2"));
+    let c = c.with("cred", reading(0.0, 0.0));
+    o.blocked = vec!["cred".into()];
+    assert_eq!(o.pick(&c, "cred").as_deref(), Some("cred2"));
+    assert_eq!(
+        o.pick(&c, "work").as_deref(),
+        Some("cred2"),
+        "never onto a blocked one"
+    );
+}
+
+#[test]
+fn overflow_profiles_are_tried_in_the_order_given() {
+    // The order passed in is tier order (`Config::overflow_order`).
+    let o = Over::new(&["low", "high"]);
+    let c = Case::new(&["work", "high", "low"])
+        .with("work", five_hour(95.0, 4 * 3600))
+        .with("high", reading(0.0, 0.0))
+        .with("low", reading(0.0, 0.0));
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("low"));
+}
+
+#[test]
+fn a_closed_gate_or_an_excluded_overflow_profile_spends_nothing() {
+    let mut o = Over::new(&["cred"]);
+    o.gate = None;
+    assert_eq!(
+        o.pick(&all_plan_out(4 * 3600), "work"),
+        None,
+        "gate unreadable"
+    );
+    let o = Over::new(&["cred"]);
+    let mut c = all_plan_out(4 * 3600);
+    c.exclude = vec![n("cred")];
+    assert_eq!(o.pick(&c, "work"), None, "excluded");
+}
+
+#[test]
+fn an_overflow_profile_is_never_picked_as_a_plan_profile() {
+    // cred has the most room of all, but spare still has capacity.
+    let o = Over::new(&["cred"]);
+    let c = all_plan_out(4 * 3600).with("spare", reading(85.0, 85.0));
+    assert_eq!(o.pick(&c, "work").as_deref(), Some("spare"));
+}
+
+/// Every selection outside tests goes through `select_with_overflow`, so a
+/// new call site cannot pick an overflow profile without the gate.
+#[test]
+fn every_selection_outside_tests_goes_through_the_overflow_gate() {
     let dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/commands/profile/auto_switch");
     let mut sites = 0;
@@ -248,35 +398,35 @@ fn every_pool_construction_uses_selection_exclude() {
             continue;
         }
         let src = std::fs::read_to_string(&path).unwrap();
-        for (i, _) in src.match_indices("Pool {") {
-            sites += 1;
-            // The Pool literal and the few lines that build its inputs.
-            let start = src[..i].char_indices().rev().nth(400).map_or(0, |(j, _)| j);
-            let end = src[i..].find("};").map_or(src.len(), |e| i + e);
-            let body = &src[start..end];
-            assert!(
-                body.contains("selection_exclude()") && !body.contains("exclude: &cfg.exclude"),
-                "{file}: a Pool built without selection_exclude():\n{body}"
-            );
-        }
+        assert!(
+            !src.contains("candidate::select("),
+            "{file}: calls candidate::select directly"
+        );
+        sites += src.matches("select_with_overflow(").count();
     }
     assert!(
         sites >= 2,
-        "expected the rerun and swap Pool sites, found {sites}"
+        "expected the rerun and swap sites, found {sites}"
     );
 }
 
 /// The rerun path (`nested_candidate`, used by `substitute` and the agent
-/// step's rerun) never offers an overflow profile while a plan profile is
-/// usable, nor when it is the only profile with quota.
+/// step's rerun) with the gate from the environment and no rotate ledger.
 #[test]
-fn the_rerun_candidate_never_offers_an_overflow_profile() {
+fn the_rerun_candidate_follows_the_overflow_rule() {
     use super::config::Config;
     use super::fsx;
     use super::rerun::nested_candidate;
     use super::state::{CREDS, Ledger, State};
+    use crate::commands::profile::overflow::OverflowEntry;
+    use crate::test_support::{EnvGuard, env_lock};
     use std::os::unix::fs::PermissionsExt;
 
+    let _lock = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _env = EnvGuard::unset([
+        "AMPLIHACK_ROTATE_OVERFLOW_WAIT",
+        "AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET",
+    ]);
     let tmp = tempfile::tempdir().unwrap();
     std::fs::set_permissions(tmp.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
     for p in ["work", "spare", "cred"] {
@@ -287,13 +437,13 @@ fn the_rerun_candidate_never_offers_an_overflow_profile() {
     let state = State::new(tmp.path()).unwrap();
     let profiles = vec![n("work"), n("spare"), n("cred")];
     let now = fsx::now();
-    let live = |five: f64, seven: f64| Reading {
+    let live = |five: f64, resets_in: i64| Reading {
         five_hour: Some(Window {
             used_percentage: five,
-            resets_at: now + 3600,
+            resets_at: now + resets_in,
         }),
         seven_day: Some(Window {
-            used_percentage: seven,
+            used_percentage: 10.0,
             resets_at: now + 86_400,
         }),
         observed_at: now - 10,
@@ -303,25 +453,48 @@ fn the_rerun_candidate_never_offers_an_overflow_profile() {
         enabled: true,
         threshold: 90,
         exclude: Vec::new(),
-        overflow: vec![n("cred")],
+        overflow: vec![OverflowEntry::new(n("cred"), 1)],
     };
     let mut readings = BTreeMap::new();
-    readings.insert("work".to_string(), live(95.0, 50.0));
-    readings.insert("spare".to_string(), live(40.0, 40.0));
-    readings.insert("cred".to_string(), live(0.0, 0.0));
-    let pick = |readings: &BTreeMap<String, Reading>| {
+    readings.insert("work".to_string(), live(95.0, 4 * 3600));
+    readings.insert("spare".to_string(), live(40.0, 4 * 3600));
+    readings.insert("cred".to_string(), live(0.0, 4 * 3600));
+    let pick = |readings: &BTreeMap<String, Reading>, current: &str| {
+        let skip = [current.to_string()];
         nested_candidate(
             &state,
             &Ledger::default(),
             &profiles,
             readings,
             &cfg,
-            "work",
-            &[],
+            current,
+            &skip,
         )
         .map(|p| p.to_string())
     };
-    assert_eq!(pick(&readings).as_deref(), Some("spare"));
-    readings.insert("spare".to_string(), live(99.0, 99.0));
-    assert_eq!(pick(&readings), None, "only the rotator spends credits");
+    assert_eq!(
+        pick(&readings, "work").as_deref(),
+        Some("spare"),
+        "plan first"
+    );
+    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    assert_eq!(
+        pick(&readings, "work").as_deref(),
+        Some("cred"),
+        "every plan profile out for longer than the wait"
+    );
+    readings.insert("spare".to_string(), live(99.0, 600));
+    assert_eq!(
+        pick(&readings, "work"),
+        None,
+        "spare is back within the wait"
+    );
+    readings.insert("spare".to_string(), live(99.0, 4 * 3600));
+    assert_eq!(pick(&readings, "cred"), None, "stays on cred");
+    readings.insert("spare".to_string(), live(20.0, 4 * 3600));
+    assert_eq!(
+        pick(&readings, "cred").as_deref(),
+        Some("spare"),
+        "back to the plan profile once it recovers"
+    );
 }
