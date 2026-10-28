@@ -67,24 +67,18 @@ fn pyyaml_path_dir() -> Option<&'static Path> {
         if command_succeeds("python3", &["-c", "import yaml"]) {
             return None;
         }
-        let root = tempfile::Builder::new()
+        // Build the venv in a `TempDir` that is still owned here: if the
+        // build fails, the assert below unwinds, the `TempDir` drops and the
+        // directory is removed. `get_or_init` leaves `DIR` uninitialised
+        // after a panic, so under `cargo test` the other suite test runs
+        // this closure again and reports the same build failure, rather
+        // than tripping over state left by the first attempt. Nothing is
+        // kept or registered for removal at exit until the build succeeds.
+        let dir = tempfile::Builder::new()
             .prefix("issue1707-pyyaml-")
             .tempdir()
-            .expect("tempdir for the PyYAML venv")
-            .keep();
-        // A static is never dropped, so remove the venv at process exit.
-        static ROOT: OnceLock<PathBuf> = OnceLock::new();
-        ROOT.set(root.clone()).expect("PyYAML venv root set once");
-        extern "C" fn remove_at_exit() {
-            if let Some(root) = ROOT.get() {
-                let _ = std::fs::remove_dir_all(root);
-            }
-        }
-        // SAFETY: registering a plain `extern "C"` function has no
-        // preconditions; it runs once, at normal process exit.
-        unsafe { libc::atexit(remove_at_exit) };
-
-        let venv = root.join("venv");
+            .expect("tempdir for the PyYAML venv");
+        let venv = dir.path().join("venv");
         let venv_str = venv.to_str().expect("utf-8 temp path");
         let python = venv.join("bin/python3");
         let python_str = python.to_str().expect("utf-8 temp path");
@@ -100,6 +94,24 @@ fn pyyaml_path_dir() -> Option<&'static Path> {
             "the claim-check suites need python3 with PyYAML: install python3-yaml, \
              or uv (which fetches PyYAML from PyPI on a cold cache)"
         );
+
+        // The build succeeded, so this closure finishes and `DIR` is set:
+        // it cannot run again, and `ROOT` is set exactly once. A static is
+        // never dropped, so remove the venv at process exit instead.
+        let root = dir.keep();
+        static ROOT: OnceLock<PathBuf> = OnceLock::new();
+        ROOT.set(root.clone())
+            .expect("ROOT is set only after a successful build, which initialises DIR");
+        extern "C" fn remove_at_exit() {
+            if let Some(root) = ROOT.get() {
+                let _ = std::fs::remove_dir_all(root);
+            }
+        }
+        // SAFETY: registering a plain `extern "C"` function has no
+        // preconditions; it runs once, at normal process exit.
+        unsafe { libc::atexit(remove_at_exit) };
+
+        let venv = root.join("venv");
         Some(venv.join("bin"))
     })
     .as_deref()
