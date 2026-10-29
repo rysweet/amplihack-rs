@@ -68,7 +68,7 @@ fn measured(session: f64, week: f64, reset: Option<i64>) -> Probed {
 
 fn exhausted(reset: Option<i64>) -> Probed {
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0, reset),
             week: win(100.0, reset),

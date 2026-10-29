@@ -714,7 +714,7 @@ team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/
 scratch   -                 not_logged_in      -        -                                     -     -
 ```
 
-amplihack runs `claude -p /usage` under every profile at once, with
+amplihack runs `claude -p /usage` under every profile, a few at a time, with
 `CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
 `Current week` lines. Checking does not appear to use quota, and an
 exhausted account still answers. The profiles with the most room come first. Exhausted ones
@@ -736,7 +736,7 @@ What the `STATE` column means:
 | `spend_limit` | Your organisation's spend limit was reached. |
 | `api_key` | An API-key profile, billed per token; its `SESSION` cell reads `api-key (billed per token)` and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
 | `not_logged_in` | `amplihack profile login <name>` |
-| `timeout` | Claude did not answer in time (30 seconds by default). Try again. |
+| `timeout` | Claude did not answer in time (120 seconds by default). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
 | `error` | The probe could not run (the profile directory was refused, or `claude` could not be started, read or waited for); the reason is printed on stderr. |
 
@@ -784,6 +784,24 @@ session or all-models weekly limit reached, the table ends with
 
 The command exits with status 0 whenever the probes ran, whatever their
 states. Like `profile run`, it is refused under Docker.
+
+### Probes on a busy host
+
+Each probe can take a minute or more of CPU, because Claude reads every
+session transcript the profile can see. amplihack gives each probe 120
+seconds and runs between 2 and 4 at once, fewer when the host's load average
+is close to its number of CPUs. A profile in state `timeout` or `error`
+shows `-` for its percentages, and `--json` gives `null` for `session` and
+`week_all`; the usage is unknown, never 100%. To give probes longer or run
+fewer at once:
+
+```bash
+AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300 AMPLIHACK_PROFILE_USAGE_PARALLEL=1 amplihack profile usage
+```
+
+The [rotator](claude-profile-rotation.md#when-the-host-is-heavily-loaded)
+uses the same two variables. The limits and the formula are in the
+[reference](../reference/profile-command.md#probe-parallelism).
 
 ### A profile shows `live in ~/.claude`
 

@@ -46,9 +46,9 @@ pub(super) fn m_spent(ctx: &Ctx, snap: &Snap) -> Result<Measurement, ProfileErro
             spend_limit: false,
         })
         .collect();
-    let decision = decide(&ctx.settings, &Reading::Exhausted, &measured, None, now());
+    let decision = decide(&ctx.settings, &Reading::EXHAUSTED, &measured, None, now());
     Ok(Measurement {
-        live: Reading::Exhausted,
+        live: Reading::EXHAUSTED,
         others: measured.into_iter().map(|m| (m.name, m.reading)).collect(),
         decision,
         note: None,

@@ -147,7 +147,8 @@ A variable with a config key keeps working and outranks the config files. See
 | `AMPLIHACK_PLUGIN_INSTALL_LOCK` | test-only |  | Plugin-manifest test fixture. |
 | `AMPLIHACK_POST_UPDATE_INSTALL` | internal |  | Marks the install that follows a self-update. |
 | `AMPLIHACK_PROBE_BIN` | test-only |  | Probe binary path in update and install tests. |
-| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Timeout for `amplihack profile usage`. |
+| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | user preference |  | Number of usage probes run at once by `amplihack profile usage` and the rotator, `1` to `16`; derived from CPUs and load when unset or empty. See [Probe parallelism](profile-command.md#probe-parallelism). |
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | user preference |  | Seconds each usage probe may run in `amplihack profile usage` and the rotator, `1` to `600`; default `120`. See [Probe deadline](profile-command.md#probe-deadline). |
 | `AMPLIHACK_PROJECT_ID` | user preference |  | Memory learning project id. |
 | `AMPLIHACK_PROJECT_ROOT` | internal |  | Project root exported by the uvx manager. |
 | `AMPLIHACK_PROMPT_DELIVERY` | user preference |  | Prompt delivery mode for agent subprocesses. |

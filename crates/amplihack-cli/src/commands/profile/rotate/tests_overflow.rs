@@ -96,7 +96,7 @@ fn measured(session: f64, week: f64, s_reset: Option<i64>, w_reset: Option<i64>)
 /// An exhausted reading (session at 100%) with reset times.
 fn exhausted(s_reset: Option<i64>, w_reset: Option<i64>) -> Probed {
     Probed {
-        reading: Reading::Exhausted,
+        reading: Reading::EXHAUSTED,
         windows: Windows {
             session: win(100.0, s_reset),
             week: win(100.0, w_reset),
@@ -232,7 +232,13 @@ fn probed_keeps_reset_times_for_exhausted_readings() {
         Some((100.0, Some(NOW + HOUR))),
         Some((40.0, Some(NOW + 50 * HOUR))),
     ));
-    assert_eq!(p.reading, Reading::Exhausted);
+    assert_eq!(
+        p.reading,
+        Reading::Exhausted {
+            session: Some(100.0),
+            week: Some(40.0)
+        }
+    );
     assert!(!p.spend_limit);
     assert_eq!(p.windows.session, win(100.0, Some(NOW + HOUR)));
     assert_eq!(p.windows.week, win(40.0, Some(NOW + 50 * HOUR)));

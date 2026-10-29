@@ -106,7 +106,7 @@ pub struct Verdict {
 pub fn plan_usable(s: &Settings, r: &Reading) -> bool {
     match r {
         Reading::Measured { session, week } => gate(s).plan_capacity(*session, *week),
-        Reading::Exhausted | Reading::Failed => false,
+        Reading::Exhausted { .. } | Reading::Failed => false,
     }
 }
 
@@ -117,7 +117,7 @@ pub fn regains(s: &Settings, r: &Reading, w: &Windows) -> Option<i64> {
     let (session_used, week_used) = match r {
         Reading::Failed => return None,
         Reading::Measured { session, week } => (Some(*session), Some(*week)),
-        Reading::Exhausted => (w.session.map(|x| x.used), w.week.map(|x| x.used)),
+        Reading::Exhausted { .. } => (w.session.map(|x| x.used), w.week.map(|x| x.used)),
     };
     let g = gate(s);
     let session_hit = session_used.is_some_and(|u| g.at_threshold(u, 0.0).0);

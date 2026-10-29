@@ -99,9 +99,12 @@ exactly what "use the default directory" means. That child still gets
 shell, stdin is `/dev/null`, and no other arguments are passed. The profile directory is
 checked again just before spawn, as for every launch.
 
-- Profiles are probed in parallel, at most 8 at a time.
-- Each probe has a 30-second deadline from spawn. When it passes, the child is
-  killed and the profile's state is `timeout`.
+- Profiles are probed in parallel, at most the
+  [parallelism bound](#probe-parallelism) at a time. The extra `~/.claude`
+  row, when there is one, is probed after the others.
+- Each probe has a [deadline](#probe-deadline) from spawn, 120 seconds by
+  default. When it passes, the child is killed and the profile's state is
+  `timeout`. Output from a probe that timed out is never parsed.
 - On Unix each child runs in its own process group. When the probe ends,
   whether by the deadline or a normal exit, the whole group is killed, so
   processes `claude` started (MCP servers, for example) do not outlive it.
@@ -114,20 +117,93 @@ checked again just before spawn, as for every launch.
   behaviour, not something amplihack controls. `claude` contacts Anthropic to
   answer it; amplihack itself makes no network calls.
 
-The deadline can be changed for tests and slow machines:
+Each probe makes `claude` read every session transcript reachable from the
+profile's `projects` directory, so one probe can take a minute or more of CPU
+time. The deadline and the number of probes run at once are therefore sized
+for a loaded host. `profile usage` and the [rotator](#rotate-cycle) use the
+same two settings.
+
+#### Probe deadline
 
 | Setting | Values | Default |
 |---------|--------|---------|
-| `--timeout-secs <n>` (hidden flag) | `1` to `600` | — |
-| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` | `30` |
+| `--timeout-secs <n>` (hidden flag, `profile usage` only) | `1` to `600` | none |
+| `AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` | `1` to `600` | `120` |
+
+The default of 120 seconds allows about 1.7 times the 70 seconds one probe
+was measured to take on a 72-CPU host at a load average of 194.
 
 The flag wins over the variable. A flag value out of range is a usage error
 (exit status 2). An empty variable counts as unset. A variable that is not a
-number from `1` to `600` prints one warning showing the value escaped and cut to 32 characters, then uses `30`:
+number from `1` to `600` prints one warning to stderr, showing the value
+escaped and cut to 32 characters, then uses `120`:
 
 ```
-warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS "soon" (use 1 to 600); using 30
+warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS "soon" (use 1 to 600); using 120
 ```
+
+The rotator reads the variable at the start of every cycle. It has no flag,
+and it ignores an invalid value without a warning, using `120`.
+
+#### Probe parallelism
+
+Unless `AMPLIHACK_PROFILE_USAGE_PARALLEL` is set, the number of probes run at
+once is derived from the host:
+
+```
+cpus  = number of CPUs available to amplihack
+load1 = first field of /proc/loadavg (the one-minute load average)
+free  = max(cpus - load1, 0)
+bound = clamp(floor(free / 8), 2, 4)
+```
+
+Where `/proc/loadavg` is missing or cannot be read (any platform other than
+Linux, for example), `free` is `cpus`. A load value that is empty, negative
+or not a finite number counts as missing.
+
+| Host | `free` | Bound |
+|------|--------|-------|
+| 72 CPUs, idle | 72 | `4` |
+| 72 CPUs, load 38 | 34 | `4` |
+| 72 CPUs, load 194 | 0 | `2` |
+| 8 CPUs, idle | 8 | `2` |
+
+The floor is 2, not 1. Under load 194 a bound of 1 would make a cycle over
+14 profiles take about 16 minutes. Two probes add little to a host already
+that busy, and they halve that time. The ceiling of 4 keeps an idle host
+from starting a burst of transcript scans at once.
+
+| Setting | Values | Default |
+|---------|--------|---------|
+| `AMPLIHACK_PROFILE_USAGE_PARALLEL` | `1` to `16` | the derived bound |
+
+A valid value replaces the derived bound. An empty variable counts as unset,
+as it does for the deadline. Any other value, including `0` and one that is
+not valid UTF-8, prints one warning to stderr, showing the value escaped and
+cut to 32 characters, then uses the derived bound:
+
+```
+warning: ignored AMPLIHACK_PROFILE_USAGE_PARALLEL "lots" (use 1 to 16); using 2
+```
+
+The number after `using` is the derived bound from the formula above, before
+the cap described next, so it can be larger than the number of profiles.
+
+Whichever value applies is then capped at the number of profiles to probe,
+and is never below 1. There is no command-line flag for it.
+
+The rotator applies the bound to its candidate probes and probes the live
+login on a separate thread at the same time, so a rotator cycle runs at most
+the bound plus one probes at once. It derives the bound again on every cycle,
+so it follows the load as it changes, and prints the warning for an invalid
+value once per cycle (to `rotate.err` for a background rotator). The
+background rotator inherits both variables from the shell that ran
+`amplihack profile rotate start`; the variables it removes are listed under
+[Rotate daemon](#rotate-daemon).
+
+A cycle under heavy load can take longer than `--interval`. Cycles never
+overlap: the rotator waits for `--interval` seconds after a cycle ends before
+it starts the next one.
 
 #### What is read
 
@@ -185,7 +261,7 @@ Every profile gets exactly one state:
 | `weekly_exhausted` | The all-models week is at 100% or more and the session is not. |
 | `spend_limit` | Claude reported that the organisation's spend limit was reached. Any percentages read are kept. |
 | `not_logged_in` | No usage line of any kind (model week lines included) was read and Claude reported that the profile is not signed in. Run `amplihack profile login <name>`. A profile [live in `~/.claude`](#logins-in-claude) is probed against `~/.claude`, so its missing `.credentials.json` does not give this state. |
-| `timeout` | The probe passed its deadline. |
+| `timeout` | The probe passed its [deadline](#probe-deadline). The account's usage is unknown. |
 | `unparsed` | Nothing recognisable was printed. Run again with `--raw` to see what Claude said. |
 | `error` | The probe could not run. The reason goes to stderr in both modes, and the JSON also has it in `error`. |
 
@@ -213,6 +289,25 @@ The not-logged-in phrases count only when no usage line of any kind was
 read; a model week line alone is enough to rule them out. New
 wording from Claude that matches none of these gives `unparsed`, never a
 guessed state. Scripts should treat a state they do not know as `unparsed`.
+
+#### Failed and exhausted results
+
+A probe that timed out or could not run says nothing about the account. Its
+usage is unknown, and it is never reported or treated as 100%. An exhausted
+result is a reading: the account answered, and a window is at 100% or more.
+
+| Result | `profile usage` table | `--json` | Rotator cycle line | Rotator decision | Next probe |
+|--------|-----------------------|----------|--------------------|------------------|------------|
+| `timeout` | state `timeout`, `-` in every percentage and reset | `"state": "timeout"`, `session` and `week_all` `null`, `error` `null` | `<name>:failed` | Unknown: never a target, never recorded as exhausted | Next run or cycle; no failed result is kept |
+| `error` | state `error`, `-` in every percentage and reset; reason on stderr | `"state": "error"`, `session` and `week_all` `null`, reason in `error` | `<name>:failed` | As for `timeout` | As for `timeout` |
+| `session_exhausted`, `weekly_exhausted` | the percentages read | the windows read | `<name>:s=<n>%,w=<n>%` with the windows read | Headroom `0`: never a target | Next run or cycle |
+
+`spend_limit`, `not_logged_in` and `unparsed` are also shown as
+`<name>:failed` in the cycle line and are never a target; see
+[Decision rule](#rotate-decision-rule). A failed live probe is handled as in
+[Failed live probes](#rotate-failed-live-probes). Neither `profile usage` nor
+the rotator records a failed probe as an auto-switch
+[reading](#readings).
 
 The reasons for `error` are fixed text, never the underlying I/O error:
 
@@ -2333,7 +2428,7 @@ of them makes an extra network call or probe for it.
 |----------|---------|---------------|
 | `statusline` | By the [status-line wrapper](#status-line-wrapper), each time it records a reading, under the state lock it takes for that. | `usage.json` as just recorded. |
 | `usage` | By [`profile usage`](#refreshing-auto-switch-readings), each time it records readings, under the state lock it takes for that. | `usage.json` as just recorded. |
-| `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as 100%; a failed probe counts as no reading. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
+| `rotate` | By the rotator, in a [cycle](#rotate-cycle) that reaches the swap, stay or ALERT, under the lock taken in step 6. | That cycle's probes. A `session_exhausted` or `weekly_exhausted` probe counts as at its limit; a failed probe, including one that timed out, counts as no reading and never as at its limit. Reset times come from the profile's `usage.json` entry while they are in the future, and are otherwise unknown. |
 
 All three use the auto-switch threshold and exclusion list, not the
 rotator's `--session-at` and `--week-at`, so they agree on the state. None
@@ -2717,7 +2812,10 @@ Every non-dry-run cycle runs these steps in order:
    cycle is the `switched` record of a [`profile switch`](#rotate-switch),
    which is kept) and end the cycle without measuring. Release the lock.
 4. **Measure.** Probe the live login and every candidate in parallel, as
-   [`profile usage`](#how-a-profile-is-probed) does. The live login is probed
+   [`profile usage`](#how-a-profile-is-probed) does, with the same
+   [deadline](#probe-deadline) and [parallelism bound](#probe-parallelism).
+   The candidates share the bound; the live probe runs beside them, so at
+   most the bound plus one probes run at once. The live login is probed
    with `CLAUDE_CONFIG_DIR` removed from the environment, so `claude` uses
    `~/.claude` and `~/.claude.json`. Candidates are probed with
    `CLAUDE_CONFIG_DIR=<root>/<name>`. Claude's text is parsed and dropped;
@@ -2926,7 +3024,11 @@ point.
 | `session_exhausted` or `weekly_exhausted` | | | `0` |
 | any other [state](#states) | | | probe failed |
 
-A candidate whose probe failed, or that is exhausted, is never chosen. The *best* candidate has the
+A candidate whose probe failed, or that is exhausted, is never chosen. A
+failed probe is unknown, not exhausted: it is not recorded as exhausted,
+does not [have capacity](#plan-pool), and is probed again on the next
+cycle. See [Failed and exhausted results](#failed-and-exhausted-results).
+The *best* candidate has the
 highest headroom; ties go to the name that sorts first by byte value.
 Failed probes on some candidates do not stop a swap to another candidate
 whose probe succeeded: with live `work` exhausted, `a` and `b` failed and
@@ -4030,7 +4132,7 @@ stdout only, without the time.
 
 | Message | Meaning |
 |---------|---------|
-| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. A profile whose probe failed shows `<name>:failed`, an exhausted one `s=100%,w=100%`; a skipped one is not listed. A login no profile owns is shown as `-`. The API-key profile is never probed and shows as `<name>:per-token`, live or not. |
+| `cycle live=<name\|-> <name>:s=<n>%,w=<n>% ...` | One per cycle: every measured profile, live first, then by name. Percentages are rounded down. An exhausted profile shows the windows it read, for example `team:s=100%,w=68%`; a window it did not read, or one that is negative or not a finite number, shows as `-` with no `%` (`team:s=-,w=100%`). A profile whose probe failed or timed out shows `<name>:failed`: its usage is unknown, and it is probed again on the next cycle. A skipped profile is not listed. A login no profile owns is shown as `-`. The API-key profile is never probed and shows as `<name>:per-token`, live or not. |
 | `swap <from>-><to> live s=<n>% w=<n>% target s=<n>% w=<n>% reason=threshold\|upgrade\|failed-probe\|overflow-in\|overflow-out` | A completed swap. For an adopted login, `<from>` is the new profile's name. A failed live probe shows `live failed`. `reason=failed-probe` is a swap made after three consecutive failed live probes; see [Failed live probes](#rotate-failed-live-probes). `overflow-in` and `overflow-out` are swaps onto and off an [overflow](#rotate-overflow) profile. |
 | `overflow: on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | Written after an `overflow-in` swap. |
 | `overflow: staying on <name>; no plan profile has capacity, next plan reset <time\|unknown>` | A cycle stayed on overflow profile `<name>` and the previous recorded cycle did not: its `last_cycle.overflow` was absent or `out`, or the ledger's `live` named another profile. So it is written once when the rotator finds itself on credits without having moved there, for example after a login was put in `~/.claude` by hand, and not again while it stays. After `overflow-in` the `overflow: on` line is written instead. |

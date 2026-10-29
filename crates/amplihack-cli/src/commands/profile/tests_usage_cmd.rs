@@ -7,11 +7,10 @@ use super::auto_switch::{LeaseView, RecordOutcome};
 use super::usage_cmd::{
     ErrorReason, Raw, Row, env_credential_var, error_warnings, format_pct, marks, observations,
     order, persist_messages, render_json, render_table, sanitize_display, swap_warning,
-    timeout_secs,
 };
 use super::usage_parse::{UsageReport, UsageState, UsageWindow};
 use std::collections::BTreeMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 
 const NOW: i64 = 1_792_152_000;
 const HOUR: i64 = 3600;
@@ -527,46 +526,11 @@ fn json_for_no_rows_is_an_empty_array() {
 }
 
 // ---------------------------------------------------------------------------
-// Timeout setting (D12, S3) and environment credentials (S2)
+// Environment credentials (S2)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn timeout_flag_wins_then_env_then_thirty() {
-    assert_eq!(timeout_secs(None, None), (30, None));
-    assert_eq!(timeout_secs(Some(2), Some(OsStr::new("45"))), (2, None));
-    assert_eq!(timeout_secs(None, Some(OsStr::new("45"))), (45, None));
-    assert_eq!(timeout_secs(None, Some(OsStr::new("600"))), (600, None));
-    assert_eq!(
-        timeout_secs(None, Some(OsStr::new(""))),
-        (30, None),
-        "empty means unset"
-    );
-}
-
-#[test]
-fn bad_timeout_env_warns_with_the_value_escaped_and_cut() {
-    let (secs, warning) = timeout_secs(None, Some(OsStr::new("soon")));
-    assert_eq!(secs, 30);
-    assert_eq!(
-        warning.as_deref(),
-        Some(
-            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\" (use 1 to 600); using 30"
-        )
-    );
-    for bad in ["0", "601", "-1", "1.5", "99999999999999999999999"] {
-        let (secs, warning) = timeout_secs(None, Some(OsStr::new(bad)));
-        assert_eq!(secs, 30, "{bad}");
-        assert!(warning.is_some(), "{bad}");
-    }
-    let long = format!("\u{1b}[2J{}", "y".repeat(200));
-    let (_, warning) = timeout_secs(None, Some(OsStr::new(&long)));
-    let warning = warning.unwrap();
-    assert!(!warning.contains('\u{1b}'), "{warning:?}");
-    assert!(
-        !warning.contains(&"y".repeat(33)),
-        "value cut to 32 characters: {warning}"
-    );
-}
+// The deadline resolver moved to `probe_limits` (issue #1698); its tests
+// are in `tests_probe_limits.rs`.
 
 #[test]
 fn env_credentials_are_found_by_name_only_when_non_empty() {
@@ -1110,4 +1074,310 @@ fn the_home_row_is_never_recorded() {
 #[test]
 fn no_profile_can_be_named_like_the_home_row() {
     assert!(super::name::ProfileName::parse("~/.claude").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1698: probes under host load. A slow probe inside its deadline is
+// read; one past it is `timeout` (never 100%); the pool never runs more than
+// the bound it is given. Fake `claude` scripts only; never a real one.
+// ---------------------------------------------------------------------------
+
+#[cfg(unix)]
+mod under_load {
+    use super::super::name::ProfileName;
+    use super::super::store::ProfileStore;
+    use super::super::usage_cmd::{Row, observations, probe, probe_all, render_json, render_table};
+    use super::super::usage_parse::UsageState;
+    use super::{NOW, row};
+    use crate::binary_finder::BinaryInfo;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    const USAGE: &str = "printf 'Current session: 37%% used · resets 4pm (UTC)\\nCurrent week (all models): 61%% used · resets Oct 22, 2am (UTC)\\n'";
+
+    fn sh(script: &str) -> Command {
+        let mut c = Command::new("/bin/sh");
+        c.arg("-c")
+            .arg(script)
+            .env("PATH", "/usr/local/bin:/usr/bin:/bin")
+            .env_remove("ANTHROPIC_API_KEY")
+            .env_remove("ANTHROPIC_AUTH_TOKEN")
+            .env_remove("CLAUDE_CODE_OAUTH_TOKEN");
+        c
+    }
+
+    #[test]
+    fn a_slow_probe_inside_its_deadline_is_read() {
+        let start = Instant::now();
+        let p = probe(
+            sh(&format!("sleep 2; {USAGE}")),
+            Duration::from_secs(20),
+            NOW,
+            false,
+        );
+        assert!(start.elapsed() >= Duration::from_secs(2));
+        assert_eq!(p.report.state, UsageState::Ok);
+        assert!(p.error.is_none());
+        assert_eq!(p.report.session.unwrap().used_percentage, 37.0);
+        assert_eq!(p.report.week_all.unwrap().used_percentage, 61.0);
+    }
+
+    fn timed_out_row(name: &str) -> Row {
+        // Prints a full screen after the deadline; it must never be read.
+        let p = probe(
+            sh(&format!("sleep 30; {USAGE}")),
+            Duration::from_secs(1),
+            NOW,
+            false,
+        );
+        assert_eq!(p.report.state, UsageState::Timeout);
+        assert!(p.error.is_none());
+        let mut r = row(name, p.report);
+        r.error = p.error;
+        r
+    }
+
+    #[test]
+    fn a_timed_out_probe_shows_timeout_and_dashes_in_the_table() {
+        let out = render_table(&[timed_out_row("slow")]);
+        let line = out
+            .lines()
+            .find(|l| l.starts_with("slow"))
+            .unwrap_or_else(|| panic!("no row for slow: {out}"));
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        assert!(cols.contains(&"timeout"), "{line}");
+        assert!(cols.contains(&"-"), "{line}");
+        assert!(!line.contains('%'), "unknown, never a percentage: {line}");
+    }
+
+    #[test]
+    fn a_timed_out_probe_is_timeout_with_null_windows_in_json() {
+        let text = render_json(&[timed_out_row("slow")]);
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v[0]["profile"], "slow");
+        assert_eq!(v[0]["state"], "timeout");
+        assert!(v[0]["session"].is_null(), "{text}");
+        assert!(v[0]["week_all"].is_null(), "{text}");
+        assert!(v[0]["error"].is_null(), "{text}");
+        assert!(!text.contains("100"), "never shown as 100%: {text}");
+    }
+
+    #[test]
+    fn a_timed_out_probe_is_never_recorded() {
+        assert!(observations(&[timed_out_row("slow")]).is_empty());
+    }
+
+    // --- The probe pool -----------------------------------------------------
+
+    struct Pool {
+        _dir: tempfile::TempDir,
+        store: ProfileStore,
+        bin: BinaryInfo,
+        marks: PathBuf,
+        names: Vec<ProfileName>,
+    }
+
+    /// `n` profiles and a fake `claude` that appends `S <profile>` on start
+    /// and `E <profile>` on exit to a marks file, sleeping `secs` between.
+    fn pool(n: usize, secs: f64) -> Pool {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(dir.path().join("root"));
+        let names: Vec<ProfileName> = (0..n)
+            .map(|i| ProfileName::parse(&format!("p{i}")).unwrap())
+            .collect();
+        for name in &names {
+            store.add(name).unwrap();
+        }
+        let marks = dir.path().join("marks");
+        let path = dir.path().join("claude");
+        // Lines shorter than PIPE_BUF are appended atomically.
+        let body = format!(
+            "#!/bin/sh\n\
+             PATH=/usr/local/bin:/usr/bin:/bin; export PATH\n\
+             [ \"$1\" = -p ] || exit 0\n\
+             who=${{CLAUDE_CONFIG_DIR##*/}}\n\
+             echo \"S $who\" >> '{marks}'\n\
+             sleep {secs}\n\
+             echo \"E $who\" >> '{marks}'\n\
+             {USAGE}\n",
+            marks = marks.display()
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        settle(&path);
+        Pool {
+            _dir: dir,
+            store,
+            bin: BinaryInfo {
+                name: "claude".into(),
+                path,
+                version: None,
+            },
+            marks,
+            names,
+        }
+    }
+
+    /// Another test thread's fork can hold the fake's write descriptor until
+    /// its exec, and an exec in that window fails with ETXTBSY. Run the fake
+    /// with no arguments (it exits at once) until it starts.
+    fn settle(path: &Path) {
+        let start = Instant::now();
+        while Command::new(path).status().is_err() {
+            assert!(start.elapsed() < Duration::from_secs(5), "fake never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+
+    /// The most probes running at once, from the start and end marks.
+    fn peak(marks: &Path) -> usize {
+        let text = fs::read_to_string(marks).unwrap();
+        let (mut running, mut peak) = (0usize, 0usize);
+        for line in text.lines() {
+            match line.split_whitespace().next() {
+                Some("S") => {
+                    running += 1;
+                    peak = peak.max(running);
+                }
+                Some("E") => running = running.saturating_sub(1),
+                _ => panic!("bad mark {line:?}"),
+            }
+        }
+        assert_eq!(running, 0, "every probe ended: {text}");
+        peak
+    }
+
+    fn run_pool(p: &Pool, parallel: usize) -> Vec<super::super::usage_cmd::Probe> {
+        probe_all(
+            &p.store,
+            &p.bin,
+            &p.names,
+            None,
+            Duration::from_secs(60),
+            NOW,
+            false,
+            parallel,
+        )
+    }
+
+    #[test]
+    fn the_pool_never_runs_more_probes_than_its_bound() {
+        let p = pool(6, 0.5);
+        let probes = run_pool(&p, 2);
+        assert_eq!(probes.len(), 6);
+        for (i, probe) in probes.iter().enumerate() {
+            assert_eq!(probe.report.state, UsageState::Ok, "p{i}: {probe:?}");
+            assert_eq!(probe.report.session.as_ref().unwrap().used_percentage, 37.0);
+        }
+        let peak = peak(&p.marks);
+        assert!(peak <= 2, "peak {peak} over the bound of 2");
+        assert!(peak >= 2, "the bound of 2 was not used (peak {peak})");
+    }
+
+    #[test]
+    fn a_bound_of_one_runs_the_probes_one_at_a_time() {
+        let p = pool(3, 0.2);
+        let probes = run_pool(&p, 1);
+        assert!(probes.iter().all(|x| x.report.state == UsageState::Ok));
+        assert_eq!(peak(&p.marks), 1);
+    }
+
+    #[test]
+    fn a_bound_of_zero_still_probes_every_profile_one_at_a_time() {
+        let p = pool(2, 0.1);
+        let probes = run_pool(&p, 0);
+        assert_eq!(probes.len(), 2);
+        assert!(probes.iter().all(|x| x.report.state == UsageState::Ok));
+        assert_eq!(peak(&p.marks), 1);
+    }
+
+    #[test]
+    fn a_bound_above_the_number_of_profiles_runs_them_all() {
+        let p = pool(3, 0.5);
+        let probes = run_pool(&p, 16);
+        assert!(probes.iter().all(|x| x.report.state == UsageState::Ok));
+        assert!(peak(&p.marks) <= 3);
+    }
+
+    #[test]
+    fn results_keep_the_order_of_the_profiles() {
+        // Each fake prints its own name as the session percentage.
+        let p = pool(4, 0.0);
+        let body = "#!/bin/sh\n\
+             PATH=/usr/local/bin:/usr/bin:/bin; export PATH\n\
+             [ \"$1\" = -p ] || exit 0\n\
+             who=${CLAUDE_CONFIG_DIR##*/}\n\
+             n=${who#p}\n\
+             sleep 0.$((3 - n))\n\
+             printf 'Current session: %s%% used · resets 4pm (UTC)\\nCurrent week (all models): 1%% used · resets Oct 22, 2am (UTC)\\n' \"$n\"\n";
+        let path = p.bin.path.with_file_name("claude-order");
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        settle(&path);
+        let bin = BinaryInfo {
+            name: "claude".into(),
+            path,
+            version: None,
+        };
+        let probes = probe_all(
+            &p.store,
+            &bin,
+            &p.names,
+            None,
+            Duration::from_secs(60),
+            NOW,
+            false,
+            2,
+        );
+        let got: Vec<f64> = probes
+            .iter()
+            .map(|x| x.report.session.as_ref().unwrap().used_percentage)
+            .collect();
+        assert_eq!(got, [0.0, 1.0, 2.0, 3.0]);
+    }
+
+    #[test]
+    fn a_slow_profile_in_the_pool_times_out_alone() {
+        let p = pool(3, 0.1);
+        // p1 sleeps past the deadline; the others finish.
+        let body = format!(
+            "#!/bin/sh\n\
+             PATH=/usr/local/bin:/usr/bin:/bin; export PATH\n\
+             [ \"$1\" = -p ] || exit 0\n\
+             who=${{CLAUDE_CONFIG_DIR##*/}}\n\
+             [ \"$who\" = p1 ] && exec sleep 30\n\
+             {USAGE}\n"
+        );
+        let path = p.bin.path.with_file_name("claude-slow");
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        settle(&path);
+        let bin = BinaryInfo {
+            name: "claude".into(),
+            path,
+            version: None,
+        };
+        let start = Instant::now();
+        let probes = probe_all(
+            &p.store,
+            &bin,
+            &p.names,
+            None,
+            Duration::from_secs(1),
+            NOW,
+            false,
+            2,
+        );
+        assert!(start.elapsed() < Duration::from_secs(15));
+        let states: Vec<UsageState> = probes.iter().map(|x| x.report.state).collect();
+        assert_eq!(
+            states,
+            [UsageState::Ok, UsageState::Timeout, UsageState::Ok]
+        );
+        assert!(probes[1].report.session.is_none());
+        assert!(probes[1].report.week_all.is_none());
+    }
 }

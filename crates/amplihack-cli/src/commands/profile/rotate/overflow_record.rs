@@ -231,7 +231,7 @@ fn rotated(
 ) -> Vec<(ProfileName, Rotated)> {
     let of = |r: &Reading| match *r {
         Reading::Measured { session, week } => Rotated::Measured { session, week },
-        Reading::Exhausted => Rotated::Exhausted,
+        Reading::Exhausted { .. } => Rotated::Exhausted,
         Reading::Failed => Rotated::Failed,
     };
     live.map(|n| (n.clone(), of(reading)))

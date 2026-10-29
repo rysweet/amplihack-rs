@@ -11,22 +11,17 @@ use super::auto_switch::{self, Observation, ObservedWindow, RecordOutcome};
 use super::name::ProfileName;
 use super::store::ProfileStore;
 use super::usage_parse::{UsageReport, UsageState, UsageWindow, parse_usage};
-use super::{default_live, pointer, run};
+use super::{default_live, pointer, probe_limits, run};
 use crate::binary_finder::BinaryInfo;
 use anyhow::Result;
 use serde::Serialize;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-pub(super) const TIMEOUT_ENV: &str = "AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS";
-const DEFAULT_TIMEOUT_SECS: u64 = 30;
-pub(super) const MAX_TIMEOUT_SECS: u64 = 600;
-/// Probes running at once.
-const MAX_PARALLEL: usize = 8;
 /// Bytes kept from each of stdout and stderr; the rest is read and dropped.
 const STREAM_CAP: usize = 64 * 1024;
 /// How long to wait for the pipes to close after the child exits. Only a
@@ -128,7 +123,7 @@ pub(super) fn run(
     timeout_flag: Option<u64>,
 ) -> Result<()> {
     super::reject_docker_env()?;
-    let (secs, warning) = timeout_secs(timeout_flag, std::env::var_os(TIMEOUT_ENV).as_deref());
+    let (secs, warning) = probe_limits::timeout_from_env(timeout_flag);
     if let Some(w) = warning {
         eprintln!("{w}");
     }
@@ -156,6 +151,10 @@ pub(super) fn run(
     // shows up in the check under the lock as a moved account.
     let marks = read_marks(store);
 
+    let (parallel, warning) = probe_limits::parallel_from_host(profiles.len());
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
     let now = now_secs();
     let probes = probe_all(
         store,
@@ -165,6 +164,7 @@ pub(super) fn run(
         Duration::from_secs(secs),
         now,
         raw,
+        parallel,
     );
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
@@ -494,28 +494,6 @@ fn now_secs() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
 }
 
-/// The probe deadline: the flag, then the environment variable, then 30. A
-/// bad variable gives the warning to print, with the value escaped and cut.
-pub(super) fn timeout_secs(flag: Option<u64>, env: Option<&OsStr>) -> (u64, Option<String>) {
-    if let Some(secs) = flag {
-        return (secs, None);
-    }
-    let Some(raw) = env.filter(|v| !v.is_empty()) else {
-        return (DEFAULT_TIMEOUT_SECS, None);
-    };
-    let text = raw.to_string_lossy();
-    match text.parse::<u64>() {
-        Ok(secs) if (1..=MAX_TIMEOUT_SECS).contains(&secs) => (secs, None),
-        _ => {
-            let shown: String = text.chars().take(32).collect();
-            let warning = format!(
-                "warning: ignored {TIMEOUT_ENV} {shown:?} (use 1 to {MAX_TIMEOUT_SECS}); using {DEFAULT_TIMEOUT_SECS}"
-            );
-            (DEFAULT_TIMEOUT_SECS, Some(warning))
-        }
-    }
-}
-
 /// The first credential variable set to a non-empty value, by name only.
 pub(super) fn env_credential_var(get: impl Fn(&str) -> Option<OsString>) -> Option<&'static str> {
     ENV_CREDENTIAL_VARS
@@ -532,8 +510,9 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 // Probing
 // ---------------------------------------------------------------------------
 
-/// Probes every profile, at most [`MAX_PARALLEL`] at once; `live` is probed
-/// against `~/.claude`. Results are in the order of `profiles`.
+/// Probes every profile, at most `parallel` at once (at least one); `live`
+/// is probed against `~/.claude`. Results are in the order of `profiles`.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn probe_all(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -542,12 +521,13 @@ pub(super) fn probe_all(
     timeout: Duration,
     now: i64,
     keep_raw: bool,
+    parallel: usize,
 ) -> Vec<Probe> {
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
     let args = ["-p".to_string(), "/usage".to_string()];
     std::thread::scope(|s| {
-        for _ in 0..profiles.len().min(MAX_PARALLEL) {
+        for _ in 0..profiles.len().min(parallel.max(1)) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);

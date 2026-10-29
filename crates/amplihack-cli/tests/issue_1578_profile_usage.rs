@@ -585,11 +585,77 @@ fn timeout_env_is_honoured_and_a_bad_value_warns() {
     assert!(out.status.success());
     assert!(
         text(&out.stderr).contains(
-            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\" (use 1 to 600); using 30"
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS \"soon\" (use 1 to 600); using 120"
         ),
         "{}",
         text(&out.stderr)
     );
+}
+
+#[test]
+fn a_bad_parallel_value_warns_and_every_profile_is_still_probed() {
+    // Issue #1698: the variable is set on the child only.
+    let f = Fixture::new(false);
+    let out = f
+        .cmd(&["profile", "usage", "--json"])
+        .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", "lots")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    let warning = warning_lines(&stderr)
+        .into_iter()
+        .find(|l| l.contains("AMPLIHACK_PROFILE_USAGE_PARALLEL"))
+        .unwrap_or_else(|| panic!("no parallel warning: {stderr}"));
+    assert!(
+        warning.starts_with(
+            "warning: ignored AMPLIHACK_PROFILE_USAGE_PARALLEL \"lots\" (use 1 to 16); using "
+        ),
+        "{warning}"
+    );
+    let n: usize = warning.rsplit(' ').next().unwrap().parse().unwrap();
+    assert!((2..=4).contains(&n), "derived bound {n}");
+    let rows: Vec<serde_json::Value> = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(!rows.is_empty());
+}
+
+#[test]
+fn a_valid_or_empty_parallel_value_prints_no_warning() {
+    let f = Fixture::new(false);
+    for v in ["1", "16", ""] {
+        let out = f
+            .cmd(&["profile", "usage", "--json"])
+            .env("AMPLIHACK_PROFILE_USAGE_PARALLEL", v)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "{v:?}: {}", text(&out.stderr));
+        assert!(
+            !text(&out.stderr).contains("AMPLIHACK_PROFILE_USAGE_PARALLEL"),
+            "{v:?}: {}",
+            text(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn a_timed_out_profile_is_timeout_in_the_table_never_a_percentage() {
+    let f = Fixture::new(false);
+    f.ok(&["profile", "add", "e"]);
+    fs::write(f.canned.join("e.slow"), "").unwrap();
+    f.canned("e", "Current session: 100% used · resets 4pm (UTC)\n");
+    let out = f
+        .cmd(&["profile", "usage", "e"])
+        .env("AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS", "1")
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "{}", text(&out.stderr));
+    let stdout = text(&out.stdout);
+    let row = table_rows(&stdout)
+        .into_iter()
+        .find(|l| first_word(l) == "e")
+        .unwrap_or_else(|| panic!("no row for e: {stdout}"));
+    assert!(row.split_whitespace().any(|w| w == "timeout"), "{row}");
+    assert!(!row.contains('%'), "{row}");
 }
 
 #[test]

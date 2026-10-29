@@ -107,7 +107,7 @@ fn message_grammar() {
     assert_eq!(
         msg::cycle(
             Some(&name("work")),
-            &Reading::Exhausted,
+            &Reading::EXHAUSTED,
             &[(key.clone(), platform)],
             Some(&key)
         ),
@@ -117,7 +117,7 @@ fn message_grammar() {
         msg::cycle(
             Some(&key),
             &platform,
-            &[(name("work"), Reading::Exhausted)],
+            &[(name("work"), Reading::EXHAUSTED)],
             Some(&key)
         ),
         "cycle live=key key:per-token work:s=100%,w=100%"
@@ -269,4 +269,111 @@ mod handfix_text {
             "ALERT: profile ryan-ryansweet has no login anywhere: a manual /login in ~/.claude replaced it. Run: amplihack profile login ryan-ryansweet"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// Issue #1698: an exhausted reading shows the windows it read, never an
+// invented 100%; a failed probe shows `failed`.
+// ---------------------------------------------------------------------------
+
+fn exhausted(session: Option<f64>, week: Option<f64>) -> Reading {
+    Reading::Exhausted { session, week }
+}
+
+#[test]
+fn exhausted_shows_the_windows_it_read() {
+    assert_eq!(
+        msg::cycle(
+            Some(&name("work")),
+            &exhausted(Some(100.0), Some(95.4)),
+            &[],
+            None
+        ),
+        "cycle live=work work:s=100%,w=95%"
+    );
+    assert_eq!(
+        msg::cycle(
+            Some(&name("work")),
+            &exhausted(Some(12.9), Some(100.0)),
+            &[(name("spare"), exhausted(Some(100.0), Some(68.0)))],
+            None
+        ),
+        "cycle live=work work:s=12%,w=100% spare:s=100%,w=68%"
+    );
+}
+
+#[test]
+fn an_exhausted_window_that_was_not_read_shows_a_dash() {
+    assert_eq!(
+        msg::cycle(
+            Some(&name("team")),
+            &exhausted(None, Some(100.0)),
+            &[],
+            None
+        ),
+        "cycle live=team team:s=-,w=100%"
+    );
+    assert_eq!(
+        msg::cycle(
+            Some(&name("team")),
+            &exhausted(Some(100.0), None),
+            &[],
+            None
+        ),
+        "cycle live=team team:s=100%,w=-"
+    );
+    assert_eq!(
+        msg::cycle(Some(&name("team")), &exhausted(None, None), &[], None),
+        "cycle live=team team:s=-,w=-"
+    );
+}
+
+#[test]
+fn a_non_finite_or_negative_exhausted_window_shows_a_dash() {
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+        let line = msg::cycle(
+            Some(&name("team")),
+            &exhausted(Some(bad), Some(100.0)),
+            &[],
+            None,
+        );
+        assert_eq!(line, "cycle live=team team:s=-,w=100%", "{bad}");
+        assert!(!line.contains("NaN") && !line.contains("inf"), "{line}");
+    }
+}
+
+#[test]
+fn swap_and_alert_lines_use_the_same_exhausted_form() {
+    assert_eq!(
+        msg::alert_no_capacity(&name("work"), &exhausted(None, Some(100.0))),
+        "ALERT: no profile has capacity live=work s=- w=100%"
+    );
+    assert_eq!(
+        msg::swap(
+            &name("work"),
+            &name("spare"),
+            &exhausted(Some(100.0), Some(40.0)),
+            &Reading::Measured {
+                session: 3.0,
+                week: 9.0
+            },
+            super::decide::Reason::Threshold
+        ),
+        "swap work->spare live s=100% w=40% target s=3% w=9% reason=threshold"
+    );
+}
+
+#[test]
+fn a_failed_reading_is_never_shown_as_a_percentage() {
+    let line = msg::cycle(
+        Some(&name("work")),
+        &Reading::Measured {
+            session: 10.0,
+            week: 20.0,
+        },
+        &[(name("slow"), Reading::Failed)],
+        None,
+    );
+    assert_eq!(line, "cycle live=work work:s=10%,w=20% slow:failed");
+    assert!(!line.contains("slow:s="), "{line}");
 }

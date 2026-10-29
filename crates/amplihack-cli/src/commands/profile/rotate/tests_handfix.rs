@@ -364,7 +364,7 @@ fn reproduction_27_oct_moves_the_duplicate_aside_and_swaps_to_capacity() {
         windows: Default::default(),
         spend_limit: false,
     };
-    let d = decide(&settings(), &Reading::Exhausted, &[target], None, T);
+    let d = decide(&settings(), &Reading::EXHAUSTED, &[target], None, T);
     assert!(
         matches!(&d, Decision::Swap { to, .. } if *to == n(C)),
         "{d:?}"
@@ -399,7 +399,7 @@ fn case_b_without_capacity_recovers_and_then_alerts_no_capacity() {
     };
     assert!(candidates(&f.store, &input).unwrap().0.is_empty());
     assert_eq!(
-        decide(&settings(), &Reading::Exhausted, &[], None, T),
+        decide(&settings(), &Reading::EXHAUSTED, &[], None, T),
         Decision::Alert
     );
 }
@@ -435,7 +435,7 @@ fn case_a_records_the_holder_and_moves_nothing() {
     assert_eq!(f.ledger().lost_login, vec![L.to_string()]);
     assert_eq!(f.logged(), vec![recorded_line(), lost_l()]);
     assert_eq!(
-        decide(&settings(), &Reading::Exhausted, &[], None, T),
+        decide(&settings(), &Reading::EXHAUSTED, &[], None, T),
         Decision::Alert
     );
 }

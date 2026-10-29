@@ -10,18 +10,32 @@ use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow
 pub enum Reading {
     /// Percent used in the session and weekly (all models) windows.
     Measured { session: f64, week: f64 },
-    /// The session or weekly limit is reached.
-    Exhausted,
+    /// The session or weekly limit is reached. The windows are those read,
+    /// for the log only; `None` when one was not read.
+    Exhausted {
+        session: Option<f64>,
+        week: Option<f64>,
+    },
     /// The probe failed or its output was incomplete.
     Failed,
 }
 
 impl Reading {
+    /// An exhausted reading at 100% in both windows, for tests.
+    #[cfg(test)]
+    pub const EXHAUSTED: Self = Self::Exhausted {
+        session: Some(100.0),
+        week: Some(100.0),
+    };
+
     /// D1: a missing session window is 0% used; a missing week window, or
     /// any state other than ok or exhausted, is a failed probe.
     pub fn from_report(r: &UsageReport) -> Self {
         match r.state {
-            UsageState::SessionExhausted | UsageState::WeeklyExhausted => Self::Exhausted,
+            UsageState::SessionExhausted | UsageState::WeeklyExhausted => Self::Exhausted {
+                session: r.session.as_ref().map(|w| w.used_percentage),
+                week: r.week_all.as_ref().map(|w| w.used_percentage),
+            },
             UsageState::Ok => match &r.week_all {
                 Some(week) => Self::Measured {
                     session: r.session.as_ref().map_or(0.0, |w| w.used_percentage),
@@ -38,7 +52,7 @@ impl Reading {
     pub fn headroom(&self) -> Option<u8> {
         match self {
             Self::Failed => None,
-            Self::Exhausted => Some(0),
+            Self::Exhausted { .. } => Some(0),
             Self::Measured { session, week } => {
                 let left = (100.0 - session.max(*week)).floor();
                 if left.is_nan() {
@@ -182,7 +196,7 @@ pub enum Decision {
 /// Whether the live login has reached a threshold. A failed probe counts.
 pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
     match live {
-        Reading::Failed | Reading::Exhausted => true,
+        Reading::Failed | Reading::Exhausted { .. } => true,
         Reading::Measured { session, week } => {
             *session >= f64::from(s.session_at) || *week >= f64::from(s.week_at)
         }
@@ -194,7 +208,7 @@ pub(super) fn needs_swap(s: &Settings, live: &Reading) -> bool {
 pub(super) fn best(candidates: &[Measured]) -> Option<(&ProfileName, u8)> {
     candidates
         .iter()
-        .filter(|c| !matches!(c.reading, Reading::Exhausted))
+        .filter(|c| !matches!(c.reading, Reading::Exhausted { .. }))
         .filter_map(|c| c.reading.headroom().map(|h| (&c.name, h)))
         .min_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.as_str().cmp(b.0.as_str())))
 }

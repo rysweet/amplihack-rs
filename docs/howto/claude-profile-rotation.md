@@ -29,6 +29,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Change the thresholds](#change-the-thresholds)
 - [When a swap happens](#when-a-swap-happens)
 - [When the live login cannot be measured](#when-the-live-login-cannot-be-measured)
+- [When the host is heavily loaded](#when-the-host-is-heavily-loaded)
 - [Which profiles can take over](#which-profiles-can-take-over)
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
@@ -69,7 +70,9 @@ work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        
 ```
 
 Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
-probe failed, never is.
+probe failed, never is. A probe that failed or timed out means the account's
+usage is unknown, not that it is used up: such a profile is not treated as
+exhausted and is probed again on the next cycle.
 
 ## Preview a rotation
 
@@ -625,7 +628,46 @@ A failed probe of a *candidate* only stops that candidate being chosen, as
 before. When every account is at or above a threshold, the rotator writes
 one `ALERT` and stays, as before.
 
-To see why a probe fails, run `amplihack profile usage --raw`.
+A failed or timed-out probe shows as `<name>:failed` in the cycle line,
+never as `s=100%,w=100%`. Its usage is unknown: the rotator does not choose
+it, does not record it as exhausted, and probes it again on the next cycle.
+An exhausted profile shows the percentages it read, such as
+`team:s=100%,w=68%`.
+
+To see why a probe fails, run `amplihack profile usage --raw`. If the state
+is `timeout`, see
+[When the host is heavily loaded](#when-the-host-is-heavily-loaded).
+
+## When the host is heavily loaded
+
+Each probe makes Claude read every session transcript the profile can see,
+which takes a minute or more of CPU on a busy host. The rotator and
+`amplihack profile usage` therefore give each probe 120 seconds and run only
+a few at once: between 2 and 4, fewer as the load average rises towards the
+number of CPUs. The rotator probes the live login beside those, so a cycle
+runs at most one more probe than that. The formula is in the
+[reference](../reference/profile-command.md#probe-parallelism).
+
+If probes still time out, give them longer, run fewer at once, or both. Set
+the variables in the shell that starts the rotator, then restart it so it
+picks them up:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300
+export AMPLIHACK_PROFILE_USAGE_PARALLEL=1
+amplihack profile rotate stop
+amplihack profile rotate start --interval 120 --session-at 70
+```
+
+`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` takes `1` to `600` seconds and
+`AMPLIHACK_PROFILE_USAGE_PARALLEL` takes `1` to `16`. On an idle host with
+many profiles, a higher `AMPLIHACK_PROFILE_USAGE_PARALLEL` makes each cycle
+shorter. An empty value is treated as unset. An invalid parallelism value is
+reported once per cycle in `rotate.err` beside the log, and the derived value
+is used instead.
+
+A slow cycle can take longer than `--interval`. Cycles do not overlap: the
+next one starts `--interval` seconds after the previous one ends.
 
 ## Which profiles can take over
 

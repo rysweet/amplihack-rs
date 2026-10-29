@@ -1,5 +1,5 @@
 //! Measuring: `claude -p /usage` for the live login and every candidate, in
-//! parallel, with the `profile usage` probe. The live login is probed with
+//! parallel, with the `profile usage` probe and its limits (`probe_limits`). The live login is probed with
 //! `CLAUDE_CONFIG_DIR` removed, so `claude` uses `~/.claude`. Claude's text
 //! is parsed and dropped; only percentages, reset times and states leave
 //! this module.
@@ -8,8 +8,8 @@ use super::decide::Probed;
 use crate::binary_finder::BinaryInfo;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
-use crate::commands::profile::usage_cmd::{self, Probe, TIMEOUT_ENV};
-use crate::commands::profile::{run, usage_parse::UsageState};
+use crate::commands::profile::usage_cmd::{self, Probe};
+use crate::commands::profile::{probe_limits, run, usage_parse::UsageState};
 use std::time::Duration;
 
 /// Whose login is in `~/.claude`.
@@ -24,8 +24,9 @@ pub enum Live<'a> {
 
 /// The reading for `p`. A failed probe counts as "swap needed", so its
 /// cause goes to stderr (the daemon's `rotate.err`); the text is fixed and
-/// never Claude's output.
-fn reading(who: &str, p: &Probe) -> Probed {
+/// never Claude's output. A timed-out probe reads `Failed` too: unknown,
+/// never a target and never exhausted, and probed again next cycle.
+pub(super) fn reading(who: &str, p: &Probe) -> Probed {
     if p.error.is_some() || p.report.state == UsageState::Error {
         let why = p.error.map_or("unreadable /usage output", |e| e.as_str());
         eprintln!("warning: rotate: probe of {who} failed: {why}");
@@ -34,14 +35,17 @@ fn reading(who: &str, p: &Probe) -> Probed {
     Probed::from_report(&p.report)
 }
 
-/// The probe deadline, as `profile usage` resolves it without a flag.
+/// The probe deadline, as `profile usage` resolves it without a flag. A bad
+/// variable falls back to the default without a warning here.
 fn timeout() -> Duration {
-    let (secs, _) = usage_cmd::timeout_secs(None, std::env::var_os(TIMEOUT_ENV).as_deref());
+    let (secs, _) = probe_limits::timeout_from_env(None);
     Duration::from_secs(secs)
 }
 
 /// The live probe and each candidate's, in the order of `candidates`, with
-/// reset times kept for exhausted readings too.
+/// reset times kept for exhausted readings too. The candidates share a pool
+/// of the size `profile usage` uses; the live probe runs on its own thread
+/// beside it, so at most that size plus one probes run at once.
 pub fn measure(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -50,6 +54,10 @@ pub fn measure(
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let timeout = timeout();
+    let (parallel, warning) = probe_limits::parallel_from_host(candidates.len());
+    if let Some(w) = warning {
+        eprintln!("{w}");
+    }
     // As `profile usage` warns: with one of these set, every probe may
     // report that credential, so the readings say nothing about the logins.
     if let Some(var) = usage_cmd::env_credential_var(|k| std::env::var_os(k)) {
@@ -71,7 +79,9 @@ pub fn measure(
                 }
             }
         });
-        let probes = usage_cmd::probe_all(store, binary, candidates, None, timeout, now, false);
+        let probes = usage_cmd::probe_all(
+            store, binary, candidates, None, timeout, now, false, parallel,
+        );
         let others = candidates
             .iter()
             .zip(probes.iter())

@@ -113,6 +113,8 @@ mod tests_live_readers;
 #[cfg(all(test, unix))]
 mod tests_log;
 #[cfg(all(test, unix))]
+mod tests_measure;
+#[cfg(all(test, unix))]
 mod tests_overflow;
 #[cfg(all(test, unix))]
 mod tests_pin;
