@@ -140,6 +140,8 @@ mod issue_1688_routing_gap_report;
 mod issue_1690_isolated_autostart;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
+#[path = "issue_1707_claim_check_shell_suites.rs"]
+mod issue_1707_claim_check_shell_suites;
 #[path = "issue_1710_autodrive_parity.rs"]
 mod issue_1710_autodrive_parity;
 #[path = "issue_1710_run_record.rs"]
