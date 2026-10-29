@@ -13,7 +13,9 @@ use super::fsx;
 use super::overflow_inputs::OverflowInputs;
 use super::state::{Ledger, State};
 use super::usage::{Reading, ReadingSource, Window};
-use crate::commands::profile::attempt::{Limited, Signals, run_attempt, usage_limited};
+use crate::commands::profile::attempt::{
+    Limited, Signals, note_key_error, run_attempt, usage_limited,
+};
 use crate::commands::profile::limit_wait::plan::{self, NoWait, WaitFor};
 use crate::commands::profile::limit_wait::scratch::{self, RerunStdin};
 use crate::commands::profile::limit_wait::{AfterLimit, Waiter};
@@ -323,6 +325,12 @@ pub(crate) fn run(switch: Option<Switch<'_>>, mut waiter: Waiter) -> Result<Opti
             }
             Err(e) => return Err(e),
         };
+        // Issue #1700: a key error on an API-key profile blocks the API key.
+        note_key_error(
+            &attempt,
+            profile.as_ref(),
+            switch.as_ref().map(|sw| sw.store.root()),
+        );
         let Some(lim) = usage_limited(&attempt, waiter.now()) else {
             return attempt.finish(None);
         };

@@ -115,7 +115,9 @@ fn list_without_the_variable_uses_the_saved_root() {
         .collect();
     for p in PROFILES {
         assert!(
-            rest.iter().any(|l| l.trim_start_matches(['*', ' ']) == p),
+            // `<mark> <name>  <kind>` (issue #1700 added the KIND column).
+            rest.iter()
+                .any(|l| l.trim_start_matches(['*', ' ']).split_whitespace().next() == Some(p)),
             "{rest:?}"
         );
     }

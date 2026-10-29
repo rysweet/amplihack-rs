@@ -33,6 +33,14 @@ pub struct Toggle {
     /// Overflow profiles (issue #1606) as `(name, tier)`, in file order.
     /// Tier 1 is tried before tier 2 and so on; file order breaks ties.
     pub overflow: Vec<(String, u8)>,
+    /// Kind overrides (issue #1700) as `(name, kind)`, in file order; kind
+    /// is `platform` (an API-key profile, also spelled `api-key`) or
+    /// `subscription`. An entry with any other kind is left out.
+    pub kind: Vec<(String, String)>,
+    /// A `kind=` entry named another kind and was left out. The status
+    /// reader ignores it; amplihack's own reader treats the file as
+    /// corrupt, so a mistyped override never leaves a profile to detection.
+    pub unknown_kind: bool,
 }
 
 /// The toggle file as read from disk.
@@ -109,7 +117,8 @@ pub fn read_toggle(_root: &Path) -> ToggleFile {
 /// Parses a toggle file: `key=value` lines, keys `enabled` (required,
 /// `on`/`off`), `threshold` (`1`..=`100`), `exclude` (comma-separated
 /// profile names) and `overflow` (comma-separated `name` or `name:tier`,
-/// tier `1`..=`9`, no name twice), each at most once, one optional final
+/// tier `1`..=`9`, no name twice) and `kind` (comma-separated
+/// `name:kind`, no name twice), each at most once, one optional final
 /// newline. The error is a short reason that never quotes the input.
 pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
     if raw.len() as u64 > MAX_TOGGLE_BYTES {
@@ -118,6 +127,7 @@ pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
     let text = std::str::from_utf8(raw).map_err(|_| "not valid UTF-8")?;
     let body = text.strip_suffix('\n').unwrap_or(text);
     let (mut enabled, mut threshold, mut exclude, mut overflow) = (None, None, None, None);
+    let mut kind = None;
     for line in body.split('\n') {
         let (key, value) = line.split_once('=').ok_or("line without '='")?;
         let repeated = match key {
@@ -131,18 +141,62 @@ pub fn parse_toggle(raw: &[u8]) -> Result<Toggle, &'static str> {
             "threshold" => threshold.replace(parse_threshold(value)?).is_some(),
             "exclude" => exclude.replace(parse_exclude(value)?).is_some(),
             "overflow" => overflow.replace(parse_overflow(value)?).is_some(),
+            "kind" => kind.replace(parse_kind(value)?).is_some(),
             _ => return Err("unknown key"),
         };
         if repeated {
             return Err("repeated key");
         }
     }
+    let (kind, unknown_kind) = kind.unwrap_or_default();
     Ok(Toggle {
         enabled: enabled.ok_or("missing enabled")?,
         threshold: threshold.unwrap_or(DEFAULT_THRESHOLD),
         exclude: exclude.unwrap_or_default(),
         overflow: overflow.unwrap_or_default(),
+        kind,
+        unknown_kind,
     })
+}
+
+/// The kinds a `kind=` entry may name, with the spelling stored.
+fn kind_value(raw: &str) -> Option<&'static str> {
+    match raw {
+        "platform" | "api-key" => Some("platform"),
+        "subscription" => Some("subscription"),
+        _ => None,
+    }
+}
+
+/// The kept `kind=` entries, and whether an unknown kind was skipped.
+type KindEntries = (Vec<(String, String)>, bool);
+
+/// `name:kind` entries, and whether any was skipped. A name twice, an
+/// invalid name or an entry without `:` is an error; an entry with an
+/// unknown kind is skipped, so a kind added later does not make the whole
+/// file unreadable here.
+fn parse_kind(value: &str) -> Result<KindEntries, &'static str> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut unknown = false;
+    if value.is_empty() {
+        return Ok((out, unknown));
+    }
+    let mut seen: Vec<&str> = Vec::new();
+    for raw in value.split(',') {
+        let (name, kind) = raw.split_once(':').ok_or("kind entry without ':'")?;
+        if !valid_live_name(name) {
+            return Err("invalid profile name in kind");
+        }
+        if seen.contains(&name) {
+            return Err("repeated profile name in kind");
+        }
+        seen.push(name);
+        match kind_value(kind) {
+            Some(k) => out.push((name.to_string(), k.to_string())),
+            None => unknown = true,
+        }
+    }
+    Ok((out, unknown))
 }
 
 /// `1`..=`100`, digits only.

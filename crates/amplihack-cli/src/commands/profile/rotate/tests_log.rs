@@ -89,13 +89,38 @@ fn message_grammar() {
                         week: 2.0
                     }
                 ),
-            ]
+            ],
+            None
         ),
         "cycle live=work work:s=90%,w=40% a:s=1%,w=2% b:failed"
     );
     assert_eq!(
-        msg::cycle(None, &Reading::Failed, &[]),
+        msg::cycle(None, &Reading::Failed, &[], None),
         "cycle live=- -:failed"
+    );
+    // The API-key profile shows as per-token, live or not (#1700).
+    let key = name("key");
+    let platform = Reading::Measured {
+        session: 0.0,
+        week: 0.0,
+    };
+    assert_eq!(
+        msg::cycle(
+            Some(&name("work")),
+            &Reading::Exhausted,
+            &[(key.clone(), platform)],
+            Some(&key)
+        ),
+        "cycle live=work work:s=100%,w=100% key:per-token"
+    );
+    assert_eq!(
+        msg::cycle(
+            Some(&key),
+            &platform,
+            &[(name("work"), Reading::Exhausted)],
+            Some(&key)
+        ),
+        "cycle live=key key:per-token work:s=100%,w=100%"
     );
     assert_eq!(
         msg::alert_no_capacity(

@@ -31,7 +31,7 @@ use super::handfix::{Env as Seam, Step, preview, step_with};
 use super::identify::{CandidateInput, LiveId, Skip, candidates, live};
 use super::ledger::{MAX_LOST_LOGIN, Phase, RotateJournal, RotateLedger, RotateState};
 use super::log::{Sink, open_or_warn, sh_quote};
-use super::observe::live_alert;
+use super::observe::live_alert_for;
 use super::settings::Settings;
 use super::swap::{Source, swap};
 use super::tests_swap::{ino_at, login, n, private};
@@ -625,7 +625,7 @@ fn an_unreadable_home_account_is_unknown_not_a_hand_change() {
             .is_empty(),
         "--dry-run previews no recovery either"
     );
-    let (kind, line) = live_alert(&LiveId::HomeUnreadable(n(L))).unwrap();
+    let (kind, line) = live_alert_for(&LiveId::HomeUnreadable(n(L)), false).unwrap();
     assert_eq!(kind, "home-unreadable");
     assert_eq!(
         line,
