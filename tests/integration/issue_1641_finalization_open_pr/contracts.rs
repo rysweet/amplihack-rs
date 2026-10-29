@@ -92,8 +92,8 @@ fn open_pr_path_runs_after_no_op_and_before_the_default_failure() {
         .find("classify_success \"EXISTING_OPEN_PR\"")
         .expect("EXISTING_OPEN_PR success path");
     let default = validate
-        .rfind("fail_result \"FAILED_IMPLEMENTATION\"")
-        .expect("default FAILED_IMPLEMENTATION");
+        .rfind("finalization_fail_or_handoff_open_pr \"FAILED_IMPLEMENTATION\"")
+        .expect("default FAILED_IMPLEMENTATION (#1714 routes it through the hand-off brick)");
     let hollow = validate
         .find("\"HOLLOW_SUCCESS\"")
         .expect("hollow-success blocker");

@@ -1,11 +1,11 @@
-//! Unit tests for `workflow_blocked_ci_handoff.sh`: the exact-match
+//! Unit tests for `workflow_finalization_handoff.sh`: the exact-match
 //! allow-list, the exact-match flag, idempotent sourcing and the absence of
 //! top-level side effects.
 
 use super::fixture::*;
 
 fn allowed(state: &str) -> bool {
-    let outcome = brick(r#"blocked_ci_handoff_allowed "$ST""#, &[("ST", state)]);
+    let outcome = brick(r#"finalization_handoff_allowed "$ST""#, &[("ST", state)]);
     match outcome.output.status.code() {
         Some(0) => true,
         Some(1) => false,
@@ -19,20 +19,23 @@ fn allowed(state: &str) -> bool {
 fn flag(value: Option<&str>, bare: Option<&str>) -> String {
     let mut envs = Vec::new();
     if let Some(value) = value {
-        envs.push(("RECIPE_VAR_blocked_ci_handoff", value));
+        envs.push(("RECIPE_VAR_finalization_handoff", value));
     }
     if let Some(bare) = bare {
-        envs.push(("BLOCKED_CI_HANDOFF", bare));
+        envs.push(("FINALIZATION_HANDOFF", bare));
     }
-    let outcome = brick("blocked_ci_handoff_flag", &envs);
+    let outcome = brick("finalization_handoff_flag", &envs);
     assert!(outcome.success(), "{}", outcome.describe());
     assert!(outcome.stderr.is_empty(), "{}", outcome.describe());
     outcome.stdout.trim_end_matches('\n').to_owned()
 }
 
+// Exactly BLOCKED_CI and FAILED_IMPLEMENTATION may be handed off (#1714
+// case 2); a checkout that is not the PR's (dirty, wrong branch) never is.
 #[test]
-fn only_blocked_ci_is_allowed() {
+fn only_blocked_ci_and_failed_implementation_are_allowed() {
     assert!(allowed("BLOCKED_CI"));
+    assert!(allowed("FAILED_IMPLEMENTATION"));
     for state in [
         "FAILED_CLOSED_UNMERGED",
         "FAILED_PR_METADATA_UNAVAILABLE",
@@ -42,7 +45,6 @@ fn only_blocked_ci_is_allowed() {
         "FAILED_INVALID_INPUT",
         "FAILED_INVALID_EVIDENCE",
         "FAILED_MISSING_TERMINAL_EVIDENCE",
-        "FAILED_IMPLEMENTATION",
         "FAILED_REPORTING",
         "FAILED_MISSING_TOOLING",
         "HOLLOW_SUCCESS",
@@ -67,13 +69,16 @@ fn near_misses_are_rejected() {
         "BLOCKED_CI\n",
         "BLOCKED_*",
         "BLOCKED_CI|FAILED_IMPLEMENTATION",
+        "failed_implementation",
+        "FAILED_IMPLEMENTATION ",
+        "FAILED_*",
         "*",
     ] {
         assert!(!allowed(state), "{state:?} must be rejected");
     }
 }
 
-// T2: only exactly `true` in RECIPE_VAR_blocked_ci_handoff switches it on.
+// T2: only exactly `true` in RECIPE_VAR_finalization_handoff switches it on.
 #[test]
 fn the_flag_is_on_only_for_exactly_true() {
     assert_eq!(flag(Some("true"), None), "true");
@@ -94,7 +99,7 @@ fn the_flag_is_on_only_for_exactly_true() {
     assert_eq!(
         flag(None, Some("true")),
         "false",
-        "a bare BLOCKED_CI_HANDOFF is never read"
+        "a bare FINALIZATION_HANDOFF is never read"
     );
     assert_eq!(flag(Some(""), Some("true")), "false");
 }
@@ -105,9 +110,9 @@ fn the_brick_can_be_sourced_twice() {
     let outcome = brick(
         r#"set -euo pipefail
 . "$BRICK_PATH"
-printf '%s %s\n' "$BLOCKED_CI_HANDOFF_FIELD" "$BLOCKED_CI_HANDOFF_VALUE"
-BLOCKED_CI_HANDOFF_VALUE=other
-BLOCKED_CI_HANDOFF_VALUE=merge_ready_loop
+printf '%s %s\n' "$FINALIZATION_HANDOFF_FIELD" "$FINALIZATION_HANDOFF_VALUE"
+FINALIZATION_HANDOFF_VALUE=other
+FINALIZATION_HANDOFF_VALUE=merge_ready_loop
 echo sourced-twice"#,
         &[("BRICK_PATH", tool_path(BRICK).to_str().unwrap())],
     );
@@ -130,7 +135,7 @@ before="$(pwd) $(umask) $- $(set -o | tr -s ' \t' ' ' | tr '\n' ,)"
 after="$(pwd) $(umask) $- $(set -o | tr -s ' \t' ' ' | tr '\n' ,)"
 [ "$before" = "$after" ] || { echo "changed: $before -> $after"; exit 3; }
 [ ! -s "$TMPDIR/brick.out" ] || { echo "output:"; cat "$TMPDIR/brick.out"; exit 4; }
-for f in blocked_ci_handoff_allowed blocked_ci_handoff_flag finalization_fail_or_handoff autodrive_build_handoff; do
+for f in finalization_handoff_allowed finalization_handoff_flag finalization_fail_or_handoff autodrive_build_handoff; do
   [ "$(type -t "$f")" = function ] || { echo "missing function $f"; exit 5; }
 done
 echo clean"#;

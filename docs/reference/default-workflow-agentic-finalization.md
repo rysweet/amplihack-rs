@@ -371,16 +371,41 @@ look like it only lacked evidence.
 | 3 | **Explicit target directory.** `worktree_path` or `repo_path` resolved. The `.` fallback never qualifies. | Recipe metadata |
 | 4 | **GitHub remote.** `remote_host_type` is empty or `github` (any of `github`, `GitHub`, `GITHUB`), and `remote.origin.url` of the target directory parses to `owner/repo`. | Local git config |
 | 5 | **Run branch.** `branch_name` and `git branch --show-current` agree when both are set. The branch is not `main`, `master` or `HEAD`, does not start with `-`, and is a valid branch name under `git check-ref-format "refs/heads/<branch>"`. | Metadata + live git |
-| 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` (fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
+| 6 | **Live PR state.** `gh pr view --repo <owner>/<repo>` reports `state=OPEN`, `headRefName` equal to the run branch, `headRefOid` equal to the local `git rev-parse HEAD` or a fast-forward of it (see [PR head rule](#pr-head-rule-1714); fails closed if HEAD cannot be resolved), `isCrossRepository=false`, the requested number, and `url` exactly `https://github.com/<owner>/<repo>/pull/<n>`. | `gh` read-only + live git |
 | 7 | **Verification signal.** Either `checks=green` (every rollup entry passed, see below), or `checks` is `pending` or `none` (CI has not reported) and `verification_completed=true` from this run's typed `verification_terminal_evidence`. `checks=failing` never qualifies, whatever `verification_completed` says: it is `BLOCKED_CI`. `checks=unknown` never qualifies either. | `statusCheckRollup` or typed evidence |
 
 Each kind of signal is insufficient on its own. A publish status without a live
 open PR fails. An open PR with no green checks and no verification evidence
 fails. An open PR with a failing check is `BLOCKED_CI` even with verification
 evidence: this run's local pre-commit run does not override CI. A green rollup on another branch's PR fails. A green rollup on an older
-commit fails too: if the run committed locally but never pushed, the PR's
-`headRefOid` differs from local HEAD, so checks (and this run's precommit
-evidence) that never covered the PR's code cannot vouch for it.
+commit fails too: if the run committed locally but never pushed, the local
+HEAD is not in the PR, so checks (and this run's precommit evidence) that
+never covered the run's code cannot vouch for it.
+
+### PR head rule (#1714)
+
+The PR head commit (`headRefOid`) qualifies when it is the local HEAD, or when
+the local HEAD is its ancestor, which is the case when a merge of main was
+pushed to the PR from another checkout. Every local commit is then in the PR,
+so the PR's checks cover this run's work. The signal reports which case held
+in its `head` field (`local` or `descendant`), and the classifier records
+`pr_head_sha_matches=true`, or `pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true`,
+in `evidence_used`.
+
+| Local HEAD vs PR head | Signal |
+| --- | --- |
+| Equal | Yes, `head:"local"` |
+| Local HEAD is an ancestor of the PR head | Yes, `head:"descendant"` |
+| Local HEAD is ahead (unpushed commits) | No |
+| Diverged, or the PR head is a rewrite of the local commit | No |
+| PR head commit not in the local object store and not fetchable | No |
+
+When the PR head commit is not in the local object store, the helper runs one
+`git fetch --no-tags --no-write-fetch-head --refmap= origin refs/heads/<branch>`
+under `GIT_TERMINAL_PROMPT=0` and a 60-second `timeout`. It writes no ref and
+no `FETCH_HEAD`. If the commit is still missing afterwards, or
+`git merge-base --is-ancestor` fails for any reason, there is no signal: a
+missing object is never read as an ancestor.
 
 ### How the PR is located
 
@@ -515,6 +540,7 @@ success.
 | Open PR, an unclassifiable check (unknown type or conclusion), with or without `verification_completed=true` | `FAILED_IMPLEMENTATION` | Yes |
 | PR `CLOSED` or `MERGED` | `FAILED_IMPLEMENTATION` | Yes |
 | PR head ≠ run branch, or cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
+| PR head commit diverged from, behind, or not a fast-forward of the local HEAD, or not fetchable | `FAILED_IMPLEMENTATION` | Yes |
 | `pr_url` names a different repo than `origin` and no valid `pr_number` is set (no `pr list` fallback) | `FAILED_IMPLEMENTATION` | No |
 | `gh` missing, unauthenticated, non-zero exit or malformed JSON | `FAILED_IMPLEMENTATION` | Attempted |
 | `pr list` returns zero PRs, two PRs, or one cross-repository PR | `FAILED_IMPLEMENTATION` | Yes |
@@ -546,10 +572,11 @@ finalization_open_pr_signal <target_dir> <branch> [<pr_ref>]
 Exit 0 prints one compact JSON line:
 
 ```json
-{"pr_number":"1641","pr_url":"https://github.com/rysweet/amplihack-rs/pull/1641","checks":"green"}
+{"pr_number":"1641","pr_url":"https://github.com/rysweet/amplihack-rs/pull/1641","checks":"green","head":"local"}
 ```
 
-`checks` is one of `green`, `failing`, `pending`, `none` or `unknown`. Exit 1
+`checks` is one of `green`, `failing`, `pending`, `none` or `unknown`. `head`
+is `local` or `descendant`; see [PR head rule](#pr-head-rule-1714). Exit 1
 prints nothing on stdout and means no usable open-PR signal; stderr gets one
 fixed line, `WARNING: no open-PR signal: <reason>`, naming the check that
 failed (for example `PR reference has an invalid PR number` or `local HEAD
@@ -574,38 +601,44 @@ returns 1 rather than writing into the working directory.
   `remote.origin.url`.
 - **Detached HEAD.** With no live branch, only the context `branch_name` is
   checked against the PR's `headRefName`. The PR must still be open, from the
-  same repo, have `headRefOid` equal to the detached HEAD, and pass
+  same repo, have `headRefOid` equal to the detached HEAD or a fast-forward of it, and pass
   verification.
 - **Empty `remote_host_type`.** Treated as GitHub. This cannot widen the check:
   the origin URL must still parse as a `github.com` repository, and userinfo
   containing `/`, `?`, `#` or `\` is rejected so a foreign host cannot hide
   behind `@github.com/`.
 
-## Auto-Drive Hand-Off of BLOCKED_CI (#1714)
+## Auto-Drive Finalization Hand-Off (#1714)
 
-`BLOCKED_CI` normally exits non-zero, which ends any recipe that called
-`default-workflow`. Under [auto-drive](auto-drive-to-merge.md#blocked_ci-hand-off-from-phase-1-1714)
-the failing checks are exactly what the later merge-ready loop fixes, so
-`autodrive-build` asks finalization to hand the PR on instead of ending the
-run. The classification does not change: the state is still `BLOCKED_CI` and
-`terminal_success` is still `"false"`. Only the exit code and one field differ.
+`BLOCKED_CI` and `FAILED_IMPLEMENTATION` normally exit non-zero, which ends any
+recipe that called `default-workflow`. Under
+[auto-drive](auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714)
+a published, open PR is exactly what the later crusty and merge-ready loops
+review and fix, so `autodrive-build` asks finalization to hand the PR on
+instead of ending the run. The classification does not change: the state is
+still `BLOCKED_CI` or `FAILED_IMPLEMENTATION` and `terminal_success` is still
+`"false"`. Only the exit code and one field differ.
 
 ### Conditions
 
-The validator hands off only when all three hold. Otherwise it fails closed
+The validator hands off only when all of these hold. Otherwise it fails closed
 exactly as before.
 
 | # | Condition | Source |
 | --- | --- | --- |
-| 1 | The state is `BLOCKED_CI`, matched exactly by `blocked_ci_handoff_allowed`. | `workflow_blocked_ci_handoff.sh` |
-| 2 | `RECIPE_VAR_blocked_ci_handoff` is exactly `true`. Only `autodrive-build` step-02 sets it; `default-workflow.yaml` declares it `""`. | `blocked_ci_handoff_flag` |
+| 1 | The state is `BLOCKED_CI` or `FAILED_IMPLEMENTATION`, matched exactly by `finalization_handoff_allowed`. | `workflow_finalization_handoff.sh` |
+| 2 | `RECIPE_VAR_finalization_handoff` is exactly `true`. Only `autodrive-build` step-02 sets it; `default-workflow.yaml` declares it `""`. | `finalization_handoff_flag` |
 | 3 | `pr_number` passes `_finalization_pr_number_valid`. On the open-PR path this is the number `gh` confirmed; on the prior-state path it is the run's own PR evidence. | Validator state |
+| 4 | For `FAILED_IMPLEMENTATION` only: the open-PR check confirmed the PR in the same validation (open, same repository, on the run branch, canonical URL, head at or a fast-forward of the local HEAD), but the checks were pending or absent and this run had no `verification_completed`, so it could not succeed. The hand-off names that PR. | `finalization_fail_or_handoff_open_pr` |
 
 Both `BLOCKED_CI` exits use it: the prior-state probe and the open-PR check
-with a failing check. The five other prior-state blockers
+with a failing check. The default `FAILED_IMPLEMENTATION` exit uses it through
+`finalization_fail_or_handoff_open_pr`. The five other prior-state blockers
 (`FAILED_MEANINGFUL_DIFF`, `FAILED_CLOSED_UNMERGED`,
 `FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`,
-`FAILED_WRONG_BRANCH`) and every other failure keep `exit 1` with the flag on.
+`FAILED_WRONG_BRANCH`), `FAILED_DIRTY_WORKTREE`, and every other failure keep
+`exit 1` with the flag on. So does a `FAILED_IMPLEMENTATION` whose PR the
+open-PR check did not confirm.
 
 ### Result
 
@@ -622,7 +655,8 @@ finalizer_output_valid=false
 handoff=merge_ready_loop
 ```
 
-stderr gets `INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)`.
+stderr gets `INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)`
+(or `FAILED_IMPLEMENTATION` in place of `BLOCKED_CI`).
 That line is for people; no step decides anything from it.
 `workflow_finalization_complete.sh` nests the whole object, so
 `.workflow_result.handoff` reaches the caller without further changes.
@@ -638,27 +672,34 @@ finalization_fail_or_handoff <state> <reason> <next_action> <evidence>
 ```
 
 A drop-in for `fail_result` with the same four arguments. It is defined in
-`amplifier-bundle/tools/workflow_blocked_ci_handoff.sh`, which
+`amplifier-bundle/tools/workflow_finalization_handoff.sh`, which
 `workflow_agentic_finalization.sh` sources after
 `workflow_finalization_pr_signal.sh`. It calls `fail_result` and
 `emit_result`, which are nested functions of `validate_finalization`, so it
 may be called only from inside `validate_finalization`. When the conditions
 above do not hold it calls `fail_result "$@"` and never returns.
 
+`finalization_fail_or_handoff_open_pr` takes the same arguments. It hands off
+only when the validator recorded a confirmed PR (`open_pr_confirmed_number`,
+`open_pr_confirmed_url` and `open_pr_confirmed_facts`, set only by the open-PR
+check). Otherwise, or when the hand-off is refused, it calls `fail_result` with
+the run's own PR evidence restored.
+
 ### Standalone runs
 
 A standalone `default-workflow`, and every other caller of it, never hands
-off. `default-workflow.yaml` declares `blocked_ci_handoff: ""`. An exported
-`RECIPE_VAR_blocked_ci_handoff=true` does not switch the hand-off on, provided
+off. `default-workflow.yaml` declares `finalization_handoff: ""`. An exported
+`RECIPE_VAR_finalization_handoff=true` does not switch the hand-off on, provided
 the recipe runner keeps giving a recipe's declared context priority over an
 inherited `RECIPE_VAR_` value; see
-[`blocked_ci_handoff`](./workflow-terminal-state.md#blocked_ci_handoff).
+[`finalization_handoff`](./workflow-terminal-state.md#finalization_handoff).
 
 The hand-off also depends on the opposite case: the value `"true"` that
 `autodrive-build` step-02 passes to its `default-workflow` sub-recipe must
 override `default-workflow.yaml`'s declared `""`. If the runner does not
 apply it, the flag is never on, the hand-off never happens, and an auto-drive
-build that ends `BLOCKED_CI` fails closed exactly as it did before #1714.
+build that ends `BLOCKED_CI` or `FAILED_IMPLEMENTATION` fails closed exactly
+as it did before #1714.
 
 A standalone run with red CI still ends:
 
@@ -693,7 +734,7 @@ key/value outputs, but the field names and meanings are identical.
 | `change_request_id` | Provider change-request identifier when available. |
 | `pr_url` | GitHub compatibility URL when a validated GitHub PR or follow-up exists. Preserved on `FAILED_REPORTING`. |
 | `pr_number` | GitHub compatibility number when a validated GitHub PR exists. Preserved on `FAILED_REPORTING`. |
-| `handoff` | Present only on an [auto-drive hand-off](#auto-drive-hand-off-of-blocked_ci-1714), with the value `merge_ready_loop`. Absent, never `""`, on every other result. It never changes `terminal_success`. |
+| `handoff` | Present only on an [auto-drive hand-off](#auto-drive-finalization-hand-off-1714), with the value `merge_ready_loop`. Absent, never `""`, on every other result. It never changes `terminal_success`. |
 
 ### Retained Legacy Compatibility Fields
 
@@ -717,7 +758,8 @@ for human reading and is not part of the machine-control result.
 
 No feature flag is required. Agentic finalization is part of the
 `default-workflow` terminal path. The one flag below changes only the exit
-code of a `BLOCKED_CI` result, and only `autodrive-build` sets it.
+code of a `BLOCKED_CI` result, or of a `FAILED_IMPLEMENTATION` on a confirmed
+open PR, and only `autodrive-build` sets it.
 
 | Setting or tool | Required when | Notes |
 | --- | --- | --- |
@@ -727,7 +769,7 @@ code of a `BLOCKED_CI` result, and only `autodrive-build` sets it.
 | `jq` | Always | Required for building and reading the deterministic evidence document and typed markers. Not used to parse agent narrative. |
 | `gh` | GitHub PR metadata path | Required only when a GitHub PR URL or GitHub remote makes PR metadata necessary. |
 | `GH_TOKEN` or GitHub auth | GitHub PR metadata path | Missing or invalid auth fails closed when GitHub metadata is required. |
-| `blocked_ci_handoff=true` | `autodrive-build` step-02 only | Exact value `true`; anything else is off. Hands a `BLOCKED_CI` PR to auto-drive's merge-ready loop with exit `0` and `handoff=merge_ready_loop`. `terminal_success` stays `false`. `default-workflow.yaml` declares it `""`. See [Auto-Drive Hand-Off of BLOCKED_CI](#auto-drive-hand-off-of-blocked_ci-1714). |
+| `finalization_handoff=true` | `autodrive-build` step-02 only | Exact value `true`; anything else is off. Hands a `BLOCKED_CI` PR, or a `FAILED_IMPLEMENTATION` on a PR the open-PR check confirmed, to auto-drive's crusty and merge-ready loops with exit `0` and `handoff=merge_ready_loop`. `terminal_success` stays `false`. `default-workflow.yaml` declares it `""`. See [Auto-Drive Finalization Hand-Off](#auto-drive-finalization-hand-off-1714). |
 | `allow_no_op=true` | Explicit no-op tasks | Allows only valid no-op success states with evidence and reason text. It cannot bypass dirty work, failed CI, or missing terminal evidence. |
 
 There is no configuration that converts finalization failures into advisory
@@ -830,7 +872,7 @@ required_next_action=Fix failing CI checks before merge.
 The recipe exits nonzero and persists `terminal_state=BLOCKED_CI`. Under
 auto-drive, with a numeric `pr_number`, it instead exits `0` with
 `handoff=merge_ready_loop`; see
-[Auto-Drive Hand-Off of BLOCKED_CI](#auto-drive-hand-off-of-blocked_ci-1714).
+[Auto-Drive Finalization Hand-Off](#auto-drive-finalization-hand-off-1714).
 
 ### Resumed run with an already-published PR
 
@@ -918,18 +960,20 @@ git -C "$WORKTREE" config --get remote.origin.url
 R=rysweet/amplihack-rs   # owner/repo parsed from the origin URL above
 gh pr list --repo "$R" --head "$(git -C "$WORKTREE" branch --show-current)" \
   --state open --json number,url,isCrossRepository
-git -C "$WORKTREE" rev-parse HEAD           # must equal the PR's headRefOid
+git -C "$WORKTREE" rev-parse HEAD           # must equal the PR's headRefOid, or be its ancestor:
+git -C "$WORKTREE" merge-base --is-ancestor HEAD <headRefOid> && echo fast-forward
 gh pr view 1641 --repo "$R" --json state,headRefName,headRefOid,isCrossRepository,statusCheckRollup \
   --jq '.statusCheckRollup[] | {name, status, conclusion, state}'
 ```
 
 A failing entry in the rollup (reported as `BLOCKED_CI`), a pending entry
 without this run's verification evidence, a second open PR for the branch (even
-from a fork), a PR head that is not the local HEAD (unpushed commits), a
+from a fork), a PR head that does not contain the local HEAD (unpushed or
+rewritten commits), a
 `pr_url` for another repo, or a missing publish signal all keep
 the run failed by design.
 
-If an auto-drive build stopped on `BLOCKED_CI` instead of handing off, check
+If an auto-drive build stopped on `BLOCKED_CI` or `FAILED_IMPLEMENTATION` instead of handing off, check
 the `handoff` field and the step-03 `#1714` error line:
 
 ```bash
@@ -937,7 +981,8 @@ jq '.. | objects | select(has("terminal_state")) | {terminal_state, pr_number, h
 ```
 
 No `handoff` field means the flag did not reach finalization or `pr_number`
-was not numeric. A `handoff` with a step-03 error means the PR was missing,
+was not numeric; for `FAILED_IMPLEMENTATION` it can also mean the open-PR
+check did not confirm the PR (see its `WARNING: no open-PR signal` line). A `handoff` with a step-03 error means the PR was missing,
 not open, or differed from the one phase 1 resolved.
 
 Do not override `BLOCKED_CI`, `FAILED_MEANINGFUL_DIFF`, `HOLLOW_SUCCESS`,

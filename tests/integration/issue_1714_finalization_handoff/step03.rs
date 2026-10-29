@@ -11,11 +11,11 @@ use serde_json::{Value, json};
 
 use super::fixture::*;
 
-fn build_result(outcome: &Outcome) -> Value {
+pub(super) fn build_result(outcome: &Outcome) -> Value {
     outcome.json()
 }
 
-fn assert_stopped(outcome: &Outcome, needle: &str, why: &str) {
+pub(super) fn assert_stopped(outcome: &Outcome, needle: &str, why: &str) {
     assert_eq!(
         outcome.output.status.code(),
         Some(1),
@@ -34,7 +34,7 @@ fn assert_stopped(outcome: &Outcome, needle: &str, why: &str) {
     );
 }
 
-fn state_reads(fx: &Step03, pr: &str) -> usize {
+pub(super) fn state_reads(fx: &Step03, pr: &str) -> usize {
     let prefix = format!("pr view {pr} --json state");
     fx.gh_calls()
         .iter()
@@ -44,7 +44,7 @@ fn state_reads(fx: &Step03, pr: &str) -> usize {
 
 // T1c: BLOCKED_CI with the hand-off and PR 134 open continues into phase 2.
 #[test]
-fn blocked_ci_handoff_with_an_open_pr_continues() {
+fn finalization_handoff_with_an_open_pr_continues() {
     let fx = Step03::new();
     let outcome = fx.run("134", Some(&handoff_result("BLOCKED_CI", "134")), &[]);
     assert!(outcome.success(), "{}", outcome.describe());
@@ -137,7 +137,9 @@ fn every_other_failed_result_stops_the_run() {
         "FAILED_MEANINGFUL_DIFF",
         "FAILED_CLOSED_UNMERGED",
         "FAILED_PR_METADATA_UNAVAILABLE",
-        "FAILED_IMPLEMENTATION",
+        "FAILED_DIRTY_WORKTREE",
+        "FAILED_INVALID_EVIDENCE",
+        "FAILED_REPORTING",
         "HOLLOW_SUCCESS",
     ]
     .into_iter()
@@ -277,7 +279,7 @@ fn a_missing_brick_stops_the_run_and_repo_path_is_never_sourced() {
     let outcome = fx.run("134", Some(&handoff_result("BLOCKED_CI", "134")), &[]);
     assert_stopped(
         &outcome,
-        "workflow_blocked_ci_handoff.sh not found under AMPLIHACK_HOME",
+        "workflow_finalization_handoff.sh not found under AMPLIHACK_HOME",
         "stale install",
     );
     assert!(!marker.exists(), "the REPO_PATH copy must never be sourced");

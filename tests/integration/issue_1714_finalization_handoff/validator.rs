@@ -1,5 +1,5 @@
 //! The validator half of #1714. Both BLOCKED_CI exits (the prior-state probe
-//! and the open-PR check) hand off only when `RECIPE_VAR_blocked_ci_handoff`
+//! and the open-PR check) hand off only when `RECIPE_VAR_finalization_handoff`
 //! is exactly `true` and the PR number is valid; the result keeps
 //! `terminal_success:"false"` and gains `handoff:"merge_ready_loop"`. Every
 //! other state, and every run without the flag, exits 1 with no `handoff` key.
@@ -8,7 +8,7 @@ use serde_json::json;
 
 use super::fixture::*;
 
-const FLAG: (&str, &str) = ("RECIPE_VAR_blocked_ci_handoff", "true");
+const FLAG: (&str, &str) = ("RECIPE_VAR_finalization_handoff", "true");
 
 /// A resumed run whose prior terminal probe reported `state` for PR `pr`.
 fn prior_state_env(fx: &Fixture, state: &str, pr: &str) -> Vec<(&'static str, String)> {
@@ -129,7 +129,7 @@ fn open_pr_with_a_failing_check_is_handed_off() {
 }
 
 // T2: anything but exactly "true" leaves a standalone run failing closed, and
-// a bare BLOCKED_CI_HANDOFF is never read.
+// a bare FINALIZATION_HANDOFF is never read.
 #[test]
 fn without_exactly_true_blocked_ci_still_fails_closed() {
     let values: [Option<&str>; 8] = [
@@ -146,9 +146,9 @@ fn without_exactly_true_blocked_ci_still_fails_closed() {
         let fx = Fixture::new();
         let mut envs = prior_state_env(&fx, "BLOCKED_CI", "134");
         if let Some(value) = value {
-            envs.push(("RECIPE_VAR_blocked_ci_handoff", value.to_owned()));
+            envs.push(("RECIPE_VAR_finalization_handoff", value.to_owned()));
         }
-        envs.push(("BLOCKED_CI_HANDOFF", "true".to_owned()));
+        envs.push(("FINALIZATION_HANDOFF", "true".to_owned()));
         let outcome = validate(&fx, &as_refs(&envs));
         assert_failed_closed(&outcome, "BLOCKED_CI", &format!("flag={value:?}"));
         assert!(!outcome.stderr.contains("#1714"), "flag={value:?}");
@@ -182,7 +182,9 @@ fn other_prior_state_blockers_are_never_handed_off() {
     }
 }
 
-// T3: the remaining non-CI failures keep exit 1 with the flag and a PR.
+// T3: the remaining non-CI failures keep exit 1 with the flag and a PR. The
+// first is FAILED_IMPLEMENTATION with a PR number the open-PR check could not
+// confirm (no live view), which is never handed off (#1714 case 2).
 #[test]
 fn non_ci_failures_with_the_flag_still_fail_closed() {
     let fx = Fixture::new();

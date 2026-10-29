@@ -20,7 +20,7 @@ code-change completion.
 - [Shell Helper API](#shell-helper-api)
 - [Branch PR Lookup](#branch-pr-lookup)
 - [Configuration](#configuration)
-- [BLOCKED_CI Hand-Off Allow-List](#blocked_ci-hand-off-allow-list)
+- [Finalization Hand-Off Allow-List](#finalization-hand-off-allow-list)
 - [Failure Semantics](#failure-semantics)
 - [Examples](#examples)
 - [Scoped-PR Signal and Agentic Adjudication](#scoped-pr-signal-and-agentic-adjudication)
@@ -487,28 +487,30 @@ state, and a non-empty `terminal_reason`.
 
 There is no configuration flag that makes development terminal validation
 advisory. CI, local recipe runs, and nested `smart-orchestrator` routing all use
-the same fail-closed behavior. The `blocked_ci_handoff` flag below does not
-change this: it changes the exit code of one failure state for one caller,
+the same fail-closed behavior. The `finalization_handoff` flag below does not
+change this: it changes the exit code of two failure states for one caller,
 and the result still reports `terminal_success=false`.
 
-### `blocked_ci_handoff`
+### `finalization_handoff`
 
 Set only by `autodrive-build` step-02, so that a `BLOCKED_CI` build with a
-published PR reaches auto-drive's merge-ready loop instead of ending the run
-(issue #1714). It is on only when `RECIPE_VAR_blocked_ci_handoff` is exactly
-`true`; there is no truthy alias and no bare-environment fallback.
-`default-workflow.yaml` declares it `""`, so a standalone run keeps failing
-closed on `BLOCKED_CI`.
+published PR, or a `FAILED_IMPLEMENTATION` build whose open PR the open-PR
+check confirmed, reaches auto-drive's crusty and merge-ready loops instead of
+ending the run (issue #1714). It is on only when
+`RECIPE_VAR_finalization_handoff` is exactly `true`; there is no truthy alias
+and no bare-environment fallback. `default-workflow.yaml` declares it `""`, so
+a standalone run keeps failing closed on both states.
 
-A `RECIPE_VAR_blocked_ci_handoff=true` exported in the shell does not switch
+A `RECIPE_VAR_finalization_handoff=true` exported in the shell does not switch
 it on, because the recipe runner gives a recipe's declared context priority
 over an inherited `RECIPE_VAR_` value. That protection depends on the runner
 keeping this priority. In the other direction, the hand-off depends on the
 `"true"` that step-02 passes to its sub-recipe overriding the `""` declared in
 `default-workflow.yaml`. If it does not, the flag is never on and an
-auto-drive build that ends `BLOCKED_CI` fails closed as before. See the
-[allow-list](#blocked_ci-hand-off-allow-list) and
-[Auto-Drive Hand-Off of BLOCKED_CI](./default-workflow-agentic-finalization.md#auto-drive-hand-off-of-blocked_ci-1714).
+auto-drive build that ends `BLOCKED_CI` or `FAILED_IMPLEMENTATION` fails
+closed as before. See the
+[allow-list](#finalization-hand-off-allow-list) and
+[Auto-Drive Finalization Hand-Off](./default-workflow-agentic-finalization.md#auto-drive-finalization-hand-off-1714).
 
 ### Agentic Finalizer
 
@@ -537,38 +539,38 @@ success rules.
 
 ---
 
-## BLOCKED_CI Hand-Off Allow-List
+## Finalization Hand-Off Allow-List
 
-`blocked_ci_handoff_allowed` in
-`amplifier-bundle/tools/workflow_blocked_ci_handoff.sh` is the only
+`finalization_handoff_allowed` in
+`amplifier-bundle/tools/workflow_finalization_handoff.sh` is the only
 definition of which terminal states may be handed from `default-workflow` to
-auto-drive's merge-ready loop. It is an exact `case` match: no globs, regular
+auto-drive's crusty and merge-ready loops. It is an exact `case` match: no globs, regular
 expressions, trimming or case folding.
 
 | State | Allowed | Reason |
 | --- | --- | --- |
 | `BLOCKED_CI` | Yes | A PR exists and needs only merge-ready work on its checks. |
+| `FAILED_IMPLEMENTATION` | Yes, only on a PR the open-PR check confirmed | The PR is open, on the run branch and contains every local commit; this run's own evidence does not prove the work complete, which the crusty loop reviews. With no confirmed PR it fails closed. |
 | `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
-| `FAILED_MEANINGFUL_DIFF` | No | The build cannot be trusted. |
-| `FAILED_DIRTY_WORKTREE` | No | The build cannot be trusted. |
-| `FAILED_WRONG_BRANCH` | No | The build cannot be trusted. |
-| `FAILED_INVALID_INPUT` | No | The build cannot be trusted. |
-| `FAILED_INVALID_EVIDENCE` | No | The build cannot be trusted. |
-| `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The build cannot be trusted. |
-| `FAILED_IMPLEMENTATION` | No | The build cannot be trusted. |
-| `FAILED_REPORTING` | No | The build cannot be trusted. |
-| `FAILED_MISSING_TOOLING` | No | The build cannot be trusted. |
-| `HOLLOW_SUCCESS` | No | The build cannot be trusted. |
-| `INCOMPLETE` | No | The build cannot be trusted. |
+| `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
+| `FAILED_DIRTY_WORKTREE` | No | The local checkout is not the PR's. |
+| `FAILED_WRONG_BRANCH` | No | The local checkout is not the PR's. |
+| `FAILED_INVALID_INPUT` | No | The evidence cannot be read. |
+| `FAILED_INVALID_EVIDENCE` | No | The evidence cannot be read. |
+| `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The evidence cannot be read. |
+| `FAILED_REPORTING` | No | The fix is to rerun the reporting step, which the loops do not do. |
+| `FAILED_MISSING_TOOLING` | No | The tooling to read the evidence is missing. |
+| `HOLLOW_SUCCESS` | No | The agent output is empty, so the PR may be too. |
+| `INCOMPLETE` | No | The run did not finish. |
 | Success states (`EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED`, ...) | Not applicable | They already succeed. |
 
-A handed-off result keeps `terminal_state=BLOCKED_CI`,
-`terminal_success=false` and `terminal_failure=true`, and adds
+A handed-off result keeps its `terminal_state` (`BLOCKED_CI` or
+`FAILED_IMPLEMENTATION`), `terminal_success=false` and `terminal_failure=true`, and adds
 `handoff=merge_ready_loop`. Only the process exit code changes, to `0`.
 `autodrive-build` step-03 still checks that the PR is open and is the one
 phase 1 resolved before it continues; see
-[BLOCKED_CI hand-off from phase 1](./auto-drive-to-merge.md#blocked_ci-hand-off-from-phase-1-1714).
+[Finalization hand-off from phase 1](./auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714).
 
 ---
 
@@ -837,9 +839,10 @@ orphan a live artifact.
 - Diagnostics do not print full environments, tokens, credentials, or auth
   headers.
 - Nonzero exit codes are preserved through nested recipe routing. The one
-  exception is the auto-drive `BLOCKED_CI` hand-off (issue #1714), which exits
-  `0` only when `RECIPE_VAR_blocked_ci_handoff` is exactly `true` and the
-  result has a numeric `pr_number`. Its result still reports
+  exception is the auto-drive finalization hand-off (issue #1714), which exits
+  `0` only when `RECIPE_VAR_finalization_handoff` is exactly `true`, the
+  state is `BLOCKED_CI` or `FAILED_IMPLEMENTATION` on a confirmed open PR,
+  and the result has a numeric `pr_number`. Its result still reports
   `terminal_success=false`, and the merge gate never reads it.
 
 ---

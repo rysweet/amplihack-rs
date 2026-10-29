@@ -462,8 +462,8 @@ mod issue_1641_finalization_open_pr;
 // BLOCKED_CI with a published open PR hands that PR to the crusty and
 // merge-ready loops; a standalone run and every other failure still fail
 // closed. Runs the real validator and autodrive-build step-03 against stubs.
-#[path = "issue_1714_blocked_ci_handoff.rs"]
-mod issue_1714_blocked_ci_handoff;
+#[path = "issue_1714_finalization_handoff.rs"]
+mod issue_1714_finalization_handoff;
 
 #[path = "issue_1642_github_origin_parsing.rs"]
 mod issue_1642_github_origin_parsing;

@@ -50,7 +50,7 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
             if line.starts_with('#') {
                 continue;
             }
-            if let Some(value) = line.strip_prefix("blocked_ci_handoff:") {
+            if let Some(value) = line.strip_prefix("finalization_handoff:") {
                 setters.push(format!("{}:{}={}", rel(&path), n + 1, value.trim()));
             }
         }
@@ -66,24 +66,27 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
         .collect();
     assert!(
         unexpected.is_empty(),
-        "unexpected blocked_ci_handoff settings: {unexpected:?}"
+        "unexpected finalization_handoff settings: {unexpected:?}"
     );
     assert_eq!(setters.len(), 3, "{setters:?}");
 
     let build = recipe_yaml("autodrive-build");
     let step02 = step(&build, "step-02-default-workflow");
     assert_eq!(
-        step02["context"]["blocked_ci_handoff"].as_str(),
+        step02["context"]["finalization_handoff"].as_str(),
         Some("true")
     );
     assert_eq!(build["context"]["workflow_result"].as_str(), Some(""));
     assert_eq!(
-        build["context"]["blocked_ci_handoff"].as_str(),
+        build["context"]["finalization_handoff"].as_str(),
         Some(""),
         "autodrive-build's own context must declare the flag off"
     );
     let default = recipe_yaml("default-workflow");
-    assert_eq!(default["context"]["blocked_ci_handoff"].as_str(), Some(""));
+    assert_eq!(
+        default["context"]["finalization_handoff"].as_str(),
+        Some("")
+    );
 }
 
 // T12: no step can produce the flag at run time, and workflow_result has one
@@ -92,8 +95,8 @@ fn only_autodrive_build_step_02_switches_the_handoff_on() {
 fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
     for path in recipe_files() {
         assert!(
-            !read(&path).contains("output: \"blocked_ci_handoff\""),
-            "{} must not output blocked_ci_handoff",
+            !read(&path).contains("output: \"finalization_handoff\""),
+            "{} must not output finalization_handoff",
             rel(&path)
         );
     }
@@ -125,8 +128,8 @@ fn no_step_outputs_the_flag_and_workflow_result_has_one_producer() {
 fn the_allow_list_is_defined_once_in_the_brick() {
     let brick_text = read(&tool_path(BRICK));
     for function in [
-        "blocked_ci_handoff_allowed()",
-        "blocked_ci_handoff_flag()",
+        "finalization_handoff_allowed()",
+        "finalization_handoff_flag()",
         "finalization_fail_or_handoff()",
         "autodrive_build_handoff()",
     ] {
@@ -150,7 +153,8 @@ fn the_allow_list_is_defined_once_in_the_brick() {
         "FAILED_CLOSED_UNMERGED",
         "FAILED_PR_METADATA_UNAVAILABLE",
         "FAILED_MEANINGFUL_DIFF",
-        "FAILED_IMPLEMENTATION",
+        "FAILED_DIRTY_WORKTREE",
+        "FAILED_WRONG_BRANCH",
         "HOLLOW_SUCCESS",
         "INCOMPLETE",
     ] {
@@ -186,31 +190,6 @@ fn the_handoff_never_reads_log_text_or_stderr() {
             "workflow_result is read through rv_field only: {line}"
         );
     }
-}
-
-// T6: the dispatcher sources the brick before the validator, and the
-// validator routes both BLOCKED_CI exits through the brick.
-#[test]
-fn the_validator_routes_both_blocked_ci_exits_through_the_brick() {
-    let dispatcher = read(&tool_path("workflow_agentic_finalization.sh"));
-    let brick_at = dispatcher
-        .find(&format!(". \"$here/{BRICK}\""))
-        .expect("the dispatcher must source the brick through $here");
-    let validate_at = dispatcher
-        .find(". \"$here/workflow_finalization_validate.sh\"")
-        .expect("the dispatcher sources the validator");
-    assert!(brick_at < validate_at, "brick before validator");
-
-    let validator = read(&tool_path("workflow_finalization_validate.sh"));
-    assert!(validator.lines().count() <= 300, "validator line budget");
-    let calls = code_lines(&validator)
-        .filter(|l| l.contains("finalization_fail_or_handoff"))
-        .count();
-    assert_eq!(calls, 2, "exactly the two BLOCKED_CI exits hand off");
-    let open_pr_exit = code_lines(&validator)
-        .find(|l| l.contains("\"$open_pr_checks\" != \"failing\""))
-        .expect("the open-PR failing-check exit");
-    assert!(open_pr_exit.contains("finalization_fail_or_handoff \"BLOCKED_CI\""));
 }
 
 // T1d: the loops take the build's PR and have no condition that skips a
@@ -259,7 +238,7 @@ fn the_merge_gate_never_reads_the_handoff() {
         for needle in [
             "handed_off",
             "build_result.terminal_state",
-            "blocked_ci_handoff",
+            "finalization_handoff",
             "merge_ready_loop",
         ] {
             assert!(

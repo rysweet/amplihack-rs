@@ -22,7 +22,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 
 - [The three phases](#the-three-phases)
 - [PR head and worktree resolution](#pr-head-and-worktree-resolution)
-- [BLOCKED_CI hand-off from phase 1 (#1714)](#blocked_ci-hand-off-from-phase-1-1714)
+- [Finalization hand-off from phase 1 (#1714)](#finalization-hand-off-from-phase-1-1714)
 - [Why there is no iteration cap](#why-there-is-no-iteration-cap)
 - [Structured verdicts](#structured-verdicts)
 - [How the merge round applies merge-ready](#how-the-merge-round-applies-merge-ready)
@@ -47,7 +47,7 @@ skill](../../amplifier-bundle/skills/auto-drive-to-merge/SKILL.md).
 | Phase | Brick | What it does |
 | --- | --- | --- |
 | 0. Prerequisites | `auto-drive-to-merge.yaml` step `autodrive-prerequisites` | Where criterion 1 needs `gadugi-test` (a Node repository, or `AUTODRIVE_QA_SCENARIO_DIR` set), stops the run with `ERROR: gadugi-test-not-installed` when it is not on `PATH`, before the build and the crusty loop spend hours. A Rust CLI or Python repository does not need it. |
-| 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI` with a published open PR hands that PR to phases 2 and 3 instead of ending the run ([#1714](#blocked_ci-hand-off-from-phase-1-1714)). |
+| 1. Build | `autodrive-build.yaml` | Runs `default-workflow` with `no_merge: "true"` to produce a PR. Never merges. A build that ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` on a confirmed open PR, hands that PR to phases 2 and 3 instead of ending the run ([#1714](#finalization-hand-off-from-phase-1-1714)). |
 | 2. Crusty loop | `autodrive-crusty-loop.yaml` over `autodrive-crusty-round.yaml` | Runs `crusty-old-engineer` as the maintainer's proxy, addresses every concern, re-reviews, repeats until `crusty_verdict` is `CLEAN`. |
 | 3. Merge-ready loop | `autodrive-merge-loop.yaml` over `autodrive-merge-round.yaml` | Before each round, sends code commits made after the clean crusty round back to the crusty loop (`autodrive_crusty_rereview.sh`). Syncs the base, runs the repository tests and, where criterion 1 needs them, the `gadugi-test` scenarios, waits for CI, applies the `merge-ready` criteria read from the skill's files, clears blockers, repeats, then merges behind the gate. |
 
@@ -357,15 +357,28 @@ worktree whose round and evaluator always pass, and checks that neither runs.
 The round steps still run the PR's own code by design (tests, hooks,
 `qa-team`), so drive only PRs whose code you are prepared to run.
 
-## BLOCKED_CI hand-off from phase 1 (#1714)
+## Finalization hand-off from phase 1 (#1714)
 
-`default-workflow` fails closed when its PR has a failing check: finalization
-classifies the run `BLOCKED_CI` and exits non-zero. Run on its own, that is
-correct, because a standalone run must never report success with red CI.
-Inside auto-drive it ended the whole run at phase 1, although phases 2 and 3
-exist to fix failing checks. Under auto-drive, a `BLOCKED_CI` build with a
-published open PR now hands that PR to the crusty loop and the merge-ready
-loop.
+`default-workflow` fails closed when finalization cannot prove the run
+complete. Run on its own, that is correct, because a standalone run must never
+report success it cannot prove. Inside auto-drive it ended the whole run at
+phase 1 even when a published, open PR existed, although phases 2 and 3 exist
+to review that PR and fix what keeps it from merging. Two cases were reported
+in #1714:
+
+1. The PR's checks were red, so finalization ended `BLOCKED_CI`.
+2. A merge of main had been pushed to the PR from another checkout, so the PR
+   head was a fast-forward of the local HEAD rather than equal to it. The
+   open-PR check found no signal and the run ended `FAILED_IMPLEMENTATION`.
+
+Case 2 has two parts. The open-PR check now treats a PR head that is a
+fast-forward of the local HEAD as the same PR (see
+[the open-PR check](./default-workflow-agentic-finalization.md#resumed-runs-open-pr-success-path-1641)),
+so the reported run would now succeed as `EXISTING_OPEN_PR` when its checks
+are green. And under auto-drive, a `FAILED_IMPLEMENTATION` on a PR that the
+open-PR check confirmed (open, same repository, on the run branch, head at or
+a fast-forward of the local HEAD) is handed to the crusty loop and the
+merge-ready loop, as `BLOCKED_CI` is.
 
 The hand-off is decided from typed data only: the `terminal_state` and
 `handoff` fields of `workflow_result`, and the PR number step-03 resolves
@@ -374,9 +387,9 @@ it.
 
 ### Which states are handed on
 
-`BLOCKED_CI` is the only state handed on. The list is defined once, in
-`blocked_ci_handoff_allowed`
-([`workflow_blocked_ci_handoff.sh`](../../amplifier-bundle/tools/workflow_blocked_ci_handoff.sh)),
+`BLOCKED_CI` and `FAILED_IMPLEMENTATION` are handed on. The list is defined once, in
+`finalization_handoff_allowed`
+([`workflow_finalization_handoff.sh`](../../amplifier-bundle/tools/workflow_finalization_handoff.sh)),
 as an exact `case` match with no globs and no case folding. The finalization
 validator and `autodrive-build` step-03 both source that file; neither holds
 its own copy.
@@ -384,28 +397,33 @@ its own copy.
 | State | Handed on? | Reason |
 | --- | --- | --- |
 | `BLOCKED_CI` | Yes | A PR exists and only its checks are failing, which is the merge-ready loop's work. |
+| `FAILED_IMPLEMENTATION` | Only on a PR the open-PR check confirmed | The PR is open, on the run branch and contains every local commit, but this run's own evidence does not prove the work complete. Reviewing that PR is the crusty loop's work. Without a confirmed PR the run ends. |
+| `FAILED_DIRTY_WORKTREE`, `FAILED_WRONG_BRANCH` | No | The local checkout is not the PR's, so nothing ties the PR to this build. |
 | `FAILED_CLOSED_UNMERGED` | No | The PR is closed. |
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
-| `FAILED_MEANINGFUL_DIFF`, `FAILED_DIRTY_WORKTREE`, `FAILED_WRONG_BRANCH`, `FAILED_INVALID_INPUT`, `FAILED_INVALID_EVIDENCE`, `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_IMPLEMENTATION`, `FAILED_REPORTING`, `FAILED_MISSING_TOOLING`, `HOLLOW_SUCCESS`, `INCOMPLETE` | No | The build itself cannot be trusted, so the run ends. |
+| `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
+| `FAILED_INVALID_INPUT`, `FAILED_INVALID_EVIDENCE`, `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_MISSING_TOOLING` | No | The evidence or tooling cannot be read, so the build cannot be trusted. |
+| `FAILED_REPORTING` | No | The fix is to rerun the reporting step, which the loops do not do. |
+| `HOLLOW_SUCCESS`, `INCOMPLETE` | No | The agent output is empty or unfinished, so the PR may be too. |
 | `EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED` and the other success states | Not applicable | They already succeed and need no hand-off. |
 
-`blocked_ci`, ` BLOCKED_CI`, `BLOCKED_CI` followed by a newline and
-`BLOCKED_*` are all rejected.
+`blocked_ci`, ` BLOCKED_CI`, `BLOCKED_CI` followed by a newline,
+`failed_implementation`, `BLOCKED_*` and `FAILED_*` are all rejected.
 
 ### How the flag reaches finalization
 
 | Recipe | Setting | Effect |
 | --- | --- | --- |
-| `autodrive-build.yaml` step-02 | `blocked_ci_handoff: "true"` in the sub-recipe `context:` | The only setter in the bundle. |
-| `autodrive-build.yaml` | `blocked_ci_handoff: ""` in `context:` | Off for autodrive-build's own steps. Step-03 sources the brick that reads the key, so it is declared (#1561); step-02's `"true"` overrides it for the sub-recipe only. |
-| `default-workflow.yaml` | `blocked_ci_handoff: ""` in `context:`, beside `no_merge: ""` | Every standalone run, and every other caller of `default-workflow`, starts with the hand-off off, even when `RECIPE_VAR_blocked_ci_handoff` is set in the environment. |
+| `autodrive-build.yaml` step-02 | `finalization_handoff: "true"` in the sub-recipe `context:` | The only setter in the bundle. |
+| `autodrive-build.yaml` | `finalization_handoff: ""` in `context:` | Off for autodrive-build's own steps. Step-03 sources the brick that reads the key, so it is declared (#1561); step-02's `"true"` overrides it for the sub-recipe only. |
+| `default-workflow.yaml` | `finalization_handoff: ""` in `context:`, beside `no_merge: ""` | Every standalone run, and every other caller of `default-workflow`, starts with the hand-off off, even when `RECIPE_VAR_finalization_handoff` is set in the environment. |
 | `workflow-finalize.yaml` | Not declared | Inherits the value from `default-workflow`, as it does `no_merge`. |
 
-`blocked_ci_handoff_flag` prints `true` only when `RECIPE_VAR_blocked_ci_handoff`
+`finalization_handoff_flag` prints `true` only when `RECIPE_VAR_finalization_handoff`
 is exactly `true`. `1`, `yes`, `TRUE`, ` true` and an empty value all print
 `false`. Unlike `no_merge_flag` it has no bare-environment fallback, so an
-exported `BLOCKED_CI_HANDOFF` is ignored. No recipe declares
-`output: "blocked_ci_handoff"`, so no step can switch it on at run time.
+exported `FINALIZATION_HANDOFF` is ignored. No recipe declares
+`output: "finalization_handoff"`, so no step can switch it on at run time.
 
 ### What finalization does under the flag
 
@@ -430,9 +448,21 @@ people, which no code reads:
 INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)
 ```
 
+The default `FAILED_IMPLEMENTATION` exit calls
+`finalization_fail_or_handoff_open_pr` instead. It hands off only when the
+open-PR check earlier in the same validation confirmed a PR (checks pending or
+absent, and no `verification_completed` from this run, so it could not
+succeed). The result then names the confirmed PR and records its facts in
+`evidence_used`, for example
+`pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true,pr_number=134,all_checks=pending`,
+and stderr gets `INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop (PR #134)`.
+A `pr_number` the open-PR check did not confirm (gh failed, the PR is closed,
+or its head diverged from the local HEAD) is never handed off.
+
 In every other case, including a `BLOCKED_CI` with an empty or non-numeric
-`pr_number`, `finalization_fail_or_handoff` calls `fail_result` and the run
-exits `1` as before. A result that is not handed off has no `handoff` key at
+`pr_number`, the helper calls `fail_result` and the run exits `1` as before;
+a failed `FAILED_IMPLEMENTATION` keeps the run's own PR evidence, not the
+confirmed PR's. A result that is not handed off has no `handoff` key at
 all; it is never `""`. The result is written under `pipefail`, so if `jq`
 fails while adding `handoff` the validator exits `1` rather than `0` with
 partial output.
@@ -440,13 +470,13 @@ partial output.
 ### What step-03 does with the result
 
 When step-02 has left a `workflow_result`, `autodrive-build.yaml` step-03
-sources `recipe_var.sh` and `workflow_blocked_ci_handoff.sh` only from an
+sources `recipe_var.sh` and `workflow_finalization_handoff.sh` only from an
 absolute `AMPLIHACK_HOME`, never from `REPO_PATH`, the working directory or
 `~/.copilot`. When either is missing, or `AMPLIHACK_HOME` is relative, it
 stops:
 
 ```text
-ERROR: #1714: workflow_blocked_ci_handoff.sh not found under AMPLIHACK_HOME; cannot decide the BLOCKED_CI hand-off [autodrive-build/step-03]
+ERROR: #1714: workflow_finalization_handoff.sh not found under AMPLIHACK_HOME; cannot decide the finalization hand-off [autodrive-build/step-03]
 ```
 
 After its usual PR resolution (see
@@ -459,9 +489,9 @@ continues as before with `handed_off` `"false"`. The function reads `workflow_re
 
 | # | `workflow_result` | Outcome |
 | --- | --- | --- |
-| R1 | Set, but no readable `terminal_state` (not one JSON object, or the field is missing) | Exit `1`: `ERROR: #1714: workflow_result is set but has no readable terminal_state; cannot decide the BLOCKED_CI hand-off [autodrive-build/step-03]`. An empty `workflow_result` never reaches this table (see above). |
+| R1 | Set, but no readable `terminal_state` (not one JSON object, or the field is missing) | Exit `1`: `ERROR: #1714: workflow_result is set but has no readable terminal_state; cannot decide the finalization hand-off [autodrive-build/step-03]`. An empty `workflow_result` never reaches this table (see above). |
 | R2 | `terminal_success` is `"true"` | Continue as before; `handed_off` is `"false"`. |
-| R3 | State passes `blocked_ci_handoff_allowed` and `handoff` is `merge_ready_loop` | Check the PR (below). If every check passes, continue with `handed_off` `"true"`. |
+| R3 | State passes `finalization_handoff_allowed` and `handoff` is `merge_ready_loop` | Check the PR (below). If every check passes, continue with `handed_off` `"true"`. |
 | R4 | R3's state and field, but a PR check fails | Exit `1` with the matching error below. |
 | R5 | Anything else, including `BLOCKED_CI` with no `handoff` field | Exit `1`, naming the state. |
 
@@ -477,8 +507,10 @@ low-trust value such as a bare `PR_NUMBER`.
 | `autodrive_pr_state A` is not `OPEN` (one retry on `UNKNOWN`) | `ERROR: #1714: PR #134 is CLOSED, not OPEN; BLOCKED_CI cannot be handed to the merge-ready loop [autodrive-build/step-03]` |
 | R5 | `ERROR: #1714: default-workflow ended BLOCKED_CI without a merge-ready hand-off; auto-drive stops here [autodrive-build/step-03]` |
 
-Step-03 repeats the open check because the prior-state path in finalization
-never asked `gh` whether the PR is open. A `gh` failure reads as `UNKNOWN`,
+The messages name the state that was reported, `BLOCKED_CI` or
+`FAILED_IMPLEMENTATION`. Step-03 repeats the open check because the
+prior-state path in finalization never asked `gh` whether the PR is open, and
+the PR may have closed since. A `gh` failure reads as `UNKNOWN`,
 so it can never count as `OPEN`. B appears in the E3 message only after it is
 known to be all digits; a non-empty B that is not all digits is printed as
 `<invalid>`. A state outside the 20-entry `terminal_vocabulary` is printed as
@@ -486,10 +518,11 @@ known to be all digits; a non-empty B that is not all digits is printed as
 line.
 
 R5 does not arise from a normal failing build. Every failed state other than a
-handed-off `BLOCKED_CI` makes `default-workflow` exit `1`, so phase 1 stops
+handed-off `BLOCKED_CI` or `FAILED_IMPLEMENTATION` makes `default-workflow` exit `1`, so phase 1 stops
 before step-03 runs. R5 applies when step-03 finds a failed `workflow_result`
 with no `handoff` field, for example one left from an earlier run and read on
-resume, or a `BLOCKED_CI` result produced while the flag was off.
+resume, or a `BLOCKED_CI` or `FAILED_IMPLEMENTATION` result produced while
+the flag was off.
 
 ### The build result
 
@@ -525,6 +558,22 @@ INFO: #1714: BLOCKED_CI handed to the merge-ready loop (PR #134)
 `"terminal_state":"BLOCKED_CI","handed_off":"true"`, and the crusty loop
 starts on PR 134. The same `BLOCKED_CI` from
 `amplihack recipe run default-workflow` run on its own still exits `1`.
+
+### Example: a merge of main pushed from another checkout
+
+The local HEAD is `5174029`. The PR head is `50e41db`, a merge of main whose
+first parent is `5174029`. The open-PR check fetches `50e41db` if it is not in
+the local object store, confirms that `5174029` is its ancestor, and treats the
+PR as this run's. With green checks the run ends `EXISTING_OPEN_PR` and
+succeeds. With checks still pending and no verification evidence from this
+run, auto-drive gets:
+
+```text
+INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop (PR #138)
+```
+
+and the crusty loop starts on PR 138. A standalone `default-workflow` still
+exits `1` with `FAILED_IMPLEMENTATION`.
 
 ## Why there is no iteration cap
 
@@ -1513,7 +1562,7 @@ output set, so a line that reads the same output twice counts twice. Reads
 made inside a bundled tool, such as the merge round's evidence reads in
 `autodrive_round_evidence.sh`, are not counted here; that file uses the same
 form. `autodrive-build` step-03's read of `workflow_result` (#1714) goes
-through `rv_field` inside `workflow_blocked_ci_handoff.sh`, and
+through `rv_field` inside `workflow_finalization_handoff.sh`, and
 `workflow_result` is the output of a `workflow-finalize.yaml` step, not of an
 autodrive step, so it is outside the checked output set and adds no row;
 `autodrive-build.yaml` only declares it `""` in `context:`. There are 34 in all:
@@ -3001,7 +3050,7 @@ and leaves that checkout's `HEAD` and index byte-for-byte unchanged.
 | `amplifier-bundle/tools/autodrive_state.sh` | tool | Resumable local state, `autodrive_crusty_final`, `autodrive_private`; platform truth for merged-ness. |
 | `amplifier-bundle/tools/autodrive_trust.sh` | tool | Range check and qa evidence chain. |
 | `amplifier-bundle/tools/autodrive_pr_head.sh` | tool | Read-only PR head and worktree resolver. |
-| `amplifier-bundle/tools/workflow_blocked_ci_handoff.sh` | tool | The [#1714 hand-off](#blocked_ci-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
+| `amplifier-bundle/tools/workflow_finalization_handoff.sh` | tool | The [#1714 hand-off](#finalization-hand-off-from-phase-1-1714): the allow-list, the exact-match flag, `finalization_fail_or_handoff` and `finalization_fail_or_handoff_open_pr` for the validator and `autodrive_build_handoff` for step-03. No top-level side effects; safe to source twice. |
 | `amplifier-bundle/skills/auto-drive-to-merge/SKILL.md` | skill | Invocable entry point. |
 | `amplifier-bundle/skills/merge-ready/SKILL.md` | skill | The criteria the merge round reads. |
 
@@ -3021,7 +3070,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| [BLOCKED_CI hand-off](#blocked_ci-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits, standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_blocked_ci_handoff.rs` |
+| [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 
@@ -3029,7 +3078,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 cargo test -p amplihack --test integration auto_drive_to_merge::
 cargo test -p amplihack --test integration merge_ready_platform_contract::
 cargo test -p amplihack --test integration autodrive_pr_worktree::
-cargo test -p amplihack --test integration issue_1714_blocked_ci_handoff::
+cargo test -p amplihack --test integration issue_1714_finalization_handoff::
 bash amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh
 bash amplifier-bundle/recipes/tests/test-issue-1543-pr-head-worktree.sh
 bash amplifier-bundle/recipes/tests/test-issue-1551-no-merge-outside-gate.sh

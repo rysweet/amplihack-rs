@@ -41,11 +41,11 @@ context:
   # path and branch from its JSON (#1676, #1561).
   worktree_setup: ""
   # Set by step-02's default-workflow sub-recipe (workflow-finalize's typed
-  # result); step-03 decides the BLOCKED_CI hand-off from it (#1714).
+  # result); step-03 decides the finalization hand-off from it (#1714).
   workflow_result: ""
   # Off here; step-02 passes "true" to its default-workflow sub-recipe only.
   # Declared because step-03 sources the brick that reads it (#1714, #1561).
-  blocked_ci_handoff: ""
+  finalization_handoff: ""
   # Phase 1 never merges. auto-drive-to-merge owns that decision.
   no_merge: "true"
 
@@ -156,9 +156,9 @@ steps:
       # Phase 1 publishes a PR and stops. The merge belongs to phase 3's gate.
       no_merge: "true"
       should_merge: "false"
-      # Issue #1714: BLOCKED_CI with a published PR goes on to the loops,
-      # which fix failing checks. Only this step switches it on.
-      blocked_ci_handoff: "true"
+      # Issue #1714: BLOCKED_CI, or FAILED_IMPLEMENTATION with a confirmed open PR,
+      # goes on to the crusty and merge-ready loops. Only this step switches it on.
+      finalization_handoff: "true"
 
   - id: "step-03-resolve-pr"
     type: "bash"
@@ -219,9 +219,9 @@ steps:
       if [ -n "${RECIPE_VAR_workflow_result:-}" ]; then
         HO_TOOLS="${AMPLIHACK_HOME:-}/amplifier-bundle/tools"
         case "${AMPLIHACK_HOME:-}" in /*) ;; *) HO_TOOLS="" ;; esac
-        { [ -n "$HO_TOOLS" ] && [ -f "$HO_TOOLS/workflow_blocked_ci_handoff.sh" ] && [ -f "$HO_TOOLS/recipe_var.sh" ] \
-            && . "$HO_TOOLS/recipe_var.sh" && . "$HO_TOOLS/workflow_blocked_ci_handoff.sh"; } \
-          || { echo "ERROR: #1714: workflow_blocked_ci_handoff.sh not found under AMPLIHACK_HOME; cannot decide the BLOCKED_CI hand-off [autodrive-build/step-03]" >&2; exit 1; }
+        { [ -n "$HO_TOOLS" ] && [ -f "$HO_TOOLS/workflow_finalization_handoff.sh" ] && [ -f "$HO_TOOLS/recipe_var.sh" ] \
+            && . "$HO_TOOLS/recipe_var.sh" && . "$HO_TOOLS/workflow_finalization_handoff.sh"; } \
+          || { echo "ERROR: #1714: workflow_finalization_handoff.sh not found under AMPLIHACK_HOME; cannot decide the finalization hand-off [autodrive-build/step-03]" >&2; exit 1; }
         # autodrive_pr_state comes from here; without it the PR reads UNKNOWN and the hand-off is refused.
         [ ! -f "$HO_TOOLS/autodrive_state.sh" ] || . "$HO_TOOLS/autodrive_state.sh"
         autodrive_build_handoff "$PR" || exit 1

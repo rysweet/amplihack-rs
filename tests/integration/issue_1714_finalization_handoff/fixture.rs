@@ -24,8 +24,10 @@ pub use crate::issue_1641_finalization_open_pr::fixture::{
     BRANCH, Fixture, Outcome, PR_URL, as_refs, check_run, green_rollup, open_pr, resumed_env,
 };
 
-pub const BRICK: &str = "workflow_blocked_ci_handoff.sh";
+pub const BRICK: &str = "workflow_finalization_handoff.sh";
 pub const HANDOFF_INFO: &str = "INFO: #1714: BLOCKED_CI handed to the merge-ready loop";
+pub const FI_HANDOFF_INFO: &str =
+    "INFO: #1714: FAILED_IMPLEMENTATION handed to the merge-ready loop";
 pub const PR134_URL: &str = "https://github.com/acme/widget/pull/134";
 
 pub fn workspace_root() -> PathBuf {
@@ -95,6 +97,13 @@ fn bash_in(tmp: &Path) -> Command {
         .env("AMPLIHACK_STATE_DIR", tmp.join("state"))
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        // github.com fetches (the open-PR check's, #1714) stay in the fixture.
+        .env("GIT_CONFIG_COUNT", "1")
+        .env(
+            "GIT_CONFIG_KEY_0",
+            format!("url.{}/.insteadOf", tmp.join("remotes").display()),
+        )
+        .env("GIT_CONFIG_VALUE_0", "https://github.com/")
         .env("GH_FIXTURE_DIR", tmp)
         .env(
             "PATH",

@@ -19,9 +19,9 @@ validate_finalization() {
   # EXISTING_OPEN_PR/BLOCKED_CI. Agent prose is NEVER read. Implementation and
   # reporting failures stay separate so evidence survives a failed reporter.
 
-  # Set only by the open-PR path (#1641) from gh-confirmed facts; cleared here
-  # so an ambient environment variable can never spoof publication.
-  local publish_state_override=""
+  # Set only by the open-PR path (#1641, #1714) from gh-confirmed facts;
+  # cleared here so an ambient environment variable can never spoof them.
+  local publish_state_override="" open_pr_confirmed_number="" open_pr_confirmed_url="" open_pr_confirmed_facts=""
   evidence_status=0
   finalization_evidence="$(workflow_context_read finalization_evidence)" || evidence_status=$?
   evidence_invalid="false"
@@ -226,17 +226,14 @@ FIELDS
     classify_success "ALLOW_NO_OP" "explicit no-op task with durable allow_no_op evidence" "No action required." "allow_no_op=true,terminal_no_op=true"
   fi
 
-  # 5. Resumed runs (#1641): a run resuming an earlier attempt's work may carry
-  #    no implementation/verification outputs of its own. It succeeds only when
-  #    it was published, its branch has an OPEN same-repo PR confirmed live by
-  #    gh whose head commit is the local HEAD, and a verification signal passes:
-  #    every statusCheckRollup entry green (all_checks=green; required status is
-  #    not queried, so any failing check counts), or CI not yet reporting
-  #    (pending/none) plus this run's typed verification_completed. A failing
-  #    check is a negative signal that local pre-commit evidence never
-  #    overrides: it fails closed as BLOCKED_CI. Runs after every blocker, so it
-  #    can only replace the default failure below; gh is never called without a
-  #    publish signal, an explicit target directory and a GitHub remote.
+  # 5. Resumed runs (#1641): with no outputs of its own, a published run whose
+  #    branch has an OPEN same-repo PR, confirmed live by gh, whose head is the
+  #    local HEAD or a fast-forward of it (#1714), succeeds when every check is
+  #    green (any failing check counts) or CI has not reported (pending/none)
+  #    and this run's verification_completed is true. A failing check is
+  #    BLOCKED_CI; pre-commit evidence never overrides it. gh is called only
+  #    after every blocker, with a publish signal, an explicit target directory
+  #    and a GitHub remote.
   publish_signal="false"
   [ -z "$pr_url$pr_number" ] || publish_signal="true"
   [ "$(resolve_publish_state_reached)" != "true" ] || publish_signal="true"
@@ -263,10 +260,8 @@ FIELDS
     run_branch="$(workflow_finalization_metadata branch_name || :)"
     [ -n "$run_branch" ] || run_branch="$(git -C "$target_dir" branch --show-current 2>/dev/null || :)"
     # A canonical pr_number is preferred, so a malformed pr_url (trailing
-    # slash, /files suffix, ...) cannot hide it; otherwise the pr_url is used.
-    # A bad pr_number with no pr_url is passed as-is so the helper rejects it
-    # instead of widening to the pr list search. Every reference is re-checked
-    # live against the origin repo, branch and HEAD.
+    # slash, /files suffix) cannot hide it. A bad pr_number with no pr_url is
+    # passed as-is so the helper rejects it rather than widening to pr list.
     open_pr_ref="$pr_number"
     if ! _finalization_pr_number_valid "$pr_number" && [ -n "$pr_url" ]; then open_pr_ref="$pr_url"; fi
     if open_pr_signal="$(finalization_open_pr_signal "$target_dir" "$run_branch" "$open_pr_ref")"; then
@@ -276,7 +271,10 @@ FIELDS
       pr_number="$(printf '%s' "$open_pr_signal" | jq -r '.pr_number')"
       pr_url="$(printf '%s' "$open_pr_signal" | jq -r '.pr_url')"
       publish_state_override="true"
-      open_pr_facts="publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,pr_head_sha_matches=true,pr_number=$pr_number"
+      # A PR head that fast-forwards the local HEAD is the same PR (#1714).
+      open_pr_head_facts="pr_head_sha_matches=true"
+      [ "$(printf '%s' "$open_pr_signal" | jq -r '.head // empty')" != "descendant" ] || open_pr_head_facts="pr_head_sha_matches=false,pr_head_fast_forwards_local_head=true"
+      open_pr_facts="publish_state_reached=true,pr_state=OPEN,pr_head_matches_branch=true,$open_pr_head_facts,pr_number=$pr_number"
       # A red check is a negative signal; pre-commit evidence never overrides it.
       [ "$open_pr_checks" != "failing" ] || finalization_fail_or_handoff "BLOCKED_CI" "open PR #$pr_number for the run branch has a failing CI check" "Fix the failing CI checks on PR #$pr_number before merge." "$open_pr_facts,all_checks=failing,verification_completed=$verification_completed"
       [ "$open_pr_checks" != "green" ] || classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR whose checks are all green" "No action required." "$open_pr_facts,all_checks=green"
@@ -284,7 +282,10 @@ FIELDS
         true:pending|true:none)
           classify_success "EXISTING_OPEN_PR" "the run branch has a published, open, same-repo PR; CI has not reported yet and this run's verification passed" "Watch CI on PR #$pr_number: checks are $open_pr_checks and only this run's pre-commit verification vouches for it; a failing check is BLOCKED_CI." "$open_pr_facts,precommit_passed=true,all_checks=$open_pr_checks" ;;
       esac
-      # No success: keep the run's own PR evidence, not the confirmed PR's.
+      # No success: keep the run's own PR evidence, not the confirmed PR's;
+      # the confirmed PR is kept only for the auto-drive hand-off below.
+      # shellcheck disable=SC2034  # all three are read by finalization_fail_or_handoff_open_pr
+      open_pr_confirmed_number="$pr_number" open_pr_confirmed_url="$pr_url" open_pr_confirmed_facts="$open_pr_facts,all_checks=$open_pr_checks"
       pr_number="$run_pr_number"; pr_url="$run_pr_url"; publish_state_override=""
       echo "WARNING: open PR for the run branch has checks=$open_pr_checks and verification_completed=$verification_completed; no passing verification signal, not classified as EXISTING_OPEN_PR" >&2
     else
@@ -293,6 +294,6 @@ FIELDS
     fi
   fi
 
-  # 6. Default: implementation/verification evidence absent.
-  fail_result "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
+  # 6. Default: evidence absent. Inside auto-drive a PR confirmed above goes to the loops (#1714).
+  finalization_fail_or_handoff_open_pr "FAILED_IMPLEMENTATION" "implementation/verification evidence was absent or incomplete" "Complete implementation and verification before finalization." "implementation_completed=$implementation_completed,verification_completed=$verification_completed"
 }
