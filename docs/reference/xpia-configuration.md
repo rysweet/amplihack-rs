@@ -162,8 +162,8 @@ Set `XPIA_ENABLED=true` if you need these blocked.
 ## Other XPIA_* variables
 
 These variables change behaviour only when XPIA is on. Their defaults are
-unchanged. The hook still reads all of them, and opens `XPIA_WHITELIST_FILE`
-and `XPIA_BLACKLIST_FILE` if set, on every tool call while XPIA is off.
+unchanged. While XPIA is off the hook reads only `XPIA_ENABLED`; it does not
+read these variables or open `XPIA_WHITELIST_FILE` and `XPIA_BLACKLIST_FILE`.
 
 The true/false variables accept the same values as `XPIA_ENABLED`: `1`,
 `true` or `yes` mean on, and any other value that is set means off. This
@@ -204,12 +204,15 @@ scanning. Read the summary's `enabled` field for that.
 
 ## Where the default is decided
 
-`XpiaConfig::from_lookup` in `crates/amplihack-security/src/config.rs` is the
-only place the default is decided:
+`XpiaConfig::enabled_from_lookup` in `crates/amplihack-security/src/config.rs`
+is the only place the default is decided:
 
 ```rust
-enabled: env_bool("XPIA_ENABLED", false),
+lookup("XPIA_ENABLED").is_some_and(|v| parse_bool(&v))
 ```
+
+`XpiaConfig::from_lookup` uses it to set `enabled`, and the hook calls
+`XpiaConfig::enabled_in_env()` before it builds anything else.
 
 - `XpiaConfig::from_env()` reads the process environment through
   `from_lookup`.

@@ -73,12 +73,22 @@ impl XpiaConfig {
         Self::from_lookup(|_| None)
     }
 
+    /// Whether `XPIA_ENABLED` in the process environment turns XPIA on.
+    ///
+    /// Reads only that variable, so a caller can skip building the full
+    /// configuration (and opening the domain-list files) when XPIA is off.
+    pub fn enabled_in_env() -> bool {
+        Self::enabled_from_lookup(|key| env::var(key).ok())
+    }
+
+    /// Whether `XPIA_ENABLED` turns XPIA on. Unset means off (#1734).
+    pub fn enabled_from_lookup(lookup: impl Fn(&str) -> Option<String>) -> bool {
+        lookup("XPIA_ENABLED").is_some_and(|v| parse_bool(&v))
+    }
+
     /// Build a configuration from a variable lookup (`None` means unset).
     pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Self {
-        let env_bool = |key: &str, default: bool| match lookup(key) {
-            Some(v) => matches!(v.to_lowercase().as_str(), "1" | "true" | "yes"),
-            None => default,
-        };
+        let env_bool = |key: &str, default: bool| lookup(key).map_or(default, |v| parse_bool(&v));
         let env_usize =
             |key: &str, default: usize| lookup(key).and_then(|v| v.parse().ok()).unwrap_or(default);
         let security_level = match lookup("XPIA_SECURITY_LEVEL")
@@ -93,7 +103,7 @@ impl XpiaConfig {
         };
 
         let mut config = Self {
-            enabled: env_bool("XPIA_ENABLED", false),
+            enabled: Self::enabled_from_lookup(&lookup),
             security_level,
             verbose_feedback: env_bool("XPIA_VERBOSE_FEEDBACK", false),
             block_on_high_risk: env_bool("XPIA_BLOCK_HIGH_RISK", true),
@@ -163,6 +173,11 @@ impl XpiaConfig {
             .iter()
             .any(|d| lower == *d || lower.ends_with(&format!(".{d}")))
     }
+}
+
+/// `1`, `true` or `yes` in any case is true; any other value is false.
+fn parse_bool(value: &str) -> bool {
+    matches!(value.to_lowercase().as_str(), "1" | "true" | "yes")
 }
 
 fn load_domains_from_file(path: &str, set: &mut HashSet<String>) {
@@ -407,6 +422,32 @@ mod lookup_tests {
             assert!(
                 enabled_for(Some(value)),
                 "XPIA_ENABLED={value:?} must enable XPIA"
+            );
+        }
+    }
+
+    #[test]
+    fn enabled_from_lookup_agrees_with_from_lookup() {
+        for value in [
+            None,
+            Some(""),
+            Some("on"),
+            Some("false"),
+            Some("0"),
+            Some(" true "),
+            Some("true"),
+            Some("YES"),
+            Some("1"),
+        ] {
+            let lookup = |k: &str| {
+                (k == "XPIA_ENABLED")
+                    .then(|| value.map(str::to_string))
+                    .flatten()
+            };
+            assert_eq!(
+                XpiaConfig::enabled_from_lookup(lookup),
+                XpiaConfig::from_lookup(lookup).enabled,
+                "XPIA_ENABLED={value:?}"
             );
         }
     }

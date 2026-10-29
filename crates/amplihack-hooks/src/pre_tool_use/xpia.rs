@@ -6,15 +6,15 @@ use tracing::warn;
 
 /// Run XPIA validation on a tool call. Returns `Some(block_json)` if blocked.
 ///
-/// XPIA is off unless `XPIA_ENABLED` opts in; when off this returns `None`
-/// before the defender is built, so the default path does not compile the
-/// detection regexes on every tool call.
+/// XPIA is off unless `XPIA_ENABLED` opts in. When off this returns `None`
+/// after reading only `XPIA_ENABLED`, so the default path neither reads the
+/// other `XPIA_*` settings and domain-list files nor compiles the detection
+/// regexes on every tool call.
 pub(super) fn check_xpia(tool_name: &str, tool_input: &Value) -> Option<Value> {
-    let config = XpiaConfig::from_env();
-    if !config.enabled {
+    if !XpiaConfig::enabled_in_env() {
         return None;
     }
-    check_xpia_with(&XpiaDefender::new(config), tool_name, tool_input)
+    check_xpia_with(&XpiaDefender::from_env(), tool_name, tool_input)
 }
 
 /// Run XPIA validation with the given defender. Returns `Some(block_json)` if blocked.
