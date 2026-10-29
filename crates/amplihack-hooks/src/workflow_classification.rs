@@ -28,13 +28,13 @@ const DEFAULT_ROUTING_PROMPT: &str = include_str!("routing_prompt.txt");
 ///
 /// Read only by [`strip_coordination_prefix`]: it must be the first non-blank
 /// text of the prompt, compared ASCII case-insensitively.
-pub const COORDINATION_PREFIX: &str = "[coord]";
+pub(crate) const COORDINATION_PREFIX: &str = "[coord]";
 
 /// Context injected for a marked prompt in place of the routing prompt.
 ///
 /// A constant, so no part of the message body is ever reflected into the
 /// hook output.
-pub const COORDINATION_NOTE: &str = "[coordination] This message starts with the [coord] marker \
+pub(crate) const COORDINATION_NOTE: &str = "[coordination] This message starts with the [coord] marker \
      and is coordination traffic between sessions. Answer it or act on it directly. \
      Do not start dev-orchestrator, smart-orchestrator or any recipe for it.";
 
@@ -199,7 +199,7 @@ fn context_output(text: &str) -> Value {
     // CLI reads a *top-level* `additionalContext` and never looks at
     // `hookSpecificOutput` -- the string does not appear anywhere in its
     // binary. So under Copilot this hook's output was discarded in both
-    // directions: it could not route a human, and the provenance gate above
+    // directions: it could not route a human, and the provenance gate in `process`
     // could not suppress anything, because there was nothing to suppress.
     //
     // That is why the router still reached recipe steps after #1328: it was
@@ -362,6 +362,19 @@ fn topic_decision(
     TopicDecision::NewTopic
 }
 
+/// Load this session's state, or the defaults when it is missing or unreadable.
+fn load_state(path: &std::path::Path, session_id: &str) -> ClassificationState {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
+        .unwrap_or_else(|| ClassificationState {
+            last_classified_turn: 0,
+            session_id: session_id.to_string(),
+            observed_turns: 0,
+            last_rule: None,
+        })
+}
+
 /// Read, increment and persist this session's own prompt counter.
 ///
 /// Returns the turn number for the prompt being handled now: 0 for the first,
@@ -372,15 +385,7 @@ fn topic_decision(
 /// hook. The cost is one extra reminder, not a broken prompt.
 fn next_observed_turn(dirs: &ProjectDirs, session_id: &str) -> u64 {
     let path = state_file(dirs, session_id);
-    let mut state = fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
-        .unwrap_or_else(|| ClassificationState {
-            last_classified_turn: 0,
-            session_id: session_id.to_string(),
-            observed_turns: 0,
-            last_rule: None,
-        });
+    let mut state = load_state(&path, session_id);
     let current = state.observed_turns;
     state.observed_turns = current.saturating_add(1);
     if let Some(parent) = path.parent()
@@ -432,15 +437,7 @@ fn record_outcome(
     mark_classified: bool,
 ) {
     let path = state_file(dirs, session_id);
-    let mut state = fs::read_to_string(&path)
-        .ok()
-        .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
-        .unwrap_or_else(|| ClassificationState {
-            last_classified_turn: 0,
-            session_id: session_id.to_string(),
-            observed_turns: 0,
-            last_rule: None,
-        });
+    let mut state = load_state(&path, session_id);
     state.last_rule = Some(rule.to_string());
     if mark_classified {
         state.last_classified_turn = turn_count;
