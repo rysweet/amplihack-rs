@@ -718,3 +718,114 @@ fn shell_tool_names_are_matched_exactly() {
         assert!(!is_shell_tool(name), "{name}");
     }
 }
+
+// ---------------------------------------------------------------------------
+// S1: tmux commands that take another tmux command as an argument. Any later
+// argument of an unscoped invocation that contains a kill command counts.
+// ---------------------------------------------------------------------------
+
+const NESTED_COMMAND_DENIED: &[&str] = &[
+    "tmux if-shell true kill-server",
+    "tmux if -F 1 kill-server",
+    "tmux if-shell -b true \"kill-session -a\"",
+    "tmux if-shell true kill-session -a",
+    "tmux if-shell true \"if-shell true kill-server\"",
+    "tmux run-shell -C kill-server",
+    "tmux run -C 'kill-server'",
+    "tmux confirm-before -y kill-server",
+    "tmux bind k kill-server",
+    "tmux bind-key -n F12 kill-server",
+    "tmux set-hook -g client-attached kill-server",
+    "tmux display-menu -T m quit q kill-server",
+    "tmux command-prompt -I kill-server",
+    "tmux set -g command-alias[100] zz=kill-server",
+    "tmux new -d 'sleep 1' \\; if-shell true kill-server",
+    "tmux -x if-shell true kill-server",
+    // Accepted fail-closed deny: the keys are only typed, not run, but an
+    // unscoped tmux with a kill command in any argument is not cleared.
+    "tmux send-keys 'tmux kill-server'",
+];
+
+const NESTED_COMMAND_ALLOWED: &[&str] = &[
+    "tmux -S /p if-shell true kill-server",
+    "tmux -L qa run-shell -C kill-server",
+    "tmux if-shell true 'display ok'",
+    "tmux new -s kill-switch",
+    "tmux kill-session -t foo",
+    "tmux kill-session -t foo \\; kill-session -t bar",
+    "tmux bind k kill-pane",
+];
+
+#[test]
+fn denies_a_kill_command_nested_in_an_unscoped_tmux_argument() {
+    let missed: Vec<&&str> = NESTED_COMMAND_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_nested_tmux_commands_that_are_scoped_or_harmless() {
+    let wrong: Vec<&&str> = NESTED_COMMAND_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// S2: a substitution whose body mentions tmux and kill-s is cleared only when
+// it holds a scoped tmux invocation, unless its output stays data.
+// ---------------------------------------------------------------------------
+
+const SUBSTITUTION_OUTPUT_DENIED: &[&str] = &[
+    "bash -c \"$(echo tmux kill-server)\"",
+    "bash -c \"$(echo 'tmux kill-server')\"",
+    "sh -c \"`echo tmux kill-server`\"",
+    "bash -c \"$(cat <<< 'tmux kill-server')\"",
+    "$(echo tmux kill-server)",
+    "`echo tmux kill-server`",
+    "x=$(echo tmux kill-server); $x",
+    "eval $(echo tmux kill-server)",
+    "eval \"$(printf 'tmux kill-server')\"",
+    "eval \"`echo tmux kill-server`\"",
+    "env $(echo tmux kill-server)",
+    "nohup $(echo tmux kill-server)",
+    "$(bash -c 'echo \"tmux kill-server\"')",
+    "echo \"$(echo tmux kill-server)\" | bash",
+    // Accepted fail-closed deny: the output is only assigned, but nothing
+    // here shows that it stays data.
+    "x=$(echo \"notes on tmux kill-server\")",
+];
+
+const SUBSTITUTION_OUTPUT_ALLOWED: &[&str] = &[
+    "bash -c \"$(echo hello)\"",
+    "x=$(echo hi); $x",
+    "echo \"tmux kill-server\"",
+    "echo \"$(tmux -S /p kill-server)\"",
+    "x=$(tmux ls)",
+    "bash -c 'echo \"tmux kill-server\"'",
+    // The output of a substitution in a data-only command stays data.
+    "git commit -m \"$(echo 'deny tmux kill-server')\"",
+    "git commit -m \"$(cat <<'EOF'\nfix: deny tmux kill-server\nEOF\n)\"",
+    "gh pr create --title t --body \"$(cat <<'EOF'\nDenies tmux kill-session -a.\nEOF\n)\"",
+];
+
+#[test]
+fn denies_a_substitution_whose_output_is_run() {
+    let missed: Vec<&&str> = SUBSTITUTION_OUTPUT_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_substitutions_that_are_scoped_or_stay_data() {
+    let wrong: Vec<&&str> = SUBSTITUTION_OUTPUT_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}

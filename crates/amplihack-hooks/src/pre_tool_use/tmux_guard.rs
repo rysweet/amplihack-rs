@@ -13,7 +13,12 @@
 //! global options. `-L default`, an empty `-S`/`-L` value, a value that
 //! refers to `$TMUX` or to a variable assigned from it anywhere in the
 //! command (`S=$TMUX; tmux -S "$S" …`), and a socket path ending in
-//! `default` are not scope.
+//! `default` are not scope. tmux commands that take another tmux command as
+//! an argument (`if-shell`, `run-shell -C`, `bind`, `set-hook`, …) are
+//! covered by one rule: in an unscoped invocation, any argument after the
+//! subcommand word that contains a kill command counts as a kill
+//! (`tmux if-shell true kill-server`, `tmux set -g command-alias[0]
+//! zz=kill-server`).
 //!
 //! tmux is found three ways, using the shared tokeniser in [`super::shell`]:
 //!
@@ -21,7 +26,11 @@
 //! 2. as a later word of another command (`xargs tmux …`, `ssh host tmux …`);
 //! 3. inside a word that holds both a `tmux` and a `kill-s` token
 //!    (`bash -c '…'`, `python -c "…"`, `$(…)`, backticks), parsed again up
-//!    to [`MAX_DEPTH`] levels.
+//!    to [`MAX_DEPTH`] levels. A substitution's output may be run as well
+//!    (`bash -c "$(echo tmux kill-server)"`, `x=$(…); $x`), so a body that
+//!    mentions `tmux` and `kill-s` is allowed only when it is a scoped tmux
+//!    invocation, unless the substitution is an argument of a data-only
+//!    command, whose output stays data.
 //!
 //! Redirections never count as tmux arguments (`tmux 2>/dev/null
 //! kill-server` is denied), and `$'…'` escapes are decoded first
@@ -68,7 +77,9 @@
 //! exemption for the whole line, so `tmux ls; git commit -m "… tmux
 //! kill-server …"` is denied. Agents should put such commands in a separate
 //! tool call. Quoting is removed before the check, so a single-quoted
-//! `$(tmux kill-server)` in a commit message is denied as well.
+//! `$(tmux kill-server)` in a commit message is denied as well, and so are
+//! `x=$(echo "notes on tmux kill-server")` and an unscoped
+//! `tmux send-keys 'tmux kill-server'`.
 //!
 //! The guard always runs and reads no environment variables, so nothing in
 //! the environment can turn it off. It never panics on any input: the hook
@@ -248,6 +259,9 @@ struct Scan {
     tmux_seen: bool,
     /// At least one tmux invocation had no valid `-S`/`-L`.
     unscoped: bool,
+    /// A data-only command's words mention both `tmux` and `kill-s`, so its
+    /// output may be the text `tmux kill-server`.
+    data_mention: bool,
 }
 
 /// State shared by every level of one check.
@@ -300,6 +314,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
             && prog_name
                 .as_deref()
                 .is_some_and(|n| DATA_PROGRAMS.contains(&n));
+        out.data_mention |= data_only && has_candidate(&words.join(" "));
 
         // A program word that is a variable or substitution could be tmux.
         if prog.is_some_and(|p| p.starts_with('$') || p.starts_with('`'))
@@ -329,18 +344,17 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // Layer 3: words that hold a script mentioning tmux and kill-s.
         let git = prog_name.as_deref() == Some("git");
         for (k, word) in words.iter().enumerate() {
-            let exempt = data_only
-                && !word.contains("$(")
-                && !word.contains('`')
-                && !(git && git_runs_value(words, k));
+            let data = data_only && !(git && git_runs_value(words, k));
+            let exempt = data && !word.contains("$(") && !word.contains('`');
             if !has_candidate(word) {
                 if !exempt && expands_near_tmux(word) {
                     out.dangerous |= expansion_dangerous(word, depth, ctx);
                 }
                 continue;
             }
-            let verdict = judge_word(word, depth, ctx);
+            let verdict = judge_word(word, data, depth, ctx);
             out.tmux_seen |= verdict.tmux_seen;
+            out.data_mention |= verdict.data_mention;
             if !verdict.substitutions_ok || (!verdict.plain_ok && !exempt) {
                 out.dangerous = true;
             }
@@ -396,20 +410,26 @@ struct WordVerdict {
     /// The rest of the word, read as a script, holds only scoped tmux.
     plain_ok: bool,
     tmux_seen: bool,
+    data_mention: bool,
 }
 
 /// Re-parses a word that holds a `tmux` and a `kill-s` token.
 ///
 /// Substitutions run as shell code wherever they appear, so each body is
-/// judged on what it runs. The rest of the word is allowed only if it holds
-/// at least one tmux invocation and all of them are scoped; a word whose
-/// tokens are split across the pieces is uncertain and fails.
-fn judge_word(word: &str, depth: usize, ctx: &mut Ctx) -> WordVerdict {
+/// judged on what it runs. Unless the word is an argument to a data-only
+/// command (`data`), a body's output may be run too, so the body is also
+/// cleared only when it holds a tmux invocation, all of them are scoped, and
+/// no data-only command in it prints the tokens. The rest of the word is
+/// allowed only if it holds at least one tmux invocation and all of them are
+/// scoped; a word whose tokens are split across the pieces is uncertain and
+/// fails.
+fn judge_word(word: &str, data: bool, depth: usize, ctx: &mut Ctx) -> WordVerdict {
     let (bodies, rest) = substitutions(word);
     let mut verdict = WordVerdict {
         substitutions_ok: true,
         plain_ok: true,
         tmux_seen: false,
+        data_mention: false,
     };
     let mut any_candidate = false;
     for body in &bodies {
@@ -418,13 +438,16 @@ fn judge_word(word: &str, depth: usize, ctx: &mut Ctx) -> WordVerdict {
         }
         any_candidate = true;
         let inner = reparse(body, depth, ctx);
-        verdict.substitutions_ok &= !inner.dangerous;
+        verdict.substitutions_ok &= !inner.dangerous
+            && (data || (inner.tmux_seen && !inner.unscoped && !inner.data_mention));
         verdict.tmux_seen |= inner.tmux_seen;
+        verdict.data_mention |= inner.data_mention;
     }
     if has_candidate(&rest) {
         let inner = reparse(&rest, depth, ctx);
         verdict.plain_ok = inner.tmux_seen && !inner.unscoped && !inner.dangerous;
         verdict.tmux_seen |= inner.tmux_seen;
+        verdict.data_mention |= inner.data_mention;
     } else if !any_candidate {
         verdict.plain_ok = false;
     }
@@ -516,6 +539,7 @@ fn expands_near_tmux(text: &str) -> bool {
 /// The words of `text` split on whitespace and shell punctuation.
 fn tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
+        .filter(|t| !t.is_empty())
 }
 
 /// Whether `text` needs a re-parse: it holds a tmux candidate or a tmux
@@ -646,11 +670,14 @@ struct Invocation {
 fn invocation(args: &[String], tainted: &HashSet<String>) -> Invocation {
     let global = global_scope(args, tainted);
     let rest = args.get(global.rest..).unwrap_or_default();
+    // Any later argument may itself be a tmux command (`if-shell true
+    // kill-server`, `bind k kill-server`, `run -C 'kill-session -a'`).
+    let nested = || kills_in(&word_tokens(rest.get(1..).unwrap_or_default()));
     let dangerous = !global.scoped
         && if global.uncertain {
             loose_dangerous(rest)
         } else {
-            sequence_dangerous(rest)
+            sequence_dangerous(rest) || nested()
         };
     Invocation {
         scoped: global.scoped,
@@ -779,19 +806,23 @@ fn sequence_dangerous(rest: &[String]) -> bool {
 /// After an unknown global option the subcommand could start anywhere, so
 /// any word that would kill, or any expansion, counts.
 fn loose_dangerous(rest: &[String]) -> bool {
-    rest.iter().enumerate().any(|(j, word)| {
-        let word = word.trim_end_matches(';');
-        is_expansion(word)
-            || kills_server(word)
-            || (is_kill_session(word) && {
-                let flags: Vec<&str> = rest
-                    .get(j + 1..)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(String::as_str)
-                    .collect();
-                kills_all_sessions(&flags)
-            })
+    rest.iter().any(|w| is_expansion(w)) || kills_in(&word_tokens(rest))
+}
+
+/// The [`tokens`] of every word in `words`, in order, so that a kill
+/// command quoted as one word (`"kill-session -a"`) or set as a value
+/// (`zz=kill-server`) is seen.
+fn word_tokens(words: &[String]) -> Vec<&str> {
+    words.iter().flat_map(|w| tokens(w)).collect()
+}
+
+/// Whether any token is `kill-server`, or `kill-session` with `-a` in the
+/// tokens after it.
+fn kills_in(tokens: &[&str]) -> bool {
+    tokens.iter().enumerate().any(|(j, token)| {
+        kills_server(token)
+            || (is_kill_session(token)
+                && kills_all_sessions(tokens.get(j + 1..).unwrap_or_default()))
     })
 }
 

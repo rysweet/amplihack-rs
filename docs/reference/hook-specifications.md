@@ -284,6 +284,20 @@ sequence (split on `;` or `\;`):
 
 `kill-session -t`, `kill-window` and `kill-pane` are not guarded.
 
+Several tmux commands take another tmux command as an argument and run it at
+once or later: `if-shell`, `run-shell -C`, `confirm-before`, `bind-key`,
+`set-hook`, `display-menu`, `command-prompt` and `command-alias`, among
+others. So in an unscoped invocation, any argument after the first
+subcommand word that contains a kill command also counts as a kill. Each
+argument is split on whitespace, `;` and `=` first, so
+`tmux if-shell true kill-server`, `tmux if-shell -b true "kill-session -a"`
+and `tmux set -g command-alias[100] zz=kill-server` are denied. Only a word
+that is `kill-server` or one of its prefixes, or `kill-session` with `-a`
+after it, counts: `tmux new -s kill-switch` and
+`tmux kill-session -t foo` are allowed. An unscoped
+`tmux send-keys 'tmux kill-server'`, which only types the text, is denied as
+well.
+
 **What counts as scoped.** The invocation is allowed only when `-S <path>` or
 `-L <name>` appears among the global options, which are the words before the
 first subcommand:
@@ -349,9 +363,16 @@ continuations are joined. Three layers are checked:
    token, such as the argument of `bash -c`, `python -c`, `$( )`, `<( )` or
    backticks, is parsed again with all three layers, up to 4 levels deep. The
    body of each `$( )` or backtick substitution in the word runs as shell code
-   wherever it appears, so it is judged on what it runs. The rest of the word
-   is allowed only if it holds at least one tmux invocation and every one is
-   scoped.
+   wherever it appears, so it is judged on what it runs. Its output may be
+   run too, as in `bash -c "$(echo tmux kill-server)"`,
+   `x=$(echo tmux kill-server); $x` or `eval "$(printf 'tmux kill-server')"`,
+   so a body that mentions both tokens is allowed only when it is a scoped
+   tmux invocation: it must hold at least one tmux invocation, every one must
+   be scoped, and no data-only command in it may print the two tokens. The
+   one exception is a substitution in an argument of a data-only command,
+   whose output stays data, so `git commit -m "$(cat <<'EOF' … EOF)"` can
+   still mention the guard. The rest of the word is allowed only if it holds
+   at least one tmux invocation and every one is scoped.
 
 Layers 2 and 3 exempt data-only commands, so a commit message can mention the
 guard. The command is data-only when its program is one of `git`, `gh`,
@@ -388,10 +409,15 @@ the command. It also decodes `$'…'` escapes as bash does, so
 | `sh -c 'tmux kill-server'` | denied |
 | `bash -c "tmux kill-server"` | denied |
 | `echo "$(tmux kill-server)"` | denied |
+| `bash -c "$(echo tmux kill-server)"` | denied |
+| `x=$(echo tmux kill-server); $x` | denied |
+| `x=$(echo "notes on tmux kill-server")` | denied |
 | `python -c "os.system('tmux kill-server')"` | denied |
 | `echo tmux kill-server \| sh` | denied |
 | `git config alias.k '!tmux kill-server'` | denied |
 | `bash -c 'tmux -S /tmp/tx1/a.sock kill-server'` | allowed |
+| `echo "$(tmux -S /p kill-server)"` | allowed |
+| `git commit -m "$(echo 'deny tmux kill-server')"` | allowed |
 | `echo kill-server` | allowed |
 | `grep kill-server file` | allowed |
 | `git commit -m "add tmux kill-server guard"` | allowed |
@@ -530,7 +556,11 @@ It also errs toward false positives. A shell evaluator anywhere on the line
 above) removes the data-only exemption for the whole line, so
 `tmux ls; git commit -m "add tmux kill-server guard"` is denied. Quoting is
 removed before the check, so a commit message containing a single-quoted
-`$(tmux kill-server)` is denied too. Put such commands in separate tool calls.
+`$(tmux kill-server)` is denied too. A substitution that only prints the
+text, outside an argument of a data-only command, is denied, as in
+`x=$(echo "notes on tmux kill-server")`; so is an unscoped tmux with a kill
+command in any argument, as in `tmux send-keys 'tmux kill-server'`. Put such
+commands in separate tool calls.
 
 **Safe form for agents.** `TMUX_TMPDIR` alone is not enough while `$TMUX` is
 set. Start, use and kill a private server on its own socket, with `TMUX`
