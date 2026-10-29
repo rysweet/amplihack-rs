@@ -50,9 +50,33 @@ export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@e
 export GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@e
 unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE
 unset GH_TOKEN GITHUB_TOKEN GH_HOST AMPLIHACK_SKIP_ISSUE_CLAIM_CHECK
+# step-03c skips the claim check when the run targets an existing branch or
+# PR. An auto-drive or recipe shell exports PR_NUMBER, and inheriting it made
+# every step-03c check below take the skip path instead of the one under test.
+unset EXISTING_BRANCH PR_NUMBER
 
 NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 OLD="$(date -u -d '-40 days' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -v-40d +%Y-%m-%dT%H:%M:%SZ)"
+
+# --- a large open-PR listing (#1707) ----------------------------------------
+# Fetching PR bodies makes `gh pr list` output far larger than before. 150 PRs
+# with 2 KiB bodies is about 330 KB, well past the 128 KiB a single argv string
+# may hold (MAX_ARG_STRLEN). If the listing is handed to jq as an argument the
+# exec fails with E2BIG and the check silently fails open; the claiming PR
+# below is then never seen. Only its body claims the issue.
+BIG_OPEN="$WORK/big_open.json"
+# The filler is words separated by spaces, as real bodies are. An all-`x`
+# filler hid a quadratic whitespace substitution that took minutes on real
+# listings; the run below is time-bounded so that cannot return unnoticed.
+FILLER="$(printf 'a %.0s' $(seq 1 1024))"
+{
+  printf '['
+  for i in $(seq 2000 2148); do
+    printf '{"number":%s,"url":"https://github.com/o/r/pull/%s","title":"Unrelated change %s","state":"OPEN","mergedAt":null,"headRefName":"feat/other-%s","closingIssuesReferences":[],"body":"%s"},' \
+      "$i" "$i" "$i" "$i" "$FILLER"
+  done
+  printf '{"number":1750,"url":"https://github.com/o/r/pull/1750","title":"Unrelated change 1750","state":"OPEN","mergedAt":null,"headRefName":"feat/other-1750","closingIssuesReferences":[],"body":"%s BODYTEXT-1750\\n\\nFixes #1084"}]\n' "$FILLER"
+} > "$BIG_OPEN"
 
 # --- a fake `gh` -----------------------------------------------------------
 # FAKE_GH selects the scenario; the `--state` argument selects which half of it
@@ -64,6 +88,9 @@ printf '%s\n' "\$*" >> "\${GH_CALL_LOG:-/dev/null}"
 state=""
 prev=""
 for a in "\$@"; do [ "\$prev" = "--state" ] && state="\$a"; prev="\$a"; done
+# The default-branch lookup. FAKE_DEFAULT_BRANCH may be set empty, or to a
+# reply that is not a branch name, to exercise the fallback.
+if [ "\${1:-}" = "repo" ]; then printf '%s\n' "\${FAKE_DEFAULT_BRANCH-main}"; exit 0; fi
 # A token-shaped string is present in every error path so redaction is exercised.
 case "\${FAKE_GH:-none}" in
   none)        printf '[]\n' ;;
@@ -74,6 +101,52 @@ case "\${FAKE_GH:-none}" in
   mention)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":903,"url":"https://github.com/o/r/pull/903","title":"Update something similar to #1084 elsewhere","state":"OPEN","mergedAt":null,"headRefName":"fix/timeouts","closingIssuesReferences":[{"number":77}]}]' || printf '[]\n' ;;
   merged_new)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":1132,"url":"https://github.com/o/r/pull/1132","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$NOW","headRefName":"fix/1084-winner","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
   merged_old)  [ "\$state" = "merged" ] && printf '%s\n' '[{"number":40,"url":"https://github.com/o/r/pull/40","title":"Update crates (#1084)","state":"MERGED","mergedAt":"$OLD","headRefName":"fix/1084-ancient","closingIssuesReferences":[{"number":1084}]}]' || printf '[]\n' ;;
+  # #1707: a bare number in another tool's branch is not a claim; a body
+  # closing keyword is. Every PR body carries a BODYTEXT marker so the tests
+  # can prove body text never reaches the output.
+  issue1707)       [ "\$state" = "open" ] && printf '%s\n' '[{"number":1701,"url":"https://github.com/o/r/pull/1701","title":"P5 agent preview controls","state":"OPEN","mergedAt":null,"headRefName":"codex/p5-1084-agent-preview-controls-2232","closingIssuesReferences":[{"number":119}],"body":"BODYTEXT-1701 Refs #119"}]' || printf '[]\n' ;;
+  bare_num)        [ "\$state" = "open" ] && printf '%s\n' '[{"number":1702,"url":"https://github.com/o/r/pull/1702","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"fix/1084-something","closingIssuesReferences":[],"body":"BODYTEXT-1702"}]' || printf '[]\n' ;;
+  digit_edge)      [ "\$state" = "open" ] && printf '%s\n' '[{"number":1703,"url":"https://github.com/o/r/pull/1703","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-10840-x","closingIssuesReferences":[],"body":"BODYTEXT-1703"}]' || printf '[]\n' ;;
+  branch_x)        [ "\$state" = "open" ] && printf '%s\n' '[{"number":1704,"url":"https://github.com/o/r/pull/1704","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/x-1084","closingIssuesReferences":[],"body":"BODYTEXT-1704"}]' || printf '[]\n' ;;
+  fix_issue)       [ "\$state" = "open" ] && printf '%s\n' '[{"number":1705,"url":"https://github.com/o/r/pull/1705","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"fix/issue-1084-x","closingIssuesReferences":[],"body":"BODYTEXT-1705"}]' || printf '[]\n' ;;
+  body_fixes)      [ "\$state" = "open" ] && printf '%s\n' '[{"number":1706,"url":"https://github.com/o/r/pull/1706","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-a","closingIssuesReferences":[],"body":"BODYTEXT-1706\\n\\nFixes #1084"}]' || printf '[]\n' ;;
+  body_resolves)   [ "\$state" = "open" ] && printf '%s\n' '[{"number":1707,"url":"https://github.com/o/r/pull/1707","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-b","closingIssuesReferences":[],"body":"BODYTEXT-1707 Resolves: #1084"}]' || printf '[]\n' ;;
+  body_closes_lc)  [ "\$state" = "open" ] && printf '%s\n' '[{"number":1708,"url":"https://github.com/o/r/pull/1708","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-c","closingIssuesReferences":[],"body":"closes #1084 BODYTEXT-1708"}]' || printf '[]\n' ;;
+  body_refs)       [ "\$state" = "open" ] && printf '%s\n' '[{"number":1709,"url":"https://github.com/o/r/pull/1709","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-d","closingIssuesReferences":[],"body":"BODYTEXT-1709 Refs #1084"}]' || printf '[]\n' ;;
+  body_digit)      [ "\$state" = "open" ] && printf '%s\n' '[{"number":1710,"url":"https://github.com/o/r/pull/1710","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-e","closingIssuesReferences":[],"body":"BODYTEXT-1710 Fixes #10840"}]' || printf '[]\n' ;;
+  body_multi)      [ "\$state" = "open" ] && printf '%s\n' '[{"number":1711,"url":"https://github.com/o/r/pull/1711","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-f","closingIssuesReferences":[{"number":119}],"body":"BODYTEXT-1711 Closes #119, #1084"}]' || printf '[]\n' ;;
+  body_prefix)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1712,"url":"https://github.com/o/r/pull/1712","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-g","closingIssuesReferences":[],"body":"BODYTEXT-1712 prefixes #1084"}]' || printf '[]\n' ;;
+  branch_case)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1713,"url":"https://github.com/o/r/pull/1713","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"Feat/ISSUE-1084-x","closingIssuesReferences":[],"body":"BODYTEXT-1713"}]' || printf '[]\n' ;;
+  branch_deep)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1714,"url":"https://github.com/o/r/pull/1714","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"user/feat/issue-1084-x","closingIssuesReferences":[],"body":"BODYTEXT-1714"}]' || printf '[]\n' ;;
+  branch_slash)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1715,"url":"https://github.com/o/r/pull/1715","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084/sub","closingIssuesReferences":[],"body":"BODYTEXT-1715"}]' || printf '[]\n' ;;
+  branch_bare)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1716,"url":"https://github.com/o/r/pull/1716","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/issue-1084","closingIssuesReferences":[],"body":"BODYTEXT-1716"}]' || printf '[]\n' ;;
+  # Round 1 of the #1718 review: the body is a fallback, read only when GitHub
+  # could not have linked the keyword, and never inside code.
+  body_default_base) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1720,"url":"https://github.com/o/r/pull/1720","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-i","baseRefName":"main","closingIssuesReferences":[],"body":"BODYTEXT-1720 Fixes #1084"}]' || printf '[]\n' ;;
+  body_release_base) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1721,"url":"https://github.com/o/r/pull/1721","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-j","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1721 Fixes #1084"}]' || printf '[]\n' ;;
+  body_table_code)   [ "\$state" = "open" ] && printf '%s\n' '[{"number":1722,"url":"https://github.com/o/r/pull/1722","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-k","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1722\\n\\n| case | body |\\n|---|---|\\n| through | \`Closes #1084\` |"}]' || printf '[]\n' ;;
+  body_fenced)       [ "\$state" = "open" ] && printf '%s\n' '[{"number":1723,"url":"https://github.com/o/r/pull/1723","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-l","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1723\\n\\n\`\`\`bash\\ngh pr create --body \\"Fixes #1084\\"\\n\`\`\`\\n"}]' || printf '[]\n' ;;
+  body_unclosed)     [ "\$state" = "open" ] && printf '%s\n' '[{"number":1724,"url":"https://github.com/o/r/pull/1724","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-m","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1724\\n\\n~~~\\nFixes #1084\\n"}]' || printf '[]\n' ;;
+  body_prose_linked) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1725,"url":"https://github.com/o/r/pull/1725","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-n","baseRefName":"release/1.x","closingIssuesReferences":[{"number":1684}],"body":"BODYTEXT-1725 Closes #1684. Builds on the runner fix #1084 from last week."}]' || printf '[]\n' ;;
+  body_code_and_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1726,"url":"https://github.com/o/r/pull/1726","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-o","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1726 \`Refs #1\` and then Fixes #1084"}]' || printf '[]\n' ;;
+  body_stray_backtick) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1727,"url":"https://github.com/o/r/pull/1727","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-p","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1727 Run the \`make target first.\\n\\nFixes #1084\\n\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
+  body_stray_crlf) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1728,"url":"https://github.com/o/r/pull/1728","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-q","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1728 Run the \`make target first.\\r\\n\\r\\nFixes #1084\\r\\n\\r\\nThen \`cargo test\`."}]' || printf '[]\n' ;;
+  # Round 6: a fence opens only at the start of a line, and a code span closes
+  # only on a backtick run of its own length (CommonMark 0.31, 4.5 and 6.1).
+  body_midline_fence) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1729,"url":"https://github.com/o/r/pull/1729","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1729","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1729 Use \`\`\` for code.\\n\\nFixes #1084"}]' || printf '[]\n' ;;
+  body_midline_tilde) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1730,"url":"https://github.com/o/r/pull/1730","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1730","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1730 see ~~~ tilde\\n\\nResolves #1084"}]' || printf '[]\n' ;;
+  body_fence_then_real) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1731,"url":"https://github.com/o/r/pull/1731","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1731","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1731\\n\\n\`\`\`\\nx\\n\`\`\`\\n\\nFixes #1084"}]' || printf '[]\n' ;;
+  body_mixed_runs) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1732,"url":"https://github.com/o/r/pull/1732","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1732","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1732 \`\`a\`b\`\` and then Fixes #1084"}]' || printf '[]\n' ;;
+  body_double_tick) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1733,"url":"https://github.com/o/r/pull/1733","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1733","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1733 \`\`Fixes #1084\`\`"}]' || printf '[]\n' ;;
+  body_triple_span) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1734,"url":"https://github.com/o/r/pull/1734","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1734","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1734 \`\`\`Fixes #1084\`\`\` inline"}]' || printf '[]\n' ;;
+  body_indented_fence) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1735,"url":"https://github.com/o/r/pull/1735","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1735","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1735\\n\\n   \`\`\`\\nFixes #1084\\n   \`\`\`\\n"}]' || printf '[]\n' ;;
+  # Same-repository long forms, which GitHub links; another repository's are not ours.
+  body_repo_qualified) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1736,"url":"https://github.com/o/r/pull/1736","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1736","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1736 Closes o/r#1084"}]' || printf '[]\n' ;;
+  body_repo_url) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1737,"url":"https://github.com/o/r/pull/1737","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1737","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1737 Fixes https://github.com/o/r/issues/1084"}]' || printf '[]\n' ;;
+  body_repo_case) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1738,"url":"https://github.com/o/r/pull/1738","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1738","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1738 fixes O/R#1084"}]' || printf '[]\n' ;;
+  body_other_repo) [ "\$state" = "open" ] && printf '%s\n' '[{"number":1739,"url":"https://github.com/o/r/pull/1739","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-1739","baseRefName":"release/1.x","closingIssuesReferences":[],"body":"BODYTEXT-1739 Closes x/y#1084 and Fixes https://github.com/x/y/issues/1084"}]' || printf '[]\n' ;;
+  body_newline)    [ "\$state" = "open" ] && printf '%s\n' '[{"number":1717,"url":"https://github.com/o/r/pull/1717","title":"Tidy something","state":"OPEN","mergedAt":null,"headRefName":"feat/unrelated-h","closingIssuesReferences":[],"body":"BODYTEXT-1717 Fixes\\n#1084"}]' || printf '[]\n' ;;
+  big_bodies)      [ "\$state" = "open" ] && cat '$BIG_OPEN' || printf '[]\n' ;;
   ratelimit)   echo 'gh: API rate limit exceeded for token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001. (HTTP 403)' >&2; exit 1 ;;
   denied)      echo 'gh: Resource not accessible by integration (HTTP 403) token ghp_FAKEFAKEFAKEFAKEFAKEFAKE0001' >&2; exit 1 ;;
   network)     echo 'error connecting to api.github.com: dial tcp: lookup api.github.com: no such host' >&2; exit 1 ;;
@@ -89,6 +162,17 @@ mkrepo() { git init -q -b main "$1"; [ "$2" = "-" ] || git -C "$1" remote add or
 mkrepo "$WORK/gh"    "https://github.com/o/r.git"
 mkrepo "$WORK/azdo"  "https://dev.azure.com/org/proj/_git/r"
 mkrepo "$WORK/noremote" "-"
+# A clone-shaped repository: real clones have refs/remotes/origin/HEAD, which
+# `git init` + `git remote add` never create. The script reads it before it
+# asks the API, so these two repositories exercise that preferred path.
+# originhead_main points at origin/main; originhead_trunk at origin/trunk.
+for b in main trunk; do
+  mkrepo "$WORK/originhead_$b" "https://github.com/o/r.git"
+  git -C "$WORK/originhead_$b" -c user.name=t -c user.email=t@example.invalid \
+    commit -q --allow-empty -m init
+  git -C "$WORK/originhead_$b" update-ref "refs/remotes/origin/$b" HEAD
+  git -C "$WORK/originhead_$b" symbolic-ref refs/remotes/origin/HEAD "refs/remotes/origin/$b"
+done
 mkdir -p "$WORK/notagit"
 
 # run <repo> [env...] -- [extra helper args] ; sets OUT / RC
@@ -122,6 +206,66 @@ run "$WORK/gh" FAKE_GH=title_paren; claimed "an open PR whose title carries (#N)
 run "$WORK/gh" FAKE_GH=branch_name; claimed "an open PR on an issue-N branch" 901
 run "$WORK/gh" FAKE_GH=merged_new;  claimed "a PR merged inside the recent window" 1132
 
+# #1707: the branch signal is the workflow's own `<prefix>/issue-<N>` shape, and
+# a closing keyword in the body is a claim even when GitHub left
+# closingIssuesReferences empty.
+run "$WORK/gh" FAKE_GH=fix_issue;      claimed "an open PR on a fix/issue-N branch" 1705
+run "$WORK/gh" FAKE_GH=branch_slash;   claimed "an open PR on an issue-N/... branch" 1715
+run "$WORK/gh" FAKE_GH=branch_bare;    claimed "an open PR on a bare issue-N branch" 1716
+run "$WORK/gh" FAKE_GH=body_fixes;     claimed "an open PR whose body says Fixes #N" 1706
+run "$WORK/gh" FAKE_GH=body_resolves;  claimed "an open PR whose body says Resolves: #N" 1707
+run "$WORK/gh" FAKE_GH=body_closes_lc; claimed "an open PR whose body says closes #N (lower case)" 1708
+run "$WORK/gh" FAKE_GH=body_newline;   claimed "an open PR whose body breaks a line between Fixes and #N" 1717
+run "$WORK/gh" FAKE_GH=body_release_base;  claimed "a PR to a non-default base whose body says Fixes #N" 1721
+run "$WORK/gh" FAKE_GH=body_code_and_real; claimed "a body with an inline code span before a real Fixes #N" 1726
+run "$WORK/gh" FAKE_GH=body_stray_backtick; claimed "a body with an unpaired backtick a paragraph before a real Fixes #N" 1727
+run "$WORK/gh" FAKE_GH=body_stray_crlf;     claimed "a CRLF body with an unpaired backtick a paragraph before a real Fixes #N" 1728
+run "$WORK/gh" FAKE_GH=body_midline_fence;   claimed "a body with a mid-line triple backtick before a real Fixes #N" 1729
+run "$WORK/gh" FAKE_GH=body_midline_tilde;   claimed "a body with a mid-line ~~~ before a real Resolves #N" 1730
+run "$WORK/gh" FAKE_GH=body_fence_then_real; claimed "a body with a closed fence before a real Fixes #N" 1731
+run "$WORK/gh" FAKE_GH=body_mixed_runs;      claimed "a body with a double-backtick span holding a single backtick before a real Fixes #N" 1732
+run "$WORK/gh" FAKE_GH=body_repo_qualified;  claimed "a body that says Closes owner/repo#N for this repository" 1736
+run "$WORK/gh" FAKE_GH=body_repo_url;        claimed "a body that says Fixes <issue URL> for this repository" 1737
+run "$WORK/gh" FAKE_GH=body_repo_case;       claimed "a body that names this repository in another case" 1738
+run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=
+claimed "a body keyword when the default branch cannot be established" 1720
+run "$WORK/gh" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH='[]'
+claimed "a body keyword when the default-branch reply is not a branch name" 1720
+
+# Each claim line names the signal that matched, so a refusal can be traced
+# without showing the body.
+via() { # via <FAKE_GH> <pr> <expected via=...>
+  run "$WORK/gh" FAKE_GH="$1"
+  grep -Eq "#$2 .* via=$3 " <<<"$OUT" \
+    && pass "the claim line for #$2 says via=$3" \
+    || fail "the claim line for #$2 does not say via=$3: ${OUT:0:400}"
+}
+via closing_ref       1128 closing-ref
+via body_release_base 1721 body-keyword
+via title_paren       900  title
+via branch_name       901  branch
+via own_branch        902  closing-ref,title
+
+run "$WORK/gh" FAKE_GH=body_fixes
+grep -q 'BODYTEXT' <<<"$OUT" \
+  && fail "PR body text reached the refusal output: ${OUT:0:400}" \
+  || pass "PR body text never appears in the refusal output"
+
+# Fetching bodies must not push the listing through argv: a large repository
+# would otherwise fail open with E2BIG and a body-only claim would be missed.
+BIG_START=$SECONDS
+run "$WORK/gh" FAKE_GH=big_bodies; claimed "a body-only claim among 150 PRs with 2 KiB bodies" 1750
+BIG_SECS=$((SECONDS - BIG_START))
+[ "$BIG_SECS" -le 10 ] \
+  && pass "a large PR listing is checked in ${BIG_SECS}s (limit 10s)" \
+  || fail "a large PR listing took ${BIG_SECS}s to check (limit 10s)"
+grep -q 'unknown' <<<"$OUT" \
+  && fail "a large PR listing made the check unreadable: ${OUT:0:400}" \
+  || pass "a large PR listing is read in full, not reported as unknown"
+grep -q 'BODYTEXT' <<<"$OUT" \
+  && fail "PR body text from a large listing reached the output" \
+  || pass "no body text from a large listing reaches the output"
+
 # This is the case the branch-scoped lookup could never see: no PR exists for
 # OUR head, and a duplicate would have been opened.
 run "$WORK/gh" FAKE_GH=closing_ref -- --head "fix/1084-a-brand-new-branch"
@@ -134,6 +278,61 @@ run "$WORK/gh" FAKE_GH=mention
 [ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok' <<<"$OUT" \
   && pass "a PR that merely mentions #N in its title does not stop a run" \
   || fail "a passing mention was treated as a claim: rc=$RC out=${OUT:0:300}"
+
+# #1707: none of these claims issue 1084.
+unclaimed() { # unclaimed <FAKE_GH> <label>
+  run "$WORK/gh" FAKE_GH="$1"
+  if [ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
+     && ! grep -q 'BODYTEXT' <<<"$OUT"; then
+    pass "$2 is not a claim"
+  else
+    fail "$2 was treated as a claim: rc=$RC out=${OUT:0:400}"
+  fi
+}
+unclaimed issue1707   "another tool's branch codex/p5-1084-... (the #1707 report)"
+unclaimed bare_num    "a fix/1084-... branch with no other signal"
+unclaimed digit_edge  "a feat/issue-10840-... branch"
+unclaimed branch_x    "a feat/x-1084 branch"
+unclaimed branch_case "a Feat/ISSUE-1084-... branch (the match is case-sensitive)"
+unclaimed branch_deep "a user/feat/issue-1084-... branch (one prefix segment only)"
+unclaimed body_refs   "a body that says Refs #N"
+unclaimed body_digit  "a body that says Fixes #N0"
+unclaimed body_multi  "a body that says Closes #119, #N"
+unclaimed body_prefix "a body that says prefixes #N"
+unclaimed body_default_base "a body keyword on a PR to the default branch that GitHub did not link"
+unclaimed body_table_code   "a body keyword inside inline code in a table cell"
+unclaimed body_fenced       "a body keyword inside a fenced code block"
+unclaimed body_unclosed     "a body keyword inside an unclosed fence"
+unclaimed body_prose_linked "a prose fix #N next to non-empty closingIssuesReferences"
+unclaimed body_double_tick    "a body keyword inside a double-backtick span"
+unclaimed body_triple_span    "a body keyword inside a mid-line triple-backtick span"
+unclaimed body_indented_fence "a body keyword inside a fence indented three spaces"
+unclaimed body_other_repo     "a closing keyword naming another repository's issue N"
+
+# The default branch comes from the local origin/HEAD when there is one, with
+# the origin/ prefix stripped, and the API is then not asked. The fake API is
+# made to disagree with the local ref in each case, so the result shows which
+# source was used. A PR to `main` with a body keyword is unclaimed only if the
+# local `origin/main` was read as `main`; were the prefix kept, `origin/main`
+# would not equal `main`, the body would be read and the PR would be a claim.
+run "$WORK/originhead_main" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=trunk
+if [ "$RC" -eq 0 ] && grep -q '^issue_claim_check: ok issue=1084' <<<"$OUT" \
+   && ! grep -q 'BODYTEXT' <<<"$OUT"; then
+  pass "a local origin/HEAD -> origin/main makes main the default branch, prefix stripped"
+else
+  fail "a local origin/HEAD -> origin/main was not read as main: rc=$RC out=${OUT:0:400}"
+fi
+grep -q '^repo view' "$WORK/calls.log" \
+  && fail "the API was asked for the default branch although origin/HEAD exists: $(cat "$WORK/calls.log")" \
+  || pass "with a local origin/HEAD the API is not asked for the default branch"
+# The local ref is preferred even when it disagrees with the API (a stale
+# origin/HEAD after a default-branch rename). That errs towards reading the
+# body, i.e. towards refusing a run rather than allowing a duplicate.
+run "$WORK/originhead_trunk" FAKE_GH=body_default_base FAKE_DEFAULT_BRANCH=main
+claimed "a body keyword on a PR to main when the local origin/HEAD says trunk" 1720
+grep -q '^repo view' "$WORK/calls.log" \
+  && fail "the API was asked although origin/HEAD -> origin/trunk exists" \
+  || pass "a stale local origin/HEAD is used without asking the API"
 run "$WORK/gh" FAKE_GH=own_branch -- --head "fix/1084-mine"
 [ "$RC" -eq 0 ] \
   && pass "the run's own branch is excluded via --head" \
@@ -146,6 +345,16 @@ run "$WORK/gh" FAKE_GH=none
 [ "$RC" -eq 0 ] && grep -q 'issue_claim_check: ok' <<<"$OUT" \
   && pass "an unclaimed issue passes" \
   || fail "an unclaimed issue was refused: rc=$RC out=${OUT:0:300}"
+
+# --help prints the whole header and stops at the exit-code table, however
+# long the header grows (#1707 lengthened it past a fixed line number).
+# The output is captured whole and its last line taken by substring, not
+# piped into `tail`: the #1434 guard forbids early-exit pipeline stages.
+HELP_OUT="$(bash "$CLAIM" --help 2>&1)"
+HELP_LAST="${HELP_OUT##*$'\n'}"
+[ "$HELP_LAST" = "#   1  an existing pull request already claims this issue" ] \
+  && pass "--help ends at the last exit-code line" \
+  || fail "--help stops in the wrong place; last line: ${HELP_LAST:0:200}"
 
 echo "== 3. a check that cannot be made warns and continues =="
 continues() { # continues <label> <expected-substring>
@@ -299,6 +508,21 @@ PY
 grep -q 'workflow_issue_reference.sh' "$STEP15" && ! grep -q 'ISSUE_REF="Closes #' "$STEP15" \
   && pass "the step-15 commit message's closing keyword comes from the diff too" \
   || fail "step-15 still hardcodes 'Closes #N' in the commit message"
+
+# The claim-check helper is called from workflow-prep.yaml and the publish
+# helper, not from .github/workflows, so the #1434 guard's derived script list
+# never scans it. Apply the same shape rule to it here. The pattern is built
+# from fragments so this file never contains a literal the guard would flag.
+STOPS_EARLY="$(printf '%s|%s' head tail)"
+EARLY_EXIT_RE="[|][[:space:]]*(${STOPS_EARLY})([[:space:]]|\$)|grep[[:space:]]+-[[:alnum:]]*m[[:space:]]"
+EARLY_HITS=$(awk -v re="$EARLY_EXIT_RE" '
+  /^[[:space:]]*#/   { next }
+  /# early-exit-ok:/ { next }
+  $0 ~ re            { printf "%d:%s\n", FNR, $0 }
+' "$CLAIM")
+[ -z "$EARLY_HITS" ] \
+  && pass "the claim-check helper has no early-exit pipeline stage (#1434)" \
+  || fail "the claim-check helper has an early-exit pipeline stage (#1434): $EARLY_HITS"
 
 echo
 if [ "$fails" -eq 0 ]; then

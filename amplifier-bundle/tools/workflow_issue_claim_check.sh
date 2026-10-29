@@ -26,17 +26,70 @@
 #
 # WHAT COUNTS AS A CLAIM
 #
-# Three signals, each of which is a PR *claiming* the issue rather than merely
+# Four signals, each of which is a PR *claiming* the issue rather than merely
 # mentioning it. "Referencing #N" would be too loose — a PR body that says
 # "similar to #1361" would refuse a run for no reason — so a passing mention is
 # deliberately NOT a claim:
 #
 #   1. closingIssuesReferences contains N. This is GitHub's own resolved link,
 #      populated from `Closes #N` / `Fixes #N` in the body. Authoritative.
-#   2. The title contains "(#N)". This is the exact shape the workflow gives its
+#   2. The body contains a closing keyword followed by #N: close, closes,
+#      closed, fix, fixes, fixed, resolve, resolves or resolved, in any case,
+#      with an optional colon and any whitespace before the `#`. The keyword
+#      must start the body or follow a non-word character, so `prefixes #N`
+#      does not match. `Fixes #N`, `closes #N` and `Resolves: #N` are claims;
+#      `Refs #N`, `see #N` and `Fixes #N0` are not. Each issue needs its own
+#      keyword, as on GitHub, so `Closes #119, #N` does not claim N.
+#
+#      The reference may also name this repository in full, as GitHub accepts:
+#      `Closes owner/repo#N` and `Fixes https://<host>/owner/repo/issues/N`,
+#      where owner/repo is the slug being checked (case-insensitive). A
+#      reference to another repository's issue N is not a claim on this one,
+#      and if the slug is not plain `owner/repo` only the `#N` form is matched.
+#
+#      This signal is a FALLBACK for signal 1, not a parallel claim. It is
+#      consulted only when GitHub could not have resolved the keywords itself:
+#      closingIssuesReferences is empty AND the PR's base is not the default
+#      branch (GitHub links keywords only on PRs that target the default
+#      branch). When the default branch cannot be established, the first
+#      condition alone applies. Fenced code blocks and inline code spans are
+#      removed before matching, as GitHub ignores keywords inside them. Both
+#      follow CommonMark closely enough for this purpose: a fence opens only
+#      at the start of a line (up to three spaces of indent), and a code span
+#      is a backtick run closed by a run of exactly the same length. A
+#      mid-line ``` or ~~~, or an unmatched run, is ordinary text and is
+#      matched as such. See strip_code in section 3.
+#
+#      Why so narrow: workflow-written PR bodies routinely quote keyword
+#      examples, earlier PRs and test scenarios. Matched against the raw body
+#      of every PR, the regex claimed issues GitHub had not linked on 4 of 100
+#      recent rysweet/amplihack-rs PRs: #1718 (`Closes #1437` in a table cell),
+#      #1688 ("runner fix #31" in prose), #1601 ("runner fixes #161" as a test
+#      label) and #1428 (`(fix #3132)` in a quoted heredoc). In each, GitHub
+#      had already resolved the real closing references. Where it has, its
+#      answer stands and the body is not read.
+#   3. The title contains "(#N)". This is the exact shape the workflow gives its
 #      own PRs (`Update <scope> (#N)`, `fix(#N): ...`).
-#   3. The head branch encodes the issue number in the workflow's own branch
-#      conventions: `fix/1084-...`, `feat/issue-1277-...`, `docs/issue-1277-...`.
+#   4. The head branch is `<prefix>/issue-<N>`, optionally followed by `-` or
+#      `/` and more text: `feat/issue-1277-...`, `docs/issue-1277-...`,
+#      `fix/issue-1277/...`. That is the only shape the workflow derives
+#      (`${BRANCH_PREFIX:-feat}/issue-<N>-<slug>`). The prefix is exactly one
+#      segment, and the match is case-sensitive.
+#
+# A bare number in a branch name is NOT a claim (#1707). The earlier rule
+# accepted N anywhere between separators, so another tool's branch
+# `codex/p5-1084-agent-preview-controls-2232`, whose `1084` is that tool's own
+# task number, was reported as claiming issue #1084 and refused the run. Such a
+# PR still claims the issue if it says so through signals 1 to 3. A branch the
+# workflow did not derive, such as `fix/1084-...`, is likewise only a claim when
+# its PR says so.
+#
+# The body is fetched for matching only. It is dropped from every PR before the
+# result is reported, so body text never appears on stdout, in the ERROR block
+# or in logs. What IS reported is which signals made each PR a claim:
+# `via=closing-ref`, `via=body-keyword`, `via=title` or `via=branch`, comma
+# separated when several match. Without it a body-only claim would show an
+# unrelated-looking PR on an unrelated branch with no reason given.
 #
 # WHICH PULL REQUESTS ARE SEARCHED
 #
@@ -150,6 +203,7 @@ REPO_ARG="${REPO_PATH:-.}"
 OWN_HEAD=""
 REPO_SLUG=""
 ALLOW_EXISTING=""
+SLUG_FROM_ORIGIN=""
 
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -158,7 +212,7 @@ while [ "$#" -gt 0 ]; do
     --head) OWN_HEAD="${2:-}"; shift 2 ;;
     --repo) REPO_SLUG="${2:-}"; shift 2 ;;
     --allow-existing-pr) ALLOW_EXISTING="true"; shift ;;
-    -h|--help) sed -n '1,141p' "$0" >&2; exit 0 ;;
+    -h|--help) sed -n '1,/^#   1  an existing pull request already claims this issue$/p' "$0" >&2; exit 0 ;;
     *) shift ;;
   esac
 done
@@ -265,6 +319,7 @@ if [ -z "$REPO_SLUG" ]; then
     *) [ "$HOST" = "${GH_HOST:-}" ] || skip "non-github-remote:${HOST}" ;;
   esac
   REPO_SLUG="${OWNER}/${NAME}"
+  SLUG_FROM_ORIGIN="true"
 fi
 
 command -v gh >/dev/null 2>&1 || unknown "gh-not-installed"
@@ -274,7 +329,7 @@ command -v jq >/dev/null 2>&1 || unknown "jq-not-installed"
 # 2. Ask GitHub which pull requests exist. Two reads, no search index.
 # ---------------------------------------------------------------------------
 
-FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences"
+FIELDS="number,url,title,state,mergedAt,headRefName,isCrossRepository,closingIssuesReferences,baseRefName,body"
 ERRFILE="$(mktemp "${TMPDIR:-/tmp}/issue-claim-check.XXXXXX")" || unknown "cannot-create-tempfile"
 # shellcheck disable=SC2329  # invoked by the EXIT trap below.
 cleanup() { rm -f "$ERRFILE"; }
@@ -320,8 +375,35 @@ RC=0
 MERGED_JSON="$(gh_list merged "$MERGED_LIMIT")" || RC=$?
 [ "$RC" -eq 0 ] || classify_failure "$RC"
 
-[ -n "${OPEN_JSON//[[:space:]]/}" ] || OPEN_JSON="[]"
-[ -n "${MERGED_JSON//[[:space:]]/}" ] || MERGED_JSON="[]"
+# An empty answer reads as no pull requests. The test is a regex, not
+# `${VAR//[[:space:]]/}`: with PR bodies included the listings run to hundreds
+# of kilobytes, and bash's pattern substitution is quadratic in the number of
+# whitespace characters, so that form took minutes on a real repository (#1707).
+[[ "$OPEN_JSON" =~ [^[:space:]] ]] || OPEN_JSON="[]"
+[[ "$MERGED_JSON" =~ [^[:space:]] ]] || MERGED_JSON="[]"
+
+# The default branch decides whether the body signal applies (see header).
+# A local read of origin/HEAD first, when the slug came from origin; otherwise
+# one API call. Any failure leaves it empty, which only narrows the body signal
+# to "closingIssuesReferences is empty". A reply that is not a plausible branch
+# name is discarded rather than trusted.
+DEFAULT_BRANCH=""
+if [ "$SLUG_FROM_ORIGIN" = "true" ]; then
+  DEFAULT_BRANCH="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null)" || DEFAULT_BRANCH=""
+  DEFAULT_BRANCH="${DEFAULT_BRANCH#origin/}"
+fi
+if [ -z "$DEFAULT_BRANCH" ]; then
+  if command -v timeout >/dev/null 2>&1; then
+    DEFAULT_BRANCH="$(timeout "$TIMEOUT_S" gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
+  else
+    DEFAULT_BRANCH="$(gh repo view "$REPO_SLUG" --json defaultBranchRef --jq '.defaultBranchRef.name' 2>/dev/null)" || DEFAULT_BRANCH=""
+  fi
+fi
+# First line only, then no whitespace, by parameter expansion: a pipeline
+# ending in an early-exit stage is the shape the #1434 guard bans.
+DEFAULT_BRANCH="${DEFAULT_BRANCH%%$'\n'*}"
+DEFAULT_BRANCH="${DEFAULT_BRANCH//[[:space:]]/}"
+[[ "$DEFAULT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]] || DEFAULT_BRANCH=""
 
 CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
   || date -u -v-"${WINDOW_H}"H +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
@@ -331,9 +413,34 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # 3. Which of them claim this issue?
 # ---------------------------------------------------------------------------
 #
-# The branch pattern is anchored on the separators the workflow's own branch
-# names use — `fix/1084-...`, `feat/issue-1277-...`, `docs/issue-1277-...` —
-# so a number embedded in an unrelated word cannot match.
+# The four signals, and why a bare number in a branch is not a claim (#1707),
+# are described in the header. The body and branch patterns build a regex from
+# $n, which is safe only because --issue has already been checked to be digits.
+#
+# The PR lists reach jq on stdin, not as --argjson arguments. With bodies
+# included, 100 open PRs easily exceed the kernel's 128 KiB limit on a single
+# argument; jq would then fail to start, the result would read as
+# claim-filter-unreadable, and the guard would fail open without a word.
+# `body` is deleted from each selected PR before the split below.
+#
+# strip_code removes fenced blocks first, then inline code spans
+# (CommonMark 0.31, sections 4.5 and 6.1). Every pattern is bounded so that
+# stray punctuation cannot swallow a real `Fixes #N` that follows it, which
+# would fail open:
+#
+#   - A fence opens only at the start of a line, after at most three spaces,
+#     and a paired fence closes only on a line of its own. A ``` or ~~~ in
+#     the middle of a line is text, not a fence. Only a fence that does open
+#     and never closes runs to the end of the body, as CommonMark specifies.
+#   - A code span opens with a backtick run of any length and closes at the
+#     next run of exactly that length; the lookarounds stop a run of two from
+#     being read as two runs of one, so ``Fixes #N`` is removed whole. A run
+#     with no partner is text. A span may wrap onto the next line but may not
+#     cross a blank line, since a blank line ends the paragraph. `\r` is
+#     allowed in the blank line because bodies are often CRLF.
+#
+# jq's regex engine (Oniguruma) supports the backreference and lookbehind
+# used here.
 #
 # The claims are then split in two (#1448). `ours` are the claims this working
 # directory is standing on: same head branch, same repository. They are this
@@ -342,17 +449,38 @@ CUTOFF="$(date -u -d "-${WINDOW_H} hours" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null \
 # the shape of every incident in #1361, and they still refuse the run.
 
 CLAIMS="$(
-  jq -nc \
-    --argjson open "$OPEN_JSON" \
-    --argjson merged "$MERGED_JSON" \
+  printf '%s\n%s\n' "$OPEN_JSON" "$MERGED_JSON" | jq -sc \
     --arg issue "$ISSUE" \
     --arg own_head "$OWN_HEAD" \
     --arg cwd_head "$CWD_HEAD" \
-    --arg cutoff "$CUTOFF" '
-      def claims_issue($n):
-        ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
-        or (((.title // "") | contains("(#" + $n + ")")))
-        or (((.headRefName // "") | test("(^|[/-])(issue-)?" + $n + "([/-]|$)")));
+    --arg cutoff "$CUTOFF" \
+    --arg default "$DEFAULT_BRANCH" \
+    --arg repo "$REPO_SLUG" '
+      .[0] as $open
+      | .[1] as $merged
+      | (if ($repo | test("^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$"))
+         then ($repo | gsub("\\."; "\\."))
+         else "(?!)" end) as $repo_re
+      | def strip_code:
+        gsub("(^|\n)[ ]{0,3}```[^`\n]*\n(?:[\\s\\S]*?\n)?[ ]{0,3}```+[ \t\r]*(?=\n|$)"; "\n")
+        | gsub("(^|\n)[ ]{0,3}~~~[^\n]*\n(?:[\\s\\S]*?\n)?[ ]{0,3}~~~+[ \t\r]*(?=\n|$)"; "\n")
+        | gsub("(^|\n)[ ]{0,3}(```|~~~)[\\s\\S]*$"; "\n")
+        | gsub("(?<!`)(`+)(?!`)(?:[^\n]|\n(?![ \t\r]*\n))*?(?<!`)\\1(?!`)"; " ");
+      def body_applies:
+        ((.closingIssuesReferences // []) | length == 0)
+        and (($default == "") or ((.baseRefName // "") != $default));
+      def claim_via($n):
+        [ (if ((.closingIssuesReferences // []) | map((.number // -1) | tostring) | index($n) != null)
+             then "closing-ref" else empty end),
+          (if body_applies
+              and ((.body // "") | strip_code
+                   | test("(^|[^A-Za-z0-9_])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]*"
+                        + "(#|" + $repo_re + "#|https?://[^/[:space:]]+/" + $repo_re + "/issues/)"
+                        + $n + "([^0-9]|$)"; "i"))
+             then "body-keyword" else empty end),
+          (if ((.title // "") | contains("(#" + $n + ")")) then "title" else empty end),
+          (if ((.headRefName // "") | test("^[^/]+/issue-" + $n + "([/-]|$)")) then "branch" else empty end)
+        ];
       def is_ours:
         ($cwd_head != "")
         and ((.headRefName // "") == $cwd_head)
@@ -360,8 +488,10 @@ CLAIMS="$(
       [ ($open | map(. + {claim_source: "open"}))
         + ($merged | map(select((.mergedAt // "") >= $cutoff)) | map(. + {claim_source: "recently-merged"}))
         | .[]
-        | select(claims_issue($issue))
+        | . + {claim_via: claim_via($issue)}
+        | select(.claim_via | length > 0)
         | select(($own_head == "") or ((.headRefName // "") != $own_head))
+        | del(.body)
       ]
       | {ours: map(select(is_ours)), others: map(select(is_ours | not))}
     ' 2>>"$ERRFILE"
@@ -406,7 +536,7 @@ FIRST_NUM="$(printf '%s' "$CLAIMS" | jq -r '(.others[0].number // "") | tostring
   echo "  issue      : #${ISSUE}"
   echo "  branch here: ${CWD_HEAD:-(detached HEAD)}"
   echo "  claimed by :"
-  printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  head=\(.headRefName // "?")  \(.url)"'
+  printf '%s' "$CLAIMS" | jq -r '.others[] | "    #\(.number)  \(.claim_source)  via=\(.claim_via | join(","))  head=\(.headRefName // "?")  \(.url)"'
   echo ""
   echo "  Opening a second pull request here is the failure recorded in issue #1361."
   echo "  The second one merges, the first is never closed, and a month later it"

@@ -144,6 +144,8 @@ mod issue_1691_switch_live;
 mod issue_1699_isolated_profile_root;
 #[path = "issue_1699_real_root_guard.rs"]
 mod issue_1699_real_root_guard;
+#[path = "issue_1707_claim_check_shell_suites.rs"]
+mod issue_1707_claim_check_shell_suites;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
