@@ -401,9 +401,22 @@ in `evidence_used`.
 | PR head commit not in the local object store and not fetchable | No |
 
 When the PR head commit is not in the local object store, the helper runs one
-`git fetch --no-tags --no-write-fetch-head --refmap= origin refs/heads/<branch>`
-under `GIT_TERMINAL_PROMPT=0` and a 60-second `timeout`. It writes no ref and
-no `FETCH_HEAD`. If the commit is still missing afterwards, or
+`git fetch --no-tags --no-write-fetch-head --refmap= origin refs/heads/<branch>`.
+It runs only after the view has passed every check that does not need the
+commit: the PR is open, same-repo, on the run branch, and has the requested
+number and canonical URL. A closed, fork or wrong-branch PR is rejected without
+a network call. The fetch writes no ref and no `FETCH_HEAD`.
+
+The fetch cannot prompt, and its wait is limited even where `timeout(1)` is
+missing, as on stock macOS:
+
+| Transport | What stops a prompt or a hang |
+| --- | --- |
+| HTTPS | stdin is `/dev/null`, `GIT_TERMINAL_PROMPT=0` stops git's credential prompt, and `http.lowSpeedLimit=1000` with `http.lowSpeedTime=30` aborts a transfer that stays below 1 KB/s for 30 seconds. |
+| SSH (`git@github.com:…`, `ssh://git@github.com/…`) | `GIT_SSH_COMMAND` is set to the ssh command git would otherwise use (`GIT_SSH_COMMAND`, then `core.sshCommand`, then `GIT_SSH`, then `ssh`) followed by `-o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2`. ssh then fails instead of asking for a key passphrase, a password or an unknown host key, gives up on a connection after 15 seconds and drops a dead one after about 30. Options on the command line take precedence over `~/.ssh/config`. A non-OpenSSH `GIT_SSH` program such as plink rejects `-o`, so the fetch fails and there is no signal. |
+| Both | Where `timeout` exists, the whole fetch is also capped at 60 seconds. |
+
+A failed fetch is not an error. If the commit is still missing afterwards, or
 `git merge-base --is-ancestor` fails for any reason, there is no signal: a
 missing object is never read as an ancestor.
 

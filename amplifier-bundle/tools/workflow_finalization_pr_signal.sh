@@ -16,10 +16,24 @@
 # checkout. Every local commit is then in the PR, so its checks cover this
 # run's work. A local HEAD ahead of, behind a rewrite of, or diverged from the
 # PR head is no signal. When the PR head commit is not in the local object
-# store, one bounded `git fetch origin refs/heads/<branch>` (an empty
-# --refmap, so no remote-tracking ref is updated; no FETCH_HEAD, no prompt,
-# 60s) is tried; if the commit is still
-# missing, or merge-base fails for any reason, there is no signal.
+# store, and the view already passes every check that does not need the
+# commit (open, same-repo, on <branch>, the requested number and URL), one
+# `git fetch origin refs/heads/<branch>` is tried. It writes nothing but
+# objects: an empty --refmap updates no remote-tracking ref, and
+# --no-write-fetch-head leaves FETCH_HEAD alone. It cannot prompt or wait
+# without limit, with or without `timeout(1)` (absent on stock macOS):
+#   - stdin is /dev/null and GIT_TERMINAL_PROMPT=0, so git never asks for
+#     HTTPS credentials;
+#   - GIT_SSH_COMMAND is the caller's ssh command (GIT_SSH_COMMAND,
+#     core.sshCommand, GIT_SSH or plain ssh) plus `-o BatchMode=yes
+#     -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2`,
+#     so ssh fails instead of asking for a key passphrase, a password or an
+#     unknown host key on /dev/tty, and drops a dead connection after ~30s;
+#   - http.lowSpeedLimit/lowSpeedTime abort an HTTPS transfer that stalls
+#     below 1 KB/s for 30s;
+#   - where `timeout` exists, the whole fetch is also capped at 60s.
+# A failed fetch is not an error; if the commit is still missing, or
+# merge-base fails for any reason, there is no signal.
 #
 # The repo identity comes only from <target_dir>'s remote.origin.url and is
 # passed to every gh call with --repo, so a fork checkout never queries
@@ -27,7 +41,7 @@
 # fixed --json field lists), runs through _gh_retry_core from
 # workflow_gh_retry.sh with one attempt, no rate-limit wait and no REST
 # fallback, and its stderr is never emitted. The only other network call is
-# the bounded git fetch above. Retry scratch files live in a
+# the non-interactive git fetch above. Retry scratch files live in a
 # private mktemp -d directory that is removed on every return path.
 #
 # This file only DEFINES functions (and sources the shared parser
@@ -110,15 +124,35 @@ _finalization_pr_checks() {
     else empty end' 2>/dev/null
 }
 
+# _finalization_batch_ssh_command <dir> <out_var> -> sets <out_var> to the
+# ssh command git would use for <dir> (GIT_SSH_COMMAND, then core.sshCommand,
+# then GIT_SSH, then ssh, git's own order) with options that make ssh fail
+# rather than prompt, and give up on an unreachable or dead connection.
+# Options on the command line take precedence over ~/.ssh/config. A
+# non-OpenSSH GIT_SSH program (plink) rejects `-o`, so the fetch fails and
+# there is no signal: closed, never a prompt.
+_finalization_batch_ssh_command() {
+  local base="${GIT_SSH_COMMAND:-}" q=""
+  [ -n "$base" ] || base="$(git -C "$1" config --get core.sshCommand 2>/dev/null || :)"
+  if [ -z "$base" ] && [ -n "${GIT_SSH:-}" ]; then
+    printf -v q '%q' "$GIT_SSH"; base="$q"
+  fi
+  [ -n "$base" ] || base="ssh"
+  printf -v "$2" '%s' "$base -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=2"
+}
+
 # _finalization_pr_head_descends <dir> <branch> <local_head> <pr_head>
 #   -> 0 only when <pr_head> is a full commit id, present locally (after at
 #   most one fetch), and <local_head> is its ancestor. Anything else is 1.
 _finalization_pr_head_descends() {
-  local dir="$1" branch="$2" local_head="$3" pr_head="$4" bound=""
+  local dir="$1" branch="$2" local_head="$3" pr_head="$4" bound="" ssh_cmd=""
   [[ "$pr_head" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || return 1
   if ! git -C "$dir" cat-file -e "${pr_head}^{commit}" 2>/dev/null; then
     ! command -v timeout >/dev/null 2>&1 || bound="timeout 60"
-    GIT_TERMINAL_PROMPT=0 $bound git -C "$dir" fetch --quiet --no-tags --no-write-fetch-head --refmap= \
+    _finalization_batch_ssh_command "$dir" ssh_cmd
+    GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="$ssh_cmd" $bound git -C "$dir" \
+      -c http.lowSpeedLimit=1000 -c http.lowSpeedTime=30 \
+      fetch --quiet --no-tags --no-write-fetch-head --refmap= \
       origin "refs/heads/$branch" </dev/null >/dev/null 2>&1 || :
     git -C "$dir" cat-file -e "${pr_head}^{commit}" 2>/dev/null || return 1
   fi
@@ -196,7 +230,15 @@ _finalization_open_pr_signal_in() {
     || { _finalization_no_signal "gh pr view failed"; return 1; }
   # A PR head that is a fast-forward of the local HEAD stands in for it
   # (#1714); every other condition is still checked against the view.
-  pr_head="$(printf '%s' "$view" | jq -r 'if type == "object" and (.headRefOid | type) == "string" then .headRefOid else empty end' 2>/dev/null || :)"
+  # The fields that need no commit are tested first, so a PR that will be
+  # rejected anyway (closed, from a fork, on another branch, another number)
+  # never costs a fetch. _finalization_pr_checks tests them all again.
+  pr_head="$(printf '%s' "$view" | jq -r --arg branch "$branch" --arg num "$num" --arg url "$url" '
+    if type == "object" and .state == "OPEN" and .headRefName == $branch
+       and .isCrossRepository == false and (.number | type) == "number"
+       and (.number | tostring) == $num and .url == $url
+       and (.headRefOid | type) == "string"
+    then .headRefOid else empty end' 2>/dev/null || :)"
   if [ -n "$pr_head" ] && [ "$pr_head" != "$head" ] && _finalization_pr_head_descends "$dir" "$branch" "$head" "$pr_head"; then
     head="$pr_head"; relation="descendant"
   fi

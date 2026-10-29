@@ -59,13 +59,13 @@ pub(super) fn drop_pushed_branch(fx: &Fixture) {
 }
 
 /// Remove every unreferenced object, so M is no longer in the object store.
-fn prune(fx: &Fixture, oid: &str) {
+pub(super) fn prune(fx: &Fixture, oid: &str) {
     fx.git(&["reflog", "expire", "--expire=now", "--all"]);
     fx.git(&["gc", "-q", "--prune=now"]);
     assert!(!has_object(fx, oid), "{oid} must be gone after the prune");
 }
 
-fn has_object(fx: &Fixture, oid: &str) -> bool {
+pub(super) fn has_object(fx: &Fixture, oid: &str) -> bool {
     let mut command = amplihack_git::command();
     command
         .current_dir(&fx.repo)

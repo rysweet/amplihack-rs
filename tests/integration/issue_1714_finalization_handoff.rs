@@ -17,6 +17,8 @@
 //! real `~/.claude`, `~/.amplihack` or profile root.
 #[path = "issue_1714_finalization_handoff/ancestor.rs"]
 mod ancestor;
+#[path = "issue_1714_finalization_handoff/ancestor_fetch_ssh.rs"]
+mod ancestor_fetch_ssh;
 #[path = "issue_1714_finalization_handoff/ancestor_handoff.rs"]
 mod ancestor_handoff;
 #[path = "issue_1714_finalization_handoff/brick.rs"]
