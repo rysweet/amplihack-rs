@@ -160,6 +160,34 @@ const DENIED: &[&str] = &[
     "echo \"$(tmux kill-server\"",
     "echo $(tmux kill-server",
     "cat <<\ntmux kill-server",
+    // Redirections are not tmux arguments (security review, finding 1).
+    "tmux 2>/dev/null kill-server",
+    "tmux >/dev/null kill-server",
+    "tmux > /dev/null kill-server",
+    "tmux </dev/null kill-server",
+    "tmux 2>&1 kill-server",
+    "tmux &>/dev/null kill-server",
+    "tmux kill-server>/dev/null",
+    "tmux kill-server</dev/null",
+    "tmux >>log kill-server",
+    "tmux 2>&- kill-server",
+    "tmux kill-server >",
+    // `$'…'` escapes are decoded (finding 2).
+    "tmux $'\\x6bill-server'",
+    "tmux $'kill-\\x73erver'",
+    "tmux $'\\153ill-server'",
+    "bash -c $'\\x74mux kill-server'",
+    // git subcommands that run shell commands (finding 3).
+    "git rebase -x 'tmux kill-server' HEAD~1",
+    "git rebase --exec 'tmux kill-server' main",
+    "git bisect run tmux kill-server",
+    "git submodule foreach 'tmux kill-server'",
+    "git -C repo submodule foreach tmux kill-server",
+    "git difftool --extcmd='tmux kill-server'",
+    "git difftool -x 'tmux kill-server'",
+    // A heredoc written to a file and run elsewhere on the line (finding 4).
+    "cat > k.sh <<'EOF'\ntmux kill-server\nEOF\nbash k.sh",
+    "cat <<'EOF' > k.sh && sh k.sh\ntmux kill-session -a\nEOF",
 ];
 
 const ALLOWED: &[&str] = &[
@@ -224,6 +252,19 @@ const ALLOWED: &[&str] = &[
     "ssh host tmux -S /tmp/tx1/a.sock kill-server",
     "xargs tmux -L qa kill-server",
     "tmux -S /tmp/tx1/a.sock new -d \"tmux -S /tmp/tx1/a.sock kill-server\"",
+    // Redirections do not hide scope or turn data into code.
+    "tmux ls >/dev/null 2>&1",
+    "tmux -S /tmp/p kill-server 2>&1",
+    "tmux -S /tmp/p kill-server &>/dev/null",
+    "tmux 2>/dev/null -S /tmp/p kill-server",
+    "git commit -m \"a > b; tmux kill-server\"",
+    "echo x >> log; tmux ls",
+    "diff <(tmux ls) <(echo)",
+    "tmux $'-S' /tmp/p $'\\x6bill-server'",
+    // git subcommands that run commands, with scoped or no tmux.
+    "git rebase -x 'tmux -S /tmp/p kill-server' HEAD~1",
+    "git rebase -i HEAD~3",
+    "git log --grep 'rebase tmux kill-server'",
 ];
 
 #[test]

@@ -4,7 +4,9 @@
 //! This is not a shell parser and does not try to be one. It splits a command
 //! line into simple commands of unquoted words, finds each command's program
 //! word, and keeps the heredoc bodies each command receives so a guard can
-//! decide whether they are data or code.
+//! decide whether they are data or code. Redirections and their targets are
+//! kept apart from the words, and `$'…'` escapes are decoded as bash does.
+//! Named-fd redirections (`{fd}>file`) are not recognised.
 
 /// Programs that run the command after them: `(name, options that take a
 /// value, positional arguments before the command)`.
@@ -32,11 +34,15 @@ pub(super) const RESERVED: &[&str] = &[
     "!", "{", "}", "if", "then", "elif", "else", "while", "until", "do",
 ];
 
-/// One simple command: its unquoted words, the heredoc bodies it receives and
-/// the pipeline it belongs to.
+/// One simple command: its unquoted words, its redirections, the heredoc
+/// bodies it receives and the pipeline it belongs to.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct SimpleCommand {
     pub(super) words: Vec<String>,
+    /// Redirection operators and their target words (`>`, `/dev/null`,
+    /// `>&`, `1`), in order. An fd number before the operator (`2>`) is
+    /// dropped. None of these is ever in `words`.
+    pub(super) redirects: Vec<String>,
     /// Bodies of the heredocs whose `<<` appeared in this command, in order.
     pub(super) heredocs: Vec<String>,
     /// For each body in `heredocs`, whether its delimiter was unquoted, so
@@ -52,7 +58,8 @@ pub(super) struct SimpleCommand {
 pub(super) struct Parsed {
     pub(super) commands: Vec<SimpleCommand>,
     /// False when the text has an unclosed quote, `$'…'`, `$(…)` or
-    /// backtick, or a `<<` with no delimiter: the words are a guess.
+    /// backtick, a `<<` with no delimiter, or a redirection with no target:
+    /// the words are a guess.
     pub(super) complete: bool,
 }
 
@@ -104,9 +111,11 @@ pub(super) fn basename(word: &str) -> &str {
 
 /// Splits `text` into simple commands, each a list of unquoted words.
 ///
-/// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes.
-/// Quotes and backslashes are removed from words. Comments are dropped, and
-/// heredoc bodies are skipped: they are data, never a command's words.
+/// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes; the
+/// `&` of a redirection (`2>&1`, `&>`) does not end one. Quotes and
+/// backslashes are removed from words, and `$'…'` escapes are decoded.
+/// Comments and redirections are dropped, and heredoc bodies are skipped:
+/// they are data, never a command's words.
 /// `$(…)` and backticks stay inside the word they appear in, including a
 /// `$(…)` inside double quotes, whose own quotes do not end the string.
 pub(super) fn commands(text: &str) -> Vec<Vec<String>> {
@@ -132,12 +141,30 @@ pub(super) fn tokenise(text: &str) -> Parsed {
     let mut in_word = false;
     // Pending heredocs on this line: (delimiter, strip tabs, expands, owner).
     let mut heredocs: Vec<(String, bool, bool, usize)> = Vec::new();
+    // An unquoted redirection operator is waiting for its target word.
+    let mut target = false;
     let mut i = 0;
-    fn end_word(word: &mut String, in_word: &mut bool, out: &mut [SimpleCommand]) {
+    fn end_word(
+        word: &mut String,
+        in_word: &mut bool,
+        target: &mut bool,
+        out: &mut [SimpleCommand],
+    ) {
         if std::mem::take(in_word)
             && let Some(last) = out.last_mut()
         {
-            last.words.push(std::mem::take(word));
+            let word = std::mem::take(word);
+            if std::mem::take(target) {
+                last.redirects.push(word);
+            } else {
+                last.words.push(word);
+            }
+        }
+    }
+    // A redirection still waiting for its target when its command ends.
+    fn end_command(target: &mut bool, complete: &mut bool) {
+        if std::mem::take(target) {
+            *complete = false;
         }
     }
     let new_command = |out: &mut Vec<SimpleCommand>, pipeline: usize| {
@@ -167,14 +194,7 @@ pub(super) fn tokenise(text: &str) -> Parsed {
                 let close = ansi_c_close(&chars, i + 1);
                 complete &= close.is_some();
                 let end = close.unwrap_or(chars.len().saturating_sub(1));
-                let mut j = i + 2;
-                while j < end {
-                    if chars[j] == '\\' && j + 1 < end {
-                        j += 1;
-                    }
-                    word.push(chars[j]);
-                    j += 1;
-                }
+                word.push_str(&ansi_c_decode(chars.get(i + 2..end).unwrap_or_default()));
                 i = end;
             }
             '"' => {
@@ -239,14 +259,14 @@ pub(super) fn tokenise(text: &str) -> Parsed {
             }
             '<' if chars.get(i + 1) == Some(&'<') && chars.get(i + 2) == Some(&'<') => {
                 // A here-string: its word follows as an ordinary word.
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
                 i += 2;
             }
             '<' if chars.get(i + 1) == Some(&'<') => {
                 // `<<WORD` / `<<-WORD`: remember the delimiter and the
                 // command it belongs to; the body is read at the end of
                 // this line.
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
                 let expands = !delim_quoted(&chars, i);
                 let (delim, strip_tabs) = heredoc_delim(&chars, &mut i);
                 if delim.is_empty() {
@@ -255,8 +275,44 @@ pub(super) fn tokenise(text: &str) -> Parsed {
                 heredocs.push((delim, strip_tabs, expands, out.len() - 1));
                 continue;
             }
+            '&' if chars.get(i + 1) == Some(&'>') => {
+                // `&>` / `&>>`: stdout and stderr to the target word.
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
+                i += 1;
+                if chars.get(i + 1) == Some(&'>') {
+                    i += 1;
+                }
+                complete &= !target;
+                target = true;
+            }
+            '<' | '>' if chars.get(i + 1) != Some(&'(') => {
+                // `[n]<`, `[n]>`, `>>`, `>|`, `<>`, `>&`, `<&`. `<(` and `>(`
+                // (process substitution) fall through to the default arm.
+                // A word of digits right before the operator is its fd.
+                let fd = !target
+                    && in_word
+                    && !word.is_empty()
+                    && word.chars().all(|d| d.is_ascii_digit());
+                if fd {
+                    word.clear();
+                    in_word = false;
+                } else {
+                    end_word(&mut word, &mut in_word, &mut target, &mut out);
+                }
+                let second: &[char] = if c == '>' {
+                    &['>', '|', '&']
+                } else {
+                    &['>', '&']
+                };
+                if chars.get(i + 1).is_some_and(|n| second.contains(n)) {
+                    i += 1;
+                }
+                complete &= !target;
+                target = true;
+            }
             '\n' => {
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
+                end_command(&mut target, &mut complete);
                 pipeline += 1;
                 new_command(&mut out, pipeline);
                 let pending = std::mem::take(&mut heredocs);
@@ -272,24 +328,27 @@ pub(super) fn tokenise(text: &str) -> Parsed {
             '|' if chars.get(i + 1) != Some(&'|') => {
                 // A lone `|` (or `|&`) joins the next command to this
                 // pipeline.
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
+                end_command(&mut target, &mut complete);
                 if chars.get(i + 1) == Some(&'&') {
                     i += 1;
                 }
                 new_command(&mut out, pipeline);
             }
             '|' => {
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
+                end_command(&mut target, &mut complete);
                 i += 1;
                 pipeline += 1;
                 new_command(&mut out, pipeline);
             }
             ';' | '&' | '(' | ')' => {
-                end_word(&mut word, &mut in_word, &mut out);
+                end_word(&mut word, &mut in_word, &mut target, &mut out);
+                end_command(&mut target, &mut complete);
                 pipeline += 1;
                 new_command(&mut out, pipeline);
             }
-            c if c.is_whitespace() => end_word(&mut word, &mut in_word, &mut out),
+            c if c.is_whitespace() => end_word(&mut word, &mut in_word, &mut target, &mut out),
             _ => {
                 in_word = true;
                 word.push(c);
@@ -297,7 +356,8 @@ pub(super) fn tokenise(text: &str) -> Parsed {
         }
         i += 1;
     }
-    end_word(&mut word, &mut in_word, &mut out);
+    end_word(&mut word, &mut in_word, &mut target, &mut out);
+    end_command(&mut target, &mut complete);
     // A heredoc whose line never ended has no body.
     for (_, _, expands, owner) in heredocs {
         if let Some(cmd) = out.get_mut(owner) {
@@ -397,6 +457,79 @@ pub(super) fn ansi_c_close(chars: &[char], open: usize) -> Option<usize> {
         i += 1;
     }
     None
+}
+
+/// Decodes the body of a `$'…'` string as bash does: the single-character
+/// escapes, `\xHH`, octal `\NNN`, `\uHHHH`, `\UHHHHHHHH` and `\cX`. An
+/// unknown escape keeps its backslash, and a code point that is not a `char`
+/// becomes U+FFFD.
+pub(super) fn ansi_c_decode(body: &[char]) -> String {
+    let mut out = String::new();
+    let mut i = 0;
+    while let Some(&c) = body.get(i) {
+        i += 1;
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(&e) = body.get(i) else {
+            out.push('\\');
+            break;
+        };
+        i += 1;
+        let simple = match e {
+            'a' => Some('\u{7}'),
+            'b' => Some('\u{8}'),
+            'e' | 'E' => Some('\u{1b}'),
+            'f' => Some('\u{c}'),
+            'n' => Some('\n'),
+            'r' => Some('\r'),
+            't' => Some('\t'),
+            'v' => Some('\u{b}'),
+            '\\' | '\'' | '"' | '?' => Some(e),
+            _ => None,
+        };
+        if let Some(decoded) = simple {
+            out.push(decoded);
+            continue;
+        }
+        let code = match e {
+            'x' => radix_digits(body, &mut i, 16, 2),
+            'u' => radix_digits(body, &mut i, 16, 4),
+            'U' => radix_digits(body, &mut i, 16, 8),
+            '0'..='7' => {
+                i -= 1;
+                radix_digits(body, &mut i, 8, 3)
+            }
+            'c' => body.get(i).map(|&x| {
+                i += 1;
+                u32::from(x) & 0x1f
+            }),
+            _ => None,
+        };
+        match code {
+            Some(code) => out.push(char::from_u32(code).unwrap_or('\u{fffd}')),
+            None => {
+                out.push('\\');
+                out.push(e);
+            }
+        }
+    }
+    out
+}
+
+/// Reads up to `max` digits in `radix` from `body[*i..]`, or `None` when
+/// there are none.
+fn radix_digits(body: &[char], i: &mut usize, radix: u32, max: usize) -> Option<u32> {
+    let mut value: Option<u32> = None;
+    for _ in 0..max {
+        let Some(d) = body.get(*i).and_then(|c| c.to_digit(radix)) else {
+            break;
+        };
+        value = Some(value.unwrap_or(0).saturating_mul(radix).saturating_add(d));
+        *i += 1;
+    }
+    value
 }
 
 /// Whether the delimiter of the `<<` at `at` is quoted or escaped, which

@@ -257,7 +257,8 @@ uses the socket named in `$TMUX` whenever no `-S` or `-L` is given, and ignores
 `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` therefore kills the user's own
 server and every session on it (#1733).
 
-**Tools it checks.** Tool names `bash`, `shell` and `exec_command`, compared
+**Tools it checks.** Tool names `bash`, `shell`, `shell_command` and
+`exec_command`, compared
 case-insensitively. It runs after the XPIA check and the Skill redirect,
 beside the merge guard, and before the non-Bash early return. It reads
 `tool_input.command`, or `tool_input.cmd`.
@@ -340,7 +341,18 @@ guard. The command is data-only when its program is one of `git`, `gh`,
 `echo`, `printf`, `grep`, `egrep`, `fgrep`, `rg`, `cat`, `head`, `tail`, `wc`,
 `jq`, `test`, `[`, `true` or `:`, no stage of the command line is a shell
 evaluator, and the word holds no `$(` or backtick. A `git -c` value containing
-`=!` is not data.
+`=!` is not data. A git command whose subcommand runs shell commands
+(`rebase`, `bisect`, `submodule`, `difftool`, `mergetool`, `filter-branch`,
+`for-each-repo`) is a shell evaluator, and its arguments are also checked
+joined together, so `git bisect run tmux kill-server` and
+`git rebase -x 'tmux kill-server' HEAD~1` are denied.
+
+Before any layer runs, the tokeniser removes redirections and their targets
+from the words (`>`, `>>`, `<`, `>|`, `<>`, `>&`, `<&`, `&>`, `&>>`, with an
+optional fd number such as `2>`), so `tmux 2>/dev/null kill-server` and
+`tmux kill-server>/dev/null` are denied and the `&` in `2>&1` does not split
+the command. It also decodes `$'…'` escapes as bash does, so
+`tmux $'\x6bill-server'` is denied.
 
 | Command | Result |
 |---|---|
@@ -356,10 +368,10 @@ Shell evaluators are `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `eval`,
 `python`, `python3`, `node`, `perl`, `ruby` and `tmux` itself (so
 `tmux new "tmux kill-server"` is denied).
 
-A heredoc body is checked as commands when the command that receives it is a
-shell evaluator, or belongs to a pipeline that contains one:
-`bash <<EOF … tmux kill-server … EOF` is denied, and
-`cat <<EOF > notes.md … tmux kill-server … EOF` is allowed. In any other
+A heredoc body is checked as commands when a shell evaluator appears anywhere
+on the command line: `bash <<EOF … tmux kill-server … EOF` is denied, so is
+`cat > k.sh <<'EOF' … tmux kill-server … EOF` followed by `bash k.sh`, and
+`cat <<EOF > notes.md … tmux kill-server … EOF` alone is allowed. In any other
 heredoc whose delimiter is unquoted, the shell still runs each `$( )` and
 backtick in the body, so those are checked as commands.
 
@@ -370,9 +382,11 @@ backtick in the body, so those are checked as commands.
   `kill-s`, denies.
 - An unscoped tmux in the same pipeline as a word starting with `kill-s`
   denies, which covers `echo kill-server | tmux -C attach`.
-- Unbalanced quotes, an unterminated `$(`, or a `<<` with no delimiter fall
-  back to a text test: the command is denied when its text contains both
-  `tmux` and `kill-s`. Input over 64 KiB gets only this text test.
+- Unbalanced quotes, an unterminated `$(`, a `<<` with no delimiter, or a
+  redirection with no target fall back to a text test: the command is denied
+  when its text contains both `tmux` and `kill-s`.
+- Input over 64 KiB gets only this plain text test, not the full parse, so
+  quoting such as `t''mux` inside over-size input is not caught.
 - Reaching the depth limit (4) or the re-parse limit (256) while a candidate
   remains denies.
 
@@ -424,9 +438,21 @@ An allowed command gets the hook's usual output, so the other PreToolUse checks
 still apply.
 
 **Known limits.** The guard is a guard rail against agent mistakes, not a
-sandbox. It does not see through shell aliases or functions, script files
-(`bash script.sh`), `tmux source-file`, or commands assembled at run time from
-pieces such as `"kill-"+"server"`.
+sandbox. It does not see through:
+
+- shell aliases or functions, script files written by an earlier command
+  (`bash script.sh`), `tmux source-file`, or commands assembled at run time
+  from pieces such as `"kill-"+"server"`;
+- a variable copied from `$TMUX`, as in `s=${TMUX%%,*}; tmux -S "$s" …`; only
+  a literal reference to `TMUX` in the `-S` value is caught;
+- quoting tricks in input over 64 KiB, which gets only the plain text test;
+- named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word.
+
+It also errs toward false positives. A shell evaluator anywhere on the line
+(including `tmux`, `find`, `docker`, `kubectl` and the git subcommands above)
+removes the data-only exemption for the whole line, so
+`tmux ls; git commit -m "add tmux kill-server guard"` is denied. Put such
+commands in separate tool calls.
 
 **Source.** `crates/amplihack-hooks/src/pre_tool_use/tmux_guard.rs`, with unit
 tests in `pre_tool_use/tests/tmux_guard_tests.rs`, host-payload tests in

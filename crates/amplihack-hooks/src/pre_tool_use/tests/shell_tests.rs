@@ -189,8 +189,176 @@ fn malformed_fragments_never_panic() {
         "cat <<EOF\n",
         "cat <<''\n\n",
         "é\u{0}ü$(é",
+        ">",
+        "2>&",
+        "&>",
+        "<>",
+        ">|",
+        "$'\\x",
+        "$'\\u",
+        "$'\\c",
+        "$'\\777",
     ] {
         let _ = parse(text);
         let _ = commands(text);
     }
+}
+
+fn redirects(text: &str) -> Vec<Vec<String>> {
+    parse(text).into_iter().map(|c| c.redirects).collect()
+}
+
+#[test]
+fn redirections_and_their_targets_are_never_words() {
+    for (text, expect_words, expect_redirects) in [
+        (
+            "tmux 2>/dev/null kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux >/dev/null kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux > /dev/null kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux </dev/null kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux 2>&1 kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["1"],
+        ),
+        (
+            "tmux &>/dev/null kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux &>>log kill-server",
+            vec!["tmux", "kill-server"],
+            vec!["log"],
+        ),
+        (
+            "tmux kill-server>/dev/null",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "tmux kill-server</dev/null",
+            vec!["tmux", "kill-server"],
+            vec!["/dev/null"],
+        ),
+        (
+            "a >>log >|x <>y 2>&- b",
+            vec!["a", "b"],
+            vec!["log", "x", "y", "-"],
+        ),
+        (
+            "a >'quoted target' b",
+            vec!["a", "b"],
+            vec!["quoted target"],
+        ),
+        ("a a2>x", vec!["a", "a2"], vec!["x"]),
+    ] {
+        assert_eq!(words(text), vec![owned(&expect_words)], "words of {text:?}");
+        assert_eq!(
+            redirects(text),
+            vec![owned(&expect_redirects)],
+            "redirects of {text:?}"
+        );
+        assert!(tokenise(text).complete, "{text:?} is complete");
+    }
+}
+
+#[test]
+fn the_ampersand_of_a_redirection_does_not_end_the_command() {
+    let cmds = parse("tmux ls >/dev/null 2>&1 && echo ok & wait");
+    assert_eq!(
+        cmds.iter().map(|c| c.words.clone()).collect::<Vec<_>>(),
+        vec![
+            owned(&["tmux", "ls"]),
+            owned(&["echo", "ok"]),
+            owned(&["wait"])
+        ]
+    );
+}
+
+#[test]
+fn quoted_operators_are_text_and_process_substitution_is_unchanged() {
+    assert_eq!(
+        words("git commit -m \"a > b; c\" 'x<y'"),
+        vec![owned(&["git", "commit", "-m", "a > b; c", "x<y"])]
+    );
+    assert_eq!(
+        words("diff <(tmux ls) <(echo)"),
+        vec![
+            owned(&["diff", "<"]),
+            owned(&["tmux", "ls"]),
+            owned(&["<"]),
+            owned(&["echo"])
+        ]
+    );
+    assert_eq!(
+        words("bash <<< \"tmux ls\""),
+        vec![owned(&["bash", "tmux ls"])]
+    );
+}
+
+#[test]
+fn a_redirection_with_no_target_is_incomplete() {
+    for text in [
+        "a >", "a 2>&", "a > ; b", "a > | b", "a >\nb", "a &>", "a > > x",
+    ] {
+        assert!(!tokenise(text).complete, "{text:?} should be incomplete");
+    }
+}
+
+fn decode(text: &str) -> String {
+    ansi_c_decode(&text.chars().collect::<Vec<_>>())
+}
+
+#[test]
+fn ansi_c_escapes_decode_as_bash_does() {
+    for (body, expect) in [
+        (r"\x6bill-server", "kill-server"),
+        (r"kill-\x73erver", "kill-server"),
+        (r"\153ill-server", "kill-server"),
+        (r"\u006bill", "kill"),
+        (r"\U0000006bill", "kill"),
+        (r"\x6g", "\u{6}g"),
+        (r"\0", "\0"),
+        (
+            r"\a\b\e\E\f\n\r\t\v",
+            "\u{7}\u{8}\u{1b}\u{1b}\u{c}\n\r\t\u{b}",
+        ),
+        (r#"\\\'\"\?"#, "\\'\"?"),
+        (r"\cA\c[", "\u{1}\u{1b}"),
+        (r"\q\x\u\c", r"\q\x\u\c"),
+        (r"trailing\", r"trailing\"),
+        (r"\UFFFFFFFF\ud800", "\u{fffd}\u{fffd}"),
+    ] {
+        assert_eq!(decode(body), expect, "decoding {body:?}");
+    }
+}
+
+#[test]
+fn ansi_c_words_are_decoded_by_the_tokeniser() {
+    assert_eq!(
+        words(r"tmux $'\x6bill-server' $'kill-\x73erver' $'\153ill-server' $'it\'s'"),
+        vec![owned(&[
+            "tmux",
+            "kill-server",
+            "kill-server",
+            "kill-server",
+            "it's"
+        ])]
+    );
 }

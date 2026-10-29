@@ -21,15 +21,37 @@
 //!    (`bash -c '…'`, `python -c "…"`, `$(…)`, backticks), parsed again up
 //!    to [`MAX_DEPTH`] levels.
 //!
+//! Redirections never count as tmux arguments (`tmux 2>/dev/null
+//! kill-server` is denied), and `$'…'` escapes are decoded first
+//! (`tmux $'\x6bill-server'` is denied); both are done by the tokeniser.
+//!
 //! Layers 2 and 3 exempt data-only commands such as
-//! `git commit -m "… tmux kill-server …"`. Heredoc bodies are parsed when a
-//! shell evaluator receives them. Uncertain input fails closed: unbalanced
-//! quotes, input over [`MAX_INPUT`] bytes, or hitting [`MAX_DEPTH`] or
-//! [`MAX_REPARSES`] with a candidate left deny.
+//! `git commit -m "… tmux kill-server …"`, except git subcommands that run
+//! shell commands ([`GIT_COMMAND_RUNNERS`]), which count as evaluators.
+//! Heredoc bodies are parsed when a shell evaluator appears anywhere on the
+//! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
+//! Uncertain input fails closed: unbalanced quotes, a redirection with no
+//! target, or hitting [`MAX_DEPTH`] or [`MAX_REPARSES`] with a candidate
+//! left deny.
 //!
 //! This is a guard rail against agent mistakes, not a sandbox. It does not
-//! see shell aliases or functions, script files (`bash script.sh`),
-//! `tmux source-file`, or commands assembled at run time from pieces.
+//! cover:
+//!
+//! - shell aliases or functions, script files (`bash script.sh` for a file
+//!   written earlier), `tmux source-file`, or commands assembled at run time
+//!   from pieces;
+//! - a variable copied from `$TMUX`, as in `s=${TMUX%%,*}; tmux -S "$s" …`:
+//!   only a literal reference to `$TMUX` in the `-S` value is caught;
+//! - input over [`MAX_INPUT`] bytes, which gets only a plain text check for
+//!   `tmux` and `kill-s` (so quoting tricks such as `t''mux` get past it),
+//!   not the full parse;
+//! - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word.
+//!
+//! It also errs toward false positives: a [`SHELL_EVALUATORS`] word anywhere
+//! on the line (`tmux`, `find`, `docker`, `kubectl`, …) removes the data-only
+//! exemption for the whole line, so `tmux ls; git commit -m "… tmux
+//! kill-server …"` is denied. Agents should put such commands in a separate
+//! tool call.
 //!
 //! The guard always runs and reads no environment variables, so nothing in
 //! the environment can turn it off. It never panics on any input: the hook
@@ -60,6 +82,30 @@ const SHELL_EVALUATORS: &[&str] = &[
     "sh", "bash", "zsh", "dash", "ksh", "fish", "eval", "source", ".", "xargs", "nohup", "exec",
     "parallel", "watch", "script", "su", "sudo", "ssh", "docker", "kubectl", "find", "tmux",
     "setsid", "python", "python3", "node", "perl", "ruby",
+];
+
+/// git subcommands that run shell commands given as arguments (`rebase -x`,
+/// `bisect run`, `submodule foreach`, `difftool --extcmd`, …). Any of them
+/// makes a `git` command an evaluator, whatever its options.
+const GIT_COMMAND_RUNNERS: &[&str] = &[
+    "rebase",
+    "bisect",
+    "submodule",
+    "difftool",
+    "mergetool",
+    "filter-branch",
+    "for-each-repo",
+];
+
+/// git global options that take a separate value.
+const GIT_VALUE_OPTS: &[&str] = &[
+    "-C",
+    "-c",
+    "--git-dir",
+    "--work-tree",
+    "--namespace",
+    "--config-env",
+    "--super-prefix",
 ];
 
 /// tmux global flags that take no value (tmux's usage line: `-2CDlNuVv`).
@@ -234,11 +280,28 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
             }
         }
 
-        // Heredoc bodies: code when a shell evaluator receives them.
-        let receives_code = pipelines.get(&cmd.pipeline).is_some_and(|f| f.evaluator);
+        // A git subcommand that runs its arguments: judge them together too,
+        // so `git bisect run tmux kill-server` reads as one command.
+        if git && git_runs_commands(words.get(start + 1..).unwrap_or_default()) {
+            let args: Vec<&str> = words
+                .get(start + 1..)
+                .unwrap_or_default()
+                .iter()
+                .map(String::as_str)
+                .collect();
+            let joined = join_argv(&args);
+            if has_candidate(&joined) {
+                let inner = reparse(&joined, depth, budget);
+                out.dangerous |= inner.dangerous;
+                out.tmux_seen |= inner.tmux_seen;
+            }
+        }
+
+        // Heredoc bodies: code when a shell evaluator appears anywhere on
+        // the line, since the body may be written to a file and run later.
         for (n, body) in cmd.heredocs.iter().enumerate() {
             let expands = cmd.heredoc_expands.get(n).copied().unwrap_or(true);
-            if receives_code {
+            if evaluator_present {
                 if has_candidate(body) {
                     let inner = reparse(body, depth, budget);
                     out.dangerous |= inner.dangerous;
@@ -386,7 +449,25 @@ fn is_evaluator(cmd: &SimpleCommand) -> bool {
         && words
             .iter()
             .any(|w| w.starts_with("-S") || w.starts_with("--split-string"));
-    named || env_split
+    let git_runner = words.get(start).is_some_and(|w| basename(w) == "git")
+        && git_runs_commands(words.get(start + 1..).unwrap_or_default());
+    named || env_split || git_runner
+}
+
+/// Whether the arguments after `git` name one of [`GIT_COMMAND_RUNNERS`]
+/// as the subcommand: the first word after git's global options.
+fn git_runs_commands(args: &[String]) -> bool {
+    let mut i = 0usize;
+    while let Some(word) = args.get(i) {
+        if GIT_VALUE_OPTS.contains(&word.as_str()) {
+            i = i.saturating_add(2);
+        } else if word.starts_with('-') {
+            i += 1;
+        } else {
+            return GIT_COMMAND_RUNNERS.contains(&word.as_str());
+        }
+    }
+    false
 }
 
 /// Whether word `k` of a `git` command is a `-c` value (which can define a
