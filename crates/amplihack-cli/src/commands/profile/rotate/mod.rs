@@ -16,6 +16,8 @@ mod autostart;
 #[cfg(unix)]
 mod backup;
 #[cfg(unix)]
+mod candidates;
+#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod cycle;
@@ -36,9 +38,11 @@ mod handfix;
 #[cfg(unix)]
 mod held;
 #[cfg(unix)]
+mod holders;
+#[cfg(unix)]
 pub(super) mod identify;
 #[cfg(unix)]
-mod ledger;
+pub(super) mod ledger;
 #[cfg(unix)]
 mod log;
 #[cfg(unix)]
@@ -58,6 +62,8 @@ mod overflow_record;
 #[cfg(unix)]
 mod pin;
 #[cfg(unix)]
+pub(super) mod platform_block;
+#[cfg(unix)]
 mod precheck;
 #[cfg(unix)]
 mod prelude;
@@ -70,9 +76,13 @@ mod spend_blocks;
 #[cfg(unix)]
 mod swap;
 #[cfg(unix)]
+mod swap_check;
+#[cfg(unix)]
 mod switch;
 #[cfg(all(test, unix))]
 pub(super) use swap::DOCUMENTED as DOCUMENTED_REFUSALS;
+
+pub use super::rotate_args::{RotateAction, RotateArgs, TuneFlags};
 
 #[cfg(all(test, unix))]
 mod tests_autostart;
@@ -106,6 +116,14 @@ mod tests_overflow;
 mod tests_pin;
 #[cfg(all(test, target_os = "linux"))]
 mod tests_pin_overflow;
+#[cfg(all(test, unix))]
+mod tests_pin_platform;
+#[cfg(all(test, unix))]
+mod tests_platform;
+#[cfg(all(test, unix))]
+mod tests_platform_block;
+#[cfg(all(test, unix))]
+mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
 #[cfg(all(test, unix))]
@@ -168,6 +186,40 @@ fn foreign_note_for(
     })
 }
 
+/// Whether rotate live-profile detection names `name` as the login in
+/// `<home>/.claude` (issue #1700: the launch guard's "held"). Any error, a
+/// hand change, an ambiguous or an adopted login is not.
+#[cfg(unix)]
+pub(super) fn is_live(
+    store: &super::store::ProfileStore,
+    home: Option<&std::path::Path>,
+    name: &super::name::ProfileName,
+) -> bool {
+    let Some(home) = home else {
+        return false;
+    };
+    let rs = ledger::RotateState::new(store.root());
+    matches!(identify::live(store, &rs, home), Ok((identify::LiveId::Known(n), _)) if &n == name)
+}
+
+/// The status line while the rotate ledger says the live login is an
+/// API-key profile (issue #1700), for `rotate status` and `auto-switch
+/// status`. The ledger is the only evidence; nothing is probed.
+#[cfg(unix)]
+pub(super) fn platform_live_line(root: &std::path::Path) -> Option<String> {
+    let l = ledger::RotateState::new(root).load_ledger().ok()??;
+    if l.live_kind.as_deref() != Some(ledger::LIVE_KIND_PLATFORM) {
+        return None;
+    }
+    let live = l.live?;
+    let since = l
+        .since
+        .map_or_else(|| "unknown".to_string(), log::timestamp);
+    Some(format!(
+        "~/.claude is on API key profile {live}: work is billed per token (since {since})"
+    ))
+}
+
 /// After a successful `profile switch NAME`: one line on stderr when the
 /// running rotator would ignore the hold. The switch itself succeeded, so
 /// this never changes the exit code.
@@ -184,76 +236,6 @@ fn warn_switch_hold(root: &std::path::Path) {
 /// `autostart`. Nothing to start off Unix.
 #[cfg(not(unix))]
 pub(crate) fn autostart_on_launch(_docker_flag: bool) {}
-
-/// `profile rotate`: one cycle, or a subcommand. Tuning flags of `start` and
-/// `watch` go after the subcommand.
-#[derive(Debug, clap::Args)]
-#[command(args_conflicts_with_subcommands = true)]
-pub struct RotateArgs {
-    #[command(subcommand)]
-    pub action: Option<RotateAction>,
-    /// Measure and decide, print what would happen, and change nothing
-    #[arg(long)]
-    pub dry_run: bool,
-    #[command(flatten)]
-    pub tune: TuneFlags,
-}
-
-#[derive(Debug, clap::Subcommand)]
-pub enum RotateAction {
-    /// Start `rotate watch` as a detached background process
-    Start(WatchFlags),
-    /// Run a cycle every --interval seconds in the foreground
-    Watch(WatchFlags),
-    /// Stop the background rotator
-    Stop,
-    /// Show whether the rotator runs, the live profile and the last cycle
-    Status,
-    /// Show, or set, whether launches start the rotator while auto-switch is on
-    Autostart {
-        #[arg(value_parser = ["on", "off"])]
-        state: Option<String>,
-    },
-}
-
-/// Thresholds and margins. Kept as text so the error can name the flag; see
-/// `settings::resolve`.
-#[derive(Debug, Clone, Default, clap::Args)]
-pub struct TuneFlags {
-    /// Swap when the live session usage reaches N% (default 85)
-    #[arg(long, value_name = "N")]
-    pub session_at: Option<String>,
-    /// Swap when the live weekly usage reaches N% (default 90)
-    #[arg(long, value_name = "N")]
-    pub week_at: Option<String>,
-    /// Points of headroom the target needs over the live login (default 5)
-    #[arg(long, value_name = "N")]
-    pub margin: Option<String>,
-    /// Points of headroom that justify a swap below the thresholds (default 30)
-    #[arg(long, value_name = "N")]
-    pub upgrade_margin: Option<String>,
-    /// Seconds after a swap during which no upgrade happens; 0 disables (default 3600)
-    #[arg(long, value_name = "SECS")]
-    pub hold: Option<String>,
-    /// Move onto an overflow profile only when the earliest plan reset is more than SECS away; 0 means at once (default 1800)
-    #[arg(long, value_name = "SECS")]
-    pub overflow_wait: Option<String>,
-    /// 1: a plan reset no reading reports counts as far away, so an unknown reset can move onto an overflow profile and spend money; 0: it never does (default 0)
-    #[arg(long, value_name = "0|1")]
-    pub overflow_unknown_reset: Option<String>,
-}
-
-#[derive(Debug, Clone, Default, clap::Args)]
-pub struct WatchFlags {
-    #[command(flatten)]
-    pub tune: TuneFlags,
-    /// Seconds between cycles (default 600)
-    #[arg(long, value_name = "SECS")]
-    pub interval: Option<String>,
-    /// Set by `start`: the pid file is already written
-    #[arg(long, hide = true)]
-    pub spawned: bool,
-}
 
 pub fn run(store: &ProfileStore, source: RootSource, args: RotateArgs) -> anyhow::Result<()> {
     #[cfg(unix)]
@@ -316,7 +298,16 @@ pub(in crate::commands::profile) fn switch_live(
 ) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
-        match switch::switch_live(store, &home_dir()?, name)? {
+        let home = home_dir()?;
+        // Judged before the move, from the profile's own login (or from
+        // `~/.claude` when it is already live), as the kind guard does.
+        let platform = super::kind::kind_of(store, name, &home) == super::kind::Kind::Platform;
+        let note = || {
+            if platform {
+                println!("{}", log::msg::switch_platform_note(name));
+            }
+        };
+        match switch::switch_live(store, &home, name)? {
             Ok(switch::Switched::DefaultOnly { reason, held }) => {
                 println!("Default for new launches: {name}");
                 match held {
@@ -331,11 +322,13 @@ pub(in crate::commands::profile) fn switch_live(
             Ok(switch::Switched::Moved { from, to }) => {
                 println!("Live login moved: {from} -> {to}");
                 print_held(store, name);
+                note();
                 Ok(())
             }
             Ok(switch::Switched::AlreadyLive(n)) => {
                 println!("{n} is already the live login; nothing moved.");
                 print_held(store, name);
+                note();
                 Ok(())
             }
             Err(f) => Err(anyhow::anyhow!(

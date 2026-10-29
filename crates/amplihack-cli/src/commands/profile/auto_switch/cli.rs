@@ -342,6 +342,9 @@ fn status(store: &ProfileStore) -> Result<String> {
         None if pending => writeln!(out, "invariant: pending recovery")?,
         None => writeln!(out, "invariant: ok (every login is in exactly one place)")?,
     }
+    if let Some(line) = crate::commands::profile::rotate::platform_live_line(store.root()) {
+        writeln!(out, "{line}")?;
+    }
     for note in notes(
         store,
         &state,
@@ -405,7 +408,14 @@ fn notes(
     }
     let home = usage_cmd::home_dir();
     let live_profile = default_live::live_name(store, home.as_deref());
-    let accounts = duplicates::accounts_with(state, ledger, names, home.as_deref(), live_profile);
+    // Issue #1700: API-key profiles share one credential; never duplicates.
+    let kinds = crate::commands::profile::kind::Ctx::load(store, home.as_deref());
+    let names: Vec<ProfileName> = names
+        .iter()
+        .filter(|n| kinds.kind(store, n) != crate::commands::profile::kind::Kind::Platform)
+        .cloned()
+        .collect();
+    let accounts = duplicates::accounts_with(state, ledger, &names, home.as_deref(), live_profile);
     for (a, b) in duplicates::pairs(&accounts) {
         notes.push(duplicates::warning(&a, &b));
     }

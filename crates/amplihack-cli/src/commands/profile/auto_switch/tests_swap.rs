@@ -371,6 +371,7 @@ mod overflow_precheck {
             threshold,
             exclude: Vec::new(),
             overflow: vec![OverflowEntry::new(n("cred"), 1)],
+            kind: Default::default(),
         }
     }
 
@@ -379,6 +380,7 @@ mod overflow_precheck {
             order: vec![n("cred")],
             blocked: blocked.iter().map(|b| b.to_string()).collect(),
             gate: Some(GATE),
+            platform: None,
         }
     }
 

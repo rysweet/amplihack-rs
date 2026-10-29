@@ -375,14 +375,30 @@ fn switch_to_an_unknown_profile_changes_nothing() {
 
 #[test]
 fn switch_to_a_profile_without_a_stored_login_is_refused() {
+    // Issue #1700 (D9): a subscription profile with no login of its own is
+    // refused by the kind guard before the switch runs, so not even
+    // `.default` changes: switching to it would bill the API key.
     let f = Fixture::new();
     f.ok(&["profile", "add", "fresh"]);
-    assert_refused_default_only(
-        &f,
-        "fresh",
-        None,
-        "profile fresh has no stored login; run `amplihack profile login fresh` first",
+    let before = (state(&f), f.logins());
+    let out = f.run(&["profile", "switch", "fresh"]);
+    assert_eq!(out.status.code(), Some(1), "{}", text(&out.stderr));
+    let err = text(&out.stderr);
+    assert!(
+        err.contains(
+            "profile fresh is a subscription profile with no login of its own; \
+             launching it would bill the Claude Platform API key per token."
+        ),
+        "{err}"
     );
+    assert!(
+        err.contains(
+            "hint: amplihack profile login <name>, or: amplihack profile kind set <name> api-key"
+        ),
+        "{err}"
+    );
+    assert_eq!(text(&out.stdout), "", "nothing switched");
+    assert_eq!((state(&f), f.logins()), before, "nothing changed");
 }
 
 #[test]

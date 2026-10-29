@@ -295,6 +295,7 @@ fn parse_cycle_reads_the_five_fields() {
             alert: true,
             live: Some("work".into()),
             overflow: None,
+            platform_live: false,
         }
     );
 }
@@ -424,6 +425,7 @@ fn status(outcome: &str, alert: bool) -> CycleStatus {
         alert,
         live: Some("work".into()),
         overflow: None,
+        platform_live: false,
     }
 }
 
@@ -615,6 +617,7 @@ fn on_overflow_cycle(outcome: &str, tag: &str, at: i64) -> CycleStatus {
         alert: false,
         live: Some("cred".into()),
         overflow: Some(tag.into()),
+        platform_live: false,
     }
 }
 
