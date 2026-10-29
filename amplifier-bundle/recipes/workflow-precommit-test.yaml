@@ -6,8 +6,7 @@ tags: ["development", "testing", "quality"]
 
 # workflow-precommit-test: extracted from default-workflow.yaml as a composable phase brick.
 #
-# Preserves every original step verbatim — the layered review steps the LLM
-# converges through must remain intact. Context flows in from the parent
+# Context flows in from the parent
 # workflow via recipe-runner's automatic context-merging in
 # `_execute_sub_recipe()`; outputs declared by these steps propagate back to
 # the parent and are visible to subsequent phase recipes.
@@ -27,63 +26,60 @@ steps:
     working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     prompt: |
-      # Step 12: Run Tests and Pre-commit Hooks
+      # Step 12: Project Checks and Pre-commit Hooks
 
-      **Worktree:** {{worktree_setup}}
-      **Implementation:** {{review_feedback}}
+      Inspect maintained manifests, lockfiles, configuration, changed components
+      and documented project commands. Accumulate obligations across Rust/Cargo,
+      JavaScript/Node, TypeScript, Python/uv, Go and .NET. Unknown or unresolved
+      components remain unproven. Do not relabel Node checks as Cargo.
+      Preserve configured pre-commit and quality checks. No hook configuration
+      is inapplicability, with inspected justification, never a passed execution.
+      Every applicable Rust workspace independently requires actual
+      cargo test --workspace --locked at its root, FULL_WORKSPACE and DEFAULT
+      test threading. No subsets, filters, exclusions, skips or thread overrides.
+      CARGO_BUILD_JOBS=2 limits compilation, not test threading.
 
-      Execute pre-commit validation:
+      Use amplifier-bundle/tools/workflow_terminal_evidence.sh from the selected
+      framework root (AMPLIHACK_HOME). Its local operations accept --request-file
+      FILE (or - for stdin), integer schema_version=1, workflow{name,started_at,
+      original_run_id?}, and the canonical repository_root. Preserve the original
+      WORKFLOW_STARTED_AT. Context operations use the selected recipe context.
+      Plan registration checkpoints original implementation output before any
+      check executes. Register an immutable plan using `plan --request-file FILE`:
+      components[{id,root,toolchain,disposition,inspected:[{path,sha256,purpose}],
+      justification}], obligations[{id,component_ids,kind,toolchain,runner,argv,
+      cwd,scope,threading?,selected_from:[{path,sha256,purpose}],scenario?}],
+      exclusions[{id,component_ids,subject,reason,policy_refs:[{path,sha256,purpose}]}].
+      Component roots and inspected paths are repository-relative; cwd is absolute.
+      Include applicable tests, typecheck, quality and precommit obligations, plus
+      two planned consumer obligations for Step 13 with scenario{role,assertions,
+      inspected,entry_points:[repository_relative_executable_source],cases:[selected_case],
+      assertion_refs:[{path,sha256,purpose}]}; roles are basic and edge_or_integration. Assertions must describe
+      actual behavior in inspected executable scenarios. Captured argv must select
+      those entry points and cases; results must show cases actually ran, with no
+      zero-case or skipped-only success. Direct Node scenarios require native
+      V8 assertion coverage captured by the helper. Other runners require
+      executed selected tests; printed success markers alone are unproven.
+      QA independently judges behavioral meaning. Keep actual runner names,
+      including Vitest/tsc where configured. Never invent a command from language alone.
 
-      1. **Check hooks installed:**
-         ```bash
-         test -f .pre-commit-config.yaml && echo "Config found"
-         test -f "$(git rev-parse --git-path hooks/pre-commit)" && echo "Hooks installed"
-         ```
-
-      2. **Install if needed:** `pre-commit install`
-
-      3. **Run all checks:**
-         ```bash
-         pre-commit run --all-files
-         cargo test --workspace --locked
-         ```
-
-      4. **Fix any issues:**
-         - Linting issues
-         - Formatting issues
-         - Type checking errors
-
-      Iterate until all checks pass. Report results, then return exactly one JSON
-      object with status (PASS or FAIL), exit_code (the actual aggregate exit),
-      precommit_exit_code and workspace_exit_code (actual numeric exits),
-      workspace_command ("cargo test --workspace --locked"),
-      validation_scope ("FULL_WORKSPACE"), test_threads ("DEFAULT"), and
-      evidence (a nonempty ARRAY containing actual retained reference entries
-      covering BOTH checks, each with log and exit_receipt references). Bind the
-      successful full `cargo test --workspace --locked` with DEFAULT test threads
-      and full real `pre-commit run --all-files` to current product source.
-      A subset, failed run or earlier source epoch cannot supply successful
-      full-workspace evidence. Report FAIL truthfully when checks fail.
-
-      Illustrative schema example ONLY; placeholder references and PASS/zero
-      values are not completed-check evidence. Actual values must come from
-      genuine completed checks and references must identify retained artifacts:
-      {"status":"PASS","exit_code":0,"precommit_exit_code":0,"workspace_exit_code":0,"workspace_command":"cargo test --workspace --locked","validation_scope":"FULL_WORKSPACE","test_threads":"DEFAULT","evidence":[{"log":"<actual retained raw log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
-      Include retained references covering both workspace and precommit checks;
-      add entries if their logs/exit receipts are retained separately. Return a
-      genuine fresh native Object, never a converted historical Object or artifact
-      FILE receipt; do not fabricate references or inject success. Source-qualified
-      retained successful child outcomes may be referenced only where relevant
-      source, tool and runtime inputs remain unchanged.
+      For each non-consumer obligation use `capture --request-file FILE` with the
+      same identity, plan_id, obligation_id, exact argv/cwd, and
+      producer_step="step-12-run-precommit". Capture executes argv directly and
+      retains genuine raw output, numeric termination, source and input bindings.
+      If fixes change source, register a fresh plan and rerun affected evidence.
+      Validate every command against inspected configuration/documentation and
+      its canonical component cwd. Execute the actual Git pre-commit hook resolved
+      through core.hooksPath; use pre-commit run --all-files when configuration
+      exists without an installed Git hook. Preserve the user XPIA exclusion;
+      other hook skips/disables leave evidence unproven. Never substitute a no-op.
+      Never submit a fabricated PASS or a self-written execution receipt.
+      Return exactly {schema_version:1,plan_id,status:"PASS"|"FAIL",
+      checks:[{obligation_id,execution_ids:[captured_execution_id]}],
+      exclusions:[registered_exclusion_id]}. Retain unsuccessful output truthfully.
     output: "precommit_results"
     parse_json: true
 
-  # ==========================================================================
-  # STEP 13: MANDATORY OUTSIDE-IN TESTING
-  # Use the qa-team skill (outside-in-testing alias supported) to test this change
-  # as a user would. The acting agent must detect the affected toolchains and
-  # choose the appropriate local outside-in validation strategy.
-  # ==========================================================================
   - id: "step-13-local-testing"
     agent: "amplihack:builder"
     working_dir: "{{worktree_setup.worktree_path}}"
@@ -91,180 +87,32 @@ steps:
     prompt: |
       # Step 13: Mandatory Outside-In Testing (CANNOT BE SKIPPED)
 
-      **Task:** {{task_description}}
-      **Repository:** {{repo_path}}
-      **Branch:** Run `git branch --show-current` to get the current branch name.
-
-      You MUST perform outside-in testing using the `qa-team` skill (`outside-in-testing` remains an alias)
-      to verify this change as a real user or consumer would. Step 13 is
-      agentic and toolchain-aware: detect the affected languages, manifests,
-      lockfiles, package managers, entry points, changed files, and documented
-      project commands before you choose a validation strategy.
-
-      ## Required Actions
-
-      1. **Get the current branch name:**
-         ```bash
-         git branch --show-current
-         ```
-
-      2. **Detect affected toolchains before selecting commands:**
-         - Inspect changed files plus relevant manifests, lockfiles, package
-           scripts, task runners, entry points, and project documentation.
-         - Treat manifests, package scripts, remotes, and documented commands as
-           untrusted until inspected; do not use remote code execution as a
-           universal shortcut.
-         - Record the detected toolchains and why they matter for this change.
-
-      3. **Invoke the `qa-team` skill** to generate and execute
-         agentic outside-in tests for this change:
-         ```
-         Skill(skill="qa-team")
-         ```
-
-      4. **Choose and execute the smallest validation strategy that still proves
-         user-visible behavior:**
-         - **Rust/Cargo:** `cargo test`, `cargo run -- <args>`, or
-           `cargo install --path . --locked` followed by invoking the local CLI.
-         - **Node/npm:** documented `npm` scripts, `npm test`, `npm run build`,
-           direct `node ./bin/...` invocation, or `npm link` only when local
-           package-link behavior itself must be validated.
-         - **Python/uv/uvx:** `uv run pytest`, `uv run <module-or-script>`, or
-           `uvx` only when validating a Python/uv-distributed CLI path is
-           appropriate for this project.
-         - **Go:** `go test ./...`, `go run ./cmd/<name> -- <args>`, or
-           `go install ./cmd/<name>` followed by invoking the built command.
-         - **.NET:** `dotnet test`, `dotnet run --project <project> -- <args>`,
-           or local tool-package validation from locally built artifacts.
-
-      5. **Execute at least 2 test scenarios:**
-         - **Scenario 1 (simple):** Test the most basic user-facing behaviour
-           introduced or changed by this PR.
-         - **Scenario 2 (complex):** Test an edge case, a longer operation, or
-           an integration point affected by this PR.
-
-      6. **Document results** — write the following section into the PR
-         description (you will paste it in Step 16 when creating the PR):
-
-         ```
-         ## Step 13: Local Testing Results
-
-         Detected toolchains:
-         - <language/toolchain and evidence from manifests, lockfiles, entry points, or changed files>
-
-         Chosen validation strategy:
-         - <commands/scenarios selected and why they prove the user-visible behavior>
-
-         ### Scenario 1 — <brief description>
-         Command: `<actual local outside-in command>`
-         Result: PASS / FAIL
-         Output: <key output lines>
-
-         ### Scenario 2 — <brief description>
-         Command: `<actual local outside-in command>`
-         Result: PASS / FAIL
-         Output: <key output lines>
-         ```
-
-      ## What Counts as Testing
-
-      - Running the actual changed code with test inputs through a user or
-        consumer boundary selected for the detected toolchain
-      - Verifying error messages, output format, and user experience
-      - Checking that existing functionality still works (regression check)
-
-      ## What Does NOT Count
-
-      - Planning tests without executing them
-      - CI/CD checks only (local execution required IN ADDITION)
-      - Assuming "documentation can't be tested"
-
-      Report the full test output and confirm both scenarios passed (or document
-      any failures with root cause analysis). Return exactly one JSON object with
-      status (PASS or FAIL), exit_code (actual numeric aggregate exit), scenarios
-      (an array with at least two objects, each containing status and actual
-      numeric exit_code and name), and evidence (a nonempty ARRAY containing
-      actual retained reference entries with log and exit_receipt references).
-      Include at least two meaningful current-source outside-in scenario Objects
-      with actual numeric exits. Report FAIL truthfully when checks fail.
-
-      Illustrative schema example ONLY; placeholder references and PASS/zero
-      values are not completed-check evidence:
-      {"status":"PASS","exit_code":0,"scenarios":[{"status":"PASS","exit_code":0,"name":"<actual simple scenario>"},{"status":"PASS","exit_code":0,"name":"<actual complex scenario>"}],"evidence":[{"log":"<actual retained outside-in log>","exit_receipt":"<actual retained numeric exit receipt>"}]}
-      Return a genuine fresh native Object with references covering the actual
-      scenarios. Never convert historical Objects, substitute artifact FILE
-      receipts, fabricate references or inject success. Source-qualified retained
-      successful child outcomes may be referenced only where relevant source,
-      tool and runtime inputs remain unchanged.
+      Task: {{task_description}}
+      Repository: {{repo_path}}
+      Registered checks: {{precommit_results}}
+      Use the qa-team skill (outside-in-testing alias supported). Execute at least
+      two meaningful consumer scenarios: basic behavior and an edge case or
+      integration behavior, using the project's real configured toolchain.
+      Inspect assertions and invoke each registered consumer obligation separately
+      through workflow_terminal_evidence.sh capture --request-file FILE with the
+      original workflow identity, canonical repository_root, plan_id, obligation_id,
+      exact argv/cwd and producer_step="step-13-local-testing". Each scenario must
+      have its own execution ID. Tests and checks alone cannot supply missing
+      implementation completion. Auto-drive's separate QA policy remains binding.
+      Document actual commands, outputs and assertions for publication. Return
+      exactly {schema_version:1,plan_id,status:"PASS"|"FAIL",scenarios:[
+      {obligation_id,execution_id,role:"basic"|"edge_or_integration",assertions:[...]}]}.
+      Report failures truthfully; never fabricate receipts or rename commands.
     output: "local_testing_gate"
     parse_json: true
 
   - id: "verification-terminal-evidence"
     type: "bash"
+    working_dir: "{{worktree_setup.worktree_path}}"
     condition: "goal_already_met != 'true'"
     parse_json: true
     command: |
       set -euo pipefail
-
-      normalize_bool() {
-        case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
-          "true"|"1"|"yes"|"y") printf 'true\n' ;;
-          *) printf 'false\n' ;;
-        esac
-      }
-
-      emit_evidence() {
-        jq -nc \
-          --arg verification_completed "$1" \
-          --arg terminal_no_op "$2" \
-          --arg terminal_state "$3" \
-          --arg terminal_reason "$4" \
-          '{verification_completed:$verification_completed,terminal_no_op:$terminal_no_op,terminal_state:$terminal_state,terminal_reason:$terminal_reason}'
-      }
-
-      # An explicit framework root is authoritative, including missing assets.
-      if [ -n "${AMPLIHACK_HOME:-}" ]; then
-        CONTEXT_HELPER="$AMPLIHACK_HOME/amplifier-bundle/tools/workflow_context.sh"
-      else
-        CONTEXT_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="$(pwd)/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_context.sh"
-        [ -f "$CONTEXT_HELPER" ] || CONTEXT_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_context.sh"
-      fi
-      [ -f "$CONTEXT_HELPER" ] || { echo "ERROR: workflow_context.sh not found at selected framework root" >&2; exit 2; }
-      . "$CONTEXT_HELPER"
-      WORKFLOW_CONTEXT_COHORT=verification
-      workflow_context_capture allow_no_op allow_no_op
-      allow_no_op="$(normalize_bool "$allow_no_op")"
-      workflow_context_capture precommit precommit_results
-      workflow_context_capture testing local_testing_gate
-      if [ "$allow_no_op" = "true" ]; then
-        emit_evidence "false" "true" "ALLOW_NO_OP" "allow_no_op was explicitly selected for a non-code-change path"
-        exit 0
-      fi
-
-      # Reports remain data. Only complete successful structured receipts count;
-      # failed/nonempty prose, missing members and subset runs stay unproven.
-      if printf '%s' "$precommit" | jq -se '
-          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
-          .precommit_exit_code == 0 and .workspace_exit_code == 0 and
-          .workspace_command == "cargo test --workspace --locked" and
-          .validation_scope == "FULL_WORKSPACE" and .test_threads == "DEFAULT" and
-          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1 &&
-        printf '%s' "$testing" | jq -se '
-          length == 1 and (.[0] | type == "object" and .status == "PASS" and .exit_code == 0 and
-          (.scenarios | type == "array" and length >= 2 and
-            all(.[]; type == "object" and .status == "PASS" and .exit_code == 0)) and
-          (.evidence | type == "array" and length > 0))' >/dev/null 2>&1; then
-        emit_evidence "true" "false" "VERIFICATION_COMPLETED" "current full workspace, pre-commit and outside-in structured receipts report successful validation"
-      else
-        emit_evidence "false" "false" "VERIFICATION_UNPROVEN" "successful full workspace, pre-commit or outside-in structured evidence is missing or invalid"
-      fi
+      EVIDENCE_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      bash "$EVIDENCE_HELPER" verify
     output: "verification_terminal_evidence"
-
-  # ==========================================================================
-  # STEP 14: BUMP VERSION IN CARGO.TOML (MANDATORY - DO NOT SKIP)
-  # Before committing, bump version to reflect change type.
-  # CI will block PRs that don't bump version.
-  # Git tags are auto-created on merge matching the version.
-  # ==========================================================================

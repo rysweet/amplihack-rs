@@ -379,3 +379,42 @@ fn workflow_complete_reports_canonical_agentic_workflow_result_fields_and_failur
         "workflow-complete must not report legacy unconditional completion once finalizer validation owns terminal status"
     );
 }
+
+#[test]
+fn all_four_finalization_consumers_use_the_revalidated_evidence_adapter() {
+    let recipe = load_finalize_recipe();
+    for (id, action) in [
+        ("step-22b-final-status", "final-status"),
+        ("collect-finalization-evidence", "collect"),
+        ("validate-agentic-finalization", "validate"),
+        ("workflow-complete", "complete"),
+    ] {
+        let command = step_command(&recipe, id);
+        assert!(
+            command.contains("workflow_terminal_evidence.sh"),
+            "{id} must restore/revalidate original typed evidence before consumption"
+        );
+        assert!(
+            command.contains(&format!("finalize --action {action}")),
+            "{id} must use its guarded {action} action"
+        );
+        assert!(
+            !command.contains("bash \"$FINAL_STATUS_HELPER\""),
+            "direct final-status calls bypass restoration"
+        );
+        assert!(
+            !command.contains("bash \"$FINALIZER_HELPER\""),
+            "direct classifier/completion calls bypass provenance guards"
+        );
+    }
+}
+
+#[test]
+fn finalization_adapter_refactor_stays_below_physical_recipe_line_budget() {
+    let path = workspace_root().join("amplifier-bundle/recipes/workflow-finalize.yaml");
+    let lines = fs::read_to_string(path).unwrap().lines().count();
+    assert!(
+        lines < 400,
+        "workflow-finalize.yaml has {lines} physical lines; adapters belong in the helper"
+    );
+}

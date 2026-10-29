@@ -274,13 +274,13 @@ steps:
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
-      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
-      bash "$FINAL_STATUS_HELPER"
+      EVIDENCE_ADAPTER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="$(pwd)/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_terminal_evidence.sh"
+      [ -f "$EVIDENCE_ADAPTER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $EVIDENCE_ADAPTER; cwd=$(pwd)" >&2; exit 1; }
+      bash "$EVIDENCE_ADAPTER" finalize --action final-status
     output: "final_status"
 
   - id: "collect-finalization-evidence"
@@ -288,8 +288,8 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
-      bash "$FINALIZER_HELPER" collect
+      EVIDENCE_ADAPTER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="$(pwd)/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $EVIDENCE_ADAPTER; cwd=$(pwd)" >&2; exit 2; }
+      bash "$EVIDENCE_ADAPTER" finalize --action collect
     output: "finalization_evidence"
 
   - id: "agentic-finalizer"
@@ -377,8 +377,8 @@ steps:
       # FAILED_PR_METADATA_UNAVAILABLE, BLOCKED_CI, FAILED_MEANINGFUL_DIFF, and
       # FAILED_MISSING_TOOLING. Non-success classifications exit 1 (fail closed).
       # Success also includes EXISTING_OPEN_PR (#1641): see default-workflow-agentic-finalization.md.
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
-      bash "$FINALIZER_HELPER" validate
+      EVIDENCE_ADAPTER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="$(pwd)/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $EVIDENCE_ADAPTER; cwd=$(pwd)" >&2; exit 2; }
+      bash "$EVIDENCE_ADAPTER" finalize --action validate
     output: "workflow_result"
 
   - id: "workflow-complete"
@@ -394,6 +394,6 @@ steps:
       # ALLOW_NO_OP, BLOCKED_CI, FAILED_IMPLEMENTATION, FAILED_REPORTING,
       # FAILED_INVALID_EVIDENCE, FAILED_MISSING_TOOLING, FAILED_PR_METADATA_UNAVAILABLE,
       # FAILED_DIRTY_WORKTREE, FAILED_MEANINGFUL_DIFF, HOLLOW_SUCCESS, INCOMPLETE.
-      FINALIZER_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="$(pwd)/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || FINALIZER_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_agentic_finalization.sh"; [ -f "$FINALIZER_HELPER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINALIZER_HELPER; cwd=$(pwd)" >&2; exit 2; }
-      bash "$FINALIZER_HELPER" complete
+      EVIDENCE_ADAPTER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="$(pwd)/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || EVIDENCE_ADAPTER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_terminal_evidence.sh"; [ -f "$EVIDENCE_ADAPTER" ] || { echo "ERROR: agentic finalization helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $EVIDENCE_ADAPTER; cwd=$(pwd)" >&2; exit 2; }
+      bash "$EVIDENCE_ADAPTER" finalize --action complete
     output: "workflow_completion"
