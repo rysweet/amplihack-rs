@@ -148,8 +148,15 @@ fn refresh_under_temp_home_never_writes_root_outside_it() {
     assert_eq!(fingerprint(&settings), before, "settings.json untouched");
     let work = &results.iter().find(|(n, _)| n == "work").unwrap().1;
     match work {
+        // Either check refuses the incident: the throwaway-HOME check runs
+        // first when the passwd home is known (it differs from this HOME),
+        // the temp-directory check otherwise.
         Refresh::Skipped(reason) => {
-            assert!(reason.contains("is under temporary directory"), "{reason}");
+            assert!(
+                reason.contains("is not the account's home")
+                    || reason.contains("is under temporary directory"),
+                "{reason}"
+            );
             assert!(reason.contains("is outside HOME"), "{reason}");
         }
         other => panic!("expected Skipped, got {other:?}"),

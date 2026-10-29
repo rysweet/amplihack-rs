@@ -193,7 +193,7 @@ mod issue_1699 {
         let home = dir(base.join("home"));
         let root = dir(home.join("profiles"));
         let bin = Path::new("/nonexistent/amplihack-hooks");
-        let reason = hook_path_refusal(bin, &root, Some(&home), &[])
+        let reason = hook_path_refusal(bin, &root, Some(&home), None, &[])
             .expect("a hooks path that does not exist must be refused");
         assert!(reason.contains("does not exist"), "{reason}");
         assert!(reason.contains("/nonexistent/amplihack-hooks"), "{reason}");
@@ -206,7 +206,7 @@ mod issue_1699 {
         let root = dir(home.join("profiles"));
         let not_a_file = dir(home.join(".local/bin/amplihack-hooks"));
         assert!(
-            hook_path_refusal(&not_a_file, &root, Some(&home), &[]).is_some(),
+            hook_path_refusal(&not_a_file, &root, Some(&home), None, &[]).is_some(),
             "only a regular file (or a symlink to one) is accepted"
         );
     }
@@ -219,7 +219,7 @@ mod issue_1699 {
         let link = home.join(".local/bin/amplihack-hooks");
         fs::create_dir_all(link.parent().unwrap()).unwrap();
         symlink(base.join("gone"), &link).unwrap();
-        let reason = hook_path_refusal(&link, &root, Some(&home), &[]).unwrap();
+        let reason = hook_path_refusal(&link, &root, Some(&home), None, &[]).unwrap();
         assert!(reason.contains("does not exist"), "{reason}");
     }
 
@@ -231,7 +231,7 @@ mod issue_1699 {
         let home = dir(base.join("home"));
         let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
         let (_other, root) = fixture();
-        let reason = hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&base))
+        let reason = hook_path_refusal(&bin, &root, Some(&home), None, std::slice::from_ref(&base))
             .expect("temp hooks path into a root outside HOME must be refused");
         assert!(reason.contains("is under temporary directory"), "{reason}");
         assert!(reason.contains("is outside HOME"), "{reason}");
@@ -249,7 +249,10 @@ mod issue_1699 {
         let (_h, real) = fixture();
         let home = dir(real.join("home"));
         let root = dir(real.join("elsewhere/profiles"));
-        assert!(hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&base)).is_some());
+        assert!(
+            hook_path_refusal(&bin, &root, Some(&home), None, std::slice::from_ref(&base))
+                .is_some()
+        );
     }
 
     #[test]
@@ -257,7 +260,7 @@ mod issue_1699 {
         let (_d, base) = fixture();
         let bin = hooks_file(&base.join("home/.local/bin/amplihack-hooks"));
         let root = dir(base.join("home/profiles"));
-        let reason = hook_path_refusal(&bin, &root, None, std::slice::from_ref(&base))
+        let reason = hook_path_refusal(&bin, &root, None, None, std::slice::from_ref(&base))
             .expect("with HOME unset a temp hooks path is refused");
         assert!(reason.contains("is under temporary directory"), "{reason}");
         assert!(reason.contains("HOME is unset"), "{reason}");
@@ -274,7 +277,7 @@ mod issue_1699 {
         let (_h, real) = fixture();
         let home = dir(real.join("home"));
         let root = dir(home.join(".claude-profiles"));
-        let reason = hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&tmp))
+        let reason = hook_path_refusal(&bin, &root, Some(&home), None, std::slice::from_ref(&tmp))
             .expect("a temp hooks path must not reach a real root under a real HOME");
         assert!(reason.contains("is under temporary directory"), "{reason}");
         assert!(
@@ -297,7 +300,8 @@ mod issue_1699 {
         symlink(&target, &link).unwrap();
         let (_r, root) = fixture();
         assert!(
-            hook_path_refusal(&link, &root, Some(&home), std::slice::from_ref(&tmp)).is_some(),
+            hook_path_refusal(&link, &root, Some(&home), None, std::slice::from_ref(&tmp))
+                .is_some(),
             "canonical target is under the temp base"
         );
     }
@@ -312,7 +316,10 @@ mod issue_1699 {
         fs::create_dir_all(link.parent().unwrap()).unwrap();
         symlink(&target, &link).unwrap();
         let root = dir(real.join("disk2/profiles"));
-        assert_eq!(hook_path_refusal(&link, &root, Some(&home), &[]), None);
+        assert_eq!(
+            hook_path_refusal(&link, &root, Some(&home), None, &[]),
+            None
+        );
     }
 
     /// The stored path is the one written, so a symlink placed in a temp
@@ -327,7 +334,7 @@ mod issue_1699 {
         fs::create_dir_all(link.parent().unwrap()).unwrap();
         symlink(&target, &link).unwrap();
         let root = dir(real.join("disk2/profiles"));
-        let reason = hook_path_refusal(&link, &root, Some(&home), std::slice::from_ref(&tmp))
+        let reason = hook_path_refusal(&link, &root, Some(&home), None, std::slice::from_ref(&tmp))
             .expect("a hooks path written under a temp base must be refused");
         assert!(reason.contains("is under temporary directory"), "{reason}");
         assert!(reason.contains(&link.display().to_string()), "{reason}");
@@ -346,7 +353,7 @@ mod issue_1699 {
         symlink(&target, &link).unwrap();
         let root = dir(real.join("disk2/profiles"));
         assert_eq!(
-            hook_path_refusal(&link, &root, Some(&home), std::slice::from_ref(&tmp)),
+            hook_path_refusal(&link, &root, Some(&home), None, std::slice::from_ref(&tmp)),
             None
         );
     }
@@ -359,7 +366,78 @@ mod issue_1699 {
         let home = dir(real.join("home"));
         let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
         let root = dir(real.join("mnt/data/profiles"));
-        assert_eq!(hook_path_refusal(&bin, &root, Some(&home), &[]), None);
+        assert_eq!(hook_path_refusal(&bin, &root, Some(&home), None, &[]), None);
+        assert_eq!(
+            hook_path_refusal(&bin, &root, Some(&home), Some(&home), &[]),
+            None,
+            "HOME is the account's home, so a root elsewhere is allowed"
+        );
+    }
+
+    /// Review of #1717, round 2: a scratch HOME that is not under any temp
+    /// base (local practice puts work files in `~/.amplihack/work`), with the
+    /// real `AMPLIHACK_CLAUDE_PROFILE_ROOT` inherited. The hooks binary exists
+    /// and is outside every temp base, yet its path dies with the scratch
+    /// directory, so it is refused.
+    #[test]
+    fn scratch_home_outside_temp_into_real_root_is_refused() {
+        let (_d, real) = fixture();
+        let account = dir(real.join("home"));
+        let home = dir(account.join(".amplihack/work/x/home"));
+        let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
+        let root = dir(account.join(".claude-profiles"));
+        let (_t, tmp) = fixture();
+        for bases in [Vec::new(), vec![tmp]] {
+            let reason = hook_path_refusal(&bin, &root, Some(&home), Some(&account), &bases)
+                .expect("a scratch HOME must not write into a root outside it");
+            assert!(reason.contains("is not the account's home"), "{reason}");
+            assert!(reason.contains("is outside HOME"), "{reason}");
+            assert!(reason.contains(&home.display().to_string()), "{reason}");
+            assert!(reason.contains(&account.display().to_string()), "{reason}");
+            assert!(reason.contains(&root.display().to_string()), "{reason}");
+        }
+    }
+
+    /// The same refusal when the scratch HOME's hooks binary is somewhere
+    /// permanent: the profiles belong to the account, not to the scratch HOME.
+    #[test]
+    fn scratch_home_with_permanent_hooks_into_real_root_is_refused() {
+        let (_d, real) = fixture();
+        let account = dir(real.join("home"));
+        let bin = hooks_file(&account.join(".local/bin/amplihack-hooks"));
+        let home = dir(real.join("scratch/home"));
+        let root = dir(account.join(".claude-profiles"));
+        assert!(hook_path_refusal(&bin, &root, Some(&home), Some(&account), &[]).is_some());
+    }
+
+    /// A scratch HOME whose profile root is inside it is self-contained.
+    #[test]
+    fn scratch_home_with_root_inside_it_is_allowed() {
+        let (_d, real) = fixture();
+        let account = dir(real.join("home"));
+        let home = dir(account.join(".amplihack/work/x/home"));
+        let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
+        let root = dir(home.join(".claude-profiles"));
+        assert_eq!(
+            hook_path_refusal(&bin, &root, Some(&home), Some(&account), &[]),
+            None
+        );
+    }
+
+    /// HOME reached through a symlink to the account's home is the account's
+    /// home: paths are compared in canonical form.
+    #[test]
+    fn home_symlinked_to_the_account_home_is_the_account_home() {
+        let (_d, real) = fixture();
+        let account = dir(real.join("home"));
+        let home = real.join("home-link");
+        symlink(&account, &home).unwrap();
+        let bin = hooks_file(&account.join(".local/bin/amplihack-hooks"));
+        let root = dir(real.join("mnt/data/profiles"));
+        assert_eq!(
+            hook_path_refusal(&bin, &root, Some(&home), Some(&account), &[]),
+            None
+        );
     }
 
     /// A temp HOME whose profile root is inside it is self-contained and
@@ -371,7 +449,7 @@ mod issue_1699 {
         let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
         let root = dir(home.join("profiles"));
         assert_eq!(
-            hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&base)),
+            hook_path_refusal(&bin, &root, Some(&home), None, std::slice::from_ref(&base)),
             None
         );
     }
@@ -386,8 +464,11 @@ mod issue_1699 {
         let (_o, other) = fixture();
         let outside = other.join("not-yet/profiles");
         let bases = std::slice::from_ref(&base);
-        assert_eq!(hook_path_refusal(&bin, &inside, Some(&home), bases), None);
-        assert!(hook_path_refusal(&bin, &outside, Some(&home), bases).is_some());
+        assert_eq!(
+            hook_path_refusal(&bin, &inside, Some(&home), None, bases),
+            None
+        );
+        assert!(hook_path_refusal(&bin, &outside, Some(&home), None, bases).is_some());
     }
 
     /// "Under" is component-wise: `/x/tmpfoo` is not under `/x/tmp`, and
@@ -400,7 +481,7 @@ mod issue_1699 {
         let bin = hooks_file(&base.join("tmpfoo/amplihack-hooks"));
         let root = dir(base.join("elsewhere"));
         assert_eq!(
-            hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&tmp)),
+            hook_path_refusal(&bin, &root, Some(&home), None, std::slice::from_ref(&tmp)),
             None,
             "tmpfoo is not under tmp"
         );
@@ -413,6 +494,7 @@ mod issue_1699 {
                 &in_tmp,
                 &sibling,
                 Some(&tmp_home),
+                None,
                 std::slice::from_ref(&tmp)
             )
             .is_some(),
@@ -433,6 +515,7 @@ mod issue_1699 {
                 &bin,
                 &root,
                 Some(&home),
+                None,
                 &[tmp, PathBuf::from("/nonexistent")]
             ),
             None
@@ -447,7 +530,7 @@ mod issue_1699 {
         let home = dir(base.join("home"));
         let bin = hooks_file(&home.join(".local/bin/amplihack-hooks"));
         let root = dir(home.join("profiles"));
-        assert_eq!(hook_path_refusal(&bin, &root, Some(&home), &[]), None);
+        assert_eq!(hook_path_refusal(&bin, &root, Some(&home), None, &[]), None);
 
         let store = ProfileStore::new(root);
         profile(&store, "work", Some(r#"{"hooks":{}}"#));

@@ -30,7 +30,7 @@ a test that exercises the refresh, and what to do when the guard fails.
 
 | Control | Where | What it does |
 |---------|-------|--------------|
-| Refusal | `refresh_profile_settings` in `crates/amplihack-cli/src/commands/profile/settings_refresh.rs` | Refuses the refresh when the hooks binary is missing, or is under a temp directory while the profile root is outside `HOME`. See [the profile reference](../reference/profile-command.md#seeding). |
+| Refusal | `refresh_profile_settings` in `crates/amplihack-cli/src/commands/profile/settings_refresh.rs` | Refuses the refresh when the hooks binary is missing; when `HOME` is not the account's passwd home and the profile root is outside `HOME`, wherever the binary lies; and when the binary is under a temp directory, unless the profile root is under `HOME` and itself under a temp directory. See [the profile reference](../reference/profile-command.md#seeding). |
 | Isolation | `tests/support/isolated_amplihack.rs` | `isolated(..)` clears the environment and also calls `.env_remove(PROFILE_ROOT_ENV)`, so no child inherits `AMPLIHACK_CLAUDE_PROFILE_ROOT`. |
 | Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits, and fails the run if any changed. |
 
@@ -59,9 +59,9 @@ that line.
 ## Write a test that starts the binary
 
 Start the binary through `isolated(..)` and give it a profile root inside
-the temp `HOME`. A root outside `HOME` combined with a hooks binary under
-the temp directory is exactly the case the refusal blocks, so such a test
-sees `Skipped` for every profile:
+the temp `HOME`. A root outside a `HOME` that is not the account's home is
+exactly the case the refusal blocks, wherever the hooks binary lies, so such
+a test sees `Skipped` for every profile:
 
 ```rust
 use crate::isolated_amplihack::{isolated, PROFILE_ROOT_ENV};
@@ -85,7 +85,7 @@ Choose the call by what the test checks:
 
 | Test checks | Call |
 |-------------|------|
-| The refusal rule itself | `hook_path_refusal(hooks_bin, root, home, temp_bases)` with injected `temp_bases` |
+| The refusal rule itself | `hook_path_refusal(hooks_bin, root, home, account_home, temp_bases)` with injected `account_home` and `temp_bases` |
 | The JSON edit on a fixture | `refresh_in(&store, update)` (unchecked) |
 | The whole install path | `refresh_profile_hooks` under `env_lock()`, with `HOME` and the root both in one temp directory |
 
@@ -149,9 +149,10 @@ nothing and passes.
   compared. A change in readability is reported.
 - On failure the guard calls `_exit(1)`, which skips later exit handlers. A
   leftover temp directory is possible.
-- The refusal does not cover a real `HOME` with a hooks binary under the temp
-  directory and a root under `HOME`, or scratch directories that are not
-  temp bases.
+- The throwaway-`HOME` refusal needs the account's passwd entry. Without
+  one (some containers, and Windows), a scratch `HOME` that is not under a
+  temp directory, with its hooks binary inside it, is not refused when the
+  root is outside it. A scratch `HOME` under a temp directory still is.
 
 ## Related
 
