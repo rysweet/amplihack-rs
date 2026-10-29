@@ -282,10 +282,13 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Verdict::Proceed => m,
         // Issue #1721: only the target left the candidates, and the probes
         // already taken chose another; from here the cycle is that one.
+        // `ctx.failed_live` is left as it is: a retry needs a target-only
+        // change, so the live probe, `failed_before`, live name and overflow
+        // entries are unchanged and `retry.failed == m.failed`. If the retry
+        // conditions are ever widened, assign `ctx.failed_live` here again.
         Verdict::Reconsidered { m, fresh, line } => {
             out.emit(t, &line);
             first = *fresh;
-            ctx.failed_live = m.failed;
             *m
         }
         Verdict::Skip(why) => {

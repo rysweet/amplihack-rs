@@ -131,15 +131,18 @@ pub fn check(
         _ => return Ok(Verdict::Skip(why)),
     };
     // A stub that built the measurement by hand kept no probes: no retry.
-    let Some((probe, probes)) = m.probed.clone() else {
+    let Some((probe, probes)) = &m.probed else {
         return Ok(Verdict::Skip(why));
     };
     let probes = probes
-        .into_iter()
+        .iter()
         .filter(|(n, _)| fresh.candidates.contains(n))
+        .cloned()
         .collect();
+    // Only the target changed, so the retry's `failed` equals the count
+    // already stored; `cycle.rs` relies on this (see the `Reconsidered` arm).
     let counted = std::mem::replace(&mut ctx.failed_live, failed_before);
-    let retry = decide_measured(ctx, &fresh, probe, probes, m.measured_at);
+    let retry = decide_measured(ctx, &fresh, probe.clone(), probes, m.measured_at);
     ctx.failed_live = counted;
     let retry = retry?;
     match &retry.decision {

@@ -245,10 +245,11 @@ pub(super) fn decide_measured(
         (Decision::Stay, Some(Tag::Out)) => Some(Tag::On),
         (_, tag) => tag,
     };
+    let others = probes.iter().map(|(n, p)| (n.clone(), p.reading)).collect();
     Ok(Measurement {
-        probed: Some((probe.clone(), probes.clone())),
         live: probe.reading,
-        others: probes.into_iter().map(|(n, p)| (n, p.reading)).collect(),
+        others,
+        probed: Some((probe, probes)),
         decision,
         note,
         failed,

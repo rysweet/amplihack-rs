@@ -2767,7 +2767,8 @@ reconsiders once:
    candidates. Nothing is probed again, so the lock is held throughout and
    the readings are as recent as those of the first decision.
 3. The [decision rule](#rotate-decision-rule) runs again on the fresh state
-   and those readings, with the time of the original measurement.
+   and those readings, recorded with the time of the original measurement.
+   Damping and spend-limit blocks are judged against the current time.
 4. If it gives a swap to a profile that is a candidate in the fresh state,
    the cycle logs
    `revalidate: target <old> no longer eligible (<reason>); reconsidered`,

@@ -842,11 +842,10 @@ to another candidate that measured with enough headroom. If every candidate
 is counted as failed, the probes are at fault rather than the accounts: run
 `amplihack profile usage` to see each profile's state.
 
-The log is not the only place you
-hear about it. When a cycle gets as far as deciding to swap, stay or raise
-the ALERT, the rotator updates the shared capacity state from that cycle's
-measurements, and the status line, Claude Code, `amplihack claude` and
-`amplihack recipe run` show a warning such as:
+The log is not the only place you hear about it. When a cycle gets as far
+as deciding to swap, stay or raise the ALERT, the rotator updates the shared
+capacity state from that cycle's measurements, and the status line, Claude
+Code, `amplihack claude` and `amplihack recipe run` show a warning such as:
 
 ```
 ⚠ all Claude accounts ≥90% · next reset Oct 22 2am
