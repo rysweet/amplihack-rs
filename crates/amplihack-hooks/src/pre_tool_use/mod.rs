@@ -6,6 +6,8 @@
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
 //! - In an auto-drive run, merges outside the merge gate (#1551)
+//! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
+//!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
 //! - XPIA prompt injection attacks (all tools)
 
 mod command;
@@ -13,6 +15,8 @@ mod cwd;
 mod git;
 pub mod launcher;
 mod merge_guard;
+mod shell;
+mod tmux_guard;
 mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
@@ -359,6 +363,17 @@ impl Hook for PreToolUseHook {
                 .get("command")
                 .and_then(Value::as_str)
                 .and_then(merge_guard::check)
+        {
+            return Ok(block);
+        }
+
+        // Issue #1733: refuse a tmux command that would kill the user's own
+        // server (or every session on it) because no -S or -L was given. Not
+        // gated by any environment variable. This must stay above the
+        // `tool_name != "Bash"` return below: Copilot's `bash` and Codex's
+        // un-normalised shell tool names would otherwise skip it.
+        if tmux_guard::is_shell_tool(&tool_name)
+            && let Some(block) = tmux_guard::check_tool_input(&tool_input)
         {
             return Ok(block);
         }

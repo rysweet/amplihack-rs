@@ -926,3 +926,93 @@ fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
         "no marker, no merge check: {outside_auto_drive}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Issue #1733: the tmux server guard runs for every shell tool name, above the
+// `tool_name != "Bash"` return, and is not gated by any environment variable.
+// ---------------------------------------------------------------------------
+
+const TMUX_INCIDENT: &str = "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server";
+
+fn shell_tool_input(tool_name: &str, tool_input: serde_json::Value) -> HookInput {
+    HookInput::PreToolUse {
+        tool_name: tool_name.to_string(),
+        tool_input,
+        session_id: None,
+    }
+}
+
+fn assert_tmux_denied(result: &serde_json::Value) {
+    assert_eq!(result["block"], true, "{result}");
+    assert_eq!(
+        result["hookSpecificOutput"]["permissionDecision"], "deny",
+        "{result}"
+    );
+    assert!(
+        result["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("env -u TMUX")),
+        "{result}"
+    );
+}
+
+#[test]
+fn tmux_guard_denies_for_every_shell_tool_name_without_the_merge_marker() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for tool in ["Bash", "bash", "BASH", "shell", "Shell", "exec_command"] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": TMUX_INCIDENT}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_reads_cmd_and_argv_arrays() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    for input in [
+        serde_json::json!({"cmd": TMUX_INCIDENT}),
+        serde_json::json!({"command": ["bash", "-lc", TMUX_INCIDENT]}),
+    ] {
+        let result = PreToolUseHook
+            .process(shell_tool_input("exec_command", input))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_denies_from_copilot_tool_args_payload() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(copilot_pre_tool_use_payload(TMUX_INCIDENT))
+        .unwrap();
+    assert_tmux_denied(&result);
+}
+
+#[test]
+fn tmux_guard_allows_a_scoped_kill_server() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(make_bash_input(
+            "env -u TMUX tmux -S /tmp/tx1/a.sock kill-server",
+        ))
+        .unwrap();
+    assert!(result.get("block").is_none(), "{result}");
+}
+
+#[test]
+fn tmux_guard_skips_non_shell_tools() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(shell_tool_input(
+            "Read",
+            serde_json::json!({"command": TMUX_INCIDENT, "path": "/tmp/notes.md"}),
+        ))
+        .unwrap();
+    assert!(result.as_object().unwrap().is_empty(), "{result}");
+}

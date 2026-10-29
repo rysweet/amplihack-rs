@@ -242,6 +242,199 @@ Runs when Claude Code stops. Triggers native Rust reflection prompt assembly plu
 
 Runs before every tool call (matcher `*`). Validates Bash commands against the amplihack allow-list and records metrics. No timeout — fail-open so tool calls are never blocked by a slow hook.
 
+The same handler runs for Copilot (`preToolUse`) and Codex (`PreToolUse`, command `pre-tool-use`), so every check below applies on all three hosts.
+
+#### tmux server guard
+
+The tmux server guard denies a shell command that would kill a whole tmux
+server, or every session on it, without naming a private socket. It always
+runs: no environment variable or setting turns it off, and it reads no
+environment variables.
+
+**Why it exists.** When `$TMUX` is set, as it is inside any tmux pane, tmux
+uses the socket named in `$TMUX` whenever no `-S` or `-L` is given, and ignores
+`TMUX_TMPDIR`. An agent running in a pane that runs
+`TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` therefore kills the user's own
+server and every session on it (#1733).
+
+**Tools it checks.** Tool names `bash`, `shell` and `exec_command`, compared
+case-insensitively. It runs after the XPIA check and the Skill redirect,
+beside the merge guard, and before the non-Bash early return. It reads
+`tool_input.command`, or `tool_input.cmd`.
+
+On Codex, `normalize_codex_input` in `protocol/codex.rs` has already renamed
+the `shell`, `exec_command` and `shell_command` tools to `Bash`, and copied
+`cmd` into `command`, before the handler runs, so a Codex call reaches the
+guard as `Bash` with `tool_input.command` set. The tool-name list matters for
+names that arrive unchanged, such as Copilot's `bash`. The normalisation does
+not change the value's type: an array of strings (the Codex argv form, such as
+`["bash","-lc","…"]`) is shell-quoted and joined by the guard before it is
+checked. An array with a non-string element has its string elements joined and
+is given the text test described under [Uncertain input](#uncertain-input).
+
+**What it denies.** A tmux invocation that runs, anywhere in its command
+sequence (split on `;` or `\;`):
+
+| Subcommand | Denied when |
+|---|---|
+| `kill-server` | The word starts with `kill-s` and is a prefix of `kill-server`: `kill-s`, `kill-se`, `kill-ser`, `kill-server`. |
+| `kill-session` | The word is a prefix of `kill-session` (`kill-ses`, `kill-sess`, …) and `-a` is set. Flags are read getopt-style with spec `aCt:`, so `-a`, `-aC` and `-at x` set `-a`; `-ta` and `-t a` name target `a` and do not. An unknown flag denies. |
+
+`kill-session -t`, `kill-window` and `kill-pane` are not guarded.
+
+**What counts as scoped.** The invocation is allowed only when `-S <path>` or
+`-L <name>` appears among the global options, which are the words before the
+first subcommand:
+
+- Flags without a value are `-2CDlNuVv`, as in tmux's own usage line, and may
+  be grouped. `-d` and `-h` are not tmux global options, so they end the
+  global options as unknown options do.
+- `-c`, `-f`, `-L`, `-S` and `-T` take a value, as a separate word or joined
+  (`-S/path`, `-Lname`).
+- `--` ends the global options. An unknown option ends them and makes the
+  invocation unscoped.
+
+These still deny, because they name the user's own server:
+
+- `-L default`, or an empty or missing `-L` or `-S` value.
+- An `-S` value that refers to `TMUX`, matches `/tmp/tmux-*/default`, or has
+  `default` as its final component. A value refers to `TMUX` when it contains
+  `$TMUX` not followed by a letter, digit or `_`; `${TMUX}`; or `${TMUX`
+  followed by one of `:`, `-`, `+`, `=`, `?`, `#`, `%` or `/`, as in
+  `${TMUX%%,*}` or `${TMUX:-x}`. `$TMUX_TMPDIR` and `${TMUX_TMPDIR}` do not
+  refer to `TMUX`.
+- A `TMUX=…` prefix or `env TMUX=…`. Setting `TMUX` is never scope.
+
+| Command | Result |
+|---|---|
+| `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` | denied |
+| `TMUX=/tmp/x,1,0 tmux kill-server` | denied |
+| `tmux kill-ses -a` | denied |
+| `tmux -L default kill-server` | denied |
+| `tmux -S "$TMUX" kill-server` | denied |
+| `tmux new -d 'sleep 1' \; kill-server` | denied |
+| `env -u TMUX tmux -S "$SB/tmux.sock" kill-server` | allowed |
+| `tmux -L qa-1733 kill-server` | allowed |
+| `tmux kill-session -t qa-1733` | allowed |
+
+**Where tmux is found.** Commands are split by the shared shell tokeniser in
+`pre_tool_use/shell.rs` on `;`, `&&`, `||`, `|`, `&` and newlines, after line
+continuations are joined. Three layers are checked:
+
+1. **Structural.** Every simple command whose program basename is `tmux`
+   (case-insensitive), after `env`, `command`, `exec`, `nice`, `nohup`,
+   `timeout`, `stdbuf`, `time`, `\tmux` and `{ …; }` are seen through.
+2. **Embedded tmux word.** In any other command, a later word with basename
+   `tmux` starts a tmux invocation, as in `xargs tmux …`, `ssh host tmux …`,
+   `setsid tmux …` or `watch tmux …`.
+3. **Embedded script.** A word that contains both a `tmux` token and a `kill-s`
+   token, such as the argument of `bash -c`, `python -c`, `$( )`, `<( )` or
+   backticks, is parsed again with all three layers, up to 4 levels deep. The
+   body of each `$( )` or backtick substitution in the word runs as shell code
+   wherever it appears, so it is judged on what it runs. The rest of the word
+   is allowed only if it holds at least one tmux invocation and every one is
+   scoped.
+
+Layers 2 and 3 exempt data-only commands, so a commit message can mention the
+guard. The command is data-only when its program is one of `git`, `gh`,
+`echo`, `printf`, `grep`, `egrep`, `fgrep`, `rg`, `cat`, `head`, `tail`, `wc`,
+`jq`, `test`, `[`, `true` or `:`, no stage of the command line is a shell
+evaluator, and the word holds no `$(` or backtick. A `git -c` value containing
+`=!` is not data.
+
+| Command | Result |
+|---|---|
+| `git commit -m "add tmux kill-server guard"` | allowed |
+| `echo "$(tmux kill-server)"` | denied |
+| `bash -c 'tmux -S /tmp/tx1/a.sock kill-server'` | allowed |
+| `python -c "os.system('tmux kill-server')"` | denied |
+| `echo tmux kill-server \| sh` | denied |
+
+Shell evaluators are `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `eval`,
+`source`, `.`, `xargs`, `env -S`, `nohup`, `exec`, `parallel`, `watch`,
+`script`, `su`, `sudo`, `setsid`, `ssh`, `docker`, `kubectl`, `find`,
+`python`, `python3`, `node`, `perl`, `ruby` and `tmux` itself (so
+`tmux new "tmux kill-server"` is denied).
+
+A heredoc body is checked as commands when the command that receives it is a
+shell evaluator, or belongs to a pipeline that contains one:
+`bash <<EOF … tmux kill-server … EOF` is denied, and
+`cat <<EOF > notes.md … tmux kill-server … EOF` is allowed. In any other
+heredoc whose delimiter is unquoted, the shell still runs each `$( )` and
+backtick in the body, so those are checked as commands.
+
+<a id="uncertain-input"></a>
+**Uncertain input.** The guard prefers a false positive to a missed kill:
+
+- A program word that starts with `$`, together with any word starting with
+  `kill-s`, denies.
+- An unscoped tmux in the same pipeline as a word starting with `kill-s`
+  denies, which covers `echo kill-server | tmux -C attach`.
+- Unbalanced quotes, an unterminated `$(`, or a `<<` with no delimiter fall
+  back to a text test: the command is denied when its text contains both
+  `tmux` and `kill-s`. Input over 64 KiB gets only this text test.
+- Reaching the depth limit (4) or the re-parse limit (256) while a candidate
+  remains denies.
+
+The guard never panics on any input. On Claude Code and Copilot a panic or
+error in the handler fails open: the hook returns `{}` and the command is
+allowed. On Codex, `pre_tool_use` runs as a security hook, so a panic or error
+goes through `deny_on_failure()` and the command is denied with the generic
+reason "Amplihack security check could not process tool input" instead of the
+guard's message.
+
+**Response.** On a deny the hook exits `0`. Claude Code and Copilot receive
+this JSON object on stdout:
+
+```json
+{
+  "block": true,
+  "message": "<M>",
+  "decision": "block",
+  "reason": "<M>",
+  "permissionDecision": "deny",
+  "permissionDecisionReason": "<M>",
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "<M>"
+  }
+}
+```
+
+On Codex, `codex_output()` reduces the deny to its `hookSpecificOutput` member
+alone, which `write_security_response` writes with a trailing newline and a
+flush:
+
+```json
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "<M>"
+  }
+}
+```
+
+`<M>` is this fixed message. The command itself is never echoed.
+
+> Blocked: this tmux command would act on the tmux server named in $TMUX (normally the user's own server, with all of their sessions), because no -S or -L was given. TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket.
+
+An allowed command gets the hook's usual output, so the other PreToolUse checks
+still apply.
+
+**Known limits.** The guard is a guard rail against agent mistakes, not a
+sandbox. It does not see through shell aliases or functions, script files
+(`bash script.sh`), `tmux source-file`, or commands assembled at run time from
+pieces such as `"kill-"+"server"`.
+
+**Source.** `crates/amplihack-hooks/src/pre_tool_use/tmux_guard.rs`, with unit
+tests in `pre_tool_use/tests/tmux_guard_tests.rs`, host-payload tests in
+`bins/amplihack-hooks/tests/tmux_guard_protocol.rs` (the Codex cases assert
+the reduced `hookSpecificOutput`-only shape), and a real-tmux test of
+`$TMUX` precedence in `crates/amplihack-hooks/tests/tmux_socket_precedence.rs`
+that skips when tmux is not installed.
+
 ### 4. PostToolUse — `post-tool-use`
 
 Runs after every tool call (matcher `*`). Records tool usage metrics. No timeout — fail-open.

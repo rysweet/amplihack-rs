@@ -18,6 +18,7 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Agents could kill the user's tmux server (#1733)**: inside a tmux pane `$TMUX` is set, and tmux then uses that socket and ignores `TMUX_TMPDIR`, so an agent's `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` killed the user's own server and every session on it. The `pre-tool-use` hook now denies `tmux kill-server` (and its prefixes) and `tmux kill-session -a` unless the invocation names a private socket with `-S <path>` or `-L <name>`, on Claude Code, Codex and Copilot. The deny names the safe form, `env -u TMUX tmux -S <private socket> …`. The testing and tmux-using skills now require `-S` on every tmux command. See `docs/reference/hook-specifications.md#tmux-server-guard`.
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime
   artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent
