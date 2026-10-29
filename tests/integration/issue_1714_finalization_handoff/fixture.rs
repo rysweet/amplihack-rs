@@ -8,8 +8,10 @@
 //!   a stub `amplihack` for the two `orch helper` calls.
 //! - [`brick`] sources `recipe_var.sh` and the new brick and runs a snippet.
 //!
-//! Every child starts from `isolated(..)`, so no ambient `RECIPE_VAR_*` or
-//! credential from an enclosing run can reach it.
+//! Every `bash` child starts from `isolated(..)` (via `bash_in` or
+//! [`fixture_bash`]), so it gets `HOME_GUARD_ENV` and `ROTATE_AUTOSTART_ENV`
+//! and no ambient `RECIPE_VAR_*` or credential from an enclosing run;
+//! `static_guards.rs` refuses a bash `Command` built any other way here.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -20,6 +22,7 @@ use serde_yaml::Value as Yaml;
 use tempfile::TempDir;
 
 use crate::isolated_amplihack::isolated;
+use crate::issue_1641_finalization_open_pr::fixture::LEAK_MARKER;
 pub use crate::issue_1641_finalization_open_pr::fixture::{
     BRANCH, Fixture, Outcome, PR_URL, as_refs, check_run, green_rollup, open_pr, resumed_env,
 };
@@ -73,7 +76,7 @@ fn outcome(command: &mut Command) -> Outcome {
     }
 }
 
-fn write_exec(path: &Path, body: &str) {
+pub fn write_exec(path: &Path, body: &str) {
     fs::write(path, body).expect("write stub");
     #[cfg(unix)]
     {
@@ -112,6 +115,17 @@ fn bash_in(tmp: &Path) -> Command {
     command
 }
 
+/// `bash` from `isolated(..)` with the #1641 fixture's environment: its
+/// private HOME, stub `gh`, github.com rewritten to its private remotes, and
+/// the leak marker its `gh` stub echoes on failure. Runs in the fixture repo.
+pub fn fixture_bash(fx: &Fixture) -> Command {
+    let mut command = bash_in(fx.tmp.path());
+    command
+        .current_dir(&fx.repo)
+        .env("GH_LEAK_MARKER", LEAK_MARKER);
+    command
+}
+
 /// Run the finalization dispatcher in `mode` with exactly `envs`.
 pub fn dispatch(fx: &Fixture, mode: &str, envs: &[(&str, &str)]) -> Outcome {
     let mut command = bash_in(fx.tmp.path());
@@ -128,21 +142,6 @@ pub fn dispatch(fx: &Fixture, mode: &str, envs: &[(&str, &str)]) -> Outcome {
 
 pub fn validate(fx: &Fixture, envs: &[(&str, &str)]) -> Outcome {
     dispatch(fx, "validate", envs)
-}
-
-/// Put a `jq` on the fixture's PATH that fails whenever its filter adds the
-/// `handoff` field, and passes every other call to the real jq.
-pub fn break_handoff_jq(fx: &Fixture) {
-    let real = Command::new("bash")
-        .args(["-c", "command -v jq"])
-        .output()
-        .expect("locate jq");
-    let real = String::from_utf8_lossy(&real.stdout).trim().to_owned();
-    assert!(real.starts_with('/'), "jq must be on PATH for these tests");
-    let body = format!(
-        "#!/usr/bin/env bash\nfor a in \"$@\"; do case \"$a\" in *handoff*) printf '{{\"partial\":'; exit 5 ;; esac; done\nexec {real} \"$@\"\n"
-    );
-    write_exec(&fx.tmp.path().join("bin/jq"), &body);
 }
 
 /// Source `recipe_var.sh` and the brick, then run `script` with `envs`.

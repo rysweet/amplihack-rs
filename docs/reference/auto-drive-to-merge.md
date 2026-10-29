@@ -395,7 +395,8 @@ whether or not the branch had an upstream (see
 [A PR ahead of local HEAD](./workflow-terminal-state.md#a-pr-ahead-of-local-head-is-the-same-pr-1714)). Second, under auto-drive, a `FAILED_IMPLEMENTATION` on a PR that the
 open-PR check confirmed (open, same repository, on the run branch, head at or
 a fast-forward of the local HEAD) is handed to the crusty loop and the
-merge-ready loop, as `BLOCKED_CI` is.
+merge-ready loop, as `BLOCKED_CI` is. A `FAILED_REPORTING` on such a PR is
+handed on in the same way.
 
 The hand-off is decided from typed data only: the `terminal_state` and
 `handoff` fields of `workflow_result`, and the PR number step-03 resolves
@@ -404,7 +405,7 @@ it.
 
 ### Which states are handed on
 
-`BLOCKED_CI` and `FAILED_IMPLEMENTATION` are handed on. The list is defined once, in
+`BLOCKED_CI`, `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` are handed on. The list is defined once, in
 `finalization_handoff_allowed`
 ([`workflow_finalization_handoff.sh`](../../amplifier-bundle/tools/workflow_finalization_handoff.sh)),
 as an exact `case` match with no globs and no case folding. The finalization
@@ -420,12 +421,20 @@ its own copy.
 | `FAILED_PR_METADATA_UNAVAILABLE` | No | No PR could be identified. |
 | `FAILED_MEANINGFUL_DIFF` | No | There is no diff worth reviewing. |
 | `FAILED_INVALID_INPUT`, `FAILED_INVALID_EVIDENCE`, `FAILED_MISSING_TERMINAL_EVIDENCE`, `FAILED_MISSING_TOOLING` | No | The evidence or tooling cannot be read, so the build cannot be trusted. |
-| `FAILED_REPORTING` | No | The fix is to rerun the reporting step, which the loops do not do. |
+| `FAILED_REPORTING` | Only on a PR the open-PR check confirmed | Implementation and verification succeeded and only the reporting step failed. The reporting narrative has no effect on the PR, which the loops review and fix. Without a confirmed PR the run ends. |
 | `HOLLOW_SUCCESS`, `INCOMPLETE` | No | The agent output is empty or unfinished, so the PR may be too. |
 | `EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED` and the other success states | Not applicable | They already succeed and need no hand-off. |
 
+When the reporting step failed, the validator runs the open-PR check before
+both reporting-failure exits (`FAILED_REPORTING`, and `FAILED_IMPLEMENTATION`
+when the evidence is incomplete), but only when the hand-off flag is on. A
+standalone run makes no extra `gh` call and fails closed as before. On these
+exits the check can only hand a confirmed PR to the loops; even a PR with
+every check green does not turn a reporting failure into success.
+
 `blocked_ci`, ` BLOCKED_CI`, `BLOCKED_CI` followed by a newline,
-`failed_implementation`, `BLOCKED_*` and `FAILED_*` are all rejected.
+`failed_implementation`, `failed_reporting`, `BLOCKED_*` and `FAILED_*` are
+all rejected.
 
 ### How the flag reaches finalization
 

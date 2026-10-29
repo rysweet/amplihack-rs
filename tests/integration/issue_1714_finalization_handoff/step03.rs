@@ -139,7 +139,6 @@ fn every_other_failed_result_stops_the_run() {
         "FAILED_PR_METADATA_UNAVAILABLE",
         "FAILED_DIRTY_WORKTREE",
         "FAILED_INVALID_EVIDENCE",
-        "FAILED_REPORTING",
         "HOLLOW_SUCCESS",
     ]
     .into_iter()

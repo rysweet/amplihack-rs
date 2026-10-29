@@ -4,12 +4,12 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use tempfile::TempDir;
 
 use super::fixture::*;
 use crate::artifact_guard_workflow::worktree_setup_json;
+use crate::isolated_amplihack::isolated;
 
 pub const BR: &str = "feat/sync";
 
@@ -154,11 +154,10 @@ impl Remote {
             self.root.join("bin").display(),
             std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())
         );
-        Command::new("bash")
+        isolated("bash")
             .arg("-c")
             .arg(finalize_command(id))
             .current_dir(self.root.join("launch"))
-            .env_clear()
             .env("PATH", path)
             .env("HOME", self.root.join("home"))
             .env("GIT_CONFIG_GLOBAL", "/dev/null")

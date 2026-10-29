@@ -30,12 +30,14 @@ fn flag(value: Option<&str>, bare: Option<&str>) -> String {
     outcome.stdout.trim_end_matches('\n').to_owned()
 }
 
-// Exactly BLOCKED_CI and FAILED_IMPLEMENTATION may be handed off (#1714
-// case 2); a checkout that is not the PR's (dirty, wrong branch) never is.
+// Exactly BLOCKED_CI, FAILED_IMPLEMENTATION (#1714 case 2) and
+// FAILED_REPORTING may be handed off; the last two only through the open-PR
+// functions. A checkout that is not the PR's (dirty, wrong branch) never is.
 #[test]
-fn only_blocked_ci_and_failed_implementation_are_allowed() {
+fn only_blocked_ci_failed_implementation_and_failed_reporting_are_allowed() {
     assert!(allowed("BLOCKED_CI"));
     assert!(allowed("FAILED_IMPLEMENTATION"));
+    assert!(allowed("FAILED_REPORTING"));
     for state in [
         "FAILED_CLOSED_UNMERGED",
         "FAILED_PR_METADATA_UNAVAILABLE",
@@ -45,7 +47,6 @@ fn only_blocked_ci_and_failed_implementation_are_allowed() {
         "FAILED_INVALID_INPUT",
         "FAILED_INVALID_EVIDENCE",
         "FAILED_MISSING_TERMINAL_EVIDENCE",
-        "FAILED_REPORTING",
         "FAILED_MISSING_TOOLING",
         "HOLLOW_SUCCESS",
         "INCOMPLETE",
@@ -71,6 +72,8 @@ fn near_misses_are_rejected() {
         "BLOCKED_CI|FAILED_IMPLEMENTATION",
         "failed_implementation",
         "FAILED_IMPLEMENTATION ",
+        "failed_reporting",
+        "FAILED_REPORTING\n",
         "FAILED_*",
         "*",
     ] {

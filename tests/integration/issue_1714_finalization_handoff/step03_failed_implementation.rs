@@ -1,6 +1,7 @@
-//! autodrive-build step-03 on #1714 case 2: a `FAILED_IMPLEMENTATION` result
-//! that finalization handed off (it does so only for a PR its open-PR check
-//! confirmed) goes through the same PR checks as `BLOCKED_CI`.
+//! autodrive-build step-03 on #1714 case 2: a `FAILED_IMPLEMENTATION` or
+//! `FAILED_REPORTING` result that finalization handed off (it does so only for
+//! a PR its open-PR check confirmed) goes through the same PR checks as
+//! `BLOCKED_CI`.
 
 use super::fixture::*;
 use super::step03::{assert_stopped, build_result, state_reads};
@@ -63,6 +64,34 @@ fn failed_implementation_with_the_handoff_and_an_open_pr_continues() {
     assert_stopped(
         &outcome,
         "ended FAILED_IMPLEMENTATION without a merge-ready hand-off",
+        "no handoff field",
+    );
+}
+
+// FAILED_REPORTING handed off by the finaliser (it does so only for a PR the
+// open-PR check confirmed) continues the same way; without the field it stops.
+#[test]
+fn failed_reporting_with_the_handoff_and_an_open_pr_continues() {
+    let fx = Step03::new();
+    let outcome = fx.run("134", Some(&handoff_result("FAILED_REPORTING", "134")), &[]);
+    assert!(outcome.success(), "{}", outcome.describe());
+    let result = build_result(&outcome);
+    assert_eq!(result["terminal_state"], "FAILED_REPORTING");
+    assert_eq!(result["handed_off"], "true");
+    assert!(state_reads(&fx, "134") >= 1, "{:?}", fx.gh_calls());
+
+    let fx = Step03::new();
+    fx.pr_states("134", &["MERGED"]);
+    let outcome = fx.run("134", Some(&handoff_result("FAILED_REPORTING", "134")), &[]);
+    assert_stopped(&outcome, "PR #134 is MERGED, not OPEN", "merged PR");
+
+    let mut standalone = handoff_result("FAILED_REPORTING", "134");
+    standalone.as_object_mut().unwrap().remove("handoff");
+    let fx = Step03::new();
+    let outcome = fx.run("134", Some(&standalone), &[]);
+    assert_stopped(
+        &outcome,
+        "ended FAILED_REPORTING without a merge-ready hand-off",
         "no handoff field",
     );
 }

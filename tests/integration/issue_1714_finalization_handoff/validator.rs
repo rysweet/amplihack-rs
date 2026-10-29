@@ -6,6 +6,8 @@
 
 use serde_json::json;
 
+use crate::isolated_amplihack::isolated;
+
 use super::fixture::*;
 
 const FLAG: (&str, &str) = ("RECIPE_VAR_finalization_handoff", "true");
@@ -268,4 +270,19 @@ fn a_success_result_has_no_handoff_key_even_with_the_flag() {
     assert_eq!(outcome.field("terminal_state"), "EXISTING_OPEN_PR");
     assert_no_handoff_key(&outcome, "EXISTING_OPEN_PR");
     assert_eq!(outcome.json().as_object().map(|o| o.len()), Some(19));
+}
+
+/// Put a `jq` on the fixture's PATH that fails whenever its filter adds the
+/// `handoff` field, and passes every other call to the real jq.
+fn break_handoff_jq(fx: &Fixture) {
+    let real = isolated("bash")
+        .args(["-c", "command -v jq"])
+        .output()
+        .expect("locate jq");
+    let real = String::from_utf8_lossy(&real.stdout).trim().to_owned();
+    assert!(real.starts_with('/'), "jq must be on PATH for these tests");
+    let body = format!(
+        "#!/usr/bin/env bash\nfor a in \"$@\"; do case \"$a\" in *handoff*) printf '{{\"partial\":'; exit 5 ;; esac; done\nexec {real} \"$@\"\n"
+    );
+    write_exec(&fx.tmp.path().join("bin/jq"), &body);
 }

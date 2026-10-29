@@ -1,6 +1,7 @@
 //! Issue #1714: inside auto-drive, a `default-workflow` build whose
-//! finalization ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` while the
-//! open-PR check confirmed a published, open PR, hands that PR to the crusty
+//! finalization ends `BLOCKED_CI`, or `FAILED_IMPLEMENTATION` or
+//! `FAILED_REPORTING` while the open-PR check confirmed a published, open PR
+//! (`reporting_handoff.rs` for the reporting-failure exits), hands that PR to the crusty
 //! loop and the merge-ready loop instead of ending the run. A standalone
 //! `default-workflow` still fails closed, and every other finalization failure
 //! still ends auto-drive. The open-PR check also accepts a PR head that is a
@@ -33,6 +34,8 @@ mod fixture;
 mod probe;
 #[path = "issue_1714_finalization_handoff/probe_stale.rs"]
 mod probe_stale;
+#[path = "issue_1714_finalization_handoff/reporting_handoff.rs"]
+mod reporting_handoff;
 #[path = "issue_1714_finalization_handoff/static_guards.rs"]
 mod static_guards;
 #[path = "issue_1714_finalization_handoff/step03.rs"]

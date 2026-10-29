@@ -559,14 +559,14 @@ expressions, trimming or case folding.
 | `FAILED_INVALID_INPUT` | No | The evidence cannot be read. |
 | `FAILED_INVALID_EVIDENCE` | No | The evidence cannot be read. |
 | `FAILED_MISSING_TERMINAL_EVIDENCE` | No | The evidence cannot be read. |
-| `FAILED_REPORTING` | No | The fix is to rerun the reporting step, which the loops do not do. |
+| `FAILED_REPORTING` | Yes, only on a PR the open-PR check confirmed | Implementation and verification succeeded and only the reporting step failed; the reporting narrative has no effect on the PR the loops review and fix. With no confirmed PR it fails closed. |
 | `FAILED_MISSING_TOOLING` | No | The tooling to read the evidence is missing. |
 | `HOLLOW_SUCCESS` | No | The agent output is empty, so the PR may be too. |
 | `INCOMPLETE` | No | The run did not finish. |
 | Success states (`EXISTING_OPEN_PR`, `IMPLEMENTED_VERIFIED`, ...) | Not applicable | They already succeed. |
 
-A handed-off result keeps its `terminal_state` (`BLOCKED_CI` or
-`FAILED_IMPLEMENTATION`), `terminal_success=false` and `terminal_failure=true`, and adds
+A handed-off result keeps its `terminal_state` (`BLOCKED_CI`,
+`FAILED_IMPLEMENTATION` or `FAILED_REPORTING`), `terminal_success=false` and `terminal_failure=true`, and adds
 `handoff=merge_ready_loop`. Only the process exit code changes, to `0`.
 `autodrive-build` step-03 still checks that the PR is open and is the one
 phase 1 resolved before it continues; see

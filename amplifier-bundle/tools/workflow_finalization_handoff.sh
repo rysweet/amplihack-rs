@@ -20,15 +20,21 @@
 #                            head at or fast-forward of the local HEAD), but
 #                            this run's own evidence does not prove the work
 #                            complete. The crusty loop reviews exactly that.
+#     FAILED_REPORTING       implementation and verification succeeded, the
+#                            reporting step failed, and the open-PR check
+#                            confirmed the PR as above. The reporting
+#                            narrative has no effect on the PR the loops
+#                            review and fix.
 #   Never handed off: FAILED_DIRTY_WORKTREE and FAILED_WRONG_BRANCH (the
 #   local checkout is not the PR's), FAILED_MISSING_TOOLING,
 #   FAILED_INVALID_EVIDENCE, FAILED_INVALID_INPUT and
 #   FAILED_MISSING_TERMINAL_EVIDENCE (the evidence cannot be read),
 #   HOLLOW_SUCCESS (the agent output is empty, so the PR may be too),
 #   FAILED_CLOSED_UNMERGED and FAILED_MEANINGFUL_DIFF (there is no open PR
-#   worth reviewing), FAILED_PR_METADATA_UNAVAILABLE (the PR is unknown),
-#   FAILED_REPORTING (the fix is to rerun the reporting step, which the
-#   loops do not do) and INCOMPLETE. Success states need no hand-off.
+#   worth reviewing), FAILED_PR_METADATA_UNAVAILABLE (the PR is unknown)
+#   and INCOMPLETE. Success states need no hand-off. FAILED_IMPLEMENTATION
+#   and FAILED_REPORTING are handed off only through the *_open_pr
+#   functions, which require a PR the open-PR check confirmed.
 #
 #   finalization_handoff_allowed <state>
 #       Return 0 only for exactly one of FINALIZATION_HANDOFF_STATES.
@@ -42,6 +48,10 @@
 #       As above, but hands off only when the open-PR check confirmed a PR
 #       (open_pr_confirmed_number/url/facts, set by the validator); otherwise it
 #       fails closed with the run's own PR evidence.
+#   finalization_try_handoff_open_pr <state> <reason> <next> <evidence>
+#       The hand-off half of the above: exits 0 after a hand-off, otherwise
+#       restores the run's own PR evidence and returns 1, so a caller can
+#       emit its own failure (FAILED_REPORTING keeps finalizer_output_valid).
 #   autodrive_build_handoff <resolved_pr>
 #       autodrive-build step-03's decision. Call directly, not in $(...): it
 #       sets HANDOFF_TERMINAL_STATE and HANDOFF_HANDED_OFF. Returns 0 to
@@ -49,11 +59,11 @@
 
 FINALIZATION_HANDOFF_FIELD="handoff"
 FINALIZATION_HANDOFF_VALUE="merge_ready_loop"
-FINALIZATION_HANDOFF_STATES="BLOCKED_CI FAILED_IMPLEMENTATION"
+FINALIZATION_HANDOFF_STATES="BLOCKED_CI FAILED_IMPLEMENTATION FAILED_REPORTING"
 
 finalization_handoff_allowed() {
   case "${1-}" in
-    BLOCKED_CI|FAILED_IMPLEMENTATION) return 0 ;;
+    BLOCKED_CI|FAILED_IMPLEMENTATION|FAILED_REPORTING) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -94,14 +104,18 @@ finalization_fail_or_handoff() {
   fail_result "$@"
 }
 
-finalization_fail_or_handoff_open_pr() {
+finalization_try_handoff_open_pr() {
   local own_number="${pr_number:-}" own_url="${pr_url:-}"
-  if [ -n "${open_pr_confirmed_number:-}" ]; then
-    pr_number="$open_pr_confirmed_number"; pr_url="${open_pr_confirmed_url:-}"; publish_state_override="true"
-    _finalization_handoff_emit "$1" "$2" "$3" "$4${open_pr_confirmed_facts:+,$open_pr_confirmed_facts}" || :
-    # No hand-off: report the run's own PR evidence, not the confirmed PR's.
-    pr_number="$own_number"; pr_url="$own_url"; publish_state_override=""
-  fi
+  [ -n "${open_pr_confirmed_number:-}" ] || return 1
+  pr_number="$open_pr_confirmed_number"; pr_url="${open_pr_confirmed_url:-}"; publish_state_override="true"
+  _finalization_handoff_emit "$1" "$2" "$3" "$4${open_pr_confirmed_facts:+,$open_pr_confirmed_facts}" || :
+  # No hand-off: report the run's own PR evidence, not the confirmed PR's.
+  pr_number="$own_number"; pr_url="$own_url"; publish_state_override=""
+  return 1
+}
+
+finalization_fail_or_handoff_open_pr() {
+  finalization_try_handoff_open_pr "$@" || :
   fail_result "$@"
 }
 

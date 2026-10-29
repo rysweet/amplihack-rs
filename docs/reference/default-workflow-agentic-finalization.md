@@ -217,7 +217,12 @@ Evaluation order:
    verification evidence is present but `finalizer_step_status.reporting_failure`
    is `true`, classify `FAILED_REPORTING` and preserve the durable evidence. If
    implementation/verification evidence is absent or failed while meaningful
-   work remains, classify `FAILED_IMPLEMENTATION`.
+   work remains, classify `FAILED_IMPLEMENTATION`. Inside auto-drive only
+   (`finalization_handoff` is `true`), the open-PR check from step 5 runs
+   first on a reporting failure, and a PR it confirms is handed to the crusty
+   and merge-ready loops on either exit (#1714, see
+   [auto-drive's finalization hand-off](./auto-drive-to-merge.md#which-states-are-handed-on)).
+   It never turns a reporting failure into success.
 4. **Success states.** With guards clear, classify the proven terminal success
    state (`MERGED`, `CLOSED_OBSOLETE`, `NO_DIFF_SUCCESS`, `FOLLOWUP_CREATED`,
    `SUPERSEDED`, `IMPLEMENTED_VERIFIED`, `ALLOW_NO_OP`) using the required
@@ -632,13 +637,13 @@ returns 1 rather than writing into the working directory.
 
 ## Auto-Drive Finalization Hand-Off (#1714)
 
-`BLOCKED_CI` and `FAILED_IMPLEMENTATION` normally exit non-zero, which ends any
+`BLOCKED_CI`, `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` normally exit non-zero, which ends any
 recipe that called `default-workflow`. Under
 [auto-drive](auto-drive-to-merge.md#finalization-hand-off-from-phase-1-1714)
 a published, open PR is exactly what the later crusty and merge-ready loops
 review and fix, so `autodrive-build` asks finalization to hand the PR on
 instead of ending the run. The classification does not change: the state is
-still `BLOCKED_CI` or `FAILED_IMPLEMENTATION` and `terminal_success` is still
+unchanged and `terminal_success` is still
 `"false"`. Only the exit code and one field differ.
 
 ### Conditions
@@ -648,19 +653,22 @@ exactly as before.
 
 | # | Condition | Source |
 | --- | --- | --- |
-| 1 | The state is `BLOCKED_CI` or `FAILED_IMPLEMENTATION`, matched exactly by `finalization_handoff_allowed`. | `workflow_finalization_handoff.sh` |
+| 1 | The state is `BLOCKED_CI`, `FAILED_IMPLEMENTATION` or `FAILED_REPORTING`, matched exactly by `finalization_handoff_allowed`. | `workflow_finalization_handoff.sh` |
 | 2 | `RECIPE_VAR_finalization_handoff` is exactly `true`. Only `autodrive-build` step-02 sets it; `default-workflow.yaml` declares it `""`. | `finalization_handoff_flag` |
 | 3 | `pr_number` passes `_finalization_pr_number_valid`. On the open-PR path this is the number `gh` confirmed; on the prior-state path it is the run's own PR evidence. | Validator state |
-| 4 | For `FAILED_IMPLEMENTATION` only: the open-PR check confirmed the PR in the same validation (open, same repository, on the run branch, canonical URL, head at or a fast-forward of the local HEAD), but the checks were pending or absent and this run had no `verification_completed`, so it could not succeed. The hand-off names that PR. | `finalization_fail_or_handoff_open_pr` |
+| 4 | For `FAILED_IMPLEMENTATION` and `FAILED_REPORTING` only: the open-PR check confirmed the PR in the same validation (open, same repository, on the run branch, canonical URL, head at or a fast-forward of the local HEAD). On the default exit the checks were also pending or absent and this run had no `verification_completed`, so it could not succeed. On the two reporting-failure exits the check runs only with the flag set and never classifies success. The hand-off names that PR. | `finalization_try_handoff_open_pr` |
 
 Both `BLOCKED_CI` exits use it: the prior-state probe and the open-PR check
-with a failing check. The default `FAILED_IMPLEMENTATION` exit uses it through
-`finalization_fail_or_handoff_open_pr`. The five other prior-state blockers
+with a failing check. The default `FAILED_IMPLEMENTATION` exit and the reporting-path
+`FAILED_IMPLEMENTATION` exit use it through
+`finalization_fail_or_handoff_open_pr`; the `FAILED_REPORTING` exit calls
+`finalization_try_handoff_open_pr` and otherwise emits its own result, which
+keeps `finalizer_output_valid=true`. The five other prior-state blockers
 (`FAILED_MEANINGFUL_DIFF`, `FAILED_CLOSED_UNMERGED`,
 `FAILED_PR_METADATA_UNAVAILABLE`, `FAILED_INVALID_INPUT`,
 `FAILED_WRONG_BRANCH`), `FAILED_DIRTY_WORKTREE`, and every other failure keep
-`exit 1` with the flag on. So does a `FAILED_IMPLEMENTATION` whose PR the
-open-PR check did not confirm.
+`exit 1` with the flag on. So does a `FAILED_IMPLEMENTATION` or
+`FAILED_REPORTING` whose PR the open-PR check did not confirm.
 
 ### Result
 

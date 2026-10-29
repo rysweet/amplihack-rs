@@ -21,8 +21,6 @@
 //!   `accept_pr_head_ahead` (as `workflow-publish` runs it) still end
 //!   `FAILED_INVALID_INPUT`, which is never handed off (`probe_stale.rs`).
 
-use std::process::Command;
-
 use serde_json::{Value, json};
 
 use super::ancestor::{
@@ -87,8 +85,7 @@ pub(super) fn probe(fx: &Fixture, named: bool, accept_ahead: bool) -> Outcome {
         .as_str()
         .expect("probe is a bash step")
         .to_owned();
-    let mut bash = Command::new("bash");
-    fx.isolate(&mut bash);
+    let mut bash = fixture_bash(fx);
     bash.arg("-c")
         .arg(command)
         .env("AMPLIHACK_HOME", workspace_root())

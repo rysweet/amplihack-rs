@@ -274,3 +274,22 @@ fn step_03_calls_the_handoff_before_the_no_pr_error() {
         "build_result is built with jq -n --arg"
     );
 }
+
+// Every bash child in these tests starts from `isolated(..)`, as fixture.rs
+// promises, so each one gets HOME_GUARD_ENV and ROTATE_AUTOSTART_ENV.
+#[test]
+fn every_bash_child_starts_from_isolated() {
+    let dir = workspace_root().join("tests/integration/issue_1714_finalization_handoff");
+    let forbidden = ["Command::new(", "\"bash\")"].concat();
+    let mut offenders = Vec::new();
+    for entry in fs::read_dir(&dir).expect("read test dir").flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "rs") && read(&path).contains(&forbidden) {
+            offenders.push(rel(&path));
+        }
+    }
+    assert!(
+        offenders.is_empty(),
+        "build bash children with isolated(\"bash\"), not {forbidden}: {offenders:?}"
+    );
+}
