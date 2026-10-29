@@ -26,7 +26,8 @@
 //! `echo gh pr merge 38 > notes`, `grep -rn 'gh pr merge' .` and
 //! `cat <<'EOF' … EOF` pass in any context.
 //!
-//! This is not a shell parser and does not try to be one. Code hidden from
+//! It splits commands with the tokeniser shared with the tmux guard
+//! ([`super::shell`]) but does not look inside embedded scripts. Code hidden from
 //! the program word (`bash -c '…'`, a script file, `eval`, an alias, a
 //! variable, `curl` with the token) is outside what this check reads. The
 //! ordinary forms are covered by the shim; deliberate evasion with the same

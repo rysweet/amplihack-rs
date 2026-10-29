@@ -11,7 +11,9 @@
 //! `kill-session -a` (and the prefixes of `kill-session`), anywhere in a tmux
 //! command sequence, unless `-S <path>` or `-L <name>` appears among tmux's
 //! global options. `-L default`, an empty `-S`/`-L` value, a value that
-//! refers to `$TMUX`, and a socket path ending in `default` are not scope.
+//! refers to `$TMUX` or to a variable assigned from it anywhere in the
+//! command (`S=$TMUX; tmux -S "$S" …`), and a socket path ending in
+//! `default` are not scope.
 //!
 //! tmux is found three ways, using the shared tokeniser in [`super::shell`]:
 //!
@@ -26,8 +28,11 @@
 //! (`tmux $'\x6bill-server'` is denied); both are done by the tokeniser.
 //!
 //! Layers 2 and 3 exempt data-only commands such as
-//! `git commit -m "… tmux kill-server …"`, except git subcommands that run
-//! shell commands ([`GIT_COMMAND_RUNNERS`]), which count as evaluators.
+//! `git commit -m "… tmux kill-server …"`. A git or gh command counts as an
+//! evaluator instead when it can run or store shell text: a git subcommand in
+//! [`GIT_COMMAND_RUNNERS`] (`config` and `clone` included, for `!` aliases,
+//! `core.pager` and `--upload-pack`), `gh alias`, or an environment
+//! assignment before the program (`GIT_EXTERNAL_DIFF=… git diff`).
 //! Heredoc bodies are parsed when a shell evaluator appears anywhere on the
 //! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
 //! Uncertain input fails closed: unbalanced quotes, a redirection with no
@@ -40,18 +45,23 @@
 //! - shell aliases or functions, script files (`bash script.sh` for a file
 //!   written earlier), `tmux source-file`, or commands assembled at run time
 //!   from pieces;
-//! - a variable copied from `$TMUX`, as in `s=${TMUX%%,*}; tmux -S "$s" …`:
-//!   only a literal reference to `$TMUX` in the `-S` value is caught;
+//! - a variable copied from `$TMUX` other than by assignment (`read`,
+//!   `printf -v`, `declare -n`), or in an earlier tool call;
 //! - input over [`MAX_INPUT`] bytes, which gets only a plain text check for
 //!   `tmux` and `kill-s` (so quoting tricks such as `t''mux` get past it),
 //!   not the full parse;
-//! - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word.
+//! - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
+//! - `tmux kill-session` without `-a`, `kill-window`, `kill-pane`, and
+//!   signals sent by other programs (`pkill tmux`, `killall tmux`);
+//! - shell text stored by an earlier tool call and run by a later one, such
+//!   as a git alias or pager set in one call and used in the next.
 //!
 //! It also errs toward false positives: a [`SHELL_EVALUATORS`] word anywhere
 //! on the line (`tmux`, `find`, `docker`, `kubectl`, …) removes the data-only
 //! exemption for the whole line, so `tmux ls; git commit -m "… tmux
 //! kill-server …"` is denied. Agents should put such commands in a separate
-//! tool call.
+//! tool call. Quoting is removed before the check, so a single-quoted
+//! `$(tmux kill-server)` in a commit message is denied as well.
 //!
 //! The guard always runs and reads no environment variables, so nothing in
 //! the environment can turn it off. It never panics on any input: the hook
@@ -59,7 +69,7 @@
 
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
 /// The deny reason. The command itself is never echoed.
@@ -84,10 +94,13 @@ const SHELL_EVALUATORS: &[&str] = &[
     "setsid", "python", "python3", "node", "perl", "ruby",
 ];
 
-/// git subcommands that run shell commands given as arguments (`rebase -x`,
-/// `bisect run`, `submodule foreach`, `difftool --extcmd`, …). Any of them
-/// makes a `git` command an evaluator, whatever its options.
+/// git subcommands that run, or store for a later git command to run, shell
+/// text given as arguments (`rebase -x`, `bisect run`, `submodule foreach`,
+/// `difftool --extcmd`, `config alias.x '!…'`, `clone --upload-pack`, …).
+/// Any of them makes a `git` command an evaluator, whatever its options.
 const GIT_COMMAND_RUNNERS: &[&str] = &[
+    "config",
+    "clone",
     "rebase",
     "bisect",
     "submodule",
@@ -108,7 +121,9 @@ const GIT_VALUE_OPTS: &[&str] = &[
     "--super-prefix",
 ];
 
-/// tmux global flags that take no value (tmux's usage line: `-2CDlNuVv`).
+/// tmux global flags that take no value (tmux 3.x usage line: `-2CDlNuVv`).
+/// Requirement D3 also lists `-d` and `-h`; tmux has no such global flags,
+/// so they are left out on purpose and end parsing as unknown (a deny).
 const GLOBAL_FLAGS: &str = "2CDlNuVv";
 
 /// tmux global options that take a value.
@@ -179,8 +194,11 @@ fn is_dangerous(text: &str) -> bool {
     if text.len() > MAX_INPUT {
         return text_test(text);
     }
-    let mut budget = MAX_REPARSES;
-    scan(text, 0, &mut budget).dangerous
+    let mut ctx = Ctx {
+        budget: MAX_REPARSES,
+        tainted: HashSet::from(["TMUX".to_string()]),
+    };
+    scan(text, 0, &mut ctx).dangerous
 }
 
 /// The fallback for input the tokeniser cannot read with confidence.
@@ -216,7 +234,35 @@ struct Scan {
     unscoped: bool,
 }
 
-fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
+/// State shared by every level of one check.
+struct Ctx {
+    /// Re-parses left before the check fails closed.
+    budget: usize,
+    /// `TMUX` and every variable assigned from it, directly or through
+    /// another tainted variable, in the text seen so far. An `-S` or `-L`
+    /// value that refers to one of these is not scope.
+    tainted: HashSet<String>,
+}
+
+/// Adds to `tainted` each variable assigned, in any word of `cmds`, a value
+/// that refers to a tainted variable. One pass in text order, which is the
+/// order the shell assigns in, keeps the cost linear. Assignment position is
+/// not checked: over-tainting only denies more.
+fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
+    for word in cmds.iter().flat_map(|c| &c.words) {
+        if !shell::is_assignment(word) {
+            continue;
+        }
+        let Some((name, value)) = word.split_once('=') else {
+            continue;
+        };
+        if refers_to_any(value, tainted) {
+            tainted.insert(name.to_string());
+        }
+    }
+}
+
+fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
     let parsed = shell::tokenise(text);
     if !parsed.complete {
         return Scan {
@@ -225,6 +271,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
         };
     }
     let cmds = &parsed.commands;
+    taint_assignments(cmds, &mut ctx.tainted);
     let pipelines = pipeline_facts(cmds);
     let evaluator_present = pipelines.values().any(|f| f.evaluator);
     let mut out = Scan::default();
@@ -252,7 +299,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
             if !is_tmux(word) || (data_only && k != start) {
                 continue;
             }
-            let inv = invocation(words.get(k + 1..).unwrap_or_default());
+            let inv = invocation(words.get(k + 1..).unwrap_or_default(), &ctx.tainted);
             out.tmux_seen = true;
             if !inv.scoped {
                 out.unscoped = true;
@@ -273,7 +320,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
                 && !word.contains("$(")
                 && !word.contains('`')
                 && !(git && git_runs_value(words, k));
-            let verdict = judge_word(word, depth, budget);
+            let verdict = judge_word(word, depth, ctx);
             out.tmux_seen |= verdict.tmux_seen;
             if !verdict.substitutions_ok || (!verdict.plain_ok && !exempt) {
                 out.dangerous = true;
@@ -291,7 +338,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
                 .collect();
             let joined = join_argv(&args);
             if has_candidate(&joined) {
-                let inner = reparse(&joined, depth, budget);
+                let inner = reparse(&joined, depth, ctx);
                 out.dangerous |= inner.dangerous;
                 out.tmux_seen |= inner.tmux_seen;
             }
@@ -303,7 +350,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
             let expands = cmd.heredoc_expands.get(n).copied().unwrap_or(true);
             if evaluator_present {
                 if has_candidate(body) {
-                    let inner = reparse(body, depth, budget);
+                    let inner = reparse(body, depth, ctx);
                     out.dangerous |= inner.dangerous;
                     out.tmux_seen |= inner.tmux_seen;
                     out.unscoped |= inner.unscoped;
@@ -312,7 +359,7 @@ fn scan(text: &str, depth: usize, budget: &mut usize) -> Scan {
                 // An unquoted delimiter: the shell runs `$(…)` in the body.
                 for sub in substitutions(body).0 {
                     if has_candidate(&sub) {
-                        let inner = reparse(&sub, depth, budget);
+                        let inner = reparse(&sub, depth, ctx);
                         out.dangerous |= inner.dangerous;
                         out.tmux_seen |= inner.tmux_seen;
                     }
@@ -338,7 +385,7 @@ struct WordVerdict {
 /// judged on what it runs. The rest of the word is allowed only if it holds
 /// at least one tmux invocation and all of them are scoped; a word whose
 /// tokens are split across the pieces is uncertain and fails.
-fn judge_word(word: &str, depth: usize, budget: &mut usize) -> WordVerdict {
+fn judge_word(word: &str, depth: usize, ctx: &mut Ctx) -> WordVerdict {
     let (bodies, rest) = substitutions(word);
     let mut verdict = WordVerdict {
         substitutions_ok: true,
@@ -351,12 +398,12 @@ fn judge_word(word: &str, depth: usize, budget: &mut usize) -> WordVerdict {
             continue;
         }
         any_candidate = true;
-        let inner = reparse(body, depth, budget);
+        let inner = reparse(body, depth, ctx);
         verdict.substitutions_ok &= !inner.dangerous;
         verdict.tmux_seen |= inner.tmux_seen;
     }
     if has_candidate(&rest) {
-        let inner = reparse(&rest, depth, budget);
+        let inner = reparse(&rest, depth, ctx);
         verdict.plain_ok = inner.tmux_seen && !inner.unscoped && !inner.dangerous;
         verdict.tmux_seen |= inner.tmux_seen;
     } else if !any_candidate {
@@ -367,15 +414,15 @@ fn judge_word(word: &str, depth: usize, budget: &mut usize) -> WordVerdict {
 
 /// One level deeper, within the depth and re-parse limits. Hitting either
 /// limit with a candidate left is dangerous.
-fn reparse(text: &str, depth: usize, budget: &mut usize) -> Scan {
-    if depth >= MAX_DEPTH || *budget == 0 {
+fn reparse(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
+    if depth >= MAX_DEPTH || ctx.budget == 0 {
         return Scan {
             dangerous: true,
             ..Scan::default()
         };
     }
-    *budget -= 1;
-    scan(text, depth + 1, budget)
+    ctx.budget -= 1;
+    scan(text, depth + 1, ctx)
 }
 
 /// The bodies of the top-level `$(…)` and backtick substitutions in `text`,
@@ -449,9 +496,14 @@ fn is_evaluator(cmd: &SimpleCommand) -> bool {
         && words
             .iter()
             .any(|w| w.starts_with("-S") || w.starts_with("--split-string"));
-    let git_runner = words.get(start).is_some_and(|w| basename(w) == "git")
-        && git_runs_commands(words.get(start + 1..).unwrap_or_default());
-    named || env_split || git_runner
+    let prog = words.get(start).map(|w| basename(w));
+    let git_runner =
+        prog == Some("git") && git_runs_commands(words.get(start + 1..).unwrap_or_default());
+    let gh_alias = prog == Some("gh") && words.get(start + 1).is_some_and(|w| w == "alias");
+    // `GIT_EXTERNAL_DIFF=…`, `GIT_SSH_COMMAND=…` and the like run their value.
+    let assigned = matches!(prog, Some("git" | "gh"))
+        && words.iter().take(start).any(|w| shell::is_assignment(w));
+    named || env_split || git_runner || gh_alias || assigned
 }
 
 /// Whether the arguments after `git` name one of [`GIT_COMMAND_RUNNERS`]
@@ -532,8 +584,8 @@ struct Invocation {
 }
 
 /// Checks the arguments after a `tmux` word.
-fn invocation(args: &[String]) -> Invocation {
-    let global = global_scope(args);
+fn invocation(args: &[String], tainted: &HashSet<String>) -> Invocation {
+    let global = global_scope(args, tainted);
     let rest = args.get(global.rest..).unwrap_or_default();
     let dangerous = !global.scoped
         && if global.uncertain {
@@ -557,7 +609,7 @@ struct Global {
     uncertain: bool,
 }
 
-fn global_scope(args: &[String]) -> Global {
+fn global_scope(args: &[String], tainted: &HashSet<String>) -> Global {
     let mut scoped = false;
     let mut bad_scope = false;
     let mut i = 0usize;
@@ -592,7 +644,7 @@ fn global_scope(args: &[String]) -> Global {
                 Some(joined)
             };
             if flag == 'S' || flag == 'L' {
-                if value.is_some_and(scope_value_ok) {
+                if value.is_some_and(|v| scope_value_ok(v, tainted)) {
                     scoped = true;
                 } else {
                     bad_scope = true;
@@ -610,26 +662,27 @@ fn global_scope(args: &[String]) -> Global {
 }
 
 /// Whether an `-S` or `-L` value names a private server: not empty, not
-/// `default` (as a name or a socket file), and not a reference to `$TMUX`.
-fn scope_value_ok(value: &str) -> bool {
+/// `default` (as a name or a socket file), and not a reference to `$TMUX` or
+/// to a variable assigned from it.
+fn scope_value_ok(value: &str, tainted: &HashSet<String>) -> bool {
     !value.is_empty()
-        && !refers_to_tmux(value)
+        && !refers_to_any(value, tainted)
         && !basename(value.trim_end_matches('/')).eq_ignore_ascii_case("default")
 }
 
-/// Whether `value` expands `$TMUX`: `$TMUX` not followed by a letter, digit
-/// or `_`, `${TMUX}`, or `${TMUX` followed by a parameter-expansion operator.
-fn refers_to_tmux(value: &str) -> bool {
+/// Whether `value` expands a variable in `names`: `$NAME` or `${NAME…}`,
+/// where `NAME` is the longest run of letters, digits and `_` after the `$`
+/// or `${`. So `$TMUX`, `${TMUX}` and `${TMUX%%,*}` refer to `TMUX`, and
+/// `$TMUX_TMPDIR` does not.
+fn refers_to_any(value: &str, names: &HashSet<String>) -> bool {
     let mut rest = value;
     while let Some(at) = rest.find('$') {
         let after = rest.get(at + 1..).unwrap_or_default();
-        if let Some(tail) = after.strip_prefix("{TMUX") {
-            if tail.starts_with(|c: char| "}:-+=?#%/".contains(c)) {
-                return true;
-            }
-        } else if let Some(tail) = after.strip_prefix("TMUX")
-            && !tail.starts_with(|c: char| c == '_' || c.is_ascii_alphanumeric())
-        {
+        let body = after.strip_prefix('{').unwrap_or(after);
+        let end = body
+            .find(|c: char| c != '_' && !c.is_ascii_alphanumeric())
+            .unwrap_or(body.len());
+        if body.get(..end).is_some_and(|name| names.contains(name)) {
             return true;
         }
         rest = after;

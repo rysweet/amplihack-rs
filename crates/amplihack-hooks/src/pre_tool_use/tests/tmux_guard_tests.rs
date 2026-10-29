@@ -185,9 +185,28 @@ const DENIED: &[&str] = &[
     "git -C repo submodule foreach tmux kill-server",
     "git difftool --extcmd='tmux kill-server'",
     "git difftool -x 'tmux kill-server'",
+    // git and gh commands that store shell text and run it later on the line.
+    "git config alias.k '!tmux kill-server' && git k",
+    "git config core.pager 'tmux kill-server' && git log",
+    "git config --global core.pager 'tmux kill-server'",
+    "git clone --upload-pack='tmux kill-server #' host:repo",
+    "gh alias set k --shell 'tmux kill-server' && gh k",
+    // Environment assignments that git runs as commands.
+    "GIT_EXTERNAL_DIFF='tmux kill-server' git diff",
+    "GIT_SSH_COMMAND='tmux kill-server' git fetch",
+    "GIT_EDITOR='tmux kill-server' git commit",
+    "env GIT_EDITOR='tmux kill-server' git commit",
     // A heredoc written to a file and run elsewhere on the line (finding 4).
     "cat > k.sh <<'EOF'\ntmux kill-server\nEOF\nbash k.sh",
     "cat <<'EOF' > k.sh && sh k.sh\ntmux kill-session -a\nEOF",
+    // Acceptance criteria and docs tables, verbatim (D2).
+    "FOO=1 BAR=2 tmux kill-server",
+    "tmux kill-session -a -t foo",
+    "true && tmux kill-server",
+    "echo x | tmux kill-server",
+    "sh -c 'tmux kill-server'",
+    "bash -c \"tmux kill-server\"",
+    "python -c \"os.system('tmux kill-server')\"",
 ];
 
 const ALLOWED: &[&str] = &[
@@ -265,6 +284,14 @@ const ALLOWED: &[&str] = &[
     "git rebase -x 'tmux -S /tmp/p kill-server' HEAD~1",
     "git rebase -i HEAD~3",
     "git log --grep 'rebase tmux kill-server'",
+    "git clone host:repo",
+    "gh alias list",
+    // Acceptance criteria and docs tables, verbatim (D2).
+    "tmux -L x kill-server",
+    "tmux -S /p kill-server",
+    "env -u TMUX tmux -S /tmp/x/sock kill-server",
+    "tmux kill-session -t foo",
+    "grep kill-server file",
 ];
 
 #[test]
@@ -287,6 +314,37 @@ fn denies_the_exact_incident_command() {
 #[test]
 fn a_tmux_prefix_assignment_is_not_scope() {
     assert!(denied("TMUX=/tmp/tx1/a.sock,1,0 tmux kill-server"));
+}
+
+/// V3: scope copied from `$TMUX` through a variable is the user's own
+/// server. Fails closed: a `-S` value that is a plain variable expansion
+/// whose source the guard cannot see is not concrete scope.
+#[test]
+fn scope_copied_from_tmux_through_a_variable_is_not_scope() {
+    assert!(denied("S=$TMUX; tmux -S \"$S\" kill-server"));
+    assert!(denied("s=${TMUX%%,*}; tmux -S \"$s\" kill-server"));
+    assert!(denied("a=$TMUX; b=${a%%,*}; tmux -S \"$b\" kill-server"));
+    assert!(denied("export S=\"$TMUX\"; tmux -S \"${S}\" kill-server"));
+    assert!(denied("S=$TMUX; bash -c \"tmux -S $S kill-server\""));
+    assert!(denied("bash -c 'S=$TMUX; tmux -L \"$S\" kill-server'"));
+    // A variable not taken from $TMUX is still scope.
+    assert!(!denied(
+        "SB=$(mktemp -d); tmux -S \"$SB/tmux.sock\" kill-server"
+    ));
+    assert!(!denied("S=$TMUX_TMPDIR/x; tmux -S \"$S\" kill-server"));
+}
+
+#[test]
+fn a_long_chain_of_assignments_is_checked_quickly() {
+    let mut line = String::from("v0=$TMUX");
+    for n in 1..4000 {
+        line.push_str(&format!("; v{n}=$v{}", n - 1));
+    }
+    line.push_str("; tmux -S \"$v3999\" kill-server");
+    assert!(line.len() < 64 * 1024);
+    let started = std::time::Instant::now();
+    assert!(denied(&line));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
 
 #[test]
@@ -448,6 +506,11 @@ fn pathological_inputs_never_panic_and_finish_quickly() {
         "${",
         "${TMUX",
         "é tmux ü",
+        "$'\\x",
+        "$'\\x' tmux kill-server",
+        "tmux kill-server \u{0}",
+        "\u{0}tmux\u{0}kill-server",
+        "tmux 'kill-server",
     ]
     .iter()
     .map(|s| s.to_string())

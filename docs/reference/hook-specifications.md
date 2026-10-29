@@ -260,8 +260,9 @@ server and every session on it (#1733).
 **Tools it checks.** Tool names `bash`, `shell`, `shell_command` and
 `exec_command`, compared
 case-insensitively. It runs after the XPIA check and the Skill redirect,
-beside the merge guard, and before the non-Bash early return. It reads
-`tool_input.command`, or `tool_input.cmd`.
+beside the merge guard, and before the non-Bash early return. It checks both
+`tool_input.command` and `tool_input.cmd`, and either one can deny, so a
+harmless `command` does not hide a `cmd` that kills the user's server.
 
 On Codex, `normalize_codex_input` in `protocol/codex.rs` has already renamed
 the `shell`, `exec_command` and `shell_command` tools to `Bash`, and copied
@@ -300,23 +301,36 @@ These still deny, because they name the user's own server:
 - `-L default`, or an empty or missing `-L` or `-S` value.
 - An `-S` value that refers to `TMUX`, matches `/tmp/tmux-*/default`, or has
   `default` as its final component. A value refers to `TMUX` when it contains
-  `$TMUX` not followed by a letter, digit or `_`; `${TMUX}`; or `${TMUX`
-  followed by one of `:`, `-`, `+`, `=`, `?`, `#`, `%` or `/`, as in
+  `$TMUX` or `${TMUX` not followed by a letter, digit or `_`, as in `${TMUX}`,
   `${TMUX%%,*}` or `${TMUX:-x}`. `$TMUX_TMPDIR` and `${TMUX_TMPDIR}` do not
   refer to `TMUX`.
+- An `-S` or `-L` value that refers, in the same way, to a variable assigned
+  from `TMUX` anywhere in the command, directly or through another such
+  variable: `S=$TMUX; tmux -S "$S" kill-server` and
+  `s=${TMUX%%,*}; tmux -S "$s" kill-server` are denied.
 - A `TMUX=…` prefix or `env TMUX=…`. Setting `TMUX` is never scope.
 
 | Command | Result |
 |---|---|
+| `tmux kill-server` | denied |
 | `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` | denied |
+| `FOO=1 BAR=2 tmux kill-server` | denied |
+| `env -u TMUX tmux kill-server` | denied |
+| `/usr/bin/tmux kill-server` | denied |
 | `TMUX=/tmp/x,1,0 tmux kill-server` | denied |
+| `tmux kill-session -a` | denied |
+| `tmux kill-session -a -t foo` | denied |
 | `tmux kill-ses -a` | denied |
 | `tmux -L default kill-server` | denied |
 | `tmux -S "$TMUX" kill-server` | denied |
 | `tmux new -d 'sleep 1' \; kill-server` | denied |
+| `tmux -L x kill-server` | allowed |
+| `tmux -S /p kill-server` | allowed |
+| `env -u TMUX tmux -S /tmp/x/sock kill-server` | allowed |
 | `env -u TMUX tmux -S "$SB/tmux.sock" kill-server` | allowed |
 | `tmux -L qa-1733 kill-server` | allowed |
-| `tmux kill-session -t qa-1733` | allowed |
+| `tmux kill-session -t foo` | allowed |
+| `tmux ls` | allowed |
 
 **Where tmux is found.** Commands are split by the shared shell tokeniser in
 `pre_tool_use/shell.rs` on `;`, `&&`, `||`, `|`, `&` and newlines, after line
@@ -341,11 +355,17 @@ guard. The command is data-only when its program is one of `git`, `gh`,
 `echo`, `printf`, `grep`, `egrep`, `fgrep`, `rg`, `cat`, `head`, `tail`, `wc`,
 `jq`, `test`, `[`, `true` or `:`, no stage of the command line is a shell
 evaluator, and the word holds no `$(` or backtick. A `git -c` value containing
-`=!` is not data. A git command whose subcommand runs shell commands
-(`rebase`, `bisect`, `submodule`, `difftool`, `mergetool`, `filter-branch`,
-`for-each-repo`) is a shell evaluator, and its arguments are also checked
-joined together, so `git bisect run tmux kill-server` and
-`git rebase -x 'tmux kill-server' HEAD~1` are denied.
+`=!` is not data. A git command whose subcommand runs shell text, or stores it
+for a later git command to run (`config`, `clone`, `rebase`, `bisect`,
+`submodule`, `difftool`, `mergetool`, `filter-branch`, `for-each-repo`), is a
+shell evaluator, and its arguments are also checked joined together, so
+`git bisect run tmux kill-server`, `git rebase -x 'tmux kill-server' HEAD~1`
+and `git config alias.k '!tmux kill-server'` are denied. `config` covers `!`
+aliases and `core.pager`; `clone` covers `--upload-pack`. `gh alias`, and a
+`git` or `gh` command preceded by an environment assignment (such as
+`GIT_SSH_COMMAND=… git fetch` or `GIT_EXTERNAL_DIFF=… git diff`), are shell
+evaluators as well. These rules only matter once the line contains `tmux` and
+`kill-s` text; an ordinary `git config user.name …` is never affected.
 
 Before any layer runs, the tokeniser removes redirections and their targets
 from the words (`>`, `>>`, `<`, `>|`, `<>`, `>&`, `<&`, `&>`, `&>>`, with an
@@ -356,11 +376,21 @@ the command. It also decodes `$'…'` escapes as bash does, so
 
 | Command | Result |
 |---|---|
-| `git commit -m "add tmux kill-server guard"` | allowed |
+| `true; tmux kill-server` | denied |
+| `true && tmux kill-server` | denied |
+| `false \|\| tmux kill-server` | denied |
+| `echo x \| tmux kill-server` | denied |
+| `echo start` *newline* `tmux kill-server` | denied |
+| `sh -c 'tmux kill-server'` | denied |
+| `bash -c "tmux kill-server"` | denied |
 | `echo "$(tmux kill-server)"` | denied |
-| `bash -c 'tmux -S /tmp/tx1/a.sock kill-server'` | allowed |
 | `python -c "os.system('tmux kill-server')"` | denied |
 | `echo tmux kill-server \| sh` | denied |
+| `git config alias.k '!tmux kill-server'` | denied |
+| `bash -c 'tmux -S /tmp/tx1/a.sock kill-server'` | allowed |
+| `echo kill-server` | allowed |
+| `grep kill-server file` | allowed |
+| `git commit -m "add tmux kill-server guard"` | allowed |
 
 Shell evaluators are `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `eval`,
 `source`, `.`, `xargs`, `env -S`, `nohup`, `exec`, `parallel`, `watch`,
@@ -443,16 +473,43 @@ sandbox. It does not see through:
 - shell aliases or functions, script files written by an earlier command
   (`bash script.sh`), `tmux source-file`, or commands assembled at run time
   from pieces such as `"kill-"+"server"`;
-- a variable copied from `$TMUX`, as in `s=${TMUX%%,*}; tmux -S "$s" …`; only
-  a literal reference to `TMUX` in the `-S` value is caught;
+- a variable copied from `$TMUX` other than by assignment (`read`,
+  `printf -v`, `declare -n`), or in an earlier tool call;
 - quoting tricks in input over 64 KiB, which gets only the plain text test;
-- named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word.
+- named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
+- shell text stored by one tool call and run by a later one, such as a git
+  alias, a git pager or a tmux `command-alias` set in one call and used in
+  the next.
+
+It does not guard these commands at all:
+
+- `tmux kill-session` with neither `-a` nor `-t`. Inside a pane this kills the
+  caller's current session, which may be the user's;
+- `kill-window` and `kill-pane`;
+- signals sent by other programs, such as `pkill tmux`, `killall tmux` or
+  `kill <pid>`.
 
 It also errs toward false positives. A shell evaluator anywhere on the line
-(including `tmux`, `find`, `docker`, `kubectl` and the git subcommands above)
-removes the data-only exemption for the whole line, so
-`tmux ls; git commit -m "add tmux kill-server guard"` is denied. Put such
-commands in separate tool calls.
+(including `tmux`, `find`, `docker`, `kubectl` and the git and gh commands
+above) removes the data-only exemption for the whole line, so
+`tmux ls; git commit -m "add tmux kill-server guard"` is denied. Quoting is
+removed before the check, so a commit message containing a single-quoted
+`$(tmux kill-server)` is denied too. Put such commands in separate tool calls.
+
+**Safe form for agents.** `TMUX_TMPDIR` alone is not enough while `$TMUX` is
+set. Start, use and kill a private server on its own socket, with `TMUX`
+removed from the environment:
+
+```bash
+SB=$(mktemp -d)
+env -u TMUX tmux -S "$SB/tmux.sock" new-session -d -s qa-1733 'sleep 60'
+env -u TMUX tmux -S "$SB/tmux.sock" ls
+env -u TMUX tmux -S "$SB/tmux.sock" kill-server
+```
+
+The guard allows all four commands, and the user's own server is never
+touched. The qa-team, outside-in-testing, e2e-outside-in-test-generator and
+other tmux-using skills give the same rule.
 
 **Source.** `crates/amplihack-hooks/src/pre_tool_use/tmux_guard.rs`, with unit
 tests in `pre_tool_use/tests/tmux_guard_tests.rs`, host-payload tests in
