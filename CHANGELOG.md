@@ -19,6 +19,14 @@ Unreleased changes appear at the top under `[Unreleased]`.
 
 ### Fixed
 
+- **Copilot launch failed with Copilot CLI 1.0.105 (#1744)**: amplihack no
+  longer adds `--remote` to Copilot launches. Copilot removed the flag; start
+  remote sessions inside Copilot with `/remote on`. A user's `--remote` or
+  `--no-remote` is passed through unchanged. Routed (LiteLLM proxy) launches
+  still add `--no-remote` and `--no-remote-export`.
+  `AMPLIHACK_COPILOT_NO_REMOTE` is removed and has no effect. See
+  [flag injection rules](docs/reference/flag-matrix.md#flag-injection-rules).
+
 - **Workflow cleanup deleted other runs' worktrees and uncommitted work
   (#1494, #1560)** — when a run started from the main checkout, the runtime
   artifact cleanup ran `rm -rf <repo>/worktrees`, deleting every concurrent
