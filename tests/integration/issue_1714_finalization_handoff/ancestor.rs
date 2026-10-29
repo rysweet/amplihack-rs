@@ -76,7 +76,7 @@ pub(super) fn has_object(fx: &Fixture, oid: &str) -> bool {
 }
 
 /// A bare repo where `https://github.com/rysweet/fixture.git` resolves.
-fn origin_remote(fx: &Fixture) -> PathBuf {
+pub(super) fn origin_remote(fx: &Fixture) -> PathBuf {
     let path = fx.remotes().join("rysweet/fixture.git");
     fs::create_dir_all(&path).expect("remote dir");
     fx.git(&["init", "-q", "--bare", &path.to_string_lossy()]);

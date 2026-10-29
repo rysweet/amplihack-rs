@@ -709,6 +709,37 @@ fetched is caught too), still fails as
 `stale PR metadata` or `no_scoped_pr`. Merged-with-unpushed-commits must not be
 reported as `MERGED`, because the local commits would be lost.
 
+### A PR ahead of local HEAD is the same PR (#1714)
+
+The opposite case: a merge of main was pushed to the PR from another checkout,
+or with GitHub's "Update branch" button, so the PR's `headRefOid` is a
+fast-forward of local `HEAD` (local `HEAD` is its ancestor). Every local commit
+is in the PR, so its checks cover this run's work. When the caller sets the
+input `accept_pr_head_ahead` to exactly `"true"` and the PR is `OPEN`, the
+probe:
+
+- checks the branch, the base and that the PR's head and base repositories are
+  the current repository, then calls `_finalization_pr_head_descends` from
+  [`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh).
+  That fetches the PR head commit once if it is missing, non-interactively and
+  with bounded time, writing no ref and no `FETCH_HEAD`. It is the same
+  function the finalization open-PR check uses, so the two cannot disagree;
+- keeps the rewind guard above: every value `origin/<branch>` held must be an
+  ancestor of the PR head;
+- prints
+  `INFO: ... open PR head ... commit(s) ahead of local HEAD, a fast-forward of it; same PR (#1714)`
+  and continues. Failing checks on that head still end `BLOCKED_CI`, because
+  they ran on a commit that holds the run's work;
+- passes `--allow-head-ahead` to `workflow_pr_scope.sh`, which then accepts a
+  named PR that is `OPEN` and whose head is a fast-forward of local `HEAD`.
+
+Only `workflow-finalize` sets `accept_pr_head_ahead` (default `"false"`). Its
+`step-20b-push-cleanup` runs `git pull --rebase` before it pushes, so the local
+branch takes the PR head first. `workflow-publish` pushes without pulling, so it
+keeps the exact-head rule. A head that does not contain local `HEAD` (diverged
+or rewritten), a rewound remote, a merged or closed PR, or a PR head commit
+that cannot be fetched, still fails as `stale PR metadata` or `no_scoped_pr`.
+
 In workflow-finalize, `step-20c-quality-audit` runs before `step-20a-artifact-guard`
 and `step-20b-push-cleanup`, so the audit's commits are checked and pushed
 before `step-21-pr-ready` validates the PR.

@@ -4,7 +4,8 @@
 //! loop and the merge-ready loop instead of ending the run. A standalone
 //! `default-workflow` still fails closed, and every other finalization failure
 //! still ends auto-drive. The open-PR check also accepts a PR head that is a
-//! fast-forward of the local HEAD (case 2, `ancestor*.rs`).
+//! fast-forward of the local HEAD (case 2, `ancestor*.rs`), and so does the
+//! terminal-state probe that workflow-finalize runs before it (`probe.rs`).
 //!
 //! The hand-off is decided from typed data only (`terminal_state`, `handoff`
 //! and the PR number), defined once in
@@ -25,6 +26,10 @@ mod ancestor_handoff;
 mod brick;
 #[path = "issue_1714_finalization_handoff/fixture.rs"]
 mod fixture;
+#[path = "issue_1714_finalization_handoff/probe.rs"]
+mod probe;
+#[path = "issue_1714_finalization_handoff/probe_stale.rs"]
+mod probe_stale;
 #[path = "issue_1714_finalization_handoff/static_guards.rs"]
 mod static_guards;
 #[path = "issue_1714_finalization_handoff/step03.rs"]

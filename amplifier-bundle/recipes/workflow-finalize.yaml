@@ -46,6 +46,9 @@ steps:
     recipe: "workflow-terminal-state"
     context:
       terminal_fail_mode: "report"
+      # #1714: a PR head that fast-forwards the local HEAD (main merged into
+      # the PR from elsewhere) is this run's PR; step-20b pulls before it pushes.
+      accept_pr_head_ahead: "true"
 
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
@@ -174,8 +177,9 @@ steps:
       else
         echo "No staged changes from cleanup"
       fi
-      push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
+      push_cmd=(git push -u origin "$current_branch")
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
+        push_cmd=(git push)
         pull_output_file=$(mktemp -t step20b-cleanup-pull-XXXXXX)
         if git --no-pager pull --rebase >"$pull_output_file" 2>&1; then
           redact_sensitive_output < "$pull_output_file"
@@ -188,29 +192,18 @@ steps:
           git --no-pager status --short >&2
           exit "$pull_rc"
         fi
-        if git push >"$push_output_file" 2>&1; then
-          redact_sensitive_output < "$push_output_file"
-          rm -f "$push_output_file"
-        else
-          push_rc=$?
-          echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
-          redact_sensitive_output < "$push_output_file" >&2
-          rm -f "$push_output_file"
-          git --no-pager status --short >&2
-          exit "$push_rc"
-        fi
+      fi
+      push_output_file=$(mktemp -t step20b-cleanup-push-XXXXXX)
+      if "${push_cmd[@]}" >"$push_output_file" 2>&1; then
+        redact_sensitive_output < "$push_output_file"
+        rm -f "$push_output_file"
       else
-        if git push -u origin "$current_branch" >"$push_output_file" 2>&1; then
-          redact_sensitive_output < "$push_output_file"
-          rm -f "$push_output_file"
-        else
-          push_rc=$?
-          echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
-          redact_sensitive_output < "$push_output_file" >&2
-          rm -f "$push_output_file"
-          git --no-pager status --short >&2
-          exit "$push_rc"
-        fi
+        push_rc=$?
+        echo "ERROR: git push failed during step-20b-push-cleanup (exit $push_rc)" >&2
+        redact_sensitive_output < "$push_output_file" >&2
+        rm -f "$push_output_file"
+        git --no-pager status --short >&2
+        exit "$push_rc"
       fi
       echo "=== Cleanup Complete ==="
     output: "cleanup_push_result"

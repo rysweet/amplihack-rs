@@ -371,11 +371,24 @@ in #1714:
    head was a fast-forward of the local HEAD rather than equal to it. The
    open-PR check found no signal and the run ended `FAILED_IMPLEMENTATION`.
 
-Case 2 has two parts. The open-PR check now treats a PR head that is a
-fast-forward of the local HEAD as the same PR (see
-[the open-PR check](./default-workflow-agentic-finalization.md#resumed-runs-open-pr-success-path-1641)),
-so the reported run would now succeed as `EXISTING_OPEN_PR` when its checks
-are green. And under auto-drive, a `FAILED_IMPLEMENTATION` on a PR that the
+Case 2 has two parts. First, both checks that decide whether an open PR is
+this run's PR now treat a PR head that is a fast-forward of the local HEAD as
+the same PR:
+
+- the terminal-state probe that `workflow-finalize` runs first
+  (`finalize-terminal-state`, with `accept_pr_head_ahead: "true"`; see
+  [A PR ahead of local HEAD](./workflow-terminal-state.md#a-pr-ahead-of-local-head-is-the-same-pr-1714));
+- the open-PR check in the finalization validator (see
+  [the open-PR check](./default-workflow-agentic-finalization.md#resumed-runs-open-pr-success-path-1641)).
+
+Both use one shared test, `_finalization_pr_head_descends` in
+[`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh),
+so the fix holds whenever the merge reached the PR: before finalization
+started (another checkout, or GitHub's "Update branch" button) or during it.
+With green checks such a run succeeds as `EXISTING_OPEN_PR`. A PR head that
+does not contain the local HEAD, or a remote rewound behind a commit this
+checkout saw on `origin/<branch>`, is still stale metadata
+(`FAILED_INVALID_INPUT`), which is never handed off. Second, under auto-drive, a `FAILED_IMPLEMENTATION` on a PR that the
 open-PR check confirmed (open, same repository, on the run branch, head at or
 a fast-forward of the local HEAD) is handed to the crusty loop and the
 merge-ready loop, as `BLOCKED_CI` is.
@@ -562,9 +575,10 @@ starts on PR 134. The same `BLOCKED_CI` from
 ### Example: a merge of main pushed from another checkout
 
 The local HEAD is `5174029`. The PR head is `50e41db`, a merge of main whose
-first parent is `5174029`. The open-PR check fetches `50e41db` if it is not in
-the local object store, confirms that `5174029` is its ancestor, and treats the
-PR as this run's. With green checks the run ends `EXISTING_OPEN_PR` and
+first parent is `5174029`. The terminal-state probe, and then the open-PR
+check, fetch `50e41db` if it is not in the local object store, confirm that
+`5174029` is its ancestor, and treat the PR as this run's. This holds whether
+the merge was pushed before finalization began or while it ran. With green checks the run ends `EXISTING_OPEN_PR` and
 succeeds. With checks still pending and no verification evidence from this
 run, auto-drive gets:
 
@@ -3070,7 +3084,7 @@ Every recipe and tool here stays inside the 400-line brick budget.
 | When the launcher applies the guard, idempotent `PATH` with the guard first, `no_merge` alone not applying it, the inherited marker, the fail-closed error for an unset, empty or relative `AMPLIHACK_HOME` and a missing or non-executable shim, and (Linux only) a phase-1 `autodrive-*` bash step whose `gh pr merge 1` gets exit `3` and `REFUSED` while the stub `gh` logs no merge, a login shell whose profile prepends another `gh` still resolving `gh` to the shim, the shipped `bash-env` sourcing a user `BASH_ENV` first; off Linux, a companion test shows the merge is refused | `crates/amplihack-cli/tests/issue_1551_merge_guard.rs` |
 | `guard_applies` truth table (`0` and `false` still apply it) and `locate_guard_dir` errors, a group- or other-writable shim or directory included | `crates/amplihack-cli/src/commands/recipe/run/tests_merge_guard.rs` |
 | The real gate's `MERGED` path with the guard first on `PATH`, the phase-2 `MERGED` check, and the directive reaching the agent prompts (§5i-1551) | `amplifier-bundle/recipes/tests/test-auto-drive-to-merge.sh` |
-| [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
+| [Finalization hand-off](#finalization-hand-off-from-phase-1-1714) (#1714): the allow-list and flag exactness, the validator's hand-off on both `BLOCKED_CI` exits and on `FAILED_IMPLEMENTATION` with a confirmed open PR (and its refusal without one), the open-PR check's PR head rule (a fast-forward PR head present locally or fetched without writing refs is the same PR; a diverged, rewritten or unfetchable head is not), the real terminal-state probe followed by the validator on a merge already on the PR before finalization (`EXISTING_OPEN_PR` when green, `FAILED_IMPLEMENTATION` handed off when pending, `BLOCKED_CI` handed off when red; a diverged head, a rewound remote, or a probe without `accept_pr_head_ahead` still `FAILED_INVALID_INPUT` and never handed off), standalone runs and all five other prior-state blockers still failing closed, step-03 run from its YAML against a stub `gh` (hand-off, closed or different PR, a non-digit `pr_number` printed as `<invalid>`, no PR, resume, `BLOCKED_CI` with no `handoff` field, a state outside the vocabulary, a missing brick), and static guards on the flag's only setter and on the merge gate | `tests/integration/issue_1714_finalization_handoff.rs` |
 | The merge-ready skill stays platform-neutral | `tests/integration/merge_ready_platform_contract_test.rs` |
 | gadugi-test scenarios for this change: criterion 6 approval measurement (#1518), the merge-ready file lookup and the repo-type gadugi rule (#1517), and the crusty range and re-review at the loop's depth, with the real recursion guard, leaving phase 2's crusty records and manifest rows unchanged. This repository is a Rust CLI repository, so auto-drive runs them only with `AUTODRIVE_QA_SCENARIO_DIR=tests/gadugi/scenarios`. | `tests/gadugi/scenarios/issue-1518-*.yaml`, `tests/gadugi/scenarios/issue-1517-*.yaml` |
 

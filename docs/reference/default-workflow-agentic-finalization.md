@@ -400,6 +400,15 @@ in `evidence_used`.
 | Diverged, or the PR head is a rewrite of the local commit | No |
 | PR head commit not in the local object store and not fetchable | No |
 
+The test and its fetch are `_finalization_pr_head_descends` in
+[`workflow_pr_head_fetch.sh`](../../amplifier-bundle/tools/workflow_pr_head_fetch.sh).
+The terminal-state probe that `workflow-finalize` runs before this validator
+uses the same function (see
+[A PR ahead of local HEAD](./workflow-terminal-state.md#a-pr-ahead-of-local-head-is-the-same-pr-1714)),
+so the probe does not report a fast-forward PR head as stale metadata
+(`FAILED_INVALID_INPUT`, which this validator never hands off) before this
+check can run.
+
 When the PR head commit is not in the local object store, the helper runs one
 `git fetch --no-tags --no-write-fetch-head --refmap= origin refs/heads/<branch>`.
 It runs only after the view has passed every check that does not need the
