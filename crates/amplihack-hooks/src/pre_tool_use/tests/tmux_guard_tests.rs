@@ -207,6 +207,10 @@ const DENIED: &[&str] = &[
     "sh -c 'tmux kill-server'",
     "bash -c \"tmux kill-server\"",
     "python -c \"os.system('tmux kill-server')\"",
+    // Acceptance criteria literals (D5).
+    "env FOO=1 tmux kill-server",
+    "echo | tmux kill-server",
+    "echo\ntmux kill-server",
 ];
 
 const ALLOWED: &[&str] = &[
@@ -292,6 +296,9 @@ const ALLOWED: &[&str] = &[
     "env -u TMUX tmux -S /tmp/x/sock kill-server",
     "tmux kill-session -t foo",
     "grep kill-server file",
+    // Acceptance criteria literals (D5): scoped kill-session -a.
+    "tmux -L x kill-session -a",
+    "tmux -S /p kill-session -a",
 ];
 
 #[test]
@@ -625,4 +632,89 @@ fn guard_reads_no_environment() {
     let b: Option<Value> = check(INCIDENT);
     assert_eq!(a, b);
     assert!(a.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// F1 (SR-7): an unscoped tmux invocation whose subcommand word is an
+// expansion is uncertain, because the expansion may name kill-server.
+// ---------------------------------------------------------------------------
+
+const EXPANDED_SUBCOMMAND_DENIED: &[&str] = &[
+    "c=kill-server; tmux $c",
+    "tmux $c",
+    "tmux \"$c\"",
+    "tmux ${C}",
+    "tmux \"${C}\"",
+    "tmux $(echo kill-server)",
+    "tmux `echo kill-server`",
+    "tmux kill-$x",
+    "TMUX_TMPDIR=/tmp/sb tmux $c",
+    "env -u TMUX tmux $c",
+    "true && tmux $c",
+    "bash -c 'tmux $c'",
+    "bash -c 'tmux $(echo kill-server)'",
+    "bash -c 'x=$(tmux $c)'",
+    "bash <<'EOF'\ntmux $c\nEOF",
+    "git rebase -x 'tmux $c' main",
+    // Global options do not scope, so the subcommand is still an expansion.
+    "tmux -2 $c",
+    "tmux -f /dev/null \"$c\"",
+    // After an unknown global option every later word is inspected.
+    "tmux -x $c",
+    "tmux -d ${C}",
+];
+
+const EXPANDED_SUBCOMMAND_ALLOWED: &[&str] = &[
+    // Scoped invocations may use an expanded subcommand.
+    "tmux -S /p $cmd",
+    "tmux -L x \"$c\"",
+    "env -u TMUX tmux -S \"$SB/tmux.sock\" $c",
+    // Expansions in option values and arguments, after a literal subcommand.
+    "tmux new -s \"$name\"",
+    "tmux new -d -s \"$name\" 'sleep 1'",
+    "tmux kill-session -t \"$s\"",
+    "tmux send-keys -t \"$pane\" \"$keys\" Enter",
+    "tmux ls",
+    "tmux display -p '#{session_name}'",
+    // An expansion that is not a tmux subcommand word.
+    "echo $c",
+    "x=$(tmux ls)",
+    "bash -c 'tmux new -s \"$name\"'",
+    "git commit -m \"tmux $c\"",
+];
+
+#[test]
+fn denies_an_unscoped_tmux_whose_subcommand_is_an_expansion() {
+    let missed: Vec<&&str> = EXPANDED_SUBCOMMAND_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_expansions_in_scoped_invocations_and_option_values() {
+    let wrong: Vec<&&str> = EXPANDED_SUBCOMMAND_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// F4: PowerShell is a shell tool.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn powershell_is_a_shell_tool() {
+    for name in ["powershell", "PowerShell", "POWERSHELL"] {
+        assert!(is_shell_tool(name), "{name}");
+    }
+}
+
+#[test]
+fn shell_tool_names_are_matched_exactly() {
+    for name in ["Read", "Write", "Edit", "pwsh-ish", "bashful", ""] {
+        assert!(!is_shell_tool(name), "{name}");
+    }
 }

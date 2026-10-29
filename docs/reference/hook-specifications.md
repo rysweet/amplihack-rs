@@ -257,12 +257,12 @@ uses the socket named in `$TMUX` whenever no `-S` or `-L` is given, and ignores
 `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` therefore kills the user's own
 server and every session on it (#1733).
 
-**Tools it checks.** Tool names `bash`, `shell`, `shell_command` and
-`exec_command`, compared
-case-insensitively. It runs after the XPIA check and the Skill redirect,
-beside the merge guard, and before the non-Bash early return. It checks both
-`tool_input.command` and `tool_input.cmd`, and either one can deny, so a
-harmless `command` does not hide a `cmd` that kills the user's server.
+**Tools it checks.** Tool names `bash`, `shell`, `shell_command`,
+`exec_command` and `powershell`, compared case-insensitively. It runs after
+the XPIA check and the Skill redirect, beside the merge guard, and before the
+non-Bash early return. It checks both `tool_input.command` and
+`tool_input.cmd`, and either one can deny, so a harmless `command` does not
+hide a `cmd` that kills the user's server.
 
 On Codex, `normalize_codex_input` in `protocol/codex.rs` has already renamed
 the `shell`, `exec_command` and `shell_command` tools to `Bash`, and copied
@@ -315,6 +315,7 @@ These still deny, because they name the user's own server:
 | `tmux kill-server` | denied |
 | `TMUX_TMPDIR=$SB/tmuxsock tmux kill-server` | denied |
 | `FOO=1 BAR=2 tmux kill-server` | denied |
+| `env FOO=1 tmux kill-server` | denied |
 | `env -u TMUX tmux kill-server` | denied |
 | `/usr/bin/tmux kill-server` | denied |
 | `TMUX=/tmp/x,1,0 tmux kill-server` | denied |
@@ -326,6 +327,8 @@ These still deny, because they name the user's own server:
 | `tmux new -d 'sleep 1' \; kill-server` | denied |
 | `tmux -L x kill-server` | allowed |
 | `tmux -S /p kill-server` | allowed |
+| `tmux -L x kill-session -a` | allowed |
+| `tmux -S /p kill-session -a` | allowed |
 | `env -u TMUX tmux -S /tmp/x/sock kill-server` | allowed |
 | `env -u TMUX tmux -S "$SB/tmux.sock" kill-server` | allowed |
 | `tmux -L qa-1733 kill-server` | allowed |
@@ -380,6 +383,7 @@ the command. It also decodes `$'…'` escapes as bash does, so
 | `true && tmux kill-server` | denied |
 | `false \|\| tmux kill-server` | denied |
 | `echo x \| tmux kill-server` | denied |
+| `echo \| tmux kill-server` | denied |
 | `echo start` *newline* `tmux kill-server` | denied |
 | `sh -c 'tmux kill-server'` | denied |
 | `bash -c "tmux kill-server"` | denied |
@@ -412,6 +416,11 @@ backtick in the body, so those are checked as commands.
   `kill-s`, denies.
 - An unscoped tmux in the same pipeline as a word starting with `kill-s`
   denies, which covers `echo kill-server | tmux -C attach`.
+- An unscoped tmux invocation whose subcommand word contains `$` or a
+  backtick denies, because the shell decides the subcommand at run time. The
+  same rule applies to the words the guard inspects after an unknown global
+  option. An expansion in an option value, as in `tmux new -s "$name"`, and
+  any expansion in a scoped invocation are still allowed.
 - Unbalanced quotes, an unterminated `$(`, a `<<` with no delimiter, or a
   redirection with no target fall back to a text test: the command is denied
   when its text contains both `tmux` and `kill-s`.
@@ -419,6 +428,17 @@ backtick in the body, so those are checked as commands.
   quoting such as `t''mux` inside over-size input is not caught.
 - Reaching the depth limit (4) or the re-parse limit (256) while a candidate
   remains denies.
+
+| Command | Result |
+|---|---|
+| `c=kill-server; tmux $c` | denied |
+| `tmux ${C}` | denied |
+| `tmux $(echo kill-server)` | denied |
+| ``tmux `echo kill-server` `` | denied |
+| `tmux kill-server 'unterminated` | denied |
+| `tmux -S /p $cmd` | allowed |
+| `tmux -L x "$c"` | allowed |
+| `tmux new -s "$name"` | allowed |
 
 The guard never panics on any input. On Claude Code and Copilot a panic or
 error in the handler fails open: the hook returns `{}` and the command is
@@ -471,8 +491,17 @@ still apply.
 sandbox. It does not see through:
 
 - shell aliases or functions, script files written by an earlier command
-  (`bash script.sh`), `tmux source-file`, or commands assembled at run time
-  from pieces such as `"kill-"+"server"`;
+  (`bash script.sh`), or commands assembled at run time from pieces such as
+  `"kill-"+"server"`;
+- the tmux commands that `tmux source-file` or `tmux source` reads, whether
+  from a file, from `-` or `/dev/stdin`, or from a heredoc or here-string. A
+  pipeline that puts a `kill-s` word beside an unscoped tmux is still denied
+  by the [uncertain-input](#uncertain-input) rule, but
+  `tmux source-file k.conf`, after an earlier call wrote `kill-server` into
+  `k.conf`, is allowed;
+- an `-S` path that is a symbolic link to the default socket or to the socket
+  in `$TMUX`. The guard reads no files and does not resolve links, so
+  `tmux -S /tmp/link kill-server` is allowed whatever the link points to;
 - a variable copied from `$TMUX` other than by assignment (`read`,
   `printf -v`, `declare -n`), or in an earlier tool call;
 - quoting tricks in input over 64 KiB, which gets only the plain text test;
@@ -488,6 +517,13 @@ It does not guard these commands at all:
 - `kill-window` and `kill-pane`;
 - signals sent by other programs, such as `pkill tmux`, `killall tmux` or
   `kill <pid>`.
+
+If the host harness times out the hook before it answers, for example on the
+first start of a cold `amplihack-hooks` binary, Claude Code and Copilot run
+the command as though the hook had allowed it. What Codex does when it times
+out a security hook has not been verified. The guard's own cost is bounded by
+the 64 KiB input limit and the 256 re-parse limit; the harness timeout is
+outside its control.
 
 It also errs toward false positives. A shell evaluator anywhere on the line
 (including `tmux`, `find`, `docker`, `kubectl` and the git and gh commands

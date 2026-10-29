@@ -37,14 +37,21 @@
 //! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
 //! Uncertain input fails closed: unbalanced quotes, a redirection with no
 //! target, or hitting [`MAX_DEPTH`] or [`MAX_REPARSES`] with a candidate
-//! left deny.
+//! left deny. So does an unscoped tmux whose subcommand word holds a `$` or
+//! a backtick (`c=kill-server; tmux $c`, `tmux $(echo kill-server)`), since
+//! the expansion may name `kill-server`; expansions in option values
+//! (`tmux new -s "$name"`) and in scoped invocations are allowed.
 //!
 //! This is a guard rail against agent mistakes, not a sandbox. It does not
 //! cover:
 //!
 //! - shell aliases or functions, script files (`bash script.sh` for a file
-//!   written earlier), `tmux source-file`, or commands assembled at run time
-//!   from pieces;
+//!   written earlier), or commands assembled at run time from pieces;
+//! - `tmux source-file` (or `source`) reading its commands from a file,
+//!   stdin, a heredoc or a here-string, unless a `kill-s` word sits in the
+//!   same pipeline as the unscoped tmux;
+//! - an `-S` path that is a symlink to the default socket, which only a
+//!   file system lookup could see;
 //! - a variable copied from `$TMUX` other than by assignment (`read`,
 //!   `printf -v`, `declare -n`), or in an earlier tool call;
 //! - input over [`MAX_INPUT`] bytes, which gets only a plain text check for
@@ -66,6 +73,9 @@
 //! The guard always runs and reads no environment variables, so nothing in
 //! the environment can turn it off. It never panics on any input: the hook
 //! fails open on Claude Code and Copilot, so a panic would allow the command.
+//! For the same reason a harness that times out the hook, for example on a
+//! cold start, lets the command run; the guard's own cost is bounded by
+//! [`MAX_INPUT`] and [`MAX_REPARSES`].
 
 use super::shell::{self, SimpleCommand, basename, program};
 use serde_json::Value;
@@ -76,9 +86,15 @@ use tracing::warn;
 pub(super) const BLOCK_MESSAGE: &str = "Blocked: this tmux command would act on the tmux server named in $TMUX (normally the user's own server, with all of their sessions), because no -S or -L was given. TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket.";
 
 /// Tool names the guard checks, compared case-insensitively: Claude Code's
-/// `Bash`, Copilot's `bash`, and Codex's shell tools in case a host skips the
-/// Codex normalisation.
-pub(super) const SHELL_TOOLS: &[&str] = &["bash", "shell", "exec_command", "shell_command"];
+/// `Bash` and `PowerShell`, Copilot's `bash` and `powershell`, and Codex's
+/// shell tools in case a host skips the Codex normalisation.
+pub(super) const SHELL_TOOLS: &[&str] = &[
+    "bash",
+    "powershell",
+    "shell",
+    "exec_command",
+    "shell_command",
+];
 
 /// Programs whose arguments are data: a `tmux … kill-server` in them is text,
 /// as long as no stage of the command line evaluates text as code.
@@ -313,13 +329,16 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // Layer 3: words that hold a script mentioning tmux and kill-s.
         let git = prog_name.as_deref() == Some("git");
         for (k, word) in words.iter().enumerate() {
-            if !has_candidate(word) {
-                continue;
-            }
             let exempt = data_only
                 && !word.contains("$(")
                 && !word.contains('`')
                 && !(git && git_runs_value(words, k));
+            if !has_candidate(word) {
+                if !exempt && expands_near_tmux(word) {
+                    out.dangerous |= expansion_dangerous(word, depth, ctx);
+                }
+                continue;
+            }
             let verdict = judge_word(word, depth, ctx);
             out.tmux_seen |= verdict.tmux_seen;
             if !verdict.substitutions_ok || (!verdict.plain_ok && !exempt) {
@@ -337,7 +356,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
                 .map(String::as_str)
                 .collect();
             let joined = join_argv(&args);
-            if has_candidate(&joined) {
+            if needs_reparse(&joined) {
                 let inner = reparse(&joined, depth, ctx);
                 out.dangerous |= inner.dangerous;
                 out.tmux_seen |= inner.tmux_seen;
@@ -349,7 +368,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         for (n, body) in cmd.heredocs.iter().enumerate() {
             let expands = cmd.heredoc_expands.get(n).copied().unwrap_or(true);
             if evaluator_present {
-                if has_candidate(body) {
+                if needs_reparse(body) {
                     let inner = reparse(body, depth, ctx);
                     out.dangerous |= inner.dangerous;
                     out.tmux_seen |= inner.tmux_seen;
@@ -358,7 +377,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
             } else if expands {
                 // An unquoted delimiter: the shell runs `$(…)` in the body.
                 for sub in substitutions(body).0 {
-                    if has_candidate(&sub) {
+                    if needs_reparse(&sub) {
                         let inner = reparse(&sub, depth, ctx);
                         out.dangerous |= inner.dangerous;
                         out.tmux_seen |= inner.tmux_seen;
@@ -412,6 +431,21 @@ fn judge_word(word: &str, depth: usize, ctx: &mut Ctx) -> WordVerdict {
     verdict
 }
 
+/// Re-parses a word that holds a `tmux` token and an expansion but no
+/// `kill-s` token, such as the script in `bash -c 'tmux $c'`. Each
+/// substitution body and the rest of the word are judged on their own, so
+/// `x=$(tmux ls)` stays allowed.
+fn expansion_dangerous(word: &str, depth: usize, ctx: &mut Ctx) -> bool {
+    let (bodies, rest) = substitutions(word);
+    let mut dangerous = false;
+    for text in bodies.iter().chain(std::iter::once(&rest)) {
+        if needs_reparse(text) {
+            dangerous |= reparse(text, depth, ctx).dangerous;
+        }
+    }
+    dangerous
+}
+
 /// One level deeper, within the depth and re-parse limits. Hitting either
 /// limit with a candidate left is dangerous.
 fn reparse(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
@@ -425,8 +459,12 @@ fn reparse(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
     scan(text, depth + 1, ctx)
 }
 
+/// Stands in for a substitution in the text around it. It is an expansion,
+/// so a tmux subcommand made by a substitution stays uncertain.
+const PLACEHOLDER: &str = " $_ ";
+
 /// The bodies of the top-level `$(…)` and backtick substitutions in `text`,
-/// and the text with each replaced by a placeholder word.
+/// and the text with each replaced by [`PLACEHOLDER`].
 fn substitutions(text: &str) -> (Vec<String>, String) {
     let chars: Vec<char> = text.chars().collect();
     let mut bodies = Vec::new();
@@ -437,14 +475,14 @@ fn substitutions(text: &str) -> (Vec<String>, String) {
             let close = shell::subst_close(&chars, i);
             let end = close.unwrap_or(chars.len());
             bodies.push(chars.get(i + 2..end).unwrap_or_default().iter().collect());
-            rest.push_str(" _ ");
+            rest.push_str(PLACEHOLDER);
             i = end.saturating_add(1);
         } else if c == '`' {
             let end = (i + 1..chars.len())
                 .find(|&j| chars.get(j) == Some(&'`'))
                 .unwrap_or(chars.len());
             bodies.push(chars.get(i + 1..end).unwrap_or_default().iter().collect());
-            rest.push_str(" _ ");
+            rest.push_str(PLACEHOLDER);
             i = end.saturating_add(1);
         } else {
             rest.push(c);
@@ -468,6 +506,26 @@ fn has_candidate(text: &str) -> bool {
         }
     }
     false
+}
+
+/// Whether `text` holds a `tmux` token and a `$` or backtick that could
+/// expand to its subcommand.
+fn expands_near_tmux(text: &str) -> bool {
+    (text.contains('$') || text.contains('`'))
+        && text
+            .split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
+            .any(is_tmux)
+}
+
+/// Whether `text` needs a re-parse: it holds a tmux candidate or a tmux
+/// token beside an expansion.
+fn needs_reparse(text: &str) -> bool {
+    has_candidate(text) || expands_near_tmux(text)
+}
+
+/// Whether a word holds an expansion, so its value is unknown here.
+fn is_expansion(word: &str) -> bool {
+    word.contains('$') || word.contains('`')
 }
 
 fn starts_kill_s(word: &str) -> bool {
@@ -691,7 +749,8 @@ fn refers_to_any(value: &str, names: &HashSet<String>) -> bool {
 }
 
 /// Whether a tmux command sequence (split on `;` words and words ending in
-/// `;`) runs `kill-server` or `kill-session -a`.
+/// `;`) runs `kill-server` or `kill-session -a`, or has a subcommand word
+/// that is an expansion and so may be either.
 fn sequence_dangerous(rest: &[String]) -> bool {
     let mut current: Vec<&str> = Vec::new();
     let mut commands: Vec<Vec<&str>> = Vec::new();
@@ -708,18 +767,21 @@ fn sequence_dangerous(rest: &[String]) -> bool {
     commands.push(current);
     commands.iter().any(|cmd| match cmd.split_first() {
         Some((name, flags)) => {
-            kills_server(name) || (is_kill_session(name) && kills_all_sessions(flags))
+            is_expansion(name)
+                || kills_server(name)
+                || (is_kill_session(name) && kills_all_sessions(flags))
         }
         None => false,
     })
 }
 
 /// After an unknown global option the subcommand could start anywhere, so
-/// any word that would kill counts.
+/// any word that would kill, or any expansion, counts.
 fn loose_dangerous(rest: &[String]) -> bool {
     rest.iter().enumerate().any(|(j, word)| {
         let word = word.trim_end_matches(';');
-        kills_server(word)
+        is_expansion(word)
+            || kills_server(word)
             || (is_kill_session(word) && {
                 let flags: Vec<&str> = rest
                     .get(j + 1..)

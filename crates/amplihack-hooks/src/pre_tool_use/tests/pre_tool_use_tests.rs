@@ -1016,3 +1016,30 @@ fn tmux_guard_skips_non_shell_tools() {
         .unwrap();
     assert!(result.as_object().unwrap().is_empty(), "{result}");
 }
+
+#[test]
+fn tmux_guard_denies_for_the_powershell_tool_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let _marker = EnvRestore::unset("AMPLIHACK_MERGE_GUARD");
+    for tool in ["powershell", "PowerShell"] {
+        let result = PreToolUseHook
+            .process(shell_tool_input(
+                tool,
+                serde_json::json!({"command": "tmux kill-server"}),
+            ))
+            .unwrap();
+        assert_tmux_denied(&result);
+    }
+}
+
+#[test]
+fn tmux_guard_allows_a_scoped_kill_server_for_the_powershell_tool_name() {
+    let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
+    let result = PreToolUseHook
+        .process(shell_tool_input(
+            "powershell",
+            serde_json::json!({"command": "tmux -S /tmp/tx1/a.sock kill-server"}),
+        ))
+        .unwrap();
+    assert!(result.get("block").is_none(), "{result}");
+}
