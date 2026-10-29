@@ -140,6 +140,8 @@ mod issue_1688_routing_gap_report;
 mod issue_1690_isolated_autostart;
 #[path = "issue_1691_switch_live.rs"]
 mod issue_1691_switch_live;
+#[path = "issue_1707_claim_check_shell_suites.rs"]
+mod issue_1707_claim_check_shell_suites;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]
@@ -168,6 +170,8 @@ mod issue_899_merge_validations_abstention;
 mod no_capacity_notice_statusline;
 #[path = "pr_712_named_asset_canonicalization.rs"]
 mod pr_712_named_asset_canonicalization;
+#[path = "profile_overflow.rs"]
+mod profile_overflow;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

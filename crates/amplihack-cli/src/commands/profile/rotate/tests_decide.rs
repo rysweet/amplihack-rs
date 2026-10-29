@@ -11,7 +11,7 @@
 //!   Option<i64>, now: i64) -> Decision`, where `Decision` is `Stay`,
 //!   `Swap { to, reason: Reason::{Threshold, Upgrade} }` or `Alert`.
 
-use super::decide::{Decision, Measured, Reading, Reason, decide};
+use super::decide::{Decision, Measured, Reading, Reason, Windows, decide};
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
@@ -26,6 +26,8 @@ fn settings() -> Settings {
         upgrade_margin: 30,
         hold: 3600,
         interval: 600,
+        overflow_wait: 1800,
+        overflow_unknown_reset: false,
     }
 }
 
@@ -37,6 +39,8 @@ fn c(name: &str, reading: Reading) -> Measured {
     Measured {
         name: ProfileName::parse(name).unwrap(),
         reading,
+        windows: Windows::default(),
+        spend_limit: false,
     }
 }
 

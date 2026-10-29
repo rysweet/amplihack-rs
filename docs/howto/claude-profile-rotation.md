@@ -33,6 +33,7 @@ The exact flags, files, exit codes and log lines are in the
 - [Read the log](#read-the-log)
 - [Resume sessions stopped by a usage limit](#resume-sessions-stopped-by-a-usage-limit)
 - [When no account has capacity](#when-no-account-has-capacity)
+- [Use usage credits when every plan login is exhausted](#use-usage-credits-when-every-plan-login-is-exhausted)
 - [Move from the tmux prototype](#move-from-the-tmux-prototype)
 - [Where a login with no profile goes](#where-a-login-with-no-profile-goes)
 - [Swap refused](#swap-refused)
@@ -207,6 +208,12 @@ swap, by the usual [rules](#when-a-swap-happens). Run
   hold before it measures or chooses a profile. The hold is its own file, so
   `.default` can stay unset for features that ask for that; `switch --none`
   clears both.
+- **The hold beats usage credits too.** A `switch` onto an
+  [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
+  keeps you on credits, spending, even while a plan login has capacity. A
+  `switch` onto a plan login never moves onto credits, even when every plan
+  login runs out. Run `switch --none` to let the rotator decide again. See
+  [Pin and overflow](../reference/profile-command.md#pin-and-overflow).
 - **An older rotator does not see it.** If the running rotator was started
   from another amplihack binary, `switch` still moves the login and exits 0,
   but prints a warning:
@@ -542,6 +549,7 @@ the exact rules.
 | `--margin N` | `AMPLIHACK_ROTATE_MARGIN` | `5` | A threshold swap needs a target with at least N more points of headroom. |
 | `--upgrade-margin N` | `AMPLIHACK_ROTATE_UPGRADE_MARGIN` | `30` | Swap without reaching a threshold when a target has at least N more points of headroom. |
 | `--hold SECS` | `AMPLIHACK_ROTATE_HOLD` | `3600` | No upgrade swap for this long after any swap. `0` turns the hold off. |
+| `--overflow-wait SECS` | `AMPLIHACK_ROTATE_OVERFLOW_WAIT` | `1800` | Use an [overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted) only when the next plan reset is further away than this. |
 | `--interval SECS` | `AMPLIHACK_ROTATE_INTERVAL` | `600` | Time between cycles, for `start` and `watch` only. |
 
 A flag beats the variable, and the variable beats the default. For example, to
@@ -637,6 +645,10 @@ To keep a profile out of rotation for good, exclude it:
 ```bash
 amplihack profile auto-switch exclude review
 ```
+
+A profile marked as overflow is taken over only by the rules in
+[Use usage credits when every plan login is exhausted](#use-usage-credits-when-every-plan-login-is-exhausted),
+never as an ordinary target.
 
 ## Read the log
 
@@ -813,7 +825,9 @@ the resume, delete the `StopFailure` entry from `~/.claude/settings.json`.
 ## When no account has capacity
 
 When the `ALERT: no profile has capacity` line is written, the rotator has
-nowhere to move the login, so it stays put. The log is not the only place you
+nowhere to move the login, so it stays put. With an
+[overflow profile](#use-usage-credits-when-every-plan-login-is-exhausted)
+marked, it moves there instead when the next plan reset is far enough away. The log is not the only place you
 hear about it. When a cycle gets as far as deciding to swap, stay or raise
 the ALERT, the rotator updates the shared capacity state from that cycle's
 measurements, and the status line, Claude Code, `amplihack claude` and
@@ -846,6 +860,356 @@ appears and how it is deduplicated is in
 [When no account has capacity](claude-profiles.md#when-no-account-has-capacity);
 the file and the exact rules are in the
 [capacity notice reference](../reference/profile-command.md#capacity-notice).
+
+## Use usage credits when every plan login is exhausted
+
+If one of your accounts has usage credits turned on, the rotator can move
+work onto it when every plan login is out of capacity and the next reset is
+a long way off, and move work back as soon as a plan login has capacity
+again. That account is an *overflow profile*. Every other profile is a
+*plan profile*.
+
+**Overflow costs real money.** Work on an overflow profile past its plan
+limit is billed to the account's usage credits. The rotator keeps that time
+short, but it is not a spending cap. The organization spend limit at
+<https://claude.ai/settings/usage> is the only hard limit, so set one before
+you start.
+
+### Turn on usage credits
+
+Usage credits are an account setting, and amplihack cannot change it. Sign
+in to claude.ai as the account, open <https://claude.ai/settings/usage>,
+turn on usage credits and set a spend limit. Without this, the account stops
+at its plan limit like any other, and the rotator gets nothing from it.
+
+### Mark the profile
+
+The account needs a logged-in profile, as for rotation in general. Mark it:
+
+```bash
+amplihack profile overflow add ryan-mistt-org
+```
+
+```
+overflow: added ryan-mistt-org
+note: ryan-mistt-org is used only when every plan login is exhausted, and work on it is billed to that account's usage credits.
+note: set a spend limit for the organization at https://claude.ai/settings/usage; the rotator is not a spending cap.
+```
+
+The mark is stored as `overflow=ryan-mistt-org` in `<root>/.auto-switch`,
+next to the auto-switch exclude list, and not in `config.toml`. The rotator
+and auto-switch already read that file on every cycle and every check, so a
+running rotator picks the mark up without a restart, and auto-switch skips
+the profile from its next check. With several overflow profiles, the rotator
+tries them in the order you added them.
+
+`add` and `remove` wait for a running rotator cycle to finish before they
+write. If one holds the file for more than 10 seconds, the command changes
+nothing and fails with:
+
+```
+error: .auto-switch is being changed by another process (the rotator or auto-switch); retry
+```
+
+Run it again. A `remove` that printed `overflow: removed <name>` is never
+undone by a concurrent write.
+
+Check the marks:
+
+```bash
+amplihack profile overflow list
+```
+
+```
+ryan-mistt-org
+```
+
+A marked name with no profile directory under the root is listed with
+`missing` after it, so a typo or a deleted profile shows up here.
+
+Leave the default profile unset. A launch that resolves to a profile
+through the default pointer uses that profile directly, whatever the rotator
+does. If the default is the overflow profile, every such launch spends
+credits; if it is a plan profile, those launches never follow the rotator.
+`add` warns when the default names the profile. Clear it with:
+
+```bash
+amplihack profile switch --none
+```
+
+An excluded profile is never used, even when it is marked as overflow.
+`add` warns when the profile is in the exclude list; remove it from the list
+with `amplihack profile auto-switch exclude <the other names>`.
+
+### Choose how long to wait for a reset
+
+The rotator moves onto credits only when the earliest plan reset is more
+than `--overflow-wait` seconds away. The default is 1800 (30 minutes). To
+wait up to an hour before spending credits:
+
+```bash
+amplihack profile rotate stop
+amplihack profile rotate start --overflow-wait 3600
+```
+
+`AMPLIHACK_ROTATE_OVERFLOW_WAIT` sets the same value. Accepted values are
+whole seconds from `0` to `604800` (7 days); anything else is a usage error
+that names the flag or the variable. `0` means credits are used as soon as
+every plan login is out of capacity. The live login still has to reach
+`--session-at` or `--week-at` first.
+
+Auto-switch uses the running rotator's wait: `rotate watch` records its
+overflow settings when it starts, and every Claude session reads them from
+there, so there is nothing to keep in step. Check with
+`amplihack profile auto-switch status`, whose `overflow gate:` line shows
+the values and says `from the rotator`. Only while no rotator runs does
+auto-switch read `AMPLIHACK_ROTATE_OVERFLOW_WAIT` from its own environment.
+See [Auto-switch and overflow profiles](../reference/profile-command.md#auto-switch-and-overflow-profiles).
+
+### When no plan reset time is known
+
+A plan profile whose probe failed, or that reads exhausted without a reset
+time, has no known reset. Unknown resets are left out: one known reset
+decides the wait. When **none** is known, the rotator does not spend money
+by default: it writes the no-capacity ALERT and stays on the plan login. To
+let an unknown reset move work onto credits at once, opt in:
+
+```bash
+amplihack profile rotate stop
+amplihack profile rotate start --overflow-unknown-reset 1
+```
+
+`AMPLIHACK_ROTATE_OVERFLOW_UNKNOWN_RESET=1` in the environment of
+`rotate start` does the same. Auto-switch follows the running rotator's
+choice either way. The `overflow: on` log line then reads `next plan reset
+unknown`.
+
+### Rank overflow profiles
+
+Each overflow mark has a tier from 1 to 9 (default 1). Lower tiers are tried
+first, so a cheaper kind of overflow comes before a dearer one:
+
+```bash
+amplihack profile overflow add ryan-mistt-org            # tier 1
+amplihack profile overflow add api-key-profile --tier 2  # tried after tier 1
+amplihack profile overflow list
+```
+
+### What the rotator does
+
+On each cycle:
+
+1. While the live login is a plan profile, the rotator decides as usual.
+   Only when it would write `ALERT: no profile has capacity` does it look at
+   overflow: if the earliest plan reset is more than `--overflow-wait` away
+   and an overflow profile can be used, it swaps to the first one by tier
+   with `reason=overflow-in`. A failed live probe never leads to credits.
+2. While the live login is an overflow profile, it checks every plan
+   profile. As soon as one has capacity it swaps back with
+   `reason=overflow-out`, without waiting for `--hold` or needing `--margin`
+   or `--upgrade-margin`. Otherwise it stays.
+
+A plan profile *has capacity* when its probe succeeded and its session and
+week use are both below `--session-at` and `--week-at`. Reaching either
+threshold is enough to take its capacity away. The rotator never
+moves onto credits while any plan profile has capacity, and moves back only
+to one that has it, so it does not bounce between credits and a login that
+is already at a threshold.
+
+An overflow profile's own session and weekly limits show as exhausted in
+`profile usage`. That does not stop it being used, by the rotator or by
+auto-switch; those are the plan limits the credits cover. Only a
+[spend block](../reference/profile-command.md#overflow-spend-limit-block)
+moves work from one overflow profile to the next.
+
+The log shows each move:
+
+```
+2026-10-24T09:00:05Z cycle live=work work:s=97%,w=91% personal:s=100%,w=100% ryan-mistt-org:s=100%,w=100%
+2026-10-24T09:00:05Z swap work->ryan-mistt-org live s=97% w=91% target s=100% w=100% reason=overflow-in
+2026-10-24T09:00:05Z overflow: on ryan-mistt-org; no plan profile has capacity, next plan reset 2026-10-24T14:00:00Z
+2026-10-24T14:10:05Z swap ryan-mistt-org->personal live s=100% w=100% target s=0% w=62% reason=overflow-out
+2026-10-24T14:10:05Z overflow: off ryan-mistt-org; back on plan profile personal
+```
+
+To see only overflow moves:
+
+```bash
+grep -E 'reason=overflow|overflow: (on|off|staying)|spend limit' ~/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+### See whether you are running on credits
+
+```bash
+amplihack profile rotate status
+```
+
+```
+root: /home/you/.claude-profiles (source: config)
+rotate: running
+autostart: on (default)
+pid: 48213
+live: ryan-mistt-org
+last cycle: 2026-10-24T09:10:05Z stayed overflow=on
+overflow: ryan-mistt-org
+on overflow: yes (ryan-mistt-org)
+log: /home/you/.claude-profiles/.auto-switch.d/rotate/rotate.log
+```
+
+`on overflow: yes` needs two things: the login in `~/.claude` is an overflow
+profile, and the rotator's last cycle recorded `overflow=in` or
+`overflow=on`, meaning it found no plan capacity. If you put the overflow
+login in `~/.claude` yourself while a plan login still has capacity, the line
+reads `on overflow: no (ryan-mistt-org is overflow; plan capacity remains)`
+until the next cycle moves it out. After `amplihack profile switch
+ryan-mistt-org`, the line reads `on overflow: yes (ryan-mistt-org, held by
+switch)`: the hold keeps you on credits until `amplihack profile switch
+--none`. `status` runs no probe.
+
+When the default pointer names an overflow profile, `status` adds a warning
+line:
+
+```
+default: ryan-mistt-org (overflow; launches use it directly)
+```
+
+`profile usage` marks the profile `overflow` and, when its login is in
+`~/.claude` and its own probe in that run shows the session or all-models
+weekly limit reached, ends with `running on overflow: ryan-mistt-org`. A live overflow
+login that still has plan capacity is not on credits and gets no footer. While the
+rotator is on credits it reports capacity, so the no-capacity warning clears
+and the [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit)
+resumes sessions stopped by a limit. Those sessions then run on credits.
+
+### When the credits run out
+
+Claude reports `You've hit your org's monthly spend limit …` (older
+versions say `Your organization has reached its monthly spend limit`) when
+the credits are used up or turned off. The rotator's usage probe recognises
+both and runs against the live overflow profile on every cycle, so it sees
+the message within one cycle. When the probe reads this for an overflow
+profile, it blocks that profile until 00:00 UTC on the 1st of the
+next month, writes one ALERT, and moves to the next overflow profile, a plan
+profile, or nowhere:
+
+```
+2026-10-24T11:20:05Z ALERT: overflow profile ryan-mistt-org hit its spend limit; blocked until 2026-11-01T00:00:00Z
+```
+
+It does not retry the profile on every cycle. After raising the spend limit
+or adding credits, lift the block:
+
+```bash
+amplihack profile overflow clear ryan-mistt-org
+```
+
+```
+overflow: cleared the spend block on ryan-mistt-org
+```
+
+`clear` waits up to 10 seconds for a running cycle and otherwise fails with
+`rotator busy, retry`; run it again.
+
+The block depends on the spend-limit message appearing in the output of
+`claude -p /usage`. If sessions on the overflow profile fail with that
+message but no block appears in `overflow list`, the rotator cannot tell, and
+you have two ways out:
+
+- `amplihack profile overflow remove <name>` makes it a plan profile. A
+  spend-limit reading then counts as a failed probe, so the rotator swaps it
+  out only after three failed cycles in a row (30 minutes at the default
+  interval), and only to a plan profile.
+- `amplihack profile rotate stop` stops all swapping and leaves that login
+  in `~/.claude` until you start the rotator again.
+
+### Turn overflow off
+
+**Removing the mark does not stop spending.** If the overflow profile's
+login is in `~/.claude` and no plan profile has the margin, the rotator
+writes `ALERT: no profile has capacity` and leaves the login there, and
+Claude keeps billing work on it to the credits. Stopping the rotator leaves
+the login where it is too.
+
+If `rotate status` shows `on overflow: yes`, stop the spending first: turn off
+usage credits or lower the spend limit at
+<https://claude.ai/settings/usage>. Claude then refuses work on that login,
+and while the mark is still there the rotator blocks the profile and moves
+away from it, as in [When the credits run out](#when-the-credits-run-out).
+Ending the Claude sessions on that login also stops spending until the next
+launch.
+
+Then remove the mark:
+
+```bash
+amplihack profile overflow remove ryan-mistt-org
+```
+
+```
+overflow: removed ryan-mistt-org
+```
+
+The next cycle treats the profile as a plan profile again. If its login is
+in `~/.claude` at that moment, it is swapped out by the usual rules: because
+its plan limits are exhausted, that is a threshold swap whenever another
+profile has the margin.
+
+If you move an overflow profile's login into `~/.claude` yourself while a
+plan profile has capacity, the rotator moves it back out on the next cycle.
+To stay on it, remove the mark or stop the rotator.
+
+### Upgrading and rolling back
+
+Older `amplihack` binaries do not know the new settings:
+
+- they count a `.auto-switch` that has an `overflow=` line as corrupt, so
+  auto-switch is off for them and the exclude list is ignored;
+- they reject a rotate ledger that has overflow fields.
+
+Upgrade every `amplihack` binary that uses the root, including the one the
+rotator and the hooks run, and then restart the rotator:
+
+```bash
+amplihack profile rotate stop
+amplihack profile rotate start
+```
+
+To go back to an older binary:
+
+1. Note every marked profile and every block. `overflow list` shows blocks
+   only for marked profiles, so run it before removing anything:
+   ```bash
+   amplihack profile overflow list
+   ```
+2. Make sure the login in `~/.claude` is not on credits. If `rotate status`
+   shows `on overflow: yes`, follow
+   [Turn overflow off](#turn-overflow-off) first.
+3. Remove each mark, then lift each block. `clear` works on a name that is
+   no longer marked:
+   ```bash
+   amplihack profile overflow remove ryan-mistt-org
+   amplihack profile overflow clear ryan-mistt-org
+   ```
+4. Stop the rotator, then run one cycle by hand. With no marks left, the
+   cycle records `last_cycle` without the `overflow` field:
+   ```bash
+   amplihack profile rotate stop
+   amplihack profile rotate
+   ```
+5. Check that nothing is left. `rotate status` must show a `last cycle:`
+   line with no `overflow=` suffix and `overflow: -`, and the ledger must
+   have no overflow keys:
+   ```bash
+   amplihack profile rotate status
+   grep -cE '"overflow(_blocked)?"' ~/.claude-profiles/.auto-switch.d/rotate/ledger.json
+   ```
+   The `grep` prints `0`. If the `last cycle:` line still ends in
+   `overflow=`, the cycle was skipped (for example `skip: state lock busy`);
+   run `amplihack profile rotate` again.
+
+Then install the older binary and start the rotator.
+
+The exact rules are in the
+[overflow reference](../reference/profile-command.md#rotate-overflow).
 
 ## Move from the tmux prototype
 
@@ -1317,6 +1681,15 @@ full rule is in
   `amplihack profile usage` to check: the live row then reports the other
   organization's usage, and if another profile already holds that
   organization, both commands warn about a duplicate login.
+- **Overflow depends on what `/usage` shows.** The rotator assumes that an
+  account on credits still answers `claude -p /usage` after its plan limit,
+  and that a used-up spend limit shows there as `spend_limit`. An overflow
+  profile whose probe fails is never used. A spend block always lasts until
+  the 1st of the next month (UTC), whatever reset Claude states; lift it
+  sooner with `amplihack profile overflow clear <name>`.
+- **The warning can say exhausted while on credits.** The status line and
+  `profile usage` do not know about credits and may record the no-capacity
+  warning between cycles; the rotator's next cycle clears it.
 - **A manual `/login` in `~/.claude` loses a login.** A manual `/login` in
   `~/.claude` replaces whatever login was there; the profile that login
   belonged to is left with no login. The rotator recovers the rest by itself
@@ -1325,6 +1698,9 @@ full rule is in
   with `amplihack profile login <name>`. Backups under
   `<root>/.rejected-logins/rotate-…` are never pruned; delete them yourself
   once you no longer need them.
+  A manual `/login` onto an overflow profile's account is recovered the same
+  way, and the same cycle then moves off it whenever a plan login has
+  capacity, so a `/login` by hand never leaves work running on credits.
 - **A rotator started before an upgrade ignores `switch`.** The hold from
   `profile switch` is a file the rotator reads on each cycle; a
   `rotate watch` started by an older `amplihack` does not know about it and

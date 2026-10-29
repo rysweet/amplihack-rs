@@ -11,9 +11,10 @@
 //! never looks for `claude` and never starts the rotator; see "Rotate
 //! switch" in docs/reference/profile-command.md.
 
+use super::alert::clear_alert;
 use super::cycle::{Ctx, LOCK_WAIT, prototype_guard};
 use super::identify::{LiveId, Skip};
-use super::ledger::{LastCycle, RotateState, SWITCHED, clear_alert};
+use super::ledger::{LastCycle, RotateState, SWITCHED, active_blocks};
 use super::log::msg;
 use super::observe::{Snap, live_alert};
 use super::pin;
@@ -123,6 +124,12 @@ pub(super) fn switch_in(
             return default_only(&ctx.rs, store, name, reason_of(&line));
         }
     };
+    // A pin stops every rotator move, so pinning an overflow profile whose
+    // credits are known to be spent would hold the login where it cannot
+    // work. Refused like a skip reason, for the already-live case too.
+    if let Some(reason) = spend_blocked(&ctx.rs, &first, name)? {
+        return default_only(&ctx.rs, store, name, reason);
+    }
     let switched = match source {
         None => {
             out.emit(now(), &msg::switched_already_live(name));
@@ -249,6 +256,26 @@ pub(super) fn not_a_candidate(
     ))
 }
 
+/// Why `name` may not be pinned for its spend, if it may not: it is an
+/// overflow profile in the prelude's snapshot and the ledger holds an active
+/// spend block for it (#1606). A ledger that cannot be read fails the
+/// switch, since the blocks are then unknown.
+pub(super) fn spend_blocked(
+    rs: &RotateState,
+    snap: &Snap,
+    name: &ProfileName,
+) -> Result<Option<String>, ProfileError> {
+    if !snap.overflow.iter().any(|e| &e.name == name) {
+        return Ok(None);
+    }
+    let Some(l) = rs.load_ledger()? else {
+        return Ok(None);
+    };
+    Ok(active_blocks(&l, now())
+        .get(name.as_str())
+        .map(|b| msg::switch_spend_blocked(name, b.until)))
+}
+
 /// Records the switch as the ledger's last cycle: outcome
 /// [`SWITCHED`], measured now, and no alert. The person chose this login, so
 /// the limit-resume hook treats it as capacity measured at the switch: a
@@ -262,6 +289,7 @@ fn record_switch(rs: &RotateState) -> Result<(), ProfileError> {
         at: t,
         measured_at: Some(t),
         outcome: SWITCHED.into(),
+        overflow: None,
     });
     rs.save_ledger(&l)
 }
