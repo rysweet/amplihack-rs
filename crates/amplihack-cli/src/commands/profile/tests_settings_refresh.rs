@@ -263,6 +263,27 @@ mod issue_1699 {
         assert!(reason.contains("HOME is unset"), "{reason}");
     }
 
+    /// Review of #1717: a real HOME and a real profile root under it, with
+    /// the hooks binary under a temp directory (install falls back to the
+    /// source binary, which `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` can put in
+    /// `/tmp`). The root is under HOME but not temporary, so it is refused.
+    #[test]
+    fn temp_hooks_into_real_root_under_real_home_is_refused() {
+        let (_d, tmp) = fixture();
+        let bin = hooks_file(&tmp.join("build/amplihack-hooks"));
+        let (_h, real) = fixture();
+        let home = dir(real.join("home"));
+        let root = dir(home.join(".claude-profiles"));
+        let reason = hook_path_refusal(&bin, &root, Some(&home), std::slice::from_ref(&tmp))
+            .expect("a temp hooks path must not reach a real root under a real HOME");
+        assert!(reason.contains("is under temporary directory"), "{reason}");
+        assert!(
+            reason.contains("is not under a temporary directory"),
+            "{reason}"
+        );
+        assert!(reason.contains(&root.display().to_string()), "{reason}");
+    }
+
     /// A symlink in a real-looking HOME that points into a temp directory is
     /// judged by its target.
     #[test]

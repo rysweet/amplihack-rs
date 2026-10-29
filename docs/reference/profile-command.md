@@ -730,15 +730,22 @@ Rules:
   the `amplihack-hooks` binary does not exist or is not a regular file (a
   symlink to a regular file is accepted), or when the binary's canonical path
   lies under a temporary directory (`/tmp`, an absolute `$TMPDIR`, or the
-  platform temp dir) and the profile root is not under `$HOME`, or `$HOME` is
-  unset. That second case is a test install with a temp `HOME` that
-  inherited a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`. The path as written is
+  platform temp dir), unless the profile root lies both under `$HOME` and
+  under a temporary directory. That exception is the layout of an isolated
+  test install, where `HOME` and the profile root are both temporary. Two
+  cases are refused in particular: a test install with a temp `HOME` that
+  inherited a real `AMPLIHACK_CLAUDE_PROFILE_ROOT`, and a real install whose
+  hooks binary is a temporary build (deploying the binary failed, so install
+  fell back to a source binary such as one named by
+  `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` under `/tmp`). `$HOME` unset also
+  refuses a temporary hooks path. The path as written is
   checked as well, so a symlink placed in a temporary directory is refused
   even when it points elsewhere. A refusal writes nothing; each profile is
   reported with one line, and the install still succeeds:
 
   ```text
   Profile work: settings.json not refreshed (hooks binary /tmp/.tmpQ3x9/home/.local/bin/amplihack-hooks is under temporary directory /tmp; profile root /home/user/.claude-profiles is outside HOME)
+  Profile work: settings.json not refreshed (hooks binary /tmp/build/amplihack-hooks is under temporary directory /tmp; profile root /home/user/.claude-profiles is not under a temporary directory)
   Profile work: settings.json not refreshed (hooks binary /nonexistent/amplihack-hooks does not exist or is not a regular file)
   ```
 
@@ -746,7 +753,10 @@ Rules:
   under `/tmp`. The `~/.claude/settings.json` registration and `statusLine`
   are not affected. If your real `HOME` is under `/tmp` and your profile root
   is outside it, move the root under `HOME` (see [Root command](#root-command))
-  and run `amplihack install` again; changing `TMPDIR` does not help.
+  and run `amplihack install` again; changing `TMPDIR` does not help. If the
+  hooks binary is a temporary build, fix the deploy failure that install
+  reported, or point `AMPLIHACK_AMPLIHACK_HOOKS_BINARY_PATH` at a binary
+  outside the temporary directories, and run `amplihack install` again.
 - On Unix, directories are created `0700` and files `0600`; Windows uses
   inherited ACLs. Files use `create_new` (`O_EXCL` on Unix), so nothing is
   overwritten and no destination symlink is followed.

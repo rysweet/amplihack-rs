@@ -13,7 +13,8 @@
 //! the developer's `AMPLIHACK_CLAUDE_PROFILE_ROOT` inherited, rewrote the real
 //! profiles with a hooks path inside that temp HOME. [`hook_path_refusal`]
 //! now refuses a hooks binary that does not exist, and one under a temporary
-//! directory when the profile root is not under HOME.
+//! directory unless the profile root is under HOME and itself under a
+//! temporary directory.
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
@@ -62,10 +63,12 @@ pub(crate) fn refresh_profile_settings(
 /// Issue #1699: `None` when `hooks_bin` may be written into the profiles
 /// under `root`, otherwise the reason it may not. Refused when `hooks_bin`
 /// is not a regular file (after following symlinks), or when it lies under
-/// one of `temp_bases` (expected canonical) and `root` does not lie under
-/// `home`, or `home` is unknown. "Lies under" is checked twice: on the fully
-/// resolved path, and on the path as written with only its directory
-/// resolved, because the path as written is what the profiles store.
+/// one of `temp_bases` (expected canonical) unless `root` lies both under
+/// `home` and under one of `temp_bases`, which is the `isolated(..)` test
+/// layout. An unknown `home` refuses a temp hooks path. "Lies under" is
+/// checked twice: on the fully resolved path, and on the path as written with
+/// only its directory resolved, because the path as written is what the
+/// profiles store.
 /// Comparisons are component-wise on canonical paths, or on the absolute form
 /// of a path that does not exist.
 pub(crate) fn hook_path_refusal(
@@ -95,13 +98,28 @@ pub(crate) fn hook_path_refusal(
     let Some(home) = home.and_then(resolved) else {
         return Some(format!("{under_temp}; HOME is unset"));
     };
-    match resolved(root) {
-        Some(root_path) if root_path.starts_with(&home) => None,
-        _ => Some(format!(
+    let Some(root_path) = resolved(root) else {
+        return Some(format!(
+            "{under_temp}; profile root {} cannot be resolved",
+            root.display()
+        ));
+    };
+    if !root_path.starts_with(&home) {
+        return Some(format!(
             "{under_temp}; profile root {} is outside HOME",
             root.display()
-        )),
+        ));
     }
+    // HOME may be the real one, with the hooks binary taken from a temporary
+    // build (install falls back to the source binary when deploying fails).
+    // Only a profile root that is itself temporary may receive a temp path.
+    if !temp_bases.iter().any(|base| root_path.starts_with(base)) {
+        return Some(format!(
+            "{under_temp}; profile root {} is not under a temporary directory",
+            root.display()
+        ));
+    }
+    None
 }
 
 /// `path` with its directory resolved and its last component kept as written,

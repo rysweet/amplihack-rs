@@ -190,7 +190,8 @@ pub(super) const PROFILE_REFRESH_TEST_OPT_IN: &str = "AMPLIHACK_TEST_PROFILE_REF
 /// registrations as `~/.claude/settings.json`. Never fails the install: a
 /// profile that cannot be refreshed is reported and skipped. Issue #1699: a
 /// `hooks_bin` that does not exist, or that lies under a temporary directory
-/// while the profile root is outside HOME, is refused for every profile.
+/// while the profile root is outside HOME or not itself temporary, is refused
+/// for every profile.
 pub(super) fn refresh_profile_hooks(hooks_bin: &Path) {
     use crate::commands::profile::{Refresh, refresh_profile_settings};
     // This crate's in-process install tests inherit the developer's
