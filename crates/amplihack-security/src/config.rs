@@ -66,8 +66,9 @@ impl XpiaConfig {
 
     /// Built-in defaults, ignoring every `XPIA_*` environment variable.
     ///
-    /// Tests use this so that a session which exports, for example,
-    /// `XPIA_ENABLED=false` cannot change their outcome.
+    /// XPIA is off by default (opt in with `XPIA_ENABLED=true`). Tests use
+    /// this so that a session which exports, for example, `XPIA_ENABLED=true`
+    /// cannot change their outcome.
     pub fn defaults() -> Self {
         Self::from_lookup(|_| None)
     }
@@ -92,7 +93,7 @@ impl XpiaConfig {
         };
 
         let mut config = Self {
-            enabled: env_bool("XPIA_ENABLED", true),
+            enabled: env_bool("XPIA_ENABLED", false),
             security_level,
             verbose_feedback: env_bool("XPIA_VERBOSE_FEEDBACK", false),
             block_on_high_risk: env_bool("XPIA_BLOCK_HIGH_RISK", true),
@@ -185,9 +186,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_is_enabled() {
+    fn default_config_is_disabled() {
+        // Owner decision (#1734): XPIA is off unless the user opts in.
         let cfg = XpiaConfig::defaults();
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled, "XPIA must be disabled by default");
         assert!(cfg.block_on_critical);
     }
 
@@ -367,8 +369,77 @@ mod lookup_tests {
     #[test]
     fn defaults_ignore_lookup_free_environment() {
         let cfg = XpiaConfig::defaults();
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
         assert_eq!(cfg.max_prompt_length, 10_000);
         assert!(cfg.blacklist_domains.is_empty());
+    }
+
+    fn enabled_for(value: Option<&str>) -> bool {
+        XpiaConfig::from_lookup(|k| match k {
+            "XPIA_ENABLED" => value.map(str::to_string),
+            _ => None,
+        })
+        .enabled
+    }
+
+    #[test]
+    fn xpia_enabled_value_table() {
+        // Off: unset, empty, unrecognised, and the explicit false forms.
+        // Values are not trimmed, so " true " stays off.
+        for value in [
+            None,
+            Some(""),
+            Some("maybe"),
+            Some("on"),
+            Some("false"),
+            Some("FALSE"),
+            Some("0"),
+            Some("no"),
+            Some(" true "),
+        ] {
+            assert!(
+                !enabled_for(value),
+                "XPIA_ENABLED={value:?} must leave XPIA disabled"
+            );
+        }
+        // On: the accepted truthy forms, in any case.
+        for value in ["true", "TRUE", "True", "1", "yes", "Yes", "YES"] {
+            assert!(
+                enabled_for(Some(value)),
+                "XPIA_ENABLED={value:?} must enable XPIA"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_opt_in_keeps_full_protection() {
+        let cfg = XpiaConfig::from_lookup(|k| (k == "XPIA_ENABLED").then(|| "true".into()));
+        assert!(cfg.enabled);
+        assert!(cfg.block_on_critical);
+        assert!(cfg.block_on_high_risk);
+        assert!(cfg.validate_bash);
+        assert!(cfg.validate_webfetch);
+        assert!(cfg.validate_agents);
+    }
+
+    #[test]
+    fn other_xpia_keys_cannot_enable_xpia_on_their_own() {
+        // Every other XPIA_* key at its strictest value, XPIA_ENABLED unset.
+        let cfg = XpiaConfig::from_lookup(|k| match k {
+            "XPIA_SECURITY_LEVEL" => Some("STRICT".into()),
+            "XPIA_BLOCK_HIGH_RISK"
+            | "XPIA_BLOCK_CRITICAL"
+            | "XPIA_VALIDATE_WEBFETCH"
+            | "XPIA_VALIDATE_BASH"
+            | "XPIA_VALIDATE_AGENTS"
+            | "XPIA_LOG_EVENTS"
+            | "XPIA_VERBOSE_FEEDBACK" => Some("true".into()),
+            "XPIA_BLACKLIST_DOMAINS" => Some("evil.com".into()),
+            _ => None,
+        });
+        assert!(
+            !cfg.enabled,
+            "only XPIA_ENABLED may turn XPIA on; sub-settings must not"
+        );
     }
 }

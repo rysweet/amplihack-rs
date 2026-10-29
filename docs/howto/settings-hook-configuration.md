@@ -58,6 +58,8 @@ All hooks are implemented as subcommands of the compiled `amplihack-hooks` binar
 
 **XPIA security behavior:** When the `tools/xpia` directory is present in the staged framework assets, the `session-start`, `pre-tool-use`, and `post-tool-use` subcommands additionally activate XPIA defense logic (implemented in `amplihack-security::XpiaDefender`). No extra hook entries are added — the same `amplihack-hooks <subcommand>` invocation handles both framework and security duties. The `pre-tool-use` subcommand is only registered when XPIA assets are present.
 
+Registering the hook does not turn XPIA scanning on. XPIA is off by default and runs only when the agent CLI is started with `XPIA_ENABLED=true` (`1` and `yes` also work, in any case). With XPIA off, the registered `pre-tool-use` hook still enforces the CWD deletion, CWD rename, commit-on-main and `--no-verify` guards. See the [XPIA Configuration Reference](../reference/xpia-configuration.md).
+
 ### What Is Validated
 
 The installer validates:
@@ -144,7 +146,7 @@ amplihack install  # This will reconfigure hooks automatically
 
 - This is normal if your framework bundle does not include XPIA assets
 - XPIA security is an optional feature — the info message is not an error
-- When XPIA assets are present, the installer automatically registers the XPIA hook subcommands via the `amplihack-hooks` binary
+- When XPIA assets are present, the installer automatically registers the XPIA hook subcommands via the `amplihack-hooks` binary. XPIA scanning still stays off until you set `XPIA_ENABLED=true`
 
 ## Advanced: Path Expansion
 

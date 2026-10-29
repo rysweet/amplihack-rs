@@ -6,7 +6,10 @@
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
 //! - In an auto-drive run, merges outside the merge gate (#1551)
-//! - XPIA prompt injection attacks (all tools)
+//! - XPIA prompt injection attacks (all tools), only when `XPIA_ENABLED=true`
+//!
+//! XPIA is off by default. The other blocks above do not depend on it and
+//! run whether or not XPIA is enabled.
 
 mod command;
 mod cwd;
