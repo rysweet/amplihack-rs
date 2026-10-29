@@ -20,6 +20,7 @@
 
 use super::name::ProfileName;
 use super::store::ProfileStore;
+use amplihack_utils::secure_files::{passwd_home, temp_bases};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
@@ -57,7 +58,7 @@ pub(crate) fn refresh_profile_settings(
         store.root(),
         home.as_deref(),
         account_home.as_deref(),
-        &production_temp_bases(),
+        &temp_bases(),
     ) {
         Some(reason) => refused_all(&store, &reason),
         None => refresh_in(&store, update),
@@ -177,82 +178,11 @@ fn resolved(path: &Path) -> Option<PathBuf> {
         .or_else(|| std::path::absolute(path).ok())
 }
 
-/// The temporary directories a hooks binary must not come from: the canonical
-/// forms of `temp_dir()`, an absolute `$TMPDIR` and `/tmp`, without
-/// duplicates. A base that cannot be canonicalised is left out.
-/// `temp_bases()` in `tests/issue_1699_real_root_guard.rs` builds the same
-/// list for the test guard; change both together.
-fn production_temp_bases() -> Vec<PathBuf> {
-    let tmpdir = std::env::var_os("TMPDIR")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute());
-    let mut bases: Vec<PathBuf> = Vec::new();
-    for candidate in [
-        Some(std::env::temp_dir()),
-        tmpdir,
-        Some(PathBuf::from("/tmp")),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if let Ok(base) = candidate.canonicalize()
-            && !bases.contains(&base)
-        {
-            bases.push(base);
-        }
-    }
-    bases
-}
-
 /// `HOME` from the process environment; unset or empty is `None`.
 fn current_home() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(PathBuf::from)
-}
-
-/// The effective user's home directory from the passwd database, which a
-/// changed `HOME` does not affect. `tests/issue_1699_real_root_guard.rs` has
-/// the same lookup for the test guard.
-#[cfg(unix)]
-fn passwd_home() -> Option<PathBuf> {
-    use std::ffi::{CStr, OsString};
-    use std::os::unix::ffi::OsStringExt;
-    let mut buf = vec![0 as libc::c_char; 16 * 1024];
-    let mut pwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
-    let mut out: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: every pointer is valid for the call and `buf.len()` is its
-    // size; `out` is only read when the call reports success. geteuid has no
-    // preconditions.
-    let rc = unsafe {
-        libc::getpwuid_r(
-            libc::geteuid(),
-            pwd.as_mut_ptr(),
-            buf.as_mut_ptr(),
-            buf.len(),
-            &mut out,
-        )
-    };
-    if rc != 0 || out.is_null() {
-        return None;
-    }
-    // SAFETY: on success `out` points to the filled `pwd`, and pw_dir, when
-    // not null, to a NUL-terminated string in `buf`.
-    let dir = unsafe { (*out).pw_dir };
-    if dir.is_null() {
-        return None;
-    }
-    // SAFETY: as above.
-    let bytes = unsafe { CStr::from_ptr(dir) }.to_bytes().to_vec();
-    if bytes.is_empty() {
-        return None;
-    }
-    Some(PathBuf::from(OsString::from_vec(bytes)))
-}
-
-#[cfg(not(unix))]
-fn passwd_home() -> Option<PathBuf> {
-    None
 }
 
 /// Every profile's result when the hooks path is refused. Only stats

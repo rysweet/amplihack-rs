@@ -4,7 +4,8 @@
 //! Compiled into two test binaries: `cli_integration` (through `tests/main.rs`)
 //! and the `amplihack-cli` library tests (through
 //! `src/commands/install/tests/mod.rs`), where the in-process install tests
-//! run. It uses only `std`, `sha2` and `libc`.
+//! run. It uses only `std`, `sha2`, `libc` and `amplihack_utils`, all normal
+//! dependencies of the cli crate.
 //!
 //! How it works:
 //! - [`arm`] records a baseline once per process: for each real profile root
@@ -31,9 +32,7 @@
 
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
-use std::ffi::{CStr, OsString};
 use std::io::Read;
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -58,50 +57,10 @@ struct Baseline {
 
 static BASELINE: OnceLock<Baseline> = OnceLock::new();
 
-/// Canonical temporary-directory bases: `temp_dir()`, `$TMPDIR` and `/tmp`.
-/// `production_temp_bases()` in
-/// `src/commands/profile/settings_refresh.rs` builds the same list for the
-/// production refusal; change both together.
-fn temp_bases() -> Vec<PathBuf> {
-    let mut candidates = vec![std::env::temp_dir(), PathBuf::from("/tmp")];
-    if let Some(tmpdir) = std::env::var_os("TMPDIR").map(PathBuf::from)
-        && tmpdir.is_absolute()
-    {
-        candidates.push(tmpdir);
-    }
-    let mut bases: Vec<PathBuf> = candidates
-        .iter()
-        .filter_map(|p| p.canonicalize().ok())
-        .collect();
-    bases.sort();
-    bases.dedup();
-    bases
-}
-
-/// The home directory in the passwd database, which no test can change.
-fn passwd_home() -> Option<PathBuf> {
-    let mut buf = vec![0 as libc::c_char; 16 * 1024];
-    // SAFETY: an all-zero passwd is a valid out-parameter for getpwuid_r.
-    let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
-    let mut out: *mut libc::passwd = std::ptr::null_mut();
-    // SAFETY: every pointer is valid for the call and `buf.len()` is its size;
-    // geteuid has no preconditions.
-    let rc = unsafe {
-        libc::getpwuid_r(
-            libc::geteuid(),
-            &mut pwd,
-            buf.as_mut_ptr(),
-            buf.len(),
-            &mut out,
-        )
-    };
-    if rc != 0 || out.is_null() || pwd.pw_dir.is_null() {
-        return None;
-    }
-    // SAFETY: on success pw_dir points to a NUL-terminated string in `buf`.
-    let dir = unsafe { CStr::from_ptr(pwd.pw_dir) };
-    Some(PathBuf::from(OsString::from_vec(dir.to_bytes().to_vec())))
-}
+// `temp_bases` and `passwd_home` are the functions the production refusal in
+// `src/commands/profile/settings_refresh.rs` calls, so the guard judges roots
+// by the same rule production uses.
+use amplihack_utils::secure_files::{passwd_home, temp_bases};
 
 /// The root candidates for `homes` and an explicit root, kept only where they
 /// are existing directories not under any of `temp_bases`. Canonical and

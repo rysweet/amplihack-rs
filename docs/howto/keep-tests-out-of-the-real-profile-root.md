@@ -90,7 +90,11 @@ Choose the call by what the test checks:
 | The whole install path | `refresh_profile_hooks` under `env_lock()`, with `HOME` and the root both in one temp directory |
 
 `hook_path_refusal` and `refresh_in` take all their inputs as arguments and
-are called directly; they need no environment variables. In-crate calls to
+are called directly; they need no environment variables. In production the
+two injected values come from `amplihack_utils::secure_files::passwd_home()`
+and `amplihack_utils::secure_files::temp_bases()`. The real-root guard calls
+the same two functions to decide which roots are real, so the guard and the
+refusal cannot use different rules. In-crate calls to
 `refresh_profile_hooks` reach the refresh only when
 `AMPLIHACK_TEST_PROFILE_REFRESH` is set, and the test must hold `env_lock()`
 while it changes process variables.
