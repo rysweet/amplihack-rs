@@ -497,10 +497,9 @@ fn substitutions(text: &str) -> (Vec<String>, String) {
 fn has_candidate(text: &str) -> bool {
     let mut tmux = false;
     let mut kill = false;
-    for token in text.split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c))) {
-        let name = basename(token);
-        tmux |= name.eq_ignore_ascii_case("tmux");
-        kill |= starts_kill_s(name);
+    for token in tokens(text) {
+        tmux |= is_tmux(token);
+        kill |= starts_kill_s(basename(token));
         if tmux && kill {
             return true;
         }
@@ -511,10 +510,12 @@ fn has_candidate(text: &str) -> bool {
 /// Whether `text` holds a `tmux` token and a `$` or backtick that could
 /// expand to its subcommand.
 fn expands_near_tmux(text: &str) -> bool {
-    is_expansion(text)
-        && text
-            .split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
-            .any(is_tmux)
+    is_expansion(text) && tokens(text).any(is_tmux)
+}
+
+/// The words of `text` split on whitespace and shell punctuation.
+fn tokens(text: &str) -> impl Iterator<Item = &str> {
+    text.split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
 }
 
 /// Whether `text` needs a re-parse: it holds a tmux candidate or a tmux
