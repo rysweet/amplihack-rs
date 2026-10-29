@@ -32,7 +32,7 @@ a test that exercises the refresh, and what to do when the guard fails.
 |---------|-------|--------------|
 | Refusal | `refresh_profile_settings` in `crates/amplihack-cli/src/commands/profile/settings_refresh.rs` | Refuses the refresh when the hooks binary is missing; when `HOME` is not the account's passwd home and the profile root is outside `HOME`, wherever the binary lies; and when the binary is under a temp directory, unless the profile root is under `HOME` and itself under a temp directory. See [the profile reference](../reference/profile-command.md#seeding). |
 | Isolation | `tests/support/isolated_amplihack.rs` | `isolated(..)` clears the environment and also calls `.env_remove(PROFILE_ROOT_ENV)`, so no child inherits `AMPLIHACK_CLAUDE_PROFILE_ROOT`. |
-| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits, and fails the run if any changed. |
+| Guard | `crates/amplihack-cli/tests/issue_1699_real_root_guard.rs` | Hashes the real profiles' `settings.json` files before `main` on Linux (when the guard test runs on other Unix systems) and again when the test process exits. It fails the run if a changed file was removed, cannot be read, or names this process's temp directory; any other change is printed as a warning. |
 
 The refusal is the only one that protects users. It is enforced in
 `refresh_profile_settings`, the single production entry point; `refresh_in`
@@ -107,9 +107,22 @@ uses this layout.
 
 ## When the real-root guard fails
 
-The guard prints the changed paths and a hint to re-run, then exits the test
-process with status 1. This happens after libtest prints `test result: ok`, and
-no test is named as the failure:
+At exit the guard sorts each changed file by origin. The #1699 damage writes a
+hooks path under the writing process's own temp directory, so a file that
+still exists and names nothing under this process's `std::env::temp_dir()` can
+only have been changed by another process, such as another branch's test run
+on the same host. Those files are listed under a warning and do not fail the
+run:
+
+```text
+issue_1699 real-root guard: warning: changed by another process (nothing under /tmp/amplihack-workflow-AbC123/tmp named), not failing:
+  /home/user/.claude-profiles/work/settings.json
+```
+
+The run fails when a changed file was removed, cannot be read, or names this
+process's temp directory. The guard then prints those paths and a hint to
+re-run, and exits the test process with status 1. This happens after libtest
+prints `test result: ok`, and no test is named as the failure:
 
 ```text
 issue_1699 real-root guard: real profile root changed during this test run:
@@ -117,11 +130,12 @@ issue_1699 real-root guard: real profile root changed during this test run:
 issue_1699 real-root guard: another process can cause this (`amplihack install`, `profile add`, rotator status-line setup or a rotator restart during the run); re-run the tests before investigating
 ```
 
-1. Check whether you changed the file yourself during the run, for example
-   with `amplihack install` or `/config` in a live session, or by a rotator
-   restart, because `record_root` rewrites `<root>/.auto-switch.d/rotate/root`.
-   The guard compares content, not mtimes, so only a real change trips it.
-   If so, run the tests again.
+1. Check whether another process changed the file during the run while
+   `TMPDIR` was unset or `/tmp`, for example another checkout's test run, or
+   `amplihack install`, `/config` or a rotator restart (`record_root` rewrites
+   `<root>/.auto-switch.d/rotate/root`) if the file was then removed. The
+   guard compares content, not mtimes, so only a real change trips it. If so,
+   run the tests again, ideally with a `TMPDIR` of their own.
 2. Otherwise a test wrote the file. List the tests that set `HOME` without
    `isolated(..)`:
 
@@ -144,6 +158,12 @@ temp directory are skipped, so on CI, where no real root exists, it checks
 nothing and passes.
 
 ## Limits
+
+- Attribution needs a temp directory of its own. When `TMPDIR` is unset or
+  `/tmp`, a temp hooks path written by any process names this process's temp
+  directory too, so every such change fails the run, as before. When
+  another process rewrites a file after this run did, only the later
+  content is judged.
 
 - The guard takes its baseline in `.init_array` before `main` on Linux, and
   when the guard test runs on other Unix systems, so it does not see changes

@@ -16,7 +16,9 @@
 //! - On Linux it is armed before `main`, so changes made by any test are
 //!   seen; elsewhere it is armed when the guard test runs.
 //! - At exit a `libc::atexit` handler takes a second snapshot. If they differ
-//!   it prints the changed paths and ends the process with `_exit(1)`.
+//!   it sorts each changed path by origin (see [`split_by_origin`]). Paths this
+//!   run may have changed are printed and the process ends with `_exit(1)`;
+//!   paths only another process can have changed are printed as a warning.
 //!
 //! It is read-only: files are opened with `O_NOFOLLOW`, must be regular files,
 //! at most 1 MiB of each is hashed, and only lengths and hashes are kept.
@@ -25,8 +27,9 @@
 //! the live rotator changes are never read. Where no real root exists (CI),
 //! nothing is checked.
 //!
-//! Limits: another test binary's changes are not seen, and a change made and
-//! reverted within one run is not seen.
+//! Limits: another test binary's changes are not seen, a change made and
+//! reverted within one run is not seen, and when another process rewrites a
+//! file after this run did, only the later content is judged.
 
 #![allow(dead_code)]
 
@@ -53,6 +56,8 @@ type Snapshot = BTreeMap<PathBuf, (u64, [u8; 32])>;
 struct Baseline {
     roots: Vec<PathBuf>,
     files: Snapshot,
+    /// This process's temp directory, as written and canonical.
+    own_temp: Vec<String>,
 }
 
 static BASELINE: OnceLock<Baseline> = OnceLock::new();
@@ -102,9 +107,9 @@ fn real_roots() -> Vec<PathBuf> {
     keep_real_roots(explicit, &homes, &temp_bases())
 }
 
-/// Length and hash of `path` if it is a regular file, opened without
-/// following a symlink.
-fn fingerprint(path: &Path) -> Option<(u64, [u8; 32])> {
+/// Length and first [`MAX_HASHED`] bytes of `path` if it is a regular file,
+/// opened without following a symlink.
+fn read_head(path: &Path) -> Option<(u64, Vec<u8>)> {
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -116,7 +121,52 @@ fn fingerprint(path: &Path) -> Option<(u64, [u8; 32])> {
     }
     let mut head = Vec::new();
     file.take(MAX_HASHED).read_to_end(&mut head).ok()?;
-    Some((meta.len(), Sha256::digest(&head).into()))
+    Some((meta.len(), head))
+}
+
+/// Length and hash of `path` if it is a regular file.
+fn fingerprint(path: &Path) -> Option<(u64, [u8; 32])> {
+    let (len, head) = read_head(path)?;
+    Some((len, Sha256::digest(&head).into()))
+}
+
+/// `temp_dir`, as given and canonical, without a trailing slash. Empty forms
+/// (a temp directory of `/`) are dropped.
+fn temp_prefixes(temp_dir: &Path) -> Vec<String> {
+    let mut prefixes: Vec<String> = Vec::new();
+    for form in [Some(temp_dir.to_path_buf()), temp_dir.canonicalize().ok()]
+        .into_iter()
+        .flatten()
+    {
+        let text = form.to_string_lossy().trim_end_matches('/').to_string();
+        if !text.is_empty() && !prefixes.contains(&text) {
+            prefixes.push(text);
+        }
+    }
+    prefixes
+}
+
+/// Splits `changed` into paths this run may have changed and paths only
+/// another process can have changed.
+///
+/// The #1699 damage writes a hooks path under the writer's own temp
+/// directory. A changed file is put down to another process only when it
+/// still exists, is readable, and names nothing under `own_temp`. A removed
+/// or unreadable file, or any change when `own_temp` is empty, counts
+/// against this run.
+fn split_by_origin(changed: &[PathBuf], own_temp: &[String]) -> (Vec<PathBuf>, Vec<PathBuf>) {
+    changed.iter().cloned().partition(|path| {
+        if own_temp.is_empty() {
+            return true;
+        }
+        let Some((_, head)) = read_head(path) else {
+            return true;
+        };
+        let text = String::from_utf8_lossy(&head);
+        own_temp.iter().any(|prefix| {
+            text.contains(&format!("{prefix}/")) || text.contains(&format!("{prefix}\""))
+        })
+    })
 }
 
 /// The allow-listed files under `roots`.
@@ -170,6 +220,34 @@ fn report(changed: &[PathBuf]) -> String {
     text
 }
 
+/// The warning for changes only another process can have made.
+fn report_foreign(foreign: &[PathBuf], own_temp: &[String]) -> String {
+    let mut text = format!(
+        "issue_1699 real-root guard: warning: changed by another process (nothing under {} named), not failing:\n",
+        own_temp.join(" or ")
+    );
+    for path in foreign {
+        text.push_str(&format!("  {}\n", path.display()));
+    }
+    text
+}
+
+/// The text to print for `changed`, and whether the run fails.
+fn verdict(changed: &[PathBuf], own_temp: &[String]) -> Option<(String, bool)> {
+    if changed.is_empty() {
+        return None;
+    }
+    let (own, foreign) = split_by_origin(changed, own_temp);
+    let mut text = String::new();
+    if !foreign.is_empty() {
+        text.push_str(&report_foreign(&foreign, own_temp));
+    }
+    if !own.is_empty() {
+        text.push_str(&report(&own));
+    }
+    Some((text, !own.is_empty()))
+}
+
 /// Printed after the changed paths: the baseline is taken before the tests
 /// start, so a legitimate change made by another process in that window also
 /// fails the run.
@@ -181,14 +259,16 @@ extern "C" fn check_at_exit() {
     let result = std::panic::catch_unwind(|| {
         let baseline = BASELINE.get()?;
         let changed = diff_snapshots(&baseline.files, &snapshot(&baseline.roots));
-        (!changed.is_empty()).then(|| report(&changed))
+        verdict(&changed, &baseline.own_temp)
     });
     use std::io::Write;
     match result {
-        Ok(Some(text)) => {
+        Ok(Some((text, fails))) => {
             let _ = std::io::stderr().write_all(text.as_bytes());
-            // SAFETY: _exit ends the process at once; nothing runs after it.
-            unsafe { libc::_exit(1) };
+            if fails {
+                // SAFETY: _exit ends the process at once; nothing runs after it.
+                unsafe { libc::_exit(1) };
+            }
         }
         Ok(None) => {}
         Err(_) => {
@@ -208,10 +288,15 @@ fn arm() -> Option<&'static Baseline> {
     Some(BASELINE.get_or_init(|| {
         let roots = real_roots();
         let files = snapshot(&roots);
+        let own_temp = temp_prefixes(&std::env::temp_dir());
         // SAFETY: registering a plain `extern "C"` function has no
         // preconditions; it runs once, at normal process exit.
         unsafe { libc::atexit(check_at_exit) };
-        Baseline { roots, files }
+        Baseline {
+            roots,
+            files,
+            own_temp,
+        }
     }))
 }
 
@@ -230,7 +315,10 @@ static ARM_BEFORE_MAIN: extern "C" fn() = {
 fn real_profile_roots_unchanged_by_this_run() {
     let Some(baseline) = arm() else { return };
     let changed = diff_snapshots(&baseline.files, &snapshot(&baseline.roots));
-    assert!(changed.is_empty(), "{}", report(&changed));
+    if let Some((text, fails)) = verdict(&changed, &baseline.own_temp) {
+        assert!(!fails, "{text}");
+        eprint!("{text}");
+    }
 }
 
 #[cfg(test)]
@@ -367,6 +455,82 @@ mod fixture {
             &[],
         );
         assert_eq!(roots, vec![home.join(".amplihack/claude-profiles")]);
+    }
+
+    fn hooks_at(dir: &Path) -> String {
+        format!(
+            "{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"command\":\"\\\"{}/.local/bin/amplihack-hooks\\\" stop\"}}]}}]}}}}",
+            dir.display()
+        )
+    }
+
+    #[test]
+    fn change_naming_own_temp_fails_the_run() {
+        let (d, root) = root();
+        let own = d.path().canonicalize().unwrap().join("own-tmp");
+        fs::create_dir_all(&own).unwrap();
+        let own_temp = temp_prefixes(&own);
+        let path = root.join("a/settings.json");
+        fs::write(&path, hooks_at(&own.join(".tmpXYZ"))).unwrap();
+        let (text, fails) = verdict(std::slice::from_ref(&path), &own_temp).unwrap();
+        assert!(fails);
+        assert!(text.contains(&format!("  {}\n", path.display())), "{text}");
+        assert!(!text.contains("warning"), "{text}");
+    }
+
+    #[test]
+    fn change_naming_another_temp_tree_only_warns() {
+        let (d, root) = root();
+        let base = d.path().canonicalize().unwrap();
+        let own = base.join("own-tmp");
+        let other = base.join("other-tmp");
+        fs::create_dir_all(&own).unwrap();
+        let own_temp = temp_prefixes(&own);
+        let path = root.join("a/settings.json");
+        fs::write(&path, hooks_at(&other.join(".tmpXYZ"))).unwrap();
+        let (text, fails) = verdict(std::slice::from_ref(&path), &own_temp).unwrap();
+        assert!(!fails, "{text}");
+        assert!(text.contains("changed by another process"), "{text}");
+        assert!(text.contains(&format!("  {}\n", path.display())), "{text}");
+    }
+
+    #[test]
+    fn own_temp_must_match_a_whole_path_component() {
+        let (d, root) = root();
+        let base = d.path().canonicalize().unwrap();
+        let own = base.join("tmp");
+        fs::create_dir_all(&own).unwrap();
+        let path = root.join("a/settings.json");
+        fs::write(&path, hooks_at(&base.join("tmpother/.tmpXYZ"))).unwrap();
+        let (own_changes, foreign) =
+            split_by_origin(std::slice::from_ref(&path), &temp_prefixes(&own));
+        assert!(own_changes.is_empty());
+        assert_eq!(foreign, vec![path]);
+    }
+
+    #[test]
+    fn removed_file_or_empty_own_temp_fails_the_run() {
+        let (_d, root) = root();
+        let removed = root.join("a/settings.json");
+        fs::remove_file(&removed).unwrap();
+        let (_, fails) = verdict(std::slice::from_ref(&removed), &["/x".into()]).unwrap();
+        assert!(fails);
+        let kept = root.join("b/settings.json");
+        let (_, fails) = verdict(std::slice::from_ref(&kept), &[]).unwrap();
+        assert!(fails);
+        assert!(verdict(&[], &["/x".into()]).is_none());
+    }
+
+    #[test]
+    fn temp_prefixes_drop_root_and_trailing_slash() {
+        assert!(temp_prefixes(Path::new("/")).is_empty());
+        let d = tempfile::tempdir().unwrap();
+        let canonical = d.path().canonicalize().unwrap();
+        let with_slash = PathBuf::from(format!("{}/", canonical.display()));
+        assert_eq!(
+            temp_prefixes(&with_slash),
+            vec![canonical.to_string_lossy().into_owned()]
+        );
     }
 
     #[test]
