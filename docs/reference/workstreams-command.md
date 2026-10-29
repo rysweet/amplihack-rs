@@ -210,8 +210,12 @@ The log directory is read only when it is a directory owned by you and not
 writable by group or others (mode `& 0o022` is `0`). Up to 20,000 entries
 are listed by name and modification time. Runs are then taken newest first,
 by the latest change to either of their files, until 2,000 run files are
-taken, and only those records are read. A live run writes to its log, so it
-is among the newest. In each case below the command prints
+taken, and only those records are read. While the directory holds at most
+20,000 entries, the runs left out are the oldest, and a live run, which
+writes to its log, is among the newest and is kept. Past 20,000 entries this
+no longer holds: the directory lists its entries in no particular order, and
+the limit applies before the sort by age, so any run, including a live one,
+may be left out. That case has its own warning. In each case below the command prints
 one line on stderr, with no path or system error, and still prints the
 table:
 
@@ -220,7 +224,8 @@ table:
 | `recipe.log_dir` and HOME are both unset | `warning: recipe log directory unavailable (HOME not set)` | None. |
 | The directory cannot be listed, or is not a directory | `warning: recipe log directory unreadable` | None. |
 | The directory is not owned by you, or group or others may write to it | `warning: recipe log directory is not private; ignoring it` | None. |
-| The directory has more than 2,000 run files, or more than 20,000 entries | `warning: more than 2000 run files in the recipe log directory; older runs are not shown` | The newest runs, up to 2,000 files. |
+| The directory has more than 2,000 run files and at most 20,000 entries | `warning: more than 2000 run files in the recipe log directory; older runs are not shown` | The newest runs, up to 2,000 files. |
+| The directory has more than 20,000 entries | `warning: more than 20000 entries in the recipe log directory; some runs, possibly recent ones, are not shown` | Up to 2,000 files, newest first, from the first 20,000 entries listed. These are not necessarily the newest runs. |
 
 A directory that does not exist yet gives no warning and no runs.
 `recipe run --detach` creates it with mode `0700`.

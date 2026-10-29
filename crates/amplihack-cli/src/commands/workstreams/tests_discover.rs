@@ -5,11 +5,13 @@
 //! - `scan(log_dir) -> (Vec<Discovered>, Option<&'static str>)`: one entry
 //!   per session found as a readable `<session>.run.json` or a
 //!   `<session>.log` owned by this user; names containing `.tmp.` and
-//!   `*.context.json` / `*.spec.json` are skipped; at most 2,000 directory
-//!   entries are read. `Discovered { session, record, log }`. The second
+//!   `*.context.json` / `*.spec.json` are skipped; at most 20,000 directory
+//!   entries are listed and at most 2,000 run files, newest first, are read. `Discovered { session, record, log }`. The second
 //!   value is a fixed warning: `UNREADABLE` for a directory that cannot be
 //!   listed, `NOT_PRIVATE` (and no runs) for one not owned by this user or
-//!   writable by group or others, `TRUNCATED` when entries were left unread.
+//!   writable by group or others, `TRUNCATED` when older run files were left
+//!   unread, `TOO_MANY_ENTRIES` when entries were left unlisted (then the
+//!   runs shown are not necessarily the newest).
 //!   A missing directory gives no runs and no warning.
 //! - `select(runs, identity, all) -> Vec<Discovered>`: with `all`, every
 //!   run; otherwise runs whose `parent` is `identity`, then repeatedly runs
@@ -18,7 +20,8 @@
 //!   gives nothing. Runs without a record appear only under `all`.
 
 use super::discover::{
-    Discovered, NOT_PRIVATE, TRUNCATED, UNREADABLE, owned_by, scan, scan_capped, select,
+    Discovered, NOT_PRIVATE, TOO_MANY_ENTRIES, TRUNCATED, UNREADABLE, owned_by, scan, scan_capped,
+    select,
 };
 use crate::commands::recipe::run_record::{RunRecord, build, record_path, write_new};
 use chrono::{TimeZone, Utc};
@@ -249,10 +252,34 @@ fn the_cap_warns_only_when_entries_are_left_unread() {
     for n in 0..5 {
         fs::write(d.path().join(format!("s{n}.log")), "").unwrap();
     }
-    let (found, warning) = scan_capped(d.path(), 3);
+    let (found, warning) = scan_capped(d.path(), 20_000, 3);
     assert_eq!(found.len(), 3);
     assert_eq!(warning, Some(TRUNCATED));
-    let (found, warning) = scan_capped(d.path(), 5);
+    let (found, warning) = scan_capped(d.path(), 20_000, 5);
+    assert_eq!(found.len(), 5);
+    assert_eq!(warning, None);
+}
+
+#[test]
+fn past_the_entry_limit_the_warning_does_not_claim_the_newest_runs() {
+    let d = private_log_dir();
+    for n in 0..5 {
+        fs::write(d.path().join(format!("s{n}.log")), "").unwrap();
+    }
+    // Four of five entries listed: the cut happens before the sort by age,
+    // so the warning must not say that only older runs are missing.
+    let (found, warning) = scan_capped(d.path(), 4, 2_000);
+    assert_eq!(found.len(), 4);
+    assert_eq!(warning, Some(TOO_MANY_ENTRIES));
+    assert!(
+        !TOO_MANY_ENTRIES.contains("older runs"),
+        "{TOO_MANY_ENTRIES}"
+    );
+    // Both limits reached: the entry limit is the one reported.
+    let (_, warning) = scan_capped(d.path(), 4, 2);
+    assert_eq!(warning, Some(TOO_MANY_ENTRIES));
+    // Exactly at the entry limit nothing is left unlisted.
+    let (found, warning) = scan_capped(d.path(), 5, 2_000);
     assert_eq!(found.len(), 5);
     assert_eq!(warning, None);
 }
@@ -278,7 +305,7 @@ fn past_the_cap_the_newest_runs_are_kept() {
         // age, so name order cannot pass this test by chance.
         set_mtime(&log, 1_000_000 + n * 60);
     }
-    let (found, warning) = scan_capped(d.path(), 3);
+    let (found, warning) = scan_capped(d.path(), 20_000, 3);
     assert_eq!(sessions(&found), set(&["s3", "s4", "s5"]));
     assert_eq!(warning, Some(TRUNCATED));
 }
@@ -298,7 +325,7 @@ fn a_run_counts_from_its_newest_file() {
         fs::write(&p, "").unwrap();
         set_mtime(&p, 5_000 + n);
     }
-    let (found, warning) = scan_capped(d.path(), 3);
+    let (found, warning) = scan_capped(d.path(), 20_000, 3);
     assert_eq!(sessions(&found), set(&["live", "old2"]));
     let live = found.iter().find(|r| r.session == "live").unwrap();
     assert!(live.record.is_some() && live.log.is_some());
@@ -343,7 +370,7 @@ fn a_log_directory_that_cannot_be_listed_warns_without_its_path() {
         fs::set_permissions(&locked, fs::Permissions::from_mode(0o700)).unwrap();
         assert_eq!(result, (Vec::new(), Some(UNREADABLE)));
     }
-    for warning in [UNREADABLE, NOT_PRIVATE, TRUNCATED] {
+    for warning in [UNREADABLE, NOT_PRIVATE, TRUNCATED, TOO_MANY_ENTRIES] {
         assert!(!warning.contains('/'), "{warning}");
     }
 }

@@ -22,10 +22,14 @@ const SHARED_DIR_BITS: u32 = 0o022;
 pub(crate) const UNREADABLE: &str = "warning: recipe log directory unreadable";
 /// The log directory is not owned by this user, or others may write to it.
 pub(crate) const NOT_PRIVATE: &str = "warning: recipe log directory is not private; ignoring it";
-/// The log directory has more run files than [`MAX_ENTRIES`], or more
-/// entries than [`MAX_NAMES`].
+/// The log directory has more run files than [`MAX_ENTRIES`]; the newest
+/// runs are shown.
 pub(crate) const TRUNCATED: &str =
     "warning: more than 2000 run files in the recipe log directory; older runs are not shown";
+/// The log directory has more entries than [`MAX_NAMES`]. `read_dir`
+/// returns entries in no particular order, so the entries left unlisted may
+/// include recent runs, and the runs shown are not necessarily the newest.
+pub(crate) const TOO_MANY_ENTRIES: &str = "warning: more than 20000 entries in the recipe log directory; some runs, possibly recent ones, are not shown";
 
 /// Runs a walk selects at most.
 const MAX_SELECTED: usize = 2_000;
@@ -49,15 +53,24 @@ pub(crate) struct Discovered {
 /// At most [`MAX_NAMES`] entries are listed, by name and metadata only.
 /// Runs are then taken newest first, by the latest modification time of
 /// their files, until [`MAX_ENTRIES`] files are taken; only those records
-/// are read. A live run writes to its log, so it is among the newest and is
-/// not the one left out. Runs come back ordered by session name.
+/// are read. Runs come back ordered by session name.
+///
+/// While the directory has at most [`MAX_NAMES`] entries, every run is
+/// listed, so the runs left out are the oldest and a live run, which writes
+/// to its log, is kept. Past [`MAX_NAMES`] entries this does not hold:
+/// `read_dir` returns entries in no particular order, so the cut at
+/// [`MAX_NAMES`] happens before the sort by age and may drop any run,
+/// including a live one. That case has its own warning,
+/// [`TOO_MANY_ENTRIES`], instead of [`TRUNCATED`].
 ///
 /// A missing directory has no runs and no warning. One that cannot be read,
 /// or that is not owned by this user or is writable by others, has no runs
 /// and a fixed warning that names neither the path nor the OS error. One
-/// with more than the cap gives the newest runs and [`TRUNCATED`].
+/// with more than [`MAX_ENTRIES`] run files gives the newest runs and
+/// [`TRUNCATED`]; one with more than [`MAX_NAMES`] entries gives
+/// [`TOO_MANY_ENTRIES`].
 pub(crate) fn scan(log_dir: &Path) -> (Vec<Discovered>, Option<&'static str>) {
-    scan_capped(log_dir, MAX_ENTRIES)
+    scan_capped(log_dir, MAX_NAMES, MAX_ENTRIES)
 }
 
 /// The files of one session, found by name.
@@ -74,8 +87,13 @@ impl Files {
     }
 }
 
-/// [`scan`] taking at most `cap` run files.
-pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Option<&'static str>) {
+/// [`scan`] listing at most `names` entries and taking at most `cap` run
+/// files.
+pub(super) fn scan_capped(
+    log_dir: &Path,
+    names: usize,
+    cap: usize,
+) -> (Vec<Discovered>, Option<&'static str>) {
     let meta = match fs::metadata(log_dir) {
         Ok(meta) => meta,
         Err(e) if e.kind() == ErrorKind::NotFound => return (Vec::new(), None),
@@ -91,7 +109,7 @@ pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Optio
         return (Vec::new(), Some(UNREADABLE));
     };
     let mut by_session: HashMap<String, Files> = HashMap::new();
-    for entry in entries.by_ref().take(MAX_NAMES).filter_map(Result::ok) {
+    for entry in entries.by_ref().take(names).filter_map(Result::ok) {
         let name = entry.file_name();
         let Some(name) = name.to_str() else {
             continue;
@@ -126,7 +144,8 @@ pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Optio
             files.log = Some(entry.path());
         }
     }
-    let mut truncated = entries.next().is_some();
+    let names_cut = entries.next().is_some();
+    let mut truncated = false;
     let mut sessions: Vec<(String, Files)> = by_session.into_iter().collect();
     sessions.sort_by(|(a, fa), (b, fb)| fb.newest.cmp(&fa.newest).then_with(|| a.cmp(b)));
     let mut taken = 0;
@@ -153,7 +172,11 @@ pub(super) fn scan_capped(log_dir: &Path, cap: usize) -> (Vec<Discovered>, Optio
     }
     (
         found.into_values().collect(),
-        truncated.then_some(TRUNCATED),
+        if names_cut {
+            Some(TOO_MANY_ENTRIES)
+        } else {
+            truncated.then_some(TRUNCATED)
+        },
     )
 }
 
