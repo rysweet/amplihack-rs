@@ -37,6 +37,8 @@ The override applies when the workstream recipe is:
 
 The invariant applies per workstream. A top-level hybrid task can contain multiple workstreams with different classifications, and each workstream must be routed from its own normalized classification.
 
+Prompts that start with `[coord]` are coordination messages between sessions. The workflow classification reminder does not route them to dev-orchestrator unless the body is an explicit work request such as `build #1740`; see [Coordination Messages](./coordination-messages.md).
+
 ## Classification authority
 
 The routing implementation uses the most specific classification available.
@@ -308,4 +310,5 @@ The routing helper must:
 - [Getting Started with /dev](../tutorials/dev-orchestrator-tutorial.md)
 - [`amplihack orch run`](./orch-run-command.md)
 - [Workflow Classifier](./workflow-classifier.md)
+- [Coordination Messages](./coordination-messages.md)
 - [Smart-Orchestrator Recovery](../concepts/smart-orchestrator-recovery.md)
