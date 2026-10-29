@@ -1,6 +1,6 @@
 //! The outside sources of `workstreams status`, behind traits so tests
 //! inject fakes: GitHub's PR list, the live tmux sessions, a checkout's
-//! origin and the login usage probe.
+//! origin and `amplihack profile usage --json`.
 //!
 //! Every subprocess runs through
 //! [`bounded_process`](amplihack_utils::bounded_process), which bounds its
@@ -16,10 +16,8 @@ use std::time::Duration;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 
-use super::logins::is_api_key_profile;
-use crate::commands::profile::usage_cmd::{self, Row};
 use crate::commands::recipe::run_record::{origin_url, repo_slug};
-use amplihack_utils::bounded_process::run_helper;
+use amplihack_utils::bounded_process::{self, Ended, Limits, run_helper};
 
 const TMUX_TIMEOUT: Duration = Duration::from_secs(3);
 const GH_TIMEOUT: Duration = Duration::from_secs(10);
@@ -52,14 +50,10 @@ pub(crate) trait OriginSource {
 }
 
 pub(crate) trait UsageSource: Send + Sync {
-    /// Every profile and whether it is an API-key profile; `Err` is a
-    /// refusal to show logins at all, such as inside Docker, in fixed text
-    /// that names no path.
-    fn profiles(&self) -> Result<Vec<(String, bool)>, String>;
-    /// The usage rows of those of `profiles` (as [`Self::profiles`] gave
-    /// them) that are not API-key profiles. Stops when `cancel` is set.
-    /// `Err` is fixed text, like a refusal.
-    fn probe(&self, profiles: &[(String, bool)], cancel: &AtomicBool) -> Result<Vec<Row>, String>;
+    /// The standard output of `amplihack profile usage --json`. Stops when
+    /// `cancel` is set. `Err` is fixed text that names no path, such as a
+    /// refusal inside Docker.
+    fn usage_json(&self, cancel: &AtomicBool) -> Result<Vec<u8>, String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -142,48 +136,58 @@ impl OriginSource for GitOrigin {
     }
 }
 
-/// The profiles `amplihack profile usage` probes, read in process.
+/// Bytes kept from `profile usage --json`; one row is well under 4 KiB.
+const USAGE_CAP: usize = 1024 * 1024;
+/// How long the pipes may stay open after `profile usage` exits.
+const USAGE_READ_GRACE: Duration = Duration::from_secs(1);
+/// Shown when `profile usage` could not be run or failed. It refuses inside
+/// Docker and without a `claude` binary; its own stderr says why and is not
+/// shown here, as it may name a path.
+pub(crate) const USAGE_FAILED: &str =
+    "amplihack profile usage failed; run it on its own to see why";
+
+/// `amplihack profile usage --json --timeout-secs <probe>`, run as this
+/// same binary through [`bounded_process`]. Using its stable JSON keeps one
+/// implementation of every login rule (API-key, overflow and live
+/// detection) in `profile usage`.
 pub(crate) struct ProfileUsage {
-    /// Each probe's own limit; the caller's deadline still applies.
-    pub timeout: Duration,
+    /// Each probe's own limit, passed as `--timeout-secs`; a probe that runs
+    /// out gives a `timeout` row rather than holding up the others.
+    pub probe_timeout: Duration,
+    /// When the whole command is stopped.
+    pub deadline: Duration,
 }
 
 impl UsageSource for ProfileUsage {
-    fn profiles(&self) -> Result<Vec<(String, bool)>, String> {
-        Ok(usage_cmd::listed_profiles()
-            .map_err(str::to_string)?
-            .into_iter()
-            .map(|(name, dir)| {
-                let api_key = !dir.as_os_str().is_empty() && is_api_key_profile(&dir);
-                (name, api_key)
-            })
-            .collect())
-    }
-
-    fn probe(&self, profiles: &[(String, bool)], cancel: &AtomicBool) -> Result<Vec<Row>, String> {
-        let plans: Vec<String> = profiles
-            .iter()
-            .filter(|(_, api_key)| !api_key)
-            .map(|(name, _)| name.clone())
-            .collect();
-        // The errors may name a path or the claude binary; they are not shown.
-        if profiles.is_empty() {
-            // No profiles: `profile usage` shows nothing either.
-            return Ok(Vec::new());
-        }
-        if plans.is_empty() {
-            // Every profile uses an API key: only the `~/.claude` login.
-            return usage_cmd::probe_home_listed(self.timeout, cancel)
-                .map_err(|_| usage_cmd::REFUSED_PROBE.to_string());
-        }
-        // Every profile when none is an API-key profile. The `~/.claude` row
-        // is probed either way.
-        let names = if plans.len() == profiles.len() {
-            Vec::new()
-        } else {
-            plans
+    fn usage_json(&self, cancel: &AtomicBool) -> Result<Vec<u8>, String> {
+        let exe = std::env::current_exe().map_err(|_| USAGE_FAILED.to_string())?;
+        let mut cmd = Command::new(exe);
+        cmd.args([
+            "profile",
+            "usage",
+            "--json",
+            "--timeout-secs",
+            &self.probe_timeout.as_secs().max(1).to_string(),
+        ]);
+        let limits = Limits {
+            timeout: self.deadline,
+            cap: USAGE_CAP,
+            read_grace: USAGE_READ_GRACE,
         };
-        usage_cmd::probe_listed(&names, self.timeout, cancel)
-            .map_err(|_| usage_cmd::REFUSED_PROBE.to_string())
+        let out = bounded_process::run(cmd, limits, Some(cancel))
+            .map_err(|_| USAGE_FAILED.to_string())?;
+        match out.ended {
+            Ended::Exited(_) if out.success() && out.complete => Ok(out.stdout),
+            Ended::Stopped => Err(no_reading_by(self.deadline)),
+            _ => Err(USAGE_FAILED.to_string()),
+        }
     }
+}
+
+/// The text shown when `profile usage` did not finish by the deadline.
+pub(crate) fn no_reading_by(deadline: Duration) -> String {
+    format!(
+        "no reading within {}s (raise --logins-deadline)",
+        deadline.as_secs()
+    )
 }

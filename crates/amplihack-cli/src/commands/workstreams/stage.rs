@@ -89,20 +89,24 @@ pub(crate) fn classify(input: &StageInput) -> Stage {
     }
 }
 
-/// `min(60, 40 + 5(c - 1))`.
+/// Issue #1710 (comment of 2026-10-29T19:09:55Z): "review loop 40 + 4 per
+/// round (capped at 60)". Round 1 is 40, each later round adds 4, so round
+/// 3 is 48 and round 6 reaches 60. Round 1 counts from the base, as in the
+/// merge-ready rule below: `min(60, 40 + 4(c - 1))`.
 pub(crate) fn review_percent(rounds: u32) -> u8 {
-    scaled(rounds, 40, 60)
+    scaled(rounds, 40, 4, 60)
 }
 
+/// "merge-ready loop 70 + 5 per round (capped at 95)":
 /// `min(95, 70 + 5(m - 1))`.
 pub(crate) fn merge_ready_percent(rounds: u32) -> u8 {
-    scaled(rounds, 70, 95)
+    scaled(rounds, 70, 5, 95)
 }
 
-fn scaled(rounds: u32, base: u32, cap: u32) -> u8 {
+fn scaled(rounds: u32, base: u32, step: u32, cap: u32) -> u8 {
     let percent = rounds
         .saturating_sub(1)
-        .saturating_mul(5)
+        .saturating_mul(step)
         .saturating_add(base)
         .min(cap);
     u8::try_from(percent).unwrap_or(u8::MAX)

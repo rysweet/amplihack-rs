@@ -178,6 +178,8 @@ mod no_capacity_notice_statusline;
 mod pr_712_named_asset_canonicalization;
 #[path = "profile_overflow.rs"]
 mod profile_overflow;
+#[path = "profile_platform.rs"]
+mod profile_platform;
 #[path = "remote_cli_contract.rs"]
 mod remote_cli_contract;
 #[path = "runner_probe_cleanup.rs"]

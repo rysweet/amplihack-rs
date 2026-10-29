@@ -8,8 +8,10 @@
 //! caller's identity (`recipe/run_identity.rs`). PR state, live sessions,
 //! origins and login usage come through the traits in `sources.rs`, so
 //! [`snapshot`] runs in tests without tmux, gh, git or claude. Rendering is
-//! the pure function in `render.rs`. The command only reads.
+//! the pure function in `render.rs`. The command itself only reads; the
+//! `profile usage` it runs records its readings, as it does on its own.
 
+pub(crate) mod bars;
 pub(crate) mod discover;
 pub(crate) mod logins;
 pub(crate) mod manifest;
@@ -17,6 +19,8 @@ pub(crate) mod render;
 pub(crate) mod sources;
 pub(crate) mod stage;
 
+#[cfg(test)]
+mod tests_bars;
 #[cfg(test)]
 mod tests_discover;
 #[cfg(test)]
@@ -39,6 +43,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use chrono::DateTime;
+use chrono_tz::Tz;
 use clap::Subcommand;
 
 use crate::commands::recipe::autodrive_paths::{
@@ -53,6 +58,9 @@ use render::{LoginsSection, PrCell, Snapshot, WorkRow};
 use sources::{LiveSessions, OriginSource, PrInfo, PrSource, UsageSource};
 use stage::{PrState, StageInput};
 
+/// Shortest `--logins-deadline`: one second for the probes and one for
+/// `profile usage` to start, stop them and print its rows.
+pub(crate) const MIN_DEADLINE_SECS: u64 = 2;
 /// Default `--logins-deadline`, in seconds.
 const DEFAULT_DEADLINE_SECS: u64 = 8;
 /// How long a probe has to stop after its cancel flag is set.
@@ -70,18 +78,20 @@ pub enum WorkstreamsCommands {
         /// Show every run on this host, not only this session's
         #[arg(long)]
         all: bool,
-        /// Leave out the LOGINS section; no usage probe is started
+        /// Leave out the logins section; no usage probe is started
         #[arg(long)]
         no_logins: bool,
         /// Labels and queued items (default ~/.amplihack/work/workstreams.tsv)
         #[arg(long, value_name = "PATH")]
         manifest: Option<PathBuf>,
-        /// Seconds the LOGINS section may take, 1 to 60
+        /// Seconds the logins section may take, 2 to 60. Each probe gets one
+        /// second less, so `profile usage` has a second to report a slow
+        /// login as a `timeout` row before the section is cut off
         #[arg(
             long,
             value_name = "SECS",
             default_value_t = DEFAULT_DEADLINE_SECS,
-            value_parser = clap::value_parser!(u64).range(1..=60)
+            value_parser = clap::value_parser!(u64).range(MIN_DEADLINE_SECS..=60)
         )]
         logins_deadline: u64,
     },
@@ -118,18 +128,31 @@ fn status(all: bool, no_logins: bool, manifest: Option<PathBuf>, deadline: u64) 
         all,
         logins_deadline: deadline,
     };
-    let usage: Option<Arc<dyn UsageSource>> = (!no_logins)
-        .then(|| Arc::new(sources::ProfileUsage { timeout: deadline }) as Arc<dyn UsageSource>);
+    let usage: Option<Arc<dyn UsageSource>> = (!no_logins).then(|| {
+        Arc::new(sources::ProfileUsage {
+            probe_timeout: probe_timeout(deadline),
+            deadline,
+        }) as Arc<dyn UsageSource>
+    });
     let sources = Sources {
         prs: Box::new(sources::GhPrs),
         live: Box::new(sources::TmuxSessions),
         origin: Box::new(sources::GitOrigin::default()),
         usage,
         now: chrono::Utc::now().timestamp(),
+        zone: local_zone(),
         warn: Box::new(|warning| eprintln!("{warning}")),
     };
     print!("{}", render::render(&snapshot(&input, &sources)?));
     Ok(())
+}
+
+/// Each probe's `--timeout-secs`: a second under the deadline, so a slow
+/// login gives a `timeout` row and the others still arrive in time.
+pub(crate) fn probe_timeout(deadline: Duration) -> Duration {
+    deadline
+        .saturating_sub(Duration::from_secs(1))
+        .max(Duration::from_secs(1))
 }
 
 /// Where the manifest comes from: a missing default is ignored, a missing
@@ -163,6 +186,8 @@ pub(crate) struct Sources {
     pub usage: Option<Arc<dyn UsageSource>>,
     /// Unix seconds.
     pub now: i64,
+    /// The zone the title's time is shown in.
+    pub zone: Tz,
     /// Prints a fixed warning line; it never holds a path or an OS error.
     pub warn: Box<dyn Fn(&'static str)>,
 }
@@ -213,11 +238,36 @@ pub(crate) fn snapshot(input: &StatusInput, sources: &Sources) -> Result<Snapsho
             .map(|(row, _)| queued_row(row, only_list)),
     );
 
+    // The title names the repository only when every run names the same one.
+    let repo = match &prs.keys().collect::<Vec<_>>()[..] {
+        [only] => only.rsplit('/').next().map(str::to_string),
+        _ => None,
+    };
     Ok(Snapshot {
+        repo,
+        when: title_time(sources.now, sources.zone),
         no_identity: input.identity.is_none() && !input.all,
         workstreams,
         logins: logins.map(PendingLogins::finish),
     })
+}
+
+/// The host's IANA zone, or UTC when it cannot be read or is unknown.
+fn local_zone() -> Tz {
+    iana_time_zone::get_timezone()
+        .ok()
+        .and_then(|name| name.parse().ok())
+        .unwrap_or(Tz::UTC)
+}
+
+/// `Thu 11:56 PDT`: the weekday, the 24-hour time and the zone's
+/// abbreviation, as in the title in issue #1710.
+pub(crate) fn title_time(now: i64, zone: Tz) -> String {
+    DateTime::from_timestamp(now, 0)
+        .unwrap_or_default()
+        .with_timezone(&zone)
+        .format("%a %H:%M %Z")
+        .to_string()
 }
 
 /// The PR list of every repository the runs name, each asked once; `None`
@@ -294,14 +344,6 @@ fn run_row(
 
     let created = live.get(&run.session).copied();
     let start = record.and_then(|r| epoch(&r.started_at)).or(created);
-    let finished = record
-        .and_then(|r| r.outcome.as_ref())
-        .and_then(|o| epoch(&o.finished_at));
-    let elapsed_secs = match (start, created, finished) {
-        (Some(s), Some(_), _) => Some(sources.now.saturating_sub(s)),
-        (Some(s), None, Some(f)) => Some(f.saturating_sub(s)),
-        _ => None,
-    };
     let running = created.is_some() && !stage.closed;
     let reason = (!running).then(|| {
         let class = match record {
@@ -320,7 +362,6 @@ fn run_row(
         issue,
         pr,
         percent: stage.percent,
-        elapsed_secs,
         stage: stage.label,
         concerns,
         conflicts: info.is_some_and(|p| p.mergeable == "CONFLICTING"),
@@ -401,7 +442,6 @@ fn queued_row(row: &ManifestRow, list: Option<&[PrInfo]>) -> WorkRow {
             .or(info.map(|p| p.number))
             .map_or(PrCell::None, PrCell::Known),
         percent: stage.percent,
-        elapsed_secs: None,
         stage: stage.label,
         concerns: None,
         conflicts: info.is_some_and(|p| p.mergeable == "CONFLICTING"),
@@ -409,69 +449,45 @@ fn queued_row(row: &ManifestRow, list: Option<&[PrInfo]>) -> WorkRow {
     }
 }
 
-/// The logins section: the probe runs on a worker thread from the start of
-/// [`snapshot`]; at the deadline the cancel flag is set and the section is
-/// built at most [`CANCEL_GRACE`] later, with `no reading` for every
-/// profile that has no result. A probe that still has not returned is left
-/// to finish on its detached thread.
-enum PendingLogins {
-    Ready(LoginsSection),
-    Probing {
-        profiles: Vec<(String, bool)>,
-        rx: mpsc::Receiver<Result<Vec<crate::commands::profile::usage_cmd::Row>, String>>,
-        cancel: Arc<AtomicBool>,
-        due: Instant,
-    },
+/// The logins section: `profile usage --json` runs on a worker thread from
+/// the start of [`snapshot`]; at the deadline the cancel flag is set (which
+/// stops the subprocess and its process group) and the section is built at
+/// most [`CANCEL_GRACE`] later. A source that still has not returned is
+/// left to finish on its detached thread.
+struct PendingLogins {
+    rx: mpsc::Receiver<Result<Vec<u8>, String>>,
+    cancel: Arc<AtomicBool>,
+    deadline: Duration,
+    due: Instant,
 }
 
 impl PendingLogins {
     fn start(usage: &Arc<dyn UsageSource>, deadline: Duration) -> Self {
         let due = Instant::now() + deadline;
-        let profiles = match usage.profiles() {
-            Ok(profiles) => profiles,
-            Err(reason) => return Self::Ready(LoginsSection::Refused(reason)),
-        };
-        if profiles.iter().all(|(_, api_key)| *api_key) {
-            return Self::Ready(LoginsSection::Rows(logins::login_rows(
-                &profiles,
-                Some(&[]),
-            )));
-        }
         let cancel = Arc::new(AtomicBool::new(false));
         let (tx, rx) = mpsc::channel();
         let (worker_usage, worker_cancel) = (Arc::clone(usage), Arc::clone(&cancel));
-        let worker_profiles = profiles.clone();
         std::thread::spawn(move || {
-            let _ = tx.send(worker_usage.probe(&worker_profiles, &worker_cancel));
+            let _ = tx.send(worker_usage.usage_json(&worker_cancel));
         });
-        Self::Probing {
-            profiles,
+        Self {
             rx,
             cancel,
+            deadline,
             due,
         }
     }
 
     fn finish(self) -> LoginsSection {
-        let (profiles, rx, cancel, due) = match self {
-            Self::Ready(section) => return section,
-            Self::Probing {
-                profiles,
-                rx,
-                cancel,
-                due,
-            } => (profiles, rx, cancel, due),
-        };
-        let left = due.saturating_duration_since(Instant::now());
-        let result = rx.recv_timeout(left).ok().or_else(|| {
-            cancel.store(true, Ordering::SeqCst);
-            rx.recv_timeout(CANCEL_GRACE).ok()
+        let left = self.due.saturating_duration_since(Instant::now());
+        let result = self.rx.recv_timeout(left).ok().or_else(|| {
+            self.cancel.store(true, Ordering::SeqCst);
+            self.rx.recv_timeout(CANCEL_GRACE).ok()
         });
-        match result {
+        match result.map(|r| r.and_then(|json| logins::parse(&json))) {
+            Some(Ok(rows)) => LoginsSection::Rows(rows),
             Some(Err(reason)) => LoginsSection::Refused(reason),
-            // A probe cut short by the cancel flag reports it as a timeout.
-            Some(Ok(rows)) => LoginsSection::Rows(logins::login_rows(&profiles, Some(&rows))),
-            None => LoginsSection::Rows(logins::login_rows(&profiles, None)),
+            None => LoginsSection::Refused(sources::no_reading_by(self.deadline)),
         }
     }
 }

@@ -1,6 +1,6 @@
 ---
 name: workstream-status
-description: Show the user a plain-text status table of the workstreams this session started (detached amplihack runs and the runs they started, with stage, progress, PR, review concerns and elapsed time) and the capacity of every Claude login, pasted inline in the reply. Use when the user asks for workstream status, progress of background work, a status table or bar chart of runs, login capacity, or regular status updates at an interval.
+description: Show the user a plain-text status table of the workstreams this session started (detached amplihack runs and the runs they started, with stage, progress, PR and review concerns) and the capacity of every Claude login, pasted inline in the reply. Use when the user asks for workstream status, progress of background work, a status table or bar chart of runs, login capacity, or regular status updates at an interval.
 metadata:
   version: "1.0"
   author: amplihack
@@ -43,26 +43,34 @@ page at https://rysweet.github.io/amplihack-rs/reference/workstreams-command/.
 amplihack workstreams status
 ```
 
-Then reply with the output, for example:
+Then reply with the output. With login readings it looks like this (this
+exact text is the fixture in `workstreams/tests_render.rs`, and the binary is
+tested to produce it byte for byte):
 
 ````markdown
 ```text
-WORKSTREAMS
-  LABEL                    ISSUE  PR     PROGRESS         ELAPSED STAGE
-▶ workstream-status skill  #1710  #1715  ███████░░░  70%  2h05m   merge-ready round 1
-⏸ docs sweep               #1720  -      ░░░░░░░░░░   0%  -       queued
+  amplihack-rs workstreams — Thu 11:56 PDT
 
-LOGINS
-  PROFILE          SESSION           WEEK              STATE    RESETS
-  work*            ███░░░░░░░  31%   ██████░░░░  58%   ok       Oct 28, 4:50pm
-  spare            no reading                          timeout
-* live in ~/.claude
+  WORKSTREAM                     ISSUE  PR     PROGRESS                   STAGE
+  Credit-backed overflow         #1694  #1695  ████████████████████ 100%  merged
+  API-key profiles (last resort) #1700  #1727  ██████░░░░░░░░░░░░░░  30%  ▶ PR open, conflicts with main
+  Usage probe timeouts           #1698  -      ███░░░░░░░░░░░░░░░░░  15%  ⏸ build stopped on a usage limit
+  Rotator skips needed swaps     #1721  -      ░░░░░░░░░░░░░░░░░░░░   0%  ⏸ queued
+
+  LOGIN                      SESSION                   WEEK
+  hharkness (live)           ░░░░░░░░░░░░░░░░░░░░   0% █████░░░░░░░░░░░░░░░  29%
+  aanderson                  ████████████████████ 100% ████████░░░░░░░░░░░░  43%  session out, resets Oct 29, 1:10pm
+  rssourcelabs               -                         ████████████████████ 100%  week out, resets Nov 2, 10am
+  api-key                    API key, billed per token (no plan limits)
 ```
 ````
 
+The title names the repository when every run belongs to one, and gives the
+weekday, time and zone of the report.
+
 Add a sentence or two after the block only when a row needs the user's
-attention, such as `stopped on a usage limit`, `conflicts`, or every login
-near its limit.
+attention, such as `stopped on a usage limit`, `conflicts with main`, or every
+login near its limit.
 
 ## Updates at each status report
 
@@ -90,9 +98,9 @@ and the user has seen the final table.
 | `--all` | Show every run on this host, not only this session's. |
 | `--no-logins` | Leave out the logins section. Use it when only workstreams were asked about, or probes are slow. |
 | `--manifest <PATH>` | Read labels and queued items from another file. |
-| `--logins-deadline <SECS>` | Seconds the logins section may take, `1` to `60`, default `8`. |
+| `--logins-deadline <SECS>` | Seconds the logins section may take, `2` to `60`, default `8`. |
 
-The command always finishes: slow login probes show `no reading`, and a
+The command always finishes: slow login probes show `no reading (timeout)`, and a
 GitHub or tmux failure shows `?` or treats runs as stopped.
 
 ## Manifest
@@ -129,13 +137,15 @@ everything on the host.
 | `building` | 15% | Running, no PR yet. |
 | `PR open` | 30% | PR exists, no review round yet. |
 | `PR state unknown` | 30% | PR exists, but GitHub did not answer or the PR is older than the 100 listed. Check it with `gh pr view`. |
-| `review round N` | 40-60% | Review loop, with open concerns. |
-| `merge-ready round N` | 70-95% | Merge-ready checks loop. |
+| `review round N` | 40-60% | Review loop: 40 + 4 per round after the first, at most 60. |
+| `merge-ready round N` | 70-95% | Merge-ready loop: 70 + 5 per round after the first, at most 95. |
 | `merged` | 100% | Done. |
 | `closed` | 0% | PR closed without merging. |
 
-`▶` means the run is live. `⏸` means it is waiting or stopped; the reason
-follows when known, such as `stopped on a usage limit`. A `*` after a login
-name marks the login live in `~/.claude`. An API-key profile shows `API key:
-billed per token, no plan limits`, and an overflow profile shows `overflow:
-paid credits, no plan limits`.
+`▶` means the run is live. `⏸` means it is waiting, and the reason follows,
+such as `build stopped on a usage limit` or `queued`. A merged row has no
+marker. `(live)` after a login name marks the login live in `~/.claude`.
+`session out, resets …` and `week out, resets …` name the window that is used
+up. An API-key profile shows `API key, billed per token (no plan limits)`, an
+overflow profile `overflow, paid credits (no plan limits)`, and a profile
+whose probe gave nothing `no reading (<state>)`.

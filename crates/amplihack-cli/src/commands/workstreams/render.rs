@@ -1,34 +1,41 @@
-//! The plain-text table: a pure function over a [`Snapshot`].
+//! The plain-text report: a pure function over a [`Snapshot`], in the
+//! layout the owner set in the 2026-10-29T19:09:55Z comment on issue #1710:
 //!
-//! Every outside string is cleaned with [`sanitize`] before it is cut or
-//! padded, so its width is its `char` count. Apart from printable ASCII the
-//! output uses only the five single-width glyphs below, and every line is
-//! cut to [`MAX_WIDTH`] at the end, in release builds too.
+//! ```text
+//!   amplihack-rs workstreams — Thu 11:56 PDT
+//!
+//!   WORKSTREAM                     ISSUE  PR     PROGRESS                   STAGE
+//!   Credit-backed overflow         #1694  #1695  ████████████████████ 100%  merged
+//!   API-key profiles (last resort) #1700  #1727  ██████░░░░░░░░░░░░░░  30%  ▶ PR open, conflicts with main
+//!   Usage probe timeouts           #1698  -      ███░░░░░░░░░░░░░░░░░  15%  ⏸ build stopped on a usage limit
+//!
+//!   LOGIN                      SESSION                   WEEK
+//!   hharkness (live)           ░░░░░░░░░░░░░░░░░░░░   0% █████░░░░░░░░░░░░░░░  29%
+//! ```
+//!
+//! Each heading sits over the first character of its column. (In the
+//! comment, `STAGE` and `WEEK` sit one or two columns right of their data.)
+//!
+//! Bars, the logins section and text cleaning come from `bars.rs`, the one
+//! copy of the bar code (see its module comment on #1739). Every outside
+//! string is cleaned with [`sanitize`] before it is cut
+//! or padded. Apart from printable ASCII the output uses only `█ ░ ▶ ⏸ … —`,
+//! and every line is cut to [`MAX_WIDTH`].
 
-/// Widest line printed.
-const MAX_WIDTH: usize = 100;
-/// Cells in a progress or usage bar.
-const BAR_CELLS: usize = 10;
-const FULL: char = '█';
-const EMPTY: char = '░';
+use super::bars::{self, MAX_WIDTH, bar, pad, pad_left};
+pub(crate) use super::bars::{LoginRow, clip, sanitize};
+
 const RUNNING: char = '▶';
-const STOPPED: char = '⏸';
-const CUT: char = '…';
-/// Width of a workstream label.
-const LABEL_WIDTH: usize = 24;
-/// Width of a login profile name.
-const PROFILE_WIDTH: usize = 16;
-/// Width of a login state.
-const STATE_WIDTH: usize = 8;
-/// Longest elapsed time text: `9999d23h`.
-const MAX_DAYS: i64 = 9_999;
+const WAITING: char = '⏸';
+/// Longest workstream label; longer ones are cut.
+const LABEL_WIDTH: usize = 30;
+/// Width of a percentage: `100%`.
+const PCT_WIDTH: usize = 4;
+/// The percentage at which a workstream is done (merged): no marker.
+const DONE: u8 = 100;
 
 pub(crate) const NO_IDENTITY_HINT: &str =
     "no session id found; run with --all to see every run on this host";
-const LIVE_LEGEND: &str = "* live in ~/.claude";
-const API_KEY_TEXT: &str = "API key: billed per token, no plan limits";
-const OVERFLOW_TEXT: &str = "overflow: paid credits, no plan limits";
-const NO_READING: &str = "no reading";
 
 /// What the `PR` column shows.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,45 +50,18 @@ pub(crate) enum PrCell {
 /// One workstream row.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct WorkRow {
+    /// A live run: marked `▶`. A row that is neither running nor done is
+    /// waiting: marked `⏸`, with its reason.
     pub running: bool,
     pub label: String,
     pub issue: Option<u64>,
     pub pr: PrCell,
     pub percent: u8,
-    pub elapsed_secs: Option<i64>,
     pub stage: String,
     pub concerns: Option<u64>,
+    /// GitHub reports the PR as conflicting: `conflicts with main`.
     pub conflicts: bool,
     pub reason: Option<String>,
-}
-
-/// What a login row shows.
-// `NoReading` names what the row prints: `no reading`.
-#[allow(clippy::enum_variant_names)]
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum Reading {
-    Bars {
-        session: Option<f64>,
-        week: Option<f64>,
-        state: String,
-        resets: Option<String>,
-    },
-    NoReading {
-        state: String,
-    },
-    ApiKey,
-    /// A credit-backed overflow profile (#1695): its plan numbers do not
-    /// limit it, so no bars.
-    Overflow,
-}
-
-/// One login row.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct LoginRow {
-    pub profile: String,
-    /// The login is live in `~/.claude`.
-    pub live: bool,
-    pub reading: Reading,
 }
 
 /// The logins section: rows, or why there are none.
@@ -91,9 +71,14 @@ pub(crate) enum LoginsSection {
     Refused(String),
 }
 
-/// Everything the table shows.
+/// Everything the report shows.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Snapshot {
+    /// The repository name for the title (`amplihack-rs`), when every run
+    /// names the same one.
+    pub repo: Option<String>,
+    /// When the report was made, as the title shows it: `Thu 11:56 PDT`.
+    pub when: String,
     /// The caller has no identity and `--all` was not given.
     pub no_identity: bool,
     pub workstreams: Vec<WorkRow>,
@@ -101,79 +86,35 @@ pub(crate) struct Snapshot {
     pub logins: Option<LoginsSection>,
 }
 
-/// A 10-cell bar for `percent`, clamped to 0..=100; `None` when it is not
-/// a finite number.
-pub(crate) fn bar(percent: f64) -> Option<String> {
-    if !percent.is_finite() {
-        return None;
-    }
-    let filled = (percent.clamp(0.0, 100.0) / 10.0).round() as usize;
-    let filled = filled.min(BAR_CELLS);
-    let mut out = String::new();
-    out.extend(std::iter::repeat_n(FULL, filled));
-    out.extend(std::iter::repeat_n(EMPTY, BAR_CELLS - filled));
-    Some(out)
-}
-
-/// `s` with every char outside printable ASCII replaced by `?`.
-pub(crate) fn sanitize(s: &str) -> String {
-    s.chars()
-        .map(|c| if (' '..='~').contains(&c) { c } else { '?' })
-        .collect()
-}
-
-/// `s` when it has at most `max` chars, else its first `max - 1` and `…`.
-pub(crate) fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
-    out.push(CUT);
-    out
-}
-
-/// `2h05m` under a day, `3d04h` from a day up, `-` when unknown. Negative
-/// values count as 0.
-pub(crate) fn elapsed(secs: Option<i64>) -> String {
-    let Some(secs) = secs else {
-        return "-".to_string();
-    };
-    let secs = secs.max(0);
-    let (days, hours, minutes) = (secs / 86_400, secs % 86_400 / 3_600, secs % 3_600 / 60);
-    if days == 0 {
-        format!("{hours}h{minutes:02}m")
-    } else if days > MAX_DAYS {
-        format!(">{MAX_DAYS}d")
-    } else {
-        format!("{days}d{hours:02}h")
-    }
-}
-
-/// `s` padded with spaces to `width` chars.
-fn pad(s: &str, width: usize) -> String {
-    let mut out = s.to_string();
-    out.extend(std::iter::repeat_n(
-        ' ',
-        width.saturating_sub(s.chars().count()),
-    ));
-    out
-}
-
-/// The whole table.
+/// The whole report.
 pub(crate) fn render(snapshot: &Snapshot) -> String {
-    let mut lines = vec!["WORKSTREAMS".to_string()];
+    let repo = snapshot
+        .repo
+        .as_deref()
+        .map_or(String::new(), |r| format!("{} ", sanitize(r)));
+    let mut lines = vec![
+        format!("  {repo}workstreams — {}", sanitize(&snapshot.when)),
+        String::new(),
+    ];
     if snapshot.no_identity {
         lines.push(format!("  {NO_IDENTITY_HINT}"));
     }
     if snapshot.workstreams.is_empty() {
-        lines.push("  none".to_string());
+        lines.push("  no workstreams".to_string());
     } else {
         work_lines(&snapshot.workstreams, &mut lines);
     }
     if let Some(logins) = &snapshot.logins {
         lines.push(String::new());
-        lines.push("LOGINS".to_string());
-        logins_lines(logins, &mut lines);
+        match logins {
+            LoginsSection::Refused(reason) => {
+                lines.push(format!("  logins: {}", sanitize(reason)));
+            }
+            LoginsSection::Rows(rows) if rows.is_empty() => {
+                lines.push("  logins: none".to_string());
+            }
+            LoginsSection::Rows(rows) => lines.extend(bars::render_login_lines(rows)),
+        }
     }
     let mut out = String::new();
     for line in lines {
@@ -185,40 +126,42 @@ pub(crate) fn render(snapshot: &Snapshot) -> String {
 
 /// The cells of one workstream row, cleaned and cut.
 struct WorkCells {
-    marker: char,
     label: String,
     issue: String,
     pr: String,
-    bar: String,
-    percent: String,
-    elapsed: String,
+    progress: String,
     stage: String,
 }
 
-/// Columns are as wide as their widest cell and one space apart, so the
-/// stage keeps as much of the 100 columns as the other cells leave.
+/// Each text column is as wide as its widest cell or heading; the label
+/// column is followed by one space and the number columns by two, as in the
+/// issue.
 fn work_lines(rows: &[WorkRow], lines: &mut Vec<String>) {
     let cells: Vec<WorkCells> = rows.iter().map(work_cells).collect();
-    let width = |f: fn(&WorkCells) -> &str| {
+    let width = |heading: &str, f: fn(&WorkCells) -> &str| {
         cells
             .iter()
             .map(|c| f(c).chars().count())
-            .max()
-            .unwrap_or(0)
+            .fold(heading.chars().count(), usize::max)
     };
-    let (label_w, issue_w, pr_w) = (width(|c| &c.label), width(|c| &c.issue), width(|c| &c.pr));
-    let (percent_w, elapsed_w) = (width(|c| &c.percent), width(|c| &c.elapsed));
+    let label_w = width("WORKSTREAM", |c| &c.label) + 1;
+    let issue_w = width("ISSUE", |c| &c.issue) + 2;
+    let pr_w = width("PR", |c| &c.pr) + 2;
+    let progress_w = bars::BAR_CELLS + 1 + PCT_WIDTH + 2;
+    lines.push(format!(
+        "  {}{}{}{}STAGE",
+        pad("WORKSTREAM", label_w),
+        pad("ISSUE", issue_w),
+        pad("PR", pr_w),
+        pad("PROGRESS", progress_w),
+    ));
     for c in &cells {
         let head = format!(
-            "{} {} {} {} {} {}{} {} ",
-            c.marker,
+            "  {}{}{}{}",
             pad(&c.label, label_w),
             pad(&c.issue, issue_w),
             pad(&c.pr, pr_w),
-            c.bar,
-            " ".repeat(percent_w.saturating_sub(c.percent.chars().count())),
-            c.percent,
-            pad(&c.elapsed, elapsed_w),
+            pad(&c.progress, progress_w),
         );
         let room = MAX_WIDTH.saturating_sub(head.chars().count());
         lines.push(format!("{head}{}", clip(&c.stage, room)));
@@ -226,23 +169,8 @@ fn work_lines(rows: &[WorkRow], lines: &mut Vec<String>) {
 }
 
 fn work_cells(row: &WorkRow) -> WorkCells {
-    let percent = row.percent.min(100);
-    let mut stage = vec![sanitize(&row.stage)];
-    if let Some(n) = row.concerns {
-        stage.push(if n == 1 {
-            "1 concern".to_string()
-        } else {
-            format!("{n} concerns")
-        });
-    }
-    if row.conflicts {
-        stage.push("conflicts".to_string());
-    }
-    if let Some(reason) = &row.reason {
-        stage.push(sanitize(reason));
-    }
+    let percent = row.percent.min(DONE);
     WorkCells {
-        marker: if row.running { RUNNING } else { STOPPED },
         label: clip(&sanitize(&row.label), LABEL_WIDTH),
         issue: row.issue.map_or("-".to_string(), |n| format!("#{n}")),
         pr: match row.pr {
@@ -250,70 +178,43 @@ fn work_cells(row: &WorkRow) -> WorkCells {
             PrCell::Known(n) => format!("#{n}"),
             PrCell::Unknown => "#?".to_string(),
         },
-        bar: bar(f64::from(percent)).unwrap_or_default(),
-        percent: format!("{percent}%"),
-        elapsed: elapsed(row.elapsed_secs),
-        stage: stage.join(", "),
+        progress: format!(
+            "{} {}",
+            bar(f64::from(percent)).unwrap_or_default(),
+            pad_left(&format!("{percent}%"), PCT_WIDTH)
+        ),
+        stage: stage_text(row, percent),
     }
 }
 
-fn logins_lines(section: &LoginsSection, lines: &mut Vec<String>) {
-    let rows = match section {
-        LoginsSection::Refused(reason) => {
-            lines.push(format!("  {}", sanitize(reason)));
-            return;
-        }
-        LoginsSection::Rows(rows) if rows.is_empty() => {
-            lines.push("  none".to_string());
-            return;
-        }
-        LoginsSection::Rows(rows) => rows,
-    };
-    lines.push(format!(
-        "  {} {}{}{} RESETS",
-        pad("PROFILE", PROFILE_WIDTH),
-        pad("SESSION", 18),
-        pad("WEEK", 18),
-        pad("STATE", STATE_WIDTH),
-    ));
-    for row in rows {
-        let mut name = clip(&sanitize(&row.profile), PROFILE_WIDTH - 1);
-        if row.live {
-            name.push('*');
-        }
-        let head = format!("  {} ", pad(&name, PROFILE_WIDTH));
-        let rest = match &row.reading {
-            Reading::ApiKey => API_KEY_TEXT.to_string(),
-            Reading::Overflow => OVERFLOW_TEXT.to_string(),
-            Reading::NoReading { state } => format!(
-                "{}{}",
-                pad(NO_READING, 36),
-                clip(&sanitize(state), STATE_WIDTH)
-            ),
-            Reading::Bars {
-                session,
-                week,
-                state,
-                resets,
-            } => format!(
-                "{}{}{} {}",
-                usage_cell(*session),
-                usage_cell(*week),
-                pad(&clip(&sanitize(state), STATE_WIDTH), STATE_WIDTH),
-                resets.as_deref().map_or("-".to_string(), sanitize)
-            ),
-        };
-        lines.push(format!("{head}{rest}"));
+/// The marker, then the stage and what follows it: `▶ PR open, conflicts
+/// with main`, `⏸ build stopped on a usage limit`, `merged`. A done row has
+/// no marker: it is not waiting.
+fn stage_text(row: &WorkRow, percent: u8) -> String {
+    let mut parts = Vec::new();
+    let mut reason = row.reason.as_deref().map(sanitize);
+    if row.stage == "building"
+        && let Some(why) = reason.take()
+    {
+        parts.push(format!("build {why}"));
+    } else {
+        parts.push(sanitize(&row.stage));
     }
-    if rows.iter().any(|r| r.live) {
-        lines.push(LIVE_LEGEND.to_string());
+    if let Some(n) = row.concerns {
+        parts.push(if n == 1 {
+            "1 concern".to_string()
+        } else {
+            format!("{n} concerns")
+        });
     }
-}
-
-/// A bar and its percentage in 18 columns; `-` when there is no number.
-fn usage_cell(percent: Option<f64>) -> String {
-    match percent.and_then(|p| bar(p).map(|b| (b, p))) {
-        Some((b, p)) => pad(&format!("{b} {:>4}", format!("{:.0}%", p)), 18),
-        None => pad("-", 18),
+    if row.conflicts {
+        parts.push("conflicts with main".to_string());
+    }
+    parts.extend(reason);
+    let text = parts.join(", ");
+    match (percent >= DONE, row.running) {
+        (true, _) => text,
+        (false, true) => format!("{RUNNING} {text}"),
+        (false, false) => format!("{WAITING} {text}"),
     }
 }

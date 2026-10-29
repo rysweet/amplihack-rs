@@ -766,10 +766,10 @@ mod tests {
                 assert_eq!(logins_deadline, 60);
             }
         }
-        match workstreams_status(&["--logins-deadline", "1"]) {
+        match workstreams_status(&["--logins-deadline", "2"]) {
             crate::commands::workstreams::WorkstreamsCommands::Status {
                 logins_deadline, ..
-            } => assert_eq!(logins_deadline, 1),
+            } => assert_eq!(logins_deadline, 2),
         }
     }
 
@@ -778,6 +778,7 @@ mod tests {
         let _env = launcher_env_lock();
         for bad in [
             &["--logins-deadline", "0"][..],
+            &["--logins-deadline", "1"],
             &["--logins-deadline", "61"],
             &["--logins-deadline", "-1"],
             &["--logins-deadline", "soon"],

@@ -48,7 +48,7 @@ const ENV_CREDENTIAL_VARS: [&str; 3] = [
 
 /// Why a probe could not run. Fixed text: never an I/O error or a path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ErrorReason {
+pub(super) enum ErrorReason {
     ProfileRefused,
     StartFailed,
     ReadFailed,
@@ -68,9 +68,9 @@ impl ErrorReason {
 
 /// What `claude` printed, kept only with `--raw`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct Raw {
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
+pub(super) struct Raw {
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 
 /// The outcome of one `claude -p /usage` run.
@@ -93,26 +93,30 @@ impl Probe {
 
 /// One output row.
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct Row {
-    pub(crate) profile: String,
+pub(super) struct Row {
+    pub(super) profile: String,
     /// The account live in the profile's directory.
-    pub(crate) account: String,
-    pub(crate) default: bool,
+    pub(super) account: String,
+    pub(super) default: bool,
     /// The directory this profile's login is lent to.
-    pub(crate) leased_to: Option<String>,
+    pub(super) leased_to: Option<String>,
     /// The login is live in `~/.claude` and the numbers were read there.
-    pub(crate) live_in: bool,
+    pub(super) live_in: bool,
     /// Marked as credit-backed overflow in `<root>/.auto-switch`.
-    pub(crate) overflow: bool,
+    pub(super) overflow: bool,
     /// The end of the rotator's active spend block on this overflow
     /// profile, epoch seconds.
-    pub(crate) overflow_blocked_until: Option<i64>,
+    pub(super) overflow_blocked_until: Option<i64>,
     /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
     /// never recorded.
-    pub(crate) live_in_home: bool,
-    pub(crate) report: UsageReport,
-    pub(crate) error: Option<ErrorReason>,
-    pub(crate) raw: Option<Raw>,
+    pub(super) live_in_home: bool,
+    /// An API-key profile (issue #1700): not probed, billed per token.
+    pub(super) api_key: bool,
+    /// The API-key block on an API-key row: its reason and end.
+    pub(super) api_key_blocked: Option<(String, i64)>,
+    pub(super) report: UsageReport,
+    pub(super) error: Option<ErrorReason>,
+    pub(super) raw: Option<Raw>,
 }
 
 pub(super) fn run(
@@ -140,6 +144,11 @@ pub(super) fn run(
     let binary = run::resolve_claude_binary()?;
     let home = home_dir();
     let (live, home_row) = detect_live(store, home.as_deref(), &profiles);
+    // Issue #1700: API-key profiles are never probed; a probe costs tokens
+    // or times out, and there are no plan limits to read.
+    let keys = ApiKeys::load(store, home.as_deref(), &profiles);
+    let (keyed, profiles): (Vec<ProfileName>, Vec<ProfileName>) =
+        profiles.into_iter().partition(|p| keys.names.contains(p));
     let live_name = live.as_ref().map(|l| l.name.clone());
     // Read before probing: the account each row is recorded under must be
     // the one live when its probe started, so that a swap during the probe
@@ -155,12 +164,12 @@ pub(super) fn run(
         Duration::from_secs(secs),
         now,
         raw,
-        &PROBE_CANCEL,
     );
     // The login in `~/.claude` may have been swapped during the probe; its
     // numbers are shown but not recorded against the profile.
     let swapped = swapped_live(store, home.as_deref(), live);
     let mut rows = build_rows(&marks, &profiles, probes, live_name.as_ref());
+    rows.extend(keys.rows(&marks, &keyed));
     // Only when every profile is listed: naming profiles asks about those.
     if home_row && names.is_empty() {
         let cmd = run::build_home_command(&binary, &["-p".into(), "/usage".into()]);
@@ -174,129 +183,6 @@ pub(super) fn run(
     }
     record(store, &rows, swapped.as_ref(), json);
     Ok(())
-}
-
-/// Issue #1710: the rows `profile usage` would show, for `workstreams
-/// status`. Probes like [`run`], at most `timeout` each, and stops when
-/// `cancel` is set, killing each probe's process group. Never records or
-/// persists anything and prints nothing; refuses to run where profiles are
-/// not applied (Docker). The `~/.claude` row is added only when `names` is
-/// empty, as in [`run`].
-pub(crate) fn probe_rows(
-    store: &ProfileStore,
-    binary: &BinaryInfo,
-    names: &[String],
-    timeout: Duration,
-    cancel: &AtomicBool,
-) -> Result<Vec<Row>> {
-    super::reject_docker_env()?;
-    let profiles = selected_profiles(store, names)?;
-    if profiles.is_empty() {
-        return Ok(Vec::new());
-    }
-    probe_profiles_and_home(store, binary, &profiles, timeout, cancel)
-}
-
-/// Issue #1710: the `~/.claude` row alone, for `workstreams status` when
-/// every profile uses an API key and no plan profile is probed. Empty when
-/// `~/.claude` holds a profile's login rather than one of its own.
-pub(crate) fn probe_home_listed(timeout: Duration, cancel: &AtomicBool) -> Result<Vec<Row>> {
-    super::reject_docker_env()?;
-    let store = ProfileStore::from_env().map_err(super::with_hint)?;
-    let binary = run::resolve_claude_binary()?;
-    probe_profiles_and_home(&store, &binary, &[], timeout, cancel)
-}
-
-/// Rows for `profiles`, then the `~/.claude` row when that login is one no
-/// profile holds.
-pub(super) fn probe_profiles_and_home(
-    store: &ProfileStore,
-    binary: &BinaryInfo,
-    profiles: &[ProfileName],
-    timeout: Duration,
-    cancel: &AtomicBool,
-) -> Result<Vec<Row>> {
-    let home = home_dir();
-    // Detection warnings are for `profile usage`; this caller shows rows only.
-    let (live, home_row) = match default_live::detect_for_usage(store, home.as_deref()) {
-        default_live::UsageLive::Profile(name) => (Some(name), false),
-        default_live::UsageLive::Home => (None, true),
-        default_live::UsageLive::Detected(live, _) => (live.map(|l| l.name), false),
-    };
-    let live = live.filter(|n| profiles.contains(n));
-    let overflow = super::overflow::overflow_names(store.root());
-    let marks = Marks {
-        default: pointer::read(store.root()).ok().flatten(),
-        lease: auto_switch::lease_view(store.root()).ok().flatten(),
-        blocked: overflow_blocks(store, &overflow),
-        overflow,
-    };
-    let now = now_secs();
-    let probes = probe_all(
-        store,
-        binary,
-        profiles,
-        live.as_ref(),
-        timeout,
-        now,
-        false,
-        cancel,
-    );
-    let mut rows = build_rows(&marks, profiles, probes, live.as_ref());
-    // `names` narrows the profile rows only: `workstreams status` passes the
-    // plan profiles when some profile uses an API key, and the `~/.claude`
-    // login is still a login it must show.
-    if home_row && !cancel.load(Ordering::Relaxed) {
-        let cmd = run::build_home_command(binary, &["-p".into(), "/usage".into()]);
-        rows.push(home_row_of(probe_cancellable(
-            cmd, timeout, now, false, cancel,
-        )));
-    }
-    Ok(rows)
-}
-
-/// `workstreams status` refuses logins inside Docker, where profiles are
-/// not applied.
-pub(crate) const REFUSED_DOCKER: &str = "profile store unavailable in Docker";
-/// The store's root cannot be resolved (no HOME, an invalid root setting).
-pub(crate) const REFUSED_NO_STORE: &str = "no profile store";
-/// The store's root exists but cannot be listed safely.
-pub(crate) const REFUSED_UNREADABLE: &str = "profile store unreadable";
-/// The probe itself failed, for example because `claude` was not found.
-pub(crate) const REFUSED_PROBE: &str = "usage probe failed";
-
-/// Issue #1710: every profile in the store for this environment, with its
-/// directory, for `workstreams status`. Refuses where profiles are not
-/// applied (Docker). The error is one of the fixed `REFUSED_*` texts, so it
-/// names no path.
-pub(crate) fn listed_profiles() -> Result<Vec<(String, std::path::PathBuf)>, &'static str> {
-    super::reject_docker_env().map_err(|_| REFUSED_DOCKER)?;
-    let store = ProfileStore::from_env().map_err(|_| REFUSED_NO_STORE)?;
-    let mut out = Vec::new();
-    for raw in store.list().map_err(|_| REFUSED_UNREADABLE)? {
-        // `store.list` already leaves out names that do not parse; one that
-        // still fails is skipped, so it cannot hide the other profiles.
-        let Ok(name) = ProfileName::parse(&raw) else {
-            continue;
-        };
-        // A profile that no longer resolves still gets a row, with no
-        // directory to inspect.
-        let dir = store.resolve(&name).unwrap_or_default();
-        out.push((raw, dir));
-    }
-    Ok(out)
-}
-
-/// Issue #1710: [`probe_rows`] against the store for this environment and
-/// the `claude` binary `profile usage` would use.
-pub(crate) fn probe_listed(
-    names: &[String],
-    timeout: Duration,
-    cancel: &AtomicBool,
-) -> Result<Vec<Row>> {
-    let store = ProfileStore::from_env().map_err(super::with_hint)?;
-    let binary = run::resolve_claude_binary()?;
-    probe_rows(&store, &binary, names, timeout, cancel)
 }
 
 /// `$HOME` as an absolute path; `None` when it is unset, empty or relative.
@@ -353,6 +239,8 @@ fn home_row_of(p: Probe) -> Row {
         overflow: false,
         overflow_blocked_until: None,
         live_in_home: true,
+        api_key: false,
+        api_key_blocked: None,
         report: p.report,
         error: p.error,
         raw: p.raw,
@@ -437,6 +325,80 @@ fn overflow_blocks(
     Default::default()
 }
 
+/// The selected API-key profiles (issue #1700), which of them is live in
+/// `~/.claude`, and the API-key block.
+#[derive(Default)]
+struct ApiKeys {
+    names: Vec<ProfileName>,
+    live: Option<ProfileName>,
+    block: Option<(String, i64)>,
+}
+
+impl ApiKeys {
+    #[cfg(unix)]
+    fn load(
+        store: &ProfileStore,
+        home: Option<&std::path::Path>,
+        selected: &[ProfileName],
+    ) -> Self {
+        let names: Vec<ProfileName> = super::kind::Ctx::load(store, home)
+            .platform_profiles(store)
+            .into_iter()
+            .filter(|p| selected.contains(p))
+            .collect();
+        if names.is_empty() {
+            return Self::default();
+        }
+        let live = names
+            .iter()
+            .find(|n| super::rotate::is_live(store, home, n))
+            .cloned();
+        let ledger = super::rotate::ledger::RotateState::new(store.root())
+            .load_ledger()
+            .unwrap_or_else(|e| {
+                eprintln!(
+                    "warning: could not read the rotate ledger ({e}); no API-key block shown"
+                );
+                None
+            });
+        let block = ledger.and_then(|l| {
+            super::rotate::platform_block::active(&l, now_secs())
+                .map(|b| (b.reason.clone(), b.until))
+        });
+        Self { names, live, block }
+    }
+
+    #[cfg(not(unix))]
+    fn load(_: &ProfileStore, _: Option<&std::path::Path>, _: &[ProfileName]) -> Self {
+        Self::default()
+    }
+
+    /// One row per API-key profile, with no reading.
+    fn rows(&self, marks: &Marks, names: &[ProfileName]) -> Vec<Row> {
+        names
+            .iter()
+            .map(|name| {
+                let n = name.as_str();
+                Row {
+                    profile: n.to_string(),
+                    account: n.to_string(),
+                    default: marks.default.as_ref() == Some(name),
+                    leased_to: None,
+                    live_in: self.live.as_ref() == Some(name),
+                    overflow: false,
+                    overflow_blocked_until: None,
+                    api_key: true,
+                    api_key_blocked: self.block.clone(),
+                    live_in_home: false,
+                    report: UsageReport::empty(UsageState::Ok),
+                    error: None,
+                    raw: None,
+                }
+            })
+            .collect()
+    }
+}
+
 /// One row per probe, with the default, lease and `~/.claude` marks.
 fn build_rows(
     marks: &Marks,
@@ -470,6 +432,8 @@ fn build_rows(
                     .then(|| blocked.get(n).copied())
                     .flatten(),
                 live_in_home: false,
+                api_key: false,
+                api_key_blocked: None,
                 report: p.report,
                 error: p.error,
                 raw: p.raw,
@@ -568,9 +532,7 @@ pub(super) fn env_credential_warning(var: &str) -> String {
 // ---------------------------------------------------------------------------
 
 /// Probes every profile, at most [`MAX_PARALLEL`] at once; `live` is probed
-/// against `~/.claude`. Results are in the order of `profiles`. Setting
-/// `cancel` stops every running probe and fails the ones not yet started.
-#[allow(clippy::too_many_arguments)]
+/// against `~/.claude`. Results are in the order of `profiles`.
 pub(super) fn probe_all(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -579,7 +541,6 @@ pub(super) fn probe_all(
     timeout: Duration,
     now: i64,
     keep_raw: bool,
-    cancel: &AtomicBool,
 ) -> Vec<Probe> {
     let next = AtomicUsize::new(0);
     let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
@@ -600,12 +561,7 @@ pub(super) fn probe_all(
                         run::build_profile_command
                     };
                     let p = match build(binary, store, name, &args) {
-                        Ok(_) if cancel.load(Ordering::Relaxed) => Probe {
-                            report: UsageReport::empty(UsageState::Timeout),
-                            error: None,
-                            raw: None,
-                        },
-                        Ok(cmd) => probe_cancellable(cmd, timeout, now, keep_raw, cancel),
+                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
                         // Reported as its fixed reason (and a stderr
                         // warning); the detail can name paths.
                         Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
@@ -626,29 +582,19 @@ pub(super) fn probe_all(
 }
 
 /// Runs `cmd` through [`bounded_process::run`]: stdin from `/dev/null`, up
-/// to 64 KiB of each output stream, killed at the deadline. The exit status
-/// is not used.
+/// to 64 KiB of each output stream, killed at the deadline or when
+/// [`PROBE_CANCEL`] is set. The exit status is not used.
 ///
 /// On Unix the child leads its own process group, and the whole group is
 /// killed when the probe ends, so processes `claude` started (MCP servers,
 /// for example) do not outlive it.
 pub(super) fn probe(cmd: Command, timeout: Duration, now: i64, keep_raw: bool) -> Probe {
-    probe_cancellable(cmd, timeout, now, keep_raw, &PROBE_CANCEL)
-}
-
-/// [`probe`], stopped early as a timeout when `cancel` is set.
-fn probe_cancellable(
-    cmd: Command,
-    timeout: Duration,
-    now: i64,
-    keep_raw: bool,
-    cancel: &AtomicBool,
-) -> Probe {
     let limits = bounded_process::Limits {
         timeout,
         cap: STREAM_CAP,
         read_grace: READ_GRACE,
     };
+    let cancel: &AtomicBool = &PROBE_CANCEL;
     let out = match bounded_process::run(cmd, limits, Some(cancel)) {
         Ok(out) => out,
         Err(bounded_process::Failure::Start) => {
@@ -694,11 +640,23 @@ fn probe_cancellable(
 /// then unavailable rows by state; ties by name.
 pub(super) fn order(rows: &mut [Row], now: i64) {
     rows.sort_by(|a, b| {
-        let (ga, gb) = (sort_key(&a.report, now), sort_key(&b.report, now));
+        let (ga, gb) = (row_key(a, now), row_key(b, now));
         ga.0.cmp(&gb.0)
             .then(ga.1.total_cmp(&gb.1))
             .then_with(|| a.profile.cmp(&b.profile))
     });
+}
+
+/// [`sort_key`], with API-key rows (issue #1700) after every usable and
+/// exhausted row and before the unavailable ones.
+fn row_key(r: &Row, now: i64) -> (u8, f64) {
+    if r.api_key {
+        return (2, 0.0);
+    }
+    match sort_key(&r.report, now) {
+        (g, m) if g >= 2 => (g + 1, m),
+        k => k,
+    }
 }
 
 /// `(group, metric)`; a smaller metric sorts first within the group.
@@ -760,6 +718,9 @@ pub(super) fn marks(row: &Row) -> String {
     if row.live_in {
         // The wording auto-switch uses for a login live in another directory.
         parts.push(format!("live in {}", default_live::LABEL));
+    }
+    if let Some((reason, until)) = &row.api_key_blocked {
+        parts.push(format!("blocked until {} ({reason})", utc_time(*until)));
     }
     if row.overflow {
         parts.push(match row.overflow_blocked_until {
@@ -845,8 +806,12 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             [
                 sanitize_display(&r.profile, false),
                 sanitize_display(&marks(r), false),
-                r.report.state.as_str().to_string(),
-                pct(&r.report.session),
+                state_label(r).to_string(),
+                if r.api_key {
+                    API_KEY_CELL.to_string()
+                } else {
+                    pct(&r.report.session)
+                },
                 resets(&r.report.session),
                 pct(&r.report.week_all),
                 resets(&r.report.week_all),
@@ -887,7 +852,28 @@ pub(super) fn render_table(rows: &[Row]) -> String {
             sanitize_display(&r.profile, false)
         ));
     }
+    if rows.iter().any(|r| r.api_key && r.live_in) {
+        out.push_str("live: work is running on the API key (billed per token)\n");
+    }
+    if let Some((reason, until)) = rows.iter().find_map(|r| r.api_key_blocked.as_ref()) {
+        out.push_str(&format!(
+            "blocked: the API key until {} ({reason})\n",
+            utc_time(*until)
+        ));
+    }
     out
+}
+
+/// The `SESSION` cell of an API-key row.
+const API_KEY_CELL: &str = "api-key (billed per token)";
+
+/// The `STATE` of a row: `api_key` for an API-key profile.
+fn state_label(r: &Row) -> &'static str {
+    if r.api_key {
+        "api_key"
+    } else {
+        r.report.state.as_str()
+    }
 }
 
 /// The row's own probe in this run shows a plan limit reached: an
@@ -921,6 +907,12 @@ fn raw_block(out: &mut String, name: &str, text: &str) {
 }
 
 #[derive(Serialize)]
+struct ApiKeyBlock<'a> {
+    reason: &'a str,
+    until: i64,
+}
+
+#[derive(Serialize)]
 struct JsonRow<'a> {
     profile: &'a str,
     account: &'a str,
@@ -929,7 +921,9 @@ struct JsonRow<'a> {
     live_in: Option<&'static str>,
     overflow: bool,
     overflow_blocked_until: Option<i64>,
-    state: UsageState,
+    kind: &'static str,
+    api_key_blocked: Option<ApiKeyBlock<'a>>,
+    state: &'static str,
     session: Option<&'a UsageWindow>,
     week_all: Option<&'a UsageWindow>,
     week_models: &'a [UsageWindow],
@@ -951,7 +945,15 @@ pub(super) fn render_json(rows: &[Row]) -> String {
             live_in: r.live_in.then_some(default_live::LABEL),
             overflow: r.overflow,
             overflow_blocked_until: r.overflow_blocked_until,
-            state: r.report.state,
+            kind: if r.api_key { "api-key" } else { "subscription" },
+            api_key_blocked: r
+                .api_key_blocked
+                .as_ref()
+                .map(|(reason, until)| ApiKeyBlock {
+                    reason,
+                    until: *until,
+                }),
+            state: state_label(r),
             session: r.report.session.as_ref(),
             week_all: r.report.week_all.as_ref(),
             week_models: &r.report.week_models,
@@ -992,6 +994,7 @@ pub(super) fn observations(rows: &[Row]) -> Vec<Observation> {
         })
     };
     rows.iter()
+        .filter(|r| !r.api_key)
         .filter(|r| {
             !r.live_in_home
                 && matches!(

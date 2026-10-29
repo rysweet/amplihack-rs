@@ -1,108 +1,92 @@
-//! The logins section (D11), built from the rows `profile usage` reads.
+//! The logins section (D11), read from `amplihack profile usage --json` and
+//! drawn by `bars.rs`.
+//!
+//! `profile usage` owns every rule about a login: which profiles exist,
+//! which are API-key (Claude Platform) profiles (#1700, `kind`), which are
+//! credit-backed overflow (`overflow`), which login is live in `~/.claude`
+//! (`live_in`), and the probe itself. This module only reads its stable
+//! JSON interface, so the two commands cannot disagree about a login.
 
-use std::path::Path;
+use serde::Deserialize;
 
-use serde_json::Value;
+use super::bars::{LoginRow, Reading, without_zone};
 
-use super::render::{LoginRow, Reading};
-use crate::commands::profile::usage_cmd::Row;
-use crate::commands::profile::usage_parse::{UsageState, UsageWindow};
-use crate::commands::recipe::run_record::read_owned;
+/// `kind` of an API-key profile in `profile usage --json`.
+const API_KEY_KIND: &str = "api-key";
+/// Shown in place of rows when the output cannot be read. Fixed text: it
+/// never holds a path or the output itself.
+pub(crate) const UNREADABLE: &str =
+    "amplihack profile usage --json gave output that is not a row list";
 
-/// Largest profile file inspected for an API-key sign.
-const MAX_PROFILE_FILE: u64 = 4 * 1024 * 1024;
-/// Mode bits a profile file may not have.
-const LOOSE_BITS: u32 = 0o077;
-/// The name of the `~/.claude` row.
-const HOME_LABEL: &str = "~/.claude";
-
-/// Whether the profile at `dir` uses an API key (Claude Platform) rather
-/// than a plan login: `settings.json` has `apiKeyHelper` or sets
-/// `env.ANTHROPIC_API_KEY`, or `.claude.json` has `primaryApiKey`. Only the
-/// answer leaves this function: never a key, a path or a parse error.
-/// A missing, unsafe or malformed file counts as no API key, by design: the
-/// profile is then probed as a plan login and its row shows what it finds.
-pub(crate) fn is_api_key_profile(dir: &Path) -> bool {
-    let has = |value: Option<&Value>| value.is_some_and(|v| !v.is_null());
-    let settings = read_json(&dir.join("settings.json"));
-    if settings.as_ref().is_some_and(|s| {
-        has(s.get("apiKeyHelper")) || has(s.get("env").and_then(|e| e.get("ANTHROPIC_API_KEY")))
-    }) {
-        return true;
-    }
-    read_json(&dir.join(".claude.json")).is_some_and(|c| has(c.get("primaryApiKey")))
+/// One element of the `profile usage --json` array. Fields this section
+/// does not use are ignored.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct UsageRow {
+    pub profile: String,
+    /// `~/.claude` when the login is live there, else `null`.
+    #[serde(default)]
+    pub live_in: Option<String>,
+    #[serde(default)]
+    pub overflow: bool,
+    /// `subscription` or `api-key`.
+    #[serde(default)]
+    pub kind: String,
+    pub state: String,
+    #[serde(default)]
+    pub session: Option<Window>,
+    #[serde(default)]
+    pub week_all: Option<Window>,
 }
 
-/// The JSON in `path` when it is a private regular file of this user of at
-/// most [`MAX_PROFILE_FILE`] bytes.
-fn read_json(path: &Path) -> Option<Value> {
-    serde_json::from_slice(&read_owned(path, LOOSE_BITS, MAX_PROFILE_FILE)?).ok()
+/// A usage window as `profile usage --json` prints it.
+#[derive(Debug, Clone, Deserialize)]
+pub(crate) struct Window {
+    pub used_percentage: f64,
+    #[serde(default)]
+    pub resets_text: Option<String>,
 }
 
-/// One row per profile, in the order of `profiles` (the bool marks an
-/// API-key profile), then the `~/.claude` row when `rows` has one. `rows` is
-/// `None` when the probe did not finish by the deadline.
-pub(crate) fn login_rows(profiles: &[(String, bool)], rows: Option<&[Row]>) -> Vec<LoginRow> {
-    let rows = rows.unwrap_or_default();
-    let mut out: Vec<LoginRow> = profiles
-        .iter()
-        .map(|(name, api_key)| {
-            let found = rows.iter().find(|r| !r.live_in_home && r.profile == *name);
-            LoginRow {
-                profile: name.clone(),
-                live: found.is_some_and(|r| r.live_in),
-                reading: if *api_key {
-                    Reading::ApiKey
-                } else if found.is_some_and(|r| r.overflow) {
-                    Reading::Overflow
-                } else {
-                    found.map_or(
-                        Reading::NoReading {
-                            state: UsageState::Timeout.as_str().to_string(),
-                        },
-                        reading,
-                    )
-                },
-            }
-        })
-        .collect();
-    if let Some(home) = rows.iter().find(|r| r.live_in_home) {
-        out.push(LoginRow {
-            profile: HOME_LABEL.to_string(),
-            live: true,
-            reading: reading(home),
-        });
-    }
-    out
+/// The login rows of `profile usage --json` output, in its order (by
+/// capacity, the `~/.claude` row included). `Err` is [`UNREADABLE`].
+pub(crate) fn parse(json: &[u8]) -> Result<Vec<LoginRow>, String> {
+    let rows: Vec<UsageRow> = serde_json::from_slice(json).map_err(|_| UNREADABLE.to_string())?;
+    Ok(rows.iter().map(login_row).collect())
 }
 
-/// Bars for a reading with numbers; `no reading` otherwise.
-fn reading(row: &Row) -> Reading {
-    let r = &row.report;
-    let state = r.state.as_str().to_string();
-    let no_numbers = r.session.is_none() && r.week_all.is_none();
-    if matches!(r.state, UsageState::Timeout | UsageState::Unparsed) || no_numbers {
-        return Reading::NoReading { state };
+/// One login row: API-key and overflow profiles have no plan bars; a
+/// probe with no numbers shows its state.
+pub(crate) fn login_row(row: &UsageRow) -> LoginRow {
+    LoginRow {
+        profile: row.profile.clone(),
+        live: row.live_in.is_some(),
+        reading: reading(row),
     }
-    let pct = |w: &Option<UsageWindow>| w.as_ref().map(|w| w.used_percentage);
-    let resets = [&r.session, &r.week_all]
-        .into_iter()
-        .flatten()
-        .find_map(|w| w.resets_text.as_deref())
-        .map(without_zone);
+}
+
+fn reading(row: &UsageRow) -> Reading {
+    if row.kind == API_KEY_KIND {
+        return Reading::ApiKey;
+    }
+    if row.overflow {
+        return Reading::Overflow;
+    }
+    let no_numbers = row.session.is_none() && row.week_all.is_none();
+    if matches!(row.state.as_str(), "timeout" | "unparsed") || no_numbers {
+        return Reading::NoReading {
+            state: row.state.clone(),
+        };
+    }
+    let pct = |w: &Option<Window>| w.as_ref().map(|w| w.used_percentage);
+    let resets = |w: &Option<Window>| {
+        w.as_ref()
+            .and_then(|w| w.resets_text.as_deref())
+            .map(without_zone)
+    };
     Reading::Bars {
-        session: pct(&r.session),
-        week: pct(&r.week_all),
-        state,
-        resets,
-    }
-}
-
-/// `4:50pm (Europe/London)` without ` (Europe/London)`.
-fn without_zone(text: &str) -> String {
-    let text = text.trim();
-    match text.rfind(" (") {
-        Some(at) if text.ends_with(')') => text[..at].trim_end().to_string(),
-        _ => text.to_string(),
+        session: pct(&row.session),
+        week: pct(&row.week_all),
+        state: row.state.clone(),
+        session_resets: resets(&row.session),
+        week_resets: resets(&row.week_all),
     }
 }

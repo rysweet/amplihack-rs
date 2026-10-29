@@ -15,7 +15,7 @@ use std::process::{Output, Stdio};
 use std::time::{Duration, Instant};
 
 const SESSION: &str = "amp-default-workflow-app-20261028-090000";
-const ALLOWED_GLYPHS: [char; 5] = ['█', '░', '▶', '⏸', '…'];
+const ALLOWED_GLYPHS: [char; 6] = ['█', '░', '▶', '⏸', '…', '—'];
 
 struct Fx {
     _tmp: tempfile::TempDir,
@@ -131,7 +131,7 @@ fn stderr(out: &Output) -> String {
 fn assert_display_safe(text: &str) {
     assert!(!text.contains('\x1b'), "ESC in output:\n{text}");
     for line in text.lines() {
-        assert!(line.chars().count() <= 100, "too wide: {line:?}");
+        assert!(line.chars().count() <= 120, "too wide: {line:?}");
         assert!(
             line.chars()
                 .all(|c| (' '..='~').contains(&c) || ALLOWED_GLYPHS.contains(&c)),
@@ -156,14 +156,19 @@ fn status_without_logins_renders_plain_text_and_exits_zero() {
     assert!(took < Duration::from_secs(20), "took {took:?}");
     let text = stdout(&out);
     assert_display_safe(&text);
-    assert!(text.starts_with("WORKSTREAMS\n"), "{text}");
-    assert!(!text.contains("LOGINS"), "{text}");
+    let title = text.lines().next().unwrap_or_default();
+    assert!(
+        title.starts_with("  ") && title.contains("workstreams — "),
+        "{text}"
+    );
+    assert!(text.contains("\n  WORKSTREAM "), "column headings: {text}");
+    assert!(!text.contains("  LOGIN "), "{text}");
     let row = text
         .lines()
         .find(|l| l.contains("#1710"))
         .unwrap_or_else(|| panic!("no row for the caller's run:\n{text}"));
     // tmux failed, so nothing is live; gh failed, so the PR is unknown.
-    assert!(row.starts_with('⏸'), "{row}");
+    assert!(row.contains('⏸'), "{row}");
     assert!(row.contains("#?"), "{row}");
 }
 
@@ -183,20 +188,27 @@ fn no_logins_never_starts_a_usage_probe() {
 fn a_stalled_probe_shows_no_reading_within_the_deadline() {
     let fx = Fx::new();
     fx.add_profile("spare");
+    // `claude --version` answers, so `profile usage` reaches the probe;
+    // only `claude -p /usage` stalls. A stalled version check is the next
+    // test.
+    fx.stub(
+        "claude",
+        "case \"$1\" in\n  --version) echo '2.1.301 (Claude Code)'; exit 0 ;;\nesac\nexec sleep 30",
+    );
     let (out, took) = fx.run(
-        &["workstreams", "status", "--logins-deadline", "1"],
+        &["workstreams", "status", "--logins-deadline", "2"],
         &[("AMPLIHACK_SESSION_ID", "me")],
     );
     assert!(out.status.success(), "{}", stderr(&out));
     assert!(took < Duration::from_secs(10), "took {took:?}");
     let text = stdout(&out);
     assert_display_safe(&text);
-    assert!(text.contains("LOGINS"), "{text}");
+    assert!(text.contains("  LOGIN "), "{text}");
     let row = text
         .lines()
         .find(|l| l.contains("spare"))
         .unwrap_or_else(|| panic!("no spare row:\n{text}"));
-    assert!(row.contains("no reading"), "{row}");
+    assert!(row.contains("no reading (timeout)"), "{row}");
 }
 
 /// Found by outside-in testing: at the deadline the command exited while the
@@ -212,7 +224,7 @@ fn a_stalled_claude_is_not_left_running_after_the_deadline() {
         &format!("echo $$ >> '{}'\nexec sleep 30", pids.display()),
     );
     let (out, _) = fx.run(
-        &["workstreams", "status", "--logins-deadline", "1"],
+        &["workstreams", "status", "--logins-deadline", "2"],
         &[("AMPLIHACK_SESSION_ID", "me")],
     );
     assert!(out.status.success(), "{}", stderr(&out));
@@ -313,7 +325,7 @@ fn a_missing_or_malformed_explicit_manifest_exits_one() {
 #[test]
 fn a_deadline_out_of_range_is_a_usage_error() {
     let fx = Fx::new();
-    for bad in ["0", "61"] {
+    for bad in ["0", "1", "61"] {
         let (out, _) = fx.run(&["workstreams", "status", "--logins-deadline", bad], &[]);
         assert_eq!(out.status.code(), Some(2), "--logins-deadline {bad}");
     }

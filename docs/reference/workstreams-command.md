@@ -21,7 +21,6 @@ the capacity of every Claude login, for an agent to paste into its reply. The
 - [Stages and progress](#stages-and-progress)
   - [Finding the PR](#finding-the-pr)
   - [Running or stopped](#running-or-stopped)
-  - [Elapsed time](#elapsed-time)
 - [Logins](#logins)
 - [Manifest](#manifest)
 - [Time limits](#time-limits)
@@ -48,38 +47,69 @@ wording and order may change. Scripts should read
 | Flag | Default | Effect |
 |------|---------|--------|
 | `--all` | off | Show every run on this host, not only the caller's. See [Which runs are shown](#which-runs-are-shown). |
-| `--no-logins` | off | Leave out the `LOGINS` section. No usage probe is started. |
+| `--no-logins` | off | Leave out the logins section. No usage probe is started. |
 | `--manifest <PATH>` | `~/.amplihack/work/workstreams.tsv` | Read labels and queued items from this file. See [Manifest](#manifest). |
-| `--logins-deadline <SECS>` | `8` | Seconds the `LOGINS` section may take, from `1` to `60`. |
+| `--logins-deadline <SECS>` | `8` | Seconds the logins section may take, from `2` to `60`. Each probe gets one second less, so a slow login shows as `no reading (timeout)` rather than cutting off the whole section. |
 
 A deadline outside `1` to `60`, or `--manifest` without a value, is a usage
 error.
 
 ## Output
 
+A real run, with a manifest naming two workstreams and the login probes
+timing out (logins trimmed to three rows):
+
 ```console
 $ amplihack workstreams status
-WORKSTREAMS
-▶ workstream-status skill #1710 #1715 ███████░░░  70% 2h05m merge-ready round 1
-▶ rotator manual login    #1693 #1702 █████░░░░░  45% 3h12m review round 2, 3 concerns
-⏸ limit-resume wake       #1698 -     ██░░░░░░░░  15% 0h48m building, stopped on a usage limit
-⏸ hook payload fixes      #1700 #1704 ███░░░░░░░  30% 5h40m PR open, conflicts, finished
-⏸ docs sweep              #1720 -     ░░░░░░░░░░   0% -     queued
+  workstreams — Thu 12:45 PDT
 
-LOGINS
-  PROFILE          SESSION           WEEK              STATE    RESETS
-  work*            ███░░░░░░░  31%   ██████░░░░  58%   ok       Oct 28, 4:50pm
-  personal         █████████░  92%   ███░░░░░░░  34%   ok       Oct 28, 6pm
-  spare            no reading                          timeout
-  platform         API key: billed per token, no plan limits
-* live in ~/.claude
+  WORKSTREAM                ISSUE  PR     PROGRESS                   STAGE
+  Workstream status skill   #1710  #1719  ██████░░░░░░░░░░░░░░  30%  ⏸ PR state unknown
+  Shared login bar renderer #1739  -      ░░░░░░░░░░░░░░░░░░░░   0%  ⏸ queued
+
+  LOGIN                      SESSION                   WEEK
+  aanderson                  no reading (timeout)
+  hharkness                  no reading (timeout)
+  ryan-mistt-personal (live) no reading (timeout)
 ```
 
-The workstream columns are marker, label, issue, PR, progress, elapsed time
-and stage. Each column is as wide as its widest cell, with one space between
-columns, so the stage keeps as much of the 100 columns as possible.
+With login readings, the output is the target given in issue #1710. The text
+below is the fixture in `workstreams/tests_render.rs`, which the renderer is
+tested to produce byte for byte:
 
-A section with no rows prints `none` under its title.
+```text
+  amplihack-rs workstreams — Thu 11:56 PDT
+
+  WORKSTREAM                     ISSUE  PR     PROGRESS                   STAGE
+  Credit-backed overflow         #1694  #1695  ████████████████████ 100%  merged
+  API-key profiles (last resort) #1700  #1727  ██████░░░░░░░░░░░░░░  30%  ▶ PR open, conflicts with main
+  Usage probe timeouts           #1698  -      ███░░░░░░░░░░░░░░░░░  15%  ⏸ build stopped on a usage limit
+  Rotator skips needed swaps     #1721  -      ░░░░░░░░░░░░░░░░░░░░   0%  ⏸ queued
+
+  LOGIN                      SESSION                   WEEK
+  hharkness (live)           ░░░░░░░░░░░░░░░░░░░░   0% █████░░░░░░░░░░░░░░░  29%
+  aanderson                  ████████████████████ 100% ████████░░░░░░░░░░░░  43%  session out, resets Oct 29, 1:10pm
+  rssourcelabs               -                         ████████████████████ 100%  week out, resets Nov 2, 10am
+  api-key                    API key, billed per token (no plan limits)
+```
+
+The output starts with a title, `<repo> workstreams — <weekday> <HH:MM>
+<zone>`, then a blank line. `<repo>` is the repository name when every run
+shown names the same repository, and is left out otherwise. The time is the
+host's local time with the zone abbreviation; when the host zone cannot be
+read, UTC.
+
+Every line starts with two spaces. Each heading sits over the first
+character of its column. (In the issue's text, `STAGE` and `WEEK` sit one or
+two columns to the right of their data, and so does the week bar after a `-`
+session cell; the output aligns them.)
+
+The workstream columns are label, issue, PR, progress and stage. The label,
+issue and PR columns are as wide as their widest cell or heading; the label
+is followed by one space and the issue and PR by two.
+
+A section with no rows prints `no workstreams` or `logins: none`, with no
+headings.
 
 ### Workstreams section
 
@@ -87,13 +117,11 @@ One row per workstream:
 
 | Column | Content |
 |--------|---------|
-| marker | `▶` running, `⏸` waiting, stopped or finished. See [Running or stopped](#running-or-stopped). |
-| label | The [manifest](#manifest) label; otherwise `<recipe> #<issue>`; otherwise the tmux session name. Cut to 24 characters. |
-| issue | `#<issue>`, or `-` when the run has none. |
-| PR | `#<pr>`, `-` when there is none, or `#?` when GitHub could not be asked. |
-| progress | A 10-cell bar and the percentage from [Stages and progress](#stages-and-progress). |
-| elapsed | See [Elapsed time](#elapsed-time). |
-| stage | The stage, then `N concerns`, `conflicts` and the stop reason when they apply, separated by commas. Cut to fit 100 columns. |
+| `WORKSTREAM` | The [manifest](#manifest) label; otherwise `<recipe> #<issue>`; otherwise the tmux session name. Cut to 30 characters. |
+| `ISSUE` | `#<issue>`, or `-` when the run has none. |
+| `PR` | `#<pr>`, `-` when there is none, or `#?` when GitHub could not be asked. |
+| `PROGRESS` | A 20-cell bar, one full cell per whole 5% (rounded down, so only 100% fills it), and the percentage from [Stages and progress](#stages-and-progress). |
+| `STAGE` | The marker (`▶` running, `⏸` waiting, none when merged; see [Running or stopped](#running-or-stopped)), the stage, then `N concerns`, `conflicts with main` and the stop reason when they apply, separated by commas. A stopped `building` run reads `build <reason>`, such as `build stopped on a usage limit`. Cut to fit the line. |
 
 Rows are ordered by start time, oldest first. Queued manifest rows come last,
 in manifest order.
@@ -107,33 +135,45 @@ no session id found; run with --all to see every run on this host
 
 ### Logins section
 
-One row per profile under the [profile root](./profile-command.md#profile-root):
+The rows come from `amplihack profile usage --json` (see [Logins](#logins)).
+They are drawn by `workstreams/bars.rs`, the only bar code in the tree.
+`amplihack profile usage` has no bar view yet: issue #1739 asks for one and
+has no PR. When it lands, its renderer can replace `bars.rs` without
+changing how the rows are read. Issue #1749 tracks that change and the
+removal of the login bar code from `bars.rs`.
+
+One row per row of `profile usage --json`, in its order (by remaining
+capacity):
 
 | Column | Content |
 |--------|---------|
-| `PROFILE` | The profile name, with `*` when its login is live in `~/.claude`. |
-| `SESSION` | A 10-cell bar and the current-session percentage. |
-| `WEEK` | A 10-cell bar and the all-models weekly percentage. |
-| `STATE` | The state `amplihack profile usage` reports: `ok`, `timeout`, `unparsed`, and so on. |
-| `RESETS` | The session reset, or the weekly reset when the session has none, as `claude` printed it without the time zone. `-` when neither is known. |
+| `LOGIN` | The profile name, with ` (live)` when its `live_in` is set (its login is live in `~/.claude`). |
+| `SESSION` | A 20-cell bar and the current-session percentage, or `-`. |
+| `WEEK` | A 20-cell bar and the all-models weekly percentage, or `-`. |
+| note | `session out, resets <time>` when the session is used up; `week out, resets <time>` when the week is used up (the session cell is then `-`); the state, such as `spend limit`, for any other state that is not `ok`. A reset time is shown only for a window that is used up, as `claude` printed it, without the time zone. |
 
-- A profile whose probe did not finish before the deadline, or whose state is
-  `timeout` or `unparsed`, shows `no reading` instead of bars.
-- An [API-key profile](#logins) shows `API key: billed per token, no plan
-  limits` and is not probed.
-- A credit-backed overflow profile (see `amplihack profile overflow`) shows
-  `overflow: paid credits, no plan limits` instead of bars.
-- When `~/.claude` holds a login that no profile holds, a `~/.claude*` row is
-  added last.
-- The legend line `* live in ~/.claude` follows the rows when any row is
-  marked.
+- A row whose state is `timeout` or `unparsed`, or that has no numbers,
+  shows `no reading (<state>)` instead of bars.
+- A row with `kind` `api-key` shows `API key, billed per token (no plan
+  limits)`. Which profiles are API-key profiles is decided by `profile
+  usage` alone (issue #1700); this command has no check of its own.
+- A row with `overflow` set shows `overflow, paid credits (no plan limits)`
+  instead of bars.
+- When `~/.claude` holds a login that no profile holds, `profile usage` adds
+  a `~/.claude` row, shown here as `~/.claude (live)`.
+- Percentages are formatted as in `profile usage`: whole numbers without a
+  decimal, others with one. A value over 100 is printed as read, with a full
+  bar.
 
 ### Width and characters
 
-- No line is longer than 100 characters.
+- No line is longer than 120 characters. The target rows in issues #1710
+  and #1739 run to 116 columns (a 27-column login name, two 25-column bar
+  cells and a reset note), so the limit is 120 rather than the 100 that
+  #1739's rule text names.
 - The output has no ANSI escape sequences and no control characters.
-- Apart from ASCII, only these five single-width characters appear:
-  `█ ░ ▶ ⏸ …`. A cut field ends with `…`.
+- Apart from ASCII, only these six single-width characters appear:
+  `█ ░ ▶ ⏸ … —`. A cut field ends with `…`.
 - Labels, stage text and profile names are cleaned before they are cut or
   padded: any character outside printable ASCII becomes `?`.
 
@@ -236,14 +276,20 @@ The first rule that matches sets the stage:
 
 | Order | Condition | Stage | Progress |
 |-------|-----------|-------|----------|
-| 1 | The PR is merged | `merged` | 100% |
+| 1 | The PR is merged | `merged` | 100%, no marker |
 | 2 | The PR is closed without merging | `closed` | 0%, marked `⏸` |
 | 3 | M merge-ready rounds, M ≥ 1 | `merge-ready round M` | 70 + 5·(M−1), at most 95 |
-| 4 | C review rounds, C ≥ 1 | `review round C`, then `N concerns` | 40 + 5·(C−1), at most 60 |
+| 4 | C review rounds, C ≥ 1 | `review round C`, then `N concerns` | 40 + 4·(C−1), at most 60 |
 | 5 | The PR is open | `PR open` | 30% |
 | 6 | A PR number is known, but GitHub gave no state for it | `PR state unknown` | 30% |
 | 7 | A run exists, with no PR | `building` | 15% |
 | 8 | Manifest row only | `queued` | 0% |
+
+The percentages are the ones the issue sets: "queued 0, building 15, PR open
+30, review loop 40 + 4 per round (capped at 60), merge-ready loop 70 + 5 per
+round (capped at 95), merged 100". The first round of a loop is at the base,
+so review round 1 is 40%, round 3 is 48% and round 6 reaches 60%; the
+merge-ready loop counts the same way.
 
 - Rounds are counted from the auto-drive state directory of the PR,
   `<state root>/auto-drive/<key>`, where the state root is
@@ -255,8 +301,9 @@ The first rule that matches sets the stage:
   are not rounds. Only regular files count, and at most 500 are read.
 - `N concerns` is `concern_count` from `crusty-latest.json`. It is left out
   when the file is missing or the value is not a whole number.
-- `conflicts` is added when GitHub reports the PR as conflicting with its
-  base branch.
+- `conflicts with main` is added when GitHub reports the PR's mergeable
+  state as `CONFLICTING` (the wording is the issue's; the PR's base branch is
+  normally `main`).
 - When GitHub could not be asked, rules 1, 2 and 5 cannot match. A run with a
   recorded PR number still shows its rounds; the `PR` column shows `#?`.
 
@@ -277,7 +324,8 @@ PR titles are used only for this match. They are never printed.
 
 ### Running or stopped
 
-`▶` means the run's tmux session is live. `⏸` means it is not, and the reason
+`▶` means the run's tmux session is live. `⏸` means it is not and the work is
+waiting; a merged row has no marker. The reason
 comes from the record's [outcome class](./recipe-command.md#run-records), or
 from a marker line for a [run without a record](#runs-without-a-record):
 
@@ -288,52 +336,46 @@ from a marker line for a [run without a record](#runs-without-a-record):
 | any other class | `stopped: <class>` |
 | unknown | `stopped` |
 
-Merged rows show no marker reason. Queued rows show `queued`.
-
-### Elapsed time
-
-| Run | Elapsed |
-|-----|---------|
-| live | From start to now. |
-| finished | From start to the outcome's `finished_at`. |
-| start unknown | `-` |
-
-The start is the record's `started_at`; for a live run with no record, the
-tmux session's creation time (`#{session_created}`), collected by the same
-`tmux` call that lists live sessions. File modification times are never used.
-Elapsed time under a day prints as `2h05m`, longer as `3d04h`.
+Merged rows show no marker and no reason. Queued rows show `⏸ queued`. A
+stopped run still at `building` reads `build <reason>`, for example `⏸ build
+stopped on a usage limit`.
 
 ## Logins
 
-The section reads the same data as
-[`amplihack profile usage`](./profile-command.md#usage-command), in process,
-without parsing its table. Differences:
+The section runs this same binary as
 
-- Nothing is written to the profile store. A reading taken here is not
-  recorded for auto-switch or the rotator.
-- The section stops at the [deadline](#time-limits). Probes still running are
-  cancelled and their process groups killed.
-- A profile is an API-key (Claude Platform) profile when its `settings.json`
-  has `apiKeyHelper`, its `settings.json` `env` sets `ANTHROPIC_API_KEY`, or
-  its `.claude.json` has `primaryApiKey`. The profile name plays no part.
-  Such a profile is billed per token, has no plan limits, and is not probed.
-  No key, key path or parse error is printed.
-- For this check, `settings.json` and `.claude.json` are read up to 4 MiB
-  each. A file larger than that is not inspected, so a profile whose only
-  API-key sign is in an oversized `.claude.json` is probed like a plan
-  login.
-- Like `profile usage`, it refuses to run inside Docker. When it refuses, or
-  cannot read the profile store or run the probe, the section prints one
-  fixed reason in place of rows, never a path:
+```console
+amplihack profile usage --json --timeout-secs <deadline - 1>
+```
+
+through `bounded_process`, and reads its [stable JSON
+output](./profile-command.md#usage-command). It does not parse the table,
+and it does not link to the probe code. Every rule about a login (which
+profiles exist, API-key and overflow profiles, the live login, the probe
+itself) therefore has one implementation, in `profile usage`, and the two
+commands cannot disagree about a login.
+
+- Each probe gets `--timeout-secs` one second under the
+  [deadline](#time-limits) (at least 1), so a slow login gives a `timeout`
+  row while the others still arrive in time.
+- At the deadline the subprocess and its process group are stopped, and the
+  section shows `no reading within <N>s (raise --logins-deadline)` in place
+  of rows.
+- `profile usage` records the readings it takes for auto-switch and the
+  rotator, as it does when run on its own. `--no-logins` starts no probe and
+  records nothing.
+- When `profile usage` refuses (inside Docker, without a `claude` binary, with
+  no readable profile store) or fails, the section prints one fixed reason in
+  place of rows. Its stderr is not shown, as it may name a path:
 
   | Reason | When |
   |--------|------|
-  | `profile store unavailable in Docker` | Docker mode is on. |
-  | `no profile store` | The store's root cannot be resolved, for example with no HOME or an invalid root setting. |
-  | `profile store unreadable` | The root, or a name in it, cannot be listed safely. |
-  | `usage probe failed` | The probe could not run, for example because `claude` was not found. |
+  | `amplihack profile usage failed; run it on its own to see why` | It could not be started, exited non-zero, or its output was cut. |
+  | `amplihack profile usage --json gave output that is not a row list` | Its output is not the JSON array it documents. |
+  | `no reading within <N>s (raise --logins-deadline)` | It did not finish by the deadline. |
 
-Every profile in the store gets a row, even when its probe did not finish.
+With no profiles, `profile usage --json` prints `[]` and the section shows
+`logins: none`.
 
 ## Manifest
 
@@ -382,7 +424,7 @@ Every outside call has a limit, so the command does not hang:
 |------|-------|------------------|
 | `tmux ls -F '#{session_name} #{session_created}'` | 3 s | No session counts as live. |
 | `gh pr list`, per repository | 10 s | PR fields show `?`. |
-| `LOGINS` section | `--logins-deadline`, default 8 s, plus 1 s to stop | Unfinished profiles show `no reading`. |
+| `amplihack profile usage --json` | `--logins-deadline`, default 8 s, plus 1 s to stop; each probe gets 1 s less | A slow probe shows `no reading (timeout)`; a run past the deadline shows `no reading within <N>s`. |
 
 A missing `tmux`, `gh` or `claude` binary is treated like a call that ran out.
 Subprocesses run without a shell, with stdin from `/dev/null`, in their own
@@ -398,11 +440,13 @@ process group, which is killed when the limit passes.
 
 ## Security
 
-- The command only reads. It never changes file modes, writes to the profile
-  store or starts a run.
+- The command itself only reads. It never changes file modes or starts a
+  run. The one write is made by `amplihack profile usage`, which records its
+  readings in the profile store as it always does (see [Logins](#logins));
+  `--no-logins` avoids it.
 - The log directory is used only when it is owned by you and not writable by
   group or others; see [Log directory warnings](#log-directory-warnings).
-- Run records, auto-drive state files and profile files are read only when
+- Run records and auto-drive state files are read only when
   they are regular files, owned by you, have no permission bits for group or
   others (mode `& 0o077` is `0`), and are within their size limit. Others are
   skipped.

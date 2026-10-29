@@ -7,7 +7,8 @@
 //!   manifest only. `StageInput { pr: Option<PrState>, merge_ready_rounds,
 //!   crusty_rounds, has_run, has_pr }`; `pr` is `None` when there is no PR or GitHub could not be
 //!   asked. `Stage { label, percent, closed }`.
-//! - `review_percent(c) = min(60, 40 + 5(c-1))`,
+//! - `review_percent(c) = min(60, 40 + 4(c-1))`: issue #1710 says "review
+//!   loop 40 + 4 per round (capped at 60)",
 //!   `merge_ready_percent(m) = min(95, 70 + 5(m-1))`, both saturating.
 //! - `pr_for_issue(prs, issue)`: the first PR whose title contains
 //!   `#<issue>` followed by a non-digit or the end.
@@ -50,9 +51,11 @@ fn st(label: &str, percent: u8, closed: bool) -> Stage {
 #[test]
 fn review_progress_runs_from_40_to_60() {
     assert_eq!(review_percent(1), 40);
-    assert_eq!(review_percent(2), 45);
-    assert_eq!(review_percent(5), 60);
+    assert_eq!(review_percent(2), 44);
+    assert_eq!(review_percent(3), 48);
+    assert_eq!(review_percent(5), 56);
     assert_eq!(review_percent(6), 60);
+    assert_eq!(review_percent(7), 60);
     assert_eq!(review_percent(u32::MAX), 60);
 }
 
@@ -81,7 +84,7 @@ fn each_rule_on_its_own() {
     );
     assert_eq!(
         classify(&input(Some(PrState::Open), 0, 3, true)),
-        st("review round 3", 50, false)
+        st("review round 3", 48, false)
     );
     assert_eq!(
         classify(&input(Some(PrState::Open), 0, 0, true)),
@@ -120,7 +123,7 @@ fn merge_ready_rounds_beat_review_rounds() {
 fn rounds_still_count_when_github_could_not_be_asked() {
     assert_eq!(
         classify(&input(None, 0, 2, true)),
-        st("review round 2", 45, false)
+        st("review round 2", 44, false)
     );
     assert_eq!(
         classify(&input(None, 1, 0, true)),

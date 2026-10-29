@@ -20,6 +20,7 @@ fn cfg(enabled: bool, threshold: u8, exclude: &[&str]) -> Config {
         threshold,
         exclude: names(exclude),
         overflow: Vec::new(),
+        kind: Default::default(),
     }
 }
 

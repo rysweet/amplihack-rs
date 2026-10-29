@@ -8,25 +8,26 @@
 //! - `LiveSessions::list(&self) -> Vec<(String, i64)>` (name, created epoch).
 //! - `OriginSource::origin(&self, cwd) -> Option<String>`; the URL is used
 //!   only to derive the auto-drive state key.
-//! - `UsageSource: Send + Sync` with `profiles(&self) -> Result<Vec<(String,
-//!   bool)>, String>` (`Err` is a refusal such as Docker) and `probe(&self,
-//!   profiles, cancel: &AtomicBool) -> Result<Vec<Row>, String>`, given the
-//!   profiles already read: `profiles` is called once per snapshot.
+//! - `UsageSource: Send + Sync` with `usage_json(&self, cancel: &AtomicBool)
+//!   -> Result<Vec<u8>, String>`: the output of `amplihack profile usage
+//!   --json`, or fixed text (a refusal such as Docker). Called once per
+//!   snapshot.
 //! - `Sources { prs, live, origin, usage: Option<Arc<dyn UsageSource>>, now,
-//!   warn }`; `warn` receives each fixed warning line.
+//!   zone, warn }`; `warn` receives each fixed warning line; `now` in
+//!   `zone` is the title's time.
 //! - `StatusInput { log_dir: Result<PathBuf, &'static str>, state_root,
 //!   manifest: Option<ManifestPath>, identity, all, logins_deadline }`,
 //!   `ManifestPath::{Default, Explicit}`. An `Err` log directory is warned
 //!   about and gives no runs.
 //! - `snapshot(&StatusInput, &Sources) -> anyhow::Result<Snapshot>`; the
-//!   probe runs on a worker thread, and at the deadline the cancel flag is
-//!   set and the snapshot is built at most 1 s later.
+//!   source runs on a worker thread, and at the deadline the cancel flag is
+//!   set and the snapshot is built at most 1 s later, with the logins
+//!   section saying no reading came in time.
 
-use super::render::{LoginsSection, PrCell, Reading, Snapshot, WorkRow, render};
+use super::bars::Reading;
+use super::render::{LoginsSection, PrCell, Snapshot, WorkRow, render};
 use super::sources::{LiveSessions, OriginSource, PrInfo, PrSource, UsageSource};
 use super::{ManifestPath, Sources, StatusInput, snapshot};
-use crate::commands::profile::usage_cmd::Row;
-use crate::commands::profile::usage_parse::{UsageReport, UsageState, UsageWindow};
 use crate::commands::recipe::autodrive_paths::{CRUSTY_LATEST, state_key};
 use crate::commands::recipe::run_record::{
     Outcome, RunRecord, build, record_path, write_new, write_outcome,
@@ -87,28 +88,30 @@ impl OriginSource for FakeOrigin {
 }
 
 struct FakeUsage {
-    profiles: Result<Vec<(String, bool)>, String>,
-    rows: Vec<Row>,
+    json: Result<String, String>,
     stall: Option<Duration>,
-    probes: AtomicUsize,
-    reads: AtomicUsize,
-    probed_with: Mutex<Vec<(String, bool)>>,
+    calls: AtomicUsize,
+}
+
+impl FakeUsage {
+    fn new(json: Result<String, String>, stall: Option<Duration>) -> Self {
+        Self {
+            json,
+            stall,
+            calls: AtomicUsize::new(0),
+        }
+    }
 }
 
 impl UsageSource for FakeUsage {
-    fn profiles(&self) -> Result<Vec<(String, bool)>, String> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        self.profiles.clone()
-    }
-    fn probe(&self, profiles: &[(String, bool)], cancel: &AtomicBool) -> Result<Vec<Row>, String> {
-        self.probes.fetch_add(1, Ordering::SeqCst);
-        *self.probed_with.lock().unwrap() = profiles.to_vec();
+    fn usage_json(&self, cancel: &AtomicBool) -> Result<Vec<u8>, String> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some(stall) = self.stall {
-            // Ignores the cancel flag on purpose: a probe that never returns.
+            // Ignores the cancel flag on purpose: a source that never returns.
             let _ = cancel;
             std::thread::sleep(stall);
         }
-        Ok(self.rows.clone())
+        self.json.clone().map(String::into_bytes)
     }
 }
 
@@ -244,6 +247,7 @@ fn sources(prs: FakePrs, live: &[(&str, i64)], now: i64) -> Sources {
         origin: Box::new(FakeOrigin(Some(ORIGIN.to_string()))),
         usage: None,
         now,
+        zone: chrono_tz::Tz::UTC,
         warn: Box::new(|_| {}),
     }
 }
@@ -403,7 +407,6 @@ fn manifest_labels_win_and_unmatched_rows_are_queued_last() {
     assert_eq!(queued.stage, "queued");
     assert_eq!(queued.percent, 0);
     assert!(!queued.running);
-    assert_eq!(queued.elapsed_secs, None);
     assert_eq!(queued.issue, Some(1720));
 }
 
@@ -518,7 +521,7 @@ fn a_github_failure_shows_question_marks_and_still_renders() {
     // A recorded PR number still finds its rounds.
     let known = row(&snap, "default-workflow #1711");
     assert_eq!(known.stage, "review round 2");
-    assert_eq!(known.percent, 45);
+    assert_eq!(known.percent, 44);
     assert!(render(&snap).contains("#?"));
 }
 
@@ -540,7 +543,7 @@ fn auto_drive_rounds_and_concerns_set_the_stage() {
 
     let review = row(&snap, "default-workflow #1693");
     assert_eq!(review.stage, "review round 2");
-    assert_eq!(review.percent, 45);
+    assert_eq!(review.percent, 44);
     assert_eq!(review.concerns, Some(3));
 
     let ready = row(&snap, "default-workflow #1710");
@@ -582,11 +585,11 @@ fn the_origin_url_is_never_rendered() {
 }
 
 // ---------------------------------------------------------------------------
-// Running, stopped and elapsed time
+// Running and stopped
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_live_run_is_running_and_its_elapsed_time_counts_from_started_at() {
+fn a_live_run_is_running_whatever_its_log_time() {
     let fx = Fx::new();
     fx.run("live", Some(ME), Some(1710), None);
     // An old log modification time must not matter.
@@ -605,12 +608,11 @@ fn a_live_run_is_running_and_its_elapsed_time_counts_from_started_at() {
     .unwrap();
     let r = row(&snap, "default-workflow #1710");
     assert!(r.running);
-    assert_eq!(r.elapsed_secs, Some(7_500));
     assert_eq!(r.reason, None);
 }
 
 #[test]
-fn a_finished_run_counts_to_finished_at_and_gives_its_reason() {
+fn a_finished_run_gives_its_reason() {
     let fx = Fx::new();
     fx.run("limited", Some(ME), Some(1698), None);
     fx.finish("limited", 1, "usage_limit", "2026-10-28T09:48:00Z");
@@ -628,7 +630,6 @@ fn a_finished_run_counts_to_finished_at_and_gives_its_reason() {
 
     let limited = row(&snap, "default-workflow #1698");
     assert!(!limited.running);
-    assert_eq!(limited.elapsed_secs, Some(48 * 60));
     assert_eq!(limited.reason.as_deref(), Some("stopped on a usage limit"));
     assert_eq!(
         row(&snap, "default-workflow #1700").reason.as_deref(),
@@ -655,7 +656,7 @@ fn a_dead_run_without_an_outcome_is_just_stopped() {
 }
 
 #[test]
-fn a_live_run_without_a_record_counts_from_the_session_creation_time() {
+fn a_live_run_without_a_record_is_running() {
     let fx = Fx::new();
     fs::write(fx.logs.join("amp-legacy.log"), "running\n").unwrap();
     let created = 1_800_000_000;
@@ -670,15 +671,46 @@ fn a_live_run_without_a_record_counts_from_the_session_creation_time() {
     .unwrap();
     let r = row(&snap, "amp-legacy");
     assert!(r.running);
-    assert_eq!(r.elapsed_secs, Some(600));
 }
 
 #[test]
-fn a_run_without_a_record_or_a_live_session_has_unknown_elapsed_time() {
+fn a_run_without_a_record_or_a_live_session_is_stopped() {
     let fx = Fx::new();
     fs::write(fx.logs.join("amp-old.log"), "done\n").unwrap();
     let snap = snapshot(&fx.input(None, true), &sources(FakePrs::default(), &[], 0)).unwrap();
-    assert_eq!(row(&snap, "amp-old").elapsed_secs, None);
+    let r = row(&snap, "amp-old");
+    assert!(!r.running);
+    assert_eq!(r.reason.as_deref(), Some("stopped"));
+}
+
+#[test]
+fn the_title_names_the_repository_and_the_time_in_the_zone() {
+    let fx = Fx::new();
+    fx.run("mine", Some(ME), Some(1710), None);
+    // 2026-10-29T18:56:00Z is Thu 11:56 in Los Angeles (PDT).
+    let mut src = sources(FakePrs::default(), &[], 1_793_300_160);
+    src.zone = chrono_tz::Tz::America__Los_Angeles;
+    let snap = snapshot(&fx.input(Some(ME), false), &src).unwrap();
+    assert_eq!(snap.when, "Thu 11:56 PDT");
+    let out = render(&snap);
+    let title = out.lines().next().unwrap();
+    assert_eq!(snap.repo.as_deref(), Some("app"));
+    assert_eq!(title, "  app workstreams — Thu 11:56 PDT");
+}
+
+#[test]
+fn without_runs_the_title_names_no_repository() {
+    let fx = Fx::new();
+    let snap = snapshot(
+        &fx.input(Some(ME), false),
+        &sources(FakePrs::default(), &[], 0),
+    )
+    .unwrap();
+    assert_eq!(snap.repo, None);
+    assert_eq!(
+        render(&snap).lines().next(),
+        Some("  workstreams — Thu 00:00 UTC")
+    );
 }
 
 #[test]
@@ -718,30 +750,17 @@ fn rows_are_ordered_by_start_time_oldest_first() {
 // Logins
 // ---------------------------------------------------------------------------
 
-fn ok_row(name: &str) -> Row {
-    Row {
-        profile: name.to_string(),
-        account: name.to_string(),
-        default: false,
-        leased_to: None,
-        live_in: false,
-        overflow: false,
-        overflow_blocked_until: None,
-        live_in_home: false,
-        report: UsageReport {
-            state: UsageState::Ok,
-            session: Some(UsageWindow {
-                label: "session".into(),
-                used_percentage: 20.0,
-                resets_text: None,
-                resets_at: None,
-            }),
-            week_all: None,
-            week_models: Vec::new(),
-        },
-        error: None,
-        raw: None,
-    }
+/// A `profile usage --json` row with a session reading.
+fn ok_row(name: &str, kind: &str) -> String {
+    format!(
+        r#"{{"profile": "{name}", "live_in": null, "overflow": false, "kind": "{kind}",
+            "state": "ok", "session": {{"label": "session", "used_percentage": 20.0,
+            "resets_text": null, "resets_at": null}}, "week_all": null}}"#
+    )
+}
+
+fn json(rows: &[String]) -> Result<String, String> {
+    Ok(format!("[{}]", rows.join(",")))
 }
 
 #[test]
@@ -756,16 +775,15 @@ fn without_a_usage_source_there_is_no_logins_section() {
 }
 
 #[test]
-fn a_prompt_probe_gives_readings_and_api_key_profiles_are_not_probed_as_plans() {
+fn a_prompt_source_gives_readings_and_api_key_rows_come_from_profile_usage() {
     let fx = Fx::new();
-    let usage = Arc::new(FakeUsage {
-        profiles: Ok(vec![("work".into(), false), ("platform".into(), true)]),
-        rows: vec![ok_row("work")],
-        stall: None,
-        probes: AtomicUsize::new(0),
-        reads: AtomicUsize::new(0),
-        probed_with: Mutex::new(Vec::new()),
-    });
+    let usage = Arc::new(FakeUsage::new(
+        json(&[
+            ok_row("work", "subscription"),
+            ok_row("platform", "api-key"),
+        ]),
+        None,
+    ));
     let mut src = sources(FakePrs::default(), &[], 0);
     src.usage = Some(usage.clone());
     let snap = snapshot(&fx.input(Some(ME), false), &src).unwrap();
@@ -774,13 +792,9 @@ fn a_prompt_probe_gives_readings_and_api_key_profiles_are_not_probed_as_plans() 
     };
     assert_eq!(rows.len(), 2);
     assert!(matches!(rows[0].reading, Reading::Bars { .. }));
+    // Review of #1710, round 3: `kind` from `profile usage` decides it.
     assert!(matches!(rows[1].reading, Reading::ApiKey));
-    // Review of #1710: the profiles are read once, and the probe gets them.
-    assert_eq!(usage.reads.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        *usage.probed_with.lock().unwrap(),
-        [("work".to_string(), false), ("platform".to_string(), true)]
-    );
+    assert_eq!(usage.calls.load(Ordering::SeqCst), 1);
 }
 
 /// A PR source that takes `delay` to answer.
@@ -797,14 +811,10 @@ impl PrSource for SlowPrs {
 fn the_logins_probe_runs_while_github_is_asked() {
     let fx = Fx::new();
     fx.run("amp-a", Some(ME), Some(1710), None);
-    let usage = Arc::new(FakeUsage {
-        profiles: Ok(vec![("a".into(), false)]),
-        rows: vec![ok_row("a")],
-        stall: Some(Duration::from_millis(1_000)),
-        probes: AtomicUsize::new(0),
-        reads: AtomicUsize::new(0),
-        probed_with: Mutex::new(Vec::new()),
-    });
+    let usage = Arc::new(FakeUsage::new(
+        json(&[ok_row("a", "subscription")]),
+        Some(Duration::from_millis(1_000)),
+    ));
     let mut src = sources(FakePrs::default(), &[], 0);
     src.prs = Box::new(SlowPrs(Duration::from_millis(1_000)));
     src.usage = Some(usage);
@@ -823,16 +833,12 @@ fn the_logins_probe_runs_while_github_is_asked() {
 }
 
 #[test]
-fn a_stalled_probe_returns_within_the_deadline_plus_one_second() {
+fn a_stalled_source_returns_within_the_deadline_plus_one_second() {
     let fx = Fx::new();
-    let usage = Arc::new(FakeUsage {
-        profiles: Ok(vec![("a".into(), false), ("b".into(), false)]),
-        rows: vec![ok_row("a"), ok_row("b")],
-        stall: Some(Duration::from_secs(30)),
-        probes: AtomicUsize::new(0),
-        reads: AtomicUsize::new(0),
-        probed_with: Mutex::new(Vec::new()),
-    });
+    let usage = Arc::new(FakeUsage::new(
+        json(&[ok_row("a", "subscription")]),
+        Some(Duration::from_secs(30)),
+    ));
     let mut src = sources(FakePrs::default(), &[], 0);
     src.usage = Some(usage);
     let mut input = fx.input(Some(ME), false);
@@ -842,43 +848,59 @@ fn a_stalled_probe_returns_within_the_deadline_plus_one_second() {
     let snap = snapshot(&input, &src).unwrap();
     let took = start.elapsed();
     assert!(took < Duration::from_millis(2_500), "took {took:?}");
-
-    let Some(LoginsSection::Rows(rows)) = &snap.logins else {
-        panic!("{:?}", snap.logins);
-    };
-    assert_eq!(rows.len(), 2, "every profile keeps its row");
-    assert!(
-        rows.iter()
-            .all(|r| matches!(r.reading, Reading::NoReading { .. })),
-        "{rows:?}"
+    assert_eq!(
+        snap.logins,
+        Some(LoginsSection::Refused(
+            "no reading within 1s (raise --logins-deadline)".into()
+        ))
     );
-    assert!(render(&snap).contains("no reading"));
+    assert!(render(&snap).contains("logins: no reading within 1s"));
 }
 
 #[test]
 fn a_refused_usage_source_is_reported_in_place_of_rows() {
     let fx = Fx::new();
-    let usage = Arc::new(FakeUsage {
-        profiles: Err(crate::commands::profile::usage_cmd::REFUSED_DOCKER.into()),
-        rows: vec![],
-        stall: None,
-        probes: AtomicUsize::new(0),
-        reads: AtomicUsize::new(0),
-        probed_with: Mutex::new(Vec::new()),
-    });
+    let usage = Arc::new(FakeUsage::new(
+        Err(super::sources::USAGE_FAILED.into()),
+        None,
+    ));
     let mut src = sources(FakePrs::default(), &[], 0);
-    src.usage = Some(usage.clone());
+    src.usage = Some(usage);
     let snap = snapshot(&fx.input(Some(ME), false), &src).unwrap();
-    assert!(
-        matches!(&snap.logins, Some(LoginsSection::Refused(r)) if r.contains("Docker")),
-        "{:?}",
-        snap.logins
+    assert_eq!(
+        snap.logins,
+        Some(LoginsSection::Refused(super::sources::USAGE_FAILED.into()))
     );
-    assert_eq!(usage.probes.load(Ordering::SeqCst), 0);
 }
 
 #[test]
-fn the_whole_snapshot_renders_within_100_columns() {
+fn unreadable_usage_output_is_reported_without_echoing_it() {
+    let fx = Fx::new();
+    let usage = Arc::new(FakeUsage::new(Ok("/home/secret not json".into()), None));
+    let mut src = sources(FakePrs::default(), &[], 0);
+    src.usage = Some(usage);
+    let snap = snapshot(&fx.input(Some(ME), false), &src).unwrap();
+    assert_eq!(
+        snap.logins,
+        Some(LoginsSection::Refused(super::logins::UNREADABLE.into()))
+    );
+    assert!(!render(&snap).contains("secret"));
+}
+
+#[test]
+fn the_probe_timeout_is_a_second_under_the_deadline_and_at_least_one() {
+    assert_eq!(
+        super::probe_timeout(Duration::from_secs(8)),
+        Duration::from_secs(7)
+    );
+    assert_eq!(
+        super::probe_timeout(Duration::from_secs(1)),
+        Duration::from_secs(1)
+    );
+}
+
+#[test]
+fn the_whole_snapshot_renders_within_120_columns() {
     let fx = Fx::new();
     fx.run(
         "a-very-long-session-name-that-exceeds-every-column-width-on-purpose-xx",
@@ -892,6 +914,6 @@ fn the_whole_snapshot_renders_within_100_columns() {
     ));
     let out = render(&snapshot(&input, &sources(FakePrs::default(), &[], 0)).unwrap());
     for line in out.lines() {
-        assert!(line.chars().count() <= 100, "{line:?}");
+        assert!(line.chars().count() <= 120, "{line:?}");
     }
 }
