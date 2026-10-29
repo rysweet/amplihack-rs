@@ -111,15 +111,28 @@ pub(super) struct Row {
     /// The `~/.claude` row: a login no profile holds (issue #1693). Shown,
     /// never recorded.
     pub(super) live_in_home: bool,
+    /// An API-key profile (issue #1700): not probed, billed per token.
+    pub(super) api_key: bool,
     pub(super) report: UsageReport,
     pub(super) error: Option<ErrorReason>,
     pub(super) raw: Option<Raw>,
 }
 
+/// How `profile usage` prints its rows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum OutputMode {
+    /// The default: one bar-chart line per row.
+    Bars,
+    /// The detailed table (`--table`).
+    Table,
+    /// The stable JSON array (`--json`).
+    Json,
+}
+
 pub(super) fn run(
     store: &ProfileStore,
     names: &[String],
-    json: bool,
+    mode: OutputMode,
     raw: bool,
     timeout_flag: Option<u64>,
 ) -> Result<()> {
@@ -135,7 +148,7 @@ pub(super) fn run(
     }
     let profiles = selected_profiles(store, names)?;
     if profiles.is_empty() {
-        print_empty(json);
+        print_empty(mode);
         return Ok(());
     }
     let binary = run::resolve_claude_binary()?;
@@ -167,12 +180,12 @@ pub(super) fn run(
         rows.push(home_row_of(probe(cmd, Duration::from_secs(secs), now, raw)));
     }
     order(&mut rows, now_secs());
-    print_output(&rows, json, swapped.as_ref());
+    print_output(&rows, mode, swapped.as_ref());
     #[cfg(unix)]
     for (a, b) in super::duplicates::pairs(&super::duplicates::accounts(store, home.as_deref())) {
         eprintln!("warning: {}", super::duplicates::warning(&a, &b));
     }
-    record(store, &rows, swapped.as_ref(), json);
+    record(store, &rows, swapped.as_ref(), mode == OutputMode::Json);
     Ok(())
 }
 
@@ -183,8 +196,8 @@ pub(super) fn home_dir() -> Option<std::path::PathBuf> {
         .filter(|h| h.is_absolute())
 }
 
-fn print_empty(json: bool) {
-    if json {
+fn print_empty(mode: OutputMode) {
+    if mode == OutputMode::Json {
         println!("[]");
     } else {
         println!("no profiles; create one with `amplihack profile add <name>`");
@@ -230,6 +243,7 @@ fn home_row_of(p: Probe) -> Row {
         overflow: false,
         overflow_blocked_until: None,
         live_in_home: true,
+        api_key: false,
         report: p.report,
         error: p.error,
         raw: p.raw,
@@ -347,6 +361,7 @@ fn build_rows(
                     .then(|| blocked.get(n).copied())
                     .flatten(),
                 live_in_home: false,
+                api_key: false,
                 report: p.report,
                 error: p.error,
                 raw: p.raw,
@@ -355,12 +370,12 @@ fn build_rows(
         .collect()
 }
 
-/// The table or JSON on stdout, then the warnings on stderr.
-fn print_output(rows: &[Row], json: bool, swapped: Option<&ProfileName>) {
-    if json {
-        println!("{}", render_json(rows));
-    } else {
-        print!("{}", render_table(rows));
+/// The bars, table or JSON on stdout, then the warnings on stderr.
+fn print_output(rows: &[Row], mode: OutputMode, swapped: Option<&ProfileName>) {
+    match mode {
+        OutputMode::Bars => print!("{}", render_bars(rows)),
+        OutputMode::Table => print!("{}", render_table(rows)),
+        OutputMode::Json => println!("{}", render_json(rows)),
     }
     for w in error_warnings(rows) {
         eprintln!("{w}");
@@ -878,6 +893,170 @@ pub(super) fn render_table(rows: &[Row]) -> String {
         ));
     }
     out
+}
+
+const BAR_CELLS: usize = 20;
+const BAR_LABEL_MAX: usize = 24;
+const BAR_LINE_MAX: usize = 100;
+const LIVE_SUFFIX: &str = " (live)";
+
+/// The bar view, the default human output (issue #1739). Its layout is not
+/// a stable interface; `--json` is. Every line, `--raw` blocks aside, is at
+/// most 100 characters.
+pub(super) fn render_bars(rows: &[Row]) -> String {
+    // The windows drawn as bars, `None` for a cell shown as `-`; `None`
+    // overall for a row with a note in place of bars.
+    let cells = |r: &Row| -> Option<[Option<f64>; 2]> {
+        let pct = |w: &Option<UsageWindow>| w.as_ref().map(|w| w.used_percentage);
+        if r.api_key {
+            return None;
+        }
+        match r.report.state {
+            UsageState::Ok | UsageState::SessionExhausted => {
+                Some([pct(&r.report.session), pct(&r.report.week_all)])
+            }
+            UsageState::WeeklyExhausted => Some([None, pct(&r.report.week_all)]),
+            _ => None,
+        }
+    };
+    let shown: Vec<_> = rows.iter().map(cells).collect();
+    let pct_w = shown
+        .iter()
+        .flatten()
+        .flatten()
+        .flatten()
+        .map(|p| format_pct(*p).chars().count())
+        .fold(4, usize::max);
+    let col_w = BAR_CELLS + 1 + pct_w;
+    let labels: Vec<String> = rows.iter().map(bar_label).collect();
+    let label_w = labels
+        .iter()
+        .map(|l| l.chars().count())
+        .fold(5, usize::max)
+        .min(BAR_LABEL_MAX);
+    let pad = |s: &str, w: usize| {
+        let mut s = s.to_string();
+        s.extend(std::iter::repeat_n(
+            ' ',
+            w.saturating_sub(s.chars().count()),
+        ));
+        s
+    };
+    let cell = |p: Option<f64>| match p {
+        Some(p) => format!("{} {:>pct_w$}", bar(p), format_pct(p)),
+        None => pad("-", col_w),
+    };
+    let finish = |s: String| format!("{}\n", fit(s.trim_end(), BAR_LINE_MAX));
+
+    let mut out = finish(format!(
+        "  {}  {} WEEK",
+        pad("LOGIN", label_w),
+        pad("SESSION", col_w)
+    ));
+    for ((r, label), shown) in rows.iter().zip(&labels).zip(&shown) {
+        let mut line = format!("  {}  ", pad(label, label_w));
+        match shown {
+            Some([session, week]) => {
+                line.push_str(&format!("{} {}", cell(*session), cell(*week)));
+                let note = match r.report.state {
+                    UsageState::SessionExhausted => {
+                        Some(reset_note("session out", r.report.session.as_ref()))
+                    }
+                    UsageState::WeeklyExhausted => {
+                        Some(reset_note("week out", r.report.week_all.as_ref()))
+                    }
+                    _ => None,
+                };
+                if let Some(n) = note {
+                    line.push_str("  ");
+                    line.push_str(&n);
+                }
+            }
+            None if r.api_key => line.push_str("API key, billed per token (no plan limits)"),
+            None => line.push_str(&format!("no reading ({})", r.report.state.as_str())),
+        }
+        out.push_str(&finish(line));
+        if let Some(raw) = &r.raw {
+            raw_block(&mut out, "stdout", &raw.stdout);
+            raw_block(&mut out, "stderr", &raw.stderr);
+        }
+    }
+    if let Some(name) = overflow_footer(rows) {
+        out.push_str(&format!("running on overflow: {name}\n"));
+    }
+    out
+}
+
+/// Filled cells: one per 5%, rounded down, within `0..=20`. NaN and values
+/// at or below zero fill none.
+fn bar_cells(p: f64) -> usize {
+    if p.is_nan() || p <= 0.0 {
+        return 0;
+    }
+    // A saturating cast: +inf becomes usize::MAX, then capped.
+    ((p / 5.0).floor() as usize).min(BAR_CELLS)
+}
+
+fn bar(p: f64) -> String {
+    let n = bar_cells(p);
+    let mut s: String = std::iter::repeat_n('█', n).collect();
+    s.extend(std::iter::repeat_n('░', BAR_CELLS - n));
+    s
+}
+
+/// The cleaned name, with ` (live)` when the login is in `~/.claude`, at
+/// most 24 characters; a cut name ends in `…` and the suffix is kept.
+fn bar_label(r: &Row) -> String {
+    let name = sanitize_display(&r.profile, false);
+    let live = r.live_in || r.live_in_home;
+    let budget = if live {
+        BAR_LABEL_MAX - LIVE_SUFFIX.chars().count()
+    } else {
+        BAR_LABEL_MAX
+    };
+    let mut label = fit(&name, budget);
+    if live {
+        label.push_str(LIVE_SUFFIX);
+    }
+    label
+}
+
+/// `<kind>, resets <time>`, with the trailing bracketed time zone removed
+/// from the cleaned reset text; just `<kind>` when there is no reset text.
+fn reset_note(kind: &str, w: Option<&UsageWindow>) -> String {
+    let text = w
+        .and_then(|w| w.resets_text.as_deref())
+        .map(|t| sanitize_display(t, false))
+        .unwrap_or_default();
+    let mut time = text.trim();
+    if time.ends_with(')')
+        && let Some(i) = time.rfind(" (")
+    {
+        time = time[..i].trim_end();
+    }
+    if time.is_empty() {
+        kind.to_string()
+    } else {
+        format!("{kind}, resets {}", clip(time))
+    }
+}
+
+/// `s` cut to `max` characters, the last being `…` when cut.
+fn fit(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// The cleaned name of the live overflow profile whose own probe reached a
+/// plan limit, if any.
+fn overflow_footer(rows: &[Row]) -> Option<String> {
+    rows.iter()
+        .find(|r| r.live_in && r.overflow && plan_limit_reached(r))
+        .map(|r| sanitize_display(&r.profile, false))
 }
 
 /// The row's own probe in this run shows a plan limit reached: an

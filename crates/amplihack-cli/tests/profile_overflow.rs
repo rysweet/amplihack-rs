@@ -490,12 +490,34 @@ fn profile_usage_json_marks_overflow_rows() {
 fn profile_usage_table_marks_overflow_and_running_on_overflow() {
     let f = Fixture::new();
     all_plan_logins_out(&f);
-    let s = stdout(&f.ok(&["profile", "usage"]));
+    let s = stdout(&f.ok(&["profile", "usage", "--table"]));
     assert!(s.contains("overflow"), "{s}");
     assert!(!s.contains("running on overflow"), "{s}");
     f.ok(&["profile", "rotate"]);
-    let s = stdout(&f.ok(&["profile", "usage"]));
+    let s = stdout(&f.ok(&["profile", "usage", "--table"]));
     assert!(s.contains("running on overflow: extra"), "{s}");
+}
+
+/// Issue #1739: the bar view, the default, keeps the table's footer and
+/// shows it under the same condition.
+#[test]
+fn profile_usage_bar_view_says_running_on_overflow() {
+    let f = Fixture::new();
+    all_plan_logins_out(&f);
+    let s = stdout(&f.ok(&["profile", "usage"]));
+    assert!(s.starts_with("  LOGIN"), "bar view is the default: {s}");
+    assert!(!s.contains("running on overflow"), "{s}");
+    f.ok(&["profile", "rotate"]);
+    let s = stdout(&f.ok(&["profile", "usage"]));
+    assert!(s.starts_with("  LOGIN"), "bar view is the default: {s}");
+    assert!(
+        s.lines().any(|l| l == "running on overflow: extra"),
+        "footer under the bars: {s}"
+    );
+    assert!(
+        s.lines().any(|l| l.contains("extra (live)")),
+        "the live overflow login is marked (live): {s}"
+    );
 }
 
 #[test]
@@ -571,8 +593,11 @@ fn rotate_status_says_on_overflow_while_staying_on_them() {
 fn profile_usage_needs_a_reached_limit_to_say_running_on_overflow() {
     let f = Fixture::new();
     live_on_a_marked_profile_with_capacity(&f);
-    let s = stdout(&f.ok(&["profile", "usage"]));
+    let s = stdout(&f.ok(&["profile", "usage", "--table"]));
     assert!(s.contains("overflow"), "{s}");
+    assert!(!s.contains("running on overflow"), "capacity remains: {s}");
+    let s = stdout(&f.ok(&["profile", "usage"]));
+    assert!(s.starts_with("  LOGIN"), "bar view is the default: {s}");
     assert!(!s.contains("running on overflow"), "capacity remains: {s}");
 }
 

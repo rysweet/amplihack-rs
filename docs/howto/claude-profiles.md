@@ -705,19 +705,21 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
-review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
-work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
-team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
-scratch   -                 not_logged_in      -        -                                     -     -
+  LOGIN    SESSION                   WEEK
+  review   █░░░░░░░░░░░░░░░░░░░   5% ██░░░░░░░░░░░░░░░░░░  10%
+  work     ████░░░░░░░░░░░░░░░░  20% ██████░░░░░░░░░░░░░░  30%
+  team     ████████████████████ 100% █████████████░░░░░░░  68%  session out, resets Oct 16, 4:50pm
+  scratch  no reading (not_logged_in)
 ```
 
 amplihack runs `claude -p /usage` under every profile at once, with
 `CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
 `Current week` lines. Checking does not appear to use quota, and an
-exhausted account still answers. The profiles with the most room come first. Exhausted ones
-follow, soonest back first, and the reset column says when. Profiles that
-could not be read come last. `*` marks the default.
+exhausted account still answers. Each bar has 20 cells, one per 5% used.
+The profiles with the most room come first. Exhausted ones follow, soonest
+back first, with a note saying which limit was reached and when it resets.
+Profiles that could not be read come last, as `no reading (<state>)`.
+`(live)` after a name marks the profile whose login is in `~/.claude`.
 
 To check only some profiles, name them:
 
@@ -725,7 +727,25 @@ To check only some profiles, name them:
 amplihack profile usage work team
 ```
 
-What the `STATE` column means:
+For the full table, with each reset time, the time zone and every mark
+(`*` for the default, lease and overflow marks), add `--table`:
+
+```bash
+amplihack profile usage --table
+```
+
+```
+PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
+review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
+work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
+team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
+scratch   -                 not_logged_in      -        -                                     -     -
+```
+
+This is the output `profile usage` printed by default before the bar view.
+
+What each state means (the `STATE` column of the table, or the
+`no reading (<state>)` note in the bar view):
 
 | State | What to do |
 |-------|------------|
@@ -747,7 +767,8 @@ amplihack profile usage --raw scratch
 `--raw` text can include your e-mail address or organisation name. Read it
 before you share it.
 
-For scripts, use `--json`. This picks the profile with the most capacity:
+Neither the bar view nor the table is a stable format. For scripts, use
+`--json`, which is. This picks the profile with the most capacity:
 
 ```bash
 amplihack profile usage --json | jq -r '[.[] | select(.state == "ok")][0].profile'
@@ -764,18 +785,18 @@ reset as Unix time (`resets_at`); see the
 If [auto-switch](#switch-accounts-automatically) is set up, `profile usage`
 also refreshes its readings, so it can choose accounts using numbers taken
 now instead of the last status-line update. While auto-switch has state
-(`<root>/.auto-switch.d/`), the table also shows where logins are: `leased→work` on a profile whose login is lent
+(`<root>/.auto-switch.d/`), `--table` also shows where logins are: `leased→work` on a profile whose login is lent
 to `work`'s session, and `hosts:personal` on the profile holding it. The
 numbers on a `hosts:` row belong to the hosted account. See
 [Refreshing auto-switch readings](../reference/profile-command.md#refreshing-auto-switch-readings)
 for when a reading is not recorded.
 
-A profile marked as credit-backed overflow
+With `--table`, a profile marked as credit-backed overflow
 (`amplihack profile overflow add <name>`) shows the mark `overflow`, and
 `overflow, blocked until <time>` after the rotator has blocked it on a spend
 limit. When its login is the one in `~/.claude` and its probe shows the
-session or all-models weekly limit reached, the table ends with
-`running on overflow: <name>`. In `--json`, every row has `overflow` and
+session or all-models weekly limit reached, the output ends with
+`running on overflow: <name>`, in the bar view and the table alike. In `--json`, every row has `overflow` and
 `overflow_blocked_until`. See
 [Use usage credits when every plan login is exhausted](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted).
 
@@ -788,7 +809,14 @@ If you use a login rotator that moves one account's login into the default
 `~/.claude` directory, such as
 [`amplihack profile rotate`](claude-profile-rotation.md), that profile's own directory has no login while it is
 there. `profile usage` checks that account through `~/.claude` instead and
-marks the row:
+marks the row with `(live)`:
+
+```
+  LOGIN        SESSION                   WEEK
+  team (live)  ████████░░░░░░░░░░░░  40% ███████████░░░░░░░░░  55%
+```
+
+With `--table`, the mark is spelled out:
 
 ```
 PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
@@ -1010,7 +1038,7 @@ If the second profile is the one with the right login, log in the first one
 again instead.
 
 `status` prints it as a `note:` line; `usage` prints the same text on stderr
-as a `warning:` line, after the table. The login in `~/.claude` takes part
+as a `warning:` line, after the bar view or table. The login in `~/.claude` takes part
 too, named `~/.claude`. The rotator's live profile is not compared with
 `~/.claude`, since that is where its own login is.
 

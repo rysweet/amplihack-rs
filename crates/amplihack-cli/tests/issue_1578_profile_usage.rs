@@ -305,7 +305,7 @@ fn warning_lines(stderr: &str) -> Vec<&str> {
 #[test]
 fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
     let f = Fixture::new(true);
-    let out = f.ok(&["profile", "usage"]);
+    let out = f.ok(&["profile", "usage", "--table"]);
     let stdout = text(&out.stdout);
     let rows = table_rows(&stdout);
     assert_eq!(
@@ -355,7 +355,7 @@ fn table_orders_by_capacity_marks_default_and_leases_and_hides_raw_text() {
 #[test]
 fn raw_shows_what_claude_printed() {
     let f = Fixture::new(true);
-    let out = f.ok(&["profile", "usage", "--raw"]);
+    let out = f.ok(&["profile", "usage", "--table", "--raw"]);
     let stdout = text(&out.stdout);
     assert!(stdout.contains("  raw stdout:"), "{stdout}");
     assert!(stdout.contains("  raw stderr:"), "{stdout}");
@@ -488,7 +488,7 @@ fn not_set_up_records_nothing_and_says_so_only_in_table_mode() {
 fn an_env_credential_skips_recording_and_is_named_not_echoed() {
     let f = Fixture::new(true);
     let out = f
-        .cmd(&["profile", "usage"])
+        .cmd(&["profile", "usage", "--table"])
         .env("ANTHROPIC_API_KEY", ENV_KEY_VALUE)
         .output()
         .unwrap();
@@ -699,7 +699,7 @@ impl Fixture {
         assert_eq!(u["accounts"]["c"]["five_hour"]["used_percentage"], 40.0);
         assert_eq!(u["accounts"]["c"]["seven_day"]["used_percentage"], 55.0);
 
-        let out = self.ok(&["profile", "usage"]);
+        let out = self.ok(&["profile", "usage", "--table"]);
         assert_no_secrets(&out);
         let stdout = text(&out.stdout);
         let row = table_rows(&stdout)
@@ -707,6 +707,19 @@ impl Fixture {
             .find(|l| first_word(l) == "c")
             .unwrap();
         assert!(row.contains("* live in ~/.claude"), "{row}");
+        assert!(!stdout.contains(&*self.home.to_string_lossy()), "{stdout}");
+
+        // Issue #1739: the bar view marks it `(live)` and shows ~/.claude's
+        // numbers; no other row is marked.
+        let out = self.ok(&["profile", "usage"]);
+        assert_no_secrets(&out);
+        let stdout = text(&out.stdout);
+        let row = stdout
+            .lines()
+            .find(|l| l.starts_with("  c (live)"))
+            .unwrap_or_else(|| panic!("c marked (live): {stdout}"));
+        assert!(row.contains(" 40% ") && row.ends_with(" 55%"), "{row}");
+        assert_eq!(stdout.matches("(live)").count(), 1, "{stdout}");
         assert!(!stdout.contains(&*self.home.to_string_lossy()), "{stdout}");
     }
 }
@@ -860,4 +873,92 @@ fn malformed_ledger_warns_once_and_marks_nothing_live() {
         fs::read_to_string(f.root.join(".rotator/ledger.json")).unwrap(),
         "not json"
     );
+}
+
+// --- Issue #1739: the bar view is the default --------------------------------
+
+/// `reset_text` without the trailing ` (UTC)`, as the bar view shows it.
+fn bar_reset(t: i64) -> String {
+    reset_text(t).trim_end_matches(" (UTC)").to_string()
+}
+
+fn bar(filled: usize) -> String {
+    format!("{}{}", "█".repeat(filled), "░".repeat(20 - filled))
+}
+
+#[test]
+fn default_output_is_the_bar_view_in_capacity_order() {
+    let f = Fixture::new(true);
+    let out = f.ok(&["profile", "usage"]);
+    assert_no_secrets(&out);
+    let stdout = text(&out.stdout);
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines,
+        [
+            "  LOGIN  SESSION                   WEEK".to_string(),
+            format!("  c      {}   5% {}  10%", bar(1), bar(2)),
+            format!("  a      {}  20% {}  30%", bar(4), bar(6)),
+            format!(
+                "  b      {} 100% {}  68%  session out, resets {}",
+                bar(20),
+                bar(13),
+                bar_reset(f.base + 3600)
+            ),
+            "  d      no reading (not_logged_in)".to_string(),
+        ],
+        "{stdout}"
+    );
+    assert!(!stdout.contains("(UTC)"), "zone removed: {stdout}");
+    assert!(!stdout.contains("PROFILE"), "not the table: {stdout}");
+    assert!(!stdout.contains('\x1b'), "no colour: {stdout:?}");
+    assert!(stdout.lines().all(|l| l.chars().count() <= 100), "{stdout}");
+    let all = format!("{stdout}{}", text(&out.stderr));
+    assert!(
+        !all.contains(BANNER) && !all.contains(STDERR_MARKER),
+        "raw text without --raw: {all}"
+    );
+}
+
+#[test]
+fn bar_view_with_raw_follows_each_row_with_claudes_text() {
+    let f = Fixture::new(true);
+    let out = f.ok(&["profile", "usage", "--raw"]);
+    let stdout = text(&out.stdout);
+    assert!(stdout.starts_with("  LOGIN"), "{stdout}");
+    assert!(stdout.contains("  raw stdout:"), "{stdout}");
+    assert!(stdout.contains("  raw stderr:"), "{stdout}");
+    assert!(stdout.contains(BANNER), "{stdout}");
+    assert!(stdout.contains(STDERR_MARKER), "{stdout}");
+    assert_eq!(
+        stdout.matches("  raw stdout:").count(),
+        4,
+        "one raw block per row: {stdout}"
+    );
+    assert_no_secrets(&out);
+}
+
+#[test]
+fn table_flag_restores_the_old_table() {
+    let f = Fixture::new(true);
+    let stdout = text(&f.ok(&["profile", "usage", "--table"]).stdout);
+    assert!(stdout.starts_with("PROFILE"), "{stdout}");
+    assert!(!stdout.contains('█') && !stdout.contains('░'), "{stdout}");
+    assert_eq!(table_rows(&stdout).len(), 4, "{stdout}");
+}
+
+#[test]
+fn table_and_json_together_are_a_usage_error_and_probe_nothing() {
+    let f = Fixture::new(true);
+    let out = f.run(&["profile", "usage", "--table", "--json"]);
+    assert_eq!(out.status.code(), Some(2), "{}", text(&out.stderr));
+    assert!(f.probed().is_empty(), "nothing probed");
+    assert!(f.usage_json().is_none(), "nothing recorded");
+}
+
+#[test]
+fn json_output_is_unchanged_by_the_bar_view() {
+    let f = Fixture::new(true);
+    let (rows, _) = f.json(&["profile", "usage", "--json"]);
+    assert_eq!(names(&rows), ["c", "a", "b", "d"]);
 }

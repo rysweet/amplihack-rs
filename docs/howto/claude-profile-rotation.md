@@ -61,11 +61,16 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare                        ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work      live in ~/.claude  ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+  LOGIN        SESSION                   WEEK
+  spare        ░░░░░░░░░░░░░░░░░░░░   0% ██░░░░░░░░░░░░░░░░░░  12%
+  personal     ████░░░░░░░░░░░░░░░░  20% ███████░░░░░░░░░░░░░  35%
+  work (live)  █████████████████░░░  88% ████████░░░░░░░░░░░░  41%
 ```
+
+`(live)` marks the profile whose login is in `~/.claude`. A profile whose
+probe failed shows `no reading (<state>)` instead of bars. Add `--table` for
+the reset times and the other marks, or `--json` for scripts; see
+[Usage command](../reference/profile-command.md#usage-command).
 
 Only a profile in state `ok` can be chosen; an exhausted profile, or one whose
 probe failed, never is.
@@ -106,10 +111,10 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS              STATE  SESSION  SESSION RESETS                     WEEK  WEEK RESETS
-spare     live in ~/.claude  ok     0%       -                                  12%   Oct 23, 9am (Europe/London)
-personal                     ok     20%      Oct 18, 3pm (Europe/London)        35%   Oct 22, 2am (Europe/London)
-work                         ok     88%      Oct 18, 1pm (Europe/London)        41%   Oct 21, 6pm (Europe/London)
+  LOGIN         SESSION                   WEEK
+  spare (live)  ░░░░░░░░░░░░░░░░░░░░   0% ██░░░░░░░░░░░░░░░░░░  12%
+  personal      ████░░░░░░░░░░░░░░░░  20% ███████░░░░░░░░░░░░░  35%
+  work          █████████████████░░░  88% ████████░░░░░░░░░░░░  41%
 ```
 
 A running `claude` picks up the new login when it next reads its credentials;
@@ -1073,9 +1078,10 @@ line:
 default: ryan-mistt-org (overflow; launches use it directly)
 ```
 
-`profile usage` marks the profile `overflow` and, when its login is in
+`profile usage --table` marks the profile `overflow`. With or without
+`--table`, when the overflow profile's login is in
 `~/.claude` and its own probe in that run shows the session or all-models
-weekly limit reached, ends with `running on overflow: ryan-mistt-org`. A live overflow
+weekly limit reached, the output ends with `running on overflow: ryan-mistt-org`. A live overflow
 login that still has plan capacity is not on credits and gets no footer. While the
 rotator is on credits it reports capacity, so the no-capacity warning clears
 and the [limit-resume hook](#resume-sessions-stopped-by-a-usage-limit)
@@ -1612,7 +1618,7 @@ account is no longer in `~/.claude`. In that state `profile usage` still
 reports the account that is actually there:
 
 - If exactly one profile has that account, its row is marked
-  `live in ~/.claude` and its numbers are read from `~/.claude`, even when
+  `(live)` (`live in ~/.claude` with `--table`) and its numbers are read from `~/.claude`, even when
   the profile also has its own login. The duplicate-login warning for
   `'~/.claude'` and that profile is still printed, because both copies exist
   until recovery moves one aside. The warnings still go by the ledger, so

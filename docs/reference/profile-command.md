@@ -14,7 +14,7 @@ amplihack profile switch <name> | --none
 amplihack profile remove <name> --yes
 amplihack profile login <name>
 amplihack profile run <name> -- <claude-args>...
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --table] [--raw] [<name>...]
 amplihack profile auto-switch on [--threshold <1-100>] [--exclude <name,...>]
 amplihack profile auto-switch off
 amplihack profile auto-switch status
@@ -44,7 +44,7 @@ amplihack launch|claude --profile <name> [...]
 | `remove <name>` | Requires `--yes`. Resolves and verifies the path is inside the root, reads the default pointer, deletes the directory, then clears a matching pointer. A missing pointer means no default; a corrupt, unreadable or dangling pointer fails closed before any deletion (repair with `switch`). Never deletes the root; never follows symlinks, so the shared session links are removed and the sessions in `~/.claude` are kept. `*.pre-share-*` backups inside the profile are deleted with it. |
 | `login <name>` | Checks the profile's [shared session links](#shared-session-directories), then always runs the `claude` binary (ignores binary selection), interactively, with `CLAUDE_CONFIG_DIR=<profile dir>`. Then refuses a login whose account another profile or `~/.claude` already holds, and restores the previous login. See [Login check](#login-check). |
 | `run <name> -- <args>` | One-shot launch through the normal launch path. Args are forwarded as a literal argv vector; no shell is involved. |
-| `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage, most capacity first. `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
+| `usage [<name>...]` | Runs `claude -p /usage` under each profile in parallel and shows its session and weekly usage as bar charts, most capacity first. `--table` for the detailed table, `--json` for scripts, `--raw` to include Claude's text. Refreshes auto-switch readings. See [Usage command](#usage-command). |
 | `auto-switch …` | Turn [auto-switch](#auto-switch) on or off, set its threshold and exclusions, show its state, or install and repair the status-line wrapper. See [Auto-switch commands](#auto-switch-commands). |
 | `overflow …` | Mark or unmark a credit-backed profile that the rotator may use when every plan login is exhausted, list the marks, or lift a spend-limit block. See [Overflow commands](#overflow-commands). |
 | `rotate …` | Keep the login in `~/.claude` on the account with the most capacity: once, as a dry run, or in a background process with `start`, `stop` and `status`; `autostart` controls whether launches start that process. See [Rotate](#rotate). |
@@ -55,7 +55,7 @@ login away from home; see [Leases](#leases).
 ### Usage command
 
 ```
-amplihack profile usage [--json] [--raw] [<name>...]
+amplihack profile usage [--json | --table] [--raw] [<name>...]
 ```
 
 Shows how much of each profile's current session and weekly quota is used
@@ -66,7 +66,8 @@ probed once.
 
 | Flag | Effect |
 |------|--------|
-| `--json` | Print a JSON array instead of the table. See [JSON output](#json-output). |
+| `--table` | Print the detailed table instead of the bar chart. See [Table output](#table-output). Conflicts with `--json`. |
+| `--json` | Print a JSON array instead of the bar chart. See [JSON output](#json-output). Conflicts with `--table`. |
 | `--raw` | Also print what `claude` wrote to stdout and stderr, for each profile. Without it, that text is dropped once parsed. |
 | `<name>...` | Probe only these profiles, in the [usual order](#ordering). |
 
@@ -136,8 +137,8 @@ Current week (Fable): 0% used · resets Oct 22, 2am (America/Los_Angeles)
 
 Claude leaves out the reset when the window has not started, for example
 `Current session: 0% used` when no session is open. Such a line is still
-read: `resets_text` and `resets_at` are `null`, and the table shows `-` for
-the reset.
+read: `resets_text` and `resets_at` are `null`, the table shows `-` for
+the reset, and the bar view's note has no `, resets` part.
 
 | Line | Field |
 |------|-------|
@@ -217,7 +218,62 @@ The reasons for `error` are fixed text, never the underlying I/O error:
 | `could not read claude output` | Reading the child's stdout or stderr failed, or a pipe was still open 2 seconds after the child exited (a process that left its group still held it), so the output may be cut short. |
 | `could not wait for claude` | Waiting for the child failed. It is killed and reaped first. |
 
+#### Bar output
+
+With neither `--table` nor `--json`, `profile usage` prints one line per
+profile, with a bar for the session and a bar for the all-models week:
+
+```
+  LOGIN     SESSION                   WEEK
+  review    █░░░░░░░░░░░░░░░░░░░   5% ██░░░░░░░░░░░░░░░░░░  10%
+  work      ████░░░░░░░░░░░░░░░░  20% ██████░░░░░░░░░░░░░░  30%
+  team      ████████████████████ 100% █████████████░░░░░░░  68%  session out, resets Oct 16, 4:50pm
+  night     -                         ████████████████████ 100%  week out, resets Oct 22, 2am
+  personal  no reading (not_logged_in)
+```
+
+Rows are in the same [order](#ordering) as the table and the JSON. Each bar
+has 20 cells, one per 5%: the filled cells (`█`) are the percentage divided
+by 5, rounded down, and the rest are empty (`░`). A value over 100% fills
+all 20 cells; the number beside the bar still shows the real value. The
+number uses the table's format (`5%`, `12.5%`) and is right-aligned, at
+least 4 characters wide and wider when a value such as `12.5%` needs it.
+
+What a row shows depends on its state:
+
+| Row | Shows |
+|-----|-------|
+| `ok` | Both bars. A window Claude did not report shows `-` in place of its bar. |
+| `session_exhausted` | Both bars, then `session out, resets <time>`. |
+| `weekly_exhausted` | `-` for the session, the week bar, then `week out, resets <time>`. |
+| An API-key profile | `API key, billed per token (no plan limits)` and no bars. This is checked before the state. |
+| Any other state | `no reading (<state>)` and no bars, for example `no reading (timeout)` or `no reading (error)`. The reason for an `error` row goes to stderr, as below. |
+
+`<time>` is Claude's reset text with the trailing time zone in brackets
+removed: `Oct 16, 4:50pm (America/Los_Angeles)` becomes `Oct 16, 4:50pm`.
+Only a bracketed part at the very end is removed. The rest is then cleaned
+as for the table, below: control characters are replaced, and text longer
+than 64 characters is cut to 64 and followed by `…`. When Claude gave no
+reset time, the note is just `session out` or `week out`.
+
+The `LOGIN` column holds the profile name, followed by ` (live)` on the
+profile whose login is [in `~/.claude`](#logins-in-claude). It is the only
+mark the bar view shows; use `--table` to see the default, lease, host and
+overflow marks. The whole label is at most 24 characters. A longer name is
+cut so that the name and its closing `…` fit in 24, or in 17 when ` (live)`
+follows; ` (live)` itself is never cut.
+
+No line is longer than 100 characters. A note that would pass that is cut
+and ends in `…`. The bar view uses no colour. Names are cleaned of control
+characters as for the table, below.
+
+The [`running on overflow:` footer](#marks), `--raw` blocks and the stderr
+warnings appear exactly as with the table.
+
 #### Table output
+
+`--table` prints the detailed table that was the default before the bar
+view. Its output is unchanged:
 
 ```
 PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
@@ -234,8 +290,8 @@ Model-specific week lines are not in the table; they are in the JSON.
 
 Text from Claude and from state files is cleaned before it reaches the
 terminal: control characters (including escape sequences) are replaced, and reset
-text longer than 64 characters is cut to 64 and followed by `…`. The table's layout is
-for people and may change; scripts should use `--json`.
+text longer than 64 characters is cut to 64 and followed by `…`. The layouts of
+the bar view and the table are for people and may change; scripts should use `--json`.
 
 For each `error` row, one line goes to stderr, with or without `--json`:
 
@@ -243,7 +299,7 @@ For each `error` row, one line goes to stderr, with or without `--json`:
 warning: profile "review": could not start claude
 ```
 
-With `--raw`, each row is followed by what Claude printed, indented and
+With `--raw`, each row of the bar view or the table is followed by what Claude printed, indented and
 cleaned of control characters other than newlines:
 
 ```
@@ -294,7 +350,7 @@ work past on credits.
 When the row marked `live in ~/.claude` is also marked `overflow`, and that
 row's own probe in this run reached the session or weekly limit (state
 `session_exhausted` or `weekly_exhausted`, or the session or all-models
-weekly window at 100%), the table is followed by one line:
+weekly window at 100%), the bar view or table is followed by one line:
 
 ```
 running on overflow: ryan-mistt-org
@@ -652,9 +708,9 @@ recorded or noted.
 |--------|------|
 | `0` | The probes ran, whatever states they produced, or there are no profiles. Recording failures do not change it. |
 | `1` | Setup failed: Docker is active, the profile root is invalid, a name is invalid or does not exist, or `claude` cannot be found. Printed as `error:`/`hint:` like other [errors](#errors). Nothing is probed. |
-| `2` | Command-line usage error, such as `--timeout-secs 0`. |
+| `2` | Command-line usage error, such as `--timeout-secs 0` or `--table` given with `--json`. |
 
-With no profiles, the table form prints
+With no profiles, the bar view and the table print
 `` no profiles; create one with `amplihack profile add <name>` `` and the JSON
 form prints `[]`.
 
@@ -4917,7 +4973,7 @@ profiles '<a>' and '<b>' are signed in to the same account and organization (dup
 
 `auto-switch status` prints it as a [status note](#status-notes) on stdout.
 `profile usage` prints it on stderr prefixed with `warning: `, after its
-other warnings, and it does not change the table, the JSON or the exit
+other warnings, and it does not change the bar view, the table, the JSON or the exit
 status. Both cover every profile under the root, whatever names `usage` was
 given.
 

@@ -634,11 +634,13 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
                 raw,
                 timeout_secs,
             }) => {
                 assert_eq!(names, ["a", "b"]);
                 assert!(json && raw);
+                assert!(!table);
                 assert_eq!(timeout_secs, None);
             }
             other => panic!("unexpected {other:?}"),
@@ -648,11 +650,65 @@ mod tests {
             Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
                 names,
                 json,
+                table,
                 raw,
                 ..
-            }) => assert!(names.is_empty() && !json && !raw),
+            }) => assert!(names.is_empty() && !json && !table && !raw),
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    /// Issue #1739: `--table` selects the old table; the bar view is the
+    /// default.
+    #[test]
+    fn profile_usage_table_flag_parses() {
+        let _env = launcher_env_lock();
+        let cli = Cli::try_parse_from(["amplihack", "profile", "usage", "--table", "--raw", "a"])
+            .unwrap();
+        match cli.command {
+            Commands::Profile(crate::commands::profile::ProfileCommands::Usage {
+                names,
+                json,
+                table,
+                raw,
+                ..
+            }) => {
+                assert_eq!(names, ["a"]);
+                assert!(table && raw && !json);
+            }
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn profile_usage_table_conflicts_with_json() {
+        let _env = launcher_env_lock();
+        for args in [["--table", "--json"], ["--json", "--table"]] {
+            let err = Cli::try_parse_from(["amplihack", "profile", "usage", args[0], args[1]])
+                .unwrap_err();
+            assert_eq!(
+                err.kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "{args:?}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_usage_help_documents_table_and_bar_default() {
+        let _env = launcher_env_lock();
+        let help = Cli::try_parse_from(["amplihack", "profile", "usage", "--help"])
+            .unwrap_err()
+            .to_string();
+        assert!(help.contains("--table"), "{help}");
+        assert!(
+            help.contains("Print the detailed table instead of the bar chart"),
+            "{help}"
+        );
+        assert!(
+            help.contains("Print a JSON array instead of the bar chart"),
+            "{help}"
+        );
     }
 
     #[test]

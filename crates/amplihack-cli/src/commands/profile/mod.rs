@@ -59,6 +59,8 @@ mod tests_shared_dirs;
 #[cfg(test)]
 mod tests_store;
 #[cfg(test)]
+mod tests_usage_bars;
+#[cfg(test)]
 mod tests_usage_cmd;
 #[cfg(test)]
 mod tests_usage_parse;
@@ -323,9 +325,12 @@ pub enum ProfileCommands {
     Usage {
         /// Profiles to probe (default: all)
         names: Vec<String>,
-        /// Print a JSON array instead of the table
+        /// Print a JSON array instead of the bar chart
         #[arg(long)]
         json: bool,
+        /// Print the detailed table instead of the bar chart
+        #[arg(long, conflicts_with = "json")]
+        table: bool,
         /// Also print what `claude` wrote to stdout and stderr
         #[arg(long)]
         raw: bool,
@@ -428,9 +433,19 @@ fn handle(cmd: ProfileCommands) -> Result<()> {
         ProfileCommands::Usage {
             names,
             json,
+            table,
             raw,
             timeout_secs,
-        } => usage_cmd::run(&store, &names, json, raw, timeout_secs)?,
+        } => {
+            let mode = if json {
+                usage_cmd::OutputMode::Json
+            } else if table {
+                usage_cmd::OutputMode::Table
+            } else {
+                usage_cmd::OutputMode::Bars
+            };
+            usage_cmd::run(&store, &names, mode, raw, timeout_secs)?
+        }
         ProfileCommands::AutoSwitch { command } => auto_switch::handle(&store, command)?,
         ProfileCommands::Rotate(args) => rotate::run(&store, source, *args)?,
         ProfileCommands::Overflow { command } => overflow::run(&store, command)?,

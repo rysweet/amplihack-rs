@@ -49,6 +49,7 @@ fn row(name: &str, rep: UsageReport) -> Row {
         overflow: false,
         overflow_blocked_until: None,
         live_in_home: false,
+        api_key: false,
         report: rep,
         error: None,
         raw: None,
