@@ -102,9 +102,10 @@ The UVX rows describe automatic launcher injection only. Codex accepts explicit 
    var or the user already provided any `--allow-all*` flag.
 
 4. **`--remote`**: Not injected. A user's `--remote` or `--no-remote` is
-   passed through unchanged. Start a remote session inside Copilot with
-   `/remote on` (issue #1744). Routed (LiteLLM proxy) launches still add
-   `--no-remote` and `--no-remote-export`.
+   passed through unchanged; Copilot 1.0.105 rejects both, so use
+   `/remote on` or `/remote off` inside a session (issue #1744). Routed
+   (LiteLLM proxy) launches still add `--no-remote` and `--no-remote-export`;
+   on Copilot 1.0.105 these stop the launch (#1747).
 
 5. **UVX plugin args**: `--plugin-dir` and `--add-dir` are injected only
    for `claude` when running in a UVX deployment.
