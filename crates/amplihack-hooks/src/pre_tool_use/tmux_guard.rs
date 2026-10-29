@@ -511,7 +511,7 @@ fn has_candidate(text: &str) -> bool {
 /// Whether `text` holds a `tmux` token and a `$` or backtick that could
 /// expand to its subcommand.
 fn expands_near_tmux(text: &str) -> bool {
-    (text.contains('$') || text.contains('`'))
+    is_expansion(text)
         && text
             .split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
             .any(is_tmux)
