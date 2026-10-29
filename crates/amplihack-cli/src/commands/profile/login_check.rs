@@ -392,6 +392,10 @@ fn duplicate_of(
     let Some(mine) = Account::of_dir(&held.dir) else {
         return Ok(None);
     };
+    // Issue #1700: an API-key profile is never a duplicate login.
+    if super::kind::Ctx::load(store, home).kind(store, name) == super::kind::Kind::Platform {
+        return Ok(None);
+    }
     Ok(duplicates::try_accounts(store, home)?
         .into_iter()
         .find(|(h, a)| !matches!(h, Holder::Profile(p) if p == name) && a.same(&mine))

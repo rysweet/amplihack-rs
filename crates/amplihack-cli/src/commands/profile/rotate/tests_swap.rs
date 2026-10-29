@@ -17,7 +17,6 @@
 use super::ledger::{Phase, RotateJournal, RotateState};
 use super::swap::{RecoverOutcome, Source, recover, swap};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::euid;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
@@ -38,10 +37,9 @@ pub(super) fn login(path: &Path) -> u64 {
     if path.exists() {
         fs::remove_file(path).unwrap();
     }
-    private(path, "SENTINEL");
-    if euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    // Issue #1700: an OAuth login (its top-level keys are read for the
+    // kind); the value is a sentinel that must never be printed.
+    private(path, r#"{"claudeAiOauth":{"accessToken":"SENTINEL"}}"#);
     ino(path)
 }
 

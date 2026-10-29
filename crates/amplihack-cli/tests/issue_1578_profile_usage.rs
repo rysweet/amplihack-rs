@@ -161,6 +161,7 @@ impl Fixture {
                 &format!("{{\"claudeAiOauth\":{{\"accessToken\":\"SENTINEL-TOKEN-{p}\"}}}}"),
             );
         }
+        set_default(&f.root, "c");
         if lease {
             let state = f.state();
             fs::create_dir_all(&state).unwrap();

@@ -7,13 +7,14 @@
 //! `tests_pin_overflow`.
 
 use super::alert::clear_alert;
-use super::cycle::{Ctx, CycleOutcome, LOCK_WAIT, note_live, prototype_guard, save};
+use super::cycle::{Ctx, CycleOutcome, LOCK_WAIT, prototype_guard, save};
 use super::identify::LiveId;
 use super::ledger::{RotateLedger, SWITCHED, active_blocks};
 use super::log::{Sink, msg};
 use super::measure::{self, Live};
 use super::observe::{Snap, snapshot};
 use super::overflow_record::block_pinned_spend_limited;
+use super::overflow_record::note_live;
 use super::pin::PinState;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Lock, State, exists, now};

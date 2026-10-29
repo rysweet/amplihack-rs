@@ -349,3 +349,26 @@ fn usage_limit_reset_is_never_later_than_five_hours() {
         Some(NOW + FIVE_HOURS)
     );
 }
+
+#[test]
+fn a_key_error_is_read_from_stderr_and_from_stdout_only_when_stderr_is_blank() {
+    use crate::commands::profile::attempt::key_error_source;
+    use crate::commands::profile::usage_parse::classify_key_error;
+    // Model output quoting a key error must not block the key when
+    // stderr reports something else.
+    let quoted = || b"the docs say: credit balance is too low".to_vec();
+    let text = key_error_source(b"Error: build failed\n", quoted);
+    assert_eq!(classify_key_error(&text), None);
+    let text = key_error_source(b"  \n", quoted);
+    assert_eq!(
+        classify_key_error(&text).map(|(r, _)| r),
+        Some("key_exhausted")
+    );
+    let text = key_error_source(b"API Error: invalid x-api-key\n", || {
+        panic!("stdout read although stderr had text")
+    });
+    assert_eq!(
+        classify_key_error(&text).map(|(r, _)| r),
+        Some("key_revoked")
+    );
+}

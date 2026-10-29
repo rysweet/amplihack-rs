@@ -671,6 +671,7 @@ impl Deps for DiskDeps {
             alert: false,
             live: Some("spare".into()),
             overflow: None,
+            platform_live: false,
         })
     }
     fn guard(&mut self) -> &mut dyn GuardStore {

@@ -40,16 +40,19 @@ pub fn give_logins(home: &Path, root: &Path, live: &str, stored: &[&str]) {
             r#"{{"oauthAccount":{{"accountUuid":"uuid-{name}","emailAddress":"{name}@example.com"}}}}"#
         )
     };
+    // An OAuth login by key name (issue #1700): the launch guard and the
+    // swap check read a login file's top-level keys for its kind.
+    const LOGIN: &str = r#"{"claudeAiOauth":{"accessToken":"PLACEHOLDER"}}"#;
     let dot_claude = home.join(".claude");
     fs::create_dir_all(&dot_claude).unwrap();
     fs::set_permissions(&dot_claude, fs::Permissions::from_mode(0o700)).unwrap();
-    private(&dot_claude.join(".credentials.json"), "PLACEHOLDER");
+    private(&dot_claude.join(".credentials.json"), LOGIN);
     private(&home.join(".claude.json"), &account(live));
     for name in std::iter::once(live).chain(stored.iter().copied()) {
         assert!(root.join(name).is_dir(), "profile {name} must exist");
         private(&root.join(name).join(".claude.json"), &account(name));
     }
     for name in stored {
-        private(&root.join(name).join(".credentials.json"), "PLACEHOLDER");
+        private(&root.join(name).join(".credentials.json"), LOGIN);
     }
 }

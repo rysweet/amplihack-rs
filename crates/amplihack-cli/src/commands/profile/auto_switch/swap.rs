@@ -579,15 +579,13 @@ pub fn swap_check(
 /// Reads the ledger, `usage.json`, the spend blocks and the gate; no
 /// recovery, no `/proc` scan.
 fn overflow_precheck(state: &State, owner: &ProfileName, cfg: &Config, now: i64) -> Option<bool> {
-    if cfg.overflow.is_empty() {
-        return None;
-    }
     let ledger = state.load_ledger().ok()?;
     let account = ProfileName::parse(ledger.account_in(owner.as_str())).ok()?;
-    if !cfg.is_overflow(&account) {
+    // Issue #1700: the API-key profile is in the order too.
+    let overflow = OverflowInputs::load(&state.root, cfg, now);
+    if !overflow.order.contains(&account) {
         return None;
     }
-    let overflow = OverflowInputs::load(&state.root, cfg, now);
     let readings = state.load_usage().accounts;
     Some(overflow_may_move(&account, cfg, &overflow, &readings, now))
 }
@@ -604,10 +602,20 @@ pub(super) fn overflow_may_move(
     if !candidate::overflow_usable(account.as_str(), &overflow.blocked) {
         return true;
     }
+    // Issue #1700: from the API key, a usable credit profile is a way off.
+    if overflow.platform.as_ref() == Some(account)
+        && overflow.order.iter().any(|o| {
+            Some(o) != overflow.platform.as_ref()
+                && !cfg.exclude.contains(o)
+                && candidate::overflow_usable(o.as_str(), &overflow.blocked)
+        })
+    {
+        return true;
+    }
     readings
         .iter()
         .filter_map(|(name, r)| ProfileName::parse(name).ok().map(|n| (n, r)))
-        .filter(|(n, _)| !cfg.is_overflow(n) && !cfg.exclude.contains(n))
+        .filter(|(n, _)| !overflow.order.contains(n) && !cfg.exclude.contains(n))
         .any(|(_, r)| candidate::may_return_to(Some(r), overflow.gate.as_ref(), cfg.threshold, now))
 }
 

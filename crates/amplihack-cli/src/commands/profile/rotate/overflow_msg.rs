@@ -5,6 +5,14 @@
 use super::log::timestamp;
 use crate::commands::profile::name::ProfileName;
 
+/// After `profile switch` onto API-key profile `name` (issue #1700).
+pub fn switch_platform_note(name: &ProfileName) -> String {
+    format!(
+        "note: {name} is an API-key profile; work in ~/.claude is billed per token \
+         until you run: amplihack profile switch --none"
+    )
+}
+
 /// `<time>` for a known reset, else `unknown`.
 fn reset(at: Option<i64>) -> String {
     at.map_or_else(|| "unknown".to_string(), timestamp)
