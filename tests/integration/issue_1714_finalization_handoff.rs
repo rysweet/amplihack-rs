@@ -6,6 +6,9 @@
 //! still ends auto-drive. The open-PR check also accepts a PR head that is a
 //! fast-forward of the local HEAD (case 2, `ancestor*.rs`), and so does the
 //! terminal-state probe that workflow-finalize runs before it (`probe.rs`).
+//! After that probe, `step-20-sync-pr-head` fast-forwards the worktree to
+//! such a head and step-20b pulls before it pushes, with or without an
+//! upstream (`step20b.rs`, fixture in `step20b_remote.rs`).
 //!
 //! The hand-off is decided from typed data only (`terminal_state`, `handoff`
 //! and the PR number), defined once in
@@ -36,6 +39,10 @@ mod static_guards;
 mod step03;
 #[path = "issue_1714_finalization_handoff/step03_failed_implementation.rs"]
 mod step03_failed_implementation;
+#[path = "issue_1714_finalization_handoff/step20b.rs"]
+mod step20b;
+#[path = "issue_1714_finalization_handoff/step20b_remote.rs"]
+mod step20b_remote;
 #[path = "issue_1714_finalization_handoff/validator.rs"]
 mod validator;
 #[path = "issue_1714_finalization_handoff/validator_routing.rs"]

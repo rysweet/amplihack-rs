@@ -46,9 +46,25 @@ steps:
     recipe: "workflow-terminal-state"
     context:
       terminal_fail_mode: "report"
-      # #1714: a PR head that fast-forwards the local HEAD (main merged into
-      # the PR from elsewhere) is this run's PR; step-20b pulls before it pushes.
+      # #1714: a PR head that fast-forwards the local HEAD (main merged in from
+      # elsewhere) is this run's PR; step-20-sync-pr-head fast-forwards to it.
       accept_pr_head_ahead: "true"
+
+  # #1714 case 2: before any agent edits the tree, fast-forward to a PR head the
+  # probe accepted as ahead and set a missing upstream. Never fails the run.
+  - id: "step-20-sync-pr-head"
+    type: "bash"
+    condition: "terminal_state.terminal_success != 'true' && terminal_state.should_finalize == 'true'"
+    command: |
+      set -euo pipefail
+      # Issue #1528: run only at the top of the linked task worktree, never in REPO_PATH or the cwd.
+      skip() { echo "WARNING: step-20-sync-pr-head ${1:-worktree_setup_path.sh not found}; skipping the PR head sync — never runs in REPO_PATH (#1528)" >&2; exit 0; }
+      WT_TOOL=""; for c in "${AMPLIHACK_HOME:-}" "${REPO_PATH:-}" "$(pwd)" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/worktree_setup_path.sh" ] && { WT_TOOL="$c/amplifier-bundle/tools/worktree_setup_path.sh"; break; }; done
+      wt="$(bash "${WT_TOOL:?worktree_setup_path.sh not found}" step-20-sync-pr-head)" || skip "${WT_TOOL:+worktree path gone}"; cd -P "$wt"
+      git rev-parse --is-inside-work-tree >/dev/null 2>&1 || skip "not a git repo at $(pwd -P) (#537)"
+      { gd=$(git rev-parse --absolute-git-dir) && cd_=$(git rev-parse --path-format=absolute --git-common-dir) && [ "$gd" != "$cd_" ] && [ "$(git rev-parse --show-toplevel)" = "$(pwd -P)" ]; } 2>/dev/null || skip "worktree path is not a linked worktree"
+      bash "$(dirname "$WT_TOOL")/workflow_pr_head_sync.sh"
+    output: "pr_head_sync_result"
 
   - id: "step-20-final-cleanup"
     agent: "amplihack:cleanup"
@@ -177,6 +193,9 @@ steps:
       else
         echo "No staged changes from cleanup"
       fi
+      # #1714: fetch origin/<branch> and set a missing upstream, so the pull below runs
+      # whenever the branch is on origin; a bare `push -u` to a remote ahead is rejected.
+      bash "$(dirname "$WT_TOOL")/workflow_pr_head_sync.sh"
       push_cmd=(git push -u origin "$current_branch")
       if git rev-parse --abbrev-ref '@{u}' >/dev/null 2>&1; then
         push_cmd=(git push)
@@ -220,11 +239,7 @@ steps:
       HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
       if [ "$HOST_TYPE" != "github" ]; then echo "INFO: non-GitHub host ($HOST_TYPE) — skipping gh pr ready" >&2; exit 0; fi
       # Helper contract: command -v gh; command -v jq; gh auth status; timeout; gh pr view; gh pr list; git branch --show-current; PR_NUMBER; isDraft; state; mergedAt; for pr_target in discovered targets; no PR_URL, valid PR_NUMBER, or branch PR found; terminal_status may be already-merged, closed-after-merge, or closed-unmerged; closed-unmerged exits with exit 1.
-      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"
-      [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
+      READY_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="$(pwd)/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_pr_ready.sh"; [ -f "$READY_HELPER" ] || READY_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_pr_ready.sh"
       [ -f "$READY_HELPER" ] || { echo "ERROR: workflow PR-ready helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $READY_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$READY_HELPER"
     output: "pr_ready_result"
@@ -267,11 +282,7 @@ steps:
       if [ -f "$RUNTIME_ARTIFACT_HELPER" ]; then . "$RUNTIME_ARTIFACT_HELPER"; preflight_known_workflow_runtime_artifacts .; else echo "WARNING: workflow runtime artifact helper not found; skipping artifact preflight enrichment and continuing in degraded mode (searched AMPLIHACK_HOME, REPO_PATH, worktree, ~/.copilot, ~/.amplihack): $RUNTIME_ARTIFACT_HELPER; cwd=$(pwd)" >&2; fi
       # Helper contract: git diff --quiet identifies no-diff; terminal_status accepts no-diff, already-merged, and closed-after-merge; GitHub-only status uses gh pr view.
       # Terminal-state contract: FAILED_CLOSED_UNMERGED, FAILED_MEANINGFUL_DIFF, BLOCKED_CI, MERGED, CLOSED_OBSOLETE, NO_DIFF_SUCCESS, FOLLOWUP_CREATED.
-      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"
-      [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
+      FINAL_STATUS_HELPER="${AMPLIHACK_HOME:-${REPO_PATH:-$(pwd)}}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${REPO_PATH:-$(pwd)}/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="$(pwd)/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.copilot/amplifier-bundle/tools/workflow_final_status.sh"; [ -f "$FINAL_STATUS_HELPER" ] || FINAL_STATUS_HELPER="${HOME:-/root}/.amplihack/amplifier-bundle/tools/workflow_final_status.sh"
       [ -f "$FINAL_STATUS_HELPER" ] || { echo "ERROR: workflow final-status helper not found at any known location (AMPLIHACK_HOME, REPO_PATH, worktree, cwd, ~/.copilot, ~/.amplihack): $FINAL_STATUS_HELPER; cwd=$(pwd)" >&2; exit 1; }
       bash "$FINAL_STATUS_HELPER"
     output: "final_status"
@@ -323,12 +334,9 @@ steps:
     parse_json: true
     command: |
       set -euo pipefail
-      # Issue #969: record the reporting/finalization step's typed status as
-      # {status, reporting_failure} so the deterministic classifier can
-      # distinguish an implementation failure from a reporting failure WITHOUT
-      # parsing the agent narrative. The narrative artifact's presence is the
-      # deterministic signal: an empty narrative means the reporting step failed
-      # to produce its human-readable output.
+      # Issue #969: typed {status, reporting_failure}, so the classifier tells an implementation
+      # failure from a reporting failure WITHOUT parsing the agent narrative; an empty
+      # narrative means the reporting step failed to produce its human-readable output.
       command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
       # An explicit framework root is authoritative, including missing assets.
       if [ -n "${AMPLIHACK_HOME:-}" ]; then
@@ -349,7 +357,6 @@ steps:
         status="failed"
         reporting_failure="true"
       fi
-      command -v jq >/dev/null 2>&1 || { echo "ERROR: finalizer-step-status requires jq" >&2; exit 2; }
       jq -nc --arg status "$status" --arg reporting_failure "$reporting_failure" \
         '{status: $status, reporting_failure: $reporting_failure}'
     output: "finalizer_step_status"

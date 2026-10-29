@@ -733,10 +733,32 @@ probe:
 - passes `--allow-head-ahead` to `workflow_pr_scope.sh`, which then accepts a
   named PR that is `OPEN` and whose head is a fast-forward of local `HEAD`.
 
-Only `workflow-finalize` sets `accept_pr_head_ahead` (default `"false"`). Its
-`step-20b-push-cleanup` runs `git pull --rebase` before it pushes, so the local
-branch takes the PR head first. `workflow-publish` pushes without pulling, so it
-keeps the exact-head rule. A head that does not contain local `HEAD` (diverged
+Only `workflow-finalize` sets `accept_pr_head_ahead` (default `"false"`). The
+probe's verdict alone does not bring the PR head's commits into the worktree,
+so `workflow-finalize` acts on it in two places:
+
+- `step-20-sync-pr-head` runs straight after the probe and before any agent
+  step. It runs
+  [`workflow_pr_head_sync.sh`](../../amplifier-bundle/tools/workflow_pr_head_sync.sh),
+  which fetches `origin/<branch>` (no prompt, bounded time), sets the upstream
+  when the branch has none, and runs `git merge --ff-only` to the PR head when
+  that head is a strict descendant of `HEAD`. The fast-forward cannot conflict,
+  because `HEAD` is its ancestor. `step-20-final-cleanup` and
+  `step-20c-quality-audit` therefore edit the PR's own tree. The tool always
+  exits `0`; a failed fetch or a refused fast-forward prints one warning and
+  leaves the worktree as it was.
+- `step-20b-push-cleanup` runs the same tool after its cleanup commit, so it
+  fetches `origin/<branch>` again and sets a missing upstream, then runs
+  `git pull --rebase` before it pushes. It falls back to
+  `git push -u origin <branch>` only when the branch has no upstream after
+  that, which means origin has no such branch, or the fetch failed and this
+  checkout never saw one.
+
+`tests/integration/issue_1714_finalization_handoff/step20b.rs` runs both steps
+from the YAML against a bare remote whose branch is a merge of main on top of
+the local `HEAD`, with an upstream, with only `origin/<branch>`, and with
+neither, and checks that the push succeeds on top of the PR head.
+`workflow-publish` pushes without pulling, so it keeps the exact-head rule. A head that does not contain local `HEAD` (diverged
 or rewritten), a rewound remote, a merged or closed PR, or a PR head commit
 that cannot be fetched, still fails as `stale PR metadata` or `no_scoped_pr`.
 
