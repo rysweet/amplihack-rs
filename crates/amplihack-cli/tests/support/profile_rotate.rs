@@ -6,8 +6,8 @@
 //! a running `claude-rotator`. The fake `claude` never reads a login file:
 //! it reads the account e-mail from `$CLAUDE_CONFIG_DIR/.claude.json` (or
 //! `$HOME/.claude.json` when the variable is unset) and prints canned
-//! `/usage` output for that e-mail. Login fixtures are mode 0000 (0600 under
-//! root), so any attempt by amplihack to read one fails.
+//! `/usage` output for that e-mail. Login fixtures are private OAuth JSON
+//! objects holding `SENTINEL-TOKEN` values, which must never be printed.
 
 #![cfg(unix)]
 #![allow(dead_code)]
@@ -56,12 +56,16 @@ pub fn euid() -> u32 {
     unsafe { libc::geteuid() }
 }
 
-/// A login file amplihack cannot read: only its inode identifies it.
+/// An OAuth login file. Issue #1700: amplihack reads which top-level keys
+/// a login file has (`claudeAiOauth` or not) to tell a subscription login
+/// from an API-key profile, so the file is a readable private JSON object.
+/// Its values are sentinels that must never be printed; its inode
+/// identifies it.
 pub fn login(path: &Path) -> u64 {
-    private_file(path, "SENTINEL-TOKEN");
-    if euid() != 0 {
-        fs::set_permissions(path, fs::Permissions::from_mode(0o000)).unwrap();
-    }
+    private_file(
+        path,
+        r#"{"claudeAiOauth":{"accessToken":"SENTINEL-TOKEN","refreshToken":"SENTINEL-TOKEN"}}"#,
+    );
     ino(path).unwrap()
 }
 
@@ -347,7 +351,7 @@ pub fn assert_log_grammar(line: &str, timed: bool) {
         line.to_string()
     };
     let kinds = regex::Regex::new(
-        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
+        r"^(cycle live=\S+( \S+:(s=\d+%,w=\d+%|failed|per-token))*|swap \S+->\S+ live s=\d+% w=\d+% target s=\d+% w=\d+% reason=(threshold|upgrade)|switch \S+->\S+|ALERT: .+|recovery: (rolled back|finished) an interrupted swap \S+->\S+|skip: .+|stop: signal received; cycle abandoned|idle: auto-switch is off|would .+)$",
     )
     .unwrap();
     assert!(kinds.is_match(&msg), "line outside the grammar: {line:?}");

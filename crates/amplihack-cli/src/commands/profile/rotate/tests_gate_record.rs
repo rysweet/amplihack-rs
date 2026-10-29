@@ -288,6 +288,7 @@ fn auto_switch_pick(f: &Fake, spare_pct: f64, resets_in: i64) -> Option<String> 
         threshold: 90,
         exclude: Vec::new(),
         overflow: vec![OverflowEntry::new(n("cred"), 1)],
+        kind: Default::default(),
     };
     let inputs = OverflowInputs::load_with_gate(&f.root, &cfg, f.gate(&[]), NOW);
     let profiles = vec![n("work"), n("spare"), n("cred")];
@@ -387,6 +388,7 @@ fn rotator_spends(s: &Settings, live: f64, spare: f64, resets_in: i64) -> bool {
         candidates: &candidates,
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
+        platform_block: None,
         swapped_at: None,
         now: NOW,
     });
@@ -433,6 +435,7 @@ fn auto_switch_spends_at(threshold: u8, g: Gate, live: f64, spare: f64, resets_i
         order: &order,
         blocked: &[],
         gate: Some(g),
+        platform: None,
     };
     select_with_overflow(&pool, &ov, "work", |_| true).map(|p| p.to_string())
         == Some("cred".to_string())
@@ -484,6 +487,7 @@ fn rotator_returns(s: &Settings, session: f64, week: f64) -> bool {
         candidates: &candidates,
         overflow: &[OverflowEntry::new(n("cred"), 1)],
         blocks: &BTreeMap::new(),
+        platform_block: None,
         swapped_at: None,
         now: NOW,
     });
@@ -514,6 +518,7 @@ fn auto_switch_returns(threshold: u8, g: Gate, session: f64, week: f64) -> bool 
         order: &order,
         blocked: &[],
         gate: Some(g),
+        platform: None,
     };
     let picked = select_with_overflow(&pool, &ov, "cred", |_| true).map(|p| p.to_string());
     let back = picked.as_deref() == Some("plan");

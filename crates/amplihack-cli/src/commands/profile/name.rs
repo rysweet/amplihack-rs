@@ -5,7 +5,7 @@
 use super::ProfileError;
 use amplihack_utils::rotator_status::valid_live_name;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ProfileName(String);
 
 impl ProfileName {

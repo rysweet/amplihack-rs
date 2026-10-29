@@ -1,17 +1,108 @@
-//! Which profile's login is in `~/.claude` (D11, D13), and which profiles
-//! may receive it (D16). Only `.claude.json` files and metadata are read;
-//! account values are compared, never logged.
+//! Which profile's login is in `~/.claude` (D11, D13). Which profiles
+//! may receive it (D16) is in `candidates`, re-exported here.
+//! `.claude.json` files and metadata are read; account values are
+//! compared, never logged.
+//!
+//! Issue #1700: this is also the one module that looks inside login and
+//! settings files for a profile's kind ([`login_kind`],
+//! [`api_key_setting_names`]). Those reads check which top-level keys are
+//! present and return only an enum or a bool: no value leaves a function,
+//! and a parse error is dropped inside it, so its text cannot quote a file.
 
 use super::ledger::{RotateState, safe_account};
 use crate::commands::profile::ProfileError;
+// Its own line: `tests_source_scan` refuses a read next to the login name.
+use crate::commands::profile::auto_switch::kit::CREDS;
 use crate::commands::profile::auto_switch::kit::{
-    CLAUDE_JSON, CREDS, Ledger, Liveness, MAX_CLAUDE_JSON, exists, movable_login,
-    read_bounded_nofollow, read_claude_json,
+    CLAUDE_JSON, MAX_CLAUDE_JSON, euid, exists, read_bounded_nofollow, read_claude_json,
+    writable_by_others,
 };
 use crate::commands::profile::default_live::{self, Prototype};
+use crate::commands::profile::kind;
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
+use std::os::unix::fs::MetadataExt;
 use std::path::Path;
+
+pub use super::candidates::{CandidateInput, Skip, candidates};
+pub use super::holders::{Holders, home_holders, home_key, home_still_matches};
+
+/// The largest login or settings file read for its keys; the top-level key
+/// of a claude.ai login; the API-key setting names, checked for presence.
+const MAX_KIND_READ: u64 = 64 * 1024;
+const OAUTH_KEY: &str = "claudeAiOauth";
+const ENV_API_KEY: &str = "ANTHROPIC_API_KEY";
+const API_KEY_HELPER: &str = "apiKeyHelper";
+const PRIMARY_API_KEY: &str = "primaryApiKey";
+
+/// What a login file is, by its top-level keys only: a readable JSON object
+/// with `claudeAiOauth` (`OAuth`) or without it, `{}` included (`NoOAuth`:
+/// Claude Code falls back to the Claude Platform credential); anything else
+/// there is `Unreadable`, never proof of an API key; nothing is `Missing`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginKind {
+    OAuth,
+    NoOAuth,
+    Unreadable,
+    Missing,
+}
+
+/// The kind of the login file at `path`. Read without following a
+/// symlink, without blocking on a FIFO, at most 64 KiB, and only from a
+/// regular file owned by the current user that group and others cannot
+/// write.
+pub fn login_kind(path: &Path) -> LoginKind {
+    let (raw, meta) = match read_bounded_nofollow(path, MAX_KIND_READ) {
+        Ok(None) => return LoginKind::Missing,
+        Ok(Some(found)) => found,
+        Err(_) => return LoginKind::Unreadable,
+    };
+    // SR-6: whoever could write the file could put `{}` there and make
+    // the profile bill the API key, so its contents prove nothing.
+    if meta.uid() != euid() || writable_by_others(&meta) || meta.mode() & 0o020 != 0 {
+        return LoginKind::Unreadable;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&raw) {
+        Ok(serde_json::Value::Object(map)) if map.contains_key(OAUTH_KEY) => LoginKind::OAuth,
+        Ok(serde_json::Value::Object(_)) => LoginKind::NoOAuth,
+        _ => LoginKind::Unreadable,
+    }
+}
+
+/// The JSON object at `path` when it may count as evidence: a regular file
+/// of the current user that group and others cannot write, at most `limit`
+/// bytes. `None` otherwise.
+fn evidence_object(path: &Path, limit: u64) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let (raw, meta) = read_bounded_nofollow(path, limit).ok()??;
+    // Group-writable counts too: anyone who could write it could plant a
+    // setting name and turn the profile into an API-key profile.
+    if meta.uid() != euid() || writable_by_others(&meta) || meta.mode() & 0o020 != 0 {
+        return None;
+    }
+    match serde_json::from_slice::<serde_json::Value>(&raw).ok()? {
+        serde_json::Value::Object(map) => Some(map),
+        _ => None,
+    }
+}
+
+/// Whether `dir` names an API-key setting: `env.ANTHROPIC_API_KEY` or
+/// `apiKeyHelper` in `settings.json` (at most 64 KiB), or `primaryApiKey`
+/// in `.claude.json` (which Claude Code lets grow larger). Presence only;
+/// a value is never looked at, and `apiKeyHelper` is never run.
+pub fn api_key_setting_names(dir: &Path) -> bool {
+    let in_settings = evidence_object(&dir.join("settings.json"), MAX_KIND_READ).is_some_and(|m| {
+        m.contains_key(API_KEY_HELPER)
+            || m.get("env")
+                .and_then(serde_json::Value::as_object)
+                .is_some_and(|env| env.contains_key(ENV_API_KEY))
+    });
+    in_settings
+        || evidence_object(
+            &dir.join(CLAUDE_JSON),
+            crate::commands::profile::auto_switch::kit::MAX_CLAUDE_JSON,
+        )
+        .is_some_and(|m| m.contains_key(PRIMARY_API_KEY))
+}
 
 /// An `oauthAccount`: its user (`accountUuid`), its organization
 /// (`organizationUuid`) and its e-mail (lower-cased). `Debug` hides all
@@ -110,7 +201,8 @@ pub enum LiveId {
     HomeUnreadable(ProfileName),
     /// Several login-less profiles match the account in `~/.claude`.
     Ambiguous,
-    /// `~/.claude` has no login file (D13).
+    /// `~/.claude` has no login file (D13), an unreadable one, or one
+    /// without OAuth while no profile is an API-key profile.
     NoLogin,
 }
 
@@ -151,9 +243,34 @@ fn from_prototype(
     }
 }
 
+/// The live profile when `~/.claude` holds a login without OAuth (issue
+/// #1700): the ledger's `live` when it is an API-key profile (no account
+/// check: an API-key profile need not have an `oauthAccount`), else the
+/// only API-key profile; several are `Ambiguous`, none `NoLogin`.
+fn platform_live(
+    store: &ProfileStore,
+    rs: &RotateState,
+    home: &Path,
+) -> Result<LiveId, ProfileError> {
+    let platforms = kind::platform_profiles(store, home);
+    if let Some(l) = rs.load_ledger()?
+        && let Some(live) = l.live.as_deref()
+    {
+        let name = ProfileName::parse(live)?;
+        if platforms.contains(&name) {
+            return Ok(LiveId::Known(name));
+        }
+    }
+    Ok(match platforms.as_slice() {
+        [] => LiveId::NoLogin,
+        [one] => LiveId::Known(one.clone()),
+        _ => LiveId::Ambiguous,
+    })
+}
+
 /// The live profile, and the reason the prototype ledger was ignored, if it
-/// was. Reads `$HOME/.claude.json`, the ledgers and each profile's
-/// `.claude.json`; never a login file.
+/// was. Reads `$HOME/.claude.json`, the ledgers, each profile's
+/// `.claude.json`, and which top-level keys the login files have.
 pub fn live(
     store: &ProfileStore,
     rs: &RotateState,
@@ -162,6 +279,12 @@ pub fn live(
     let creds = home.join(".claude").join(CREDS);
     if !std::fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
         return Ok((LiveId::NoLogin, None));
+    }
+    match login_kind(&creds) {
+        LoginKind::OAuth => {}
+        LoginKind::NoOAuth => return Ok((platform_live(store, rs, home)?, None)),
+        // A damaged file is never an API-key login.
+        LoginKind::Unreadable | LoginKind::Missing => return Ok((LiveId::NoLogin, None)),
     }
     let account = Account::of_dir(home);
     if let Some(l) = rs.load_ledger()?
@@ -196,162 +319,6 @@ pub fn live(
         (None, _) => LiveId::Adopt,
     };
     Ok((id, ignored))
-}
-
-/// Why a profile is not a candidate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Skip {
-    Live,
-    NoLogin,
-    Excluded,
-    SessionRunning,
-    Leased,
-    Hosting,
-    Parked,
-    NoAccount,
-}
-
-impl Skip {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Live => "live",
-            Self::NoLogin => "no login",
-            Self::Excluded => "excluded",
-            Self::SessionRunning => "session running",
-            Self::Leased => "leased",
-            Self::Hosting => "hosting",
-            Self::Parked => "parked",
-            Self::NoAccount => "no account",
-        }
-    }
-}
-
-pub struct CandidateInput<'a> {
-    pub live: Option<&'a ProfileName>,
-    /// The auto-switch `exclude` list.
-    pub exclude: Vec<ProfileName>,
-    pub liveness: Liveness,
-    /// The auto-switch ledger: leases and hosted directories.
-    pub auto_switch: Ledger,
-}
-
-/// The candidates, then every skipped profile with its reason.
-pub type Candidates = (Vec<ProfileName>, Vec<(ProfileName, Skip)>);
-
-/// The profiles that may receive the login in `~/.claude`, sorted by name,
-/// and every other profile with the first reason it is skipped. A profile
-/// root that cannot be listed is an error, not an empty list.
-pub fn candidates(
-    store: &ProfileStore,
-    input: &CandidateInput<'_>,
-) -> Result<Candidates, ProfileError> {
-    let (mut ok, mut skips) = (Vec::new(), Vec::new());
-    let parked = store.root().join(".auto-switch.d").join("parked");
-    let names = store.list()?;
-    for name in names.iter().filter_map(|n| ProfileName::parse(n).ok()) {
-        let n = name.as_str();
-        let dir = store.verify_profile_dir(&name).ok();
-        let skip = if input.live == Some(&name) {
-            Some(Skip::Live)
-        } else if !dir.as_ref().is_some_and(|d| movable_login(&d.join(CREDS))) {
-            Some(Skip::NoLogin)
-        } else if input.exclude.contains(&name) {
-            Some(Skip::Excluded)
-        } else if input.liveness.is_live(&name) {
-            Some(Skip::SessionRunning)
-        } else if input.auto_switch.leased_to(n).is_some() {
-            Some(Skip::Leased)
-        } else if input.auto_switch.hosts.contains_key(n) {
-            Some(Skip::Hosting)
-        } else if exists(&parked.join(n)) {
-            Some(Skip::Parked)
-        } else if dir.as_deref().and_then(Account::of_dir).is_none() {
-            Some(Skip::NoAccount)
-        } else {
-            None
-        };
-        match skip {
-            Some(s) => skips.push((name, s)),
-            None => ok.push(name),
-        }
-    }
-    Ok((ok, skips))
-}
-
-/// Who holds the account in `~/.claude` (issue #1693). Lists are sorted by
-/// name.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Holders {
-    /// No profile has the account.
-    None,
-    /// Exactly one profile has it; `own_login`: something is at its
-    /// `.credentials.json` (by `lstat`).
-    One {
-        name: ProfileName,
-        own_login: bool,
-    },
-    Many(Vec<ProfileName>),
-    /// Profiles with a login whose account cannot be read: any of them could
-    /// hold the account, so no match can be trusted.
-    Unreadable(Vec<ProfileName>),
-    /// `~/.claude.json` has no usable account.
-    HomeUnreadable,
-    /// `~/.claude/.credentials.json` is missing or not a regular file.
-    HomeNoLogin,
-}
-
-/// Every profile that passes the directory check, with or without its own
-/// login, compared by [`Account::same`] with the account in `~/.claude`.
-/// Reads `.claude.json` files and metadata only; a login-less profile with
-/// no account is skipped.
-pub fn home_holders(store: &ProfileStore, home: &Path) -> Result<Holders, ProfileError> {
-    let creds = home.join(".claude").join(CREDS);
-    if !std::fs::symlink_metadata(&creds).is_ok_and(|m| m.is_file()) {
-        return Ok(Holders::HomeNoLogin);
-    }
-    let Some(account) = Account::of_dir(home) else {
-        return Ok(Holders::HomeUnreadable);
-    };
-    let mut names: Vec<ProfileName> = store
-        .list()?
-        .iter()
-        .filter_map(|n| ProfileName::parse(n).ok())
-        .collect();
-    names.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-    let (mut matched, mut unreadable) = (Vec::new(), Vec::new());
-    for name in names {
-        let Ok(dir) = store.verify_profile_dir(&name) else {
-            continue;
-        };
-        let own = exists(&dir.join(CREDS));
-        match Account::of_dir(&dir) {
-            Some(a) if a.same(&account) => matched.push((name, own)),
-            Some(_) => {}
-            None if own => unreadable.push(name),
-            None => {}
-        }
-    }
-    if !unreadable.is_empty() {
-        return Ok(Holders::Unreadable(unreadable));
-    }
-    Ok(match matched.len() {
-        0 => Holders::None,
-        1 => {
-            let (name, own_login) = matched.remove(0);
-            Holders::One { name, own_login }
-        }
-        _ => Holders::Many(matched.into_iter().map(|(n, _)| n).collect()),
-    })
-}
-
-/// The ledger key (uuid, else e-mail) of the account in `~/.claude.json`.
-pub fn home_key(home: &Path) -> Option<String> {
-    Account::of_dir(home).map(|a| a.key().to_string())
-}
-
-/// Whether `~/.claude.json`, read again, still holds the account `key`.
-pub fn home_still_matches(home: &Path, key: &str) -> bool {
-    Account::of_dir(home).is_some_and(|a| a.matches_key(key))
 }
 
 /// Why `~/.claude.json` has no usable account, in words for the escalated

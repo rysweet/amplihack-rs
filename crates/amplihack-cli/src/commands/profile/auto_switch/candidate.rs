@@ -99,6 +99,9 @@ pub struct OverflowPool<'a> {
     /// `None` when overflow may not be used at all: the gate's settings or
     /// the spend blocks could not be read.
     pub gate: Option<Gate>,
+    /// The API-key profile (issue #1700), also last in `order`. Its block,
+    /// when active, is in `blocked`.
+    pub platform: Option<&'a ProfileName>,
 }
 
 /// A reading's adjusted (session, week) use: five-hour and seven-day, 0 for
@@ -192,7 +195,10 @@ pub fn overflow_usable(name: &str, blocked: &[String]) -> bool {
 ///    ([`may_return_to`]): this is how a session moves back, and it does so
 ///    exactly when the rotator would, even with an auto-switch threshold
 ///    below `--session-at` or `--week-at`.
-/// 2. `None` when `current` is an overflow profile without a spend block: it
+/// 2. From the API-key profile (issue #1700): the first usable credit
+///    profile, since credits cost less. Then, as for credits, `None` when
+///    the API key is not blocked.
+///    `None` when `current` is an overflow profile without a spend block: it
 ///    stays there until a plan profile has capacity.
 /// 3. The first overflow profile in `ov.order` that is not `current`, not
 ///    excluded, not blocked and `eligible`, when the gate
@@ -255,6 +261,20 @@ pub fn select_with_overflow<'a>(
     };
     if let Some(p) = own(back) {
         return Some(p);
+    }
+    if on_overflow
+        && ov.platform.is_some_and(|p| p.as_str() == current)
+        && let Some(o) = ov.order.iter().find(|o| {
+            let n = o.as_str();
+            n != current
+                && Some(*o) != ov.platform
+                && pool.profiles.contains(o)
+                && !pool.exclude.contains(o)
+                && overflow_usable(n, ov.blocked)
+                && eligible(o)
+        })
+    {
+        return Some(o);
     }
     if on_overflow && overflow_usable(current, ov.blocked) {
         return None;

@@ -32,12 +32,17 @@
 //!   with an active block. See `tests_pin_overflow` and "Pin and overflow"
 //!   in docs/reference/profile-command.md.
 //! - A spend-limit reading on an overflow profile blocks it, once per block.
+//! - Issue #1700: the API-key profile is the entry at
+//!   [`PLATFORM_TIER`], after every credit tier, and the API-key block
+//!   covers it. Off the API key, every cycle and ignoring the hold: a plan
+//!   login with capacity, else a usable credit profile; blocked, the best
+//!   usable plan login, else an ALERT that stays (no swap, no loop).
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::ledger::OverflowBlock;
 use super::settings::Settings;
 use crate::commands::profile::name::ProfileName;
-use crate::commands::profile::overflow::{Gate, OverflowEntry};
+use crate::commands::profile::overflow::{Gate, OverflowEntry, PLATFORM_TIER};
 use std::collections::BTreeMap;
 
 /// What a cycle records about overflow in `last_cycle.overflow`.
@@ -77,6 +82,9 @@ pub struct OverflowInput<'a> {
     pub overflow: &'a [OverflowEntry],
     /// The ledger's spend blocks, by profile name; expired ones are ignored.
     pub blocks: &'a BTreeMap<String, OverflowBlock>,
+    /// The API-key block (issue #1700); it covers the entry at
+    /// [`PLATFORM_TIER`] while `now < until`.
+    pub platform_block: Option<&'a OverflowBlock>,
     pub swapped_at: Option<i64>,
     pub now: i64,
 }
@@ -156,9 +164,15 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
     // Tried by tier; a stable sort keeps the given order within a tier.
     let mut order: Vec<&OverflowEntry> = i.overflow.iter().collect();
     order.sort_by_key(|e| e.tier);
+    let platform = order
+        .iter()
+        .find(|e| e.tier == PLATFORM_TIER)
+        .map(|e| &e.name);
     let order: Vec<&ProfileName> = order.into_iter().map(|e| &e.name).collect();
     let is_overflow = |n: &ProfileName| order.contains(&n);
     let live_over = i.live_name.is_some_and(is_overflow);
+    let platform_blocked = i.platform_block.is_some_and(|b| i.now < b.until);
+    let live_platform = platform.is_some() && i.live_name == platform;
 
     // Spend-limit evidence on any overflow profile, live or candidate,
     // blocks it once.
@@ -178,13 +192,19 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             new_blocks.push(o.clone());
         }
     }
-    let blocked = |n: &ProfileName| active(i.blocks, n, i.now) || new_blocks.contains(n);
+    let blocked = |n: &ProfileName| {
+        active(i.blocks, n, i.now)
+            || new_blocks.contains(n)
+            || (platform_blocked && Some(n) == platform)
+    };
     // The first overflow profile by tier, then given order, that may be
     // moved to: a candidate, not live, not blocked, its probe did not fail.
-    let next_overflow = || {
+    // `credit_only` leaves the API-key profile out.
+    let next_in = |credit_only: bool| {
         order
             .iter()
             .copied()
+            .filter(|o| !(credit_only && Some(*o) == platform))
             .filter(|o| Some(*o) != i.live_name && !blocked(o))
             .find_map(|o| {
                 i.candidates
@@ -193,6 +213,7 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
             })
             .map(|c| c.name.clone())
     };
+    let next_overflow = || next_in(false);
     let plan: Vec<Measured> = i
         .candidates
         .iter()
@@ -251,6 +272,21 @@ pub fn decide_overflow(i: &OverflowInput<'_>) -> Verdict {
         return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
     }
     let earliest = earliest_plan_reset(s, plan.iter().map(|c| (&c.reading, &c.windows)));
+    if live_platform {
+        // On the API key: credits cost less, so a usable credit profile is
+        // a way off, at once. Blocked, the best usable plan login; with
+        // nowhere to go, an ALERT that stays: no swap is attempted.
+        if let Some(to) = next_in(true) {
+            return verdict(swap(to, Reason::OverflowOut), Some(Tag::Out), None);
+        }
+        if platform_blocked {
+            if let Some((to, _)) = best(&plan) {
+                return verdict(swap(to.clone(), Reason::OverflowOut), Some(Tag::Out), None);
+            }
+            return verdict(Decision::Alert, Some(Tag::On), None);
+        }
+        return verdict(Decision::Stay, Some(Tag::On), earliest);
+    }
     if i.live_name.is_some_and(blocked) {
         // The live overflow cannot spend: the next overflow profile if the
         // wait still holds, else the best plan login, else the ALERT.

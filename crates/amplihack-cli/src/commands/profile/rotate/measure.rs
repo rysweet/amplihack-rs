@@ -17,6 +17,9 @@ pub enum Live<'a> {
     Profile(&'a ProfileName),
     /// No profile owns it yet.
     Unowned,
+    /// An API-key profile (issue #1700): never probed, since a probe costs
+    /// tokens or times out; its reading is [`Probed::platform`].
+    Platform,
 }
 
 /// The reading for `p`. A failed probe counts as "swap needed", so its
@@ -56,6 +59,7 @@ pub fn measure(
     std::thread::scope(|s| {
         let live = s.spawn(|| {
             let cmd = match live {
+                Live::Platform => return Probed::platform(),
                 Live::Profile(name) => run::build_default_dir_command(binary, store, name, &args),
                 Live::Unowned => Ok(run::build_home_command(binary, &args)),
             };
