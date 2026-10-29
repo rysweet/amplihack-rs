@@ -2,43 +2,16 @@
 use super::*;
 use std::process::Stdio;
 
-/// Limit for native plugin commands other than the inventory probe.
-pub(super) const NATIVE_TIMEOUT: Duration = Duration::from_secs(30);
-/// Limit for the `plugin list --json` inventory probe when Codex is the
-/// selected provider. A cold probe after a Codex auto-update was measured at
-/// 32.8 s on codex-cli 0.165.0, over the general limit, so the probe gets
-/// roughly four times that.
-pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
-/// Limit for the `plugin --help` capability check.
-pub(super) const CAPABILITY_TIMEOUT: Duration = Duration::from_secs(10);
-
-/// Inventory probe limit. Only a selected Codex gets the longer limit; an
-/// optional Codex keeps the general one, since its plugin is skipped anyway.
-pub(super) fn probe_timeout(codex_selected: bool) -> Duration {
-    if codex_selected {
-        PROBE_TIMEOUT
-    } else {
-        NATIVE_TIMEOUT
-    }
-}
-
+/// amplihack waits for Codex to exit; there is no time limit on any native
+/// plugin call. Output is capped per stream and stdin is null.
 pub(super) fn native(binary: &Path, args: &[&str], home: &Path) -> Result<Value> {
-    native_with_timeout(binary, args, home, NATIVE_TIMEOUT)
-}
-
-pub(super) fn native_with_timeout(
-    binary: &Path,
-    args: &[&str],
-    home: &Path,
-    timeout: Duration,
-) -> Result<Value> {
     path_scope::check()?;
     let mut cmd = Command::new(binary);
     cmd.args(args).env("CODEX_HOME", home).stdin(Stdio::null());
     if !args.contains(&"--json") {
         cmd.arg("--json");
     }
-    let output = crate::util::run_output_with_timeout_limited(cmd, timeout, 1024 * 1024)?;
+    let output = crate::util::run_output_limited(cmd, 1024 * 1024)?;
     path_scope::check()?;
     ensure!(
         output.status.success(),
@@ -62,7 +35,7 @@ pub(super) fn plugin_capability(binary: &Path, home: &Path) -> Result<bool> {
     cmd.args(["plugin", "--help"])
         .env("CODEX_HOME", home)
         .stdin(Stdio::null());
-    let output = crate::util::run_output_with_timeout_limited(cmd, CAPABILITY_TIMEOUT, 64 * 1024)?;
+    let output = crate::util::run_output_limited(cmd, 64 * 1024)?;
     path_scope::check()?;
     match output.status.code() {
         Some(0) => Ok(is_plugin_help(&String::from_utf8_lossy(&output.stdout))),
