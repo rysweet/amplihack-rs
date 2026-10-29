@@ -51,13 +51,7 @@ This works the same way for `amplihack claude`, `amplihack copilot` and
 `amplihack codex`, because all three run the same `amplihack-hooks
 pre-tool-use` binary.
 
-To turn XPIA off again, unset the variable or set it to `false`:
-
-```bash
-unset XPIA_ENABLED
-```
-
-The hook reads `XPIA_ENABLED` only from its own process environment. A
+To turn it off again, unset the variable or set it to `false`. The hook reads `XPIA_ENABLED` only from its own process environment. A
 `.env` file, the tool input and the settings files do not change it.
 
 ## Accepted values for XPIA_ENABLED
@@ -130,9 +124,6 @@ CLI:
   allowed. None of the guards above has run.
 - **Codex:** the hook denies the tool call.
 
-So under Claude Code and Copilot the guards are a strong default, not a
-guarantee.
-
 ## What XPIA adds when it is on
 
 With `XPIA_ENABLED=true`, the XPIA scan runs first, before the guards above.
@@ -148,9 +139,6 @@ A blocked call returns this reason:
 ```
 🛡️ XPIA Security Alert: Request blocked due to potential security risk.
 ```
-
-The same `false || rm -rf .` command from the example above is then blocked
-by XPIA, before the CWD guard runs.
 
 XPIA does not scan what a tool returns. A fetched web page, the contents of a
 file read with `Read` and the output of a `Bash` command reach the agent
@@ -235,9 +223,6 @@ No installer, settings template or plugin wrapper sets `XPIA_ENABLED`.
 
 ## Do not edit installed hook wrappers
 
-You do not need to edit any installed file to turn XPIA off. It is already
-off.
-
 Do not add `export XPIA_ENABLED=...` to the installed Codex hook wrapper
 (`~/.amplihack/codex/market/plugin/bin/hook`). The Codex installer records a
 digest of that file. Any edit makes `amplihack codex` fail with:
@@ -252,6 +237,6 @@ wrote, then set `XPIA_ENABLED` in your shell instead.
 
 ## Related
 
-- [Settings hook configuration](../howto/settings-hook-configuration.md) — how the `pre-tool-use` hook is registered
-- [`/amplihack:xpia` command](../claude/commands/amplihack/xpia.md) — health, status and logs
-- [Environment variables](./environment-variables.md) — every variable amplihack reads
+- [Settings hook configuration](../howto/settings-hook-configuration.md): how the `pre-tool-use` hook is registered
+- [`/amplihack:xpia` command](../claude/commands/amplihack/xpia.md): health, status and logs
+- [Environment variables](./environment-variables.md): every variable amplihack reads
