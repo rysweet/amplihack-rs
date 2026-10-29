@@ -142,6 +142,18 @@ mod issue_1690_isolated_autostart;
 mod issue_1691_switch_live;
 #[path = "issue_1707_claim_check_shell_suites.rs"]
 mod issue_1707_claim_check_shell_suites;
+#[path = "issue_1740_checks_tool.rs"]
+mod issue_1740_checks_tool;
+#[path = "issue_1740_diff_limits.rs"]
+mod issue_1740_diff_limits;
+#[path = "issue_1740_diff_limits_guards.rs"]
+mod issue_1740_diff_limits_guards;
+#[path = "issue_1740_quick_change_recipe.rs"]
+mod issue_1740_quick_change_recipe;
+#[path = "issue_1740_routing_recipes.rs"]
+mod issue_1740_routing_recipes;
+#[path = "issue_1740_select_workflow.rs"]
+mod issue_1740_select_workflow;
 #[path = "issue_439_no_per_step_timeout.rs"]
 mod issue_439_no_per_step_timeout;
 #[path = "issue_507_routing_question_passthrough.rs"]

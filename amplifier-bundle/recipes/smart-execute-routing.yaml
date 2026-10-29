@@ -17,6 +17,8 @@ context:
   recursion_guard: ""
   workstreams_file: ""
   adaptive_recipe: ""
+  workflow: ""
+  selected_workflow: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -103,7 +105,7 @@ steps:
 
   # ─────────────────────────────────────────────────────────────────────────
   # Phase 2c: Single dev/investigation workstream -- round 1
-  # Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+  # Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
   # Hybrid decompositions route each workstream by its own normalized classification.
   # NOTE: workstream_count may be stored as a Number (int) by the Rust
   # recipe runner's parse_context_value (which auto-detects "1" → Number).
@@ -121,12 +123,27 @@ steps:
     # as Number) or a string with trailing whitespace. Compare against both
     # types to avoid .strip() on non-strings (fix #3606).
     condition: |
-      'Development' in task_type and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
+      'Development' in task_type and selected_workflow != 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
     recipe: "default-workflow"
     # Issue #425: explicitly forward worktree_setup and allow_no_op so the
     # recipe-runner threads them across the smart-execute-routing ->
     # default-workflow -> workflow-tdd boundary. task_description and
     # repo_path continue to flow via automatic merging in _execute_sub_recipe().
+    context:
+      worktree_setup: "{{worktree_setup}}"
+      allow_no_op: "{{allow_no_op}}"
+      skip_pre_agent_validation: "{{skip_pre_agent_validation}}"
+      auto_init_repo: "{{auto_init_repo}}"
+    output: "round_1_result"
+
+  # Issue #1740: select-workflow chose quick-change (classifier or -c workflow=).
+  # Same forwarded keys as the development step; see
+  # docs/reference/quick-change-recipe.md.
+  - id: "execute-single-round-1-quick-change"
+    type: "recipe"
+    condition: |
+      'Development' in task_type and selected_workflow == 'quick-change' and ((workstream_count == 1 or workstream_count == '1' or workstream_count == '') or force_single_workstream == 'true')
+    recipe: "quick-change"
     context:
       worktree_setup: "{{worktree_setup}}"
       allow_no_op: "{{allow_no_op}}"
@@ -161,6 +178,7 @@ steps:
       trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
       # FIX (heredoc-bulletproof): use env var — no heredoc needed.
       printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
+      # #1740: the helper reads the -c workflow= override from RECIPE_VAR_workflow.
       amplihack orch helper build-workstreams-config < "$_DECOMP_TMPFILE"
     output: "workstreams_file"
 

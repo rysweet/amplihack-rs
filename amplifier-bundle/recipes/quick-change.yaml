@@ -1,0 +1,243 @@
+name: "quick-change"
+description: "One agent session for a small change, the repository's own checks, then commit, push and PR"
+version: "1.0.0"
+author: "Amplihack Team"
+tags: ["development", "small-change", "single-session"]
+
+# quick-change (issue #1740): a single-session recipe for small changes.
+#
+# One builder session makes the change; the repository's checks run; a bash
+# step measures the diff against the base pinned before the agent ran. Within
+# the limits the change is committed, pushed and opened as a PR, and the
+# recipe stops there: no review, merge, CI repair or finalisation. Over the
+# limits the work is handed over, uncommitted, to default-workflow on the same
+# branch. The verdict comes from git output only, never from agent text.
+#
+# Every bash step sources tools/quick_change_common.sh, found from
+# AMPLIHACK_HOME, repo_path or the $HOME install locations, never from the
+# worktree. Untrusted values reach bash only through RECIPE_VAR_*.
+# Pager safety: quick_change_common.sh sets GIT_PAGER=cat/PAGER=cat.
+# Contract: docs/reference/quick-change-recipe.md
+
+recursion:
+  max_depth: 6
+  max_total_steps: 140
+
+context:
+  task_description: ""
+  repo_path: "."
+  issue_number: ""
+  branch_prefix: "quick"
+  existing_branch: ""
+  quick_change_max_files: "3"
+  quick_change_max_lines: "150"
+  worktree_setup: ""
+  quick_change_base: ""
+  quick_change_checks: ""
+  quick_change_verdict: ""
+  quick_change_handover_note: ""
+
+steps:
+  # Step 1: worktree and branch from workflow-worktree, quick/ prefix.
+  - id: "quick-change-worktree"
+    type: "recipe"
+    recipe: "workflow-worktree"
+    context:
+      branch_prefix: "quick"
+
+  # Step 2: pin the base and snapshot git configuration, hooks and push URL
+  # before the agent runs (S2, S3).
+  - id: "quick-change-record-base"
+    type: "bash"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-record-base; . "${QC:?quick_change_common.sh not found}"
+      BASE="$(git -C "$QC_WT" rev-parse HEAD)"
+      SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
+      printf '%s\n' "$SNAP" | qc_write git-config.snapshot
+      printf '%s\n' "$BASE" | qc_write base
+      echo "quick-change: base $BASE pinned; state in $QUICK_CHANGE_STATE_DIR" >&2
+      printf '%s' "$BASE"
+    output: "quick_change_base"
+
+  # Step 3: the only agent session.
+  - id: "quick-change-implement"
+    agent: "amplihack:core:builder"
+    working_dir: "{{worktree_setup.worktree_path}}"
+    prompt: |
+      # Quick change
+
+      You are a leaf step inside a recipe that is already running. Make the
+      change described between the markers below in the current worktree, and
+      nothing else.
+
+      ----- TASK START -----
+      {{task_description}}
+      ----- TASK END -----
+
+      Constraints:
+      - Do not start an orchestrator, a recipe, a workflow or another agent
+        session (#1333). Work directly with your own tools.
+      - Do not commit, push, create branches or open a PR; later steps do that.
+      - Do not change git configuration, hooks, remotes or refs.
+      - Keep the change small: a few files and lines. If it needs more, make
+        the change anyway; a later step measures the diff and hands larger
+        work over to the full workflow.
+      - Run the repository's relevant checks if they are quick, and fix what
+        your change broke.
+
+      End with a short summary of the files you changed.
+    output: "quick_change_implementation"
+
+  # Step 4: the repository's own checks; a failure makes the PR a draft.
+  - id: "quick-change-run-checks"
+    type: "bash"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-run-checks; . "${QC:?quick_change_common.sh not found}"
+      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      SUMMARY="$(bash "$QC_TOOLS/quick_change_checks.sh" "$QC_WT" "$BASE" "$QUICK_CHANGE_STATE_DIR/checks-table.md")"
+      printf '%s\n' "$SUMMARY" | qc_write checks-summary
+      echo "quick-change: $SUMMARY" >&2
+      printf '%s' "$SUMMARY"
+    output: "quick_change_checks"
+
+  # Step 5: the deterministic verdict. No condition: nothing skips it. Exit 3
+  # (empty diff), 4 (git configuration drift) and 2 (fault) fail the run.
+  - id: "quick-change-diff-limits"
+    type: "bash"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-diff-limits; . "${QC:?quick_change_common.sh not found}"
+      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      rc=0
+      OUT="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" "$QC_WT" --base "$BASE" \
+        --max-files "${RECIPE_VAR_quick_change_max_files:-3}" \
+        --max-lines "${RECIPE_VAR_quick_change_max_lines:-150}")" || rc=$?
+      printf '%s\n' "$OUT" >&2
+      case "$rc" in
+        0) ;;
+        3) exit 3 ;;
+        4) exit 4 ;;
+        *) echo "ERROR: quick-change-diff-limits: the diff-limits tool failed (exit $rc)" >&2; exit 2 ;;
+      esac
+      printf '%s\n' "$OUT" | qc_write diff-limits
+      LINE1="${OUT%%$'\n'*}"; VERDICT="${LINE1#QUICK_CHANGE_VERDICT=}"; VERDICT="${VERDICT%% *}"
+      case "$VERDICT" in
+        proceed|handover) printf '%s' "$VERDICT" ;;
+        *) echo "ERROR: quick-change-diff-limits: unexpected verdict line '$LINE1'" >&2; exit 2 ;;
+      esac
+    output: "quick_change_verdict"
+
+  # Step 6: on hand-over, keep a patch of the uncommitted work and write the
+  # note for default-workflow. The note holds fixed wording and values from
+  # the bash steps only, never agent text or patch content.
+  - id: "quick-change-write-handover"
+    type: "bash"
+    condition: "quick_change_verdict == 'handover'"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-write-handover; . "${QC:?quick_change_common.sh not found}"
+      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      BRANCH="$(git -C "$QC_WT" symbolic-ref -q --short HEAD)" || qc_die "the worktree is not on a branch"
+      LINE1="$(sed -n 1p "$QUICK_CHANGE_STATE_DIR/diff-limits")"
+      REASON="${LINE1##*reason=}"
+      PATCH="$QUICK_CHANGE_STATE_DIR/quick-change-handover.patch"
+      # Untracked files were marked intent-to-add by the diff-limits tool.
+      git -C "$QC_WT" -c core.fsmonitor=false diff --binary --no-ext-diff --no-textconv "$BASE" | qc_write quick-change-handover.patch
+      NOTE="$(printf '%s\n' \
+        "Hand-over from quick-change: the diff exceeded its limits (reason=$REASON)." \
+        "The uncommitted changes are already in this worktree on branch $BRANCH." \
+        "Base commit: $BASE" \
+        "Patch: $PATCH" \
+        'Before you start, run `git status`. If the changes listed in the patch are missing,' \
+        "apply them with: git apply --index $PATCH" \
+        'Continue from these changes; do not start again from the base commit.')"
+      printf '%s\n' "$NOTE" | qc_write handover-note
+      echo "quick-change: handing over to default-workflow (reason=$REASON); patch at $PATCH" >&2
+      printf '%s' "$NOTE"
+    output: "quick_change_handover_note"
+
+  # Step 7: default-workflow continues on the quick/ branch; its step 04
+  # reuses the existing worktree as it is.
+  - id: "quick-change-handover"
+    type: "recipe"
+    condition: "quick_change_verdict == 'handover'"
+    recipe: "default-workflow"
+    context:
+      task_description: "{{task_description}}\n\n{{quick_change_handover_note}}"
+      existing_branch: "{{worktree_setup.branch_name}}"
+      repo_path: "{{repo_path}}"
+    output: "quick_change_handover_result"
+
+  # Step 8: stage, guard, set the identity and commit with -F (#1570).
+  - id: "quick-change-commit"
+    type: "bash"
+    condition: "quick_change_verdict == 'proceed'"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-commit; . "${QC:?quick_change_common.sh not found}"
+      cd "$QC_WT"
+      qc_branch >/dev/null
+      for helper in git-identity.sh workflow_hook_repair.sh; do
+        [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
+        . "$QC_TOOLS/$helper"
+      done
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
+      git add -A
+      amplihack hygiene artifact-guard --repo . --mode pre-publish
+      ! git diff --cached --quiet || qc_die "nothing staged to commit"
+      ISSUE="$(qc_issue)"
+      { printf '%s\n\n%s\n' "$(qc_title)" "$(qc_summary)"; [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"; } | qc_write commit-message
+      amplihack_prepare_git_commit_identity
+      [ -n "${GIT_AUTHOR_EMAIL:-}" ] || qc_die "no commit identity (user.email) resolved"
+      hook_repair_run commit quick-change-commit -- git commit -F "$QUICK_CHANGE_STATE_DIR/commit-message"
+      git rev-parse HEAD
+
+  # Step 9: push the branch to the URL recorded in the snapshot, with an
+  # explicit refspec, then check the remote ref (#1269).
+  - id: "quick-change-push"
+    type: "bash"
+    condition: "quick_change_verdict == 'proceed'"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-push; . "${QC:?quick_change_common.sh not found}"
+      cd "$QC_WT"
+      BRANCH="$(qc_branch)"
+      for helper in workflow_hook_repair.sh verify_pushed_ref.sh; do
+        [ -f "$QC_TOOLS/$helper" ] || qc_die "$helper is missing from $QC_TOOLS"
+      done
+      . "$QC_TOOLS/workflow_hook_repair.sh"
+      SNAP="$(bash "$QC_TOOLS/quick_change_diff_limits.sh" --snapshot "$QC_WT")"
+      [ "$SNAP" = "$(cat "$QUICK_CHANGE_STATE_DIR/git-config.snapshot")" ] \
+        || qc_die "git configuration, hooks or the push URL changed since the base was recorded; not pushing"
+      hook_repair_run push quick-change-push --fix-message "fix: address {hook_ids} pre-push rejection" \
+        -- git push -u origin "refs/heads/$BRANCH:refs/heads/$BRANCH"
+      SHA="$(git rev-parse HEAD)"
+      bash "$QC_TOOLS/verify_pushed_ref.sh" origin "$BRANCH" "$SHA"
+      printf '%s' "$SHA"
+
+  # Step 10: open the PR; a draft when the checks failed. Always the last step.
+  - id: "quick-change-create-pr"
+    type: "bash"
+    condition: "quick_change_verdict == 'proceed'"
+    command: |
+      QC=""; for c in "${AMPLIHACK_HOME:-}" "${RECIPE_VAR_repo_path:-}" "${HOME:-/root}/.copilot" "${HOME:-/root}/.amplihack"; do [ -n "$c" ] && [ -f "$c/amplifier-bundle/tools/quick_change_common.sh" ] && { QC="$c/amplifier-bundle/tools/quick_change_common.sh"; break; }; done; QC_STEP=quick-change-create-pr; . "${QC:?quick_change_common.sh not found}"
+      cd "$QC_WT"
+      BRANCH="$(qc_branch)"
+      [ -f "$QC_TOOLS/workflow_gh_retry.sh" ] || qc_die "workflow_gh_retry.sh is missing from $QC_TOOLS"
+      BASE="$(cat "$QUICK_CHANGE_STATE_DIR/base")"
+      CHECKS="$(cat "$QUICK_CHANGE_STATE_DIR/checks-summary")"
+      DEFAULT="$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || true)"
+      DEFAULT="${DEFAULT#origin/}"; [ -n "$DEFAULT" ] || DEFAULT=main
+      ISSUE="$(qc_issue)"
+      set --
+      case "$CHECKS" in QUICK_CHANGE_CHECKS=failed*) set -- --draft ;; esac
+      {
+        [ $# -eq 0 ] || printf 'Checks failed\n\n'
+        printf '## Summary\n\n%s\n' "$(qc_summary)"
+        [ -z "$ISSUE" ] || printf '\nRefs #%s\n' "$ISSUE"
+        printf '\n## Diff\n\n```\n%s\n```\n' "$(git diff --stat "$BASE" HEAD)"
+        printf '\n## Checks\n\n| Command | Result |\n| --- | --- |\n'
+        cat "$QUICK_CHANGE_STATE_DIR/checks-table.md"
+      } | qc_write pr-body.md
+      # gh pr create runs through _gh_retry_core from workflow_gh_retry.sh,
+      # under an outer timeout; the body goes through --body-file (#1570).
+      GH_RETRY_TMPDIR="$QUICK_CHANGE_STATE_DIR" timeout 1800 bash -c '. "$1"; shift; _gh_retry_core "pr create" pr create "$@"' _ \
+        "$QC_TOOLS/workflow_gh_retry.sh" --base "$DEFAULT" --head "$BRANCH" --title "$(qc_title)" \
+        --body-file "$QUICK_CHANGE_STATE_DIR/pr-body.md" "$@"
+    output: "quick_change_pr_url"

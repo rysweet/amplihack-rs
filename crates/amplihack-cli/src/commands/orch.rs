@@ -21,6 +21,7 @@ use std::path::PathBuf;
 
 use crate::commands::multitask;
 
+mod select_workflow;
 mod workflow_log_inventory;
 
 #[derive(Subcommand, Debug)]
@@ -141,6 +142,26 @@ pub enum OrchHelperCommands {
         /// The current task type (e.g. "Operations").
         #[arg(long)]
         current: String,
+    },
+
+    /// Choose the workflow for a task: `quick-change`, `default-workflow` or
+    /// `none` (issue #1740).
+    ///
+    /// Reads the classifier JSON from stdin (at most 1 MiB; larger or
+    /// unreadable input is treated as empty). Prints the bare value with no
+    /// trailing newline, writes any warnings and then one
+    /// `[dev-orchestrator] Workflow:` log line to stderr, and always exits 0.
+    /// See `docs/reference/quick-change-recipe.md` for the precedence table.
+    SelectWorkflow {
+        /// The `-c workflow=` value: `quick-change` or `default-workflow`.
+        #[arg(long = "override", default_value = "")]
+        override_value: String,
+        /// The normalised task type.
+        #[arg(long, default_value = "")]
+        task_type: String,
+        /// The workstream count. An unreadable value counts as not one.
+        #[arg(long, default_value = "1")]
+        workstream_count: String,
     },
 
     /// List deterministic workflow log artifacts by metadata only.
@@ -432,6 +453,34 @@ fn read_stdin() -> Result<String> {
     Ok(buf)
 }
 
+/// Upper bound on the classifier JSON read by `select-workflow`.
+const SELECT_WORKFLOW_STDIN_MAX: u64 = 1 << 20;
+
+/// Read at most [`SELECT_WORKFLOW_STDIN_MAX`] bytes of stdin. Oversized,
+/// unreadable or non-UTF-8 input is treated as empty, which selects the
+/// default workflow.
+fn read_bounded_stdin() -> String {
+    let mut buf = Vec::new();
+    let read = std::io::stdin()
+        .take(SELECT_WORKFLOW_STDIN_MAX + 1)
+        .read_to_end(&mut buf);
+    match read {
+        Ok(_) if buf.len() as u64 <= SELECT_WORKFLOW_STDIN_MAX => {
+            String::from_utf8(buf).unwrap_or_default()
+        }
+        Ok(_) => {
+            eprintln!("[dev-orchestrator] classifier output over 1 MiB treated as empty");
+            String::new()
+        }
+        Err(e) => {
+            eprintln!(
+                "[dev-orchestrator] could not read classifier output ({e}); treated as empty"
+            );
+            String::new()
+        }
+    }
+}
+
 /// CLI entry point for `amplihack orch helper <subcommand>`.
 pub fn run(command: OrchHelperCommands) -> Result<()> {
     match command {
@@ -472,8 +521,28 @@ pub fn run(command: OrchHelperCommands) -> Result<()> {
         }
         OrchHelperCommands::BuildWorkstreamsConfig => {
             let input = read_stdin()?;
-            let path = build_workstreams_config_to_tempfile(&input)?;
+            let workflow = std::env::var("RECIPE_VAR_workflow").unwrap_or_default();
+            if !workflow.trim().is_empty() && select_workflow::valid_override(&workflow).is_none() {
+                eprintln!("{}", select_workflow::unknown_override_warning(&workflow));
+            }
+            let path = build_workstreams_config_with_override(&input, &workflow)?;
             println!("{path}");
+            Ok(())
+        }
+        OrchHelperCommands::SelectWorkflow {
+            override_value,
+            task_type,
+            workstream_count,
+        } => {
+            let input = read_bounded_stdin();
+            let count = workstream_count.trim().parse::<usize>().unwrap_or(0);
+            let selection = select_workflow::select(&override_value, &task_type, &input, count);
+            for warning in &selection.warnings {
+                eprintln!("{warning}");
+            }
+            eprintln!("{}", select_workflow::log_line(&selection));
+            print!("{}", selection.workflow);
+            std::io::Write::flush(&mut std::io::stdout()).context("failed to flush stdout")?;
             Ok(())
         }
         OrchHelperCommands::ExtractField { field, default } => {
@@ -682,24 +751,32 @@ fn normalise_workstream_classification(raw: &str) -> &'static str {
     normalise_type(raw)
 }
 
+/// Development workstreams run `quick-change` or `default-workflow` only: a
+/// valid override wins, an exact `quick-change` or `default-workflow` from
+/// the model is kept, and anything else is coerced to `default-workflow`
+/// (#1740). Non-Development recipes are left unchanged.
 fn normalise_workstream_recipe(
     ws: &serde_json::Value,
     top_level_task_type: Option<&str>,
+    override_workflow: Option<&'static str>,
 ) -> String {
     let raw_recipe = ws
         .get("recipe")
         .and_then(|v| v.as_str())
-        .unwrap_or("default-workflow");
+        .unwrap_or(select_workflow::DEFAULT_WORKFLOW);
 
     let is_development = workstream_classification(ws, top_level_task_type)
         .map(normalise_workstream_classification)
         == Some("Development");
 
-    if is_development {
-        "default-workflow".to_string()
-    } else {
-        raw_recipe.to_string()
+    if !is_development {
+        return raw_recipe.to_string();
     }
+    let kept = match raw_recipe {
+        select_workflow::QUICK_CHANGE => select_workflow::QUICK_CHANGE,
+        _ => select_workflow::DEFAULT_WORKFLOW,
+    };
+    override_workflow.unwrap_or(kept).to_string()
 }
 
 /// Build the workstreams-config tempfile from a decomposition JSON blob and
@@ -707,6 +784,17 @@ fn normalise_workstream_recipe(
 /// each entry has `issue: "TBD"`, `branch: feat/orch-{i}-{slug}`,
 /// `description`, `task`, `recipe` (default `default-workflow`).
 pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
+    build_workstreams_config_with_override(decomp, "")
+}
+
+/// [`build_workstreams_config_to_tempfile`] with the `-c workflow=` value.
+/// A valid override (`quick-change` or `default-workflow`) applies to every
+/// Development workstream; an empty or invalid one is ignored.
+pub fn build_workstreams_config_with_override(
+    decomp: &str,
+    override_value: &str,
+) -> Result<String> {
+    let override_workflow = select_workflow::valid_override(override_value);
     let obj = extract_json(decomp).unwrap_or(serde_json::json!({}));
     let top_level_task_type = obj.get("task_type").and_then(|v| v.as_str());
     let workstreams = obj
@@ -729,7 +817,7 @@ pub fn build_workstreams_config_to_tempfile(decomp: &str) -> Result<String> {
             .and_then(|v| v.as_str())
             .unwrap_or(&name)
             .to_string();
-        let recipe = normalise_workstream_recipe(ws, top_level_task_type);
+        let recipe = normalise_workstream_recipe(ws, top_level_task_type, override_workflow);
         entries.push(serde_json::json!({
             "issue": "TBD",
             "branch": format!("feat/orch-{idx}-{slug}"),
@@ -1427,6 +1515,143 @@ mod tests {
         assert_eq!(parsed[1]["recipe"], "qa-workflow");
         assert_eq!(parsed[2]["recipe"], "ops-sentinel-workflow");
         assert_eq!(parsed[3]["recipe"], "consensus-workflow");
+    }
+
+    // --- #1740: quick-change in the normaliser and the -c workflow= override --
+
+    const MIXED_DECOMP: &str = r#"{
+        "task_type": "Development",
+        "workstreams": [
+            {"name": "docs", "classification": "Development", "recipe": "quick-change"},
+            {"name": "core", "classification": "Development", "recipe": "default-workflow"},
+            {"name": "wrong", "classification": "Development", "recipe": "investigation-workflow"},
+            {"name": "missing", "classification": "Development"},
+            {"name": "research", "classification": "Investigation", "recipe": "investigation-workflow"}
+        ]
+    }"#;
+
+    fn recipes_with_override(decomp: &str, ov: &str) -> Vec<String> {
+        let path = build_workstreams_config_with_override(decomp, ov).unwrap();
+        let body = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_file(&path).ok();
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["recipe"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn development_workstream_keeps_quick_change_recipe() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "typo", "classification": "Development", "recipe": "quick-change"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "quick-change");
+    }
+
+    #[test]
+    fn development_quick_change_recipe_is_matched_exactly() {
+        for near_miss in [
+            "Quick-Change",
+            " quick-change",
+            "quick_change",
+            "quick-change-x",
+        ] {
+            let decomp = serde_json::json!({
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "x", "classification": "Development", "recipe": near_miss}
+                ]
+            });
+            let parsed = workstreams_config_from(&decomp.to_string());
+            assert_eq!(parsed[0]["recipe"], "default-workflow", "{near_miss:?}");
+        }
+    }
+
+    #[test]
+    fn non_development_quick_change_recipe_is_left_unchanged() {
+        let parsed = workstreams_config_from(
+            r#"{
+                "task_type": "Development",
+                "workstreams": [
+                    {"name": "q", "classification": "Investigation", "recipe": "quick-change"}
+                ]
+            }"#,
+        );
+
+        assert_eq!(parsed[0]["recipe"], "quick-change");
+    }
+
+    #[test]
+    fn empty_override_normalises_each_development_workstream() {
+        assert_eq!(
+            recipes_with_override(MIXED_DECOMP, ""),
+            vec![
+                "quick-change",
+                "default-workflow",
+                "default-workflow",
+                "default-workflow",
+                "investigation-workflow",
+            ]
+        );
+    }
+
+    #[test]
+    fn quick_change_override_applies_to_every_development_workstream_only() {
+        assert_eq!(
+            recipes_with_override(MIXED_DECOMP, "quick-change"),
+            vec![
+                "quick-change",
+                "quick-change",
+                "quick-change",
+                "quick-change",
+                "investigation-workflow",
+            ]
+        );
+    }
+
+    #[test]
+    fn default_workflow_override_replaces_a_classifier_quick_change() {
+        assert_eq!(
+            recipes_with_override(MIXED_DECOMP, " Default-Workflow\n"),
+            vec![
+                "default-workflow",
+                "default-workflow",
+                "default-workflow",
+                "default-workflow",
+                "investigation-workflow",
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_override_is_ignored_by_the_normaliser() {
+        assert_eq!(
+            recipes_with_override(MIXED_DECOMP, "quick"),
+            recipes_with_override(MIXED_DECOMP, "")
+        );
+    }
+
+    #[test]
+    fn build_workstreams_config_to_tempfile_ignores_any_override() {
+        // The one-argument form keeps its signature and behaves as an empty
+        // override, so callers outside the CLI arm are unaffected.
+        let parsed = workstreams_config_from(MIXED_DECOMP);
+        let got: Vec<&str> = parsed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["recipe"].as_str().unwrap())
+            .collect();
+        assert_eq!(got, recipes_with_override(MIXED_DECOMP, ""));
     }
 
     #[test]

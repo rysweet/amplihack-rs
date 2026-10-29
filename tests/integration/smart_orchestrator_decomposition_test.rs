@@ -2,7 +2,8 @@
 //!
 //! These tests assert the v3 composer + 4 phase sub-recipes preserve
 //! the v2 contract verbatim:
-//!   * exact 29-step inventory in exact order
+//!   * exact 31-step inventory in exact order (#1740 added select-workflow
+//!     and execute-single-round-1-quick-change)
 //!   * 4 sub-recipes in 4 calls, in order
 //!   * brick rule (≤400 LOC) on every phase recipe
 //!   * no duplicate step IDs across phases
@@ -26,6 +27,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "classify-and-decompose",
     "parse-decomposition",
     "activate-workflow",
+    "select-workflow",
     "materialize-force-single-workstream",
     "materialize-allow-no-op",
     "setup-session",
@@ -34,6 +36,7 @@ const EXPECTED_STEP_INVENTORY: &[&str] = &[
     "ops-file-change-check",
     "derive-recursion-guard",
     "execute-single-round-1-development",
+    "execute-single-round-1-quick-change",
     "execute-single-round-1-investigation",
     "create-workstreams-config",
     "launch-parallel-round-1",
@@ -181,4 +184,63 @@ fn critical_routing_and_recovery_steps_present() {
             "MANDATORY step `{must}` missing from composed smart-orchestrator"
         );
     }
+}
+
+/// Issue #1740 (D1): a quick-change run skips orchestrator reflection and
+/// outside-in validation; summarize and complete-session still run.
+const SKIPPED_AFTER_QUICK_CHANGE: &[(&str, &str)] = &[
+    ("smart-reflect-loop", "reflect-round-1"),
+    ("smart-reflect-loop", "execute-round-2"),
+    ("smart-reflect-loop", "reflect-round-2"),
+    ("smart-reflect-loop", "execute-round-3"),
+    ("smart-reflect-loop", "reflect-final"),
+    ("smart-validate-summarize", "validate-outside-in-testing"),
+];
+
+fn raw_condition(recipe: &str, id: &str) -> String {
+    let path = recipes_dir().join(format!("{recipe}.yaml"));
+    let raw = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path:?}: {e}"));
+    let doc: serde_yaml::Value =
+        serde_yaml::from_str(&raw).unwrap_or_else(|e| panic!("parse {path:?}: {e}"));
+    let step = doc["steps"]
+        .as_sequence()
+        .expect("steps")
+        .iter()
+        .find(|s| s["id"].as_str() == Some(id))
+        .unwrap_or_else(|| panic!("{recipe}: step {id} missing"));
+    step["condition"]
+        .as_str()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[test]
+fn reflection_and_validation_exclude_quick_change() {
+    for (recipe, id) in SKIPPED_AFTER_QUICK_CHANGE {
+        let c = raw_condition(recipe, id);
+        assert!(
+            c.contains("and selected_workflow != 'quick-change'"),
+            "{recipe}/{id} must exclude quick-change runs: {c}"
+        );
+    }
+    for id in ["summarize", "complete-session"] {
+        let c = raw_condition("smart-validate-summarize", id);
+        assert!(!c.contains("selected_workflow"), "{id} must still run: {c}");
+    }
+}
+
+#[test]
+fn quick_change_round_1_requires_the_selection() {
+    let c = raw_condition(
+        "smart-execute-routing",
+        "execute-single-round-1-quick-change",
+    );
+    assert!(c.contains("selected_workflow == 'quick-change'"), "{c}");
+    let c = raw_condition(
+        "smart-execute-routing",
+        "execute-single-round-1-development",
+    );
+    assert!(c.contains("selected_workflow != 'quick-change'"), "{c}");
 }

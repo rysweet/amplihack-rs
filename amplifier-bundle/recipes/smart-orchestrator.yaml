@@ -36,6 +36,8 @@ context:
   session_info: ""
   task_type: ""
   workstream_count: ""
+  workflow: "" # -c workflow=quick-change|default-workflow (issue #1740)
+  selected_workflow: "" # set by select-workflow in smart-classify-route
   workstreams_file: ""
   recursion_guard: ""
   round_1_result: ""

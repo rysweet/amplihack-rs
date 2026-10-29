@@ -77,7 +77,7 @@ in amplihack. It replaces the `ultrathink-orchestrator` skill.
 
 ## Development Routing Invariant
 
-Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
 
 Hybrid decompositions route each workstream by its own normalized classification.
 

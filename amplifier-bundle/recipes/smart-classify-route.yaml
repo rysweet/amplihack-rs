@@ -20,6 +20,8 @@ recursion:
 
 context:
   force_single_workstream: ""
+  workflow: ""
+  selected_workflow: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -85,6 +87,14 @@ steps:
          unusual ones like "hold off merging", "keep it as a draft", "wait for
          my review", "leave it open", "don't merge", "no admin merge". Default
          to `false` when the request says nothing about merging.
+      6. recommended_workflow: "quick-change" | "default-workflow", and
+         workflow_reason: one short sentence (issue #1740). Recommend
+         "quick-change" only for a Development task with exactly one
+         workstream that is one of: documentation only; a dependency lock
+         update; a comment or typo fix; a small contained fix to one or two
+         files. Never recommend it for a feature, a behaviour change visible
+         to users, or more than one workstream. When in doubt, choose
+         "default-workflow".
 
       **Classification rules — read carefully (#269)**:
       - **Operations** is ONLY for one-shot read-only or trivial mutating
@@ -97,7 +107,7 @@ steps:
         ANY code; OR write/add tests; OR open a PR; OR modify files in
         `src/` / `crates/` / `bins/`. Multi-requirement tasks with numbered
         items `(1)`, `(2)`, `(3)` are almost always Development.
-      - Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.
+      - Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.
       - Hybrid decompositions route each workstream by its own normalized classification.
       - When in doubt between Operations and Development, choose Development.
 
@@ -112,7 +122,9 @@ steps:
         "no_merge": false,
         "workstreams": [
           {"name": "slug", "description": "full task", "recipe": "default-workflow"}
-        ]
+        ],
+        "recommended_workflow": "default-workflow",
+        "workflow_reason": "one short sentence"
       }
       ```
     output: "decomposition_json"
@@ -202,6 +214,22 @@ steps:
       # Output workstream count without trailing newline (fix #3570).
       printf '%s' "$COUNT"
     output: "workstream_count"
+
+  # select-workflow (#1740): quick-change, default-workflow or none, from the
+  # -c workflow= override, task_type, the classifier's recommended_workflow
+  # and the workstream count. The helper logs the choice and reason to stderr.
+  - id: "select-workflow"
+    type: "bash"
+    command: |
+      _DECOMP_TMPFILE=$(mktemp)
+      trap 'rm -f "$_DECOMP_TMPFILE"' EXIT
+      printf '%s' "${RECIPE_VAR_decomposition_json:-}" > "$_DECOMP_TMPFILE"
+      amplihack orch helper select-workflow \
+        --override "${RECIPE_VAR_workflow:-}" \
+        --task-type "${RECIPE_VAR_task_type:-}" \
+        --workstream-count "${RECIPE_VAR_workstream_count:-1}" \
+        < "$_DECOMP_TMPFILE"
+    output: "selected_workflow"
 
   # ─────────────────────────────────────────────────────────────────────────
   # Materialize user_context overrides into step outputs so they are

@@ -338,15 +338,21 @@ fn recipe_files_with_git_commands_disable_interactive_pagers() {
 
 #[test]
 fn issue_749_prompts_and_dev_orchestrator_docs_state_development_routing_invariant() {
-    let required = "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant.";
+    let required = "Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`.";
 
     for rel in [
         "amplifier-bundle/recipes/smart-classify-route.yaml",
         "amplifier-bundle/recipes/smart-execute-routing.yaml",
         "amplifier-bundle/skills/dev-orchestrator/SKILL.md",
         "amplifier-bundle/skills/dev-orchestrator/reference.md",
+        "docs/reference/dev-orchestrator-routing.md",
+        "docs/reference/quick-change-recipe.md",
     ] {
         let content = read_repo_file(rel);
+        assert!(
+            !content.contains("Development classification always routes to `default-workflow`"),
+            "{rel} must not keep the pre-#1740 wording of the invariant"
+        );
         assert!(
             content.contains(required),
             "{rel} must explicitly state the Development routing invariant"
@@ -379,7 +385,7 @@ fn issue_749_routing_hook_prompt_reinforces_development_invariant() {
 
     assert!(
         content.contains(
-            "Development classification always routes to `default-workflow`; model-provided recipe fields do not override that invariant."
+            "Development classification routes to `default-workflow` unless the classifier or `-c workflow=` selects `quick-change` for a small single-workstream task; any other model-provided recipe value is coerced to `default-workflow`."
         ),
         "routing hook prompt must reinforce the Development routing invariant"
     );
@@ -425,6 +431,39 @@ fn issue_672_workflow_reliability_normalizes_development_recipes() {
             "default-workflow",
         ],
         "Development-classified workstreams must route to default-workflow for missing, empty, wrong, and already-correct recipe values"
+    );
+}
+
+#[test]
+fn issue_1740_development_workstreams_keep_quick_change_and_coerce_the_rest() {
+    let entries = build_workstream_entries(serde_json::json!({
+        "task_type": "Development",
+        "workstreams": [
+            {
+                "name": "small-doc-fix",
+                "classification": "Development",
+                "description": "Fix one broken link.",
+                "recipe": "quick-change"
+            },
+            {
+                "name": "near-miss",
+                "classification": "Development",
+                "description": "A recipe name close to quick-change is still coerced.",
+                "recipe": "quick_change"
+            },
+            {
+                "name": "other",
+                "classification": "Development",
+                "description": "Any other model-provided value is coerced.",
+                "recipe": "consensus-workflow"
+            }
+        ]
+    }));
+
+    assert_eq!(
+        recipes(&entries),
+        vec!["quick-change", "default-workflow", "default-workflow"],
+        "Development workstreams may keep quick-change; every other recipe value is coerced to default-workflow"
     );
 }
 

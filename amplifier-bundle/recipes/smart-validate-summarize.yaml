@@ -17,7 +17,9 @@ recursion:
   max_depth: 6
   max_total_steps: 80
 
-context: {}
+context:
+  # Issue #1740: set by select-workflow; quick-change runs skip these steps.
+  selected_workflow: ""
 
 steps:
   # ─────────────────────────────────────────────────────────────────────────
@@ -34,7 +36,7 @@ steps:
 
   - id: "validate-outside-in-testing"
     type: "agent"
-    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result"
+    condition: "'Q&A' not in task_type and ('Operations' not in task_type or ops_modified_files) and 'Development' in task_type and round_1_result and selected_workflow != 'quick-change'"
     agent: "amplihack:core:reviewer"
     prompt: |
       Outside-in testing validation check.
