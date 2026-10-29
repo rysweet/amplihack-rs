@@ -258,6 +258,32 @@ fn rotate_log_grammar_is_documented() {
     }
 }
 
+/// Rotate revalidation (#1721): the labelled skip line, the `revalidate:`
+/// line and the no-capacity ALERT suffix each have a log-grammar row.
+#[test]
+fn rotate_revalidation_log_rows_are_documented() {
+    for row in [
+        "| `skip: state changed during measurement (<labels>)` |",
+        "| `revalidate: target <name> no longer eligible (<reason>); reconsidered` |",
+        "`ALERT: no profile has capacity live=<name> s=<n>% w=<n>% (candidates: <F> failed, <E> exhausted)`",
+        "#### Rotate revalidation",
+    ] {
+        assert!(REFERENCE.contains(row), "reference is missing `{row}`");
+    }
+    for label in [
+        "`journal`",
+        "`live`",
+        "`pin`",
+        "`overflow`",
+        "`target eligibility: <reason>`",
+    ] {
+        assert!(
+            REFERENCE.contains(label),
+            "reference is missing label {label}"
+        );
+    }
+}
+
 /// Rotator autostart and failed-probe damping: the reference names the
 /// variable, the command, the status line and the new log lines as the code
 /// prints them, and the how-tos describe autostart.

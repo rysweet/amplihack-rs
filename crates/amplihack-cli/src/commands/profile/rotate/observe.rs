@@ -11,6 +11,7 @@ use super::ledger::{Phase, spend_reset};
 use super::log::{Sink, msg, timestamp};
 use super::measure::{self, Live};
 use super::overflow::{OverflowInput, Tag, decide_overflow};
+use super::overflow_record::alert_line;
 use super::pin::{self, Gate as PinGate, PinState};
 use super::swap;
 use crate::commands::profile::ProfileError;
@@ -132,6 +133,9 @@ pub fn reading_of(others: &[(ProfileName, Reading)], name: &ProfileName) -> Read
         .map_or(Reading::Failed, |(_, r)| *r)
 }
 
+/// The live profile's probe and each candidate's.
+pub type Probes = (Probed, Vec<(ProfileName, Probed)>);
+
 /// One cycle's measurements and its decision, after the overflow policy
 /// and failed-probe damping.
 pub struct Measurement {
@@ -150,6 +154,10 @@ pub struct Measurement {
     pub next_plan_reset: Option<i64>,
     /// When measuring started, epoch seconds.
     pub measured_at: i64,
+    /// The probes decided on, for step 6 to re-decide a swap whose target
+    /// left the candidates (#1721); `None` from a stub, which disables that.
+    /// `Probed` must never hold a token or an account identifier.
+    pub probed: Option<Probes>,
 }
 
 pub fn measure_and_decide(
@@ -238,6 +246,7 @@ pub(super) fn decide_measured(
         (_, tag) => tag,
     };
     Ok(Measurement {
+        probed: Some((probe.clone(), probes.clone())),
         live: probe.reading,
         others: probes.into_iter().map(|(n, p)| (n, p.reading)).collect(),
         decision,
@@ -356,12 +365,8 @@ pub fn dry_run(ctx: &mut Ctx) -> Result<CycleOutcome, ProfileError> {
             None => out.emit(0, "would stay"),
         },
         Decision::Alert => {
-            let line = match name {
-                Some(n) if tag == Some(Tag::On) && snap.platform_live() => {
-                    msg::alert_platform_stuck(&platform_block_reason(ctx), n)
-                }
-                _ => msg::alert_no_capacity_for(name.map_or("-", ProfileName::as_str), &live),
-            };
+            let reason = || platform_block_reason(ctx);
+            let (_, line) = alert_line(&snap, tag, &live, &others, reason);
             out.emit(
                 0,
                 &format!(

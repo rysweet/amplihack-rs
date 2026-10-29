@@ -10,7 +10,6 @@ use super::ledger::{LastCycle, RotateLedger, RotateState, SWITCHED};
 use super::log::{Sink, msg};
 use super::observe::{
     Measurement, Snap, dry_run, live_name, measure_and_decide, platform_block_reason, reading_of,
-    snapshot,
 };
 use super::overflow::Tag;
 use super::overflow_record::{
@@ -21,10 +20,11 @@ use super::overflow_record::{
 // holds the cycle).
 use super::pin::{self, Gate as PinGate};
 use super::prelude::{Prelude, locked_prelude};
+use super::revalidate::{self, Verdict};
 use super::settings::Settings;
 use super::swap::{self, Source};
 use crate::commands::profile::ProfileError;
-use crate::commands::profile::auto_switch::kit::{Liveness, exists, now, scan_system};
+use crate::commands::profile::auto_switch::kit::{Liveness, now, scan_system};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::run::resolve_claude_binary;
 use crate::commands::profile::shared_dirs;
@@ -191,7 +191,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     }
     // Step 3: recover and identify under the lock.
     let (mut out, prelude) = locked_prelude(ctx, mode == Mode::OneShot, true)?;
-    let (lock, state, first) = match prelude {
+    let (lock, state, mut first) = match prelude {
         Prelude::Ready { lock, state, first } => (lock, state, first),
         Prelude::LockBusy => {
             out.emit(now(), msg::LOCK_BUSY);
@@ -252,17 +252,7 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
 
     // Steps 4 and 5: measure without the lock, then decide. Recovery does
     // not need `claude`, so it is looked for only now.
-    let Measurement {
-        live,
-        others,
-        decision,
-        note,
-        failed,
-        tag,
-        new_blocks,
-        next_plan_reset,
-        measured_at,
-    } = match ctx.measure {
+    let m = match ctx.measure {
         Some(stub) => stub(ctx, &first)?,
         None => {
             let binary = resolve_claude_binary()
@@ -270,17 +260,17 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
             measure_and_decide(ctx, &binary, &first)?
         }
     };
-    ctx.failed_live = failed;
+    let failed_before = std::mem::replace(&mut ctx.failed_live, m.failed);
     out.emit(
         now(),
-        &msg::cycle(live_name(&first.live), &live, &others, first.platform()),
+        &msg::cycle(live_name(&first.live), &m.live, &m.others, first.platform()),
     );
     if ctx.stopping() {
         out.emit(now(), msg::STOPPED);
         return Ok(CycleOutcome::Stopped);
     }
 
-    // Step 6: revalidate and swap under the lock.
+    // Step 6: revalidate and swap under the lock, held until the swap.
     let Some(lock) = state.try_lock(LOCK_WAIT)? else {
         out.emit(now(), msg::LOCK_BUSY);
         return Ok(CycleOutcome::Skipped);
@@ -288,27 +278,43 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
     // The external rotator may have started while this one measured.
     prototype_guard(ctx.store.root())?;
     let t = now();
-    if exists(&ctx.rs.journal) || snapshot(ctx, &state)? != first {
-        out.emit(t, msg::CHANGED);
-        let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
-        // A record written while this cycle measured unlocked (a `profile
-        // switch`, or another cycle) is newer than anything this cycle knows.
-        // Overwriting it with `skipped` would lose a switch's record, and the
-        // held cycles after it would then write a bare `held`, so the
-        // limit-resume hook would never wake sessions stopped before the
-        // switch (#1691).
-        if !newer_than(l.last_cycle.as_ref(), measured_at) {
-            save(
-                ctx,
-                &mut l,
-                CycleOutcome::Skipped,
-                t,
-                Some(measured_at),
-                None,
-            )?;
+    let m = match revalidate::check(ctx, &state, &first, &m, failed_before)? {
+        Verdict::Proceed => m,
+        // Issue #1721: only the target left the candidates, and the probes
+        // already taken chose another; from here the cycle is that one.
+        Verdict::Reconsidered { m, fresh, line } => {
+            out.emit(t, &line);
+            first = *fresh;
+            ctx.failed_live = m.failed;
+            *m
         }
-        return Ok(CycleOutcome::Skipped);
-    }
+        Verdict::Skip(why) => {
+            out.emit(t, &msg::changed(&why));
+            let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
+            // A record written while this cycle measured unlocked (a `profile
+            // switch`, or another cycle) is newer than anything this cycle
+            // knows. Overwriting it with `skipped` would lose a switch's
+            // record, and the held cycles after it would then write a bare
+            // `held`, so the limit-resume hook would never wake sessions
+            // stopped before the switch (#1691).
+            if !newer_than(l.last_cycle.as_ref(), m.measured_at) {
+                let at = Some(m.measured_at);
+                save(ctx, &mut l, CycleOutcome::Skipped, t, at, None)?;
+            }
+            return Ok(CycleOutcome::Skipped);
+        }
+    };
+    let Measurement {
+        live,
+        others,
+        decision,
+        note,
+        tag,
+        new_blocks,
+        next_plan_reset,
+        measured_at,
+        ..
+    } = m;
     let mut l = ctx.rs.load_ledger()?.unwrap_or_default();
     let stay_line = stay_note(&l, tag, live_name(&first.live), next_plan_reset);
     // Saved before any swap, which reloads the ledger from disk.
@@ -365,7 +371,8 @@ pub fn run_cycle(ctx: &mut Ctx, mode: Mode) -> Result<CycleOutcome, ProfileError
         Decision::Alert => {
             note_live(&mut l, &first, t);
             let name = live_name(&first.live);
-            let (kind, line) = alert_line(&first, tag, &live, || platform_block_reason(ctx));
+            let reason = || platform_block_reason(ctx);
+            let (kind, line) = alert_line(&first, tag, &live, &others, reason);
             alert_once(&mut out, &mut l, &alert_key(kind, name), t, &line);
             CycleOutcome::Alerted
         }
