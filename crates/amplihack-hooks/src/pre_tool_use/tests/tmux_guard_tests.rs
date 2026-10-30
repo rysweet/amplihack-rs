@@ -9,6 +9,58 @@ fn denied(command: &str) -> bool {
     check(command).is_some()
 }
 
+/// Measures the CPU time the calling thread spends, not wall time.
+///
+/// The cost-bound tests below catch a quadratic regression, which costs
+/// minutes. Wall time also counts the time the thread waits for a core: the
+/// workspace suite runs on hosts with a load average near 100, where a case
+/// that needs 15 s of CPU in a debug build took more than its 30 s wall bound.
+/// CPU time does not grow with the host's load, so the bounds stay meaningful.
+struct CpuTimer {
+    #[cfg(unix)]
+    start: std::time::Duration,
+    #[cfg(not(unix))]
+    start: std::time::Instant,
+}
+
+impl CpuTimer {
+    #[cfg(unix)]
+    fn start() -> Self {
+        Self {
+            start: thread_cpu_time(),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn start() -> Self {
+        Self {
+            start: std::time::Instant::now(),
+        }
+    }
+
+    #[cfg(unix)]
+    fn elapsed(&self) -> std::time::Duration {
+        thread_cpu_time().saturating_sub(self.start)
+    }
+
+    #[cfg(not(unix))]
+    fn elapsed(&self) -> std::time::Duration {
+        self.start.elapsed()
+    }
+}
+
+#[cfg(unix)]
+fn thread_cpu_time() -> std::time::Duration {
+    let mut ts = libc::timespec {
+        tv_sec: 0,
+        tv_nsec: 0,
+    };
+    // SAFETY: `ts` is a valid, writable timespec for the call's duration.
+    let rc = unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+    assert_eq!(rc, 0, "clock_gettime(CLOCK_THREAD_CPUTIME_ID) failed");
+    std::time::Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
+}
+
 /// The exact command from the incident (2026-10-28 15:18:39 PDT).
 const INCIDENT: &str = "TMUX_TMPDIR=$SB/tmuxsock tmux kill-server";
 
@@ -350,7 +402,7 @@ fn a_long_chain_of_assignments_is_checked_quickly() {
     }
     line.push_str("; tmux -S \"$v3999\" kill-server");
     assert!(line.len() < 64 * 1024);
-    let started = std::time::Instant::now();
+    let started = CpuTimer::start();
     assert!(denied(&line));
     assert!(started.elapsed() < std::time::Duration::from_secs(2));
 }
@@ -502,7 +554,7 @@ fn reaching_the_depth_limit_denies() {
 /// Copilot, so a panic would allow the command.
 #[test]
 fn pathological_inputs_never_panic_and_finish_quickly() {
-    let started = std::time::Instant::now();
+    let started = CpuTimer::start();
     let mut inputs: Vec<String> = [
         "",
         "tmux",
@@ -1189,7 +1241,7 @@ fn more_tmux_words_in_one_command_than_the_cap_deny() {
 
 #[test]
 fn large_inputs_shaped_against_the_cost_bound_finish_quickly() {
-    let started = std::time::Instant::now();
+    let started = CpuTimer::start();
     let fill = MAX_INPUT - 1_000;
     let tmux64 = "tmux ".repeat(MAX_TMUX_PER_COMMAND);
     let cases = [
@@ -1209,10 +1261,11 @@ fn large_inputs_shaped_against_the_cost_bound_finish_quickly() {
         assert!(text.len() <= MAX_INPUT, "case is over MAX_INPUT");
         let _ = check(text);
     }
-    // A release build takes about 0.3 s for the slowest of these; the bound
-    // leaves room for a debug build on a loaded host.
+    // A release build takes about 0.3 s of CPU for all of these and a debug
+    // build about 15 s; the quadratic version took 29 s in a release build,
+    // so minutes in a debug one. The bound sits well between the two.
     assert!(
-        started.elapsed() < std::time::Duration::from_secs(30),
+        started.elapsed() < std::time::Duration::from_secs(60),
         "took {:?}",
         started.elapsed()
     );
