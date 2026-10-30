@@ -59,7 +59,10 @@ fn registry() -> Registry {
 fn an_empty_registry() {
     let reg: Registry = serde_json::from_value(json!({ "version": 1, "agents": {} })).unwrap();
     assert_eq!(status_text(&reg).trim_end(), "no agents registered");
-    assert_eq!(status_json(&reg, NOW), json!({ "agents": [] }));
+    assert_eq!(
+        status_json(&reg, NOW),
+        json!({ "agents": [], "version": 1 })
+    );
 }
 
 #[test]
@@ -137,6 +140,10 @@ fn text_from_outside_is_sanitised() {
 #[test]
 fn the_json_form() {
     let got = status_json(&registry(), NOW);
+    let mut keys: Vec<&String> = got.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["agents", "version"], "the top-level keys");
+    assert_eq!(got["version"], 1, "the format version");
     let agents = got["agents"].as_array().unwrap();
     let names: Vec<&str> = agents.iter().map(|a| a["name"].as_str().unwrap()).collect();
     assert_eq!(

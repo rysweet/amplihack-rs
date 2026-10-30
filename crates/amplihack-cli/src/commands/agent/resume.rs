@@ -9,6 +9,7 @@ use super::pass::{PassCfg, View, load};
 use super::registry::{Entry, State, fmt_ts};
 use super::report::{self, Outcome};
 use super::scan::{self, Observation};
+use super::server::{Launched, Placement, Real};
 use super::sessions;
 use super::store::{self, AgentsDir};
 use super::supervise::sleep_unless_stopped;
@@ -72,6 +73,7 @@ pub(super) fn run(
         .map(|c| (c.name, c.registered_at))
         .collect();
     let mut resumed = HashSet::new();
+    let mut placement = Placement::default();
     let mut failure = None;
     schedule(
         order,
@@ -83,7 +85,8 @@ pub(super) fn run(
             let Some(registered_at) = registered.get(&name) else {
                 return ControlFlow::Continue(());
             };
-            match resume_one(dir, home, cfg, &name, registered_at, &mut resumed) {
+            let held = (&mut resumed, &mut placement);
+            match resume_one(dir, home, cfg, &name, registered_at, held) {
                 Ok(()) => ControlFlow::Continue(()),
                 Err(e) => {
                     failure = Some(e);
@@ -98,14 +101,14 @@ pub(super) fn run(
 /// D15: the record is read again and dropped without a line if it was
 /// removed, registered again or is no longer active; liveness, tmux and the
 /// pre-checks are repeated; a conversation already resumed in this pass is
-/// skipped. Otherwise the pane command is started.
+/// skipped. Otherwise the pane command is started, placed by `server.rs`.
 fn resume_one(
     dir: &AgentsDir,
     home: &Path,
     cfg: &PassCfg,
     name: &str,
     registered_at: &str,
-    resumed: &mut HashSet<String>,
+    (resumed, placement): (&mut HashSet<String>, &mut Placement),
 ) -> anyhow::Result<()> {
     let reg = load(dir)?;
     let Some(e) = reg.agents.get(name) else {
@@ -138,17 +141,26 @@ fn resume_one(
     let lost = e.lost_at.clone();
     let message = launch::message(lost.as_deref().unwrap_or(&now_ts), &now_ts);
     let argv = launch::pane_command(name, e, &cfg.exe, &message);
-    let started = tmux.new_session(
-        &e.tmux_session,
-        &e.tmux_window,
-        Path::new(&e.launch_dir),
-        &argv,
-    );
-    if let Err(line) = started {
+    let real = Real {
+        tmux: &tmux,
+        session: &e.tmux_session,
+        window: &e.tmux_window,
+        dir: Path::new(&e.launch_dir),
+        command: &argv,
+    };
+    let socket = e.tmux_socket.as_deref().map(Path::new);
+    let warning = match placement.launch(socket, now, &real) {
+        Launched::Started { warning } => warning,
         // P6: a failed launch counts as a restart, so the restart limit
         // ends an agent whose launch keeps failing.
-        return settle(dir, name, registered_at, Some(Outcome::Tmux(line)), true);
-    }
+        Launched::Failed(line) => {
+            return settle(dir, name, registered_at, Some(Outcome::Tmux(line)), true);
+        }
+        Launched::Unknown { reason, attempted } => {
+            let skipped = Some(Outcome::TmuxUnknown(reason));
+            return settle(dir, name, registered_at, skipped, attempted);
+        }
+    };
     resumed.insert(id.clone());
     let result = Outcome::Resumed.to_string();
     let (conv, lost, at) = (Some(id.as_str()), lost.as_deref(), Some(now_ts.as_str()));
@@ -165,6 +177,12 @@ fn resume_one(
     });
     // The session was started either way, so the line is always written.
     emit(&dir.log(), &line);
+    if let Some(reason) = warning {
+        emit(
+            &dir.log(),
+            &report::server_unscoped_line(now, name, &reason),
+        );
+    }
     written
 }
 

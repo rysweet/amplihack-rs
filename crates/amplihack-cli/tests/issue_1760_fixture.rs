@@ -104,6 +104,7 @@ impl Fx {
         );
         fx.make_socket();
         fx.install_fakes();
+        fx.install_fake_systemd_run();
         fx.set_self_parent(1);
         fx
     }

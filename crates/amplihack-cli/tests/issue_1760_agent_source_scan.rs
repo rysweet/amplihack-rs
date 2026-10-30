@@ -1,7 +1,7 @@
 //! Issue #1760, R8, R9.1, R10.2, D23, S16, S20 and S27: source and docs
 //! guards for `amplihack agent`. The module list exists; every new file is
 //! 300 lines or fewer; every unit-test file is wired; only `tmux.rs` runs
-//! tmux; no shell, no tmux kill or `remain-on-exit`, no `open_private_append`
+//! tmux, and `server.rs` under `systemd-run` (G1); no shell, no tmux kill or `remain-on-exit`, no `open_private_append`
 //! or `create_dir_all`, no #1569/#1618 identifiers; the `/proc` test seam is
 //! read in one place and never documented; the docs use no retired names, and
 //! every documented `amplihack agent` and `amplihack claude --supervise`
@@ -14,10 +14,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 const MODULES: &str = "mod validate registry store procfs cmdline env_record sessions scan \
-    markers socket_check tmux dirty launch report pass resume supervise discover register wrapper";
+    markers socket_check tmux tmux_parse server dirty launch report pass resume supervise discover \
+    register wrapper";
 const UNIT_TESTS: &str = "tests_validate tests_registry tests_store tests_procfs tests_cmdline \
     tests_env_record tests_env_drift tests_sessions tests_scan tests_markers tests_tmux \
-    tests_launch tests_report tests_pass tests_supervise";
+    tests_launch tests_report tests_pass tests_supervise tests_server tests_validate_hardening";
 const DOCS: &str = "docs/howto/supervise-agent-sessions.md docs/reference/agent-command.md";
 
 fn manifest() -> PathBuf {
@@ -88,10 +89,7 @@ fn the_planned_modules_exist() {
         .split_whitespace()
         .filter(|m| !agent_dir().join(format!("{m}.rs")).is_file())
         .collect();
-    assert!(
-        missing.is_empty(),
-        "missing in src/commands/agent/: {missing:?}"
-    );
+    assert!(missing.is_empty(), "not in agent/: {missing:?}");
 }
 
 /// D23: 300 lines or fewer for every new file, source and test.
@@ -164,12 +162,14 @@ fn every_unit_test_file_is_wired() {
 
 #[test]
 fn only_tmux_rs_runs_tmux() {
-    let runs: Vec<String> = sources()
-        .into_iter()
-        .filter(|(_, s)| code(s).contains("Command::new(\"tmux\")"))
-        .map(|(n, _)| n)
-        .collect();
-    assert_eq!(runs, ["tmux.rs"]);
+    let srcs = sources();
+    let with = |needle: &str| -> Vec<&str> {
+        let hits = srcs.iter().filter(|(_, s)| code(s).contains(needle));
+        hits.map(|(n, _)| n.as_str()).collect()
+    };
+    assert_eq!(with("OsStr::new(\"tmux\")"), ["tmux.rs"]);
+    assert_eq!(with("\"systemd-run\""), ["server.rs"]);
+    assert_eq!(with("tmux::client("), ["server.rs"]);
 }
 
 #[test]

@@ -100,7 +100,7 @@ pub struct SuperviseArgs {
     /// Seconds between batches.
     #[arg(long, default_value_t = 60, value_parser = clap::value_parser!(u64).range(0..))]
     pub gap: u64,
-    /// Resumes allowed in the trailing hour before an agent is stopped.
+    /// Launch attempts allowed in the trailing hour before an agent is stopped.
     #[arg(long = "max-restarts", default_value_t = 3, value_parser = clap::value_parser!(u64).range(1..))]
     pub max_restarts: u64,
 }
@@ -145,6 +145,8 @@ mod resume;
 #[cfg(unix)]
 mod scan;
 #[cfg(unix)]
+mod server;
+#[cfg(unix)]
 mod sessions;
 #[cfg(unix)]
 mod socket_check;
@@ -154,6 +156,8 @@ mod store;
 mod supervise;
 #[cfg(unix)]
 mod tmux;
+#[cfg(unix)]
+mod tmux_parse;
 #[cfg(unix)]
 mod validate;
 #[cfg(unix)]
@@ -248,6 +252,9 @@ mod tests_scan;
 #[cfg(test)]
 #[path = "tests_scan_observe.rs"]
 mod tests_scan_observe;
+#[cfg(test)]
+#[path = "tests_server.rs"]
+mod tests_server;
 #[cfg(test)]
 #[path = "tests_sessions.rs"]
 mod tests_sessions;

@@ -168,12 +168,16 @@ mod issue_1760_agent_supervise_checks;
 mod issue_1760_agent_supervise_dupes;
 #[path = "issue_1760_agent_supervise_limits.rs"]
 mod issue_1760_agent_supervise_limits;
+#[path = "issue_1760_agent_tmux_scope.rs"]
+mod issue_1760_agent_tmux_scope;
 #[path = "issue_1760_agent_wrapper.rs"]
 mod issue_1760_agent_wrapper;
 #[path = "issue_1760_agent_wrapper_refusals.rs"]
 mod issue_1760_agent_wrapper_refusals;
 #[path = "issue_1760_fake_proc.rs"]
 mod issue_1760_fake_proc;
+#[path = "issue_1760_fake_systemd_run.rs"]
+mod issue_1760_fake_systemd_run;
 #[path = "issue_1760_fakes.rs"]
 mod issue_1760_fakes;
 #[path = "issue_1760_fixture.rs"]

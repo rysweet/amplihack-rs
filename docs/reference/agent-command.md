@@ -314,8 +314,16 @@ ALERT custodian: stopped: restart limit (3 restarts in the last hour)
 
 ### JSON form
 
-One JSON document and a newline: `{"agents":[...]}`, sorted by name. Every
-key is always present; an absent value is `null`.
+One JSON document and a newline: `{"agents":[...],"version":1}`, with
+`agents` sorted by name. Every key is always present; an absent value is
+`null`.
+
+| Top-level key | Type |
+|---------------|------|
+| `agents` | array of agent objects, described below |
+| `version` | integer, `1`. It changes only when a key is removed or renamed, a key's type or meaning changes, or a new value is added to a key that holds one of a fixed set of values, such as `state` or `ended_by`. |
+
+Each agent object:
 
 | Key | Type |
 |-----|------|
@@ -361,7 +369,18 @@ prints it:
 }
 ```
 
-Keys are printed in alphabetical order.
+Keys are printed in alphabetical order, at the top level and in every
+object.
+
+Stability rule for `version` 1:
+
+- A key is never removed or renamed, and its type and meaning never change.
+- New keys may be added to any object. They take their alphabetical place,
+  so read keys by name, never by position, and ignore keys you do not know.
+- New values may be added to a string that is documented as one of a fixed
+  set, such as `state` or `ended_by`, only with a new `version`.
+- Recorded environment values never appear in the output, in either form.
+  `status` prints no environment variables at all.
 
 ## Supervise
 
@@ -377,7 +396,7 @@ amplihack agent supervise [--once] [--interval SECS] [--batch N] [--gap SECS] [-
 | `--interval SECS` | 60 | 1 or more | Time from the end of one pass to the start of the next. |
 | `--batch N` | 6 | 1 or more | Agents resumed per batch. |
 | `--gap SECS` | 60 | 0 or more | Wait between batches. There is no wait after the last batch. |
-| `--max-restarts N` | 3 | 1 or more | Resumes allowed per agent in any hour; see [Restart limit](#restart-limit). |
+| `--max-restarts N` | 3 | 1 or more | Launch attempts allowed per agent in any hour; see [Restart limit](#restart-limit). |
 
 A value out of range is a usage error (exit 2).
 
@@ -638,6 +657,72 @@ is running.
 | Exit 0 | The resume time is appended to `restarts`, `last_recovery` is set, `lost_at` is cleared, and a `resumed` line is written with the old `lost_at`. The resumed `amplihack claude --supervise` writes its own `launch_id` and `launched_at`. |
 | Anything else | `failed: tmux: LINE`, where LINE is tmux's first stderr line, at most 200 characters. The attempt's time is appended to `restarts`, so it counts towards the [restart limit](#restart-limit), even when the repeated line is not written again. |
 
+#### Server placement
+
+The supervisor checks whether a tmux server is running before the first
+resume on each tmux socket in a pass, with the same `-S SOCKET` that the
+resume uses:
+
+```text
+tmux [-S SOCKET] list-sessions
+```
+
+The rows are tried in order, as for the [session state](#tmux-session-state)
+check, and the first that applies decides. Rows 1 to 3 look at the socket
+before tmux is run, so after a reboot, when the socket's directory or file
+does not exist yet, the server counts as absent.
+
+| Order | Outcome | Server state | Launch |
+|-------|---------|--------------|--------|
+| 1 | The socket's directory exists, and it, a directory above it or an existing socket file fails the [socket checks](#tmux-calls) | unknown, reason `socket directory is not private`; tmux is not run | None. The result is `skipped: tmux session exists (tmux state unknown: REASON)`, and no restart is counted. |
+| 2 | The socket's directory does not exist | absent; tmux is not run | Through `systemd-run`, below. |
+| 3 | The socket file does not exist | absent; tmux is not run | Through `systemd-run`, below. |
+| 4 | `list-sessions` exits 0 | present | Plain `tmux new-session`, as above. |
+| 5 | `list-sessions` exits 1 with `no server running` on stderr | absent | Through `systemd-run`, below. |
+| 6 | Anything else: tmux missing, a timeout, a signal, other text | unknown | None, as in row 1. |
+
+When the server is absent and `systemd-run` is on `PATH`, the
+`new-session` argv is run as:
+
+```text
+systemd-run --user --scope --collect --quiet --unit=amplihack-tmux-server-TS-N -- tmux [-S SOCKET] new-session ...
+```
+
+TS is the Unix time of the launch in whole seconds. N is a counter that
+starts at 1 in each pass and goes up by one for each socket on which the
+pass finds no server, so scopes started on two sockets in the same second do not share
+a name. Both are decimal integers, and nothing else is placed in the unit
+name. `-S SOCKET`, when recorded, comes before `new-session`. tmux then
+starts its server inside the transient scope
+`amplihack-tmux-server-TS-N.scope`, outside the service's control group.
+`--collect` removes the scope once its last process exits. `systemd-run`
+follows the [tmux call rules](#tmux-calls): one argv, no shell, stdin
+closed, a 10-second timeout and output capped at 64 KiB per stream. It is
+always run with `--user`; amplihack never runs it, or `systemctl`, for the
+system manager.
+
+| `systemd-run` outcome | Effect |
+|-----------------------|--------|
+| Exit 0 | The resume succeeded, as for tmux exit 0. |
+| Not on `PATH` | Plain `tmux new-session`, then a WARNING line with REASON `systemd-run is not on PATH`. |
+| Non-zero exit, timeout or signal | `tmux [-S SOCKET] has-session -t =SESSION` runs first, read as in the [session state](#tmux-session-state) check. If the session exists, the resume succeeded and nothing more is started. If its state is unknown, nothing more is started, the result is `skipped: tmux session exists (tmux state unknown: REASON)`, and a restart is counted, because `systemd-run` may have started the session. Otherwise plain `tmux new-session` runs once, then a WARNING line with REASON `systemd-run: LINE` (its first stderr line, or why it could not be run), `systemd-run exited N` (no stderr), `systemd-run was ended by a signal`, or `systemd-run did not finish within 10 s`. |
+
+The WARNING line, written to the [supervisor log](#supervisor-log) only when
+the plain `tmux new-session` exits 0:
+
+```text
+TIME WARNING: agent NAME tmux server started without its own scope: REASON
+```
+
+The outcome of a plain `tmux new-session` decides the resume as in the
+table above. When it fails, the result is `failed: tmux: LINE` and no
+WARNING line is written: the failure line already records the attempt.
+Later resumes on the same socket in the pass use plain tmux without a new
+check, or, when the server state was unknown, are skipped with the same
+result. A server that something else ends between two of them
+is started again by the later resume without a scope and without a WARNING
+line; the next pass checks again.
+
 #### Resume message
 
 The message is a constant with two times:
@@ -692,6 +777,10 @@ run:
 
 No command kills a tmux server, session, window or pane, sends keys, or uses
 `remain-on-exit`.
+
+`systemd-run`, used only for [server placement](#server-placement), is found
+on `PATH` and run under the same rules: one argv, stdin closed, a 10-second
+timeout, output capped at 64 KiB per stream, and the same variables removed.
 
 ## `amplihack claude --supervise`
 
@@ -1001,7 +1090,13 @@ stdout, so the journal of the [service](#service-unit) holds the same lines.
 TIME agent=NAME conversation=ID|- lost=TIME|- resumed=TIME|- result=RESULT
 TIME ALERT: agent NAME stopped: restart limit (N restarts in the last hour)
 TIME WARNING: agent NAME conversation not recorded: REASON
+TIME WARNING: agent NAME tmux server started without its own scope: REASON
 ```
+
+A line is a recovery line when its second field starts with `agent=`, an
+ALERT line when it is `ALERT:`, and a WARNING line when it is `WARNING:`.
+Each form keeps its fields in the order shown; new forms may be added with a
+new second field.
 
 - TIME is UTC, such as `2026-10-29T23:27:41Z`.
 - `lost` is the agent's `lost_at` when set. `resumed` is set only when RESULT
@@ -1013,10 +1108,15 @@ TIME WARNING: agent NAME conversation not recorded: REASON
   [pre-check](#pre-checks), `failed: tmux: LINE` when tmux refused to
   [create the session](#resume), or `stopped: restart limit`, which the ALERT
   line follows.
-- The WARNING line is written only to the log, by
-  [`claude --supervise`](#what-it-records) when it cannot record the
-  conversation of the session it started. It is not stored in
-  `last_recovery`.
+- The `conversation not recorded` WARNING line is written only to the log,
+  by [`claude --supervise`](#what-it-records) when it cannot record the
+  conversation of the session it started.
+- The `tmux server started without its own scope` WARNING line is written by
+  the supervisor when it had to start a tmux server without `systemd-run`;
+  see [Server placement](#server-placement). It is also printed on stdout.
+- REASON in a WARNING line is cut to 200 characters, and its control and
+  format characters, including the escape that starts an ANSI sequence, are
+  replaced by `?`, so it cannot end the line or forge another one. Neither WARNING line is stored in `last_recovery`.
 
 A healthy agent writes no line. A line with the same agent, conversation and
 RESULT as the agent's previous line is not written again, except `resumed`,
@@ -1137,9 +1237,9 @@ loginctl enable-linger "$USER"
 | Setting | Why |
 |---------|-----|
 | `ExecStart` | The absolute path of `amplihack`. Adjust it to the install path, and add [supervise flags](#supervise-flags) here. |
-| `Environment=PATH=` | Absolute directories only, with no empty entries, covering `tmux`, `git`, `claude` and `amplihack`. A tmux server the supervisor starts takes this environment as its global environment, so resumed sessions see the same `PATH`. |
+| `Environment=PATH=` | Absolute directories only, with no empty entries, covering `tmux`, `git`, `systemd-run`, `claude` and `amplihack`. Every directory must be writable only by you or by root, because these programs are found through it. A tmux server the supervisor starts takes this environment as its global environment, so resumed sessions see the same `PATH`. |
 | `Restart=always`, `RestartSec=10` | systemd starts the supervisor again if it exits for any reason. |
-| `KillMode=process` | The tmux servers the supervisor starts, and every resumed agent in them, live in the service's control group. With systemd's default, `control-group`, stopping or restarting the service would end all of them. With `process`, only the supervisor stops, and each later start logs `Found left-over process ... in control group while starting unit` for every process still running there. That is expected. |
+| `KillMode=process` | The supervisor starts tmux servers in scopes of their own (see [Server placement](#server-placement)), so this matters only for a server started without one. Such a server, and every resumed agent in it, lives in the service's control group. With systemd's default, `control-group`, stopping or restarting the service would end all of them. With `process`, only the supervisor stops, and each later start logs `Found left-over process ... in control group while starting unit` for every process still running there. That is expected. |
 | `WantedBy=default.target` | `enable` starts the service with your user manager. |
 
 Leave out:
@@ -1152,8 +1252,30 @@ Leave out:
   agent's tmux server sits in a private `/tmp` that your own `tmux attach`
   cannot reach.
 - **Credentials.** Claude Code reads its login from `~/.claude`, so the unit
-  needs no tokens, and anything in the unit's environment reaches every
-  resumed session.
+  needs no tokens. Do not add secrets with `Environment=`: the unit file and
+  `systemctl --user show` expose them, and anything in the unit's
+  environment reaches every resumed session.
+
+`systemd-run --user` needs `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS`,
+which the user manager sets for its services on most distributions. Without
+them, servers are started without a scope and WARNING lines are written.
+
+To see the scopes and the agents in them:
+
+```bash
+systemctl --user status 'amplihack-tmux-server-*'
+```
+
+An alternative to scopes is a tmux server run as its own user service, such
+as a `tmux-server.service` that runs `tmux new-session -d`. While it runs,
+the supervisor finds a server present on the default socket and does not
+call `systemd-run` for agents on that socket. Two limits apply:
+
+- Resumed agents take the tmux server's environment, not this unit's
+  `PATH`. Set the same `Environment=PATH=` in `tmux-server.service`, with
+  the same writable-directory rule.
+- It covers only the default socket. Agents recorded with `-S SOCKET` on
+  another socket are still placed in scopes.
 
 With `loginctl enable-linger`, your user manager starts at boot, so registered
 agents are resumed after a reboot without anyone logging in. Without it, the

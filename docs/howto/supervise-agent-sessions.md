@@ -17,6 +17,7 @@ The exact flags, file formats, messages and exit codes are in the
 
 - [Before you start](#before-you-start)
 - [Run the supervisor service](#run-the-supervisor-service)
+- [Where the tmux server runs](#where-the-tmux-server-runs)
 - [Register sessions](#register-sessions)
 - [Register the coordinator and its areas](#register-the-coordinator-and-its-areas)
 - [Check what is registered](#check-what-is-registered)
@@ -91,8 +92,26 @@ amplihack does not install the service. Write the unit yourself.
    `PATH` list every directory from step 1. systemd replaces `%h` with your
    home directory. Do not add credentials, sandboxing settings such as
    `PrivateTmp=` or `ProtectHome=`, or resource limits such as `MemoryMax=`:
-   every agent the supervisor resumes inherits them. The
+   every agent the supervisor resumes inherits them. Do not put secrets in
+   `Environment=` lines either: the unit file and `systemctl --user show`
+   expose them, and every resumed agent inherits them. The
    [reference](../reference/agent-command.md#service-unit) gives the reasons.
+
+   Every directory in `PATH` must be writable only by you or by root. The
+   supervisor finds `tmux`, `git`, `systemd-run` and `amplihack` through
+   `PATH`, so a directory that another user can write to lets that user
+   choose the program it runs. Check with:
+
+   ```bash
+   tr ':' '\n' <<<"$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin" | xargs stat -c '%U %A %n'
+   ```
+
+   ```text
+   alex drwxr-xr-x /home/alex/.local/bin
+   root drwxr-xr-x /usr/local/bin
+   root drwxr-xr-x /usr/bin
+   root drwxr-xr-x /bin
+   ```
 
 3. Load and start it:
 
@@ -111,17 +130,119 @@ amplihack does not install the service. Write the unit yourself.
    Without lingering, systemd starts the supervisor when you log in, and at
    logout it stops the supervisor and every agent the supervisor resumed.
 
-`KillMode=process` keeps resumed agents alive when the service stops or
-restarts. The tmux servers that the supervisor starts belong to the service's
-control group, and systemd's default would end them with it. Because they are
-left running, each restart of the service logs
+The supervisor starts each tmux server in a scope unit of its own, outside
+the service's control group, so stopping the service leaves the agents
+running; see [Where the tmux server runs](#where-the-tmux-server-runs).
+`KillMode=process` is a second safeguard for a server that had to be started
+without that scope. Such a server belongs to the service's control group, and
+systemd's default would end it with the service. Because it is left running,
+each restart of the service logs
 `Found left-over process ... in control group while starting unit` for each
-of them. This is expected with `KillMode=process`.
+of its processes. This is expected with `KillMode=process`.
 
 The login rotator has the same need to outlive a tmux server. Issue #1759
 covers running it as its own user service, `amplihack-rotator.service`, and an
 installer shared by both units belongs with that work. The two units are
 independent: either runs without the other.
+
+## Where the tmux server runs
+
+When the supervisor resumes an agent and no tmux server is running on the
+agent's socket, its `tmux new-session` starts one. By default that server
+would be a child of the supervisor and so part of the service's control
+group. To keep it out, the supervisor starts it through `systemd-run`, in a
+scope unit of its own:
+
+```text
+systemd-run --user --scope --collect --quiet --unit=amplihack-tmux-server-1793349461-1 -- \
+  tmux new-session -d -s coordinator -n main -c /home/alex/src/mistt -- ...
+```
+
+The name ends in the Unix time of the launch and a counter that starts at 1
+in each pass and goes up by one for every scope the pass starts, so two
+scopes started in the same second get different names. Only the first resume on each
+tmux socket in a pass checks whether a server is running; later resumes on
+that socket in the same pass join the server it started, with plain `tmux`.
+A server that was already running is used as it is, and `systemd-run` is not
+called.
+
+List the scopes, and see which agents run in each:
+
+```bash
+systemctl --user status 'amplihack-tmux-server-*'
+```
+
+```text
+● amplihack-tmux-server-1793349461-1.scope - /usr/bin/tmux new-session -d -s coordinator ...
+     Loaded: loaded (/run/user/1000/systemd/transient/amplihack-tmux-server-1793349461-1.scope; transient)
+     Active: active (running) since Thu 2026-10-29 23:27:41 UTC; 9h ago
+     CGroup: /user.slice/user-1000.slice/user@1000.service/app.slice/amplihack-tmux-server-1793349461-1.scope
+             ├─48211 tmux new-session -d -s coordinator -n main -c /home/alex/src/mistt ...
+             ├─48214 /home/alex/.local/bin/amplihack claude --no-reflection --profile work --supervise coordinator ...
+             └─48230 claude --resume 0f8e5c1a-3b2d-4c6e-9a7f-1d2e3f4a5b6c ...
+```
+
+Because the server is in its own scope, stopping or restarting the
+supervisor service does not touch it, and the service's start no longer logs
+`Found left-over process` for it. Keep `KillMode=process` in the unit all the
+same: it still protects agents when the scope could not be used.
+
+`systemd-run` needs to reach your user manager. From a user service this
+works when `XDG_RUNTIME_DIR` and `DBUS_SESSION_BUS_ADDRESS` are set, which
+systemd does for user services on most distributions. When `systemd-run` is
+not on `PATH`, the supervisor starts tmux without it. When `systemd-run`
+fails or does not answer within 10 seconds, the supervisor:
+
+1. asks tmux whether the agent's session now exists, because `systemd-run`
+   can fail after tmux has started. If it does, the resume counts as done and
+   nothing else is started. If tmux's answer is unexpected, nothing else is
+   started either, and the result is
+   `skipped: tmux session exists (tmux state unknown: REASON)`;
+2. otherwise starts tmux once more without `systemd-run`, so the agent is
+   still resumed.
+
+Either way, a server started without `systemd-run` gives a WARNING line:
+
+   ```text
+   2026-10-29T23:27:41Z WARNING: agent coordinator tmux server started without its own scope: systemd-run is not on PATH
+   ```
+
+A server started this way is in the service's control group, as before, and
+`KillMode=process` is what keeps it alive across a service restart. If the
+WARNING lines keep coming, either install `systemd-run` (part of systemd), or
+run tmux as a user service of its own and let the supervisor use that
+server. A minimal `~/.config/systemd/user/tmux-server.service`:
+
+```ini
+[Unit]
+Description=tmux server
+
+[Service]
+Type=forking
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/tmux new-session -d -s keepalive
+ExecStop=/usr/bin/tmux kill-server
+
+[Install]
+WantedBy=default.target
+```
+
+With that server running, the supervisor finds a server on the default
+socket and does not call `systemd-run`. Two things differ from scopes:
+
+- Resumed agents run with the environment of the tmux server, not of the
+  supervisor unit. Give `tmux-server.service` the same `Environment=PATH=`
+  as the supervisor unit, with the same rule that every directory on it is
+  writable only by you or root.
+- It covers only the default socket. An agent registered with its own tmux
+  socket still gets a scope, or a WARNING line, when no server is running on
+  that socket.
+
+If tmux gives an unexpected answer when the supervisor asks whether a server
+is running, the agent, and every other agent on that socket, is not resumed
+in that pass and is skipped with
+`skipped: tmux session exists (tmux state unknown: REASON)`. The next pass
+asks again.
 
 ## Register sessions
 
@@ -549,7 +670,7 @@ running, `--once` prints
 | `--interval SECS` | 60 | Time from the end of one pass to the start of the next |
 | `--batch N` | 6 | Agents resumed per batch |
 | `--gap SECS` | 60 | Wait between batches |
-| `--max-restarts N` | 3 | Resumes allowed per agent in any hour before it is stopped |
+| `--max-restarts N` | 3 | Launch attempts allowed per agent in any hour before it is stopped |
 
 To change them, override `ExecStart` in a drop-in:
 
@@ -647,6 +768,10 @@ processes are left alone. Earlier lines in the log are kept.
   Claude Code is known to use. If Claude Code uses another, for example for a
   very long path, the result is `failed: no transcript` although the
   transcript exists.
+- **Server placement is checked once per socket per pass.** If something
+  else ends the tmux server between two resumes on the same socket in one
+  pass, the later resume starts a server without its own scope and without a
+  WARNING line. The next pass checks again.
 - **No log rotation.** `~/.amplihack/agents/supervisor.log` grows by one line
   per recovery attempt. Truncate it while the service is stopped if it gets
   large.

@@ -1,5 +1,5 @@
 //! What the supervisor writes and `agent status` prints: the recovery and
-//! ALERT lines (R7.1, R7.2), the wrapper's WARNING line, the closed set of
+//! ALERT lines (R7.1, R7.2), the two WARNING lines, the closed set of
 //! result texts, the repeat rule (D13), the log append (S20) and both status
 //! forms (R7.4, R7.5, B7).
 //! Everything shown or logged passes through [`sanitize`].
@@ -96,10 +96,26 @@ pub fn alert_line(now: i64, name: &str, n: usize) -> String {
 /// `<ts> WARNING: agent <name> conversation not recorded: <reason>`, logged
 /// by the wrapper when its id thread gives up or cannot record what it found.
 pub fn not_recorded_line(now: i64, name: &str, reason: &str) -> String {
-    let line = format!(
-        "{} WARNING: agent {name} conversation not recorded: {reason}",
-        fmt_ts(now)
-    );
+    warning_line(now, name, "conversation not recorded", reason)
+}
+
+/// `<ts> WARNING: agent <name> tmux server started without its own scope:
+/// <reason>`, logged by the supervisor when it had to start a tmux server
+/// without `systemd-run` (G1).
+pub fn server_unscoped_line(now: i64, name: &str, reason: &str) -> String {
+    warning_line(
+        now,
+        name,
+        "tmux server started without its own scope",
+        reason,
+    )
+}
+
+/// A WARNING line; `reason` is cut to 200 characters, and the whole line is
+/// sanitised, so it cannot end the line or forge another one.
+fn warning_line(now: i64, name: &str, what: &str, reason: &str) -> String {
+    let reason = sanitize(reason, MAX_TEXT);
+    let line = format!("{} WARNING: agent {name} {what}: {reason}", fmt_ts(now));
     sanitize(&line, MAX_LINE)
 }
 
@@ -219,7 +235,8 @@ pub fn status_text(reg: &Registry) -> String {
     out
 }
 
-/// The JSON form: every key present, absent values `null` (B7).
+/// The JSON form: every key present, absent values `null` (B7), and a
+/// top-level `version` that changes only with an incompatible change.
 pub fn status_json(reg: &Registry, now: i64) -> Value {
     let agents: Vec<Value> = reg
         .agents
@@ -249,5 +266,5 @@ pub fn status_json(reg: &Registry, now: i64) -> Value {
             })
         })
         .collect();
-    json!({ "agents": agents })
+    json!({ "agents": agents, "version": 1 })
 }

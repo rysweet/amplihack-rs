@@ -2,10 +2,11 @@
 //!
 //! - The fake `tmux` records each call's argv, environment, working
 //!   directory, time and open file descriptors; keeps `session<TAB>window`
-//!   lines for `has-session`; answers `display-message` from `panes`; fails
-//!   `new-session` while `fail_new` exists, `has-session` without `-S` while
-//!   `no_default` does, and everything while `broken` does. It never runs the
-//!   pane command.
+//!   lines for `has-session` and `list-sessions`; answers `display-message`
+//!   from `panes`; fails `new-session` while `fail_new` exists,
+//!   `has-session` and `list-sessions` without `-S` while `no_default` does,
+//!   and everything while `broken` does. It never runs the pane command.
+//!   The fake `systemd-run` is in `issue_1760_fake_systemd_run.rs`.
 //! - The fake `git` records argv and environment, and for `status` prints as
 //!   many lines as `<dir>/.fake-dirty` says.
 //! - The fake `claude` records argv, environment and pid, prints
@@ -47,10 +48,10 @@ while [ $# -gt 0 ]; do
   esac
 done
 touch "$d/sessions" "$d/panes"
+case "$cmd" in has-session|list-sessions) [ -z "$sock" ] && [ -e "$d/no_default" ] && { echo "error connecting to $TMUX_TMPDIR/tmux-$(id -u)/default (No such file or directory)" >&2; exit 1; } ;; esac
 case "$cmd" in
   has-session)
     s="${target#=}"
-    [ -z "$sock" ] && [ -e "$d/no_default" ] && { echo "error connecting to $TMUX_TMPDIR/tmux-$(id -u)/default (No such file or directory)" >&2; exit 1; }
     cut -f1 "$d/sessions" | grep -qxF -- "$s" && exit 0
     if [ -s "$d/sessions" ]; then echo "can't find session: $s" >&2
     else echo "no server running on /fake/socket" >&2; fi
@@ -59,6 +60,7 @@ case "$cmd" in
     [ -e "$d/fail_new" ] && { cat "$d/fail_new" >&2; exit 1; }
     printf '%s\t%s\n' "$sname" "$wname" >> "$d/sessions"
     exit 0 ;;
+  list-sessions) [ -s "$d/sessions" ] && { cut -f1 "$d/sessions"; exit 0; }; echo "no server running on /fake/socket" >&2; exit 1 ;;
   display-message)
     line=$(awk -F'\t' -v t="$target" '$1==t' "$d/panes" | head -n 1)
     [ -n "$line" ] || { echo "can't find pane: $target" >&2; exit 1; }
@@ -186,8 +188,6 @@ impl Fx {
         );
     }
 
-    // ----- fake tmux -----
-
     pub fn tmux_session(&self, session: &str, window: &str) {
         append(
             &self.tmux_state.join("sessions"),
@@ -248,8 +248,6 @@ impl Fx {
             .collect()
     }
 
-    // ----- fake git -----
-
     /// `git status --porcelain` in `dir` prints `n` lines.
     pub fn dirty(&self, dir: &Path, n: usize) {
         fs::write(dir.join(".fake-dirty"), n.to_string()).unwrap();
@@ -269,8 +267,6 @@ impl Fx {
             })
             .collect()
     }
-
-    // ----- fake claude -----
 
     pub fn claude_mode(&self, mode: &str) {
         fs::write(self.records.join("claude.mode"), mode).unwrap();
