@@ -112,6 +112,12 @@ fn hostile_root_round_trips_through_bash_without_running_anything() {
     let exports =
         profile_exports(getter(&[(PROFILE_VAR, "work"), (ROOT_VAR, root)]), keep).unwrap();
     let script = format!("{exports}printf '%s' \"$AMPLIHACK_CLAUDE_PROFILE_ROOT\"");
+    // `bash` is resolved from PATH, which other tests point at an empty
+    // tempdir while holding the env lock; hold it so the spawn cannot see
+    // their PATH and fail with ENOENT (#1730, #1731).
+    let _env = crate::test_support::env_lock()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
     let out = Command::new("bash")
         .arg("-c")
         .arg(&script)
