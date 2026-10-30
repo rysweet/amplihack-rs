@@ -18,6 +18,7 @@ The marker is read by code. The hook does not infer coordination traffic from wo
 - [Sending a coordination message](#sending-a-coordination-message)
 - [Marker rules](#marker-rules)
 - [Explicit work requests](#explicit-work-requests)
+- [Reports that start with a verb](#reports-that-start-with-a-verb)
 - [The coordination note](#the-coordination-note)
 - [Routing prompt calibration](#routing-prompt-calibration)
 - [Gate order](#gate-order)
@@ -34,11 +35,12 @@ Put `[coord]` at the start of the text you type or paste into another session:
 [coord] report your lane status
 [coord] CI passed on PR 1739, nothing for you to do
 [coord] handing PR 1741 over to you
+[coord] fix landed on PR 1739
 [coord] build #1740
 [coord] fix the parser for #12
 ```
 
-The first three receive the coordination note. The last two start with a change verb, so they are work requests and receive the routing prompt (see [Explicit work requests](#explicit-work-requests)).
+The first four receive the coordination note. The fourth starts with a change verb, but uses it as a noun in a report (see [Reports that start with a verb](#reports-that-start-with-a-verb)). The last two start with a change verb used as a request, so they are work requests and receive the routing prompt (see [Explicit work requests](#explicit-work-requests)).
 
 amplihack has no dedicated send command. Any tool that types into a session, such as `tmux send-keys`, works:
 
@@ -70,7 +72,7 @@ A marker joined to the next word still matches. A marker anywhere other than the
 | `[coo` | No: shorter than the marker | |
 | `[coörd] x` | No | |
 
-An unmarked prompt takes the same path through the hook as before this feature: the same gates, the same throttle and the same routing prompt file. That file has changed, however. The status and hand-over exception added to rule 8, and five new calibration lines, apply to every unmarked new-topic prompt in every session, under Claude Code and the Copilot CLI; see [Routing prompt calibration](#routing-prompt-calibration).
+An unmarked prompt passes the same gates as before this feature and receives the same routing prompt file. Two things differ. The routing prompt itself has changed: the status and hand-over exception added to rule 8, and five new calibration lines, apply to every unmarked new-topic prompt in every session, under Claude Code and the Copilot CLI; see [Routing prompt calibration](#routing-prompt-calibration). The throttle no longer counts a classification that never took place; see [State file](#state-file).
 
 ## Explicit work requests
 
@@ -79,6 +81,8 @@ A marked body that asks for work is not treated as coordination traffic. It rece
 ```text
 (?i)^(build|fix|implement|develop|add|create|refactor|update|write|work\s+on|start)\s+\S
 ```
+
+and is not a report that starts with a change verb used as a noun (see [Reports that start with a verb](#reports-that-start-with-a-verb)).
 
 The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, refactor, update, write) plus implement, develop, work on and start. A unit test reads the IMPLEMENT signal from `routing_prompt.txt` and fails if a verb there is missing from the rule.
 
@@ -91,7 +95,10 @@ The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, re
 | `refactor #57` | Yes |
 | `update PR 57` | Yes |
 | `implement retry in installer.rs` | Yes |
-| `fix landed on PR 12` | Yes, although it is a report; see below |
+| `fix failed tests on PR 12` | Yes: `failed` is followed by a noun |
+| `fix for #12 landed` | Yes, although it is a report; see [Reports that start with a verb](#reports-that-start-with-a-verb) |
+| `fix landed on PR 12` | No: a report |
+| `build failed on PR 12` | No: a report |
 | `update: CI passed on PR 12` | No: the verb is not followed by whitespace |
 | `building #1740` | No: only the listed verbs count |
 | `fixes #3` | No |
@@ -99,13 +106,33 @@ The verbs are the routing prompt's IMPLEMENT signal (build, fix, add, create, re
 | `report your lane status` | No |
 | `handing PR 57 over to you` | No |
 
-The rule errs towards routing. A report that starts with a verb, such as `fix landed on PR 12`, receives the routing prompt, whose rule 8 then classifies a result report as Q&A; the cost is one classification. The opposite error would let a code change bypass `default-workflow`.
-
 A code request that the rule misses, such as `please build #1740` or `can you fix the parser`, receives the note. The note does not forbid the workflow for code changes: it tells the agent to use dev-orchestrator when the message asks for one. See [The coordination note](#the-coordination-note).
 
 A work request is routed even when the throttle would otherwise suppress the routing prompt. It records `last_classified_turn`, so the throttle then applies to the following unmarked prompts as usual.
 
 A marked body that is an explicit `/dev` command, such as `[coord] /dev fix the parser`, behaves like an unmarked `/dev` command: the hook emits nothing and the command runs.
+
+## Reports that start with a verb
+
+A coordinator's report often opens with a change verb used as a noun: `build failed on PR 12`, `fix landed on PR 12`. These bodies match the work-request pattern, but they are reports and receive the note. The rule is a second pattern, `VERB_LED_REPORT_PATTERN` in `coordination.rs`, applied only to bodies that match the first:
+
+```text
+(?i)^(?:update\s+on\b|\S+\s+(?:(?:is|was|are|were|has|had)(?:\s|$)|(?:passed|failed|landed|merged|succeeded|shipped|finished|completed|started|worked|done)(?:\s*$|\s*[.,;:!?]|\s+(?:on|in|for|at|to|into|with|after|again|and|but)\b)))
+```
+
+A body is a report when one of these holds:
+
+- It opens with `update on`, as in `update on PR 57: merged`.
+- The second word is `is`, `was`, `are`, `were`, `has` or `had`, followed by whitespace or the end of the body: `build is green on #1740`, `fix has landed`.
+- The second word is `passed`, `failed`, `landed`, `merged`, `succeeded`, `shipped`, `finished`, `completed`, `started`, `worked` or `done`, and it ends the body or is followed by punctuation (`.,;:!?`) or by `on`, `in`, `for`, `at`, `to`, `into`, `with`, `after`, `again`, `and` or `but`: `build failed on PR 12`, `fix landed.`
+
+An outcome word followed by a noun is an adjective in a request, so `fix failed tests` and `update merged branches` remain work requests. A copula joined to more word characters, as in `fix is_valid`, is part of an identifier and does not count.
+
+The hook makes this decision because the routing prompt would decide these reports the other way. The routing prompt applies the first rule that matches. Rule 4, `FILE_EDIT or IMPLEMENT present (no UNDERSTAND) → **DEV**`, comes before rule 8 and its exception for result reports, and the IMPLEMENT signal lists the verbs these reports start with. A verb-led report that reached the routing prompt would usually be classified as DEV and start dev-orchestrator. A unit test checks that rule 4 still comes before rule 8.
+
+Errors fall towards routing. A report that the pattern misses, such as `fix for #12 landed`, receives the routing prompt, and rule 4 will usually classify it as DEV. To keep such a report out of the routing prompt, start it with something other than a change verb, for example `PR 12: fix for #12 landed`. The opposite error would give a code change the note, which leaves the routing to the agent's reading of the note's last sentence.
+
+`update on` counts as a report at the start of any body, so a request worded `[coord] update on main and rerun` receives the note. The note still tells the agent to use dev-orchestrator if the message asks for a code change.
 
 ## The coordination note
 
@@ -146,6 +173,8 @@ Removing `[coord]` from the same prompt at turn 0 returns the routing prompt ins
 The routing prompt (`crates/amplihack-hooks/src/routing_prompt.txt`) treats short coordination messages that arrive without the marker as Q&A or OPS, not as ambiguous DEV requests.
 
 This is a change to the routing prompt itself, so it applies to every unmarked new-topic prompt in every amplihack session, under Claude Code and the Copilot CLI, and not only to coordination traffic. It is kept to the one exception that issue #1742 asked for. Any other ambiguous prompt, such as "the login page looks wrong", still falls to DEV.
+
+The exception is part of rule 8, and the prompt applies the first rule that matches. An unmarked report that starts with a change verb, such as `build failed on PR 12`, is decided by rule 4 as DEV before rule 8 is reached. Only the marker keeps such a report away from the routing prompt; see [Reports that start with a verb](#reports-that-start-with-a-verb).
 
 Rule 8 keeps its unqualified DEV default and gains one sentence, the exception for status, result and hand-over messages. It reads:
 
@@ -196,13 +225,13 @@ Each outcome is recorded in the state file's `last_rule` field. These values are
 | Path | Output | `last_rule` | `last_classified_turn` |
 | --- | --- | --- | --- |
 | Marked; body is an explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
-| Marked; body is a work request (starts with a change verb) | routing prompt, throttle ignored | `coordination_explicit_dev` | set to the current turn |
+| Marked; body is a work request (starts with a change verb, not a report) | routing prompt, throttle ignored | `coordination_explicit_dev` | set to the current turn |
 | Marked; anything else | coordination note, every turn | `coordination_marker` | unchanged |
 | Unmarked explicit `/dev` command | `{}` | `explicit_dev_command` | unchanged |
 | Unmarked new topic | routing prompt | `classification` | set to the current turn |
 | Unmarked, not a new topic | `{}` | `throttled` | unchanged |
 
-The note path leaves `last_classified_turn` unchanged because no classification took place, so the next human prompt is judged as it would have been without the coordination message.
+The note path leaves `last_classified_turn` unchanged because no classification took place, so a note never starts or extends the three-turn throttle window. A note still counts as a turn. The next unmarked prompt is judged at its own turn number, so after two notes in a fresh session it is at turn 2: past the rule that routes turns 0 and 1 unconditionally, and subject to the follow-up wording check like any later prompt. In a session where nothing has been classified, `last_classified_turn` is absent and the window does not apply, so a new topic after the notes receives the routing prompt.
 
 The provenance, nested-session and workflow-active gates record no outcome: `last_rule` and `last_classified_turn` keep their previous values. Only `observed_turns` can change on those paths, as described under [Gate order](#gate-order). If a custom routing prompt is blank, the hook emits `{}`, but the outcome has already been recorded.
 
@@ -227,12 +256,24 @@ The hook keeps one file per session at:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `last_classified_turn` | integer | Turn at which the routing prompt was last emitted |
+| `last_classified_turn` | integer or absent, default absent | Turn at which the routing prompt was last emitted; absent until the session's first classification |
 | `session_id` | string | Session ID as received |
 | `observed_turns` | integer, default `0` | The hook's own prompt counter, used when the runtime sends no turn number |
 | `last_rule` | string or absent, default absent | The `last_rule` value of the most recent recorded outcome |
 
-Files written before this feature have no `last_rule` field and still load. Older binaries ignore the new field.
+In a session where nothing has been classified, `last_classified_turn` is absent. After two coordination notes in a fresh session, under a runtime that sends no turn number:
+
+```json
+{
+  "session_id": "lane-3",
+  "observed_turns": 2,
+  "last_rule": "coordination_marker"
+}
+```
+
+Files written before this feature have no `last_rule` field and always hold `last_classified_turn`; they load unchanged. An older binary ignores `last_rule`. It cannot read a file without `last_classified_turn`, so it treats that file as missing, which routes the prompt and restarts its own `observed_turns` count at 0.
+
+Before this feature, a state file created by turn resolution held `last_classified_turn: 0` although nothing had been classified, and the throttle read that as a classification at turn 0. In a session whose first two prompts classified nothing (coordination notes, explicit `/dev` commands or prompts stopped by a gate), a new topic at turn 2 or 3 was throttled. It now receives the routing prompt. This applies to unmarked sessions as well.
 
 State writes are best-effort. A write failure is logged at debug level with the error and path, never the prompt, and the hook still returns its output. An unreadable or malformed file is treated as empty, which leans towards emitting the routing prompt, not suppressing it.
 
@@ -241,7 +282,7 @@ State writes are best-effort. A write failure is logged at debug level with the 
 - The marker is advisory. No marked prompt leads directly to a recipe; the strongest effect, for a work request, is the same routing prompt that an unmarked new topic receives.
 - The provenance, nested-session and workflow-active gates run before the marker is read.
 - The prefix comparison cannot panic on short, whitespace-only or multibyte input.
-- The work-request pattern is a literal regex compiled once. The `regex` crate matches in linear time.
+- The work-request and report patterns are literal regexes, each compiled once. The `regex` crate matches in linear time.
 - Neither the prompt nor the body is written to the state file or the debug log, and neither is copied into the hook output, so a peer session cannot forge hook context through a coordination message.
 
 ## Related

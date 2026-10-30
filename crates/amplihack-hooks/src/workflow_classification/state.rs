@@ -12,7 +12,16 @@ use std::path::{Path, PathBuf};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub(super) struct ClassificationState {
-    pub(super) last_classified_turn: u64,
+    /// Turn at which the routing prompt was last emitted.
+    ///
+    /// Absent until the session's first classification, so that a turn which
+    /// classified nothing (a coordination note, an explicit `/dev` command or
+    /// a gated prompt) cannot look like a classification at turn 0 to the
+    /// throttle. Files written before issue #1742 always hold an integer and
+    /// load unchanged. A binary from before #1742 fails to parse a file
+    /// without the field and treats it as missing, which routes the prompt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) last_classified_turn: Option<u64>,
     pub(super) session_id: String,
     /// Prompts seen in this session, counted by us.
     ///
@@ -42,7 +51,7 @@ pub(super) fn load_state(path: &Path, session_id: &str) -> ClassificationState {
         .ok()
         .and_then(|raw| serde_json::from_str::<ClassificationState>(&raw).ok())
         .unwrap_or_else(|| ClassificationState {
-            last_classified_turn: 0,
+            last_classified_turn: None,
             session_id: session_id.to_string(),
             observed_turns: 0,
             last_rule: None,
@@ -89,7 +98,7 @@ pub(super) fn record_outcome(
     let mut state = load_state(&path, session_id);
     state.last_rule = Some(rule.to_string());
     if mark_classified {
-        state.last_classified_turn = turn_count;
+        state.last_classified_turn = Some(turn_count);
     }
 
     let write = || -> anyhow::Result<()> {

@@ -1,10 +1,11 @@
 //! Unit tests of the workflow classification reminder, split by area.
 //!
 //! This file holds the tests that predate issue #1742. The coordination
-//! marker tests are in `tests/`: shared fixtures in `support`, the marker and
-//! work-request rules in `marker`, the gates and robustness cases in `gates`,
-//! and the routing prompt and its docs in `prompt_docs`. `layout` holds the
-//! module to the crate's line budget.
+//! marker tests are in `tests/`: shared fixtures in `support`, the marker rule
+//! and the state file in `marker`, the work-request rule and verb-led reports
+//! in `work_request`, the gates and robustness cases in `gates`, and the
+//! routing prompt and its docs in `prompt_docs`. `layout` holds the module to
+//! the crate's line budget.
 
 use super::*;
 use std::fs;
@@ -14,6 +15,7 @@ mod layout;
 mod marker;
 mod prompt_docs;
 mod support;
+mod work_request;
 
 /// Test-only view of `topic_decision`. Issue #1757 removes it together with
 /// `save_classification_state` once `classify` below uses `record_outcome`.
@@ -39,7 +41,7 @@ fn save_classification_state(
         .map(|prev| prev.observed_turns)
         .unwrap_or(0);
     let state = ClassificationState {
-        last_classified_turn: turn_count,
+        last_classified_turn: Some(turn_count),
         session_id: session_id.to_string(),
         observed_turns,
         last_rule: None,

@@ -3,7 +3,9 @@
 
 use super::support::*;
 use super::*;
-use crate::workflow_classification::coordination::EXPLICIT_WORK_REQUEST_PATTERN;
+use crate::workflow_classification::coordination::{
+    EXPLICIT_WORK_REQUEST_PATTERN, VERB_LED_REPORT_PATTERN,
+};
 
 // ---- routing prompt ----
 
@@ -56,6 +58,23 @@ fn routing_prompt_has_the_coordination_calibration_lines() {
     );
 }
 
+/// `VERB_LED_REPORT_PATTERN` and the docs rest on this order: the routing
+/// prompt applies the first matching rule, and rule 4 sends an IMPLEMENT verb
+/// to DEV before rule 8's exception for result reports is reached. A report
+/// that starts with a change verb therefore has to be caught by the hook, not
+/// left to rule 8 (review round 3 of PR #1752).
+#[test]
+fn routing_prompt_decides_implement_verbs_before_the_report_exception() {
+    assert!(DEFAULT_ROUTING_PROMPT.contains("apply the FIRST matching rule"));
+    let rule_4 = DEFAULT_ROUTING_PROMPT
+        .find("\n4. FILE_EDIT or IMPLEMENT present (no UNDERSTAND) → **DEV**")
+        .expect("rule 4 sends IMPLEMENT to DEV");
+    let rule_8 = DEFAULT_ROUTING_PROMPT
+        .find("\n8. Ambiguous → **DEV**")
+        .expect("rule 8");
+    assert!(rule_4 < rule_8);
+}
+
 #[test]
 fn routing_prompt_keeps_its_existing_contract() {
     for kept in [
@@ -100,6 +119,10 @@ fn docs_quote_the_note_and_calibration_verbatim() {
         docs.contains(EXPLICIT_WORK_REQUEST_PATTERN),
         "docs must quote the work-request pattern"
     );
+    assert!(
+        docs.contains(VERB_LED_REPORT_PATTERN),
+        "docs must quote the verb-led report pattern"
+    );
     assert!(docs.contains(COORDINATION_PREFIX));
 }
 
@@ -113,6 +136,21 @@ fn docs_say_unmarked_prompts_get_the_amended_routing_prompt() {
         "an unmarked prompt receives the amended routing prompt"
     );
     assert!(docs.contains("every unmarked new-topic prompt"));
+}
+
+/// Review round 3 of PR #1752: rule 8 does not decide a report that starts
+/// with a change verb, because rule 4 comes first. The docs must not say it
+/// does, and must not promise that a note leaves the next prompt untouched.
+#[test]
+fn docs_do_not_rely_on_rule_8_for_verb_led_reports() {
+    let docs = coordination_docs();
+    for claim in [
+        "whose rule 8 then classifies a result report as Q&A",
+        "so the next human prompt is judged as it would have been without the coordination message",
+    ] {
+        assert!(!docs.contains(claim), "docs still claim {claim:?}");
+    }
+    assert!(docs.contains("rule 4"), "docs name the rule that decides");
 }
 
 #[test]

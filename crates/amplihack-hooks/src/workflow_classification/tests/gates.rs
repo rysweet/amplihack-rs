@@ -37,7 +37,11 @@ fn provenance_gate_records_no_outcome_without_turn_count() {
         .expect("turn resolution writes the state file");
     assert_eq!(state["observed_turns"], 1);
     assert_eq!(last_rule(&state), None);
-    assert_eq!(classified_turn(&state), Some(0));
+    assert_eq!(
+        state.get("last_classified_turn"),
+        None,
+        "a gated prompt is not a classification, so none is written"
+    );
 }
 
 #[test]

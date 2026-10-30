@@ -275,10 +275,12 @@ fn topic_decision(
         return TopicDecision::Throttled;
     }
 
+    // A session with no classification yet has no window to throttle within.
     let path = state_file(dirs, session_id);
     if let Ok(raw) = fs::read_to_string(path)
         && let Ok(state) = serde_json::from_str::<ClassificationState>(&raw)
-        && turn_count.saturating_sub(state.last_classified_turn) <= 3
+        && let Some(last_classified) = state.last_classified_turn
+        && turn_count.saturating_sub(last_classified) <= 3
     {
         return TopicDecision::Throttled;
     }

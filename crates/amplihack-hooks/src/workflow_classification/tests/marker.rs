@@ -1,5 +1,5 @@
-//! The marker rule, the work-request rule and the marked and unmarked paths
-//! through `process` (issue #1742).
+//! The marker rule, the state file and the marked and unmarked paths through
+//! `process` (issue #1742). The work-request rule is in `work_request`.
 
 use super::support::*;
 use super::*;
@@ -81,107 +81,6 @@ fn marker_matching_rules() {
     }
 }
 
-// ---- explicit work request rule ----
-
-/// A marked body that starts with a change verb is a request for work and is
-/// routed. Issue #1742: "an explicit development request inside a
-/// coordination message still routes ... because it names the work". A
-/// coordinator words such requests naturally, so the rule does not ask for an
-/// issue or PR number straight after the verb.
-#[test]
-fn explicit_work_request_rule() {
-    let matches = [
-        "build #1740",
-        "BUILD #1740",
-        "fix issue 12",
-        "fix issue #12",
-        "fix issue#12",
-        "work on PR #57",
-        "work   on pr 57",
-        "implement pr 3 now",
-        "develop #9",
-        "start issue 4",
-        "Start #4 when ready",
-        // Requests that name the work without a number next to the verb.
-        "fix the parser for #12",
-        "Fix\tthe parser",
-        "refactor #57",
-        "update PR 57",
-        "implement retry in installer.rs",
-        "add a retry to the installer",
-        "create docs/reference/retry.md",
-        "write tests for the parser",
-        "build 1740",
-        "start the build for issue 5",
-        // A report that starts with a verb is routed too. The routing prompt
-        // then classifies it, and its rule 8 treats a result report as Q&A.
-        "fix landed on PR 12",
-    ];
-    for body in matches {
-        assert!(
-            is_explicit_work_request(body),
-            "{body:?} starts with a change verb and must be routed"
-        );
-    }
-
-    let non_matches = [
-        "",
-        "build",
-        "fix   ",
-        "building #1740",
-        "fixes #3",
-        "rebuild #1740",
-        "fix-up landed on main",
-        "update: CI passed on PR 12",
-        "work #5",
-        "please build #1740",
-        "report your lane status",
-        "CI passed on PR 12",
-        "handing PR 57 over to you",
-        "PR 134 is merged, retry the install",
-        "what's the status of #12",
-    ];
-    for body in non_matches {
-        assert!(
-            !is_explicit_work_request(body),
-            "{body:?} does not start with a change verb and a following word"
-        );
-    }
-}
-
-/// The verb list must cover every verb of the routing prompt's IMPLEMENT
-/// signal, so a marked body that the routing prompt would call DEV is routed
-/// to it and not given the note.
-#[test]
-fn work_request_verbs_cover_the_implement_signal() {
-    let start = DEFAULT_ROUTING_PROMPT
-        .find("IMPLEMENT<br/>")
-        .expect("the routing prompt has an IMPLEMENT signal")
-        + "IMPLEMENT<br/>".len();
-    let end = start
-        + DEFAULT_ROUTING_PROMPT[start..]
-            .find("\"]")
-            .expect("the IMPLEMENT node is closed");
-    let verbs: Vec<&str> = DEFAULT_ROUTING_PROMPT[start..end]
-        .split(|c: char| c == ',' || c.is_whitespace() || c == '<' || c == '>' || c == '/')
-        .filter(|word| !word.is_empty() && *word != "br")
-        .collect();
-    assert_eq!(
-        verbs,
-        [
-            "build", "fix", "add", "create", "refactor", "update", "write"
-        ],
-        "the IMPLEMENT signal changed; update EXPLICIT_WORK_REQUEST_PATTERN with it"
-    );
-    for verb in verbs {
-        let body = format!("{verb} the retry logic");
-        assert!(
-            is_explicit_work_request(&body),
-            "IMPLEMENT verb {verb:?} is missing from the work-request rule"
-        );
-    }
-}
-
 // ---- state (requirement 4) ----
 
 #[test]
@@ -189,10 +88,27 @@ fn old_state_file_deserialises() {
     let state: ClassificationState =
         serde_json::from_str(r#"{"last_classified_turn":2,"session_id":"s"}"#)
             .expect("a state file written before #1742 still loads");
-    assert_eq!(state.last_classified_turn, 2);
+    assert_eq!(state.last_classified_turn, Some(2));
     assert_eq!(state.session_id, "s");
     assert_eq!(state.last_rule, None);
     assert_eq!(state.observed_turns, 0);
+}
+
+/// A session with no classification has no `last_classified_turn`: it is
+/// neither read as turn 0 nor written as one (review round 3 of PR #1752).
+#[test]
+fn an_unclassified_session_has_no_classified_turn() {
+    let state: ClassificationState =
+        serde_json::from_str(r#"{"session_id":"s","observed_turns":2}"#).unwrap();
+    assert_eq!(state.last_classified_turn, None);
+    let back = serde_json::to_value(&state).unwrap();
+    assert!(
+        back.get("last_classified_turn").is_none(),
+        "an absent turn is not written as 0 or null: {back}"
+    );
+    let state: ClassificationState =
+        serde_json::from_str(r#"{"last_classified_turn":null,"session_id":"s"}"#).unwrap();
+    assert_eq!(state.last_classified_turn, None);
 }
 
 #[test]
@@ -316,6 +232,10 @@ fn coord_non_request_gets_note() {
     let iso = Isolated::new();
     let prompts = [
         "[coord] please fix the parser",
+        "[coord] build failed on PR 12",
+        "[coord] build is green on #1740",
+        "[coord] update on PR 57: merged",
+        "[coord] fix landed on PR 12",
         "[coord] building #1740",
         "[coord] fixes #3",
         "[coord] update: CI passed on PR 12",
@@ -348,27 +268,85 @@ fn note_is_emitted_on_every_turn() {
     }
 }
 
+/// The note does not count as a classification. Turn 15 is outside the
+/// window of the classification at turn 10, and would be inside the window of
+/// one at turn 14, so the probe fails if the note at turn 14 is recorded as a
+/// classification.
 #[test]
 fn note_does_not_advance_classified_turn() {
     let iso = Isolated::new();
-    iso.seed_classified("s-keep", 2);
+    iso.seed_classified("s-keep", 10);
 
-    assert_note(&run_hook(Some("s-keep"), Some(20), "[coord] status?"));
+    assert_note(&run_hook(Some("s-keep"), Some(14), "[coord] status?"));
 
     let state = iso.read_state("s-keep").unwrap();
-    assert_eq!(classified_turn(&state), Some(2));
+    assert_eq!(classified_turn(&state), Some(10));
     assert_eq!(last_rule(&state), Some("coordination_marker"));
 
-    // The next human prompt is judged as if the note had never happened.
     let out = run_hook(
         Some("s-keep"),
-        Some(21),
+        Some(15),
         "Please investigate the install flow",
     );
     assert_router(&out);
     let state = iso.read_state("s-keep").unwrap();
-    assert_eq!(classified_turn(&state), Some(21));
+    assert_eq!(classified_turn(&state), Some(15));
     assert_eq!(last_rule(&state), Some("classification"));
+}
+
+/// Review round 3 of PR #1752, item 2. With no turn count, as live sessions
+/// send, two notes in a fresh session used to leave a default
+/// `last_classified_turn` of 0 that throttled the first real prompt at turn 2.
+#[test]
+fn notes_in_a_fresh_session_do_not_throttle_the_next_prompt() {
+    let iso = Isolated::new();
+    assert_note(&run_hook(Some("s-fresh"), None, "[coord] status?"));
+    assert_note(&run_hook(
+        Some("s-fresh"),
+        None,
+        "[coord] handing PR 57 over",
+    ));
+
+    let state = iso.read_state("s-fresh").unwrap();
+    assert_eq!(state["observed_turns"], 2);
+    assert_eq!(
+        classified_turn(&state),
+        None,
+        "nothing has been classified: {state}"
+    );
+
+    let out = run_hook(Some("s-fresh"), None, "Please investigate the install flow");
+    assert_router(&out);
+    let state = iso.read_state("s-fresh").unwrap();
+    assert_eq!(state["observed_turns"], 3);
+    assert_eq!(classified_turn(&state), Some(2));
+    assert_eq!(last_rule(&state), Some("classification"));
+
+    // The throttle applies from the first real classification on.
+    assert_eq!(
+        run_hook(Some("s-fresh"), None, "Please investigate that too"),
+        empty()
+    );
+}
+
+/// The same holds for unmarked turns that classify nothing, such as explicit
+/// `/dev` commands: before review round 3 a prompt at turn 2 or 3 was
+/// throttled against a classification at turn 0 that never took place.
+#[test]
+fn unclassified_dev_commands_do_not_throttle_the_next_prompt() {
+    let iso = Isolated::new();
+    assert_eq!(
+        run_hook(Some("s-dev2"), None, "/dev fix the parser"),
+        empty()
+    );
+    assert_eq!(run_hook(Some("s-dev2"), None, "/dev add a test"), empty());
+    assert_router(&run_hook(
+        Some("s-dev2"),
+        None,
+        "Please investigate the install flow",
+    ));
+    let state = iso.read_state("s-dev2").unwrap();
+    assert_eq!(classified_turn(&state), Some(2));
 }
 
 #[test]
