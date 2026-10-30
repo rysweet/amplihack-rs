@@ -486,6 +486,39 @@ mod tests {
         }
     }
 
+    /// Issue #1744: Copilot CLI 1.0.105 removed `--remote`, so amplihack no
+    /// longer adds it. Both `-h` and `--help` for `amplihack copilot` must say
+    /// how to start and stop a remote session instead.
+    #[test]
+    fn copilot_help_explains_remote_on_and_off() {
+        let _env = launcher_env_lock();
+        let mut cmd = Cli::command();
+        let copilot = cmd
+            .find_subcommand_mut("copilot")
+            .expect("copilot command should exist");
+
+        let mut short = Vec::new();
+        copilot.write_help(&mut short).unwrap();
+        let mut long = Vec::new();
+        copilot.write_long_help(&mut long).unwrap();
+
+        for (name, bytes) in [("-h", short), ("--help", long)] {
+            let rendered = String::from_utf8(bytes).unwrap();
+            assert!(
+                rendered.contains("/remote on"),
+                "copilot {name} must mention `/remote on`; got:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("/remote off"),
+                "copilot {name} must mention `/remote off`; got:\n{rendered}"
+            );
+            assert!(
+                rendered.contains("does not pass `--remote`"),
+                "copilot {name} must say amplihack does not pass --remote; got:\n{rendered}"
+            );
+        }
+    }
+
     // ── Provider-neutral workflow helper commands ─────────────────────────────
 
     #[test]
