@@ -47,9 +47,8 @@ fn timeout() -> Duration {
 }
 
 /// The live probe and each candidate's, in the order of `candidates`, with
-/// reset times kept for exhausted readings too. The candidates share a pool
-/// of the size `profile usage` uses; the live probe runs on its own thread
-/// beside it, so at most that size plus one probes run at once.
+/// reset times kept for exhausted readings too. The deadline and the bound
+/// are those `profile usage` uses; the live probe counts against the bound.
 pub fn measure(
     store: &ProfileStore,
     binary: &BinaryInfo,
@@ -58,7 +57,8 @@ pub fn measure(
     now: i64,
 ) -> (Probed, Vec<(ProfileName, Probed)>) {
     let timeout = timeout();
-    let (parallel, warning) = probe_limits::parallel_from_host(candidates.len());
+    let live_probed = usize::from(!matches!(live, Live::Platform));
+    let (bound, warning) = probe_limits::parallel_from_host(candidates.len() + live_probed);
     if let Some(w) = warning {
         eprintln!("{w}");
     }
@@ -67,31 +67,54 @@ pub fn measure(
     if let Some(var) = usage_cmd::env_credential_var(|k| std::env::var_os(k)) {
         eprintln!("{}", usage_cmd::env_credential_warning(var));
     }
+    measure_with(store, binary, live, candidates, now, timeout, bound)
+}
+
+/// [`measure`] with the deadline and bound given. The live probe and the
+/// candidates share one pool of `bound` slots, the live probe first, so at
+/// most `bound` run at once and a slot freed by any probe, the live one
+/// included, goes to the next candidate.
+pub(super) fn measure_with(
+    store: &ProfileStore,
+    binary: &BinaryInfo,
+    live: Live<'_>,
+    candidates: &[ProfileName],
+    now: i64,
+    timeout: Duration,
+    bound: usize,
+) -> (Probed, Vec<(ProfileName, Probed)>) {
     let args = ["-p".to_string(), "/usage".to_string()];
-    std::thread::scope(|s| {
-        let live = s.spawn(|| {
-            let cmd = match live {
-                Live::Platform => return Probed::platform(),
-                Live::Profile(name) => run::build_default_dir_command(binary, store, name, &args),
-                Live::Unowned => Ok(run::build_home_command(binary, &args)),
-            };
-            match cmd {
-                Ok(cmd) => reading("~/.claude", &usage_cmd::probe(cmd, timeout, now, false)),
-                Err(e) => {
-                    eprintln!("warning: rotate: probe of ~/.claude failed: {e}");
-                    Probed::failed()
-                }
+    let probe_live = || {
+        let cmd = match live {
+            Live::Platform => return Probed::platform(),
+            Live::Profile(name) => run::build_default_dir_command(binary, store, name, &args),
+            Live::Unowned => Ok(run::build_home_command(binary, &args)),
+        };
+        match cmd {
+            Ok(cmd) => reading("~/.claude", &usage_cmd::probe(cmd, timeout, now, false)),
+            Err(e) => {
+                eprintln!("warning: rotate: probe of ~/.claude failed: {e}");
+                Probed::failed()
             }
-        });
-        let probes = usage_cmd::probe_all(
-            store, binary, candidates, None, timeout, now, false, parallel,
-        );
-        let others = candidates
-            .iter()
-            .zip(probes.iter())
-            .map(|(n, p)| (n.clone(), reading(n.as_str(), p)))
-            .collect();
-        // A panic in the probe thread is a bug; report the live login failed.
-        (live.join().unwrap_or_else(|_| Probed::failed()), others)
-    })
+        }
+    };
+    // Job 0 is the live probe, unless the live login is not probed.
+    let skip = usize::from(!matches!(live, Live::Platform));
+    let jobs = skip + candidates.len();
+    let mut probed = usage_cmd::pooled(jobs, bound, |i| match i.checked_sub(skip) {
+        // A panic in the live probe is a bug; it reads as a failed probe.
+        None => std::panic::catch_unwind(std::panic::AssertUnwindSafe(&probe_live))
+            .unwrap_or_else(|_| Probed::failed()),
+        Some(c) => {
+            let name = &candidates[c];
+            let p = usage_cmd::probe_profile(store, binary, name, false, timeout, now, false);
+            reading(name.as_str(), &p)
+        }
+    });
+    let live = if skip == 1 {
+        probed.remove(0)
+    } else {
+        Probed::platform()
+    };
+    (live, candidates.iter().cloned().zip(probed).collect())
 }

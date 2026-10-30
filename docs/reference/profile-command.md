@@ -193,11 +193,16 @@ the cap described next, so it can be larger than the number of profiles.
 Whichever value applies is then capped at the number of profiles to probe,
 and is never below 1. There is no command-line flag for it.
 
-The rotator applies the bound to its candidate probes and probes the live
-login on a separate thread at the same time, so a rotator cycle runs at most
-the bound plus one probes at once. It derives the bound again on every cycle,
-so it follows the load as it changes, and prints the warning for an invalid
-value once per cycle (to `rotate.err` for a background rotator). The
+The live probe counts against the bound in the rotator. When the live login
+is probed, the bound is derived for the candidates plus one, and the live
+probe and the candidate probes share one pool of that size: the live probe
+starts first, and whenever a probe ends, the live one included, the next
+candidate takes its place. A rotator cycle therefore never runs more probes
+at once than the bound. An [API-key](#api-key-profiles) live login is not
+probed, so then the bound is derived for the candidates alone. The rotator
+derives the bound again on every cycle, so it follows the load as it
+changes, and prints the warning for an invalid value once per cycle (to
+`rotate.err` for a background rotator). The
 background rotator inherits both variables from the shell that ran
 `amplihack profile rotate start`; the variables it removes are listed under
 [Rotate daemon](#rotate-daemon).
@@ -2815,8 +2820,10 @@ Every non-dry-run cycle runs these steps in order:
 4. **Measure.** Probe the live login and every candidate in parallel, as
    [`profile usage`](#how-a-profile-is-probed) does, with the same
    [deadline](#probe-deadline) and [parallelism bound](#probe-parallelism).
-   The candidates share the bound; the live probe runs beside them, so at
-   most the bound plus one probes run at once. The live login is probed
+   The live probe counts against the bound, so a cycle never runs more
+   probes at once than the bound: with a bound of 2 or more the live probe
+   runs beside the candidate probes, and with a bound of 1 it runs first and
+   the candidates follow one at a time. The live login is probed
    with `CLAUDE_CONFIG_DIR` removed from the environment, so `claude` uses
    `~/.claude` and `~/.claude.json`. Candidates are probed with
    `CLAUDE_CONFIG_DIR=<root>/<name>`. Claude's text is parsed and dropped;

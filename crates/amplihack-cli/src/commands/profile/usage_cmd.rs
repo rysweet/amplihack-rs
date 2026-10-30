@@ -523,31 +523,67 @@ pub(super) fn probe_all(
     keep_raw: bool,
     parallel: usize,
 ) -> Vec<Probe> {
-    let next = AtomicUsize::new(0);
-    let results: Mutex<Vec<Option<Probe>>> = Mutex::new(vec![None; profiles.len()]);
+    pooled(profiles.len(), parallel, |i| {
+        let name = &profiles[i];
+        probe_profile(
+            store,
+            binary,
+            name,
+            live == Some(name),
+            timeout,
+            now,
+            keep_raw,
+        )
+    })
+}
+
+/// Probes one profile, against `~/.claude` when `live`. The command is
+/// built here, right before the spawn, so the directory check is as late as
+/// possible.
+pub(super) fn probe_profile(
+    store: &ProfileStore,
+    binary: &BinaryInfo,
+    name: &ProfileName,
+    live: bool,
+    timeout: Duration,
+    now: i64,
+    keep_raw: bool,
+) -> Probe {
     let args = ["-p".to_string(), "/usage".to_string()];
+    let build = if live {
+        run::build_default_dir_command
+    } else {
+        run::build_profile_command
+    };
+    match build(binary, store, name, &args) {
+        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
+        // Reported as its fixed reason (and a stderr warning); the detail
+        // can name paths.
+        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
+    }
+}
+
+/// `job(0)` to `job(n - 1)`, at most `parallel` at once (at least one).
+/// Jobs start in index order, each on the first worker free, so no worker
+/// sits idle while a job waits. Results are in index order; a panic in a
+/// job propagates.
+pub(super) fn pooled<T: Send>(
+    n: usize,
+    parallel: usize,
+    job: impl Fn(usize) -> T + Sync,
+) -> Vec<T> {
+    let next = AtomicUsize::new(0);
+    let results: Mutex<Vec<Option<T>>> = Mutex::new((0..n).map(|_| None).collect());
     std::thread::scope(|s| {
-        for _ in 0..profiles.len().min(parallel.max(1)) {
+        for _ in 0..n.min(parallel.max(1)) {
             s.spawn(|| {
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
-                    let Some(name) = profiles.get(i) else {
+                    if i >= n {
                         break;
-                    };
-                    // Built here, right before the spawn, so the directory
-                    // check is as late as possible.
-                    let build = if live == Some(name) {
-                        run::build_default_dir_command
-                    } else {
-                        run::build_profile_command
-                    };
-                    let p = match build(binary, store, name, &args) {
-                        Ok(cmd) => probe(cmd, timeout, now, keep_raw),
-                        // Reported as its fixed reason (and a stderr
-                        // warning); the detail can name paths.
-                        Err(_) => Probe::failed(ErrorReason::ProfileRefused, None),
-                    };
-                    results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(p);
+                    }
+                    let r = job(i);
+                    results.lock().unwrap_or_else(PoisonError::into_inner)[i] = Some(r);
                 }
             });
         }
@@ -558,7 +594,7 @@ pub(super) fn probe_all(
         .into_iter()
         // Each index is taken by exactly one worker, and a worker panic
         // propagates out of the scope, so every slot is filled.
-        .map(|p| p.expect("every profile is probed"))
+        .map(|r| r.expect("every job runs"))
         .collect()
 }
 

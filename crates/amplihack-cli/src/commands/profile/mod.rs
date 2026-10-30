@@ -42,6 +42,8 @@ mod tests_default_live;
 mod tests_docs_sync;
 #[cfg(test)]
 mod tests_docs_sync_platform;
+#[cfg(test)]
+mod tests_docs_sync_probe;
 #[cfg(all(test, unix))]
 mod tests_duplicates;
 #[cfg(all(test, unix))]

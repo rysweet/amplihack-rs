@@ -644,8 +644,8 @@ Each probe makes Claude read every session transcript the profile can see,
 which takes a minute or more of CPU on a busy host. The rotator and
 `amplihack profile usage` therefore give each probe 120 seconds and run only
 a few at once: between 2 and 4, fewer as the load average rises towards the
-number of CPUs. The rotator probes the live login beside those, so a cycle
-runs at most one more probe than that. The formula is in the
+number of CPUs. The rotator's probe of the live login is one of those, so a
+cycle never runs more probes at once than that. The formula is in the
 [reference](../reference/profile-command.md#probe-parallelism).
 
 If probes still time out, give them longer, run fewer at once, or both. Set

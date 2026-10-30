@@ -6,6 +6,9 @@
 //! - A probe that timed out, or failed with an error, is `Reading::Failed`:
 //!   unknown, never 100%, never a target and never exhausted. Nothing about
 //!   it is kept, so the next cycle probes it again.
+//! - `measure::measure_with` runs at most `bound` probes at once, the live
+//!   one included, and a slot the live probe frees goes to the next
+//!   candidate (fake `claude` scripts only; never a real one).
 
 use super::decide::{Decision, Measured, Probed, Reading, Reason, Windows, best, decide};
 use super::log::msg;
@@ -157,4 +160,177 @@ fn a_timed_out_probe_is_not_treated_as_exhausted() {
     // The overflow rule: no known reset, no plan capacity, no regain time.
     assert!(!plan_usable(&settings(), &slow.reading));
     assert_eq!(regains(&settings(), &slow.reading, &slow.windows), None);
+}
+
+// ---------------------------------------------------------------------------
+// The bound counts the live probe. Each fake appends `S <who>` on start and
+// `E <who>` on exit to a marks file; the live probe's `who` is `live`.
+// ---------------------------------------------------------------------------
+
+mod bound {
+    use super::super::decide::{Probed, Reading};
+    use super::super::measure::{Live, measure_with};
+    use super::{NOW, name};
+    use crate::binary_finder::BinaryInfo;
+    use crate::commands::profile::store::ProfileStore;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    struct Hosts {
+        _dir: tempfile::TempDir,
+        store: ProfileStore,
+        bin: BinaryInfo,
+        marks: PathBuf,
+    }
+
+    /// A store with `live` and `p0`..`p{n-1}`, and a fake that sleeps `secs`.
+    fn hosts(n: usize, secs: f64) -> Hosts {
+        hosts_with(n, secs, secs)
+    }
+
+    /// As [`hosts`], with the live probe sleeping `live_secs`.
+    fn hosts_with(n: usize, secs: f64, live_secs: f64) -> Hosts {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ProfileStore::new(dir.path().join("root"));
+        store.add(&name("live")).unwrap();
+        for i in 0..n {
+            store.add(&name(&format!("p{i}"))).unwrap();
+        }
+        let marks = dir.path().join("marks");
+        let path = dir.path().join("claude");
+        let body = format!(
+            "#!/bin/sh\n\
+             PATH=/usr/local/bin:/usr/bin:/bin; export PATH\n\
+             [ \"$1\" = -p ] || exit 0\n\
+             who=${{CLAUDE_CONFIG_DIR:-live}}; who=${{who##*/}}\n\
+             echo \"S $who\" >> '{marks}'\n\
+             case $who in live) sleep {live_secs} ;; *) sleep {secs} ;; esac\n\
+             echo \"E $who\" >> '{marks}'\n\
+             printf 'Current session: 37%% used · resets 4pm (UTC)\\nCurrent week (all models): 61%% used · resets Oct 22, 2am (UTC)\\n'\n",
+            marks = marks.display()
+        );
+        fs::write(&path, body).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test's fork can hold the write descriptor until its exec
+        // (ETXTBSY); run the fake with no arguments until it starts.
+        let start = Instant::now();
+        while Command::new(&path).status().is_err() {
+            assert!(start.elapsed() < Duration::from_secs(5), "fake never ran");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let bin = BinaryInfo {
+            name: "claude".into(),
+            path,
+            version: None,
+        };
+        Hosts {
+            _dir: dir,
+            store,
+            bin,
+            marks,
+        }
+    }
+
+    fn run(h: &Hosts, live: Live<'_>, n: usize, bound: usize) -> (Probed, Vec<Probed>) {
+        let cands: Vec<_> = (0..n).map(|i| name(&format!("p{i}"))).collect();
+        let (live, others) = measure_with(
+            &h.store,
+            &h.bin,
+            live,
+            &cands,
+            NOW,
+            Duration::from_secs(60),
+            bound,
+        );
+        (live, others.into_iter().map(|(_, p)| p).collect())
+    }
+
+    /// The marks in order, and the most probes running at once.
+    fn marks(h: &Hosts) -> (Vec<String>, usize) {
+        let text = fs::read_to_string(&h.marks).unwrap();
+        let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+        let peak = peak(&lines, |_| true);
+        (lines, peak)
+    }
+
+    /// The most probes running at once among the marks `counted` keeps.
+    fn peak(lines: &[String], counted: impl Fn(&str) -> bool) -> usize {
+        let (mut running, mut peak) = (0usize, 0usize);
+        for line in lines.iter().filter(|l| counted(l)) {
+            if line.starts_with("S ") {
+                running += 1;
+                peak = peak.max(running);
+            } else {
+                running -= 1;
+            }
+        }
+        assert_eq!(running, 0, "every probe ended: {lines:?}");
+        peak
+    }
+
+    fn read(p: &Probed) -> bool {
+        p.reading
+            == Reading::Measured {
+                session: 37.0,
+                week: 61.0,
+            }
+    }
+
+    #[test]
+    fn the_live_probe_counts_against_the_bound() {
+        let h = hosts(3, 0.5);
+        let live = name("live");
+        let (live, others) = run(&h, Live::Profile(&live), 3, 2);
+        assert!(
+            read(&live) && others.iter().all(read),
+            "{live:?} {others:?}"
+        );
+        let (lines, peak) = marks(&h);
+        assert_eq!(lines.len(), 8, "{lines:?}");
+        assert_eq!(peak, 2, "four probes at a bound of 2: {lines:?}");
+    }
+
+    #[test]
+    fn the_live_probes_slot_goes_to_a_candidate_when_it_ends() {
+        // A quick live probe and four slow candidates at a bound of 2: once
+        // the live probe ends, its slot runs candidates beside the other.
+        let h = hosts_with(4, 0.5, 0.0);
+        let live = name("live");
+        let (live, others) = run(&h, Live::Profile(&live), 4, 2);
+        assert!(
+            read(&live) && others.iter().all(read),
+            "{live:?} {others:?}"
+        );
+        let (lines, peak_all) = marks(&h);
+        assert_eq!(peak_all, 2, "{lines:?}");
+        let candidates = peak(&lines, |l| !l.ends_with(" live"));
+        assert_eq!(candidates, 2, "two candidates at once: {lines:?}");
+    }
+
+    #[test]
+    fn at_a_bound_of_one_the_live_probe_runs_first_and_alone() {
+        let h = hosts(2, 0.2);
+        let (live, others) = run(&h, Live::Unowned, 2, 1);
+        assert!(
+            read(&live) && others.iter().all(read),
+            "{live:?} {others:?}"
+        );
+        let (lines, peak) = marks(&h);
+        assert_eq!(peak, 1, "{lines:?}");
+        assert_eq!(lines[..2], ["S live", "E live"]);
+    }
+
+    #[test]
+    fn an_api_key_live_login_leaves_the_whole_bound_to_the_candidates() {
+        let h = hosts(2, 0.5);
+        let (live, others) = run(&h, Live::Platform, 2, 2);
+        assert_eq!(live, Probed::platform());
+        assert!(others.iter().all(read), "{others:?}");
+        let (lines, peak) = marks(&h);
+        assert!(lines.iter().all(|l| !l.ends_with(" live")), "{lines:?}");
+        assert_eq!(peak, 2, "{lines:?}");
+    }
 }
