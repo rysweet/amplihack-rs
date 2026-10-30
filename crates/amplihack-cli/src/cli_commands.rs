@@ -180,7 +180,9 @@ MODEL SELECTION (issues #1421, #1527)
         /// Read the initial auto-mode prompt from a file (requires --auto).
         #[arg(long = "prompt-file", value_name = "PATH", requires = "auto")]
         prompt_file: Option<PathBuf>,
-        /// Extra args passed to copilot
+        /// Extra args passed to copilot. amplihack does not pass `--remote`
+        /// (Copilot 1.0.105 removed it, issue #1744); start a remote session
+        /// inside Copilot with `/remote on` and stop it with `/remote off`.
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
