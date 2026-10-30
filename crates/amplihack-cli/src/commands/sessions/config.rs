@@ -14,7 +14,11 @@
 //! different destination from the one the daily run wrote to (issue #1746,
 //! review of #1766).
 
-use crate::user_config::{SESSIONS_ARCHIVE_DAYS, SESSIONS_ARCHIVE_DEST, Value, sessions_key};
+use crate::user_config::safe::display_path;
+use crate::user_config::{
+    SESSIONS_ARCHIVE_DAYS, SESSIONS_ARCHIVE_DEST, TEST_HOME_GUARD_ENV, Value, guard_forbids,
+    sessions_key,
+};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -103,4 +107,24 @@ fn default_dest(home: &Path) -> PathBuf {
 /// The key from the user file, or why it cannot be used.
 fn saved(home: &Path, key: &'static str) -> Result<Option<Value>, ConfigError> {
     sessions_key(home, key).map_err(|why| ConfigError::Key { key, why })
+}
+
+/// The line that refuses to run when the test guard
+/// ([`TEST_HOME_GUARD_ENV`], set on every `amplihack` a test starts) is set
+/// and `path`, the HOME or DEST named by `what`, is outside the temp dir;
+/// `None` otherwise.
+///
+/// The keys are guarded in [`sessions_key`], but a key is read only when
+/// its flag is absent, so `archive --days N --dest DIR` and
+/// `restore --dest DIR` never read one. Without this check a test that
+/// gives both flags but leaves the real HOME would archive and remove the
+/// developer's real `~/.claude/projects` (issues #1542 and #1699, review of
+/// #1766).
+pub fn outside_test_temp(what: &str, path: &Path) -> Option<String> {
+    guard_forbids(path).then(|| {
+        format!(
+            "{TEST_HOME_GUARD_ENV} is set and {what} ({}) is outside the temp dir; nothing changed",
+            display_path(path)
+        )
+    })
 }

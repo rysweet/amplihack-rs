@@ -523,3 +523,92 @@ fn bad_session_names_are_skipped() {
     // The control character is escaped, never printed raw.
     assert!(!text(&out.stderr).contains('\u{1}'));
 }
+
+/// The line a guarded run prints for a HOME or DEST outside its temp dir.
+fn guard_line(what: &str, path: &std::path::Path) -> String {
+    format!(
+        "AMPLIHACK_TEST_HOME_GUARD is set and {what} ({}) is outside the temp dir; nothing changed",
+        path.display()
+    )
+}
+
+#[test]
+fn the_test_guard_stops_a_home_or_dest_outside_the_temp_dir_whatever_the_flags() {
+    // With `--days` and `--dest` no config key is read, so the key's guard
+    // never runs; the command itself must refuse (review of #1766). The
+    // child's TMPDIR is a directory inside this fixture, so "outside the
+    // temp dir" is still inside this test's own temporary directory and
+    // nothing real is at risk if the check is missing.
+    let fx = Fx::new();
+    let session = fx.session("aaaa", 10, &[]);
+    let child_tmp = fx.base.join("child-tmp");
+    fs::create_dir_all(&child_tmp).unwrap();
+    chmod(&child_tmp, 0o700);
+    let dest = child_tmp.join("dest");
+    let d = dest.to_str().unwrap().to_string();
+    let run = |tmpdir: &std::path::Path, args: &[&str]| {
+        let mut c = fx.cmd(args);
+        c.env("TMPDIR", tmpdir);
+        fx.run_cmd(c)
+    };
+    let refused = |out: &std::process::Output, line: &str| {
+        assert_eq!(exit_code(out), 1, "stderr: {}", text(&out.stderr));
+        assert_stderr_line(out, line);
+        assert!(out.stdout.is_empty(), "stdout: {}", text(&out.stdout));
+    };
+
+    // HOME outside the child's temp dir: archive, with and without --apply.
+    let home_line = guard_line("HOME", &fx.home);
+    for extra in [&["--apply"][..], &[]] {
+        let mut args = vec!["sessions", "archive", "--days", "1", "--dest", &d];
+        args.extend_from_slice(extra);
+        refused(&run(&child_tmp, &args), &home_line);
+    }
+    assert!(session.is_file(), "a guarded run archived the session");
+    assert!(!dest.exists(), "a guarded run created DEST");
+
+    // Control: the same command with HOME inside the temp dir archives, so
+    // the refusal above was the guard and nothing else.
+    let out = run(
+        &fx.base,
+        &[
+            "sessions", "archive", "--days", "1", "--dest", &d, "--apply",
+        ],
+    );
+    ok(&out);
+    assert!(!session.exists());
+    let archive = dest.join(PROJECT).join("aaaa.tar.gz");
+    assert!(archive.is_file());
+
+    // HOME outside: restore with --dest writes nothing into HOME.
+    refused(
+        &run(&child_tmp, &["sessions", "restore", "aaaa", "--dest", &d]),
+        &home_line,
+    );
+    assert!(!session.exists(), "a guarded restore wrote into HOME");
+    assert!(archive.is_file());
+
+    // HOME inside the temp dir (TMPDIR is HOME itself), DEST outside it.
+    let other = fx.base.join("other-dest");
+    let o = other.to_str().unwrap().to_string();
+    let dest_line = guard_line("DEST", &other);
+    let second = fx.session("bbbb", 10, &[]);
+    refused(
+        &run(
+            &fx.home,
+            &[
+                "sessions", "archive", "--days", "1", "--dest", &o, "--apply",
+            ],
+        ),
+        &dest_line,
+    );
+    refused(
+        &run(&fx.home, &["sessions", "restore", "aaaa", "--dest", &o]),
+        &dest_line,
+    );
+    assert!(
+        second.is_file(),
+        "a guarded run archived into an outside DEST"
+    );
+    assert!(!other.exists(), "a guarded run created an outside DEST");
+}

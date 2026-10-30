@@ -11,7 +11,8 @@ as it grows (#1698). `sessions archive` moves each old session into one
 compressed archive under `~/.amplihack/session-archive`, and
 `sessions restore` brings one back. Claude Code cannot resume an archived
 session until it is restored; see
-[Resume an archived session](#resume-an-archived-session).
+[Resume an archived session](#resume-an-archived-session). Nothing removes
+archives, so that directory keeps growing; see [Disk use](#disk-use).
 
 ## Contents
 
@@ -26,6 +27,7 @@ session until it is restored; see
 - [Restore](#restore)
 - [Resume an archived session](#resume-an-archived-session)
 - [Destination layout](#destination-layout)
+- [Disk use](#disk-use)
 - [Manifest](#manifest)
 - [Lock](#lock)
 - [Configuration](#configuration)
@@ -367,6 +369,59 @@ a world-writable directory that lacks the sticky bit, where another user
 could replace it after the check. `/tmp` has the sticky bit, and the default
 under `~/.amplihack` is not affected.
 
+## Disk use
+
+The archive moves session logs; it does not delete them. Apart from the
+temporary files a crashed run leaves (see [Lock](#lock)) and the archive of
+a session that failed after it was written, nothing in amplihack removes
+anything from DEST, so DEST only grows. The default DEST,
+`~/.amplihack/session-archive`, is normally on the same filesystem as
+`~/.claude`, and the
+[daily run](./profile-command.md#rotate-daily-session-archive) is on by
+default, so DEST grows without anyone running a command.
+
+Session logs are text and compress well. On one development host, 212 MB of
+logs older than three days compressed to 52 MB with gzip, about a quarter
+of their size; the ratio depends on what the sessions hold. DEST therefore
+grows at roughly a quarter of the rate at which `~/.claude/projects` grew
+before, and a backlog of 15 GiB becomes a little under 4 GiB of
+archives. The [manifest](#manifest) also grows, by one line of under 2 KiB
+per archived session.
+
+To see how large DEST is:
+
+```
+du -sh ~/.amplihack/session-archive
+```
+
+To keep new archives on another disk, set `sessions.archive_dest`:
+
+```
+amplihack config set sessions.archive_dest /mnt/data/claude-sessions
+```
+
+The daily run and `restore` use the new directory from their next run.
+Archives already written stay in the old directory, with its manifest, and
+`restore` reaches them only when given that directory:
+
+```
+amplihack sessions restore 4f1c2a7e-9b3d-4c55-8e21-6a0f3d9b7c10 --dest ~/.amplihack/session-archive
+```
+
+There is no command that prunes DEST. To reclaim space, delete old
+`<DEST>/<project>/*.tar.gz` files by hand. An archive's modification time is
+when it was written, so this removes archives written more than 90 days ago:
+
+```
+find ~/.amplihack/session-archive -name '*.tar.gz' -mtime +90 -delete
+```
+
+A deleted archive cannot be brought back by amplihack, and Claude Code
+cannot resume its session. Its manifest line stays, so `restore` for that
+session prints `archive <DEST>/<archive> not found` and exits 1. Leave
+`MANIFEST.jsonl` and `.archive.lock` in place: the archive and `restore`
+both use them.
+
 ## Manifest
 
 `<DEST>/MANIFEST.jsonl` has one JSON line per archived session, appended
@@ -508,11 +563,12 @@ Every message below goes to stderr. The tests check these strings exactly.
 | `destination <DEST> is not private (must be your own directory, not writable by group or others)` | DEST failed the [privacy check](#destination-layout). |
 | `refusing to run with an effective user id different from the real user id` | The command runs setuid or similar. Nothing read. |
 | `HOME is not set` | The home directory is unknown. Nothing read. |
+| `AMPLIHACK_TEST_HOME_GUARD is set and <HOME or DEST> (<path>) is outside the temp dir; nothing changed` | The process was started by a test, which sets that variable, and HOME or DEST is outside the temp dir. HOME is checked before anything is read, and DEST before anything is changed, whichever flags were given. Never seen outside tests. |
 | `cannot read <key> (<why>)` | `<key>` is `sessions.archive_days` or `sessions.archive_dest`. The user config file cannot give it a value, and its flag was not given; see [Configuration](#configuration). `<why>` names the file and the problem, never the value. Nothing read. |
 | `session <id> not found in <DEST>/MANIFEST.jsonl` | `restore`: no manifest line for `<id>`, or no manifest. |
 | `refused session <id>: bad session id` | `restore`: the id breaks the [id rules](#what-a-session-is). Nothing read. |
 | `refused session <id>: bad manifest line` | `restore`: the line's `project` or `archive` field breaks the [rules](#restore). Nothing written. |
-| `archive <DEST>/<archive> not found` | `restore`: the manifest names an archive that does not exist. |
+| `archive <DEST>/<archive> not found` | `restore`: the manifest names an archive that does not exist, for example one deleted by hand to reclaim space; see [Disk use](#disk-use). |
 | `refused <DEST>/<archive>: bad member <member>` | `restore`: a member is not a regular file or directory, or its path is unsafe. Nothing written. |
 | `refused <DEST>/<archive>: member count or size mismatch` | `restore`: the archive does not match the manifest's `parts` or `bytes`. Nothing written. |
 | `refused <DEST>/<archive>: not a readable archive` | `restore`: the file is not a gzip tar, or is truncated or corrupt. Nothing written. |
@@ -544,6 +600,12 @@ process, or end it. The daily run stops in the same way until then.
 
 If the profile root cannot be read, the path is the root you configured
 with `AMPLIHACK_CLAUDE_PROFILE_ROOT`, or `~/.amplihack` when it is unset.
+
+When the filesystem holding DEST is full, sessions fail with
+`write failed (disk full)` or `manifest write failed (disk full)`, and their
+originals are kept. DEST grows with every run; see [Disk use](#disk-use)
+for how large it gets, how to move it to another disk and how to delete old
+archives.
 
 ## Privacy
 

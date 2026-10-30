@@ -15,11 +15,11 @@
 //! - No environment variable is read for days or DEST (checked end to end
 //!   in `tests/issue_1746_sessions_archive.rs`).
 
-use super::config::{ConfigError, DEFAULT_DAYS, resolve};
+use super::config::{ConfigError, DEFAULT_DAYS, outside_test_temp, resolve};
 use crate::user_config::{Value, schema};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 struct Home {
     _tmp: tempfile::TempDir,
@@ -203,4 +203,22 @@ fn a_relative_dest_flag_is_made_absolute() {
     let o = resolve(None, Some(PathBuf::from("rel/dir")), false, h.arg()).unwrap();
     assert!(o.dest.is_absolute(), "{}", o.dest.display());
     assert!(o.dest.ends_with("rel/dir"));
+}
+
+#[test]
+fn the_test_guard_refuses_a_path_outside_the_temp_dir_and_names_it() {
+    // Unit tests always run under the guard.
+    assert_eq!(
+        outside_test_temp("HOME", Path::new("/")).as_deref(),
+        Some(
+            "AMPLIHACK_TEST_HOME_GUARD is set and HOME (/) is outside the temp dir; nothing changed"
+        )
+    );
+    // A path under the temp dir passes, whether or not it exists yet.
+    let h = home(None);
+    assert_eq!(outside_test_temp("HOME", &h.path), None);
+    assert_eq!(
+        outside_test_temp("DEST", &h.path.join("missing/dest")),
+        None
+    );
 }

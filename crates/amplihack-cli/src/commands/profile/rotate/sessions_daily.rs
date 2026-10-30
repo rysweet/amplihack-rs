@@ -62,6 +62,11 @@ pub(super) fn tick(rs: &RotateState, home: &Path, now: i64, stop: &AtomicBool) {
     }
     let mut log = |line: &str| super::daemon::log_line(rs, line);
     let mut run = |opts: &Opts| {
+        // HOME is guarded when the keys are read; a DEST key can still name
+        // a directory outside a test's temp dir.
+        if let Some(line) = config::outside_test_temp("DEST", &opts.dest) {
+            return Err(line);
+        }
         let mut warn = |line: &str| super::daemon::log_line(rs, &format!("{PREFIX}{line}"));
         let started = Instant::now();
         let halt = || stop.load(Ordering::Relaxed) || started.elapsed() >= RUN_LIMIT;

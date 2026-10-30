@@ -35,7 +35,7 @@ use crate::commands::profile::{ROOT_ENV, store_from_env};
 use amplihack_utils::rotator_status::home_from_env;
 use clap::Subcommand;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Subcommand)]
 pub enum SessionsCommands {
@@ -70,6 +70,14 @@ fn fail(line: &str) -> ! {
     std::process::exit(1)
 }
 
+/// Exits 1 when the test guard forbids `path`; see
+/// [`config::outside_test_temp`].
+fn refuse_outside_test_temp(what: &str, path: &Path) {
+    if let Some(line) = config::outside_test_temp(what, path) {
+        fail(&line);
+    }
+}
+
 pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
     // SAFETY: geteuid and getuid have no preconditions.
     if unsafe { libc::geteuid() != libc::getuid() } {
@@ -77,10 +85,19 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
     }
     let env = |k: &str| std::env::var_os(k);
     let mut warn = |l: &str| eprintln!("{l}");
+    // Before either subcommand reads or changes anything: a process a test
+    // started never touches a HOME or DEST outside the temp dir, whichever
+    // flags it was given. An empty HOME is left to `resolve`, which reports
+    // it as unset.
+    let home = home_from_env();
+    if let Some(h) = home.as_deref().filter(|h| !h.as_os_str().is_empty()) {
+        refuse_outside_test_temp("HOME", h);
+    }
     match cmd {
         SessionsCommands::Archive { days, dest, apply } => {
-            let opts = config::resolve(days, dest, apply, home_from_env())
-                .unwrap_or_else(|e| fail(&e.to_string()));
+            let opts =
+                config::resolve(days, dest, apply, home).unwrap_or_else(|e| fail(&e.to_string()));
+            refuse_outside_test_temp("DEST", &opts.dest);
             // Without the profile root the live check cannot see every
             // profile's sessions, so it fails closed.
             let profile_root = match store_from_env() {
@@ -104,8 +121,9 @@ pub fn run_sessions(cmd: SessionsCommands) -> anyhow::Result<()> {
             }
         }
         SessionsCommands::Restore { session_id, dest } => {
-            let opts = config::resolve(Some(1), dest, true, home_from_env())
-                .unwrap_or_else(|e| fail(&e.to_string()));
+            let opts =
+                config::resolve(Some(1), dest, true, home).unwrap_or_else(|e| fail(&e.to_string()));
+            refuse_outside_test_temp("DEST", &opts.dest);
             let report = restore::run(&session_id, &opts.home, &opts.dest, &mut warn)
                 .unwrap_or_else(|e| fail(&e.to_string()));
             println!("{}", report.summary());

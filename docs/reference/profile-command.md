@@ -4404,6 +4404,12 @@ Each session the archive skips or fails also gets its own line, such as
 [`sessions` messages](./sessions-command.md#messages). No error from the
 archive stops or changes the rotation cycle.
 
+The run moves old logs into the archive directory; it does not delete them.
+Nothing removes archives from that directory, so it keeps growing, at
+roughly a quarter of the rate the session logs grew. See
+[`sessions` disk use](./sessions-command.md#disk-use) for its size, how to
+move it to another disk and how to delete old archives.
+
 #### Turning the daily run off
 
 The switch is the user config key `sessions.daily_archive`:
