@@ -13,9 +13,17 @@ const REQUIRED: &[&str] = &[
     "TMUX_TMPDIR alone does not redirect tmux while $TMUX is set",
 ];
 
+/// Runs the hook with a cleared environment: only `PATH` is inherited, so
+/// nothing from the caller (`TMUX`, `CLAUDE_CONFIG_DIR`, a profile root, the
+/// auto-drive marker) reaches it, and every path it could write to is inside
+/// a temporary directory.
 fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
     let home = tempfile::tempdir().unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_amplihack-hooks"));
+    command.env_clear();
+    if let Some(path) = std::env::var_os("PATH") {
+        command.env("PATH", path);
+    }
     command
         .arg(subcommand)
         .current_dir(home.path())
@@ -23,13 +31,9 @@ fn hook_bytes(subcommand: &str, payload: &str, provider: &str) -> Value {
         .env("AMPLIHACK_HOME", home.path().join(".amplihack"))
         .env("CODEX_HOME", home.path().join(".codex"))
         .env("AMPLIHACK_AGENT_BINARY", provider)
-        .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run")
-        // The guard must not depend on the auto-drive marker.
-        .env_remove("AMPLIHACK_MERGE_GUARD");
+        .env("AMPLIHACK_RECIPE_RUN_ID", "test-leaf-run");
     if provider == "codex" {
         command.env("AMPLIHACK_HOOK_PROTOCOL", "codex");
-    } else {
-        command.env_remove("AMPLIHACK_HOOK_PROTOCOL");
     }
     let mut child = command
         .stdin(Stdio::piped())
@@ -184,5 +188,30 @@ fn deny_never_echoes_the_command() {
     ] {
         let output = hook(payload, provider);
         assert!(!output.to_string().contains("zq-secret-7f3a"), "{output}");
+    }
+}
+
+/// Crusty round 1, concern 1: a socket path read from tmux is the user's
+/// server, including in the deny message's own `env -u TMUX` form.
+#[test]
+fn every_host_denies_a_socket_path_taken_from_tmux() {
+    let command =
+        "sock=$(tmux display -p '#{socket_path}'); env -u TMUX tmux -S \"$sock\" kill-server";
+    assert_full_deny(&hook(claude_payload(command), "claude"));
+    assert_full_deny(&hook(copilot_payload(command), "copilot"));
+    assert_codex_deny(&hook(codex_exec_payload(command), "codex"));
+}
+
+/// Crusty round 1, concerns 3 and 4: amplihack's own launches and stops are
+/// allowed, including inline task text that mentions the guard.
+#[test]
+fn claude_code_allows_amplihack_own_tmux_use() {
+    for command in [
+        "amplihack recipe run default-workflow --detach -c task_description=\"Follow-up to #1733: tmux kill-server guard false positives\"",
+        "amplihack recipe run default-workflow --detach --context-from-file task_description=/tmp/task.md",
+        "amplihack recipe stop amp-default-workflow-repo-20261029-101500",
+        "tmux kill-session -t '=amp-default-workflow-repo-20261029-101500'",
+    ] {
+        assert_not_denied(&hook(claude_payload(command), "claude"));
     }
 }

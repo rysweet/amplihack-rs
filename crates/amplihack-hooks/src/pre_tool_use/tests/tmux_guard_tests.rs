@@ -3,7 +3,7 @@
 //! `-S` or `-L`. Commands that only mention the forms as data pass.
 
 use super::*;
-use serde_json::{Value, json};
+use serde_json::json;
 
 fn denied(command: &str) -> bool {
     check(command).is_some()
@@ -82,6 +82,7 @@ const DENIED: &[&str] = &[
     "nice -n 5 tmux kill-server",
     "nohup tmux kill-server",
     "timeout 5 tmux kill-server",
+    // stdbuf is not a wrapper: layer 2 finds the tmux word after it.
     "stdbuf -oL tmux kill-server",
     "time tmux kill-server",
     "sudo tmux kill-server",
@@ -391,6 +392,12 @@ fn block_message_carries_the_required_guidance() {
         "-S <private socket>",
         "env -u TMUX",
         "TMUX_TMPDIR alone does not redirect tmux while $TMUX is set",
+        // A socket path read from tmux is the user's server (crusty round 1).
+        "#{socket_path}",
+        // The way out when the command only mentions the words as text.
+        "--context-from-file",
+        "--body-file",
+        "its own tool call",
     ] {
         assert!(BLOCK_MESSAGE.contains(needle), "missing {needle:?}");
     }
@@ -625,13 +632,20 @@ fn deeply_nested_input_is_safe_on_a_small_stack() {
     assert_eq!(handle.join().ok(), Some(true), "panicked or allowed");
 }
 
+/// The guard always runs: nothing in the environment can turn it off or
+/// change a verdict, because neither this module nor the tokeniser it uses
+/// reads the environment. Running `check` twice in one process could not
+/// show that, so this reads their source instead.
 #[test]
-fn guard_reads_no_environment() {
-    // The response is a pure function of the input text.
-    let a: Option<Value> = check(INCIDENT);
-    let b: Option<Value> = check(INCIDENT);
-    assert_eq!(a, b);
-    assert!(a.is_some());
+fn guard_source_reads_no_environment() {
+    for (name, source) in [
+        ("tmux_guard.rs", include_str!("../tmux_guard.rs")),
+        ("shell.rs", include_str!("../shell.rs")),
+    ] {
+        for needle in ["std::env", "env::var", "env!(", "var_os", "getenv"] {
+            assert!(!source.contains(needle), "{name} contains {needle:?}");
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -827,5 +841,253 @@ fn allows_substitutions_that_are_scoped_or_stay_data() {
         .iter()
         .filter(|c| denied(c))
         .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 1, concern 1: inside a pane, `#{socket_path}` is the user's
+// own socket, so an `-S`/`-L` value that substitutes tmux's output, or a
+// variable assigned one, is not scope. The second command is the deny
+// message's own `env -u TMUX` form with the socket taken from tmux.
+// ---------------------------------------------------------------------------
+
+const SOCKET_FROM_TMUX_DENIED: &[&str] = &[
+    "tmux -S \"$(tmux display -p '#{socket_path}')\" kill-server",
+    "sock=$(tmux display -p '#{socket_path}'); env -u TMUX tmux -S \"$sock\" kill-server",
+    "tmux -S \"$(tmux display-message -p '#{socket_path}')\" kill-session -a",
+    "env -u TMUX tmux -S \"$(tmux display -p '#{socket_path}')\" kill-server",
+    "tmux -S \"`tmux display -p '#{socket_path}'`\" kill-server",
+    "tmux -S\"$(tmux display -p '#{socket_path}')\" kill-server",
+    "tmux -L \"$(tmux display -p '#{socket_path}')\" kill-server",
+    "tmux -S \"$(/usr/bin/tmux display -p '#{socket_path}')\" kill-server",
+    "tmux -S \"$(command tmux display -p '#{socket_path}')\" kill-server",
+    "export sock=\"$(tmux display -p '#{socket_path}')\"; tmux -S \"$sock\" kill-server",
+    "sock=$(tmux display -p '#{socket_path}'); s2=$sock; tmux -S \"$s2\" kill-server",
+    "sock=`tmux display -p '#{socket_path}'`; tmux -S \"$sock\" kill-server",
+    "bash -c 'sock=$(tmux display -p \"#{socket_path}\"); tmux -S \"$sock\" kill-server'",
+];
+
+const SOCKET_FROM_TMUX_ALLOWED: &[&str] = &[
+    "tmux -S \"$SB/sock\" kill-server",
+    "tmux -S \"$(mktemp -d)/s\" kill-server",
+    "SB=$(mktemp -d); env -u TMUX tmux -S \"$SB/s\" kill-server",
+    // A sandbox whose path mentions tmux is still a private socket.
+    "SB=$(mktemp -d /tmp/tmux-qa.XXXXXX); env -u TMUX tmux -S \"$SB/s\" kill-server",
+    "tmux -S \"$(mktemp -d -t tmux-qa.XXXX)/s\" kill-server",
+    // Reading the socket path is fine; only a kill on it is denied.
+    "tmux display -p '#{socket_path}'",
+    "tmux -S \"$(tmux display -p '#{socket_path}')\" ls",
+];
+
+#[test]
+fn denies_a_socket_path_taken_from_tmux() {
+    let missed: Vec<&&str> = SOCKET_FROM_TMUX_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_a_private_socket_made_by_a_substitution() {
+    let wrong: Vec<&&str> = SOCKET_FROM_TMUX_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 1, concerns 3 and 4: amplihack's own tmux use stays allowed,
+// including an inline task description that mentions the guard. The
+// `-c`/`--context` values of `amplihack recipe run` are data, exactly as a
+// `--context-from-file` file is.
+// ---------------------------------------------------------------------------
+
+const AMPLIHACK_OWN_TMUX_USE_ALLOWED: &[&str] = &[
+    "amplihack recipe stop amp-default-workflow-repo-20261029-101500",
+    "amplihack recipe stop 2f1c9a7e-run-id",
+    "amplihack recipe run default-workflow --detach --context-from-file task_description=/home/u/.amplihack/work/task.md -c repo_path=.",
+    "amplihack recipe run smart-orchestrator --detach -w /repo --context-from-file task_description=\"$TASK_FILE\" -c repo_path=.",
+    // Inline task text that mentions the guard (the dev-orchestrator and
+    // auto-drive-to-merge launch forms).
+    "amplihack recipe run default-workflow --detach -c task_description=\"Follow-up to #1733: tmux kill-server guard false positives\"",
+    "amplihack recipe run default-workflow -c task_description=\"make recipe stop use tmux kill-session -t =name\"",
+    "amplihack recipe run default-workflow -c task_description='deny tmux kill-session -a without -S'",
+    "cd /repo && AMPLIHACK_HOME=/x amplihack recipe run amplifier-bundle/recipes/smart-orchestrator.yaml -c task_description=\"deny tmux kill-server\" -c repo_path=\".\" --verbose",
+    "amplihack recipe run auto-drive-to-merge -c task_description=\"tmux kill-server guard\" -c repo_path=/home/u/src/p",
+    "amplihack recipe run default-workflow --context task_description='tmux kill-server guard'",
+    "amplihack recipe run default-workflow --context=task_description='tmux kill-server guard'",
+    "amplihack recipe run default-workflow -ctask_description='tmux kill-server guard'",
+    // The hand-written detached form, with a task that does not mention the
+    // guard.
+    "tmux new-session -d -s run \"$(amplihack agent-binary --shell) amplihack recipe run default-workflow -c task_description='fix the parser'\"",
+    "tmux new-session -d -s \"recipe-$(date +%s)\" \"cd /repo && $(amplihack agent-binary --shell -w /repo) amplihack recipe run smart-orchestrator -c task_description='TASK' -c repo_path='.'\"",
+    // The exact-match target `recipe stop` and `--detach` use.
+    "tmux kill-session -t '=amp-default-workflow-repo-20261029-101500'",
+    "tmux kill-session -t =amp-x",
+    "tmux kill-session -t \"=$session\"",
+    "tmux kill-session -t=amp-x",
+];
+
+const AMPLIHACK_OWN_TMUX_USE_DENIED: &[&str] = &[
+    // A substitution in a context value runs.
+    "amplihack recipe run default-workflow -c task_description=\"$(tmux kill-server)\"",
+    "amplihack recipe run default-workflow -c task_description=\"`tmux kill-server`\"",
+    // Only context values are data: a positional argument or another
+    // option's value is not.
+    "amplihack recipe run default-workflow tmux kill-server",
+    "amplihack recipe run default-workflow -c repo_path=. tmux kill-server",
+    "amplihack recipe run default-workflow -w 'tmux kill-server'",
+    // Only `recipe run` gets the exemption.
+    "amplihack launch -- -p 'tmux kill-server'",
+    // An evaluator anywhere on the line removes it, as for other data-only
+    // commands: put the tmux command in its own tool call.
+    "amplihack recipe run default-workflow -c task_description=\"tmux kill-server\"; tmux ls",
+    "amplihack recipe run default-workflow -c task_description=\"tmux kill-server\" | bash",
+    // A hand-written `tmux new-session` runs its argument in a shell, so
+    // inline task text there is judged as a command. Use `--detach` or
+    // `--context-from-file` for such a task.
+    "tmux new-session -d -s run \"$(amplihack agent-binary --shell) amplihack recipe run default-workflow -c task_description='tmux kill-server guard'\"",
+];
+
+#[test]
+fn allows_amplihack_own_tmux_use() {
+    let wrong: Vec<&&str> = AMPLIHACK_OWN_TMUX_USE_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+#[test]
+fn recipe_run_context_values_are_data_only_on_their_own() {
+    let missed: Vec<&&str> = AMPLIHACK_OWN_TMUX_USE_DENIED
+        .iter()
+        .filter(|c| !denied(c))
+        .collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 1, concern 6: an embedded script gets the same verdict as the
+// command unwrapped. A targeted `kill-session -t` inside `bash -c` or
+// `ssh host '…'` is allowed; any run of tokens that would kill still denies,
+// so a tmux call the tokeniser cannot parse is not cleared.
+// ---------------------------------------------------------------------------
+
+const WRAPPED_TARGETED_KILL_ALLOWED: &[&str] = &[
+    "bash -c \"tmux kill-session -t amp-x\"",
+    "ssh vm1 \"tmux kill-session -t amp-x\"",
+    "ssh vm1 'tmux kill-session -t =amp-x 2>/dev/null || true'",
+    "bash -lc 'tmux kill-session -t a; tmux kill-session -t b'",
+    "sh -c \"bash -c 'tmux kill-session -t amp-x'\"",
+    "x=$(tmux kill-session -t foo)",
+    "python3 -c \"import os; os.system('tmux kill-session -t amp-x')\"",
+];
+
+const WRAPPED_KILL_DENIED: &[&str] = &[
+    "ssh vm1 \"tmux kill-session -a\"",
+    "ssh vm1 'tmux kill-server'",
+    "bash -c \"tmux kill-session -t x; tmux kill-server\"",
+    "bash -c \"tmux kill-session -t x -a\"",
+    // An unscoped tmux beside a kill token elsewhere in the script.
+    "bash -c \"tmux kill-session -t x; echo kill-server\"",
+    "bash -c \"tmux ls; printf 'kill-server'\"",
+    "python -c \"import os; os.system('tmux kill-session -a')\"",
+    "python3 -c 'import subprocess; subprocess.run([\"tmux\", \"kill-session\", \"-a\"])'",
+    // The substitution's output may be run.
+    "bash -c \"$(echo tmux kill-session -t x)\"",
+];
+
+#[test]
+fn allows_a_wrapped_targeted_kill_session() {
+    let wrong: Vec<&&str> = WRAPPED_TARGETED_KILL_ALLOWED
+        .iter()
+        .filter(|c| denied(c))
+        .collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+#[test]
+fn denies_a_wrapped_script_with_any_kill() {
+    let missed: Vec<&&str> = WRAPPED_KILL_DENIED.iter().filter(|c| !denied(c)).collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 1, concern 7: a `tmux -C` client runs each line of its stdin,
+// so a kill word anywhere in a piped word counts, after a space, a newline
+// escape or a tab escape.
+// ---------------------------------------------------------------------------
+
+const CONTROL_MODE_DENIED: &[&str] = &[
+    "printf 'list-sessions\\nkill-server\\n' | tmux -C attach",
+    "echo ' kill-server' | tmux -C attach",
+    "echo -e 'ls\\tkill-session -a' | tmux -C attach",
+    "printf 'ls\\n' 'kill-server' | tmux -CC attach",
+    "bash -c \"printf 'ls\\nkill-server' | tmux -C attach\"",
+    // bash keeps the backslash of `\n` inside double quotes.
+    "printf \"list-sessions\\nkill-server\\n\" | tmux -C attach",
+    "bash -c 'printf \"ls\\nkill-server\" | tmux -C attach'",
+];
+
+const CONTROL_MODE_ALLOWED: &[&str] = &[
+    "printf 'list-sessions\\n' | tmux -C attach",
+    "echo skill-set | tmux -C attach",
+    "printf 'ls\\n' | tmux -S /tmp/tx1/a.sock -C attach",
+    "printf 'kill-server\\n' | tmux -S /tmp/tx1/a.sock -C attach",
+];
+
+#[test]
+fn denies_a_kill_piped_to_an_unscoped_control_client() {
+    let missed: Vec<&&str> = CONTROL_MODE_DENIED.iter().filter(|c| !denied(c)).collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_control_mode_without_a_kill_or_with_scope() {
+    let wrong: Vec<&&str> = CONTROL_MODE_ALLOWED.iter().filter(|c| denied(c)).collect();
+    assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
+}
+
+// ---------------------------------------------------------------------------
+// Crusty round 1, concern 8: git is data-only only with a subcommand in
+// GIT_DATA_SUBCOMMANDS. Any other subcommand's arguments are judged as
+// scripts, which covers the `--upload-pack` family without listing it.
+// ---------------------------------------------------------------------------
+
+const GIT_NON_DATA_DENIED: &[&str] = &[
+    "git fetch --upload-pack 'tmux kill-server #' /tmp/r",
+    "git pull --upload-pack='tmux kill-server #' /tmp/r",
+    "git ls-remote --upload-pack 'tmux kill-server #' /tmp/r",
+    "git push --receive-pack='tmux kill-server #' /tmp/r",
+    "git archive --remote=/tmp/r --exec='tmux kill-server #' HEAD",
+    "git grep --open-files-in-pager='tmux kill-server #' needle",
+    "git -C repo fetch --upload-pack 'tmux kill-session -a #' /tmp/r",
+];
+
+const GIT_DATA_ALLOWED: &[&str] = &[
+    "git log --grep 'tmux kill-server'",
+    "git --no-pager log --grep 'tmux kill-server'",
+    "git -C repo commit -m \"deny tmux kill-server\"",
+    "git tag -a v1 -m 'deny tmux kill-server'",
+    "git notes add -m 'tmux kill-server guard'",
+    "git stash push -m 'tmux kill-server notes'",
+    "git diff -G 'tmux kill-server'",
+    "git show --stat HEAD",
+    "git add -A && git commit -m \"deny tmux kill-server\" && git push",
+    "git push -u origin HEAD && gh pr create --title t --body \"Denies tmux kill-server.\"",
+];
+
+#[test]
+fn denies_shell_text_in_a_non_data_git_subcommand() {
+    let missed: Vec<&&str> = GIT_NON_DATA_DENIED.iter().filter(|c| !denied(c)).collect();
+    assert!(missed.is_empty(), "not denied: {missed:#?}");
+}
+
+#[test]
+fn allows_mentions_in_data_git_subcommands() {
+    let wrong: Vec<&&str> = GIT_DATA_ALLOWED.iter().filter(|c| denied(c)).collect();
     assert!(wrong.is_empty(), "wrongly denied: {wrong:#?}");
 }

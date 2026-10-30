@@ -51,6 +51,20 @@ fn joins_line_continuations_and_removes_quotes() {
     );
 }
 
+/// Inside double quotes bash removes a backslash only before `$`, a
+/// backtick, `"`, `\` or a newline. Before anything else it stays, so
+/// `printf "ls\nkill-server"` still holds the `\n` that printf turns into a
+/// line break (crusty review of #1735, concern 7).
+#[test]
+fn double_quotes_keep_a_backslash_before_an_ordinary_character() {
+    assert_eq!(
+        words(r#"printf "a\nb" "c\$d" "e\"f" "g\\h" "i\`j" "k\tl""#),
+        vec![owned(&[
+            "printf", "a\\nb", "c$d", "e\"f", "g\\h", "i`j", "k\\tl"
+        ])]
+    );
+}
+
 #[test]
 fn a_lone_pipe_keeps_the_pipeline_and_other_separators_start_a_new_one() {
     let cmds = parse("a | b | c; d && e || f & g\nh");

@@ -112,8 +112,10 @@ pub(super) fn basename(word: &str) -> &str {
 /// Splits `text` into simple commands, each a list of unquoted words.
 ///
 /// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes; the
-/// `&` of a redirection (`2>&1`, `&>`) does not end one. Quotes and
-/// backslashes are removed from words, and `$'…'` escapes are decoded.
+/// `&` of a redirection (`2>&1`, `&>`) does not end one. Quotes are removed
+/// from words, and backslashes as the shell removes them: inside double
+/// quotes only before `$`, a backtick, `"`, `\` or a newline. `$'…'` escapes
+/// are decoded.
 /// Comments and redirections are dropped, and heredoc bodies are skipped:
 /// they are data, never a command's words.
 /// `$(…)` and backticks stay inside the word they appear in, including a
@@ -212,7 +214,15 @@ pub(super) fn tokenise(text: &str) -> Parsed {
                         i = end + 1;
                         continue;
                     }
-                    if chars[i] == '\\' && i + 1 < chars.len() {
+                    // Inside double quotes a backslash is removed only
+                    // before `$`, a backtick, `"`, `\` or a newline; before
+                    // anything else it stays (bash manual, Double Quotes),
+                    // so `"ls\nkill-server"` keeps its `\n` for printf.
+                    if chars[i] == '\\'
+                        && chars
+                            .get(i + 1)
+                            .is_some_and(|n| matches!(n, '$' | '`' | '"' | '\\' | '\n'))
+                    {
                         i += 1;
                     }
                     word.push(chars[i]);

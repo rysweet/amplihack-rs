@@ -322,6 +322,15 @@ These still deny, because they name the user's own server:
   from `TMUX` anywhere in the command, directly or through another such
   variable: `S=$TMUX; tmux -S "$S" kill-server` and
   `s=${TMUX%%,*}; tmux -S "$s" kill-server` are denied.
+- An `-S` or `-L` value that holds a `$( )` or backtick substitution running
+  tmux, or refers to a variable assigned one. Inside a pane,
+  `tmux display -p '#{socket_path}'` prints the user's own socket, so
+  `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` and
+  `sock=$(tmux display -p '#{socket_path}'); env -u TMUX tmux -S "$sock" kill-server`
+  are denied. A substitution runs tmux when its body has a `tmux` word, such
+  as `tmux`, `/usr/bin/tmux` or `command tmux`. A sandbox path that only
+  contains the letters, as in `SB=$(mktemp -d /tmp/tmux-qa.XXXXXX)`, is
+  still a private socket.
 - A `TMUX=…` prefix or `env TMUX=…`. Setting `TMUX` is never scope.
 
 | Command | Result |
@@ -338,6 +347,7 @@ These still deny, because they name the user's own server:
 | `tmux kill-ses -a` | denied |
 | `tmux -L default kill-server` | denied |
 | `tmux -S "$TMUX" kill-server` | denied |
+| `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` | denied |
 | `tmux new -d 'sleep 1' \; kill-server` | denied |
 | `tmux -L x kill-server` | allowed |
 | `tmux -S /p kill-server` | allowed |
@@ -345,6 +355,7 @@ These still deny, because they name the user's own server:
 | `tmux -S /p kill-session -a` | allowed |
 | `env -u TMUX tmux -S /tmp/x/sock kill-server` | allowed |
 | `env -u TMUX tmux -S "$SB/tmux.sock" kill-server` | allowed |
+| `tmux -S "$(mktemp -d)/s" kill-server` | allowed |
 | `tmux -L qa-1733 kill-server` | allowed |
 | `tmux kill-session -t foo` | allowed |
 | `tmux ls` | allowed |
@@ -354,49 +365,78 @@ These still deny, because they name the user's own server:
 continuations are joined. Three layers are checked:
 
 1. **Structural.** Every simple command whose program basename is `tmux`
-   (case-insensitive), after `env`, `command`, `exec`, `nice`, `nohup`,
-   `timeout`, `stdbuf`, `time`, `\tmux` and `{ …; }` are seen through.
+   (case-insensitive). Assignments, shell reserved words such as `if`, `then`
+   and `{`, a leading backslash (`\tmux`) and the wrappers `env`, `command`,
+   `exec`, `nice`, `nohup`, `timeout`, `time` and `sudo`, with their options,
+   are seen through to find the program word.
 2. **Embedded tmux word.** In any other command, a later word with basename
    `tmux` starts a tmux invocation, as in `xargs tmux …`, `ssh host tmux …`,
-   `setsid tmux …` or `watch tmux …`.
+   `setsid tmux …`, `watch tmux …` or `stdbuf -oL tmux …`.
 3. **Embedded script.** A word that contains both a `tmux` token and a `kill-s`
    token, such as the argument of `bash -c`, `python -c`, `$( )`, `<( )` or
    backticks, is parsed again with all three layers, up to 4 levels deep. The
-   body of each `$( )` or backtick substitution in the word runs as shell code
-   wherever it appears, so it is judged on what it runs. Its output may be
+   word is allowed when that parse finds at least one tmux invocation, none
+   of them kills, and either every one is scoped or no run of tokens anywhere
+   in the word would kill (`kill-server` or a prefix of it, or
+   `kill-session` with `-a` after it). So an embedded script gets the same
+   verdict as the command unwrapped: `bash -c "tmux kill-session -t amp-x"`
+   and `ssh vm1 "tmux kill-session -t amp-x"` are allowed, and
+   `ssh vm1 "tmux kill-session -a"` is denied. The token test keeps a tmux
+   call that the shell tokeniser cannot read as one, such as the argv list in
+   `python3 -c 'subprocess.run(["tmux", "kill-server"])'`, from passing.
+   The body of each `$( )` or backtick substitution in the word runs as shell
+   code wherever it appears, so it is judged the same way. Its output may be
    run too, as in `bash -c "$(echo tmux kill-server)"`,
    `x=$(echo tmux kill-server); $x` or `eval "$(printf 'tmux kill-server')"`,
-   so a body that mentions both tokens is allowed only when it is a scoped
-   tmux invocation: it must hold at least one tmux invocation, every one must
-   be scoped, and no data-only command in it may print the two tokens. The
-   one exception is a substitution in an argument of a data-only command,
-   whose output stays data, so `git commit -m "$(cat <<'EOF' … EOF)"` can
-   still mention the guard. The rest of the word is allowed only if it holds
-   at least one tmux invocation and every one is scoped.
+   so a body that mentions both tokens must also not print them through a
+   data-only command. The one exception is a substitution in an argument of a
+   data-only command, whose output stays data, so
+   `git commit -m "$(cat <<'EOF' … EOF)"` can still mention the guard.
 
 Layers 2 and 3 exempt data-only commands, so a commit message can mention the
 guard. The command is data-only when its program is one of `git`, `gh`,
 `echo`, `printf`, `grep`, `egrep`, `fgrep`, `rg`, `cat`, `head`, `tail`, `wc`,
 `jq`, `test`, `[`, `true` or `:`, no stage of the command line is a shell
-evaluator, and the word holds no `$(` or backtick. A `git -c` value containing
-`=!` is not data. A git command whose subcommand runs shell text, or stores it
-for a later git command to run (`config`, `clone`, `rebase`, `bisect`,
-`submodule`, `difftool`, `mergetool`, `filter-branch`, `for-each-repo`), is a
-shell evaluator, and its arguments are also checked joined together, so
+evaluator, and the word holds no `$(` or backtick.
+
+`git` is data-only only with one of the subcommands `add`, `commit`, `diff`,
+`log`, `notes`, `show`, `stash`, `status` and `tag`, none of which runs shell
+text given as an argument. This list fails closed: any other git command is
+judged like any other program, so `git fetch --upload-pack 'tmux kill-server #' /tmp/r`,
+`git push --receive-pack=…`, `git archive --exec=…` and
+`git grep --open-files-in-pager=…` are denied without each option being
+listed. A `git -c` value, or any git word
+containing `=!`, is never data. A git command whose subcommand runs its
+arguments, or stores shell text for a later git command on the same line
+(`config`, `clone`, `rebase`, `bisect`, `submodule`, `difftool`,
+`mergetool`, `filter-branch`, `for-each-repo`), is a shell evaluator for the
+whole line, and its arguments are also checked joined together, so
 `git bisect run tmux kill-server`, `git rebase -x 'tmux kill-server' HEAD~1`
-and `git config alias.k '!tmux kill-server'` are denied. `config` covers `!`
-aliases and `core.pager`; `clone` covers `--upload-pack`. `gh alias`, and a
-`git` or `gh` command preceded by an environment assignment (such as
+and `git config alias.k '!tmux kill-server' && git k` are denied. `gh alias`,
+and a `git` or `gh` command preceded by an environment assignment (such as
 `GIT_SSH_COMMAND=… git fetch` or `GIT_EXTERNAL_DIFF=… git diff`), are shell
 evaluators as well. These rules only matter once the line contains `tmux` and
 `kill-s` text; an ordinary `git config user.name …` is never affected.
+
+The `-c` and `--context` values of `amplihack recipe run` (`-c KEY=VALUE`,
+`-cKEY=VALUE`, `--context KEY=VALUE`, `--context=KEY=VALUE`) are data under
+the same conditions. amplihack hands them to the recipe as text, exactly as
+it hands over a `--context-from-file` file, which the guard never reads, so
+`amplihack recipe run default-workflow --detach -c task_description="Follow-up to #1733: tmux kill-server guard"`
+is allowed. A positional argument, another option's value, a value holding
+`$(` or a backtick, or an evaluator anywhere on the line still denies.
+`amplihack recipe stop <session>` and the exact-match
+`tmux kill-session -t '=<session>'` that `recipe stop` and `--detach` use are
+allowed too.
 
 Before any layer runs, the tokeniser removes redirections and their targets
 from the words (`>`, `>>`, `<`, `>|`, `<>`, `>&`, `<&`, `&>`, `&>>`, with an
 optional fd number such as `2>`), so `tmux 2>/dev/null kill-server` and
 `tmux kill-server>/dev/null` are denied and the `&` in `2>&1` does not split
 the command. It also decodes `$'…'` escapes as bash does, so
-`tmux $'\x6bill-server'` is denied.
+`tmux $'\x6bill-server'` is denied, and, as bash does, keeps a backslash
+inside double quotes unless it comes before `$`, a backtick, `"`, `\` or a
+newline, so `printf "ls\nkill-server"` keeps its `\n`.
 
 | Command | Result |
 |---|---|
@@ -413,14 +453,21 @@ the command. It also decodes `$'…'` escapes as bash does, so
 | `x=$(echo tmux kill-server); $x` | denied |
 | `x=$(echo "notes on tmux kill-server")` | denied |
 | `python -c "os.system('tmux kill-server')"` | denied |
+| `ssh vm1 "tmux kill-session -a"` | denied |
 | `echo tmux kill-server \| sh` | denied |
 | `git config alias.k '!tmux kill-server'` | denied |
+| `git fetch --upload-pack 'tmux kill-server #' /tmp/r` | denied |
 | `bash -c 'tmux -S /tmp/tx1/a.sock kill-server'` | allowed |
+| `bash -c "tmux kill-session -t amp-x"` | allowed |
+| `ssh vm1 "tmux kill-session -t amp-x"` | allowed |
 | `echo "$(tmux -S /p kill-server)"` | allowed |
 | `git commit -m "$(echo 'deny tmux kill-server')"` | allowed |
 | `echo kill-server` | allowed |
 | `grep kill-server file` | allowed |
 | `git commit -m "add tmux kill-server guard"` | allowed |
+| `amplihack recipe run default-workflow -c task_description="tmux kill-server guard"` | allowed |
+| `amplihack recipe stop amp-default-workflow-repo-20261029-101500` | allowed |
+| `tmux kill-session -t '=amp-default-workflow-repo-20261029-101500'` | allowed |
 
 Shell evaluators are `sh`, `bash`, `zsh`, `dash`, `ksh`, `fish`, `eval`,
 `source`, `.`, `xargs`, `env -S`, `nohup`, `exec`, `parallel`, `watch`,
@@ -440,8 +487,13 @@ backtick in the body, so those are checked as commands.
 
 - A program word that starts with `$`, together with any word starting with
   `kill-s`, denies.
-- An unscoped tmux in the same pipeline as a word starting with `kill-s`
-  denies, which covers `echo kill-server | tmux -C attach`.
+- An unscoped tmux in the same pipeline as a word holding a token that starts
+  with `kill-s` denies, because a `tmux -C` client runs each line of its
+  stdin. Words are split on whitespace and shell punctuation, and read a
+  second time with the one-letter printf escapes (`\n`, `\t`, …) as
+  separators, so `echo kill-server | tmux -C attach`,
+  `echo ' kill-server' | tmux -C attach` and
+  `printf 'list-sessions\nkill-server\n' | tmux -C attach` are all denied.
 - An unscoped tmux invocation whose subcommand word contains `$` or a
   backtick denies, because the shell decides the subcommand at run time. The
   same rule applies to the words the guard inspects after an unknown global
@@ -508,7 +560,10 @@ flush:
 
 `<M>` is this fixed message. The command itself is never echoed.
 
-> Blocked: this tmux command would act on the tmux server named in $TMUX (normally the user's own server, with all of their sessions), because no -S or -L was given. TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket.
+> Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.
+
+The last sentence covers the false positives listed below, so an agent that
+was only writing about the guard is told the supported way out.
 
 An allowed command gets the hook's usual output, so the other PreToolUse checks
 still apply.
@@ -528,8 +583,19 @@ sandbox. It does not see through:
 - an `-S` path that is a symbolic link to the default socket or to the socket
   in `$TMUX`. The guard reads no files and does not resolve links, so
   `tmux -S /tmp/link kill-server` is allowed whatever the link points to;
-- a variable copied from `$TMUX` other than by assignment (`read`,
-  `printf -v`, `declare -n`), or in an earlier tool call;
+- a variable copied from `$TMUX`, or from tmux's output, other than by
+  assignment (`read`, `printf -v`, `declare -n`, a `for` loop), or in an
+  earlier tool call;
+- an `-S` value that is a glob or a file read at run time, such as
+  `-S /tmp/tmux-*/*` or `-S "$(cat sock.txt)"`;
+- a command glued to a short option with no separator, as in
+  `git grep -O'tmux kill-server'`, where `-Otmux` reads as one word;
+- printf escapes other than the one-letter ones (`\153ill-server`), which
+  assemble a word at run time;
+- shell text that git runs from a hook file or from configuration set
+  outside the command line, and gh subcommands other than `gh alias` that run
+  commands (`gh codespace ssh`, `gh extension exec`): `gh` is otherwise
+  data-only;
 - quoting tricks in input over 64 KiB, which gets only the plain text test;
 - named-fd redirections (`{fd}>file`), whose `{fd}` is read as a word;
 - shell text stored by one tool call and run by a later one, such as a git
@@ -559,8 +625,11 @@ removed before the check, so a commit message containing a single-quoted
 `$(tmux kill-server)` is denied too. A substitution that only prints the
 text, outside an argument of a data-only command, is denied, as in
 `x=$(echo "notes on tmux kill-server")`; so is an unscoped tmux with a kill
-command in any argument, as in `tmux send-keys 'tmux kill-server'`. Put such
-commands in separate tool calls.
+command in any argument, as in `tmux send-keys 'tmux kill-server'`. A
+hand-written `tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe run … -c task_description='… tmux kill-server …'"`
+is denied as well, because tmux runs that argument as a shell command; use
+`amplihack recipe run --detach`, or `--context-from-file`, for such a task.
+Put such commands in separate tool calls, or pass the text in a file.
 
 **Safe form for agents.** `TMUX_TMPDIR` alone is not enough while `$TMUX` is
 set. Start, use and kill a private server on its own socket, with `TMUX`

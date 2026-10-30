@@ -13,35 +13,63 @@
 //! global options. `-L default`, an empty `-S`/`-L` value, a value that
 //! refers to `$TMUX` or to a variable assigned from it anywhere in the
 //! command (`S=$TMUX; tmux -S "$S" …`), and a socket path ending in
-//! `default` are not scope. tmux commands that take another tmux command as
-//! an argument (`if-shell`, `run-shell -C`, `bind`, `set-hook`, …) are
-//! covered by one rule: in an unscoped invocation, any argument after the
-//! subcommand word that contains a kill command counts as a kill
-//! (`tmux if-shell true kill-server`, `tmux set -g command-alias[0]
-//! zz=kill-server`).
+//! `default` are not scope. Nor is a value holding a `$(…)` or backtick
+//! substitution that runs tmux, or a variable assigned one: inside a pane
+//! `tmux display -p '#{socket_path}'` prints the user's own socket, so
+//! `tmux -S "$(tmux display -p '#{socket_path}')" kill-server` is denied. A
+//! substitution "runs tmux" when its body has a `tmux` token, so a sandbox
+//! made by `mktemp -d /tmp/tmux-qa.XXXXXX` is still scope.
+//!
+//! tmux commands that take another tmux command as an argument (`if-shell`,
+//! `run-shell -C`, `bind`, `set-hook`, …) are covered by one rule: in an
+//! unscoped invocation, any argument after the subcommand word that contains
+//! a kill command counts as a kill (`tmux if-shell true kill-server`,
+//! `tmux set -g command-alias[0] zz=kill-server`).
 //!
 //! tmux is found three ways, using the shared tokeniser in [`super::shell`]:
 //!
 //! 1. as the program word of a simple command;
 //! 2. as a later word of another command (`xargs tmux …`, `ssh host tmux …`);
 //! 3. inside a word that holds both a `tmux` and a `kill-s` token
-//!    (`bash -c '…'`, `python -c "…"`, `$(…)`, backticks), parsed again up
-//!    to [`MAX_DEPTH`] levels. A substitution's output may be run as well
-//!    (`bash -c "$(echo tmux kill-server)"`, `x=$(…); $x`), so a body that
-//!    mentions `tmux` and `kill-s` is allowed only when it is a scoped tmux
-//!    invocation, unless the substitution is an argument of a data-only
-//!    command, whose output stays data.
+//!    (`bash -c '…'`, `ssh host '…'`, `python -c "…"`, `$(…)`, backticks),
+//!    parsed again up to [`MAX_DEPTH`] levels. The word is cleared when the
+//!    parse finds at least one tmux invocation, none of them kills, and
+//!    either every one is scoped or no run of tokens anywhere in the word
+//!    would kill (`kill-server`, or `kill-session` with `-a`). So
+//!    `bash -c "tmux kill-session -t amp-x"` is allowed, as it is unwrapped,
+//!    while `python -c 'subprocess.run(["tmux", "kill-server"])'`, whose
+//!    tmux call the shell tokeniser cannot see, is still denied. A
+//!    substitution's output may be run as well (`bash -c "$(echo tmux
+//!    kill-server)"`, `x=$(…); $x`), so a body that mentions `tmux` and
+//!    `kill-s` must also not print them through a data-only command, unless
+//!    the substitution is an argument of a data-only command, whose output
+//!    stays data.
 //!
 //! Redirections never count as tmux arguments (`tmux 2>/dev/null
 //! kill-server` is denied), and `$'…'` escapes are decoded first
 //! (`tmux $'\x6bill-server'` is denied); both are done by the tokeniser.
+//! Words are split on whitespace and shell punctuation, and read a second
+//! time with the one-letter printf escapes (`\n`, `\t`, …) as separators, so
+//! `printf 'ls\nkill-server\n' | tmux -C attach` is denied.
 //!
 //! Layers 2 and 3 exempt data-only commands such as
-//! `git commit -m "… tmux kill-server …"`. A git or gh command counts as an
-//! evaluator instead when it can run or store shell text: a git subcommand in
-//! [`GIT_COMMAND_RUNNERS`] (`config` and `clone` included, for `!` aliases,
-//! `core.pager` and `--upload-pack`), `gh alias`, or an environment
-//! assignment before the program (`GIT_EXTERNAL_DIFF=… git diff`).
+//! `git commit -m "… tmux kill-server …"`. `git` is data-only only with a
+//! subcommand in [`GIT_DATA_SUBCOMMANDS`] (`commit`, `log`, …), none of which
+//! runs shell text given as an argument. Any other git command is judged like
+//! any other program, so `git fetch --upload-pack 'tmux kill-server #' r` is
+//! denied. A git subcommand in [`GIT_COMMAND_RUNNERS`], which runs its
+//! arguments or stores shell text for a later git command on the same line
+//! (`config` and `clone -c` for `!` aliases and `core.pager`), makes the
+//! whole line an evaluator; so do `gh alias` and an environment assignment
+//! before `git` or `gh` (`GIT_EXTERNAL_DIFF=… git diff`).
+//!
+//! The `-c`/`--context` values of `amplihack recipe run` are data too:
+//! amplihack hands them to the recipe as text, exactly as it hands over a
+//! `--context-from-file` file, which the guard never reads. So a task
+//! description that mentions the guard can be launched inline. As with the
+//! other data-only commands, a `$(` or backtick in the value, or an
+//! evaluator anywhere on the line, removes the exemption.
+//!
 //! Heredoc bodies are parsed when a shell evaluator appears anywhere on the
 //! line, so `cat > k.sh <<EOF … EOF` followed by `bash k.sh` is denied.
 //! Uncertain input fails closed: unbalanced quotes, a redirection with no
@@ -57,12 +85,21 @@
 //! - shell aliases or functions, script files (`bash script.sh` for a file
 //!   written earlier), or commands assembled at run time from pieces;
 //! - `tmux source-file` (or `source`) reading its commands from a file,
-//!   stdin, a heredoc or a here-string, unless a `kill-s` word sits in the
-//!   same pipeline as the unscoped tmux;
+//!   stdin, a heredoc or a here-string, unless a word with a `kill-s` token
+//!   sits in the same pipeline as the unscoped tmux;
 //! - an `-S` path that is a symlink to the default socket, which only a
 //!   file system lookup could see;
-//! - a variable copied from `$TMUX` other than by assignment (`read`,
-//!   `printf -v`, `declare -n`), or in an earlier tool call;
+//! - a variable copied from `$TMUX`, or from tmux's output, other than by
+//!   assignment (`read`, `printf -v`, `declare -n`, a `for` loop), or in an
+//!   earlier tool call;
+//! - an `-S` value that is a glob or a file read at run time (`-S
+//!   /tmp/tmux-*/*`, `-S "$(cat sock.txt)"`);
+//! - a command glued to a short option with no separator, as in
+//!   `git grep -O'tmux kill-server'`, where `-Otmux` is one token;
+//! - shell text that git runs from a hook file or from configuration set
+//!   outside the command line;
+//! - gh subcommands other than `gh alias` that run commands (`gh codespace
+//!   ssh`, `gh extension exec`): gh is otherwise data-only;
 //! - input over [`MAX_INPUT`] bytes, which gets only a plain text check for
 //!   `tmux` and `kill-s` (so quoting tricks such as `t''mux` get past it),
 //!   not the full parse;
@@ -78,12 +115,20 @@
 //! kill-server …"` is denied. Agents should put such commands in a separate
 //! tool call. Quoting is removed before the check, so a single-quoted
 //! `$(tmux kill-server)` in a commit message is denied as well, and so are
-//! `x=$(echo "notes on tmux kill-server")` and an unscoped
-//! `tmux send-keys 'tmux kill-server'`.
+//! `x=$(echo "notes on tmux kill-server")`, an unscoped
+//! `tmux send-keys 'tmux kill-server'`, and a hand-written
+//! `tmux new-session -d "$(amplihack agent-binary --shell) amplihack recipe
+//! run … -c task_description='… tmux kill-server …'"`, whose task text tmux
+//! runs inside a shell command.
+//! [`BLOCK_MESSAGE`] names the way out for text: pass it in a file
+//! (`git commit -F`, `--body-file`, `--context-from-file`) or run the
+//! command in its own tool call.
 //!
 //! The guard always runs and reads no environment variables, so nothing in
-//! the environment can turn it off. It never panics on any input: the hook
-//! fails open on Claude Code and Copilot, so a panic would allow the command.
+//! the environment can turn it off; `guard_source_reads_no_environment`
+//! checks the source of this module and of the tokeniser. It never panics
+//! on any input: the hook fails open on Claude Code and Copilot, so a panic
+//! would allow the command.
 //! For the same reason a harness that times out the hook, for example on a
 //! cold start, lets the command run; the guard's own cost is bounded by
 //! [`MAX_INPUT`] and [`MAX_REPARSES`].
@@ -93,8 +138,10 @@ use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use tracing::warn;
 
-/// The deny reason. The command itself is never echoed.
-pub(super) const BLOCK_MESSAGE: &str = "Blocked: this tmux command would act on the tmux server named in $TMUX (normally the user's own server, with all of their sessions), because no -S or -L was given. TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket.";
+/// The deny reason. The command itself is never echoed. It also covers the
+/// false-positive case, a command that only mentions the words as text, so
+/// an agent is told the supported way out rather than guessing at one.
+pub(super) const BLOCK_MESSAGE: &str = "Blocked: this command looks like a tmux kill-server or kill-session -a with no -S or -L, which acts on the tmux server named in $TMUX (normally the user's own server, with all of their sessions). TMUX_TMPDIR alone does not redirect tmux while $TMUX is set. Use `tmux -S <private socket> …`, or `env -u TMUX tmux -S <private socket> …`, and only for a server you started on that socket; a socket path taken from $TMUX or from tmux itself (`#{socket_path}`) is the user's server. If the command only mentions these words as text, such as a commit message or a task description, pass the text in a file (`git commit -F`, `--body-file`, `--context-from-file`) or run that command in its own tool call.";
 
 /// Tool names the guard checks, compared case-insensitively: Claude Code's
 /// `Bash` and `PowerShell`, Copilot's `bash` and `powershell`, and Codex's
@@ -121,10 +168,23 @@ const SHELL_EVALUATORS: &[&str] = &[
     "setsid", "python", "python3", "node", "perl", "ruby",
 ];
 
-/// git subcommands that run, or store for a later git command to run, shell
-/// text given as arguments (`rebase -x`, `bisect run`, `submodule foreach`,
-/// `difftool --extcmd`, `config alias.x '!…'`, `clone --upload-pack`, …).
-/// Any of them makes a `git` command an evaluator, whatever its options.
+/// The only git subcommands whose arguments are data. None of them runs shell
+/// text given as an argument. A git command with any other subcommand is not
+/// data-only (`fetch`, `pull`, `push`, `ls-remote` and `archive` take
+/// `--upload-pack`, `--receive-pack` or `--exec`; `grep -O` runs a pager).
+/// This list fails closed: a subcommand missing from it only loses the
+/// exemption.
+const GIT_DATA_SUBCOMMANDS: &[&str] = &[
+    "add", "commit", "diff", "log", "notes", "show", "stash", "status", "tag",
+];
+
+/// git subcommands that run their arguments as a command, or store shell text
+/// for a later git command on the same line to run (`rebase -x`,
+/// `bisect run`, `submodule foreach`, `difftool --extcmd`,
+/// `config alias.x '!…'`, `clone -c core.pager=…`, …). Any of them makes the
+/// whole line an evaluator. Shell text in a single argument of any other
+/// non-data subcommand is already judged as a script, so this list is not
+/// meant to grow with every option that runs a program.
 const GIT_COMMAND_RUNNERS: &[&str] = &[
     "config",
     "clone",
@@ -275,9 +335,10 @@ struct Ctx {
 }
 
 /// Adds to `tainted` each variable assigned, in any word of `cmds`, a value
-/// that refers to a tainted variable. One pass in text order, which is the
-/// order the shell assigns in, keeps the cost linear. Assignment position is
-/// not checked: over-tainting only denies more.
+/// that refers to a tainted variable or substitutes tmux's output
+/// (`sock=$(tmux display -p '#{socket_path}')`). One pass in text order,
+/// which is the order the shell assigns in, keeps the cost linear.
+/// Assignment position is not checked: over-tainting only denies more.
 fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
     for word in cmds.iter().flat_map(|c| &c.words) {
         if !shell::is_assignment(word) {
@@ -286,10 +347,21 @@ fn taint_assignments(cmds: &[SimpleCommand], tainted: &mut HashSet<String>) {
         let Some((name, value)) = word.split_once('=') else {
             continue;
         };
-        if refers_to_any(value, tainted) {
+        if refers_to_any(value, tainted) || substitutes_tmux_output(value) {
             tainted.insert(name.to_string());
         }
     }
+}
+
+/// Whether `value` holds a `$(…)` or backtick substitution whose body has a
+/// `tmux` token. Inside a pane, `tmux display -p '#{socket_path}'` prints
+/// the socket of the user's own server, so such a value is not scope.
+fn substitutes_tmux_output(value: &str) -> bool {
+    (value.contains("$(") || value.contains('`'))
+        && substitutions(value)
+            .0
+            .iter()
+            .any(|body| either_reading(body, |t| t.iter().any(|w| is_tmux(w))))
 }
 
 fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
@@ -310,15 +382,23 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         let start = program_start(words);
         let prog = words.get(start);
         let prog_name = prog.map(|p| basename(p).to_ascii_lowercase());
+        let args = words.get(start + 1..).unwrap_or_default();
+        let git = prog_name.as_deref() == Some("git");
         let data_only = !evaluator_present
             && prog_name
                 .as_deref()
-                .is_some_and(|n| DATA_PROGRAMS.contains(&n));
-        out.data_mention |= data_only && has_candidate(&words.join(" "));
+                .is_some_and(|n| DATA_PROGRAMS.contains(&n))
+            && (!git || git_subcommand(args).is_some_and(|s| GIT_DATA_SUBCOMMANDS.contains(&s)));
+        // `amplihack recipe run`: only its `-c`/`--context` values are data.
+        let recipe_run =
+            !evaluator_present && prog_name.as_deref() == Some("amplihack") && is_recipe_run(args);
+        let context_value = |k: usize| recipe_run && is_context_value(words, k);
+        out.data_mention |= (data_only || recipe_run) && has_candidate(&words.join(" "));
 
         // A program word that is a variable or substitution could be tmux.
+        // Its own body is judged by layer 3, so only the words after it count.
         if prog.is_some_and(|p| p.starts_with('$') || p.starts_with('`'))
-            && words.iter().skip(start).any(|w| starts_kill_s(w))
+            && words.iter().skip(start + 1).any(|w| mentions_kill_s(w))
         {
             out.dangerous = true;
         }
@@ -327,7 +407,7 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         // starts an invocation. Words before it are assignments and wrapper
         // options (the `TMUX` in `env -u TMUX`).
         for (k, word) in words.iter().enumerate().skip(start) {
-            if !is_tmux(word) || (data_only && k != start) {
+            if !is_tmux(word) || (k != start && (data_only || context_value(k))) {
                 continue;
             }
             let inv = invocation(words.get(k + 1..).unwrap_or_default(), &ctx.tainted);
@@ -342,9 +422,8 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
         }
 
         // Layer 3: words that hold a script mentioning tmux and kill-s.
-        let git = prog_name.as_deref() == Some("git");
         for (k, word) in words.iter().enumerate() {
-            let data = data_only && !(git && git_runs_value(words, k));
+            let data = (data_only && !(git && git_runs_value(words, k))) || context_value(k);
             let exempt = data && !word.contains("$(") && !word.contains('`');
             if !has_candidate(word) {
                 if !exempt && expands_near_tmux(word) {
@@ -362,13 +441,8 @@ fn scan(text: &str, depth: usize, ctx: &mut Ctx) -> Scan {
 
         // A git subcommand that runs its arguments: judge them together too,
         // so `git bisect run tmux kill-server` reads as one command.
-        if git && git_runs_commands(words.get(start + 1..).unwrap_or_default()) {
-            let args: Vec<&str> = words
-                .get(start + 1..)
-                .unwrap_or_default()
-                .iter()
-                .map(String::as_str)
-                .collect();
+        if git && git_runs_commands(args) {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
             let joined = join_argv(&args);
             if needs_reparse(&joined) {
                 let inner = reparse(&joined, depth, ctx);
@@ -418,11 +492,9 @@ struct WordVerdict {
 /// Substitutions run as shell code wherever they appear, so each body is
 /// judged on what it runs. Unless the word is an argument to a data-only
 /// command (`data`), a body's output may be run too, so the body is also
-/// cleared only when it holds a tmux invocation, all of them are scoped, and
-/// no data-only command in it prints the tokens. The rest of the word is
-/// allowed only if it holds at least one tmux invocation and all of them are
-/// scoped; a word whose tokens are split across the pieces is uncertain and
-/// fails.
+/// cleared only when it is [`cleared`] and no data-only command in it prints
+/// the tokens. The rest of the word is allowed only if it is [`cleared`]; a
+/// word whose tokens are split across the pieces is uncertain and fails.
 fn judge_word(word: &str, data: bool, depth: usize, ctx: &mut Ctx) -> WordVerdict {
     let (bodies, rest) = substitutions(word);
     let mut verdict = WordVerdict {
@@ -438,20 +510,32 @@ fn judge_word(word: &str, data: bool, depth: usize, ctx: &mut Ctx) -> WordVerdic
         }
         any_candidate = true;
         let inner = reparse(body, depth, ctx);
-        verdict.substitutions_ok &= !inner.dangerous
-            && (data || (inner.tmux_seen && !inner.unscoped && !inner.data_mention));
+        verdict.substitutions_ok &=
+            !inner.dangerous && (data || (cleared(&inner, body) && !inner.data_mention));
         verdict.tmux_seen |= inner.tmux_seen;
         verdict.data_mention |= inner.data_mention;
     }
     if has_candidate(&rest) {
         let inner = reparse(&rest, depth, ctx);
-        verdict.plain_ok = inner.tmux_seen && !inner.unscoped && !inner.dangerous;
+        verdict.plain_ok = cleared(&inner, &rest);
         verdict.tmux_seen |= inner.tmux_seen;
         verdict.data_mention |= inner.data_mention;
     } else if !any_candidate {
         verdict.plain_ok = false;
     }
     verdict
+}
+
+/// Whether an embedded script that mentions `tmux` and `kill-s`, scanned as
+/// `inner`, is harmless: it holds at least one tmux invocation, none of them
+/// kills, and either every one is scoped or no run of tokens anywhere in
+/// `text` would kill. The token test keeps a tmux call that the shell
+/// tokeniser cannot see as one, such as the argv list in
+/// `python -c 'subprocess.run(["tmux", "kill-server"])'`, from passing as
+/// harmless. So `bash -c "tmux kill-session -t amp-x"` gets the same verdict
+/// as `tmux kill-session -t amp-x`.
+fn cleared(inner: &Scan, text: &str) -> bool {
+    inner.tmux_seen && !inner.dangerous && (!inner.unscoped || !text_kills(text))
 }
 
 /// Re-parses a word that holds a `tmux` token and an expansion but no
@@ -518,16 +602,9 @@ fn substitutions(text: &str) -> (Vec<String>, String) {
 /// Whether `text` holds both a `tmux` token and a `kill-s` token, separated
 /// by whitespace or shell punctuation.
 fn has_candidate(text: &str) -> bool {
-    let mut tmux = false;
-    let mut kill = false;
-    for token in tokens(text) {
-        tmux |= is_tmux(token);
-        kill |= starts_kill_s(basename(token));
-        if tmux && kill {
-            return true;
-        }
-    }
-    false
+    either_reading(text, |t| {
+        t.iter().any(|w| is_tmux(w)) && t.iter().any(|w| starts_kill_s(basename(w)))
+    })
 }
 
 /// Whether `text` holds a `tmux` token and a `$` or backtick that could
@@ -536,10 +613,54 @@ fn expands_near_tmux(text: &str) -> bool {
     is_expansion(text) && tokens(text).any(is_tmux)
 }
 
+/// Whether `word` holds a token starting with `kill-s`, wherever it sits in
+/// the word: `printf 'ls\nkill-server'` and `echo ' kill-server'` each
+/// print a line that a `tmux -C` client would run.
+fn mentions_kill_s(word: &str) -> bool {
+    either_reading(word, |t| t.iter().any(|w| starts_kill_s(w)))
+}
+
+/// Whether some run of tokens in `text` would kill: `kill-server` or a
+/// prefix of it, or `kill-session` with `-a` in the tokens after it.
+fn text_kills(text: &str) -> bool {
+    either_reading(text, kills_in)
+}
+
 /// The words of `text` split on whitespace and shell punctuation.
 fn tokens(text: &str) -> impl Iterator<Item = &str> {
     text.split(|c: char| !(c.is_alphanumeric() || "_.-/".contains(c)))
         .filter(|t| !t.is_empty())
+}
+
+/// Whether `test` holds for the [`tokens`] of `text`, or, when `text` has a
+/// backslash, for the tokens of `text` with each one-letter printf escape
+/// (`\n`, `\t`, …) read as a separator. The first reading keeps the letter
+/// after a backslash, as a shell does (`tmux \kill-server`); the second
+/// drops it, as `printf` and `echo -e` do (`ls\nkill-server`).
+fn either_reading(text: &str, test: impl Fn(&[&str]) -> bool) -> bool {
+    if test(&tokens(text).collect::<Vec<_>>()) {
+        return true;
+    }
+    if !text.contains('\\') {
+        return false;
+    }
+    let mut split = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            split.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some(e) if "abefnrtv".contains(e) => split.push(' '),
+            Some(e) => {
+                split.push(c);
+                split.push(e);
+            }
+            None => split.push(c),
+        }
+    }
+    test(&tokens(&split).collect::<Vec<_>>())
 }
 
 /// Whether `text` needs a re-parse: it holds a tmux candidate or a tmux
@@ -589,9 +710,8 @@ fn is_evaluator(cmd: &SimpleCommand) -> bool {
     named || env_split || git_runner || gh_alias || assigned
 }
 
-/// Whether the arguments after `git` name one of [`GIT_COMMAND_RUNNERS`]
-/// as the subcommand: the first word after git's global options.
-fn git_runs_commands(args: &[String]) -> bool {
+/// git's subcommand: the first word after git's global options.
+fn git_subcommand(args: &[String]) -> Option<&str> {
     let mut i = 0usize;
     while let Some(word) = args.get(i) {
         if GIT_VALUE_OPTS.contains(&word.as_str()) {
@@ -599,10 +719,36 @@ fn git_runs_commands(args: &[String]) -> bool {
         } else if word.starts_with('-') {
             i += 1;
         } else {
-            return GIT_COMMAND_RUNNERS.contains(&word.as_str());
+            return Some(word);
         }
     }
-    false
+    None
+}
+
+/// Whether the arguments after `git` name one of [`GIT_COMMAND_RUNNERS`]
+/// as the subcommand.
+fn git_runs_commands(args: &[String]) -> bool {
+    git_subcommand(args).is_some_and(|s| GIT_COMMAND_RUNNERS.contains(&s))
+}
+
+/// Whether the arguments after `amplihack` start with `recipe run`.
+fn is_recipe_run(args: &[String]) -> bool {
+    args.first().is_some_and(|w| w == "recipe") && args.get(1).is_some_and(|w| w == "run")
+}
+
+/// Whether word `k` of an `amplihack recipe run` command is a context value:
+/// `-c KEY=VALUE`, `-cKEY=VALUE`, `--context KEY=VALUE` or
+/// `--context=KEY=VALUE`.
+fn is_context_value(words: &[String], k: usize) -> bool {
+    let Some(word) = words.get(k) else {
+        return false;
+    };
+    let joined = word.starts_with("--context=")
+        || (word.starts_with("-c") && !word.starts_with("--") && word.len() > 2);
+    joined
+        || k.checked_sub(1)
+            .and_then(|p| words.get(p))
+            .is_some_and(|prev| prev == "-c" || prev == "--context")
 }
 
 /// Whether word `k` of a `git` command is a `-c` value (which can define a
@@ -645,12 +791,12 @@ fn pipeline_facts(cmds: &[SimpleCommand]) -> HashMap<usize, PipelineFacts> {
 }
 
 fn has_kill_s_word(cmd: &SimpleCommand) -> bool {
-    cmd.words.iter().any(|w| starts_kill_s(w))
+    cmd.words.iter().any(|w| mentions_kill_s(w))
 }
 
-/// Whether a command other than `cmd` in its pipeline has a word starting
-/// with `kill-s`, or a heredoc body in the pipeline mentions it: an unscoped
-/// `tmux -C` reads its commands from stdin.
+/// Whether a command other than `cmd` in its pipeline has a word holding a
+/// token that starts with `kill-s`, or a heredoc body in the pipeline
+/// mentions it: an unscoped `tmux -C` reads its commands from stdin.
 fn pipeline_mentions_kill_s(
     pipelines: &HashMap<usize, PipelineFacts>,
     cmd: &SimpleCommand,
@@ -672,7 +818,7 @@ fn invocation(args: &[String], tainted: &HashSet<String>) -> Invocation {
     let rest = args.get(global.rest..).unwrap_or_default();
     // Any later argument may itself be a tmux command (`if-shell true
     // kill-server`, `bind k kill-server`, `run -C 'kill-session -a'`).
-    let nested = || kills_in(&word_tokens(rest.get(1..).unwrap_or_default()));
+    let nested = || text_kills(&rest.get(1..).unwrap_or_default().join(" "));
     let dangerous = !global.scoped
         && if global.uncertain {
             loose_dangerous(rest)
@@ -748,11 +894,13 @@ fn global_scope(args: &[String], tainted: &HashSet<String>) -> Global {
 }
 
 /// Whether an `-S` or `-L` value names a private server: not empty, not
-/// `default` (as a name or a socket file), and not a reference to `$TMUX` or
-/// to a variable assigned from it.
+/// `default` (as a name or a socket file), not a reference to `$TMUX` or to
+/// a variable assigned from it or from tmux's output, and not itself a
+/// substitution of tmux's output (`"$(tmux display -p '#{socket_path}')"`).
 fn scope_value_ok(value: &str, tainted: &HashSet<String>) -> bool {
     !value.is_empty()
         && !refers_to_any(value, tainted)
+        && !substitutes_tmux_output(value)
         && !basename(value.trim_end_matches('/')).eq_ignore_ascii_case("default")
 }
 
@@ -806,14 +954,7 @@ fn sequence_dangerous(rest: &[String]) -> bool {
 /// After an unknown global option the subcommand could start anywhere, so
 /// any word that would kill, or any expansion, counts.
 fn loose_dangerous(rest: &[String]) -> bool {
-    rest.iter().any(|w| is_expansion(w)) || kills_in(&word_tokens(rest))
-}
-
-/// The [`tokens`] of every word in `words`, in order, so that a kill
-/// command quoted as one word (`"kill-session -a"`) or set as a value
-/// (`zz=kill-server`) is seen.
-fn word_tokens(words: &[String]) -> Vec<&str> {
-    words.iter().flat_map(|w| tokens(w)).collect()
+    rest.iter().any(|w| is_expansion(w)) || text_kills(&rest.join(" "))
 }
 
 /// Whether any token is `kill-server`, or `kill-session` with `-a` in the
