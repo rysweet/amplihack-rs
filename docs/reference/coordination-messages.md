@@ -202,7 +202,7 @@ The hook keeps one file per session at:
 <project>/.claude/runtime/classification_state/<session>.json
 ```
 
-`<session>` is the session ID reduced to `[A-Za-z0-9_-]`. An example after a coordination note at turn 7:
+`<session>` is the session ID with every character outside `[A-Za-z0-9_-]` replaced by `_`. An example after a coordination note at turn 7:
 
 ```json
 {

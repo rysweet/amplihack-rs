@@ -28,13 +28,13 @@ const DEFAULT_ROUTING_PROMPT: &str = include_str!("routing_prompt.txt");
 ///
 /// Read only by [`strip_coordination_prefix`]: it must be the first non-blank
 /// text of the prompt, compared ASCII case-insensitively.
-pub(crate) const COORDINATION_PREFIX: &str = "[coord]";
+pub const COORDINATION_PREFIX: &str = "[coord]";
 
 /// Context injected for a marked prompt in place of the routing prompt.
 ///
 /// A constant, so no part of the message body is ever reflected into the
 /// hook output.
-pub(crate) const COORDINATION_NOTE: &str = "[coordination] This message starts with the [coord] marker \
+pub const COORDINATION_NOTE: &str = "[coordination] This message starts with the [coord] marker \
      and is coordination traffic between sessions. Answer it or act on it directly. \
      Do not start dev-orchestrator, smart-orchestrator or any recipe for it.";
 
@@ -118,7 +118,7 @@ impl Hook for WorkflowClassificationReminderHook {
         }
 
         // A runtime that reports no turn number gets one we keep ourselves, so
-        // both runtimes reach `is_new_topic` with the same meaning. Falling back
+        // both runtimes reach `topic_decision` with the same meaning. Falling back
         // to 0 would pin every Copilot prompt at "first turn".
         let dirs_for_turn = ProjectDirs::from_cwd();
         let turn_count = match turn_count {
@@ -1339,11 +1339,14 @@ mod tests {
             run_hook(Some("s-prov2"), None, "[coord] build #1740"),
             empty()
         );
-        // Turn resolution may have bumped observed_turns; nothing else changes.
-        if let Some(state) = iso.read_state("s-prov2") {
-            assert_eq!(last_rule(&state), None);
-            assert_eq!(classified_turn(&state), Some(0));
-        }
+        // Turn resolution runs before the gate and saves observed_turns; the
+        // gate itself records no outcome.
+        let state = iso
+            .read_state("s-prov2")
+            .expect("turn resolution writes the state file");
+        assert_eq!(state["observed_turns"], 1);
+        assert_eq!(last_rule(&state), None);
+        assert_eq!(classified_turn(&state), Some(0));
     }
 
     #[test]
