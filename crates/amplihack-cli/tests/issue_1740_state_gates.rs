@@ -269,6 +269,27 @@ fn every_row_the_checks_tool_writes_passes_the_pr_gates() {
     );
     rows.push(through_the_pr_gates(&r, &run));
 
+    // A .rs file in no package's directory: clippy and test run once for
+    // the whole workspace.
+    let r = Repo::new();
+    r.write(
+        "Cargo.toml",
+        "[package]\nname = \"demo\"\nversion = \"0.1.0\"\n\n[workspace]\n",
+    );
+    r.write("tests/integration/checks.rs", "#[test]\nfn ok() {}\n");
+    let run = run_checks(&r, &bin_dir(&r, "bin", true, &[("cargo", CARGO_STUB)]));
+    assert_eq!(
+        run.summary,
+        "QUICK_CHANGE_CHECKS=failed ran=3 failed=1 skipped=0"
+    );
+    assert!(
+        run.table
+            .contains("| `cargo test --workspace` | exit 101 |"),
+        "{}",
+        run.table
+    );
+    rows.push(through_the_pr_gates(&r, &run));
+
     for table in &rows {
         seen.extend(skip_reasons_in(table));
     }

@@ -25,13 +25,21 @@
 # --committed re-measures BASE..HEAD after hook repair may have committed a
 # fixing agent's changes. The worktree must be clean (else exit 2), rule 6
 # is skipped because the recipe's own commits are expected, every other rule
-# runs, and a handover verdict exits 5: it is too late to hand over, so the
-# caller must not publish.
+# runs (rule 1 without the branch-upstream line, see below), and a handover
+# verdict exits 5: it is too late to hand over, so the caller must not
+# publish.
 #
 # --snapshot prints the git configuration and hooks snapshot that
 # quick-change-record-base stores as $QUICK_CHANGE_STATE_DIR/git-config.snapshot.
 # Each line is `<name>\t<checksum>`; names never carry configuration values,
-# so a drift report can name what changed without printing it.
+# so a drift report can name what changed without printing it. The local
+# configuration is shared by every worktree of the repository, and other runs
+# write branch upstream entries into it, so branch.<name>.<key> entries are
+# left out of the config-local and config-worktree checksums (see
+# config_file_sum). The entries of the branch checked out here are compared
+# at every level instead, in branch-upstream (remote, merge) and
+# branch-other. --committed does not compare branch-upstream: the recipe's
+# own `git push -u` writes it, and by then no hand-over can happen.
 #
 # Written for bash 3.2: no associative arrays, no array readers and no case-folding expansions.
 
@@ -49,8 +57,12 @@ PUB_RE='^[[:space:]]*pub([[:space:]]|$)'
 CLI_RE='#[[](arg|command|clap)'
 # Keys that redirect the push or its transport, or run a program during
 # git add, commit or push. Global and system values are covered here; the
-# local and worktree files are also checksummed whole below.
-CONFIG_KEY_RE='^(remote\.|url\.|core\.hookspath$|core\.sshcommand$|core\.fsmonitor$|credential\.|include\.|includeif\.|http\.|core\.gitproxy$|core\.askpass$|core\.attributesfile$|protocol\.|filter\.|gpg\.|commit\.gpgsign$)'
+# local and worktree files are also checksummed below. push.default decides
+# what a bare `git push` updates (`matching` pushes every branch that has a
+# namesake on the remote), and default-workflow pushes that way after a
+# hand-over.
+CONFIG_KEY_RE='^(remote\.|url\.|core\.hookspath$|core\.sshcommand$|core\.fsmonitor$|credential\.|include\.|includeif\.|http\.|core\.gitproxy$|core\.askpass$|core\.attributesfile$|protocol\.|filter\.|gpg\.|commit\.gpgsign$|push\.default$)'
+TAB=$'\t'
 
 fault() {
   echo "quick_change_diff_limits.sh: $1" >&2
@@ -89,9 +101,49 @@ snapshot() {
   printf '%s\n' "$out"
 }
 
+# config_file_sum <source...>: checksum of the entries that
+# `git config <source...> -z --list` prints, less every branch.<name>.<key>
+# entry. Every worktree shares the local file, and other runs write branch
+# upstream entries into it while this run is in progress: workflow-worktree
+# (`git branch --set-upstream-to`), `git worktree add -b` from a remote
+# branch, and `git push -u`. Another branch's entries apply only when that
+# branch is checked out. This branch's entries are compared at every level in
+# branch-upstream and branch-other instead. Two-part keys such as
+# branch.autoSetupMerge, and every other entry, count. A failed read is a
+# fault.
+config_file_sum() {
+  local tmp entry
+  tmp="$(mktemp)" || fault "mktemp failed"
+  git -C "$WT" config "$@" -z --list > "$tmp" || { rm -f "$tmp"; fault "git config $1 --list failed"; }
+  while IFS= read -r -d '' entry; do
+    case "${entry%%$'\n'*}" in branch.*.*) continue ;; esac
+    printf '%s\0' "$entry"
+  done < "$tmp" | cksum_of
+  rm -f "$tmp"
+}
+
 snapshot_lines() {
-  local hooks entry key value name matched cfg
-  CONFIG_ENTRIES=""
+  local hooks entry key value name matched cfg head local_sum wt_file wt_sum
+  CONFIG_ENTRIES=""; OWN_UPSTREAM=""; OWN_OTHER=""
+  # The branch checked out here; empty on a detached HEAD. A failure other
+  # than "not a branch" is a fault.
+  head="$(git -C "$WT" symbolic-ref -q HEAD)" || { [ $? -eq 1 ] || fault "cannot read HEAD"; head=""; }
+  case "$head" in
+    refs/heads/?*) OWN_BRANCH="${head#refs/heads/}" ;;
+    *) OWN_BRANCH="" ;;
+  esac
+  local_sum="$(config_file_sum --local)" || fault "cannot read the local git configuration"
+  # The per-worktree file, read directly: `git config --worktree` fails in a
+  # linked worktree unless extensions.worktreeConfig is set, and otherwise
+  # reads the shared file, so its result changed when a second worktree was
+  # added. A missing file is an empty one.
+  wt_file="$(git -C "$WT" rev-parse --path-format=absolute --git-path config.worktree)" \
+    || fault "cannot resolve the worktree configuration file"
+  if [ -e "$wt_file" ] || [ -L "$wt_file" ]; then
+    wt_sum="$(config_file_sum --file "$wt_file")" || fault "cannot read $wt_file"
+  else
+    wt_sum="$(printf '' | cksum_of)"
+  fi
   # A failed read must stop the run: two equally empty snapshots would
   # compare equal and hide drift. The list goes through a file because a
   # fault inside a process substitution would only end that subshell.
@@ -102,6 +154,20 @@ snapshot_lines() {
     key="${entry%%$'\n'*}"
     value="${entry#*$'\n'}"
     [ "$value" != "$entry" ] || value=""
+    # This branch's entries, from every level: default-workflow's bare
+    # `git push` after a hand-over follows its remote, pushRemote and merge.
+    # git lowercases the section and the variable name, never the branch.
+    case "$key" in
+      branch.*.*)
+        name="${key#branch.}"; name="${name%.*}"
+        if [ -n "$OWN_BRANCH" ] && [ "$name" = "$OWN_BRANCH" ]; then
+          case "${key##*.}" in
+            remote|merge) OWN_UPSTREAM="${OWN_UPSTREAM}${key##*.}=$(printf '%s' "$value" | cksum_of)"$'\n' ;;
+            *) OWN_OTHER="${OWN_OTHER}${key##*.}=$(printf '%s' "$value" | cksum_of)"$'\n' ;;
+          esac
+        fi
+        continue ;;
+    esac
     # Match case-insensitively in bash first: most entries do not match, and
     # forking tr per entry made the snapshot take seconds on a long config.
     shopt -s nocasematch
@@ -125,8 +191,11 @@ snapshot_lines() {
     config_group transport-programs '^(core\.gitproxy|core\.askpass|protocol\.)'
     config_group filters-attributes '^(filter\.|core\.attributesfile=)'
     config_group signing '^(gpg\.|commit\.gpgsign=)'
-    printf 'config-local\t%s\n' "$(git -C "$WT" config --local -z --list 2>/dev/null | cksum_of)"
-    printf 'config-worktree\t%s\n' "$(git -C "$WT" config --worktree -z --list 2>/dev/null | cksum_of)"
+    config_group push-default '^push\.default='
+    printf 'branch-upstream\t%s\n' "$(printf '%s' "$OWN_UPSTREAM" | cksum_of)"
+    printf 'branch-other\t%s\n' "$(printf '%s' "$OWN_OTHER" | cksum_of)"
+    printf 'config-local\t%s\n' "$local_sum"
+    printf 'config-worktree\t%s\n' "$wt_sum"
     printf 'push-url\t%s\n' "$(git -C "$WT" remote get-url --push origin 2>/dev/null | cksum_of)"
     hooks="$(git -C "$WT" rev-parse --path-format=absolute --git-path hooks)" || fault "cannot resolve the hooks directory"
     printf 'hooks-dir\t%s\n' "$(printf '%s' "$hooks" | cksum_of)"
@@ -247,10 +316,19 @@ if [ -n "${QUICK_CHANGE_STATE_DIR:-}" ]; then
   SNAPSHOT_FILE="$QUICK_CHANGE_STATE_DIR/git-config.snapshot"
   [ -f "$SNAPSHOT_FILE" ] && [ ! -L "$SNAPSHOT_FILE" ] || fault "snapshot $SNAPSHOT_FILE is missing"
   CURRENT="$(snapshot)"
-  if [ "$CURRENT" != "$(cat "$SNAPSHOT_FILE")" ]; then
-    CHANGED="$(LC_ALL=C comm -3 <(printf '%s\n' "$CURRENT") <(LC_ALL=C sort "$SNAPSHOT_FILE") \
+  STORED="$(cat "$SNAPSHOT_FILE")" || fault "cannot read $SNAPSHOT_FILE"
+  if [ "$COMMITTED" -eq 1 ]; then
+    # The recipe's own `git push -u origin <ref>:<ref>` writes this branch's
+    # upstream. After the step-4 verdict no hand-over can happen, and the
+    # recipe's push and PR steps name origin and the branch explicitly, so
+    # the upstream is not compared here. Every other line is.
+    CURRENT="$(printf '%s\n' "$CURRENT" | LC_ALL=C grep -v "^branch-upstream$TAB")" || fault "grep failed"
+    STORED="$(printf '%s\n' "$STORED" | LC_ALL=C grep -v "^branch-upstream$TAB")" || fault "grep failed"
+  fi
+  if [ "$CURRENT" != "$STORED" ]; then
+    CHANGED="$(LC_ALL=C comm -3 <(printf '%s\n' "$CURRENT") <(printf '%s\n' "$STORED" | LC_ALL=C sort) \
       | LC_ALL=C awk -F '\t' '{ sub(/^\t/, ""); print $1 }' | LC_ALL=C sort -u)"
-    echo "quick-change: git configuration or hooks changed during the agent step; stopping without hand-over or push" >&2
+    echo "quick-change: git configuration or hooks differ from the snapshot taken before the agent ran; stopping without hand-over or push" >&2
     emit stop git-config-drift 4 "$CHANGED"
   fi
 else

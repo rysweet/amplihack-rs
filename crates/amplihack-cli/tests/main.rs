@@ -154,6 +154,8 @@ mod issue_1740_diff_limits;
 mod issue_1740_diff_limits_awk;
 #[path = "issue_1740_diff_limits_guards.rs"]
 mod issue_1740_diff_limits_guards;
+#[path = "issue_1740_diff_limits_shared_config.rs"]
+mod issue_1740_diff_limits_shared_config;
 #[path = "issue_1740_quick_change_recipe.rs"]
 mod issue_1740_quick_change_recipe;
 #[path = "issue_1740_quick_change_steps.rs"]

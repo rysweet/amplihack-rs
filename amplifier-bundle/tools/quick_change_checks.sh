@@ -7,7 +7,8 @@
 #
 #   Cargo.toml               cargo fmt --all -- --check, always; with changed
 #                            .rs files, cargo clippy and cargo test for each
-#                            affected crate
+#                            affected crate, or once with --workspace when a
+#                            changed .rs file has no crate (see crate_of)
 #   .pre-commit-config.yaml  pre-commit run --files <changed files>
 #   package.json             npm run lint and npm test, when the script exists
 #
@@ -72,11 +73,17 @@ while IFS= read -r -d '' path; do
 done < <(git -C "$WT" -c core.fsmonitor=false -c core.quotepath=off diff --no-renames --name-only -z "$BASE"; git -C "$WT" -c core.fsmonitor=false ls-files -z -o --exclude-standard)
 
 # crate_of <path>: the [package] name of the nearest ancestor Cargo.toml.
+# Prints nothing when there is none, or when that manifest is also the
+# workspace root: a member can compile files anywhere under the root through
+# a `path` key (bins/amplihack compiles tests/integration/ in amplihack-rs),
+# and the root package's own checks would not build them. The caller checks
+# the whole workspace for such a file.
 crate_of() {
   local dir="${1%/*}"
   [ "$dir" != "$1" ] || dir="."
   while :; do
     if [ -f "$WT/$dir/Cargo.toml" ] && LC_ALL=C grep -q '^\[package\]' "$WT/$dir/Cargo.toml"; then
+      ! LC_ALL=C grep -q '^\[workspace\]' "$WT/$dir/Cargo.toml" || return 0
       LC_ALL=C awk '
         /^\[/ { in_pkg = ($0 ~ /^\[package\][[:space:]]*$/); next }
         in_pkg && /^[[:space:]]*name[[:space:]]*=/ {
@@ -89,18 +96,34 @@ crate_of() {
   done
 }
 
+# rust_checks <selection...>: clippy and test for one package (-p <name>) or
+# for the whole workspace (--workspace).
+rust_checks() {
+  if ! command -v cargo >/dev/null 2>&1; then
+    skip "cargo clippy $* --all-targets -- -D warnings" "cargo not on PATH"
+    skip "cargo test $*" "cargo not on PATH"
+  else
+    run_check "cargo clippy $* --all-targets -- -D warnings" cargo clippy "$@" --all-targets -- -D warnings
+    run_check "cargo test $*" cargo test "$@"
+  fi
+}
+
 # --- Rust ----------------------------------------------------------------------
 if [ -f "$WT/Cargo.toml" ]; then
   CRATES=""
   RS_CHANGED=0
+  WORKSPACE=0
   for path in ${CHANGED[@]+"${CHANGED[@]}"}; do
     case "$path" in *.rs) ;; *) continue ;; esac
     RS_CHANGED=1
     name="$(crate_of "$path")"
     if [[ "$name" =~ ^[A-Za-z0-9_-]+$ ]]; then
       case $'\n'"$CRATES" in *$'\n'"$name"$'\n'*) ;; *) CRATES="${CRATES}${name}"$'\n' ;; esac
-    elif [ -n "$name" ]; then
-      echo "WARNING: crate name '$(display "$name")' is not ^[A-Za-z0-9_-]+\$; not checked" >&2
+    else
+      # No crate for this file, or a name this tool cannot read: a check of
+      # the other crates alone would not build it.
+      [ -z "$name" ] || echo "WARNING: crate name '$(display "$name")' is not ^[A-Za-z0-9_-]+\$; checking the whole workspace" >&2
+      WORKSPACE=1
     fi
   done
   if ! command -v cargo >/dev/null 2>&1; then
@@ -108,21 +131,18 @@ if [ -f "$WT/Cargo.toml" ]; then
   else
     run_check "cargo fmt --all -- --check" cargo fmt --all -- --check
   fi
-  if [ "$RS_CHANGED" -eq 0 ] || [ -z "$CRATES" ]; then
+  if [ "$RS_CHANGED" -eq 0 ]; then
     reason="no .rs files changed"
     command -v cargo >/dev/null 2>&1 || reason="cargo not on PATH"
     skip "cargo clippy --all-targets -- -D warnings" "$reason"
     skip "cargo test" "$reason"
+  elif [ "$WORKSPACE" -eq 1 ]; then
+    # --workspace covers every crate, so the per-crate checks are not run.
+    rust_checks --workspace
   else
     while IFS= read -r crate; do
       [ -n "$crate" ] || continue
-      if ! command -v cargo >/dev/null 2>&1; then
-        skip "cargo clippy -p $crate --all-targets -- -D warnings" "cargo not on PATH"
-        skip "cargo test -p $crate" "cargo not on PATH"
-      else
-        run_check "cargo clippy -p $crate --all-targets -- -D warnings" cargo clippy -p "$crate" --all-targets -- -D warnings
-        run_check "cargo test -p $crate" cargo test -p "$crate"
-      fi
+      rust_checks -p "$crate"
     done <<EOF
 $CRATES
 EOF

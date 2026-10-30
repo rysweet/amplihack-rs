@@ -212,11 +212,27 @@ Any line that starts with `pub` and whitespace counts: items of every kind (`fn`
 
 **Git configuration snapshot.** Taken by `quick-change-record-base` before the agent runs. The keys it covers are listed under [Security limits](#security-limits); it also covers the contents of the hooks directory. A configuration read that fails is a fault (exit 2), so two empty snapshots can never compare equal.
 
+**Shared configuration.** A linked worktree's local configuration is the repository's `.git/config`, which every worktree shares ([git-worktree, configuration file](https://git-scm.com/docs/git-worktree#_configuration_file)). Other runs write branch upstream entries there while this one is in progress: `workflow-worktree` runs `git branch --set-upstream-to`, `git worktree add -b` from `origin/main` sets an upstream, and `git push -u` writes one ([git-push](https://git-scm.com/docs/git-push)). This recipe's own push step does the same. Branch entries are therefore compared as follows:
+
+| Snapshot line | What it covers |
+| --- | --- |
+| `config-local`, `config-worktree` | The local file and the per-worktree file (`config.worktree`), less every `branch.<name>.<key>` entry. Two-part keys such as `branch.autoSetupMerge` still count. |
+| `branch-upstream` | `branch.<name>.remote` and `branch.<name>.merge` for the branch checked out in the run's worktree, at every configuration level |
+| `branch-other` | Every other `branch.<name>.<key>` entry for that branch, `pushRemote` included, at every configuration level |
+
+Another branch's entries apply only when that branch is checked out, so they are not compared. The run's own entries are, because `default-workflow` pushes with a bare `git push` after a hand-over (`workflow-publish.yaml`), and that push follows them. `push.default`, which decides what a bare push updates, is checked at every level for the same reason.
+
+`--committed` does not compare `branch-upstream`. The recipe's own `git push -u origin <ref>:<ref>` writes it, and it differs from the snapshot whenever the best-effort push in `workflow-worktree` did not happen: the branch then still tracks `origin/main`, as `git worktree add -b` from `origin/main` set it. By the time `--committed` runs, the run can no longer hand over, and the push and PR steps name `origin` and the branch explicitly, so the upstream is not used. Step 4 compares every line.
+
+The per-worktree file is read directly, since `git config --worktree` fails in a linked worktree unless `extensions.worktreeConfig` is set.
+
 **Git configuration drift stops the run.** Any difference from the snapshot gives verdict `stop`. There is no hand-over and no push, because `default-workflow` would otherwise run its own commit and push steps in a worktree whose hooks, `insteadOf` rules or push URL the agent has changed. The snapshot is not restored automatically: a restore covers only the keys in the snapshot, and a change outside them would pass unnoticed. The run fails with:
 
 ```text
-quick-change: git configuration or hooks changed during the agent step; stopping without hand-over or push
+quick-change: git configuration or hooks differ from the snapshot taken before the agent ran; stopping without hand-over or push
 ```
+
+The message does not say who made the change. Besides the agent, it can be a check, hook repair, or another process that writes the shared configuration with something other than the entries above, such as a new remote. The `changed` list in the JSON names the snapshot lines that differ.
 
 The worktree is left in place for inspection. Do not pass its branch to a later run as `existing_branch`. Remove it once inspected:
 
@@ -241,7 +257,7 @@ QUICK_CHANGE_VERDICT=handover reason=public-interface
 {"verdict":"handover","reason":"public-interface","files":2,"lines":41,"lockfile_lines":0,"max_files":3,"max_lines":150,"base":"093edc996..."}
 ```
 
-`--committed` measures the change after it has been committed, which the commit and push steps do because hook repair can add commits after step 4. The worktree must be clean, so the diff against the base equals `base..HEAD`; otherwise the tool exits 2. Rule 6 (`agent-commit`) is skipped, since the recipe's own commits are expected, and every other rule runs, rule 1 included. A `handover` verdict in this mode exits 5 and prints to stderr:
+`--committed` measures the change after it has been committed, which the commit and push steps do because hook repair can add commits after step 4. The worktree must be clean, so the diff against the base equals `base..HEAD`; otherwise the tool exits 2. Rule 6 (`agent-commit`) is skipped, since the recipe's own commits are expected, and every other rule runs, rule 1 included, without the `branch-upstream` line (see [Shared configuration](#rules)). A `handover` verdict in this mode exits 5 and prints to stderr:
 
 ```text
 quick-change: hook repair grew the change beyond the quick-change limits; not publishing
@@ -328,11 +344,18 @@ amplifier-bundle/tools/quick_change_checks.sh <worktree> <base-sha> <table-out-f
 
 | Repository has | Checks run |
 | --- | --- |
-| `Cargo.toml` | `cargo fmt --all -- --check`, always. When `.rs` files changed, `cargo clippy -p <crate> --all-targets -- -D warnings` and `cargo test -p <crate>` for each affected crate. |
+| `Cargo.toml` | `cargo fmt --all -- --check`, always. When `.rs` files changed, `cargo clippy -p <crate> --all-targets -- -D warnings` and `cargo test -p <crate>` for each affected crate, or the same two once with `--workspace` (see below). |
 | `.pre-commit-config.yaml` | `pre-commit run --files <changed files>` |
 | `package.json` | `npm run lint` and `npm test`, each only when the script exists |
 
-An affected crate is the nearest ancestor directory of a changed `.rs` file whose `Cargo.toml` has a `[package]` section. Crate names must match `^[A-Za-z0-9_-]+$`.
+An affected crate is the nearest ancestor directory of a changed `.rs` file whose `Cargo.toml` has a `[package]` section. When a changed `.rs` file has no such directory, when that `Cargo.toml` is also the workspace root (it has a `[workspace]` section), or when the crate name does not match `^[A-Za-z0-9_-]+$`, clippy and test run once for the whole workspace, and no per-crate check runs:
+
+```text
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+```
+
+A file outside every package directory can be compiled only through a `path` key on a target ([Cargo targets](https://doc.rust-lang.org/cargo/reference/cargo-targets.html#configuring-a-target)) or a `#[path]` attribute. In this repository, `bins/amplihack/Cargo.toml` compiles `tests/integration/main.rs` that way, so a change under `tests/integration/` runs the workspace checks. A root package is not trusted to cover its directory, because a member can compile files anywhere under it in the same way.
 
 Checks run with `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` removed from the environment. Their output goes to stderr only, never into the PR, the commit or recipe outputs.
 
@@ -353,7 +376,7 @@ A skipped check is never counted as passed. Skip reasons come from a closed set:
 | Reason | When |
 | --- | --- |
 | `cargo not on PATH` | `Cargo.toml` exists but `cargo` does not |
-| `no .rs files changed` | clippy and test, when only non-Rust files changed |
+| `no .rs files changed` | clippy and test, when no `.rs` file changed |
 | `pre-commit not on PATH` | `.pre-commit-config.yaml` exists but `pre-commit` does not |
 | `npm not on PATH` | `package.json` exists but `npm` does not |
 | `jq not on PATH` | `package.json` scripts cannot be read |
@@ -384,10 +407,14 @@ Refs #1740
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | exit 0 |
-| `cargo clippy -p amplihack-cli --all-targets -- -D warnings` | skipped (no .rs files changed) |
-| `cargo test -p amplihack-cli` | skipped (no .rs files changed) |
+| `cargo clippy --all-targets -- -D warnings` | skipped (no .rs files changed) |
+| `cargo test` | skipped (no .rs files changed) |
 | `pre-commit run --files docs/index.md` | exit 0 |
+| `npm run lint` | skipped (no "lint" script) |
+| `npm test` | exit 0 |
 ```
+
+The Checks table above is what `quick_change_checks.sh` wrote for a one-line change to `docs/index.md` in this repository, whose root has `Cargo.toml`, `.pre-commit-config.yaml` and a `package.json` with a `test` script and no `lint` script.
 
 | Item | Rule |
 | --- | --- |
@@ -574,7 +601,7 @@ The agent's prompt instructions are not relied on. The controls are in the bash 
 - Tools are resolved from `AMPLIHACK_HOME`, `RECIPE_VAR_repo_path` or the two `$HOME` install locations, never from the current directory. A tools path inside the agent's worktree is refused.
 - The diff base is pinned before the agent runs. An agent commit forces a hand-over. Git configuration drift and hook changes stop the run with no hand-over and no push.
 - Changes made by hook repair are measured again after the commit and after the push; a change that no longer fits the limits is not opened as a PR.
-- The diff-limit step and the push step compare git configuration, hooks and the push URL with the snapshot taken before the agent ran, and refuse to continue when any of them differ. The snapshot covers remotes, URL rewrites, `http.*`, credential helpers, `core.hooksPath`, `core.sshCommand`, `core.fsmonitor`, `core.gitProxy`, `core.askPass`, `protocol.*`, includes, clean and smudge filters, `core.attributesFile` and commit signing, at every configuration level, plus the whole local and worktree configuration files and the hooks directory.
+- The diff-limit step and the push step compare git configuration, hooks and the push URL with the snapshot taken before the agent ran, and refuse to continue when any of them differ. The snapshot covers remotes, URL rewrites, `http.*`, credential helpers, `core.hooksPath`, `core.sshCommand`, `core.fsmonitor`, `core.gitProxy`, `core.askPass`, `protocol.*`, includes, clean and smudge filters, `core.attributesFile`, commit signing and `push.default`, at every configuration level, plus the local and per-worktree configuration files and the hooks directory. The configuration files leave out `branch.<name>.<key>` entries, which other runs write; the entries of the run's own branch are compared at every level instead, as described under [Shared configuration](#rules).
 - Every step after the agent reads the pinned base from the state directory and checks it against the value the runner holds in memory (`quick_change_base`), so rewriting the stored base stops the run.
 - The push goes to `origin` with an explicit refspec and no force, mirror, tags or delete, and only after the snapshot comparison passes. No step merges.
 - Untrusted text reaches bash only through `RECIPE_VAR_*` variables; no `command:` block contains `{{`. No step uses `eval`, `bash -c "$VAR"` or `set -x`.
@@ -589,6 +616,8 @@ Known limits:
 - Changed file names are passed to `pre-commit run --files` as they are. An agent-created file whose name starts with `-` is read by pre-commit as an option.
 - A new file created with the executable bit is counted like any other new file; only a mode change to an existing file, or a symlink, forces a hand-over.
 - When hook repair during the push grows the change beyond the limits, the branch is already on `origin` and no PR is opened. Delete the remote branch by hand if it is not wanted.
+- The repository configuration is shared by every worktree. Other branches' entries are left out of the drift check, but any other change another process makes there while a run is in progress, such as adding a remote, stops that run as drift.
+- A changed `.rs` file is checked with the package of the nearest `Cargo.toml` that has a `[package]` section and is not the workspace root. A file that a different package compiles through a `path` key or a `#[path]` attribute, but that sits under another member's directory, is checked with that member, whose checks do not build it.
 - `.gitignore` is the boundary for secrets. An ignored file is neither counted nor committed; a secret in a tracked or new unignored file is caught only by the artifact guard before the commit.
 
 ## Out of scope
