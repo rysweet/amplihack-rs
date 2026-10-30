@@ -167,8 +167,9 @@ enum Ran {
         stdout: String,
         stderr: String,
     },
-    /// The deadline passed and the test killed the child. The output is read
-    /// only through `Debug`, in failure messages.
+    /// The deadline passed, or the test saw what it was waiting for, and the
+    /// test killed the child. The output is read only through `Debug`, in
+    /// failure messages.
     #[allow(dead_code)]
     Killed { stdout: String, stderr: String },
 }
@@ -188,9 +189,10 @@ impl Drop for Reaped {
 }
 
 /// Run `command` with stdin null and its output in files, and kill it if it
-/// has not exited within `limit`. Files rather than pipes, so neither a full
-/// pipe nor a grandchild holding one open can stall the test.
-fn run_until(command: &mut Command, limit: Duration) -> Ran {
+/// has not exited within `limit` or as soon as `give_up()` is true. Files
+/// rather than pipes, so neither a full pipe nor a grandchild holding one open
+/// can stall the test.
+fn run_until(command: &mut Command, limit: Duration, give_up: &dyn Fn() -> bool) -> Ran {
     let out = tempfile::tempdir().expect("tempdir for the child's output");
     let stdout_path = out.path().join("stdout");
     let stderr_path = out.path().join("stderr");
@@ -209,7 +211,7 @@ fn run_until(command: &mut Command, limit: Duration) -> Ran {
         if let Some(status) = child.0.try_wait().expect("poll the child") {
             break Some(status.code());
         }
-        if started.elapsed() >= limit {
+        if started.elapsed() >= limit || give_up() {
             break None;
         }
         std::thread::sleep(Duration::from_millis(50));
@@ -265,12 +267,12 @@ fn assert_nothing_left_behind(marker: &str) {
 }
 
 /// Every process (by `/proc`) whose command line contains `marker`, as
-/// `"<pid> <command line>"`. Empty where there is no `/proc`.
+/// `"<pid> <command line>"`. Panics without `/proc`: its callers run only on
+/// Linux, and an empty answer would let `assert_nothing_left_behind` pass
+/// without checking anything.
 fn processes_mentioning(marker: &str) -> Vec<String> {
-    let Ok(entries) = fs::read_dir("/proc") else {
-        return Vec::new();
-    };
-    entries
+    fs::read_dir("/proc")
+        .expect("read /proc: part (c) runs only on Linux")
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let pid = entry.file_name().into_string().ok()?;
@@ -284,6 +286,19 @@ fn processes_mentioning(marker: &str) -> Vec<String> {
                 .then(|| format!("{pid} {}", cmdline.trim_end()))
         })
         .collect()
+}
+
+/// Whether a process whose command line contains `marker` is stopped (state
+/// `T` in `/proc/<pid>/stat`), as git is when a terminal read trips `SIGTTIN`.
+fn stopped_mentioning(marker: &str) -> bool {
+    processes_mentioning(marker).iter().any(|line| {
+        let pid = line.split(' ').next().unwrap_or_default();
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            // The state follows the `)` that closes the command name.
+            stat.rsplit_once(')')
+                .is_some_and(|(_, rest)| rest.trim_start().starts_with('T'))
+        })
+    })
 }
 
 fn on_path(tool: &str) -> bool {
@@ -420,7 +435,7 @@ fn part_b_builder_git_fails_at_once_without_askpass() {
         git.env_remove(var);
     }
 
-    let ran = run_until(&mut git, BUILDER_DEADLINE);
+    let ran = run_until(&mut git, BUILDER_DEADLINE, &|| false);
     match &ran {
         Ran::Exited {
             code: Some(code),
@@ -449,6 +464,10 @@ fn part_b_builder_git_fails_at_once_without_askpass() {
 /// compound command the shell stays in the foreground, `timeout` puts git in
 /// a background group, and a read of the terminal stops it on `SIGTTIN`.
 /// Only the port and the process id are put into the shell string.
+///
+/// The run is killed as soon as git is seen stopped, so the control need not
+/// wait for the inner `timeout` or [`PTY_DEADLINE`]; in (c1) and (c2) a
+/// stopped git is a failure either way.
 fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Ran {
     let home = tempfile::tempdir().expect("temp HOME");
     let inner = format!(
@@ -465,7 +484,8 @@ fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Ran {
     for var in remove {
         script.env_remove(var);
     }
-    run_until(&mut script, PTY_DEADLINE)
+    let url = server.url();
+    run_until(&mut script, PTY_DEADLINE, &|| stopped_mentioning(&url))
 }
 
 /// The status in the `rc=<n>` line the inner shell prints. Git's prompt ends
@@ -497,9 +517,9 @@ fn assert_fails_at_once<'a>(label: &str, ran: &'a Ran) -> &'a str {
 
 /// The trap, and the variables that keep git out of it, in a real
 /// pseudo-terminal. The control has none of the three variables and must not
-/// finish normally: GNU `timeout` kills the stopped git and reports 124, and
-/// uutils `timeout`, stopped as well, is killed at the test's own deadline,
-/// which closes the pseudo-terminal and hangs up the stopped group.
+/// finish normally: the test kills `script` as soon as it sees git stopped
+/// (or GNU `timeout` reports 124 first), which closes the pseudo-terminal and
+/// hangs up the stopped group.
 #[test]
 fn part_c_plain_timeout_trap_in_a_pseudo_terminal() {
     if !cfg!(target_os = "linux") {
@@ -525,8 +545,8 @@ fn part_c_plain_timeout_trap_in_a_pseudo_terminal() {
     assert!(
         armed,
         "trap was not armed: with none of the three variables, git under plain \
-         `timeout` in a pseudo-terminal should have stopped on SIGTTIN (rc=124, or \
-         killed at the test's {PTY_DEADLINE:?} deadline). Without the trap, (c1) and \
+         `timeout` in a pseudo-terminal should have stopped on SIGTTIN (seen stopped, \
+         rc=124, or killed at the test's {PTY_DEADLINE:?} deadline). Without the trap, (c1) and \
          (c2) prove nothing: {control:#?}"
     );
     assert_nothing_left_behind(&url);
@@ -678,6 +698,10 @@ fn howto_is_linked_and_offers_no_weakening() {
         (
             "docs/howto/develop-amplihack.md",
             "(./keep-tests-from-prompting-for-git.md)",
+        ),
+        (
+            "docs/reference/default-workflow-agentic-finalization.md",
+            "(../howto/keep-tests-from-prompting-for-git.md)",
         ),
     ] {
         assert!(

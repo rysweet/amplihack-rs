@@ -330,10 +330,10 @@ cargo test -p amplihack --test integration issue_1764 -- --nocapture
 | (a) Environment | Reads the test process's environment and `isolated("x").get_envs()` | Both have the three variables with the values above |
 | (b) Git builder | `git ls-remote` through `amplihack_git::command()`, with a null stdin and both askpass variables removed | The builder sets `GIT_TERMINAL_PROMPT=0` on the command; git exits non-zero, not by a signal, before the test's deadline, with `terminal prompts disabled` in stderr |
 | (c) Pseudo-terminal | `git ls-remote` under `script` and plain `timeout`, in a compound command | The control (no variables) shows the trap. (c1), with `GIT_TERMINAL_PROMPT=0` and no askpass variable, exits before the inner `timeout`'s deadline with a status other than 124 and `terminal prompts disabled` in its output. (c2), with all three variables, exits before that deadline with a status other than 124. |
-| (d) Recipe text | Loads the two recipe files | Each of the three step prompts contains `--foreground`, `setsid`, `/dev/null`, `SIGTTIN` and `GIT_TERMINAL_PROMPT=0`, and step 12 still contains its `workspace_command` schema |
+| (d) Recipe text | Loads the two recipe files | Each of the three step prompts contains `--foreground`, `setsid`, `/dev/null`, `SIGTTIN` and `GIT_TERMINAL_PROMPT=0`, none contains a setting that weakens TLS, host-key checking or credential storage, and step 12 still contains its `workspace_command` schema |
 | Cargo config | Reads `.cargo/config.toml` | The file holds only the `[env]` table with the three entries |
 | Shell tests | Reads the twelve shell tests | The first two commands after each script's `set` line are the export and `exec </dev/null` |
-| How-to | Reads this guide and the three pages that link it | The links are present and the guide offers no setting that weakens TLS, host-key checking or credential storage |
+| How-to | Reads this guide and the four pages that link it | The links are present in `mkdocs.yml`, `docs/index.md`, `docs/howto/develop-amplihack.md` and `docs/reference/default-workflow-agentic-finalization.md`, and the guide offers no setting that weakens TLS, host-key checking or credential storage |
 
 Part (b) first checks that `amplihack_git::command()` sets
 `GIT_TERMINAL_PROMPT=0` on the command it returns. The test process already
@@ -343,14 +343,29 @@ builder, with no askpass program, fails at once with
 `terminal prompts disabled` rather than waiting.
 
 Part (c) runs on Linux when `script` and `timeout` are on `PATH`; otherwise it
-prints why it was skipped. Its control passes if `timeout` exits 124 (GNU) or
-the test's own, longer deadline expires first (uutils). In the second case the
-test kills its `script` process; closing the pseudo-terminal hangs up the
-stopped git. If the control finishes normally, the test fails with
-`trap was not armed`: git was not put in a background group, so (c1) and (c2)
-would prove nothing. The control sets the run time of part (c): the inner
-`timeout`'s deadline on CI, and the test's own deadline on a host with uutils
-`timeout`. (c1) and (c2) each take under a second.
+prints why it was skipped. Its control passes if the test sees git stopped
+(state `T` in `/proc/<pid>/stat`), if `timeout` exits 124, or if the test's own,
+longer deadline expires. Once it sees git stopped, the test kills its `script`
+process at once; closing the pseudo-terminal hangs up the stopped group, and
+the test then checks that no process using its URL is left. It sends no
+signal to the group itself. If the control finishes normally, the test fails
+with `trap was not armed`: git was not put in a background group, so (c1) and
+(c2) would prove nothing. Because
+the test stops waiting as soon as git is stopped, the control and (c1) and
+(c2) each take about a second, with GNU or uutils `timeout`.
+
+Part (d) and the how-to check reject the same settings, listed in the test's
+`WEAKENING` constant. Each would stop a prompt by turning off TLS
+verification, by turning off host-key checking or by writing a credential to
+disk, so neither this guide nor a recipe prompt may suggest one. The guide
+does not name them, because the check searches it for those strings.
+
+When part (b) or (c) fails, its message prints the child's exit status, the
+time it took, its stdout and its stderr. It prints no environment variables,
+either those the test set for the child or those of the test process, which
+may hold `GH_TOKEN` or a similar secret. The loopback server reads at most
+8 KiB of each request and never prints it, so no request header reaches the
+test output either.
 
 If part (a) fails, the `[env]` table did not reach the test binary. Find out
 why. Do not add the variables to `.github/workflows/ci.yml`, which would hide
@@ -480,121 +495,55 @@ case.
 
 ## Reproduce the trap
 
-You need `python3`, `script` (from util-linux), `timeout`, `ss` and two
-terminal panes. The server listens only on `127.0.0.1`. The runs use a
-temporary `HOME` as their working directory, with `GIT_CONFIG_GLOBAL=/dev/null`
-and `GIT_CONFIG_NOSYSTEM=1`, and with `GIT_CEILING_DIRECTORIES` set to the
-directory above it, so git reads no repository's `.git/config`. No credential
-helper or `~/.netrc` entry answers, and nothing stored is sent. Do not point
-these commands at any other host.
-
-1. In the first pane, start a server that refuses every request:
-
-   ```bash
-   python3 -I -c '
-   import http.server
-   class H(http.server.BaseHTTPRequestHandler):
-       def do_GET(self):
-           self.send_response(401)
-           self.send_header("WWW-Authenticate", "Basic realm=\"issue-1764\"")
-           self.send_header("Content-Length", "0")
-           self.end_headers()
-       def log_message(self, *args):
-           pass
-   http.server.HTTPServer(("127.0.0.1", 18764), H).serve_forever()
-   ' & server=$!
-   ```
-
-   Check that the server holds the port before you go on:
-
-   ```bash
-   ss -ltnp 'sport = :18764'
-   ```
-
-   The output must list `python3` with the server's pid (`echo $server`).
-   `ss -p` shows a process name only for your own processes, so a listener
-   that another user owns appears without one. If the server printed
-   `Address already in use`, or `ss` shows no `python3`, stop: choose another
-   port and change it in every later command.
-
-2. In the second pane, run the control. It removes the three variables and
-   uses a compound command. Steps 3 and 4 run in the same pane, because they
-   reuse `$home`:
-
-   ```bash
-   home=$(mktemp -d)
-   cd "$home"
-   env -u GIT_TERMINAL_PROMPT -u GIT_ASKPASS -u SSH_ASKPASS \
-       HOME="$home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-       GIT_CEILING_DIRECTORIES="$(dirname "$home")" SHELL=/bin/sh \
-       script -qec 'timeout 6 git ls-remote http://127.0.0.1:18764/repo.git </dev/null; rc=$?; echo "rc=$rc"; exit $rc' /dev/null </dev/null
-   ```
-
-   With GNU `timeout` it prints git's `Username for …` prompt and, after 6 s,
-   `rc=124`. With uutils `timeout` it prints the prompt and does not return. In that case, list the stopped
-   processes from the first pane; their state is `T`:
-
-   ```bash
-   ps -eo pid,stat,args | grep -E '[t]imeout 6 git|[g]it.*127\.0\.0\.1:18764'
-   ```
-
-   End the run by killing only its `script` process. Closing the
-   pseudo-terminal hangs up the stopped group:
-
-   ```bash
-   ps -eo pid,args | grep '[s]cript -qec timeout 6'
-   kill <pid from the line above>
-   ```
-
-3. In the second pane, run it again with `GIT_TERMINAL_PROMPT=0`:
-
-   ```bash
-   env -u GIT_ASKPASS -u SSH_ASKPASS GIT_TERMINAL_PROMPT=0 \
-       HOME="$home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-       GIT_CEILING_DIRECTORIES="$(dirname "$home")" SHELL=/bin/sh \
-       script -qec 'timeout 6 git ls-remote http://127.0.0.1:18764/repo.git </dev/null; rc=$?; echo "rc=$rc"; exit $rc' /dev/null </dev/null
-   ```
-
-   It returns in well under a second:
-
-   ```text
-   fatal: could not read Username for 'http://127.0.0.1:18764': terminal prompts disabled
-   rc=128
-   ```
-
-4. In the second pane, run the control under `setsid -w` instead of
-   `script`. With no controlling terminal it fails at once:
-
-   ```bash
-   env -u GIT_TERMINAL_PROMPT -u GIT_ASKPASS -u SSH_ASKPASS \
-       HOME="$home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
-       GIT_CEILING_DIRECTORIES="$(dirname "$home")" \
-       setsid -w timeout --kill-after=10 20 git ls-remote http://127.0.0.1:18764/repo.git </dev/null
-   echo "rc=$?"
-   ```
-
-   ```text
-   fatal: could not read Username for 'http://127.0.0.1:18764': No such device or address
-   rc=128
-   ```
-
-5. Clean up: `cd && rm -rf "$home"` in the second pane and `kill "$server"`
-   in the first. Then check that the server has gone; this prints only a
-   header line:
-
-   ```bash
-   ss -ltn 'sport = :18764'
-   ```
-
-The compound command in steps 2 and 3 is needed. With a single command,
-`script -qec 'timeout 6 git ls-remote …' /dev/null`, the shell replaces itself
-with `timeout`, which then leads the pseudo-terminal's session and cannot
-leave its foreground group. Git is never stopped, and the run does not show
-the trap. The same applies when you check a whole test suite under `script`:
+The guard test's part (c), `part_c_plain_timeout_trap_in_a_pseudo_terminal`,
+reproduces the trap on every run, with a control, and checks that nothing is
+left behind. [How the trap works](#how-the-trap-works) explains what happens.
+To see it by hand you need `python3`, `script` (from util-linux) and
+`timeout`. The server listens only on `127.0.0.1`; do not point these
+commands at any other host. The runs use a temporary `HOME`, with no global
+or system git configuration, so no credential helper answers.
 
 ```bash
-script -qec 'timeout --kill-after=60 5400 cargo test --workspace --locked; rc=$?; echo "exit=$rc"; exit $rc' /dev/null </dev/null
+# A server that refuses every request. If the port is taken, choose another.
+python3 -I -c '
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(401)
+        self.send_header("WWW-Authenticate", "Basic realm=\"issue-1764\"")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, *args):
+        pass
+http.server.HTTPServer(("127.0.0.1", 18764), H).serve_forever()
+' & server=$! && sleep 1
+
+home=$(mktemp -d) && cd "$home"
+run() {   # Arguments: extra variables for git, such as GIT_TERMINAL_PROMPT=0.
+    env -u GIT_TERMINAL_PROMPT -u GIT_ASKPASS -u SSH_ASKPASS "$@" \
+        HOME="$home" GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1 \
+        GIT_CEILING_DIRECTORIES="$(dirname "$home")" SHELL=/bin/sh \
+        script -qec 'timeout 6 git ls-remote http://127.0.0.1:18764/repo.git </dev/null; rc=$?; echo "rc=$rc"; exit $rc' /dev/null </dev/null
+}
+
+# The control: git prompts for a username and is stopped (state T).
+run & sleep 2
+ps -eo pid,stat,cmd | awk '$2 ~ /T/'
+# Kill only `script`; closing the pseudo-terminal hangs up the stopped group.
+pkill -f '^script -qec timeout 6 git'
+
+# With the setting, git fails at once with `terminal prompts disabled`, rc=128.
+run GIT_TERMINAL_PROMPT=0
+
+cd && rm -rf "$home"; kill "$server"
+ps -eo pid,stat,cmd | awk '$2 ~ /T/'             # prints only the header
 ```
+
+With GNU `timeout` the control ends after 6 s with `rc=124`; with uutils
+`timeout` it never returns, which is why the commands kill `script`. The
+compound command inside `script` is needed: with a single command the shell
+replaces itself with `timeout`, which then leads the session, cannot leave
+the foreground group, and the trap does not appear.
 
 ## Limits
 
@@ -622,7 +571,8 @@ script -qec 'timeout --kill-after=60 5400 cargo test --workspace --locked; rc=$?
   `tests/outside-in/scripts/scenario8-checks.sh`. They now fail at once
   instead of prompting.
 - A test that reads its own stdin is stopped in the same way when the suite
-  runs at a terminal, or under `script` as above, behind plain `timeout`.
+  runs at a terminal, or under `script` as in
+  [Reproduce the trap](#reproduce-the-trap), behind plain `timeout`.
   Give such a test its answer as an argument instead of reading stdin, as
   the power-steering tests in `amplihack-utils` do.
 - Nothing here works around uutils `timeout`. On a host where it is installed,

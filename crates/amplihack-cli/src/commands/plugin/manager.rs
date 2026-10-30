@@ -48,7 +48,13 @@ impl PluginManager {
             // so the clone may ask them for a credential (issue #1764).
             let mut git_cmd = amplihack_git::interactive_command();
             git_cmd.arg("clone").arg(source).arg(&clone_path);
-            let status = match run_with_timeout(git_cmd, GIT_CLONE_TIMEOUT) {
+            // The description keeps the URL, and any token in it, out of the
+            // timeout error.
+            let status = match run_with_timeout_described(
+                git_cmd,
+                GIT_CLONE_TIMEOUT,
+                "git clone <plugin source>",
+            ) {
                 Ok(s) => s,
                 Err(err) => {
                     return Ok(InstallResult {
