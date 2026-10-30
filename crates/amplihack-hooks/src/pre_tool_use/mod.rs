@@ -6,6 +6,8 @@
 //! - Direct commits to main/master branch
 //! - Use of --no-verify flag on git commands
 //! - In an auto-drive run, merges outside the merge gate (#1551)
+//! - tmux `kill-server` / `kill-session -a` without `-S` or `-L`, which act
+//!   on the user's own server when `$TMUX` is set (#1733; all shell tools)
 //! - `tail -f` on a device that never ends, for every shell tool (#1794)
 //! - XPIA prompt injection attacks (all tools)
 
@@ -14,7 +16,9 @@ mod cwd;
 mod git;
 pub mod launcher;
 mod merge_guard;
+mod shell;
 mod tail_guard;
+mod tmux_guard;
 mod xpia;
 
 use crate::protocol::{FailurePolicy, Hook};
@@ -335,6 +339,26 @@ impl Hook for PreToolUseHook {
             } => (tool_name, tool_input),
             _ => return Ok(Value::Object(serde_json::Map::new())),
         };
+
+        // Issue #1733: refuse a tmux command that would kill the user's own
+        // server (or every session on it) because no -S or -L was given. Not
+        // gated by any environment variable.
+        //
+        // This runs first, above XPIA and the merge guard. Those checks
+        // answer with a bare `{"block": true, "message": …}`, which Claude
+        // Code does not enforce (#1773), and XPIA, on by default, matches
+        // `; rm`, `\; kill…` and a `kill…` line, so it would answer first for
+        // `tmux kill-server; rm -rf "$SB"` or a `tmux -C attach <<EOF` heredoc
+        // and the command would run. The guard only ever denies, so running
+        // it first cannot let through anything the later checks refuse. It
+        // must also stay above the `tool_name != "Bash"` return below:
+        // Copilot's `bash` and Codex's un-normalised shell tool names would
+        // otherwise skip it.
+        if tmux_guard::is_shell_tool(&tool_name)
+            && let Some(block) = tmux_guard::check_tool_input(&tool_input)
+        {
+            return Ok(block);
+        }
 
         // Issue #1794: deny `tail -f /dev/null` and the like for every shell
         // tool name. It runs before XPIA, whose bare block shape Claude Code
