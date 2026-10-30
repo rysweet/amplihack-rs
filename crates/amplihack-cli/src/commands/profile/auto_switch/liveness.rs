@@ -102,6 +102,53 @@ pub fn scan(proc_root: &Path, root: &Path, self_pid: u32, uid: u32) -> Liveness 
     Liveness::Known(live)
 }
 
+/// The `CLAUDE_CONFIG_DIR` of every process of `uid` other than `self_pid`
+/// that is not a zombie, for the session archive's live check (issue #1746).
+/// A relative value is taken from the process's working directory.
+/// Processes that cannot be read are skipped; only the value is kept.
+pub(crate) fn claude_config_dirs(proc_root: &Path, self_pid: u32, uid: u32) -> Vec<PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(entries) = std::fs::read_dir(proc_root) else {
+        return Vec::new();
+    };
+    let mut dirs = Vec::new();
+    for entry in entries.flatten() {
+        let Some(pid) = entry
+            .file_name()
+            .to_str()
+            .and_then(|s| s.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let dir = entry.path();
+        if pid == self_pid
+            || !matches!(status(&dir), Some((state, owner)) if owner == uid && state != 'Z')
+        {
+            continue;
+        }
+        let Ok(Some((environ, _))) = fsx::read_bounded_nofollow(&dir.join("environ"), MAX_ENVIRON)
+        else {
+            continue;
+        };
+        let value = environ
+            .split(|&b| b == 0)
+            .find_map(|e| e.strip_prefix(KEY))
+            .filter(|v| !v.is_empty())
+            .map(|v| PathBuf::from(std::ffi::OsStr::from_bytes(v)));
+        drop(environ);
+        match value {
+            Some(p) if p.is_absolute() => dirs.push(p),
+            Some(p) => {
+                if let Ok(cwd) = std::fs::read_link(dir.join("cwd")) {
+                    dirs.push(cwd.join(p));
+                }
+            }
+            None => {}
+        }
+    }
+    dirs
+}
+
 /// `(state letter, real uid)` from `/proc/<pid>/status`.
 fn status(dir: &Path) -> Option<(char, u32)> {
     let (raw, _) = fsx::read_bounded_nofollow(&dir.join("status"), MAX_SMALL).ok()??;

@@ -40,6 +40,10 @@ pub enum Commands {
     /// Manage Claude Code login profiles
     #[command(subcommand)]
     Profile(crate::commands::profile::ProfileCommands),
+    /// Archive old Claude Code sessions, or restore one
+    #[cfg(unix)]
+    #[command(subcommand)]
+    Sessions(crate::commands::sessions::SessionsCommands),
     /// Launch Claude Code
     Launch {
         /// Resume the previous session

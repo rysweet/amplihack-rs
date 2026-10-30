@@ -253,6 +253,7 @@ fn rotate_log_grammar_is_documented() {
         "stop: signal received; cycle abandoned",
         "recovery: rolled back an interrupted swap",
         "recovery: finished an interrupted swap",
+        "sessions archive: <summary>",
     ] {
         assert!(REFERENCE.contains(line), "reference is missing `{line}`");
     }

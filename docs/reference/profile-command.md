@@ -2494,6 +2494,9 @@ section defines its behaviour. It is separate from [auto-switch](#auto-switch),
 which swaps logins inside profiled sessions, but shares its toggle, its
 exclusion list and its state lock.
 
+The rotator also runs a [daily session archive](#rotate-daily-session-archive)
+that moves old session logs out of `~/.claude/projects`.
+
 ### Rotate commands
 
 ```
@@ -3741,6 +3744,7 @@ fails to parse is left unchanged and reported as `RotateInconsistent`.
 | `rotate.err` | The background process's own stdout and stderr, and one line from each launch that [started](#rotate-autostart) a rotator or failed to. Not rotated. |
 | `autostart` | The [autostart](#rotate-autostart) setting: `on` or `off` and a newline. Missing means on. |
 | `pin` | The [rotation pin](#rotate-pin): one profile name and a newline. Written by `profile switch <name>`, removed by `profile switch --none`. Not part of the ledger. |
+| `sessions-archive.last` | When the [daily session archive](#rotate-daily-session-archive) last started: epoch seconds and a newline. Written atomically before each run. |
 
 The auto-switch `ledger.json` and `journal.json` one level up are separate
 files and are not changed by rotation.
@@ -3855,6 +3859,8 @@ stdout only, without the time.
 | ``skip: held by switch to <name>; run `amplihack profile switch --none` to release`` | The [pin](#rotate-pin) holds rotation; the cycle neither measured nor swapped. |
 | ``skip: pin unreadable; run `amplihack profile switch --none` `` | The pin file cannot be trusted or parsed; the cycle holds. |
 | `skip: pin names missing profile <name>; ignored` | The pin names a removed profile; the cycle runs normally. |
+| `sessions archive: <summary>` | The [daily session archive](#rotate-daily-session-archive) ran; `<summary>` is the [`sessions archive` summary line](./sessions-command.md#output). |
+| `sessions archive: <error>` | The daily session archive did not run, or stopped; `<error>` is one of the [`sessions` messages](./sessions-command.md#messages) or the lock line. |
 | `switch <from>-><to>` | A swap made by [`profile switch`](#rotate-switch). It has no readings, because `switch` measures nothing, and it does not start with `swap `, so a search for rotator swaps does not match it. |
 | `skip: <name> is already the live login; nothing moved` | `profile switch` found `<name>` already live. |
 | `would swap ...` / `would block <name> (spend limit) until <time>` / `would adopt ~/.claude as <name>` / `would stay` / `would stay (live probe failed (1/3))` / `would stay (held by switch to <name>)` / `would stay (pin unreadable)` / `would alert: ...` / `would recover an interrupted swap (phase <phase>)` / `would alert: rotate recovery is inconsistent` / `would alert: the rotate journal is damaged` / `would recover: <recovered line>` | `--dry-run` only. |
@@ -4123,6 +4129,65 @@ if needed.
 When the variable is set to a valid value, `rotate autostart on|off` still
 writes the file, and then warns on stderr that
 `AMPLIHACK_ROTATE_AUTOSTART=<value>` overrides it in this environment.
+
+### Rotate daily session archive
+
+`rotate watch`, including the background rotator, runs
+[`amplihack sessions archive --apply`](./sessions-command.md) at most once a
+day, so old session logs do not build up in `~/.claude/projects`. It is on by
+default.
+
+After each pass of the watch loop, before it sleeps, and whether or not the
+rotator is idle or held by a pin, the rotator reads
+`<root>/.auto-switch.d/rotate/sessions-archive.last`. The archive runs when:
+
+- the file is missing, or does not hold a whole number of epoch seconds;
+- 86,400 seconds or more have passed since the time it holds; or
+- the time it holds is in the future, because the clock went back.
+
+The rotator writes the current time to the file before the archive starts.
+A crash, a held [lock](./sessions-command.md#lock) or an error therefore
+waits a full day before the next attempt, rather than retrying every cycle.
+If the file cannot be written, the archive does not run and the log gets
+`sessions archive: cannot record the run time (<kind>); not run`.
+
+The archive runs inside the rotator process, with the days and destination
+from `AMPLIHACK_SESSIONS_ARCHIVE_DAYS` and `AMPLIHACK_SESSIONS_ARCHIVE_DEST`
+in its environment, or their defaults (3 days, `~/.amplihack/session-archive`).
+It runs to completion before the next cycle, so the first run over a large
+backlog delays rotation by one long cycle. Its summary line, or one error
+line, goes to the [log](#rotate-log) with the prefix `sessions archive: `,
+for example:
+
+```
+2026-10-29T03:15:00Z sessions archive: archived 412 sessions, 0.11 GiB (older than 3 days; 7 live sessions kept; 0 failed)
+```
+
+Each session the archive skips or fails also gets its own line, such as
+`sessions archive: skipped <project>/<id>: symlink`; see the
+[`sessions` messages](./sessions-command.md#messages). No error from the
+archive stops or changes the rotation cycle.
+
+To turn the daily run off, set `AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0` (or
+`off`) where the rotator is started, then restart it:
+
+```
+amplihack profile rotate stop
+AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0 amplihack profile rotate start
+```
+
+The three `AMPLIHACK_SESSIONS_ARCHIVE_*` variables do not start with
+`AMPLIHACK_ROTATE`, so the background rotator inherits them like any other
+variable (see [Rotate daemon](#rotate-daemon)). A running
+rotator does not see later changes. A rotator started by
+[autostart](#rotate-autostart) takes them from whichever launch started it,
+so to make a setting apply every time, export it in your shell profile
+rather than on one command line.
+
+`1` or `on`, or an empty or unset variable, means on. Any other value also
+means on, and the rotator logs
+`sessions archive: ignored AMPLIHACK_SESSIONS_ARCHIVE_DAILY value (use on, off, 1 or 0); running`
+once, without repeating the value.
 
 ### Rotate prototype coexistence
 

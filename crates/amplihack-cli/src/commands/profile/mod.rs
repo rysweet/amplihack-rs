@@ -73,6 +73,9 @@ mod tests_usage_parse;
 mod tests_verify;
 
 use anyhow::Result;
+/// For `amplihack sessions` (issue #1746): the live check and profile root.
+#[cfg(unix)]
+pub(crate) use auto_switch::claude_config_dirs;
 /// File helpers shared with the usage-limit wait (#1618).
 #[cfg(unix)]
 use auto_switch::fsx;
@@ -83,6 +86,7 @@ use clap::Subcommand;
 use name::ProfileName;
 #[cfg(test)]
 use root_cmd::{render_list, render_show};
+pub(crate) use root_config::store_from_env;
 pub(crate) use rotate::autostart_on_launch;
 #[cfg(unix)]
 pub(crate) use rotate::warn_foreign_rotator;
@@ -90,7 +94,7 @@ pub(crate) use settings_refresh::{Refresh, refresh_profile_settings};
 use std::borrow::Cow;
 use std::ffi::OsStr;
 use std::path::PathBuf;
-use store::ProfileStore;
+pub(crate) use store::ProfileStore;
 pub(crate) use store::ROOT_ENV;
 pub use supervise_gate::maybe_supervise;
 

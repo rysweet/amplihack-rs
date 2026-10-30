@@ -41,6 +41,9 @@ Several of these variables have a persistent equivalent in the [user config file
   - [AMPLIHACK_MEMORY_BACKEND](#amplihack_memory_backend)
   - [AMPLIHACK_USAGE_LIMIT_WAIT](#amplihack_usage_limit_wait)
   - [AMPLIHACK_USAGE_LIMIT_MAX_WAIT_SECS](#amplihack_usage_limit_max_wait_secs)
+  - [AMPLIHACK_SESSIONS_ARCHIVE_DAYS](#amplihack_sessions_archive_days)
+  - [AMPLIHACK_SESSIONS_ARCHIVE_DEST](#amplihack_sessions_archive_dest)
+  - [AMPLIHACK_SESSIONS_ARCHIVE_DAILY](#amplihack_sessions_archive_daily)
   - [HOME](#home)
   - [AMPLIHACK_DEFAULT_MODEL](#amplihack_default_model)
   - [AMPLIHACK_ENABLE_BLARIFY](#amplihack_enable_blarify)
@@ -997,6 +1000,65 @@ prints one warning and is ignored.
 
 ---
 
+### AMPLIHACK_SESSIONS_ARCHIVE_DAYS
+
+**Type:** string (whole number, at least 1)
+**Default:** `3`
+**Read by:** `amplihack sessions archive` and the rotator's [daily session archive](./profile-command.md#rotate-daily-session-archive)
+
+A session is archived when nothing in it has been written for this many
+days. `--days` overrides it. Empty means unset. Any other invalid value,
+including `0`, stops the command with
+`AMPLIHACK_SESSIONS_ARCHIVE_DAYS must be a whole number of at least 1`, and
+the daily run logs the same line and does not archive. See the
+[`sessions` reference](./sessions-command.md#configuration).
+
+```bash
+# Keep a week of sessions in ~/.claude/projects
+export AMPLIHACK_SESSIONS_ARCHIVE_DAYS=7
+```
+
+---
+
+### AMPLIHACK_SESSIONS_ARCHIVE_DEST
+
+**Type:** string (directory path)
+**Default:** `~/.amplihack/session-archive`
+**Read by:** `amplihack sessions archive`, `amplihack sessions restore` and the rotator's daily session archive
+
+Directory that holds the session archives, the manifest and the lock.
+`--dest` overrides it. Empty means unset; a relative path is taken from the
+current directory. It must not be, contain, or lie inside
+`~/.claude/projects`, and must be a directory you own that group and others
+cannot write. See [Destination layout](./sessions-command.md#destination-layout).
+
+---
+
+### AMPLIHACK_SESSIONS_ARCHIVE_DAILY
+
+**Type:** string (switch)
+**Values:** `1` or `on` | `0` or `off`
+**Default:** on
+**Read by:** `amplihack profile rotate watch`
+
+Turns the rotator's [daily session archive](./profile-command.md#rotate-daily-session-archive)
+on or off. Empty means unset. Any other value counts as on, and the rotator
+logs one line saying it was ignored. It does not start with
+`AMPLIHACK_ROTATE`, so the background rotator inherits it from the command
+that starts it. A rotator started by autostart takes it from whichever
+launch started it, so export it in your shell profile to make it apply every
+time. A running rotator does not see later changes.
+
+```bash
+# Turn the daily archive off for every rotator started from now on
+echo 'export AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0' >> ~/.bashrc
+export AMPLIHACK_SESSIONS_ARCHIVE_DAILY=0
+amplihack profile rotate stop
+amplihack profile rotate start
+```
+
+---
+
 ### HOME
 
 **Required:** yes (for most operations)
@@ -1669,6 +1731,7 @@ per-session default is in effect. Setting this alone does **not** enable sharing
 - [Agent Binary Routing](../concepts/agent-binary-routing.md) — Why `AMPLIHACK_AGENT_BINARY` exists and how recipe runner uses it
 - [Run amplihack in Non-interactive Mode](../howto/run-in-noninteractive-mode.md) — CI and pipe usage guide
 - [Bootstrap Parity](../concepts/bootstrap-parity.md) — How the Rust CLI matches the Python launcher's environment contract
+- [`amplihack sessions` Reference](./sessions-command.md) - `AMPLIHACK_SESSIONS_ARCHIVE_*` and the daily session archive
 - [Memory Backend Reference](./memory-backend.md) — `AMPLIHACK_MEMORY_BACKEND` values, storage paths, schema, and security
 - [Signal Channel](../signal-channel.md) — Full reference for the Signal channel, including the per-session-default group strategy and the opt-in rolling-group variables
 - [Recipe Runner Logging](./recipe-runner-logging.md) — Progress, heartbeat, snippet, and JSONL configuration

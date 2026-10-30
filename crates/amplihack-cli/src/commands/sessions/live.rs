@@ -1,0 +1,171 @@
+//! Which sessions are running. The main safety property of `sessions
+//! archive`: a session whose pid file says it is live is never archived,
+//! whichever Claude config directory holds the pid file.
+//!
+//! Sources: `<HOME>/.claude/sessions`, `<profile>/sessions` for every
+//! profile (profiles share `projects/` but each has its own `sessions/`),
+//! and `<CLAUDE_CONFIG_DIR>/sessions` of this user's processes. The build
+//! fails closed: only a missing directory counts as empty.
+
+use super::scan::valid_name;
+use crate::commands::profile::{ProfileError, ProfileStore};
+use amplihack_utils::secure_files::read_bounded_nofollow;
+use std::collections::{BTreeSet, HashSet};
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
+
+const MAX_PID_FILE: u64 = 64 * 1024;
+
+/// What the live check asks the system; a fake in tests.
+pub trait Probe {
+    /// Whether `pid` (always in `1..=i32::MAX`) is a running process.
+    fn alive(&self, pid: i32) -> bool;
+    /// `CLAUDE_CONFIG_DIR` of this user's running processes.
+    fn config_dirs(&self) -> Vec<PathBuf>;
+}
+
+/// `kill(pid, 0)` and, on Linux, `/proc`.
+pub struct SystemProbe;
+
+impl Probe for SystemProbe {
+    fn alive(&self, pid: i32) -> bool {
+        if pid < 1 {
+            return false;
+        }
+        // SAFETY: signal 0 only checks that `pid` exists; `pid` is positive,
+        // so this never addresses a process group or every process.
+        if unsafe { libc::kill(pid, 0) } == 0 {
+            return true;
+        }
+        // EPERM: it exists but belongs to someone else. Only ESRCH is dead.
+        io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
+    }
+
+    fn config_dirs(&self) -> Vec<PathBuf> {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: getuid has no preconditions.
+            let uid = unsafe { libc::getuid() };
+            crate::commands::profile::claude_config_dirs(
+                Path::new("/proc"),
+                std::process::id(),
+                uid,
+            )
+        }
+        #[cfg(not(target_os = "linux"))]
+        Vec::new()
+    }
+}
+
+/// Session ids with a live pid file.
+#[derive(Debug, Default, Clone)]
+pub struct LiveSet {
+    ids: HashSet<String>,
+}
+
+impl LiveSet {
+    pub fn contains(&self, id: &str) -> bool {
+        self.ids.contains(id)
+    }
+}
+
+/// The directory that could not be read and why.
+pub type LiveError = (PathBuf, io::ErrorKind);
+
+/// Reads every source. Any error but a missing directory fails closed.
+pub fn build(home: &Path, profile_root: &Path, probe: &dyn Probe) -> Result<LiveSet, LiveError> {
+    let mut dirs = vec![home.join(".claude/sessions")];
+    dirs.extend(
+        profiles(profile_root)?
+            .into_iter()
+            .map(|n| profile_root.join(n).join("sessions")),
+    );
+    dirs.extend(probe.config_dirs().into_iter().map(|d| d.join("sessions")));
+    let mut seen = BTreeSet::new();
+    let mut set = LiveSet::default();
+    for dir in dirs {
+        let canonical = match dir.canonicalize() {
+            Ok(c) => c,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+            Err(e) => return Err((dir, e.kind())),
+        };
+        if seen.insert(canonical.clone()) {
+            read_dir_into(&dir, &canonical, probe, &mut set)?;
+        }
+    }
+    Ok(set)
+}
+
+/// Profile names in the root, as `profile list` sees them.
+fn profiles(root: &Path) -> Result<Vec<String>, LiveError> {
+    ProfileStore::new(root.to_path_buf())
+        .list()
+        .map_err(|e| match e {
+            ProfileError::Io(e) => (root.to_path_buf(), e.kind()),
+            _ => (root.to_path_buf(), io::ErrorKind::InvalidData),
+        })
+}
+
+fn read_dir_into(
+    shown: &Path,
+    dir: &Path,
+    probe: &dyn Probe,
+    set: &mut LiveSet,
+) -> Result<(), LiveError> {
+    let fail = |e: io::Error| (shown.to_path_buf(), e.kind());
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(fail(e)),
+    };
+    for entry in entries {
+        let entry = entry.map_err(fail)?;
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(|n| n.strip_suffix(".json")) else {
+            continue;
+        };
+        // DirEntry::file_type does not follow symlinks.
+        if !entry.file_type().map_err(fail)?.is_file() {
+            continue;
+        }
+        let raw = match read_bounded_nofollow(&entry.path(), MAX_PID_FILE) {
+            Ok(Some((raw, _))) => raw,
+            // Gone since the listing.
+            Ok(None) => continue,
+            // A symlink, a non-regular file or one over the limit.
+            Err(e) if e.kind() == io::ErrorKind::InvalidData => continue,
+            Err(e) => return Err((entry.path(), e.kind())),
+        };
+        if let Some(id) = live_id(&raw, stem, probe) {
+            set.ids.insert(id);
+        }
+    }
+    Ok(())
+}
+
+/// The session id of a pid file whose body pid or numeric stem is alive.
+/// A body that does not parse protects nothing.
+fn live_id(raw: &[u8], stem: &str, probe: &dyn Probe) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_slice(raw).ok()?;
+    let id = v.get("sessionId")?.as_str()?;
+    if !valid_name(id) {
+        return None;
+    }
+    let body = v
+        .get("pid")
+        .and_then(serde_json::Value::as_i64)
+        .and_then(in_range);
+    let from_stem = (!stem.is_empty() && stem.bytes().all(|b| b.is_ascii_digit()))
+        .then(|| stem.parse::<i64>().ok().and_then(in_range))
+        .flatten();
+    let mut pids: Vec<i32> = body.into_iter().chain(from_stem).collect();
+    pids.dedup();
+    pids.into_iter()
+        .any(|p| probe.alive(p))
+        .then(|| id.to_string())
+}
+
+fn in_range(pid: i64) -> Option<i32> {
+    i32::try_from(pid).ok().filter(|&p| p >= 1)
+}

@@ -70,6 +70,8 @@ mod prelude;
 #[cfg(unix)]
 mod recover;
 #[cfg(unix)]
+mod sessions_daily;
+#[cfg(unix)]
 mod settings;
 #[cfg(unix)]
 mod spend_blocks;
@@ -126,6 +128,8 @@ mod tests_platform_block;
 mod tests_platform_identify;
 #[cfg(all(test, unix))]
 mod tests_recover;
+#[cfg(all(test, unix))]
+mod tests_sessions_daily;
 #[cfg(all(test, unix))]
 mod tests_settings;
 #[cfg(test)]
