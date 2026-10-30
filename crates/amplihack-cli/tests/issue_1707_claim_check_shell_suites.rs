@@ -10,16 +10,17 @@
 //! [`crate::isolated_amplihack::isolated`], the one way a test starts a child
 //! in this harness. There is no second keep-list here: the suites get exactly
 //! the environment that helper builds (its `KEPT_VARS`, `CARGO*`, `RUST*` and
-//! `LC_*`, plus `AMPLIHACK_TEST_HOME_GUARD=1` and
-//! `AMPLIHACK_ROTATE_AUTOSTART=0`), so a suite that one day starts
-//! `amplihack` gets the same safeguards as every other test. On top of that
-//! this file sets `HOME` and `TMPDIR` to the test's own temp dir and puts the
-//! PyYAML venv, when one is needed, first on `PATH`. `BASH_ENV`, every other
-//! `AMPLIHACK_*` variable, `CLAUDE_CONFIG_DIR`, `GH_*`, `GIT_*` and
-//! `PR_NUMBER` are left unset, so neither the developer's `~/.amplihack`, the
-//! profile root nor an auto-drive shell's `gh` merge guard reaches the suites
-//! or the `bash` children they start. The suites set `AMPLIHACK_HOME` per
-//! invocation where they need it.
+//! `LC_*`, plus `AMPLIHACK_TEST_HOME_GUARD=1`,
+//! `AMPLIHACK_ROTATE_AUTOSTART=0` and the git prompt suppressors in
+//! `NO_GIT_PROMPT_ENV`), so a suite that one day starts `amplihack` gets the
+//! same safeguards as every other test. On top of that this file sets `HOME`
+//! and `TMPDIR` to the test's own temp dir and puts the PyYAML venv, when one
+//! is needed, first on `PATH`. `BASH_ENV`, every other `AMPLIHACK_*`
+//! variable, `CLAUDE_CONFIG_DIR`, `GH_*`, every `GIT_*` variable other than
+//! those suppressors, and `PR_NUMBER` are left unset, so neither the
+//! developer's `~/.amplihack`, the profile root nor an auto-drive shell's `gh`
+//! merge guard reaches the suites or the `bash` children they start. The
+//! suites set `AMPLIHACK_HOME` per invocation where they need it.
 //!
 //! The suites read recipe YAML with `python3` and PyYAML. When the system
 //! `python3` cannot import `yaml`, the test builds one virtual environment
@@ -39,7 +40,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::OnceLock;
 
-use crate::isolated_amplihack::{HOME_GUARD_ENV, ROTATE_AUTOSTART_ENV, isolated, shared_temp_home};
+use crate::isolated_amplihack::{
+    HOME_GUARD_ENV, NO_GIT_PROMPT_ENV, ROTATE_AUTOSTART_ENV, isolated, shared_temp_home,
+};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -151,9 +154,11 @@ fn run_suite(script: &str) {
 /// nothing from the developer's or an auto-drive shell beyond that helper's
 /// keep-list: no `BASH_ENV` (which would source the merge guard's `gh` shim
 /// into every bash child), no `AMPLIHACK_*` other than the helper's two
-/// safeguards, no `CLAUDE_CONFIG_DIR`, no `GIT_*`/`GH_*`, no `PR_NUMBER`, and
-/// a `HOME` under the test's temp dir. The safeguards themselves must be set,
-/// which shows the command came from the shared helper and not a copy.
+/// safeguards, no `CLAUDE_CONFIG_DIR`, no `GH_*`, no `GIT_*` beyond the
+/// helper's prompt suppressors, no `PR_NUMBER`, and a `HOME` under the test's
+/// temp dir. The safeguards and the suppressors (issue #1764) must be set,
+/// with their exact values, which shows the command came from the shared
+/// helper and not a copy.
 #[test]
 fn issue_1707_suite_environment_is_isolated() {
     let tmp = tempfile::TempDir::new().expect("tempdir");
@@ -173,7 +178,8 @@ fn issue_1707_suite_environment_is_isolated() {
             (!name.starts_with("AMPLIHACK_")
                 || *name == HOME_GUARD_ENV
                 || *name == ROTATE_AUTOSTART_ENV)
-                && !name.starts_with("GIT_")
+                && (!name.starts_with("GIT_")
+                    || NO_GIT_PROMPT_ENV.iter().any(|(allowed, _)| allowed == name))
                 && !name.starts_with("GH_")
                 && !matches!(
                     *name,
@@ -188,6 +194,9 @@ fn issue_1707_suite_environment_is_isolated() {
     };
     assert_eq!(value_of(HOME_GUARD_ENV), Some("1"), "{env}");
     assert_eq!(value_of(ROTATE_AUTOSTART_ENV), Some("0"), "{env}");
+    for (name, value) in NO_GIT_PROMPT_ENV {
+        assert_eq!(value_of(name), Some(value), "{env}");
+    }
     let home = value_of("HOME").expect("HOME is set");
     assert!(
         Path::new(home).starts_with(tmp.path()),

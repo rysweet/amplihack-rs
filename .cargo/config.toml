@@ -1,0 +1,4 @@
+[env]
+GIT_TERMINAL_PROMPT = { value = "0", force = true }
+GIT_ASKPASS = { value = "true", force = true }
+SSH_ASKPASS = { value = "true", force = true }

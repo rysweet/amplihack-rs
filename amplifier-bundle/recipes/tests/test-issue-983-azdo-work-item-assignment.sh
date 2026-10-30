@@ -33,6 +33,9 @@
 # Exit codes: 0 = pass, 1 = fail, 2 = test harness error.
 
 set -uo pipefail
+# Issue #1764: no git this script runs may wait on a credential prompt.
+export GIT_TERMINAL_PROMPT=0 GIT_ASKPASS=true SSH_ASKPASS=true
+exec </dev/null
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"

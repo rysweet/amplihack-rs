@@ -151,6 +151,14 @@ See [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-
 this test run` when a test rewrote a real profile's `settings.json`. See
 [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md).
 
+### A Test Run Stops Instead of Failing
+
+A run under plain `timeout` from a terminal can stop, with its processes in
+state `T`, when git asks for credentials. Run long commands as
+`GIT_TERMINAL_PROMPT=0 setsid -w timeout --kill-after=60 <secs> <command> </dev/null`.
+Ctrl-C does not stop that form; the guide says how to. See
+[Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md).
+
 ### Pre-commit Hook Issues
 
 The project uses pre-commit hooks. If they fail:
@@ -167,3 +175,4 @@ pre-commit run --all-files
 - [Code Review](../reference/code-review.md) — code review practices
 - [Keep Tests from Leaking Rotator Daemons](./keep-tests-from-leaking-rotator-daemons.md) — test stops and the leak check for `rotate watch` daemons
 - [Keep Tests out of the Real Profile Root](./keep-tests-out-of-the-real-profile-root.md) — profile-root isolation and the real-root guard
+- [Keep Tests from Prompting for Git Credentials](./keep-tests-from-prompting-for-git.md) - git prompt settings for tests and amplihack, and running long commands
