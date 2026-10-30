@@ -989,7 +989,7 @@ mod tests {
         let fake_provider = temp.path().join("fake-gh");
         std::fs::write(
             &fake_provider,
-            "#!/bin/sh\n/bin/sleep 2\nprintf 'done\\n'\n",
+            "#!/bin/sh\n/bin/sleep 30\nprintf 'done\\n'\n",
         )
         .unwrap();
         let mut perms = std::fs::metadata(&fake_provider).unwrap().permissions();
@@ -1009,8 +1009,11 @@ mod tests {
             None => unsafe { std::env::remove_var("AMPLIHACK_TEST_PROVIDER_TIMEOUT_MS") },
         }
 
+        // The fake provider sleeps 30 s and the timeout is 50 ms, so 10 s
+        // separates an enforced timeout from none while leaving room for a
+        // descheduled poll thread on a loaded host.
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
+            started.elapsed() < std::time::Duration::from_secs(10),
             "provider command helper must enforce an explicit timeout"
         );
         assert!(
