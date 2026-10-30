@@ -195,3 +195,44 @@ fn alias_behaviour_is_documented_and_linked() {
         "CHANGELOG.md [Unreleased] Fixed names #1762"
     );
 }
+
+/// No caller hides a missing resolver or falls back to the local branch name,
+/// which from an alias worktree is `<B>--wt-<n>` (philosophy review of #1782).
+#[test]
+fn resolver_callers_do_not_fall_back_to_local_branch() {
+    let call = Regex::new(r#"\$\(bash "[^\n]*?remote_branch(?:\.sh)?"[^)\n]*\)""#).unwrap();
+    let mut calls = Vec::new();
+    for dir in ["amplifier-bundle/recipes", "amplifier-bundle/tools"] {
+        let dir = workspace_root().join(dir);
+        for entry in std::fs::read_dir(&dir).expect("read bundle dir").flatten() {
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap_or_default();
+            for line in text.replace("\\\n", " ").lines() {
+                for found in call.find_iter(line) {
+                    let rest = line[found.end()..].trim_start();
+                    let fallback = rest
+                        .strip_prefix("||")
+                        .map(|r| r.split(';').next().unwrap_or(""))
+                        .unwrap_or("");
+                    calls.push((path.clone(), found.as_str().to_owned(), fallback.to_owned()));
+                }
+            }
+        }
+    }
+    assert_eq!(calls.len(), 15, "resolver calls found: {calls:#?}");
+    for (path, found, fallback) in &calls {
+        assert!(
+            !found.contains("2>/dev/null"),
+            "{}: the resolver's stderr must stay visible: {found}",
+            path.display()
+        );
+        assert!(
+            !fallback.contains("--show-current"),
+            "{}: a failed resolver must not fall back to the local branch: {found} || {fallback}",
+            path.display()
+        );
+    }
+}

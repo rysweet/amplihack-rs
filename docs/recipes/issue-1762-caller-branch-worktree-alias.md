@@ -395,11 +395,12 @@ bash "$R" /
 # (no output, exit 0: not a repository)
 ```
 
-Callers use this pattern, which falls back to the local branch name when the
-resolver is missing or fails:
+Callers treat a resolver that is missing or fails as an error. They do not
+fall back to the local branch name, which from an alias worktree is
+`<B>--wt-<n>`. Bash's own message names the missing file:
 
 ```bash
-rb="$(bash "$R" "$dir" 2>/dev/null)" || rb="$(git -C "$dir" branch --show-current 2>/dev/null || true)"
+rb="$(bash "$R" "$dir")" || exit 2
 ```
 
 ---
@@ -460,15 +461,11 @@ macOS.
 | Missing | Effect |
 |---|---|
 | Planner | Step 4 prints `WARNING: <TOOLS_DIR>/workflow_caller_branch_alias.sh not found; cannot create an alias worktree for '<B>' (issue #1762).`, then the two #858 `ERROR` lines, and exits 1 with nothing on stdout. This is the behaviour from before #1762. |
-| Resolver | Each caller falls back to `git branch --show-current` without a message. Off the alias path that is the same answer. |
+| Resolver | Bash prints `No such file or directory` with the resolver's path, and no caller uses the local branch name instead. Steps 15, 18c and 20b, the step 16b retry command and `workflow_publish_pr.sh` stop before pushing or opening a PR. `workflow_pr_ready.sh`, `workflow-terminal-state`, finalization's evidence collection and the PR scope check in `workflow_final_status.sh` stop with an `ERROR`. The other lookups fail closed: the open-PR check confirms no PR, the branch PR lookup in `workflow_final_status.sh` is skipped, the terminal evidence verdict is `UNCERTAIN`, and `workflow_pr_head_sync.sh` syncs nothing. |
 
-Both helpers ship in `amplifier-bundle/tools/`. An install that has the planner
-but not the resolver is damaged: from an alias worktree, the push steps would
-use the local name. Git's default `push.default=simple` refuses that push
-because the local and upstream names differ, but with `push.default=current`
-the same push creates a branch named after the alias on `origin`. If
-`origin/<B>` is also missing locally, the `-u` fallbacks in steps 18c and 20b
-push the alias name whatever `push.default` says. Reinstall the bundle with
+Both helpers ship in `amplifier-bundle/tools/`, so an install that lacks either
+one is damaged. Without the stop, a run in an alias worktree would push, or
+look up the PR, under the alias name. Reinstall the bundle with
 `amplihack install`.
 
 ---
@@ -567,7 +564,7 @@ The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 | Step 4 | `alias_created_when_caller_on_pushed_clean_branch` (with a snapshot showing the caller is untouched), `rerun_reuses_alias_worktree`, `alias_shaped_branch_with_other_upstream_is_skipped`, `caller_behind_origin_alias_starts_at_origin`, `caller_not_on_branch_is_unchanged`, `default_branch_keeps_858_refusal`, `missing_planner_warns_then_refuses`, `concurrent_create_does_not_remove_existing_worktree`, `alias_ref_made_by_other_run_is_not_removed` |
 | Stops | `stops_on_uncommitted_tracked_change`, `stops_when_branch_not_on_origin`, `stops_on_unpushed_commit`, `reports_only_first_cause` |
 | Consumers | `publish_pushes_alias_head_to_original_remote_branch`, `open_pr_check_looks_up_remote_branch`, `final_status_branch_lookup_uses_remote_branch`, `terminal_state_probe_accepts_alias` (with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream), `remote_branch_resolver_contract`, `planner_and_resolver_agree_on_default_branches` |
-| Security | `step16b_prompt_does_not_template_branch_name`, `planner_writes_nothing`, `planner_rejects_previous_branch_syntax`, `planner_status_unreadable_fails_closed`, `planner_ignores_inherited_git_dir`, `push_fallback_keeps_alias_mapping`, `step15_refuses_unbound_push_target`, `helpers_contain_no_write_commands` |
+| Security | `step16b_prompt_does_not_template_branch_name`, `planner_writes_nothing`, `planner_rejects_previous_branch_syntax`, `planner_status_unreadable_fails_closed`, `planner_ignores_inherited_git_dir`, `push_fallback_keeps_alias_mapping`, `step15_refuses_unbound_push_target`, `helpers_contain_no_write_commands`, `missing_resolver_stops_push_steps`, `resolver_callers_do_not_fall_back_to_local_branch` |
 
 `tests/integration/workflow_worktree_caller_refusal_test.rs` keeps the #858
 cases. Its Gate B, Gate B symlink and Gate C cases now expect the #1762 stop:

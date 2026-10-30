@@ -50,7 +50,8 @@ collect_evidence() {
   elif [ -d "$target_dir" ] && git -C "$target_dir" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     repo_valid="true"
     if [ -z "$branch_name" ]; then
-      branch_name="$(bash "$_finalization_collect_remote_branch" "$target_dir" 2>/dev/null)" || branch_name="$(git -C "$target_dir" branch --show-current)"
+      branch_name="$(bash "$_finalization_collect_remote_branch" "$target_dir")" \
+        || { echo "ERROR: collect-finalization-evidence requires workflow_remote_branch.sh next to this file (#1762)" >&2; exit 2; }
     fi
     head_sha="$(git -C "$target_dir" rev-parse --verify HEAD)"
     remote_origin="$(git -C "$target_dir" config --get remote.origin.url 2>/dev/null || true)"

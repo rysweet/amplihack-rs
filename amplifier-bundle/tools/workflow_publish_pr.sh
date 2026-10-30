@@ -354,7 +354,7 @@ fi
 
 HOST_TYPE="${REMOTE_HOST_TYPE:-other}"
 # #1762: in an alias worktree (<B>--wt-<n> tracking origin/<B>) the PR head is <B>.
-CURRENT_BRANCH="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" . 2>/dev/null)" || CURRENT_BRANCH="$(git branch --show-current)"
+CURRENT_BRANCH="$(bash "$SCRIPT_DIR/workflow_remote_branch.sh" .)" || finish_publish "FAILED_INVALID_INPUT" "invalid-input" "failure" "workflow_remote_branch.sh is missing or failed at $SCRIPT_DIR; cannot name the PR head branch" 1
 [ "$CURRENT_BRANCH" = "$(git branch --show-current)" ] || PR_HEAD_ARG="$CURRENT_BRANCH"
 ISSUE_NUM="$ISSUE_NUMBER"
 if ! [[ "$ISSUE_NUM" =~ ^[0-9]+$ ]]; then echo "ERROR: issue_number is not numeric: $ISSUE_NUM" >&2; exit 1; fi

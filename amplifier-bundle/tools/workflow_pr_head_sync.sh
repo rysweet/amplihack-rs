@@ -39,11 +39,14 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 local_branch="$(git branch --show-current 2>/dev/null || :)"
 # #1762: an alias (<B>--wt-<n> tracking origin/<B>) syncs with origin/<B>.
-branch="$(bash "$here/workflow_remote_branch.sh" . 2>/dev/null)" || branch="$local_branch"
 if [ -z "$local_branch" ]; then
   echo "WARNING: workflow_pr_head_sync: detached HEAD; nothing to sync (#1714)" >&2
   exit 0
 fi
+branch="$(bash "$here/workflow_remote_branch.sh" .)" || {
+  echo "WARNING: workflow_pr_head_sync: workflow_remote_branch.sh is missing or failed; nothing to sync (#1762)" >&2
+  exit 0
+}
 
 bound=""
 ! command -v timeout >/dev/null 2>&1 || bound="timeout 60"

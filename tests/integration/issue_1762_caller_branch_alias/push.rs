@@ -27,6 +27,18 @@ fn alias_with_work(fx: &Fx, push_default: Option<&str>) -> PathBuf {
 
 /// Run `recipe`'s step `id` in `wt` with worktree_setup naming `branch_name`.
 fn run_step(fx: &Fx, recipe: &str, id: &str, wt: &Path, branch_name: &str) -> Run {
+    run_step_in(fx, recipe, id, wt, branch_name, None)
+}
+
+/// [`run_step`], with `AMPLIHACK_HOME` set to `home` when one is given.
+fn run_step_in(
+    fx: &Fx,
+    recipe: &str,
+    id: &str,
+    wt: &Path,
+    branch_name: &str,
+    home: Option<&Path>,
+) -> Run {
     let setup = json!({
         "worktree_path": wt.to_str().unwrap(),
         "branch_name": branch_name,
@@ -42,6 +54,9 @@ fn run_step(fx: &Fx, recipe: &str, id: &str, wt: &Path, branch_name: &str) -> Ru
         .env("TASK_DESCRIPTION", "fix the fixture branch for issue 1762")
         .env("ISSUE_NUMBER", "1762")
         .env("REMOTE_HOST_TYPE", "github");
+    if let Some(home) = home {
+        command.env("AMPLIHACK_HOME", home);
+    }
     run(&mut command)
 }
 
@@ -146,6 +161,38 @@ fn push_fallback_keeps_alias_mapping() {
 
     assert_eq!(run.code, Some(0), "{}", run.describe());
     assert_published_to_remote_branch(&fx, &wt, &run, "step 18c -u fallback");
+}
+
+/// A bundle without the resolver stops every push step before it pushes. A
+/// fallback to the local name would push the alias: here push.default is
+/// `current` and origin/<B> is missing locally, so even the `-u` fallbacks
+/// would name the alias.
+#[test]
+fn missing_resolver_stops_push_steps() {
+    for (recipe, id) in [
+        ("workflow-publish", "step-15-commit-push"),
+        ("workflow-pr-review", "step-18c-push-feedback-changes"),
+        ("workflow-finalize", "step-20b-push-cleanup"),
+    ] {
+        let fx = Fx::new();
+        let wt = alias_with_work(&fx, Some("current"));
+        fx.git(
+            &fx.caller,
+            &["update-ref", "-d", &format!("refs/remotes/origin/{BRANCH}")],
+        );
+        let home = fx.bundle_without(RESOLVER);
+        let before = fx.origin_refs();
+
+        let run = run_step_in(&fx, recipe, id, &wt, BRANCH, Some(&home));
+
+        assert_ne!(run.code, Some(0), "{id}\n{}", run.describe());
+        assert!(
+            run.stderr_line_with(&[RESOLVER]).is_some(),
+            "{id}: stderr names the missing resolver\n{}",
+            run.describe()
+        );
+        assert_eq!(fx.origin_refs(), before, "{id}: nothing may reach origin");
+    }
 }
 
 #[test]

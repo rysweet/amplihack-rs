@@ -21,8 +21,9 @@
 # It only reads (`symbolic-ref`, `rev-parse`, `config --get`). Exit status is
 # 0, or 2 on a usage error.
 #
-# Callers fall back to the local branch when this tool is missing:
-#   rb="$(bash "$R" "$dir" 2>/dev/null)" || rb="$(git -C "$dir" branch --show-current 2>/dev/null || true)"
+# Callers treat a missing or failing tool as an error, never as the local
+# branch, which from an alias worktree would push or look up <B>--wt-<n>:
+#   rb="$(bash "$R" "$dir")" || exit 2
 
 set -euo pipefail
 # S7: an inherited repository, work tree or index must not redirect the reads.

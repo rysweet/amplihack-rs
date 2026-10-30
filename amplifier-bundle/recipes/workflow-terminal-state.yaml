@@ -311,7 +311,7 @@ steps:
       git rev-parse --is-inside-work-tree >/dev/null 2>&1 || fail_terminal_state "FAILED_INVALID_INPUT" "workflow-terminal-state requires a git repo at target checkout; either git init or rerun from a checkout"
 
       # #1762: an alias worktree (<B>--wt-<n> tracking origin/<B>) is on <B>.
-      current_branch="$(bash "${GITHUB_REPO_HELPER%/*}/workflow_remote_branch.sh" . 2>/dev/null)" || current_branch="$(git branch --show-current 2>/dev/null || true)"
+      current_branch="$(bash "${GITHUB_REPO_HELPER%/*}/workflow_remote_branch.sh" .)" || fail_terminal_state "FAILED_INVALID_INPUT" "workflow_remote_branch.sh is missing or failed beside $GITHUB_REPO_HELPER (#1762)"
       if [ -z "$BRANCH_INPUT" ] || [ "$BRANCH_INPUT" = "''" ]; then
         BRANCH_INPUT="$current_branch"
       fi

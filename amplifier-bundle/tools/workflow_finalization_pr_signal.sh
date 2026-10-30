@@ -160,7 +160,8 @@ _finalization_open_pr_signal_in() {
   case "$branch" in ''|main|master|HEAD|-*) _finalization_no_signal "run branch is empty or a default branch"; return 1 ;; esac
   git check-ref-format "refs/heads/$branch" >/dev/null 2>&1 \
     || { _finalization_no_signal "run branch is not a valid branch name"; return 1; }
-  live="$(bash "$_finalization_pr_signal_remote_branch" "$dir" 2>/dev/null)" || live="$(git -C "$dir" branch --show-current 2>/dev/null || :)"
+  live="$(bash "$_finalization_pr_signal_remote_branch" "$dir")" \
+    || { _finalization_no_signal "workflow_remote_branch.sh is missing or failed (#1762)"; return 1; }
   if [ -n "$live" ] && [ "$live" != "$branch" ]; then
     _finalization_no_signal "run branch does not match the checked-out branch"
     return 1

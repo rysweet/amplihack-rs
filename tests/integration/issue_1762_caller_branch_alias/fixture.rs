@@ -486,9 +486,9 @@ impl Fx {
         run(&mut command)
     }
 
-    /// An `AMPLIHACK_HOME` whose tools are this worktree's, except that the
-    /// planner is replaced by `planner_body`.
-    pub fn bundle_with_planner(&self, planner_body: &str) -> PathBuf {
+    /// An `AMPLIHACK_HOME` holding a copy of this worktree's top-level tools;
+    /// returns the home and its tools directory.
+    fn bundle_copy(&self) -> (PathBuf, PathBuf) {
         let home = self.root.join("stub-bundle");
         let tools = home.join("amplifier-bundle/tools");
         fs::create_dir_all(&tools).expect("stub tools dir");
@@ -499,7 +499,21 @@ impl Fx {
                 fs::copy(path, tools.join(entry.file_name())).expect("copy tool");
             }
         }
+        (home, tools)
+    }
+
+    /// An `AMPLIHACK_HOME` whose tools are this worktree's, except that the
+    /// planner is replaced by `planner_body`.
+    pub fn bundle_with_planner(&self, planner_body: &str) -> PathBuf {
+        let (home, tools) = self.bundle_copy();
         write_exec(&tools.join(PLANNER), planner_body);
+        home
+    }
+
+    /// An `AMPLIHACK_HOME` whose tools are this worktree's, without `name`.
+    pub fn bundle_without(&self, name: &str) -> PathBuf {
+        let (home, tools) = self.bundle_copy();
+        fs::remove_file(tools.join(name)).expect("remove tool from stub bundle");
         home
     }
 
