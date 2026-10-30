@@ -83,3 +83,90 @@ fn docs_say_a_failed_probe_is_unknown_not_one_hundred_percent() {
         assert!(doc.contains("unknown"), "{doc_name} does not say unknown");
     }
 }
+
+// ---------------------------------------------------------------------------
+// The usage request (`get_usage`), its method variable and the rotator's
+// warnings. Each check names the constant or source the docs quote, so the
+// docs cannot describe a probe the code does not have.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reference_quotes_the_request_line_and_argv_from_the_code() {
+    use super::usage_request::{ARGS, REQUEST_ID, REQUEST_LINE};
+    assert!(
+        REFERENCE.contains(REQUEST_LINE),
+        "the reference does not quote REQUEST_LINE"
+    );
+    let argv = format!("claude {}", ARGS.join(" "));
+    assert!(REFERENCE.contains(&argv), "missing argv: {argv}");
+    assert!(REFERENCE.contains(&format!("`{REQUEST_ID}`")));
+    // C1: the answer nesting; C2: where the usage-credits flag is.
+    for path in [
+        "response.request_id",
+        "response.subtype",
+        "response.response",
+        "rate_limits.extra_usage",
+    ] {
+        assert!(
+            REFERENCE.contains(path),
+            "the reference does not name {path}"
+        );
+    }
+}
+
+#[test]
+fn reference_gives_the_method_row_and_the_resolvers_warning() {
+    use super::probe_limits::{PROBE_ENV, ProbeMode, probe_mode};
+    let row = format!("| `{PROBE_ENV}` | `auto`, `text` | `auto` |");
+    assert!(REFERENCE.contains(&row), "missing: {row}");
+    let (mode, w) = probe_mode(Some(std::ffi::OsStr::new("Text")));
+    assert_eq!(mode, ProbeMode::Auto);
+    let w = w.expect("\"Text\" warns");
+    assert!(REFERENCE.contains(&w), "method warning drifted: {w}");
+}
+
+#[test]
+fn the_method_variable_is_documented_where_it_applies() {
+    use super::probe_limits::PROBE_ENV;
+    let row = ENV_VARS
+        .lines()
+        .find(|l| l.starts_with(&format!("| `{PROBE_ENV}`")))
+        .expect("amplihack-env-vars.md has a row for the method variable");
+    assert!(row.contains("profile-command.md#probe-method"), "{row}");
+    let compare = HOWTO
+        .split("### Compare the two probe methods")
+        .nth(1)
+        .expect("the profiles how-to has the compare section");
+    assert!(compare.contains(&format!("{PROBE_ENV}=text")));
+    assert!(ROTATE_HOWTO.contains(PROBE_ENV));
+}
+
+#[test]
+fn docs_say_overflow_profiles_are_probed_with_usage_only() {
+    assert!(REFERENCE.contains("Profiles marked as overflow are probed with `/usage` only."));
+    // The code: probe_profile, the one place every profile is probed from,
+    // reads the overflow marks and uses Text for them.
+    let src = include_str!("usage_cmd.rs");
+    assert!(src.contains("overflow_names(store.root()).contains(name)"));
+}
+
+#[test]
+fn reference_quotes_the_rotators_probe_warnings() {
+    let src = include_str!("rotate/measure.rs");
+    for (code, doc) in [
+        (
+            "warning: rotate: probe of {who} timed out",
+            "warning: rotate: probe of <name> timed out",
+        ),
+        (
+            "warning: rotate: probe of {who} failed: {why}",
+            "warning: rotate: probe of <name> failed: <reason>",
+        ),
+    ] {
+        assert!(src.contains(code), "measure.rs no longer prints {code:?}");
+        assert!(
+            REFERENCE.contains(doc),
+            "the reference does not quote {doc:?}"
+        );
+    }
+}

@@ -707,19 +707,30 @@ amplihack profile usage
 ```
 
 ```
-PROFILE   MARKS             STATE              SESSION  SESSION RESETS                        WEEK  WEEK RESETS
-review    -                 ok                 5%       Oct 16, 9pm (America/Los_Angeles)     10%   Oct 22, 2am (America/Los_Angeles)
-work      *                 ok                 20%      Oct 16, 7pm (America/Los_Angeles)     30%   Oct 22, 2am (America/Los_Angeles)
-team      -                 session_exhausted  100%     Oct 16, 4:50pm (America/Los_Angeles)  68%   Oct 22, 2am (America/Los_Angeles)
-scratch   -                 not_logged_in      -        -                                     -     -
+PROFILE   MARKS             STATE              SESSION  SESSION RESETS        WEEK  WEEK RESETS
+review    -                 ok                 5%       2026-10-17T04:00:00Z  10%   2026-10-22T09:00:00Z
+work      *                 ok                 20%      2026-10-17T02:00:00Z  30%   2026-10-22T09:00:00Z
+team      -                 session_exhausted  100%     2026-10-16T23:50:00Z  68%   2026-10-22T09:00:00Z
+scratch   -                 not_logged_in      -        -                     -     -
 ```
 
-amplihack runs `claude -p /usage` under every profile, a few at a time, with
-`CLAUDE_CONFIG_DIR` set to that profile, and reads the `Current session` and
-`Current week` lines. Checking does not appear to use quota, and an
-exhausted account still answers. The profiles with the most room come first. Exhausted ones
-follow, soonest back first, and the reset column says when. Profiles that
-could not be read come last. `*` marks the default.
+amplihack starts `claude` under every profile, a few at a time, with
+`CLAUDE_CONFIG_DIR` set to that profile, and asks it for the session and
+weekly figures with a `get_usage` request. amplihack runs
+`claude -p /usage` instead, and reads its `Current session` and
+`Current week` lines, when it cannot use the answer: for example when the
+profile is not logged in, the installed `claude` is too old to answer, or
+the account has usage credits turned on. `claude` does answer for such an
+account, but the answer cannot show a spend limit, so amplihack does not
+accept it. A profile marked as
+[overflow](claude-profile-rotation.md#use-usage-credits-when-every-plan-login-is-exhausted)
+is always read with `/usage`, without the request. Checking does not appear
+to use quota, and an exhausted account still answers. The profiles with the most room come first. Exhausted ones
+follow, soonest back first, and the reset column says when: an ISO 8601
+time as `claude` sent it (the times above are examples of the form), or
+Claude's own words (`Oct 16, 4:50pm (America/Los_Angeles)`) for a profile
+read with `/usage`. Profiles that could not be read come last. `*` marks the
+default.
 
 To check only some profiles, name them:
 
@@ -736,7 +747,7 @@ What the `STATE` column means:
 | `spend_limit` | Your organisation's spend limit was reached. |
 | `api_key` | An API-key profile, billed per token; its `SESSION` cell reads `api-key (billed per token)` and nothing is probed. Nothing to fix. See [API-key profiles and usage limits](#api-key-profiles-and-usage-limits). |
 | `not_logged_in` | `amplihack profile login <name>` |
-| `timeout` | Claude did not answer in time (120 seconds by default). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
+| `timeout` | Claude did not answer in time (120 seconds by default, for the `get_usage` request and any `/usage` fallback together). The usage is unknown, not exhausted. Try again, or see [Probes on a busy host](#probes-on-a-busy-host). |
 | `unparsed` | Claude printed something unexpected. Run with `--raw` to see it. |
 | `error` | The probe could not run (the profile directory was refused, or `claude` could not be started, read or waited for); the reason is printed on stderr. |
 
@@ -747,8 +758,11 @@ output amplihack does not recognise:
 amplihack profile usage --raw scratch
 ```
 
-`--raw` text can include your e-mail address or organisation name. Read it
-before you share it.
+`--raw` output can include your e-mail address, organisation name or
+subscription type. Read it before you share it. It shows everything
+`claude` printed in the attempt that gave the row: for a `get_usage` answer,
+every JSON line, starting with the one `claude` prints when it starts; for
+`/usage`, the text.
 
 For scripts, use `--json`. This picks the profile with the most capacity:
 
@@ -787,21 +801,80 @@ states. Like `profile run`, it is refused under Docker.
 
 ### Probes on a busy host
 
-Each probe can take a minute or more of CPU, because Claude reads every
-session transcript the profile can see. amplihack gives each probe 120
-seconds and runs between 2 and 4 at once, fewer when the host's load average
-is close to its number of CPUs. A profile in state `timeout` or `error`
-shows `-` for its percentages, and `--json` gives `null` for `session` and
-`week_all`; the usage is unknown, never 100%. To give probes longer or run
-fewer at once:
+Claude does not appear to read the session transcripts to answer the
+`get_usage` request. The `/usage` fallback reads every transcript the
+profile can see, which can take a minute or more of CPU on a busy host. So amplihack
+gives each profile's probe 120 seconds, for the request and any fallback
+together, and runs between 2 and 4 probes at once, fewer when the host's
+load average is close to its number of CPUs.
+
+A profile in state `timeout` or `error` shows `-` for its percentages, and
+`--json` gives `null` for `session` and `week_all`. Its usage is unknown,
+never 100%, and it is not recorded for auto-switch. Check which profiles
+timed out:
+
+```bash
+amplihack profile usage --json | jq -r '.[] | select(.state == "timeout") | .profile'
+```
+
+```
+spare
+```
+
+If probes keep timing out, give them longer, run fewer at once, or both:
 
 ```bash
 AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS=300 AMPLIHACK_PROFILE_USAGE_PARALLEL=1 amplihack profile usage
 ```
 
+`AMPLIHACK_PROFILE_USAGE_TIMEOUT_SECS` takes `1` to `600` seconds and
+`AMPLIHACK_PROFILE_USAGE_PARALLEL` takes `1` to `16`. An invalid value prints
+one warning and the default is used.
+
 The [rotator](claude-profile-rotation.md#when-the-host-is-heavily-loaded)
-uses the same two variables. The limits and the formula are in the
+uses the same variables. The limits and the formula are in the
 [reference](../reference/profile-command.md#probe-parallelism).
+
+### Compare the two probe methods
+
+`get_usage` is an interface Claude Code marks as experimental. To check that
+it gives the same figures as `/usage` for your logins, run both methods one
+after the other and compare the percentages. `/usage` prints whole
+percentages and `get_usage` can send decimals, so this rounds both to whole
+numbers before comparing:
+
+```bash
+q='def whole: if type == "number" then round else . end;
+  .[] | {profile, state, session: (.session.used_percentage | whole), week: (.week_all.used_percentage | whole)}'
+AMPLIHACK_PROFILE_USAGE_PROBE=text amplihack profile usage --json | jq -c "$q" | sort > ~/usage-text.jsonl
+amplihack profile usage --json | jq -c "$q" | sort > ~/usage-auto.jsonl
+diff ~/usage-text.jsonl ~/usage-auto.jsonl && echo same
+```
+
+```
+same
+```
+
+Run them one after the other, not at once, so they do not compete for the
+host. A percentage can still move between the two runs if a session is
+working, and a difference of one point can still be rounding, for example
+`20.5` from `get_usage` against `20%` from `/usage`. Resets are not
+compared: they differ in form, an ISO 8601 time from `get_usage` against
+Claude's own words from `/usage`.
+
+If the figures disagree, or `get_usage` stops working after a Claude Code
+update, use `/usage` alone until the problem is fixed:
+
+```bash
+export AMPLIHACK_PROFILE_USAGE_PROBE=text
+```
+
+`AMPLIHACK_PROFILE_USAGE_PROBE` takes `auto` (the default) or `text`,
+exactly as written. Any other value prints a warning and uses `auto`. With
+`text`, every probe pays the transcript scan, so on a busy host also see
+[Probes on a busy host](#probes-on-a-busy-host). A running rotator keeps the
+value it started with; restart it as described in
+[When the host is heavily loaded](claude-profile-rotation.md#when-the-host-is-heavily-loaded).
 
 ### A profile shows `live in ~/.claude`
 
