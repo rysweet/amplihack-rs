@@ -19,11 +19,12 @@ use crate::commands::profile::auto_switch::kit::{Lock, State, now, recover_auto_
 use crate::commands::profile::name::ProfileName;
 
 pub enum Prelude {
-    /// Recovered and identified, the lock still held.
+    /// Recovered and identified, the lock still held. The snapshot is boxed
+    /// to keep the variants close in size.
     Ready {
         lock: Lock,
         state: State,
-        first: Snap,
+        first: Box<Snap>,
     },
     LockBusy,
     AutoSwitchInconsistent,
@@ -88,6 +89,7 @@ pub fn locked_prelude(
         let live = live_name(&first.live).cloned();
         return Ok((out, Prelude::LiveUnusable { kind, live, line }));
     }
+    let first = Box::new(first);
     Ok((out, Prelude::Ready { lock, state, first }))
 }
 

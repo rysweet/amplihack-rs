@@ -9,7 +9,7 @@ use super::ledger::{
     active_blocks, prune_blocks,
 };
 use super::log::{Sink, msg};
-use super::observe::Snap;
+use super::observe::{Snap, live_name};
 use super::overflow::Tag;
 use crate::commands::profile::ProfileError;
 use crate::commands::profile::auto_switch::kit::{Rotated, capacity_from_rotation};
@@ -199,11 +199,13 @@ pub fn log_ignored(out: &mut Sink, snap: &Snap, t: i64) {
 
 /// The ALERT key kind and line for an alerted cycle: the blocked API key
 /// with nowhere to go (issue #1700; it stays, with no swap), else no
-/// capacity. `reason` gives the block's reason, read only when needed.
+/// capacity, which counts the failed and exhausted readings in `others`.
+/// `reason` gives the block's reason, read only when needed.
 pub fn alert_line(
     snap: &Snap,
     tag: Option<Tag>,
     live: &Reading,
+    others: &[(ProfileName, Reading)],
     reason: impl FnOnce() -> String,
 ) -> (&'static str, String) {
     match &snap.live {
@@ -211,11 +213,11 @@ pub fn alert_line(
             ("platform-blocked", msg::alert_platform_stuck(&reason(), n))
         }
         id => {
-            let name = match id {
-                LiveId::Known(n) | LiveId::HandChanged(n) => n.as_str(),
-                _ => "-",
-            };
-            ("no-capacity", msg::alert_no_capacity_for(name, live))
+            let name = live_name(id).map_or("-", ProfileName::as_str);
+            (
+                "no-capacity",
+                msg::alert_no_capacity_for(name, live, others),
+            )
         }
     }
 }

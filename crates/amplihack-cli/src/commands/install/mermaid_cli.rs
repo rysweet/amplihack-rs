@@ -143,32 +143,26 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[test]
     fn version_probe_is_bounded_for_hanging_binaries() {
-        let _guard = crate::test_support::home_env_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The fake runs by absolute path, so the test never changes the
+        // process-wide PATH that parallel tests resolve programs from. It
+        // sleeps far longer than the bound asserted below, and the bound is
+        // far above the probe's 500 ms timeout plus tree termination, so the
+        // test proves the probe gives up without depending on host speed
+        // (#1765).
         let temp = tempfile::tempdir().unwrap();
         let fake_bin = temp.path().join("mmdc");
-        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 2\nexit 0\n").unwrap();
+        std::fs::write(&fake_bin, "#!/bin/sh\n/bin/sleep 60\nexit 0\n").unwrap();
         let mut perms = std::fs::metadata(&fake_bin).unwrap().permissions();
         std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
         std::fs::set_permissions(&fake_bin, perms).unwrap();
 
-        let previous_path = std::env::var_os("PATH");
-        unsafe {
-            std::env::set_var("PATH", temp.path());
-        }
-
         let started = std::time::Instant::now();
-        let result = version_probe_succeeds("mmdc");
-
-        match previous_path {
-            Some(value) => unsafe { std::env::set_var("PATH", value) },
-            None => unsafe { std::env::remove_var("PATH") },
-        }
+        let result = version_probe_succeeds(fake_bin.to_str().unwrap());
+        let elapsed = started.elapsed();
 
         assert!(
-            started.elapsed() < std::time::Duration::from_secs(1),
-            "version probes must not hang on a stuck binary"
+            elapsed < std::time::Duration::from_secs(30),
+            "version probes must not hang on a stuck binary; took {elapsed:?}"
         );
         assert!(!result, "timed-out version probes must fail closed");
     }
