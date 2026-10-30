@@ -1000,6 +1000,9 @@ mod tests {
         let result = run_provider_command_with_timeout(cmd, Duration::from_millis(500));
         let elapsed = started.elapsed();
 
+        // The fake provider sleeps 60 s and the timeout is 500 ms, so 30 s
+        // separates an enforced timeout from none while leaving room for a
+        // descheduled poll thread on a loaded host.
         assert!(
             elapsed < Duration::from_secs(30),
             "provider command helper must enforce an explicit timeout, elapsed {elapsed:?}"

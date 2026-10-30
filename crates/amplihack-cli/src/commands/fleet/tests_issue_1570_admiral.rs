@@ -35,6 +35,7 @@ impl StubAzlin {
         fs::write(out.join("stage1_out"), stage1_stdout).unwrap();
         let script = format!(
             r#"#!/bin/sh
+[ "$1" = __probe ] && exit 0
 out='{out}'
 n=$(/bin/cat "$out/count" 2>/dev/null || echo 0); n=$((n+1)); printf '%s' "$n" > "$out/count"
 printf '%s\0' "$@" > "$out/call$n.argv"
@@ -51,6 +52,7 @@ esac
         let azlin = out.join("azlin");
         fs::write(&azlin, script).unwrap();
         fs::set_permissions(&azlin, fs::Permissions::from_mode(0o755)).unwrap();
+        wait_until_executable(&azlin);
         Self { temp }
     }
 
@@ -75,6 +77,30 @@ esac
 
     fn stdin(&self, n: usize) -> Vec<u8> {
         fs::read(self.temp.path().join(format!("call{n}.stdin"))).unwrap_or_default()
+    }
+}
+
+/// Waits until the freshly written stub can be executed.
+///
+/// Another test thread's fork can inherit the stub's write descriptor until
+/// its own exec closes it, and an exec in that window fails with ETXTBSY.
+/// `start_agent` retries a busy executable for only 250 ms, which a loaded
+/// host can exceed during `cargo test --workspace`. Once one exec succeeds no
+/// process holds a write descriptor, so the calls under test cannot hit it.
+/// The `__probe` argument exits before the stub records a call.
+fn wait_until_executable(path: &std::path::Path) {
+    let mut attempts = 0;
+    loop {
+        match Command::new(path).arg("__probe").status() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 250 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => {
+                assert!(r.unwrap().success(), "stub probe failed");
+                return;
+            }
+        }
     }
 }
 
