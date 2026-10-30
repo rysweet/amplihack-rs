@@ -468,11 +468,13 @@ fn git_under_script(server: &AlwaysUnauthorised, remove: &[&str]) -> Ran {
     run_until(&mut script, PTY_DEADLINE)
 }
 
-/// The `rc=<n>` line the inner shell prints.
+/// The status in the `rc=<n>` line the inner shell prints. Git's prompt ends
+/// without a newline, so in the control the status follows it on the same
+/// line: `Username for '…': rc=124`.
 fn rc_line(stdout: &str) -> Option<i32> {
     stdout
         .lines()
-        .find_map(|line| line.trim().strip_prefix("rc=")?.parse().ok())
+        .find_map(|line| line.trim().rsplit_once("rc=")?.1.parse().ok())
 }
 
 /// `ran` must have finished by itself, well inside the inner `timeout`, with

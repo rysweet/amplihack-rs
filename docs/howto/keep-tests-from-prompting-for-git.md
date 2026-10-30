@@ -204,6 +204,7 @@ cargo test -p amplihack-git --all-features
 | The test | Do this |
 |----------|---------|
 | Starts the `amplihack` binary | Use `isolated(..)` unchanged. |
+| Starts it at a pseudo-terminal with rexpect's `spawn_command` | Set `.stdin(Stdio::inherit())` after `isolated(..)`. rexpect makes the pseudo-terminal stdin before `exec`, and the null stdin would replace it, so the binary would see no terminal. |
 | Runs git and keeps the test process's environment | Use `amplihack_git::command_in(dir)`. The child inherits the `[env]` values and the builder adds `GIT_TERMINAL_PROMPT=0`. |
 | Calls `env_clear()` on git, or on a script that runs git | Call `no_git_prompt` after `env_clear()`. |
 | Is a shell script | Add the exports and `exec </dev/null` at the top. |

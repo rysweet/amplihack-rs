@@ -68,7 +68,10 @@ pub const NO_GIT_PROMPT_ENV: [(&str, &str); 3] = [
 ///
 /// Call it after `env_clear()`, which drops both the values cargo's `[env]`
 /// table gave the test process and any `GIT_TERMINAL_PROMPT=0` an
-/// `amplihack_git` builder set. A later `.env()` or `.stdin()` call wins.
+/// `amplihack_git` builder set. A later `.env()` or `.stdin()` call wins. A
+/// test that hands the command to rexpect's `spawn_command` sets
+/// `.stdin(Stdio::inherit())` afterwards: rexpect makes its pseudo-terminal
+/// stdin before `exec`, and the null stdin would replace it.
 pub fn no_git_prompt(command: &mut Command) -> &mut Command {
     for (name, value) in NO_GIT_PROMPT_ENV {
         command.env(name, value);
