@@ -1570,7 +1570,11 @@ step15_field() {
 expect_one_stdout_line() {
     expect_eq "$1: step-15 stdout is exactly one line" "$(grep -c . "$2/step.out" 2>/dev/null || true)" "1"
 }
-STEP15_ENV=(TASK_DESCRIPTION="add the widget" ISSUE_NUMBER=1671 REMOTE_HOST_TYPE=github VERSION_BUMP_CHANGE_CLASSIFICATION=MINOR)
+# Step-15 reads its change class only from RECIPE_VAR_version_bump (#1561), so
+# the fixture sets that name. Leaving it unset let a workflow's own step-15,
+# whose pre-push hook runs this test, hand in its PATCH class and turn the
+# expected 'feat:' title into 'fix:'.
+STEP15_ENV=(TASK_DESCRIPTION="add the widget" ISSUE_NUMBER=1671 REMOTE_HOST_TYPE=github RECIPE_VAR_version_bump='{"change_classification":"MINOR"}')
 
 # checkpoint_case <case-dir>: uncommitted work containing FORMAT_ME plus
 # artefacts the staging helper must leave out.
