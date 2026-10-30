@@ -3296,6 +3296,7 @@ fn render_tui_detail_view_shows_reasoner_notice_alongside_proposal() {
 #[test]
 fn run_tui_dry_run_surfaces_reasoner_api_key_failure_notice() {
     let dir = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
     let claude = dir.path().join("claude");
     write_executable(&azlin, "#!/bin/sh\nexit 0\n");
@@ -3333,13 +3334,24 @@ fn run_tui_dry_run_surfaces_reasoner_api_key_failure_notice() {
     let mut ui_state = FleetTuiUiState::default();
     ui_state.sync_to_state(&state);
 
-    // The backend is passed in rather than found through PATH, so the test
-    // does not change PATH or HOME for the test process (issue #1765).
-    let result = run_tui_dry_run_with(&azlin, &state, &mut ui_state, || {
-        Ok(NativeReasonerBackend::Claude(claude.clone(), || {
-            amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
-        }))
-    });
+    // The backend is passed in rather than found through PATH, and the
+    // `azlin` and `claude` children get the temporary HOME and no profile
+    // root on their own environment, so the test changes nothing for the
+    // test process and needs no env lock (issue #1765).
+    let result = run_tui_dry_run_with(
+        &azlin,
+        &state,
+        &mut ui_state,
+        || {
+            Ok(NativeReasonerBackend::Claude(claude.clone(), || {
+                amplihack_utils::root_sandbox::SkipPermissionsEnv::NotRoot
+            }))
+        },
+        &|cmd: &mut Command| {
+            cmd.env("HOME", home.path())
+                .env_remove(crate::commands::profile::ROOT_ENV);
+        },
+    );
 
     assert!(result.is_ok());
     assert_eq!(ui_state.tab, FleetTuiTab::Detail);
@@ -5263,9 +5275,6 @@ fn fleet_cli_commands_build_reasoners_through_cli_reasoner() {
 fn tui_dry_run_shows_the_root_sandbox_notice_in_the_panel() {
     use amplihack_utils::root_sandbox::SkipPermissionsEnv;
 
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -5299,19 +5308,28 @@ fn tui_dry_run_shows_the_root_sandbox_notice_in_the_panel() {
     let mut ui_state = FleetTuiUiState::default();
     ui_state.sync_to_state(&state);
 
-    let previous_home = env::var_os("HOME");
-    unsafe { env::set_var("HOME", home.path()) };
     // A reasoner binary that does not exist: the proposal falls back to
-    // heuristics, and the panel must still carry the notice.
-    let result = run_tui_dry_run_with(&azlin, &state, &mut ui_state, || {
-        Ok(NativeReasonerBackend::Claude(
-            dir.path().join("missing-claude"),
-            || SkipPermissionsEnv::SetSandbox {
-                signal: "/.dockerenv",
-            },
-        ))
-    });
-    restore_var("HOME", previous_home);
+    // heuristics, and the panel must still carry the notice. The `azlin`
+    // child gets the temporary HOME and no profile root on its own
+    // environment, so the test changes nothing for the test process and
+    // needs no env lock (issue #1765).
+    let result = run_tui_dry_run_with(
+        &azlin,
+        &state,
+        &mut ui_state,
+        || {
+            Ok(NativeReasonerBackend::Claude(
+                dir.path().join("missing-claude"),
+                || SkipPermissionsEnv::SetSandbox {
+                    signal: "/.dockerenv",
+                },
+            ))
+        },
+        &|cmd: &mut Command| {
+            cmd.env("HOME", home.path())
+                .env_remove(crate::commands::profile::ROOT_ENV);
+        },
+    );
 
     result.unwrap();
     let panel = ui_state
