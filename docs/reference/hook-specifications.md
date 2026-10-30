@@ -502,6 +502,10 @@ backtick in the body, so those are checked as commands.
   stage is not input to the tmux: in
   `tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux kill-session -t`, the
   `tmux ls` reads nothing the `xargs` stage holds, and the command is allowed.
+  A pipeline broken across lines after `|` or `|&` is still one pipeline, as
+  in POSIX (`pipe_sequence '|' linebreak command`) and bash, including when a
+  comment or blank lines follow the `|`: `echo kill-server |`, a newline, then
+  `tmux -C attach` is denied like the one-line form.
 - An unscoped tmux invocation whose subcommand word contains `$` or a
   backtick denies, because the shell decides the subcommand at run time. The
   same rule applies to the words the guard inspects after an unknown global

@@ -1104,6 +1104,11 @@ const PIPELINE_ORDER_ALLOWED: &[&str] = &[
     "tmux ls 2>/dev/null | grep -c kill-session",
     "tmux -C attach | grep kill-server",
     "tmux ls -F '#S' | grep '^amp-' | while read -r s; do tmux kill-session -t \"$s\"; done",
+    // The same targeted kills broken across lines after each `|`, and a
+    // `kill-s` word in a pipeline that a newline has already ended.
+    "tmux ls -F '#S' |\n  grep '^amp-' |\n  xargs -r -n1 tmux kill-session -t",
+    "echo kill-server\ntmux -C attach </dev/null",
+    "echo kill-server | cat\ntmux -C attach </dev/null",
 ];
 
 const PIPELINE_ORDER_DENIED: &[&str] = &[
@@ -1116,6 +1121,16 @@ const PIPELINE_ORDER_DENIED: &[&str] = &[
     "cat <<END | tmux -C attach\nkill-server\nEND",
     "tmux -C attach <<END\nkill-server\nEND",
     "tmux -C attach <<< kill-server",
+    // Crusty round 4: a pipeline broken across lines after `|` is still one
+    // pipeline (POSIX `pipe_sequence '|' linebreak command`).
+    "echo kill-server |\ntmux -C attach",
+    "printf 'ls\\nkill-server\\n' |\n  tmux -C attach",
+    "echo kill-server | # feed it\ntmux -C attach",
+    "echo kill-server |&\ntmux -C attach",
+    "echo kill-server |\n\n  # feed it\n\ntmux -C attach",
+    "echo kill-server | \\\n\ntmux -C attach",
+    "echo kill-server \\\n| tmux -C attach",
+    "cat <<END |\nkill-server\nEND\ntmux -C attach",
 ];
 
 #[test]

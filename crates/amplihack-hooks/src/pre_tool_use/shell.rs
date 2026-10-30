@@ -48,7 +48,8 @@ pub(super) struct SimpleCommand {
     /// For each body in `heredocs`, whether its delimiter was unquoted, so
     /// the shell expands `$(…)` and backticks inside it.
     pub(super) heredoc_expands: Vec<bool>,
-    /// Commands joined by a lone `|` (or `|&`) share an index; every other
+    /// Commands joined by a lone `|` (or `|&`) share an index, also when
+    /// newlines, comments or blank lines follow the `|`; every other
     /// separator starts a new one.
     pub(super) pipeline: usize,
 }
@@ -112,7 +113,8 @@ pub(super) fn basename(word: &str) -> &str {
 /// Splits `text` into simple commands, each a list of unquoted words.
 ///
 /// Commands end at `;`, `&`, `|`, `(`, `)` and newlines outside quotes; the
-/// `&` of a redirection (`2>&1`, `&>`) does not end one. Quotes are removed
+/// `&` of a redirection (`2>&1`, `&>`) does not end one, and a newline with
+/// no command before it (as after `a |`) ends nothing. Quotes are removed
 /// from words, and backslashes as the shell removes them: inside double
 /// quotes only before `$`, a backtick, `"`, `\` or a newline. `$'…'` escapes
 /// are decoded.
@@ -233,12 +235,17 @@ pub(super) fn tokenise(text: &str) -> Parsed {
                 }
             }
             '\\' => {
-                in_word = true;
+                // A backslash-newline is removed before the line is split
+                // into words, so it neither starts nor ends a word: `a | \`
+                // and a blank line still leave the pipeline open.
                 if let Some(&next) = chars.get(i + 1) {
                     if next != '\n' {
+                        in_word = true;
                         word.push(next);
                     }
                     i += 1;
+                } else {
+                    in_word = true;
                 }
             }
             '$' if chars.get(i + 1) == Some(&'(') => {
@@ -322,9 +329,25 @@ pub(super) fn tokenise(text: &str) -> Parsed {
             }
             '\n' => {
                 end_word(&mut word, &mut in_word, &mut target, &mut out);
-                end_command(&mut target, &mut complete);
-                pipeline += 1;
-                new_command(&mut out, pipeline);
+                // A newline ends the command in progress only when there is
+                // one. When nothing has been read since the last separator
+                // (no word, no redirection, no heredoc of its own), the next
+                // line continues what that separator began. After a lone `|`
+                // or `|&` that keeps the next command in the same pipeline,
+                // as POSIX's `pipe_sequence '|' linebreak command` and bash
+                // do, through comments and blank lines. After any other
+                // separator the empty command already has a pipeline of its
+                // own, so nothing changes.
+                let owner = out.len() - 1;
+                let empty = !target
+                    && out[owner].words.is_empty()
+                    && out[owner].redirects.is_empty()
+                    && !heredocs.iter().any(|h| h.3 == owner);
+                if !empty {
+                    end_command(&mut target, &mut complete);
+                    pipeline += 1;
+                    new_command(&mut out, pipeline);
+                }
                 let pending = std::mem::take(&mut heredocs);
                 let specs = pending.iter().map(|(d, s, _, _)| (d.clone(), *s)).collect();
                 let bodies = read_heredoc_bodies(&chars, &mut i, specs);

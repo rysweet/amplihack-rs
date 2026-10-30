@@ -57,7 +57,8 @@
 //! `kill-s` token, or a heredoc in the pipeline mentions one. Stdin flows left
 //! to right, so in `tmux ls -F '#S' | grep '^amp-' | xargs -r -n1 tmux
 //! kill-session -t` the `tmux ls` reads nothing the `xargs` stage holds, and
-//! the targeted kill is allowed.
+//! the targeted kill is allowed. A pipeline broken across lines after `|` is
+//! one pipeline; the tokeniser keeps its stages together.
 //!
 //! Layers 2 and 3 exempt data-only commands such as
 //! `git commit -m "… tmux kill-server …"`. `git` is data-only only with a

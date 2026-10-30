@@ -75,6 +75,74 @@ fn a_lone_pipe_keeps_the_pipeline_and_other_separators_start_a_new_one() {
     for (i, pair) in p.windows(2).enumerate().skip(2) {
         assert_ne!(pair[0], pair[1], "separator {i} must start a new pipeline");
     }
+
+    // POSIX `pipe_sequence '|' linebreak command`: a newline after a lone
+    // `|` or `|&`, with or without a comment or blank lines before it, does
+    // not end the pipeline (crusty review of #1735, round 4).
+    for text in [
+        "a |\nb",
+        "a |&\nb",
+        "a | # c\nb",
+        "a |\n\n  # c\n\nb",
+        "a | \\\n\nb",
+        "a\\\n| b",
+    ] {
+        let cmds = parse(text);
+        assert_eq!(cmds.len(), 2, "{text:?}: {:?}", words(text));
+        assert_eq!(cmds[0].words, owned(&["a"]), "{text:?}");
+        assert_eq!(cmds[1].words, owned(&["b"]), "{text:?}");
+        assert_eq!(cmds[0].pipeline, cmds[1].pipeline, "{text:?}");
+    }
+    // Any other separator before the newline still starts a new pipeline.
+    for text in ["a ||\nb", "a &&\nb", "a;\nb", "a &\nb", "a\nb", "a # |\nb"] {
+        let cmds = parse(text);
+        assert_eq!(cmds.len(), 2, "{text:?}: {:?}", words(text));
+        assert_ne!(cmds[0].pipeline, cmds[1].pipeline, "{text:?}");
+    }
+}
+
+/// A heredoc whose `<<` comes before a trailing `|` has its body read at the
+/// newline, and the command after the body is still the next stage.
+#[test]
+fn a_heredoc_before_a_trailing_pipe_keeps_the_pipeline() {
+    let cmds = parse("cat <<EOF |\nbody\nEOF\nsh");
+    assert_eq!(cmds.len(), 2, "{:?}", words("cat <<EOF |\nbody\nEOF\nsh"));
+    assert_eq!(cmds[0].words, owned(&["cat"]));
+    assert_eq!(cmds[0].heredocs.len(), 1);
+    assert!(cmds[0].heredocs[0].contains("body"));
+    assert_eq!(cmds[1].words, owned(&["sh"]));
+    assert!(cmds[1].heredocs.is_empty());
+    assert_eq!(cmds[0].pipeline, cmds[1].pipeline);
+}
+
+/// A stage made only of a redirection or a heredoc is a command, so the
+/// newline after it ends the pipeline, as in bash. (A stage with only a
+/// redirection has no words and is not kept in the output.)
+#[test]
+fn a_redirection_only_stage_ends_the_pipeline_at_a_newline() {
+    let cmds = parse("a | >out\nb");
+    assert_eq!(cmds.len(), 2, "{:?}", words("a | >out\nb"));
+    assert_eq!(cmds[0].words, owned(&["a"]));
+    assert_eq!(cmds[1].words, owned(&["b"]));
+    assert_ne!(cmds[0].pipeline, cmds[1].pipeline);
+
+    let cmds = parse("a | <<EOF\nbody\nEOF\nb");
+    assert_eq!(cmds.len(), 3, "{:?}", words("a | <<EOF\nbody\nEOF\nb"));
+    assert_eq!(cmds[1].heredocs.len(), 1);
+    assert!(cmds[1].heredocs[0].contains("body"));
+    assert_eq!(cmds[0].pipeline, cmds[1].pipeline);
+    assert_eq!(cmds[2].words, owned(&["b"]));
+    assert_ne!(cmds[1].pipeline, cmds[2].pipeline);
+}
+
+/// A backslash-newline is removed before words are split, so it adds no
+/// empty word between the words around it.
+#[test]
+fn a_line_continuation_between_words_adds_no_word() {
+    assert_eq!(
+        words("sudo \\\n  tmux \\\n  kill-server"),
+        vec![owned(&["sudo", "tmux", "kill-server"])]
+    );
 }
 
 #[test]
