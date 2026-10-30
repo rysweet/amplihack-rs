@@ -22,6 +22,24 @@ fn fake_claude(dir: &std::path::Path) -> BinaryInfo {
     }
 }
 
+/// Runs `cmd`, a script this test has just written, to completion.
+///
+/// Another test thread's fork can inherit the script's write descriptor until
+/// its own exec closes it, and an exec in that window fails with ETXTBSY. The
+/// window is brief but grows on a loaded host, so retry for up to 5 s.
+fn output_of_fresh_script(cmd: &mut std::process::Command) -> std::process::Output {
+    let mut attempts = 0;
+    loop {
+        match cmd.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 250 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            r => break r.unwrap(),
+        }
+    }
+}
+
 fn setup() -> (tempfile::TempDir, ProfileStore, ProfileName, BinaryInfo) {
     let d = tempfile::tempdir().unwrap();
     let s = ProfileStore::new(d.path().join("root"));
@@ -53,19 +71,7 @@ fn run_forwards_args_literally_without_shell() {
         "$(id)".to_string(),
     ];
     let mut cmd = build_profile_command(&bin, &s, &name, &args).unwrap();
-    // `setup` has just written the fake `claude`. Another test thread's fork
-    // can inherit that write descriptor until its own exec closes it, and an
-    // exec in that window fails with ETXTBSY. The window is brief, so retry.
-    let mut attempts = 0;
-    let out = loop {
-        match cmd.output() {
-            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempts < 50 => {
-                attempts += 1;
-                std::thread::sleep(std::time::Duration::from_millis(20));
-            }
-            r => break r.unwrap(),
-        }
-    };
+    let out = output_of_fresh_script(&mut cmd);
     let text = String::from_utf8_lossy(&out.stdout);
     let want = s.resolve(&name).unwrap();
     assert!(text.contains(&format!("CFG={}", want.display())), "{text}");
@@ -230,7 +236,7 @@ fn profile_command_child_sees_the_pinned_name() {
     let mut cmd = with_root_env(None, || {
         build_profile_command(&bin, &s, &name, &[]).unwrap()
     });
-    let out = cmd.env_remove("NOT_A_VAR").output().unwrap();
+    let out = output_of_fresh_script(cmd.env_remove("NOT_A_VAR"));
     assert!(
         String::from_utf8_lossy(&out.stdout).contains("PIN=work\n"),
         "{}",
@@ -287,6 +293,6 @@ fn home_command_child_sees_no_config_dir() {
     };
     let mut cmd = build_home_command(&bin, &[]);
     cmd.env("CLAUDE_CONFIG_DIR_UNRELATED", "x");
-    let out = cmd.output().unwrap();
+    let out = output_of_fresh_script(&mut cmd);
     assert_eq!(String::from_utf8_lossy(&out.stdout), "DIR=<unset>\n");
 }

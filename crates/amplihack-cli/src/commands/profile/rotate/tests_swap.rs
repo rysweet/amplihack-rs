@@ -17,15 +17,34 @@
 use super::ledger::{Phase, RotateJournal, RotateState};
 use super::swap::{RecoverOutcome, Source, recover, swap};
 use crate::commands::profile::ProfileError;
+use crate::commands::profile::auto_switch::kit::{Lock, State};
 use crate::commands::profile::name::ProfileName;
 use crate::commands::profile::store::ProfileStore;
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 pub(super) const CREDS: &str = ".credentials.json";
 pub(super) const LOCK: &str = ".oauth_refresh.lock";
 pub(super) const NOW: i64 = 1_760_000_000;
+
+/// Takes the rotate state lock under `root` for a test that holds it while
+/// it calls the code under test.
+///
+/// It waits up to 10 s instead of not at all (#1774). While another test
+/// thread spawns a child process, the child has a copy of this process's
+/// descriptors until it reaches `exec`, including one for a lock file
+/// that this test opened and has since closed. `flock` belongs to the open
+/// file, so the lock stays held for that window, which grows on a loaded
+/// host. The waits under test are in the code the test calls, not here.
+pub(super) fn hold_state_lock(root: &Path) -> Lock {
+    State::new(root)
+        .unwrap()
+        .try_lock(Duration::from_secs(10))
+        .unwrap()
+        .expect("the test's own state lock was still held after 10 s")
+}
 
 pub(super) fn private(path: &Path, body: &str) {
     fs::create_dir_all(path.parent().unwrap()).unwrap();
