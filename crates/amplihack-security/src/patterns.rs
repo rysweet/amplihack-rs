@@ -5,6 +5,7 @@
 use once_cell::sync::Lazy;
 use regex::{Regex, RegexBuilder};
 use serde::{Deserialize, Serialize};
+use std::{borrow::Cow, ops::Range};
 
 /// Category of attack pattern.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -36,6 +37,8 @@ pub struct AttackPattern {
 enum PatternMatcher {
     Regex(regex::Regex),
     LengthThreshold(usize),
+    ToolContent(regex::Regex),
+    InstructionChain,
 }
 
 impl AttackPattern {
@@ -43,21 +46,22 @@ impl AttackPattern {
     pub fn matches(&self, text: &str) -> bool {
         match &self.matcher {
             PatternMatcher::Regex(re) => re.is_match(text),
+            PatternMatcher::ToolContent(re) => matches_tool_content(re, text),
+            PatternMatcher::InstructionChain => matches_instruction_chain(text),
             PatternMatcher::LengthThreshold(n) => text.len() >= *n,
         }
     }
 }
 
 fn re(pattern: &str) -> PatternMatcher {
-    match RegexBuilder::new(pattern).case_insensitive(true).build() {
-        Ok(r) => PatternMatcher::Regex(r),
-        Err(e) => {
-            // Log the bad pattern and fall back to a never-matching regex
-            // so the system degrades gracefully instead of panicking.
-            tracing::error!(pattern, error = %e, "invalid XPIA regex — pattern disabled");
-            PatternMatcher::Regex(Regex::new("(?:$^)").expect("never-matching fallback regex"))
-        }
-    }
+    PatternMatcher::Regex(compile_regex(pattern))
+}
+
+fn compile_regex(pattern: &str) -> Regex {
+    RegexBuilder::new(pattern)
+        .case_insensitive(true)
+        .build()
+        .unwrap_or_else(|error| panic!("invalid built-in XPIA regex {pattern:?}: {error}"))
 }
 
 /// Central repository of all XPIA attack patterns.
@@ -99,6 +103,432 @@ impl Default for XpiaPatterns {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn tool_content_re(pattern: &str) -> PatternMatcher {
+    PatternMatcher::ToolContent(compile_regex(pattern))
+}
+
+fn matches_tool_content(regex: &Regex, text: &str) -> bool {
+    // Generic adapters serialize parameters, while Bash and WebFetch pass raw
+    // strings. Decode actual JSON rather than guessing whether \\n is escaped.
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => matches_json_strings(regex, &value),
+        Err(_) => matches_command(regex, text), // Non-JSON content is ordinary raw input.
+    }
+}
+
+fn matches_json_strings(regex: &Regex, value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => matches_command(regex, text),
+        serde_json::Value::Array(values) => values
+            .iter()
+            .any(|value| matches_json_strings(regex, value)),
+        serde_json::Value::Object(fields) => fields
+            .iter()
+            .any(|(key, value)| matches_command(regex, key) || matches_json_strings(regex, value)),
+        _ => false,
+    }
+}
+
+fn matches_command(regex: &Regex, text: &str) -> bool {
+    if text.contains("\\\n") || text.contains("\\\r\n") {
+        regex.is_match(&text.replace("\\\r\n", "").replace("\\\n", ""))
+    } else {
+        regex.is_match(text)
+    }
+}
+
+fn matches_instruction_chain(text: &str) -> bool {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(value) => {
+            let mut instructions = String::new();
+            append_json_instructions(&value, &mut instructions);
+            CHAIN_PATTERNS.matches(&instructions)
+        }
+        Err(_) => CHAIN_PATTERNS.matches(text),
+    }
+}
+
+fn separate_instruction(instructions: &mut String) {
+    instructions.truncate(instructions.trim_end().len());
+    if let Some(last) = instructions.chars().next_back() {
+        if !matches!(last, '.' | '!' | '?' | ';' | ',' | ':') {
+            instructions.push(';');
+        }
+        instructions.push(' ');
+    }
+}
+
+fn append_json_instructions(value: &serde_json::Value, instructions: &mut String) {
+    match value {
+        serde_json::Value::String(text) => {
+            separate_instruction(instructions);
+            instructions.push_str(text);
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                append_json_instructions(value, instructions);
+            }
+        }
+        serde_json::Value::Object(fields) => {
+            for (key, value) in fields {
+                separate_instruction(instructions);
+                instructions.push_str(key);
+                instructions.push(':');
+                append_json_instructions(value, instructions);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn command_injection_pattern() -> PatternMatcher {
+    // Enumerate executable aliases rather than accepting arbitrary prefixes.
+    let command = r"(?:rm|rmdir|del|format|kill|killall|killall5|shutdown|reboot|wget|wget2|curl|nc|nc6|ncat|netcat)(?:\.exe)?|(?:nc|netcat)\.(?:openbsd|traditional)|format\.com";
+    // Unquoted IFS expansion separates words without literal whitespace. Match
+    // only the complete variable name; `$IFS_helper` is a different variable.
+    let field_separator = r"(?:\$\{IFS\}|\$IFS\b)";
+    // Quotes concatenated with a suffix are part of the executable token.
+    tool_content_re(&format!(
+        r#"(?:\||&&|\$\(|`|;|\n)(?:\s|{field_separator})*(?:{command})(?:""|'')*(?:$|[\s;|&()`<>]|{field_separator})"#
+    ))
+}
+
+/// Cached, independent rules for associating clauses and classifying actions.
+/// Construction compiles every rule so registry initialization cannot leave a
+/// dormant invalid regex in an infrequently exercised protection.
+struct ChainPatterns {
+    markers: Regex,
+    list_label: Regex,
+    prefix: Regex,
+    coordination: Regex,
+    rejection: Regex,
+    rejected_attempt: Regex,
+    negated_action: Regex,
+    correlative: Regex,
+    error_avoidance: Regex,
+    harmful: Regex,
+    access: Regex,
+    extraction: Regex,
+}
+
+static CHAIN_PATTERNS: Lazy<ChainPatterns> = Lazy::new(ChainPatterns::new);
+
+impl ChainPatterns {
+    fn new() -> Self {
+        let modifier =
+            r"(?:(?:all|any|some)(?:\s+of)?\s+)?(?:(?:a|an|the|their|your|our|his|her|its|my)\s+)?";
+        let secret = r"(?:credentials?|passwords?|secrets?|(?:api|private)[\s_-]+keys?|(?:api|access|session|auth|authentication|bearer|refresh)[\s_-]+tokens?)";
+        // A period inside a filename or a hyphenated fixture name does not end
+        // a target word. Keep this boundary distinct from sentence association.
+        let end = r#"(?:$|[\s,;:!?`"']|\.(?:\s|$))"#;
+        // Plain lexer/parser tokens are ambiguous. Collection requires an
+        // explicit credential target or a credential-bearing source; theft and
+        // exfiltration verbs themselves supply directed harmful context.
+        let sensitive_target = format!(
+            r"(?:unauthori[sz]ed|protected|private|confidential|restricted|production|victim(?:'s)?)\s+(?:accounts?|systems?|servers?|databases?|sessions?|vaults?|networks?|repositor(?:y|ies)){end}"
+        );
+        let hostile_method = format!(
+            r"(?:without\s+(?:permission|authori[sz]ation|consent)|(?:using|with)\s+{modifier}(?:stolen|compromised)\s+(?:{secret}|tokens?))\b"
+        );
+        let harmful = format!(
+            r"^(?:(?:steal|collect|harvest|dump|exfiltrate|leak|send|upload|transmit)\s+{modifier}{secret}{end}|(?:steal|harvest|dump|exfiltrate|leak|send|upload|transmit)\s+{modifier}tokens?{end}|collect\s+{modifier}tokens?\s+from\s+{modifier}(?:browser|session|account|vault|environment){end}|(?:exfiltrate|leak)\s+{modifier}(?:data|files){end}|(?:delete|destroy|wipe|erase)\s+{modifier}(?:files|backups|logs|database){end}|(?:disable|bypass|remove)\s+{modifier}(?:security|safety)\s+(?:protections?|checks?|guards?|filters?|validation|logging){end})"
+        );
+        Self {
+            // Require a delimiter after a marker: `secrets.then.rs` is a name,
+            // while the compact `credentials.Then, continue` contains a marker.
+            markers: compile_regex(
+                r"\b(step\s+[12]|first|second|then|after(?:\s+that)?|next|finally)\b(?:$|[\s,:-])",
+            ),
+            list_label: compile_regex(r"^\s*(?:[0-9]{1,3}[.)]\s*)?$"),
+            prefix: compile_regex(
+                r"^\s*[,:-]?\s*(?:(?:please|\w+ly|now|also|not\s+only|you\s+(?:should|must|will|can|need\s+to)|make\s+sure\s+to)\s+)*(?:use\s+(?:(?:a|an|the)\s+)?(?:browser|shell|terminal|script|tool|agent|command|program|access|session)\s+to\s+)?",
+            ),
+            coordination: compile_regex(r"(?:,\s*(?:(?:and|or|but)\s+)?|\b(?:and|or|but)\s+)"),
+            rejection: compile_regex(
+                r"^\s*(?:(?:should|must|will)\s+be|is|was)\s+(?:rejected|blocked|denied)\b",
+            ),
+            rejected_attempt: compile_regex(
+                r"^(?:[^,.!?;]*\b(?:that|which)\s+|(?:ensure|verify|check)\s+(?:that\s+)?(?:the\s+)?tests?\s+|(?:add|create|write)\s+(?:the\s+)?tests?\s+to\s+)?((?:reject|block|prevent)(?:s|ed|ing)?\s+(?:failed\s+)?attempts?\s+to)\b",
+            ),
+            negated_action: compile_regex(r"^(?:do\s+not|don't|never|not)\s+"),
+            correlative: compile_regex(r"^\s*not\s+only\b"),
+            // Avoiding permission errors describes successful operation, not
+            // operating without authority. Normalize only that complete phrase.
+            error_avoidance: compile_regex(
+                r"\bwithout\s+(?:permission|authori[sz]ation|consent)\s+errors?\b",
+            ),
+            harmful: compile_regex(&harmful),
+            // Unqualified access/extraction retains the original hostile chain.
+            // Qualified actions need a sensitive target, rather than matching
+            // ordinary access to a test harness or extraction from a CSV.
+            access: compile_regex(&format!(
+                r"^(?:get|gain|obtain)\s+access(?:\s*(?:$|[.!?;,])|\s+to\s+{modifier}{sensitive_target}|[^.!?;]*\b{hostile_method})"
+            )),
+            extraction: compile_regex(&format!(
+                r"^extract\s+(?:the\s+)?data(?:\s*(?:$|[.!?;,])|\s+from\s+{modifier}{sensitive_target}|[^.!?;]*\b{hostile_method})"
+            )),
+        }
+    }
+
+    /// Classify disjoint marker bodies once and retain action flags across
+    /// incidental markers. This bounds work even for long, unpunctuated input.
+    /// An unrelated intervening sentence prevents association.
+    fn matches(&self, text: &str) -> bool {
+        let text = self.mask_rejected_quotes(text);
+        let mut markers = self
+            .markers
+            .captures_iter(&text)
+            .map(|captures| captures.get(1).expect("sequence marker capture"))
+            .peekable();
+        // (has instruction, harmful action, access action) since the anchor.
+        let mut anchor: Option<(bool, bool, bool)> = None;
+        let mut associated = true;
+        let mut completed = false;
+        while let Some(marker) = markers.next() {
+            let name = marker.as_str().to_ascii_lowercase();
+            let can_start = name != "second"
+                && name != "after"
+                && !(name.starts_with("step") && name.ends_with('2'));
+            let can_follow = name != "first" && !(name.starts_with("step") && name.ends_with('1'));
+            let next = markers.peek().map_or(text.len(), |next| next.start());
+            let span = &text[marker.end()..next];
+            let end = instruction_end(span);
+            let body = &span[..end];
+            let instruction = self.has_instruction(body);
+            let harmful = self.has_action(body, &self.harmful);
+            let access = self.has_action(body, &self.access);
+            if !associated {
+                anchor = None;
+            }
+            if let Some((prior_instruction, prior_harmful, prior_access)) = anchor {
+                if can_follow
+                    && prior_instruction
+                    && instruction
+                    && (prior_harmful
+                        || harmful
+                        || prior_access && self.has_action(body, &self.extraction))
+                {
+                    return true;
+                }
+                anchor = if completed {
+                    can_start.then_some((instruction, harmful, access))
+                } else {
+                    Some((
+                        prior_instruction || instruction,
+                        prior_harmful || harmful,
+                        prior_access || access,
+                    ))
+                };
+            } else {
+                anchor = can_start.then_some((instruction, harmful, access));
+            }
+            associated = self.list_label.is_match(&span[end..]);
+            completed = body.trim_end().ends_with(['.', '!', '?', ';']);
+        }
+        false
+    }
+
+    /// Neutralize only a balanced quoted expression with an explicit rejection
+    /// assertion. Do this before finding markers so punctuation or "then" inside
+    /// the description cannot split it. Everything after the quote stays visible.
+    fn mask_rejected_quotes<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        let mut masked = String::new();
+        let mut copied = 0;
+        for range in quoted_ranges(text) {
+            if self.rejection.is_match(&text[range.end..]) {
+                masked.push_str(&text[copied..range.start]);
+                masked.push_str("assertion");
+                copied = range.end;
+            }
+        }
+        if copied == 0 {
+            Cow::Borrowed(text)
+        } else {
+            masked.push_str(&text[copied..]);
+            Cow::Owned(masked)
+        }
+    }
+
+    fn directive<'a>(&self, text: &'a str) -> &'a str {
+        let prefix = self.prefix.find(text).expect("optional directive prefix");
+        &text[prefix.end()..]
+    }
+
+    fn has_instruction(&self, text: &str) -> bool {
+        self.directive(text)
+            .trim_start_matches(['`', '"', '\''])
+            .trim_start()
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphanumeric() || c == '_')
+    }
+
+    /// Inspect initial and coordinated actions independently. A rejection's
+    /// coordinated infinitive objects remain descriptions. An explicit new
+    /// directive prefix or another independent action ends that local scope.
+    fn has_action(&self, clause: &str, action: &Regex) -> bool {
+        let mut quotes = quoted_ranges(clause).into_iter().peekable();
+        let mut descriptive = false;
+        let mut rejected_correlative = false;
+        let mut start = 0;
+        for separator in self.coordination.find_iter(clause) {
+            // Separators and disjoint quote ranges are both ordered. Advance
+            // monotonically instead of rescanning every quote for each one.
+            while quotes
+                .peek()
+                .is_some_and(|range| range.end <= separator.start())
+            {
+                quotes.next();
+            }
+            if quotes
+                .peek()
+                .is_some_and(|range| range.contains(&separator.start()))
+            {
+                continue;
+            }
+            if self.classify_action(
+                &clause[start..separator.start()],
+                action,
+                &mut descriptive,
+                &mut rejected_correlative,
+            ) {
+                return true;
+            }
+            // An adversative starts an independent directive even after a
+            // negation or a description of rejected behavior.
+            if separator
+                .as_str()
+                .split(|c: char| !c.is_alphabetic())
+                .any(|word| word.eq_ignore_ascii_case("but"))
+            {
+                // In an actual rejected attempt, "not only ... but also"
+                // coordinates its objects. A bare "but" still starts a new
+                // directive; the paired scope is consumed exactly once.
+                let additive = clause[separator.end()..]
+                    .split_whitespace()
+                    .next()
+                    .is_some_and(|word| word.eq_ignore_ascii_case("also"));
+                if !(descriptive && rejected_correlative && additive) {
+                    descriptive = false;
+                }
+                rejected_correlative = false;
+            }
+            start = separator.end();
+        }
+        self.classify_action(
+            &clause[start..],
+            action,
+            &mut descriptive,
+            &mut rejected_correlative,
+        )
+    }
+
+    fn classify_action(
+        &self,
+        candidate: &str,
+        action: &Regex,
+        descriptive: &mut bool,
+        rejected_correlative: &mut bool,
+    ) -> bool {
+        let candidate = candidate
+            .trim_start_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | '-'));
+        let candidate = self
+            .error_avoidance
+            .replace_all(candidate, "without errors");
+        let directed = self.directive(&candidate);
+        let unquoted = directed.trim_start_matches(['`', '"', '\'']);
+        let body = self.directive(unquoted);
+        if self.negated_action.is_match(body) {
+            *descriptive = true;
+            *rejected_correlative = false;
+            return false;
+        }
+        // Adverbs and tool use can also modify a rejected infinitive. A local
+        // cue or modal starts a new directive, including inside code quotes.
+        let explicit_prefix = candidate[..candidate.len() - directed.len()]
+            .split_whitespace()
+            .chain(unquoted[..unquoted.len() - body.len()].split_whitespace())
+            .any(|word| {
+                ["now", "please", "you", "make"]
+                    .iter()
+                    .any(|prefix| word.eq_ignore_ascii_case(prefix))
+            });
+        let classified_action = self.harmful.is_match(body)
+            || self.access.is_match(body)
+            || self.extraction.is_match(body);
+        if *descriptive && (explicit_prefix || !classified_action) {
+            *descriptive = false;
+            *rejected_correlative = false;
+        }
+        if !*descriptive && action.is_match(body) {
+            return true;
+        }
+        // Require an actual rejection predicate (possibly in a relative
+        // clause), not rejection vocabulary mentioned in a literal or noun phrase.
+        if let Some(predicate) = self.rejection_predicate(directed) {
+            *descriptive = true;
+            *rejected_correlative = self.correlative.is_match(&directed[predicate.end()..]);
+        }
+        false
+    }
+    fn rejection_predicate<'a>(&self, text: &'a str) -> Option<regex::Match<'a>> {
+        self.rejected_attempt
+            .captures(text)
+            .and_then(|captures| captures.get(1))
+            .filter(|predicate| {
+                !quoted_ranges(text)
+                    .iter()
+                    .any(|range| range.contains(&predicate.start()))
+            })
+    }
+}
+
+/// Balanced quotes delimit descriptions; an apostrophe inside a word or an
+/// unmatched quote cannot hide a later coordinated imperative.
+fn quoted_ranges(text: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    let mut open = None;
+    let mut previous = None;
+    let mut chars = text.char_indices().peekable();
+    while let Some((offset, c)) = chars.next() {
+        let apostrophe = c == '\''
+            && previous.is_some_and(char::is_alphanumeric)
+            && chars.peek().is_some_and(|(_, next)| next.is_alphanumeric());
+        if !apostrophe && matches!(c, '`' | '"' | '\'') {
+            match open {
+                Some((quote, start)) if quote == c => {
+                    ranges.push(start..offset + c.len_utf8());
+                    open = None;
+                }
+                None if !previous.is_some_and(char::is_alphanumeric) => open = Some((c, offset)),
+                _ => {}
+            }
+        }
+        previous = Some(c);
+    }
+    ranges
+}
+
+/// Keep punctuation within filenames intact; only sentence punctuation ends a
+/// body. Newlines remain whitespace so split actions and newline-linked plans
+/// retain the same meaning as their single-line forms.
+fn instruction_end(text: &str) -> usize {
+    for (offset, c) in text.char_indices() {
+        let end = offset + c.len_utf8();
+        if matches!(c, '!' | '?' | ';')
+            || c == '.' && text[end..].chars().next().is_none_or(char::is_whitespace)
+        {
+            return end;
+        }
+    }
+    text.len()
+}
+
+fn chain_attack_pattern() -> PatternMatcher {
+    Lazy::force(&CHAIN_PATTERNS);
+    PatternMatcher::InstructionChain
 }
 
 fn build_patterns() -> Vec<AttackPattern> {
@@ -219,9 +649,7 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "critical",
             description: "Shell command injection via operators",
             mitigation: "Sanitize shell metacharacters",
-            matcher: re(
-                r"(\||&&|\$\(|`|;|\n)[\s]*(rm|del|format|kill|shutdown|reboot|wget|curl|nc|netcat)",
-            ),
+            matcher: command_injection_pattern(),
         },
         AttackPattern {
             id: "SE002",
@@ -282,9 +710,7 @@ fn build_patterns() -> Vec<AttackPattern> {
             severity: "high",
             description: "Multi-step attack using sequential instructions",
             mitigation: "Validate each step independently",
-            matcher: re(
-                r"(step\s+1|first,?|then|after that|next|finally).*?(step\s+2|second|then|after|next|finally)",
-            ),
+            matcher: chain_attack_pattern(),
         },
         AttackPattern {
             id: "WF001",
