@@ -8,7 +8,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 pub fn euid() -> u32 {
     // SAFETY: geteuid has no preconditions.
@@ -221,6 +221,24 @@ fn is_user_private_group(gid: u32) -> bool {
 }
 
 fn user_name(uid: u32) -> Option<String> {
+    passwd_field(uid, |pwd| pwd.pw_name).map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// The effective user's home directory from the passwd database, which a
+/// changed `HOME` does not affect. `None` when there is no entry, the entry
+/// does not fit the 16 KiB buffer (`ERANGE`), or the field is empty.
+///
+/// The one lookup used both by the CLI's profile settings refresh and by the
+/// issue #1699 test guard, so the two cannot disagree about the account home.
+pub fn passwd_home() -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+    passwd_field(euid(), |pwd| pwd.pw_dir)
+        .map(|bytes| PathBuf::from(std::ffi::OsString::from_vec(bytes)))
+}
+
+/// The bytes of one string field of `uid`'s passwd entry; `None` when the
+/// lookup fails or the field is null or empty.
+fn passwd_field(uid: u32, field: fn(&libc::passwd) -> *mut libc::c_char) -> Option<Vec<u8>> {
     let mut buf = vec![0 as libc::c_char; 16 * 1024];
     let mut pwd = std::mem::MaybeUninit::<libc::passwd>::zeroed();
     let mut out: *mut libc::passwd = std::ptr::null_mut();
@@ -231,9 +249,15 @@ fn user_name(uid: u32) -> Option<String> {
     if rc != 0 || out.is_null() {
         return None;
     }
-    // SAFETY: on success pw_name points into `buf` and is NUL-terminated.
-    let name = unsafe { std::ffi::CStr::from_ptr((*out).pw_name) };
-    Some(name.to_string_lossy().into_owned())
+    // SAFETY: on success `out` points to the filled entry.
+    let ptr = field(unsafe { &*out });
+    if ptr.is_null() {
+        return None;
+    }
+    // SAFETY: on success the entry's string fields point into `buf` and are
+    // NUL-terminated; `buf` outlives this borrow.
+    let bytes = unsafe { std::ffi::CStr::from_ptr(ptr) }.to_bytes().to_vec();
+    (!bytes.is_empty()).then_some(bytes)
 }
 
 fn group_info(gid: u32) -> Option<(String, usize)> {
