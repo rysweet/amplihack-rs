@@ -176,7 +176,12 @@ Use `interactive_command()` only when all three of these hold:
 - the child stays in the caller's foreground process group, with stdio
   inherited.
 
-`amplihack plugin install` is the only caller. `interactive_command()` does
+`amplihack plugin install` is the only caller.
+`scripts/check-git-command-sanitised.sh` fails the build on any call to
+`interactive_command(` outside `crates/amplihack-git/` and
+`crates/amplihack-cli/src/commands/plugin/manager.rs`. A new caller that meets
+the three conditions must be added to `interactive_allowed` in that script, so
+the reviewer sees it. `interactive_command()` does
 not set the variable, and does not remove a `GIT_TERMINAL_PROMPT` or askpass
 variable that it inherits.
 

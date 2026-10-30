@@ -148,7 +148,8 @@ pub fn command_in(dir: impl AsRef<Path>) -> Command {
 /// - the child stays in the caller's foreground process group, with stdio
 ///   inherited, so the person sees the prompt and can answer it.
 ///
-/// Everything else uses [`command`].
+/// Everything else uses [`command`]. `scripts/check-git-command-sanitised.sh`
+/// fails the build on a caller that is not in its `interactive_allowed` list.
 pub fn interactive_command() -> Command {
     let mut command = Command::new("git");
     scrub(&mut command);

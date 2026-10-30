@@ -182,6 +182,27 @@ else
     record_pass "guard rejects a raw Command::new(\"git\")"
 fi
 
+# interactive_command() may prompt (issue #1764), so the guard allows it only in
+# the files it names. A new caller elsewhere must fail.
+interactive_tree="$TMPROOT/interactive/crates/demo/src"
+mkdir -p "$interactive_tree"
+cat > "$interactive_tree/lib.rs" <<'RS'
+pub fn clone(url: &str) -> std::io::Result<std::process::ExitStatus> {
+    amplihack_git::interactive_command().args(["clone", url]).status()
+}
+RS
+if "$GUARD" "$TMPROOT/interactive" >/dev/null 2>&1; then
+    record_fail "guard rejects interactive_command() outside its allowlist" "guard exited 0"
+else
+    record_pass "guard rejects interactive_command() outside its allowlist"
+fi
+
+allowed_tree="$TMPROOT/allowed/crates/amplihack-cli/src/commands/plugin"
+mkdir -p "$allowed_tree"
+cp "$interactive_tree/lib.rs" "$allowed_tree/manager.rs"
+assert "guard accepts interactive_command() in plugin/manager.rs" \
+    "$GUARD" "$TMPROOT/allowed"
+
 # Other branches' checkouts live under the gitignored worktrees/ directory of
 # the main checkout and carry their own copy of crates/amplihack-git, which
 # names git directly. They are not this tree's source and must not fail it.
