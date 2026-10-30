@@ -354,30 +354,14 @@ which is the alias. Nothing reads it to push or to look up a pull request.
 usage: workflow_remote_branch.sh [DIR]
 ```
 
-`DIR` defaults to `.`. The resolver runs only `git symbolic-ref`,
-`git rev-parse --verify` (to test whether `refs/remotes/origin/HEAD`
-resolves) and `git config --get`, and changes nothing.
-
-| Checkout at `DIR` | Output |
-|---|---|
-| Detached HEAD, not a repository, or `DIR` missing | Nothing |
-| Branch name without `--wt-` | The name, unchanged |
-| `<P>--wt-<n>` where `n` matches `^[1-9][0-9]*$`, `<P>` is not empty and not the default branch, `branch.<name>.remote` is `origin`, and `branch.<name>.merge` is `refs/heads/<P>` | `<P>` |
-| Any other `--wt-` name | The name, unchanged |
-
-Only the last `--wt-` suffix is parsed: `a--wt-1--wt-2` can map only to
-`a--wt-1`. The default branch is defined as in
-[When the alias applies](#when-the-alias-applies).
-
-The resolver reads the branch configuration rather than `@{u}`, so it still
-answers when the remote-tracking ref is missing. It unsets `GIT_DIR`,
-`GIT_WORK_TREE` and `GIT_INDEX_FILE` first, so an inherited environment cannot
-point it at another repository.
-
-| Exit | Meaning |
-|---|---|
-| 0 | Any of the outputs above |
-| 2 | More than one argument. Prints the usage line on stderr. |
+For the checkout at `DIR` (default `.`), the resolver prints `<B>` when that
+checkout is on an alias of `<B>`, the branch name unchanged for any other
+branch, and nothing on a detached HEAD or outside a repository. It reads the
+branch configuration rather than `@{u}`, so it still answers when
+`refs/remotes/origin/<B>` is missing. It only reads, and it exits 0, or 2 on a
+usage error. The comment at the top of
+[`workflow_remote_branch.sh`](../../amplifier-bundle/tools/workflow_remote_branch.sh)
+gives the exact rule for what counts as an alias.
 
 Examples, from a checkout of the alias created in the
 [quick start](#quick-start):
@@ -418,25 +402,20 @@ bash "$TOOLS_DIR/workflow_caller_branch_alias.sh" "$REPO_REAL" "$MAIN_REPO_PATH"
 ```
 
 It runs the [checks](#checks-on-the-callers-checkout) against `caller_path`
-and then [chooses the alias](#alias-naming-and-reuse).
+and then [chooses the alias](#alias-naming-and-reuse). The comment at the top
+of
+[`workflow_caller_branch_alias.sh`](../../amplifier-bundle/tools/workflow_caller_branch_alias.sh)
+gives its full contract. Step 4 acts on the planner's exit status:
 
-| Exit | stdout | stderr | Meaning |
-|---|---|---|---|
-| 0 | The alias, one line | The `INFO` line | Use this alias |
-| 1 | Nothing | One `ERROR` line | A check failed; stop |
-| 2 | Nothing | The usage line | Wrong argument count, a missing directory, or a `<branch>` that `git check-ref-format --branch` does not print back unchanged (this rejects `@{-1}`) |
-| 3 | Nothing | An `INFO` line | `<branch>` is the default branch; no alias |
-
-Step 4 accepts the result only when the exit is 0 and the output starts with
-`<branch>--wt-`. Anything else ends the step with
-`ERROR: cannot set up an alias worktree for '<branch>' (planner exit <rc>; issue #1762).`
-and exit 1, except exit 3, which gives the #858 refusal.
+| Exit | Planner result | Step 4 then |
+|---|---|---|
+| 0 | The alias on stdout, the `INFO` line on stderr | Uses the alias if it starts with `<branch>--wt-`; otherwise stops as for exit 1 |
+| 1 | A check failed; one `ERROR` line | Prints `ERROR: cannot set up an alias worktree for '<branch>' (planner exit <rc>; issue #1762).` and exits 1 |
+| 2 | Usage error, which includes a `<branch>` such as `@{-1}` that `git check-ref-format --branch` does not print back unchanged | Same as exit 1 |
+| 3 | `<branch>` is the default branch; an `INFO` line | Gives the #858 refusal |
 
 The planner only reads. It never fetches, pushes, or creates branches,
-worktrees, configuration or refs, and it does not contain `update-ref`,
-`reset`, `checkout`, `stash`, `clean`, `branch -D`, `branch -m`,
-`worktree add`, `worktree remove` or any `git config` call without `--get`.
-Like the resolver, it unsets `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE`.
+worktrees, configuration or refs.
 
 On the alias path, step 4 itself writes these and nothing else:
 
@@ -452,7 +431,8 @@ never touches the caller's HEAD, index, working tree or `branch.<B>.*`, and
 never stashes, moves or discards the caller's work.
 
 Both helpers are bash scripts compatible with bash 3.2, the system bash on
-macOS.
+macOS. Both unset `GIT_DIR`, `GIT_WORK_TREE` and `GIT_INDEX_FILE` first, so an
+inherited environment cannot point them at another repository.
 
 ---
 
@@ -549,22 +529,27 @@ git branch -d fix/142-band-edge-previous-slice--wt-1   # refuses if it has commi
 
 ## Testing
 
-`tests/integration/issue_1762_caller_branch_alias_test.rs` extracts the recipe
-step bodies from the YAML and runs them against a fixture repository whose `origin`
-is a local bare repository. Each child runs through `isolated("bash")`, with a
-fixture-owned `HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
+The tests are in `tests/integration/issue_1762_caller_branch_alias/`, one file
+per area, gathered by `tests/integration/issue_1762_caller_branch_alias_test.rs`.
+They extract the recipe step bodies from the YAML and run them against a
+fixture repository whose `origin` is a local bare repository. `fixture.rs`
+builds it. Each child runs through `isolated("bash")`, with a fixture-owned
+`HOME`, `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`,
 `GIT_TERMINAL_PROMPT=0`, `GIT_ALLOW_PROTOCOL=file` and stdin from `/dev/null`.
 `AMPLIHACK_HOME` points at the workspace, so the helpers are read from the
 source tree. A fake `gh` logs its arguments and rejects unknown subcommands.
 The fixture branch is `feat/issue-1762-fixture`, so its alias directory is
 `worktrees/feat/issue-1762-fixture--wt-1`.
 
-| Group | Tests |
+| File | Covers |
 |---|---|
-| Step 4 | `alias_created_when_caller_on_pushed_clean_branch` (with a snapshot showing the caller is untouched), `rerun_reuses_alias_worktree`, `alias_shaped_branch_with_other_upstream_is_skipped`, `caller_behind_origin_alias_starts_at_origin`, `caller_not_on_branch_is_unchanged`, `default_branch_keeps_858_refusal`, `missing_planner_warns_then_refuses`, `concurrent_create_does_not_remove_existing_worktree`, `alias_ref_made_by_other_run_is_not_removed` |
-| Stops | `stops_on_uncommitted_tracked_change`, `stops_when_branch_not_on_origin`, `stops_on_unpushed_commit`, `reports_only_first_cause` |
-| Consumers | `publish_pushes_alias_head_to_original_remote_branch`, `open_pr_check_looks_up_remote_branch`, `final_status_branch_lookup_uses_remote_branch`, `terminal_state_probe_accepts_alias` (with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream), `remote_branch_resolver_contract`, `planner_and_resolver_agree_on_default_branches` |
-| Security | `step16b_prompt_does_not_template_branch_name`, `planner_writes_nothing`, `planner_rejects_previous_branch_syntax`, `planner_status_unreadable_fails_closed`, `planner_ignores_inherited_git_dir`, `push_fallback_keeps_alias_mapping`, `step15_refuses_unbound_push_target`, `helpers_contain_no_write_commands`, `missing_resolver_stops_push_steps`, `resolver_callers_do_not_fall_back_to_local_branch` |
+| `step04.rs` | The alias path: creating the alias with the caller left untouched, reuse on a re-run, skipping an alias-shaped branch that fails the reuse conditions or whose path is taken, a caller behind `origin/<B>`, a linked-worktree caller, and a caller not on `<B>` (unchanged) |
+| `step04_stops.rs` | The three stops and first-cause-only reporting, the default branch's #858 refusal, a missing planner, planner output that step 4 must reject, and the two concurrent-create cases, neither of which removes anything |
+| `planner.rs` | The planner on its own: its contract, that it writes nothing, rejects `@{-1}`, fails closed when `git status` fails and ignores an inherited `GIT_DIR`; and that the planner and the resolver agree on the default branch |
+| `resolver.rs` | The resolver on its own: its contract and an inherited `GIT_DIR`; and that both helpers are executable, start with `set -euo pipefail`, unset the inherited git variables and use nothing newer than bash 3.2 |
+| `consumers.rs` | The open-PR check, the final-status branch lookup and the terminal-state branch check use `<B>`, with a `FAILED_WRONG_BRANCH` control on an alias-shaped branch with another upstream |
+| `push.rs` | Steps 15, 16b, 18c and 20b push to `<B>`: step 15's refusal of a target other than `worktree_setup.branch_name`, the `-u` fallbacks, a missing resolver stopping every push step, and step 16b getting `<B>` without `{{...}}` templating |
+| `static_checks.rs` | Checks on the files themselves: the helpers contain no write commands, step 4 adds nothing destructive, `consensus-issue-worktree.yaml` keeps the #858 refusal, no resolver caller falls back to the local branch name, and this page is linked and in the changelog |
 
 `tests/integration/workflow_worktree_caller_refusal_test.rs` keeps the #858
 cases. Its Gate B, Gate B symlink and Gate C cases now expect the #1762 stop:
@@ -574,7 +559,8 @@ stdout, no `worktrees/` directory, the caller unchanged, and stderr naming
 expects the same stop for `origin/fix/142-band-edge-previous-slice`, and E2b
 still checks that no competing branch is derived from the task's prose.
 
-Run them locally:
+Run them locally. Add `-- --list` to the first command to print the test
+names.
 
 ```bash
 cargo test --test integration issue_1762
