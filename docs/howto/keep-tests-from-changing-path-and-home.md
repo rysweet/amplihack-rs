@@ -186,11 +186,12 @@ the install command would give its child.
 ### Code that reads neither variable
 
 If the code under test reads neither `PATH` nor `HOME`, delete the change.
-`auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path`
-in `crates/amplihack-hooks/src/pre_tool_use/tests/pre_tool_use_tests.rs`
-used to reorder `PATH`, although the merge guard reads no `PATH`. The test
-now keeps its cases and has a comment: if the guard ever resolves `gh`
-through `PATH`, add a `PATH` case through a seam, not through `set_var`.
+`auto_drive_merge_is_refused_for_bare_and_absolute_gh` in
+`crates/amplihack-hooks/src/pre_tool_use/tests/pre_tool_use_tests.rs` used
+to reorder `PATH`, under a name that said so, although the merge guard reads
+no `PATH`. The test now keeps its cases, a bare `gh` and one named by its
+absolute path, and has a comment: if the guard ever resolves `gh` through
+`PATH`, add a `PATH` case through a seam, not through `set_var`.
 
 ## Bound a timeout without measuring speed
 

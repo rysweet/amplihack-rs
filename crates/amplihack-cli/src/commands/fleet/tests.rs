@@ -679,9 +679,6 @@ fn parse_vm_text_extracts_rows() {
 
 #[test]
 fn poll_tmux_sessions_parses_multiple_sessions() {
-    let _guard = home_env_lock()
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let dir = tempfile::tempdir().unwrap();
     let home = tempfile::tempdir().unwrap();
     let azlin = dir.path().join("azlin");
@@ -690,23 +687,14 @@ fn poll_tmux_sessions_parses_multiple_sessions() {
         "#!/bin/sh\nif [ \"$1\" = connect ]; then\n  printf \"amplihack-ultra|||1|||1\\nbart|||2|||0\\n\";\nelse\n  exit 1\nfi\n",
     );
 
-    let previous_azlin = env::var_os("AZLIN_PATH");
-    unsafe {
-        env::set_var("AZLIN_PATH", &azlin);
-    }
-
     // Issue #1765: the stub is started by absolute path and gets the test
-    // HOME on its own environment; the process PATH and HOME are never
-    // changed, and no local tmux server is involved.
+    // HOME on its own environment. The test changes no process-wide
+    // variable (PATH, HOME or AZLIN_PATH), so it needs no env lock, and no
+    // local tmux server is involved.
     let sessions = FleetState::poll_tmux_sessions_with(&azlin, "test-vm", &|cmd: &mut Command| {
         cmd.env("HOME", home.path())
             .env_remove(crate::commands::profile::ROOT_ENV);
     });
-
-    match previous_azlin {
-        Some(value) => unsafe { env::set_var("AZLIN_PATH", value) },
-        None => unsafe { env::remove_var("AZLIN_PATH") },
-    }
 
     assert_eq!(sessions.len(), 2);
     assert_eq!(sessions[0].session_name, "amplihack-ultra");

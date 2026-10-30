@@ -846,7 +846,7 @@ fn main_branch_guard_fires_from_copilot_tool_args_payload() {
 /// (`agent_login_shell_resolves_gh_to_the_shim_after_a_profile_reorders_path`).
 #[cfg(unix)]
 #[test]
-fn auto_drive_merge_is_refused_when_a_profile_puts_another_gh_first_on_path() {
+fn auto_drive_merge_is_refused_for_bare_and_absolute_gh() {
     use std::os::unix::fs::PermissionsExt;
     let _guard = env_lock().lock().unwrap_or_else(|p| p.into_inner());
     let tmp = tempfile::tempdir().unwrap();
